@@ -8,6 +8,7 @@ from emuflow.errors import ValidationError
 from emuflow.logic_segment_timing import (
     _architectural_launch_endpoints,
     _boundary_tx_port,
+    _incoming_transported_cut_nets,
     _vivado_object,
     _vpr_atom_pin,
     import_vivado_logic_segment_timing,
@@ -127,7 +128,31 @@ class LogicSegmentTimingTest(unittest.TestCase):
             {"state": "fpga0", "logic": "fpga0", "remote": "fpga1"},
             "sink_cut",
             "fpga0",
-            {"incoming_cut", "sink_cut"},
+            _incoming_transported_cut_nets(
+                {
+                    "cut_nodes": [
+                        {
+                            "net": "incoming_cut",
+                            "source_fpgas": ["fpga1"],
+                            "sink_fpgas": ["fpga0"],
+                        },
+                        {
+                            # This net is transported globally, but it is a
+                            # local architectural launch on fpga0 and must not
+                            # stop the source-cone walk there.
+                            "net": "state_net",
+                            "source_fpgas": ["fpga0"],
+                            "sink_fpgas": ["fpga2"],
+                        },
+                        {
+                            "net": "sink_cut",
+                            "source_fpgas": ["fpga0"],
+                            "sink_fpgas": ["fpga3"],
+                        },
+                    ]
+                },
+                "fpga0",
+            ),
         )
         self.assertEqual(
             result,
@@ -152,7 +177,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 {"state": "fpga0", "logic": "fpga0", "remote": "fpga1"},
                 "sink_cut",
                 "fpga0",
-                {"incoming_cut", "sink_cut"},
+                {"incoming_cut"},
                 nets=nets,
                 instances=instances,
                 incoming=incoming,

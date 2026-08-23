@@ -388,7 +388,12 @@ every final RX-to-capture requirement. Incoming cut nets are explicit cone
 stop points, so parallel and reconvergent semantic branches cannot inherit the
 timing evidence of an unrelated representative path. A constant cone with no
 timed launch remains explicitly incomplete rather than being assigned a
-fabricated zero delay. This is
+fabricated zero delay. The stop rule is directional per FPGA: a net that
+originates locally and is also transported to another FPGA remains an ordinary
+local fan-in on its source FPGA; only a transported net entering the current
+FPGA stops the local launch-cone walk. This prevents a locally originated
+register or memory launch from disappearing merely because another partition
+also consumes that net. This is
 also reflected at the one-command CLI boundary: exact mode defaults slot
 refinement to zero, while an explicit nonzero request remains fail-closed until
 that optimizer is dependency-qualified. This is

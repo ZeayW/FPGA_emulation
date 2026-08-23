@@ -45,12 +45,32 @@ _FF_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
 _STATE_RESOURCES = {"ff", "bram", "bram18k", "uram288"}
 
 
+def _incoming_transported_cut_nets(
+    exact_contract: Mapping[str, Any], fpga: str
+) -> Set[str]:
+    """Return only transported cuts that enter ``fpga``.
+
+    A logical net may itself be transported to some *other* FPGA while still
+    being an ordinary local fan-in on its source FPGA.  Treating every
+    transported net as a fan-in stop point drops the architectural launches of
+    such locally originated nets.  The exact contract already records the
+    destination set, so use that causal direction rather than mere membership
+    in the global transported-net set.
+    """
+
+    return {
+        item["net"]
+        for item in exact_contract["cut_nodes"]
+        if fpga in item["sink_fpgas"]
+    }
+
+
 def _architectural_launch_endpoints(
     ir: EmuIR,
     instance_assignment: Mapping[str, str],
     sink_net: str,
     fpga: str,
-    transported_cut_nets: Set[str],
+    incoming_cut_nets: Set[str],
     *,
     nets: Optional[Mapping[str, Mapping[str, Any]]] = None,
     instances: Optional[Mapping[str, Mapping[str, Any]]] = None,
@@ -94,7 +114,7 @@ def _architectural_launch_endpoints(
         if net_id in visited:
             continue
         visited.add(net_id)
-        if net_id != sink_net and net_id in transported_cut_nets:
+        if net_id != sink_net and net_id in incoming_cut_nets:
             continue
         net = nets.get(net_id)
         if net is None:
@@ -113,7 +133,7 @@ def _architectural_launch_endpoints(
                     f"static exact launch driver {instance_id!r} is absent"
                 )
             if instance_assignment.get(instance_id) != fpga:
-                if net_id in transported_cut_nets:
+                if net_id in incoming_cut_nets:
                     continue
                 raise ValidationError(
                     "static exact launch cone crosses an undeclared "
@@ -822,9 +842,9 @@ def _write_logic_segment_query(
                 segments.append(segment)
     if exact_contract_sha256 is not None:
         schedule_entries = list(schedule["entries"])
-        transported_cut_nets = {
-            item["net"] for item in exact_contract["cut_nodes"]
-        }
+        incoming_cut_nets = _incoming_transported_cut_nets(
+            exact_contract, fpga
+        )
         entries_by_net_from: Dict[
             Tuple[str, str], List[Mapping[str, Any]]
         ] = defaultdict(list)
@@ -987,7 +1007,7 @@ def _write_logic_segment_query(
                         instance_assignment,
                         sink_cut_net,
                         fpga,
-                        transported_cut_nets,
+                        incoming_cut_nets,
                         nets=original_nets,
                         instances=original_instances,
                         incoming=incoming_nets_by_instance,
