@@ -117,6 +117,11 @@ def run_partition_checkpoint(
             if route_constraints_path is not None
             else None
         ),
+        "constraints_sha256": (
+            _sha256(constraints_path.resolve())
+            if constraints_path is not None
+            else None
+        ),
         "phase3": phase3,
     }
     write_json(output_dir / "experiment-partition-report.json", report)
@@ -125,6 +130,7 @@ def run_partition_checkpoint(
         timing_root,
         platform_path,
         output_dir,
+        constraints_path=constraints_path,
         route_constraints_path=route_constraints_path,
         expected_provider=provider,
         expected_seed=seed,
@@ -148,6 +154,7 @@ def validate_partition_checkpoint(
     platform_path: Path,
     root: Path,
     *,
+    constraints_path: Path | None = None,
     route_constraints_path: Path | None = None,
     expected_provider: str | None = None,
     expected_seed: int | None = None,
@@ -209,6 +216,13 @@ def validate_partition_checkpoint(
         "route_constraints_sha256"
     ) != _sha256(route_constraints_path.resolve()):
         raise ValidationError("partition route-constraints seal is broken")
+    expected_constraints_sha256 = (
+        _sha256(constraints_path.resolve())
+        if constraints_path is not None
+        else None
+    )
+    if report.get("constraints_sha256") != expected_constraints_sha256:
+        raise ValidationError("partition constraints seal is broken")
     seals = {
         "emuir_sha256": ir_path,
         "platform_sha256": platform_path.resolve(),

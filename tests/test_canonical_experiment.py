@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sys
 import tempfile
@@ -596,6 +597,41 @@ class CanonicalExperimentTest(unittest.TestCase):
             ):
                 compile_canonical_experiment_spec(
                     config_path, REPOSITORY, root / "safe-spec.json"
+                )
+
+    def test_partition_constraints_are_sealed_for_run_and_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            constraints = root / "partition-constraints.json"
+            constraints.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.partition-constraints/v1",
+                        "fixed": [{"instance": "u0", "fpga": "FPGA0"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = json.loads(config_path.read_text())
+            config["partition_constraints"] = str(constraints)
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            nodes = {
+                item["id"]: item
+                for item in json.loads(output.read_text())["nodes"]
+            }
+            partition = nodes["partition"]
+            self.assertIn("partition_constraints", partition["inputs"])
+            self.assertEqual(
+                partition["configuration"]["partition_constraints_sha256"],
+                hashlib.sha256(constraints.read_bytes()).hexdigest(),
+            )
+            for command in (partition["command"], partition["validator"]):
+                self.assertEqual(
+                    command[command.index("--constraints") + 1],
+                    str(constraints.resolve()),
                 )
 
     def test_partition_seed_attempts_must_be_positive(self) -> None:

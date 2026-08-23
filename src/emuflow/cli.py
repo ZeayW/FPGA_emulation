@@ -625,6 +625,7 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--frontend", type=Path, required=True)
     partition_validate.add_argument("--timing", type=Path, required=True)
     partition_validate.add_argument("--platform", type=Path, required=True)
+    partition_validate.add_argument("--constraints", type=Path)
     partition_validate.add_argument("--route-constraints", type=Path)
     partition_validate.add_argument("--provider")
     partition_validate.add_argument("--seed", type=int)
@@ -3383,6 +3384,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.timing,
                 args.platform,
                 args.root,
+                constraints_path=args.constraints,
                 route_constraints_path=args.route_constraints,
                 expected_provider=args.provider,
                 expected_seed=args.seed,

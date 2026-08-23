@@ -1244,6 +1244,14 @@ independent validators.  That qualification DAG intentionally emits only the
 unmodified baseline Phase 6 transport and three physical seeds: placement-aware
 and Chimew rescheduling are not permitted to rewrite an exact dependency
 schedule, and no inapplicable ratio-plan artifact is claimed.
+For a controlled exact-cut exercise, an optional
+`"partition_constraints": "/absolute/path/to/constraints.json"` is a
+byte-sealed Phase 3 input: the canonical compiler passes it to both the
+partition producer and independent checkpoint validator, records its digest in
+the Phase 3 configuration, and invalidates only Phase 3 and descendants when
+it changes. It is suitable for forcing a previously characterized legal
+candidate across an FPGA boundary; it is not post-processing and must remain
+part of the replayable experiment specification.
 They also bind `partition_seed_attempts` and the explicit
 `partition_repair_balance` policy into both the Phase 3 producer and independent
 validator identities. A multi-seed TritonPart sweep therefore searches for an

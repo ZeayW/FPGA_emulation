@@ -363,6 +363,12 @@ def compile_canonical_experiment_spec(
     route_constraints = _file(
         config.get("route_constraints"), "route_constraints"
     )
+    partition_constraints_value = config.get("partition_constraints")
+    partition_constraints = (
+        _file(partition_constraints_value, "partition_constraints")
+        if partition_constraints_value is not None
+        else None
+    )
     timing_model = _file(config.get("timing_model"), "timing_model")
     architecture_timing = _file(
         config.get("architecture_timing_db"), "architecture_timing_db"
@@ -523,6 +529,8 @@ def compile_canonical_experiment_spec(
         "openparf_implementation": openparf_closure["implementation_sha256"],
         **{f"tool.{label}": _sha256(path) for label, path in sorted(tools.items())},
     }
+    if partition_constraints is not None:
+        base_inputs["partition_constraints"] = _sha256(partition_constraints)
     base_bindings = {
         "rtl": str(rtl),
         "platform": str(platform),
@@ -537,6 +545,8 @@ def compile_canonical_experiment_spec(
         "openparf_implementation": str(openparf_install),
         **{f"tool.{label}": str(path) for label, path in sorted(tools.items())},
     }
+    if partition_constraints is not None:
+        base_bindings["partition_constraints"] = str(partition_constraints)
     closures = {stage: _closure(repository_root, stage) for stage in _COMPONENTS}
 
     nodes: list[Dict[str, Any]] = []
@@ -652,6 +662,9 @@ def compile_canonical_experiment_spec(
         "--minimum-combinational-cut-nets",
         str(minimum_combinational_cut_nets),
     ]
+    if partition_constraints is not None:
+        partition_command.extend(("--constraints", str(partition_constraints)))
+        partition_validator.extend(("--constraints", str(partition_constraints)))
     if partition_repair_balance:
         partition_command.insert(-2, "--repair-balance")
     partition_validator.append(
@@ -663,8 +676,8 @@ def compile_canonical_experiment_spec(
         "partition", "partition", ["frontend", "timing"], partition_command,
         partition_validator,
         [_artifact("clusters.json", "consumer-checkpoint"), _artifact("constraints.normalized.json", "consumer-checkpoint"), _artifact("assignment.json", "consumer-checkpoint"), _artifact("phase3_report.json", "consumer-checkpoint"), _artifact("experiment-partition-report.json", "evidence-critical")],
-        inputs=("platform", "route_constraints", "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
-        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots, "minimum_combinational_cut_nets": minimum_combinational_cut_nets},
+        inputs=("platform", "route_constraints", *( ("partition_constraints",) if partition_constraints is not None else () ), "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
+        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "partition_constraints_sha256": base_inputs.get("partition_constraints"), "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots, "minimum_combinational_cut_nets": minimum_combinational_cut_nets},
         peak_gib=24, retained_gib=6,
     )
     cut_command = [

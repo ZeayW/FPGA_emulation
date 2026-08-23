@@ -242,6 +242,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
             "phase3_report_sha256": _sha256(
                 partition / "phase3_report.json"
             ),
+            "constraints_sha256": None,
             "route_constraints_sha256": None,
         }
         (partition / "experiment-partition-report.json").write_text(
@@ -269,6 +270,42 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 expected_repair_balance=True,
             )
             self.assertEqual(checked["status"], "pass")
+
+    @mock.patch("emuflow.experiment_partition.validate_phase3")
+    def test_partition_validator_seals_optional_constraints(
+        self, validate_phase3
+    ) -> None:
+        validate_phase3.return_value = {"status": "pass"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frontend, timing, platform, partition = self._partition_fixture(root)
+            constraints = root / "constraints.json"
+            constraints.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.partition-constraints/v1",
+                        "fixed": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report_path = partition / "experiment-partition-report.json"
+            report = json.loads(report_path.read_text())
+            report["constraints_sha256"] = _sha256(constraints)
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            self.assertEqual(
+                validate_partition_checkpoint(
+                    frontend, timing, platform, partition,
+                    constraints_path=constraints,
+                )["status"],
+                "pass",
+            )
+            constraints.write_text("{}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "constraints seal"):
+                validate_partition_checkpoint(
+                    frontend, timing, platform, partition,
+                    constraints_path=constraints,
+                )
 
     @mock.patch("emuflow.experiment_partition.validate_phase3")
     def test_partition_validator_rejects_resealed_policy_mismatch(
