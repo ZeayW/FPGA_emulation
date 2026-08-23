@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from emuflow.cli import main
 from emuflow.combinational_cut import (
+    build_static_exact_semantic_contract,
     characterize_combinational_cuts,
     semantic_contract_sha256,
     validate_combinational_cut_characterization,
@@ -1440,6 +1441,91 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         self.assertEqual(
             validate_tdm_schedule(routes, self.platform, schedule)["status"],
             "pass",
+        )
+
+    def test_dependency_free_constant_cone_is_stable_at_slot_zero(self):
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "constant_cut",
+                    "top": "constant_cut",
+                    "source_format": "test",
+                },
+                "ports": [],
+                "instances": [
+                    {
+                        "id": "constant_lut",
+                        "type": "LUT2",
+                        "parameters": {"INIT": "1111"},
+                        "resources": {"lut": 1},
+                    },
+                    {
+                        "id": "sink_lut",
+                        "type": "LUT2",
+                        "parameters": {"INIT": "1010"},
+                        "resources": {"lut": 1},
+                    },
+                    {"id": "sink_ff", "type": "FDRE", "resources": {"ff": 1}},
+                ],
+                "nets": [
+                    {
+                        "id": "constant_cross",
+                        "name": "constant_cross",
+                        "cut_class": "combinational",
+                        "drivers": [_endpoint("constant_lut", "O")],
+                        "sinks": [_endpoint("sink_lut", "I0")],
+                    },
+                    {
+                        "id": "d",
+                        "name": "d",
+                        "cut_class": "register_input",
+                        "drivers": [_endpoint("sink_lut", "O")],
+                        "sinks": [_endpoint("sink_ff", "D")],
+                    },
+                ],
+                "clocks": [
+                    {
+                        "id": "clk",
+                        "name": "clk",
+                        "source_port": "clk",
+                        "period_ns": None,
+                    }
+                ],
+                "warnings": [],
+            }
+        )
+        contract = build_static_exact_semantic_contract(
+            ir,
+            {"name": "test-platform"},
+            {
+                "constant_lut": "fpga0",
+                "sink_lut": "fpga1",
+                "sink_ff": "fpga1",
+            },
+            [
+                {
+                    "net": "constant_cross",
+                    "source_fpgas": ["fpga0"],
+                    "sink_fpgas": ["fpga1"],
+                }
+            ],
+            max_dependency_depth=1,
+            comb_segment_budget_slots=1,
+            frame_slots=16,
+        )
+        launch = next(
+            item
+            for item in contract["logic_segments"]
+            if item["kind"] == "launch_to_tx"
+        )
+        self.assertEqual(launch["budget_slots"], 0)
+        self.assertEqual(
+            launch["source_semantics"], "configuration-stable-constant"
+        )
+        self.assertEqual(
+            launch["evidence"],
+            "structurally-proven-configuration-stable-constant",
         )
 
     def test_phase5_cli_writes_and_revalidates_exact_schedule(self):

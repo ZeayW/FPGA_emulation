@@ -790,9 +790,16 @@ def build_static_exact_semantic_contract(
         # by a local architectural launch (register/memory/top input).  Those
         # are distinct timing branches whose readiness must all be covered;
         # predecessor presence therefore does not suppress launch-to-TX.
-        # Preserve the conservative legacy segment for a dependency-free
-        # constant cone, which has no timed launch endpoint of its own.
+        # A dependency-free cone without an architectural launch is stable
+        # from configuration rather than launched by the virtual DUT clock.
+        # Preserve it in the causal contract, but identify it explicitly so
+        # downstream physical qualification does not demand a fictitious
+        # launch endpoint.  It is ready at slot zero and therefore consumes
+        # no dynamic settle budget.
         if local_launches[net_id] or not dependencies[net_id]:
+            configuration_stable_constant = (
+                not local_launches[net_id] and not dependencies[net_id]
+            )
             segment_id = f"segment{len(logic_segments):06d}"
             source_segment_by_net[net_id] = segment_id
             logic_segments.append(
@@ -810,8 +817,25 @@ def build_static_exact_semantic_contract(
                     # zero budget can schedule their TX in slot zero and
                     # falsely pass Phase 5 before routed Phase 7 rejects the
                     # physical launch-to-TX segment.
-                    "budget_slots": comb_segment_budget_slots,
-                    "evidence": "contract-budget-provisional",
+                    "budget_slots": (
+                        0
+                        if configuration_stable_constant
+                        else comb_segment_budget_slots
+                    ),
+                    "evidence": (
+                        "structurally-proven-configuration-stable-constant"
+                        if configuration_stable_constant
+                        else "contract-budget-provisional"
+                    ),
+                    **(
+                        {
+                            "source_semantics": (
+                                "configuration-stable-constant"
+                            )
+                        }
+                        if configuration_stable_constant
+                        else {}
+                    ),
                 }
             )
     for sink in sorted(dependencies):

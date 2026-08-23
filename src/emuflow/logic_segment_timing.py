@@ -994,9 +994,10 @@ def _write_logic_segment_query(
                     )
                     launches_by_sink_net[sink_cut_net] = starts
                 if not starts:
-                    # A dependency-free constant cone has no timed launch
-                    # endpoint.  Leave it unmeasured so deadline closure stays
-                    # explicitly incomplete instead of inventing zero delay.
+                    # A dependency-free constant cone has no dynamic launch
+                    # endpoint.  Its sealed semantic-contract record qualifies
+                    # configuration stability independently; do not invent a
+                    # physical startpoint merely to create a timing query.
                     continue
                 destinations = [
                     entry_endpoint(item, "tx")

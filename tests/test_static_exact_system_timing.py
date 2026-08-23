@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
+from emuflow.combinational_cut import semantic_contract_sha256
 from emuflow.static_exact_timing import (
     build_static_exact_segment_deadlines,
     validate_static_exact_segment_deadlines,
@@ -371,6 +372,77 @@ class StaticExactSystemTimingTest(unittest.TestCase):
                 phase5,
                 physical,
                 self.platform,
+            )
+
+    def test_configuration_stable_constant_needs_no_physical_launch(self):
+        schedule = copy.deepcopy(self.schedule)
+        launch = next(
+            item
+            for item in schedule["semantic_contract"]["logic_segments"]
+            if item["id"] == "segment000000"
+        )
+        launch.update(
+            {
+                "budget_slots": 0,
+                "evidence": (
+                    "structurally-proven-configuration-stable-constant"
+                ),
+                "source_semantics": "configuration-stable-constant",
+            }
+        )
+        digest = semantic_contract_sha256(schedule["semantic_contract"])
+        schedule["semantic_contract_sha256"] = digest
+        physical = copy.deepcopy(self.physical)
+        for database in physical["logic_segment_timing"].values():
+            database["semantic_contract_sha256"] = digest
+        fpga0 = physical["logic_segment_timing"]["fpga0"]
+        fpga0["segments"] = [
+            item
+            for item in fpga0["segments"]
+            if item["static_exact_segment_id"] != "segment000000"
+        ]
+        fpga0["coverage"].update(
+            {"segments": 1, "system_paths": 1, "member_paths": 1}
+        )
+
+        deadlines = build_static_exact_segment_deadlines(
+            schedule, physical, self.platform
+        )
+        self.assertEqual(deadlines["status"], "pass")
+        self.assertEqual(deadlines["coverage"]["missing_segments"], 0)
+        self.assertEqual(
+            deadlines["coverage"]["structural_constant_segments"], 1
+        )
+        constant = next(
+            item
+            for item in deadlines["segments"]
+            if item["id"] == "segment000000"
+        )
+        self.assertEqual(
+            constant["evidence"],
+            "structural-configuration-stable-constant",
+        )
+        self.assertEqual(constant["physical_measurements"], 0)
+        self.assertEqual(constant["physical_delay_bound_ns"], 0.0)
+        self.assertEqual(
+            validate_static_exact_segment_deadlines(
+                deadlines, schedule, physical, self.platform
+            )["status"],
+            "pass",
+        )
+
+        tampered = copy.deepcopy(deadlines)
+        constant = next(
+            item
+            for item in tampered["segments"]
+            if item["id"] == "segment000000"
+        )
+        constant["physical_delay_bound_ns"] = 0.1
+        with self.assertRaisesRegex(
+            ValidationError, "constant deadline"
+        ):
+            validate_static_exact_segment_deadlines(
+                tampered, schedule, physical, self.platform
             )
 
 

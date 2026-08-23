@@ -163,13 +163,22 @@ def build_static_exact_segment_deadlines(
         segment_id = segment["id"]
         kind = segment["kind"]
         fpga = segment["fpga"]
+        configuration_stable_constant = (
+            kind == "launch_to_tx"
+            and segment.get("source_semantics")
+            == "configuration-stable-constant"
+        )
         if kind == "launch_to_tx":
             tx_entries = _source_entries(
                 entries_by_net, segment["sink_cut_net"], fpga
             )
             start_slot = 0
             deadline_slot = min(item["slot"] for item in tx_entries)
-            causal_source = "architectural-launch@slot0"
+            causal_source = (
+                "configuration-stable-constant@slot0"
+                if configuration_stable_constant
+                else "architectural-launch@slot0"
+            )
             causal_sink = ",".join(sorted(item["id"] for item in tx_entries))
         elif kind == "rx_to_tx":
             arrival = arrivals.get((segment["source_cut_net"], fpga))
@@ -218,7 +227,27 @@ def build_static_exact_segment_deadlines(
             "causal_sink": causal_sink,
             "contract_budget_slots": segment["budget_slots"],
         }
-        if not physical:
+        if configuration_stable_constant:
+            if segment.get("budget_slots") != 0:
+                raise ValidationError(
+                    f"static exact constant segment {segment_id!r} must "
+                    "have a zero-slot budget"
+                )
+            if physical:
+                raise ValidationError(
+                    f"static exact constant segment {segment_id!r} has "
+                    "unexpected dynamic physical evidence"
+                )
+            record.update(
+                {
+                    "evidence": "structural-configuration-stable-constant",
+                    "physical_measurements": 0,
+                    "physical_delay_bound_ns": 0.0,
+                    "slack_ns": available_slots * slot_ns - uncertainty_ns,
+                    "status": "pass",
+                }
+            )
+        elif not physical:
             missing.append(segment_id)
             record.update(
                 {
@@ -255,18 +284,23 @@ def build_static_exact_segment_deadlines(
         raise ValidationError(
             f"physical timing contains unknown static exact segments {unknown[:10]}"
         )
-    measured = [item for item in records if item["slack_ns"] is not None]
+    qualified = [item for item in records if item["slack_ns"] is not None]
     source_records = [
-        item for item in measured if item["kind"] != "rx_to_capture"
+        item for item in qualified if item["kind"] != "rx_to_capture"
     ]
     capture_records = [
-        item for item in measured if item["kind"] == "rx_to_capture"
+        item for item in qualified if item["kind"] == "rx_to_capture"
     ]
-    failed = [item["id"] for item in measured if item["status"] == "fail"]
+    failed = [item["id"] for item in qualified if item["status"] == "fail"]
     status = "incomplete" if missing else "fail" if failed else "pass"
     endpoint_exact = sum(
-        item["evidence"] == "routed-endpoint-exact" for item in measured
+        item["evidence"] == "routed-endpoint-exact" for item in qualified
     )
+    structural_constants = sum(
+        item["evidence"] == "structural-configuration-stable-constant"
+        for item in qualified
+    )
+    physically_measured = len(qualified) - structural_constants
     return {
         "schema": STATIC_EXACT_DEADLINE_SCHEMA,
         "status": status,
@@ -282,7 +316,13 @@ def build_static_exact_segment_deadlines(
                 else (
                     "routed-endpoint-exact-deadline-pass"
                     if endpoint_exact == len(records)
-                    else "routed-conservative-bound-deadline-pass"
+                    else (
+                        "routed-endpoint-exact-plus-structural-constant-"
+                        "deadline-pass"
+                        if endpoint_exact + structural_constants
+                        == len(records)
+                        else "routed-conservative-bound-deadline-pass"
+                    )
                 )
             )
         ),
@@ -293,9 +333,10 @@ def build_static_exact_segment_deadlines(
         "clock_uncertainty_ns": uncertainty_ns,
         "coverage": {
             "contract_segments": len(records),
-            "measured_segments": len(measured),
+            "measured_segments": physically_measured,
             "endpoint_exact_segments": endpoint_exact,
-            "conservative_bound_segments": len(measured) - endpoint_exact,
+            "structural_constant_segments": structural_constants,
+            "conservative_bound_segments": physically_measured - endpoint_exact,
             "missing_segments": len(missing),
         },
         "worst_source_ready_slack_ns": (
@@ -389,17 +430,27 @@ def validate_static_exact_segment_deadlines(
     source_slacks = []
     capture_slacks = []
     endpoint_exact = 0
+    structural_constants = 0
     for segment_id, semantic in sorted(semantic_by_id.items()):
         record = records_by_id[segment_id]
         kind = semantic["kind"]
         fpga = semantic["fpga"]
+        configuration_stable_constant = (
+            kind == "launch_to_tx"
+            and semantic.get("source_semantics")
+            == "configuration-stable-constant"
+        )
         if kind == "launch_to_tx":
             starts = 0
             txs = tx_by_net_fpga.get((semantic["sink_cut_net"], fpga), [])
             if not txs:
                 raise ValidationError("static exact validator found no source TX")
             deadline = min(item["slot"] for item in txs)
-            causal_source = "architectural-launch@slot0"
+            causal_source = (
+                "configuration-stable-constant@slot0"
+                if configuration_stable_constant
+                else "architectural-launch@slot0"
+            )
             causal_sink = ",".join(sorted(item["id"] for item in txs))
         elif kind == "rx_to_tx":
             arrival = arrivals.get((semantic["source_cut_net"], fpga))
@@ -456,6 +507,37 @@ def validate_static_exact_segment_deadlines(
                     f"static exact deadline {segment_id!r}.{field} disagrees"
                 )
         physical = evidence.get(segment_id, [])
+        if configuration_stable_constant:
+            if semantic.get("budget_slots") != 0:
+                raise ValidationError(
+                    f"static exact constant segment {segment_id!r} must "
+                    "have a zero-slot budget"
+                )
+            if physical:
+                raise ValidationError(
+                    f"static exact constant segment {segment_id!r} has "
+                    "unexpected dynamic physical evidence"
+                )
+            slack = available * slot_ns - uncertainty_ns
+            if (
+                record.get("evidence")
+                != "structural-configuration-stable-constant"
+                or record.get("physical_measurements") != 0
+                or record.get("physical_delay_bound_ns") != 0.0
+                or record.get("status") != "pass"
+                or not math.isclose(
+                    float(record.get("slack_ns", math.inf)),
+                    slack,
+                    rel_tol=0.0,
+                    abs_tol=1.0e-9,
+                )
+            ):
+                raise ValidationError(
+                    f"static exact constant deadline {segment_id!r} disagrees"
+                )
+            structural_constants += 1
+            source_slacks.append(slack)
+            continue
         if not physical:
             missing.append(segment_id)
             if any(
@@ -510,7 +592,8 @@ def validate_static_exact_segment_deadlines(
         )
         if record_status == "fail":
             failed.append(segment_id)
-    measured = len(records) - len(missing)
+    qualified = len(records) - len(missing)
+    measured = qualified - structural_constants
     status = "incomplete" if missing else "fail" if failed else "pass"
     qualification = (
         "incomplete-missing-segment-evidence"
@@ -521,15 +604,21 @@ def validate_static_exact_segment_deadlines(
             else (
                 "routed-endpoint-exact-deadline-pass"
                 if endpoint_exact == len(records)
-                else "routed-conservative-bound-deadline-pass"
+                else (
+                    "routed-endpoint-exact-plus-structural-constant-"
+                    "deadline-pass"
+                    if endpoint_exact + structural_constants == len(records)
+                    else "routed-conservative-bound-deadline-pass"
+                )
             )
         )
     )
     expected_coverage = {
         "contract_segments": len(records),
-        "measured_segments": measured,
-        "endpoint_exact_segments": endpoint_exact,
-        "conservative_bound_segments": measured - endpoint_exact,
+            "measured_segments": measured,
+            "endpoint_exact_segments": endpoint_exact,
+            "structural_constant_segments": structural_constants,
+            "conservative_bound_segments": measured - endpoint_exact,
         "missing_segments": len(missing),
     }
     if (
