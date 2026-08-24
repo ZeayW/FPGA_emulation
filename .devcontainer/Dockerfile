@@ -7,6 +7,7 @@ RUN apt-get update \
         bison \
         flex \
         jq \
+        libfl-dev \
         libboost-serialization-dev \
         libboost-system-dev \
         libboost-thread-dev \
