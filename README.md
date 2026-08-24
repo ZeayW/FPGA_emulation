@@ -804,6 +804,47 @@ emuflow benchmark benchmarks/runs/serv_l1.json \
   --out build/serv-phase1-001
 ```
 
+The standalone OpenSTA timing stage is another opt-in Codespaces build.  It
+builds only CUDD and OpenSTA, then the counter smoke checks a real TimingPathDB,
+its independent validator, and timing-derived partition net weights:
+
+```bash
+scripts/codespaces/build-opensta.sh
+scripts/codespaces/test-timing.sh build/counter-opensta-smoke-001
+```
+
+After both Yosys and OpenSTA pass, run pinned SERV through the timing-driven
+board-independent integration gate.  The foreground helper fetches the pinned
+RTL, runs the checked Xilinx-soft-logic benchmark mapping, builds the complete
+OpenSTA path database and partition weights, and validates Phase 3 partition,
+Phase 4 system routing, Phase 5 TDM, and the baseline Phase 6 split:
+
+```bash
+scripts/codespaces/run-serv-timing-flow.sh \
+  build/serv-timing-diagnostic-001
+```
+
+For a laptop/network-independent run, use the detached launcher instead.  It
+records the log, PID, and final exit status under `build/logs/`; disconnecting
+the browser or SSH client does not terminate the process.  Stopping the entire
+Codespace still terminates every process in it.
+
+```bash
+scripts/codespaces/start-serv-timing-flow.sh \
+  build/serv-timing-diagnostic-001
+tail -f build/logs/serv-timing-diagnostic-001.log
+cat build/logs/serv-timing-diagnostic-001.status
+```
+
+These helpers refuse to overwrite either an earlier output tree or detached
+control artifacts.  SERV fits on one virtual FPGA, so this diagnostic forces
+two used FPGAs to exercise routing and TDM.  If Phase 3 reports
+`balance_auto_relaxed`, the helper prints an explicit warning: that run proves
+functional integration only and is not fair partitioning QoR evidence.  Any
+benchmark or algorithm claim must use the repository's content-addressed
+experiment lifecycle with a naturally capacity-constrained design and a
+feasible frozen balance contract.
+
 The two-core setup intentionally does not attempt TritonPart/OpenROAD or the
 Phase 2/7 physical stack.  Those are separate opt-in builds after the
 first-party Phase 3 regressions and small real-RTL frontend gates pass.
