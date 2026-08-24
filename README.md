@@ -766,6 +766,48 @@ cmake --build build/core --parallel
 ctest --test-dir build/core --output-on-failure
 ```
 
+### Two-core GitHub Codespaces partition development
+
+The checked-in `.devcontainer` configuration is a deliberately partial
+Ubuntu 24.04 environment for low-cost Phase 1/3 development.  It requests the
+two-core Codespaces machine, builds the first-party partition, routing-feedback,
+and TDM support programs including the MFSPart serial chain and hop refiner,
+and disables the imported Yosys, CUDD, RePart, architecture importers,
+OpenROAD/OpenSTA, VPR, and OpenPARF builds.  It is a diagnostic development
+environment, not a source-complete release or canonical evidence machine.
+
+After Codespaces finishes its automatic bootstrap, run the compact regression
+and the checked greedy-versus-MFSPart Phase 3 comparison:
+
+```bash
+scripts/codespaces/test-partition.sh smoke
+scripts/codespaces/run-small-partition.sh build/partition-smoke-001
+```
+
+Use a new output directory for every attempt; the helper refuses to overwrite
+earlier diagnostic artifacts.  The broader partition suite remains practical
+on the same machine:
+
+```bash
+scripts/codespaces/test-partition.sh partition
+```
+
+Build the in-tree Yosys frontend only when advancing from the checked-in
+counter JSON fixture to pinned SERV, PicoRV32, or secworks AES RTL:
+
+```bash
+scripts/codespaces/build-yosys.sh
+python3 scripts/benchmarks/fetch.py fetch serv
+emuflow benchmark benchmarks/runs/serv_l1.json \
+  --source-root third_party/rtl/serv \
+  --yosys build/codespaces-yosys/install/bin/yosys \
+  --out build/serv-phase1-001
+```
+
+The two-core setup intentionally does not attempt TritonPart/OpenROAD or the
+Phase 2/7 physical stack.  Those are separate opt-in builds after the
+first-party Phase 3 regressions and small real-RTL frontend gates pass.
+
 ## Quick start
 
 Quick Start uses the CLI produced by the root build; it does not perform an
