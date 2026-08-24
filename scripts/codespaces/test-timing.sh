@@ -16,7 +16,7 @@ export EMUFLOW_NATIVE_ROOT="${repository_root}/build/codespaces-core/install"
 export PATH="${repository_root}/.venv/bin:${EMUFLOW_NATIVE_ROOT}/bin:${PATH}"
 export PYTHONPATH="${repository_root}/src:${repository_root}"
 
-output_root="${1:-build/counter-opensta-smoke-001}"
+output_root="${1:-build/codespaces-runs/counter/timing-smoke/attempt-0001}"
 if [[ -e "${output_root}" ]]; then
   echo "refusing to overwrite existing output: ${output_root}" >&2
   echo "pass a new output directory for every diagnostic attempt" >&2

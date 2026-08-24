@@ -4,6 +4,7 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repository_root}"
+jobs="${EMUFLOW_CODESPACES_JOBS:-2}"
 
 if [[ ! -x .venv/bin/python ]]; then
   python3 -m venv .venv
@@ -27,7 +28,7 @@ cmake -S . -B build/codespaces-core -G Ninja \
   -DEMUFLOW_BUILD_VPR_ROUTE_CHECKER=OFF \
   -DEMUFLOW_BUILD_OPENPARF=OFF
 
-cmake --build build/codespaces-core --parallel 2
+cmake --build build/codespaces-core --parallel "${jobs}"
 
 cat <<'EOF'
 
@@ -35,7 +36,8 @@ EmuFlow's partition-focused Codespaces environment is ready.
 
 Start with:
   scripts/codespaces/test-partition.sh smoke
-  scripts/codespaces/run-small-partition.sh build/partition-smoke-001
+  scripts/codespaces/run-small-partition.sh \
+    build/codespaces-runs/counter/partition-smoke/attempt-0001
 
 Build the in-tree Yosys frontend only when you are ready to fetch and
 synthesize SERV/PicoRV32/AES:

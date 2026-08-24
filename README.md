@@ -766,22 +766,43 @@ cmake --build build/core --parallel
 ctest --test-dir build/core --output-on-failure
 ```
 
-### Two-core GitHub Codespaces partition development
+### Two-core GitHub Codespaces development profiles
 
 The checked-in `.devcontainer` configuration is a deliberately partial
-Ubuntu 24.04 environment for low-cost Phase 1/3 development.  It requests the
-two-core Codespaces machine, builds the first-party partition, routing-feedback,
-and TDM support programs including the MFSPart serial chain and hop refiner,
-and disables the imported Yosys, CUDD, RePart, architecture importers,
-OpenROAD/OpenSTA, VPR, and OpenPARF builds.  It is a diagnostic development
-environment, not a source-complete release or canonical evidence machine.
+Ubuntu 24.04 environment for low-cost development.  It requests the two-core
+Codespaces machine and uses two build jobs by default.  Set
+`EMUFLOW_CODESPACES_JOBS` explicitly only when a different machine should use
+a different local parallelism.  One container is extended through isolated
+build profiles instead of creating drifting images for each tool:
+
+| Profile | Build root | Development scope | Required gate |
+| --- | --- | --- | --- |
+| `core` | `build/codespaces-core` | Phase 1 import, Phase 3 partitioning, topology/feedback refinement, Phase 4 routing, and Phase 5 TDM | partition smoke, then the broader partition suite |
+| `frontend` | `build/codespaces-yosys` | RTL synthesis, mapping, and EmuIR frontend debugging | pinned SERV Phase 1 benchmark |
+| `timing` | `build/codespaces-opensta` | CUDD/OpenSTA TimingPathDB extraction and timing-driven Phase 3--5 integration | counter timing smoke, then pinned SERV timing flow |
+| `physical` | server/HPC install | OpenROAD/TritonPart, architecture import, OpenPARF, VPR/Vivado, Phase 7, and canonical QoR | content-addressed registered experiment and complete physical validators |
+
+The `core` profile is created automatically and builds the first-party
+partition, routing-feedback, and TDM support programs including the MFSPart
+serial chain and hop refiner.  `frontend` and `timing` are opt-in builds in the
+same Codespace.  The physical profile is intentionally not a Codespaces build.
+This environment is a diagnostic development machine, not a source-complete
+release or canonical evidence machine.
+
+Use `emuflow-<profile>-dev-<cores>c` for Codespace display names.  Build trees
+remain `build/codespaces-<profile>`.  Every diagnostic attempt uses
+`build/codespaces-runs/<design>/<gate>/attempt-NNNN`; detached logs, PID files,
+and exit status use the matching flattened name below
+`build/logs/codespaces/`.  Increment the attempt number instead of overwriting
+or relabelling an earlier result.
 
 After Codespaces finishes its automatic bootstrap, run the compact regression
 and the checked greedy-versus-MFSPart Phase 3 comparison:
 
 ```bash
 scripts/codespaces/test-partition.sh smoke
-scripts/codespaces/run-small-partition.sh build/partition-smoke-001
+scripts/codespaces/run-small-partition.sh \
+  build/codespaces-runs/counter/partition-smoke/attempt-0001
 ```
 
 Use a new output directory for every attempt; the helper refuses to overwrite
@@ -810,7 +831,8 @@ its independent validator, and timing-derived partition net weights:
 
 ```bash
 scripts/codespaces/build-opensta.sh
-scripts/codespaces/test-timing.sh build/counter-opensta-smoke-001
+scripts/codespaces/test-timing.sh \
+  build/codespaces-runs/counter/timing-smoke/attempt-0001
 ```
 
 After both Yosys and OpenSTA pass, run pinned SERV through the timing-driven
@@ -821,7 +843,7 @@ Phase 4 system routing, Phase 5 TDM, and the baseline Phase 6 split:
 
 ```bash
 scripts/codespaces/run-serv-timing-flow.sh \
-  build/serv-timing-diagnostic-001
+  build/codespaces-runs/serv/timing-flow/attempt-0001
 ```
 
 For a laptop/network-independent run, use the detached launcher instead.  It
@@ -831,9 +853,9 @@ Codespace still terminates every process in it.
 
 ```bash
 scripts/codespaces/start-serv-timing-flow.sh \
-  build/serv-timing-diagnostic-001
-tail -f build/logs/serv-timing-diagnostic-001.log
-cat build/logs/serv-timing-diagnostic-001.status
+  build/codespaces-runs/serv/timing-flow/attempt-0001
+tail -f build/logs/codespaces/serv-timing-flow-attempt-0001.log
+cat build/logs/codespaces/serv-timing-flow-attempt-0001.status
 ```
 
 These helpers refuse to overwrite either an earlier output tree or detached

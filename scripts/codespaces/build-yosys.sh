@@ -4,10 +4,12 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repository_root}"
+jobs="${EMUFLOW_CODESPACES_JOBS:-2}"
 
 cmake -S . -B build/codespaces-yosys -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_TESTING=ON \
+  -DEMUFLOW_EXTERNAL_JOBS="${jobs}" \
   -DEMUFLOW_BUILD_YOSYS=ON \
   -DEMUFLOW_BUILD_CUDD=OFF \
   -DEMUFLOW_BUILD_REPART=OFF \
@@ -22,6 +24,6 @@ cmake -S . -B build/codespaces-yosys -G Ninja \
 
 cmake --build build/codespaces-yosys \
   --target yosys_native \
-  --parallel 2
+  --parallel "${jobs}"
 
 echo "Yosys is available at build/codespaces-yosys/install/bin/yosys"
