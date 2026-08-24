@@ -807,6 +807,8 @@ emuflow benchmark benchmarks/runs/serv_l1.json \
 The two-core setup intentionally does not attempt TritonPart/OpenROAD or the
 Phase 2/7 physical stack.  Those are separate opt-in builds after the
 first-party Phase 3 regressions and small real-RTL frontend gates pass.
+The container also enables the standard Dev Containers SSH feature so the
+GitHub CLI can run and collect the same tests non-interactively.
 
 ## Quick start
 
