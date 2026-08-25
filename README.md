@@ -1430,9 +1430,13 @@ this command starts.  It rechecks the physical report, Phase 6 manifest, FPGA
 coverage, seed, worker count, architecture digest, and channel width before
 materializing the lookahead artifacts.  Only the resulting complete root may
 be passed to `experiment-cache import`; the original failed attempt remains
-append-only evidence.  If sealing moved the attempt, the resume gate infers
-one original `physical/` root from the per-FPGA reports and safely rebases only
-its descendants into the new copy; external inputs are never rewritten.
+append-only evidence.  The per-FPGA VPR validators accept a content-sealed
+materialization below the new `physical/` root even while that original source
+still exists: every input, placement, route, timing artifact, and checker
+certificate is rehashed and semantically revalidated, and its relative path
+below `physical/` must remain identical.  Mixed layouts or modified bytes are
+rejected.  The validator returns runtime paths rebased only into the validated
+new copy; external inputs and the immutable source attempt are never rewritten.
 
 Build and verify the portable implementation closure used by a v2 node:
 

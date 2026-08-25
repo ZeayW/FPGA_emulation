@@ -637,10 +637,13 @@ def validate_vpr_pack_place_checkpoint(
         stored = Path(stored_value)
         if stored == expected:
             return True
-        # A failed cache attempt is atomically moved from staging/ to failures/.
-        # Accept only that root relocation: the old absolute path must be gone,
-        # and the path below the physical-flow root must remain identical.
-        if not stored.is_absolute() or stored.exists():
+        # Experiment recovery preserves the failed attempt and copy-on-write
+        # materializes its independently sealed checkpoint in a new attempt.
+        # The source may therefore still exist.  Accept a different root only
+        # when the path below the physical-flow root is identical; the input
+        # and artifact bytes are checked against the stored SHA-256 seals
+        # below, so path existence at the source is not an identity signal.
+        if not stored.is_absolute():
             return False
         try:
             stored_relative = stored.relative_to(stored_physical_root)
@@ -705,8 +708,8 @@ def validate_vpr_pack_place_checkpoint(
         or report.get("metrics") != expected_metrics
     ):
         raise ValidationError("VPR pack/place checkpoint metrics disagree")
-    # The sealed checkpoint may have been atomically relocated from a failed
-    # cache staging tree.  Keep the on-disk report immutable, but return a
+    # The sealed checkpoint may have been materialized from a failed cache
+    # attempt.  Keep the on-disk report immutable, but return a
     # runtime view whose consumable paths point at the independently validated
     # current tree.  Returning the stale sealed paths would make the validator
     # pass and then fail immediately in the next physical-flow stage.
@@ -810,12 +813,12 @@ def validate_vpr_route_checkpoint(
         normalized_stored = stored.resolve(strict=False)
         if normalized_stored == expected:
             return True
-        # Managed checkpoints are first written below an immutable staging
-        # root and then atomically moved into the content-addressed cache.  A
-        # later attempt may materialize that cache below another root.  Accept
-        # only that relocation: the original staging path must no longer
-        # exist, and the path below the physical-flow root must be identical.
-        if not stored.is_absolute() or stored.exists():
+        # A recovery attempt copy-on-write materializes a sealed checkpoint
+        # while preserving its immutable source attempt.  Accept a different
+        # root only when the path below the physical-flow root is identical;
+        # all input, output, timing, and checker bytes remain independently
+        # bound by the SHA-256 and semantic checks below.
+        if not stored.is_absolute():
             return False
         try:
             stored_relative = normalized_stored.relative_to(stored_physical_root)

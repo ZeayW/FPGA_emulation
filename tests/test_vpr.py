@@ -148,7 +148,7 @@ int main() {
                     resume=True,
                 )
 
-    def test_pack_place_checkpoint_allows_sealed_root_relocation(self) -> None:
+    def test_pack_place_checkpoint_allows_sealed_materialization(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             old_physical = root / "staging/output/physical"
@@ -198,9 +198,9 @@ int main() {
             (old_output / "vpr-pack-place-report.json").write_text(
                 json.dumps(report), encoding="utf-8"
             )
-            new_physical = root / "failures/output/physical"
+            new_physical = root / "recovery/output/physical"
             new_physical.parent.mkdir(parents=True)
-            old_physical.rename(new_physical)
+            shutil.copytree(old_physical, new_physical)
             checked = validate_vpr_pack_place_checkpoint(
                 new_physical / "architecture/arch.xml",
                 new_physical / "FPGA0/partition.eblif",
@@ -208,6 +208,29 @@ int main() {
                 seed=1,
             )
             self.assertEqual(checked["metrics"]["packed_blocks"], 3)
+            self.assertTrue(old_output.is_dir())
+            wrong_physical = root / "wrong-layout/output/physical"
+            wrong_physical.parent.mkdir(parents=True)
+            shutil.copytree(old_physical, wrong_physical)
+            (wrong_physical / "FPGA0").rename(wrong_physical / "FPGA9")
+            with self.assertRaisesRegex(ValidationError, "binding disagrees"):
+                validate_vpr_pack_place_checkpoint(
+                    wrong_physical / "architecture/arch.xml",
+                    wrong_physical / "FPGA9/partition.eblif",
+                    wrong_physical / "FPGA9/vpr-pack-place",
+                    seed=1,
+                )
+            copied_placement = (
+                new_physical / "FPGA0/vpr-pack-place/partition.place"
+            )
+            copied_placement.write_text("tampered", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "placement seal"):
+                validate_vpr_pack_place_checkpoint(
+                    new_physical / "architecture/arch.xml",
+                    new_physical / "FPGA0/partition.eblif",
+                    new_physical / "FPGA0/vpr-pack-place",
+                    seed=1,
+                )
             self.assertEqual(
                 checked["architecture"]["path"],
                 str((new_physical / "architecture/arch.xml").resolve()),
@@ -749,7 +772,7 @@ int main() {
                     sdc_file=sdc,
                 )
 
-    def test_route_resume_accepts_only_an_atomic_root_relocation(self) -> None:
+    def test_route_resume_accepts_sealed_materialization(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             staging = root / "staging"
@@ -849,9 +872,9 @@ int main() {
                 json.dumps(report), encoding="utf-8"
             )
 
-            cached = root / "cached"
-            staging.rename(cached)
-            current_fpga = cached / "fpga_0"
+            recovery = root / "recovery"
+            shutil.copytree(staging, recovery)
+            current_fpga = recovery / "fpga_0"
             validated = validate_vpr_route_checkpoint(
                 current_fpga / "arch.xml",
                 current_fpga / "cpu.eblif",
@@ -864,9 +887,23 @@ int main() {
                 validated["artifacts"]["route"]["path"],
                 str((current_fpga / "vpr-route" / "cpu.route").resolve()),
             )
-
-            shutil.copytree(cached, staging)
+            self.assertTrue(output.is_dir())
+            wrong_root = root / "wrong-layout"
+            shutil.copytree(staging, wrong_root)
+            (wrong_root / "fpga_0").rename(wrong_root / "fpga_1")
+            wrong_fpga = wrong_root / "fpga_1"
             with self.assertRaisesRegex(ValidationError, "binding disagrees"):
+                validate_vpr_route_checkpoint(
+                    wrong_fpga / "arch.xml",
+                    wrong_fpga / "cpu.eblif",
+                    wrong_fpga / "cpu.net",
+                    wrong_fpga / "packed.json",
+                    wrong_fpga / "cpu.place",
+                    wrong_fpga / "vpr-route",
+                )
+            copied_route = current_fpga / "vpr-route/cpu.route"
+            copied_route.write_text("tampered", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "route seal"):
                 validate_vpr_route_checkpoint(
                     current_fpga / "arch.xml",
                     current_fpga / "cpu.eblif",
