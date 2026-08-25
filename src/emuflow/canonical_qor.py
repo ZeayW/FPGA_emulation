@@ -1,4 +1,4 @@
-"""Independent nine-arm QoR aggregation for canonical Phase 6 studies."""
+"""Independent QoR aggregation for canonical Phase 6 provider studies."""
 
 from __future__ import annotations
 
@@ -16,8 +16,6 @@ from .runtime import QOR_REPORT_SCHEMA
 
 CANONICAL_QOR_COMPARISON_SCHEMA = "emuflow.canonical-qor-comparison/v2"
 _PROVIDERS = ("baseline", "placement-aware", "chimew")
-_SEEDS = (1, 2, 3)
-_ARM_KEYS = {(provider, seed) for provider in _PROVIDERS for seed in _SEEDS}
 _METRICS = (
     "global_target_clock_wns_ns",
     "global_target_clock_tns_ns",
@@ -60,18 +58,60 @@ def parse_canonical_qor_arms(
         except ValueError as error:
             raise ValidationError("canonical QoR arm seed is invalid") from error
         key = (provider, seed)
-        if key not in _ARM_KEYS or key in arms:
+        if provider not in _PROVIDERS or seed < 1 or key in arms:
             raise ValidationError("canonical QoR arm identity is invalid or duplicated")
         supplied_root = Path(root_text).expanduser()
         if supplied_root.is_symlink() or not supplied_root.is_dir():
             raise ValidationError("canonical QoR arm root is not a directory")
         root = supplied_root.resolve()
         arms[key] = root
-    if set(arms) != _ARM_KEYS:
-        raise ValidationError("canonical QoR comparison requires exactly nine arms")
+    _physical_seeds(arms)
     if len(set(arms.values())) != len(arms):
         raise ValidationError("canonical QoR arm roots must be distinct")
     return arms
+
+
+def _physical_seeds(
+    arms: Mapping[Tuple[str, int], Any],
+) -> tuple[int, ...]:
+    """Return the common non-empty seed set covered by every provider."""
+
+    seeds_by_provider = {provider: set() for provider in _PROVIDERS}
+    for key in arms:
+        if not isinstance(key, tuple) or len(key) != 2:
+            raise ValidationError(
+                "canonical QoR comparison requires one or more complete provider seed sets"
+            )
+        provider, seed = key
+        if (
+            provider not in seeds_by_provider
+            or isinstance(seed, bool)
+            or not isinstance(seed, int)
+            or seed < 1
+        ):
+            raise ValidationError(
+                "canonical QoR comparison requires one or more complete provider seed sets"
+            )
+        seeds_by_provider[provider].add(seed)
+    if any(not seeds for seeds in seeds_by_provider.values()):
+        raise ValidationError(
+            "canonical QoR comparison requires one or more complete provider seed sets"
+        )
+    seed_sets = list(seeds_by_provider.values())
+    if any(seeds != seed_sets[0] for seeds in seed_sets[1:]):
+        raise ValidationError(
+            "canonical QoR comparison requires one or more complete provider seed sets"
+        )
+    expected = {
+        (provider, seed)
+        for provider in _PROVIDERS
+        for seed in seed_sets[0]
+    }
+    if set(arms) != expected:
+        raise ValidationError(
+            "canonical QoR comparison requires one or more complete provider seed sets"
+        )
+    return tuple(sorted(seed_sets[0]))
 
 
 def _number(value: Any, label: str) -> float:
@@ -260,9 +300,10 @@ def _classification(values: Sequence[float], tolerance: float = 1.0e-9) -> str:
 def _comparison(
     provider: str,
     by_key: Mapping[Tuple[str, int], Mapping[str, Any]],
+    seeds: Sequence[int],
 ) -> Dict[str, Any]:
     deltas = []
-    for seed in _SEEDS:
+    for seed in seeds:
         baseline = by_key[("baseline", seed)]["metrics"]
         candidate = by_key[(provider, seed)]["metrics"]
         deltas.append(
@@ -309,8 +350,7 @@ def build_canonical_qor_comparison(
     shared_root: Path,
     arm_roots: Mapping[Tuple[str, int], Path],
 ) -> Dict[str, Any]:
-    if set(arm_roots) != _ARM_KEYS:
-        raise ValidationError("canonical QoR comparison requires exactly nine arms")
+    seeds = _physical_seeds(arm_roots)
     if shared_root.is_symlink() or not shared_root.is_dir():
         raise ValidationError("canonical QoR shared checkpoint is invalid")
     shared_root = shared_root.resolve()
@@ -322,7 +362,7 @@ def build_canonical_qor_comparison(
     records = [
         _arm_record(provider, seed, arm_roots[(provider, seed)], common_upstream)
         for provider in _PROVIDERS
-        for seed in _SEEDS
+        for seed in seeds
     ]
     by_key = {
         (record["provider"], record["physical_seed"]): record
@@ -343,7 +383,7 @@ def build_canonical_qor_comparison(
     for provider in _PROVIDERS:
         schedules = {
             by_key[(provider, seed)]["effective_phase6_schedule_sha256"]
-            for seed in _SEEDS
+            for seed in seeds
         }
         if len(schedules) != 1:
             raise ValidationError(
@@ -352,7 +392,7 @@ def build_canonical_qor_comparison(
         provider_schedules[provider] = next(iter(schedules))
         manifests = {
             by_key[(provider, seed)]["effective_phase6_manifest_sha256"]
-            for seed in _SEEDS
+            for seed in seeds
         }
         if len(manifests) != 1:
             raise ValidationError(
@@ -364,7 +404,12 @@ def build_canonical_qor_comparison(
         "status": "pass",
         "design": design,
         "platform": platform,
-        "qualification": "paired-three-seed-complete-phase7c-system-timing",
+        "qualification": (
+            "single-seed-complete-phase7c-system-timing"
+            if len(seeds) == 1
+            else "paired-multi-seed-complete-phase7c-system-timing"
+        ),
+        "physical_seeds": list(seeds),
         "claim_scope": (
             "academic contest-topology/device projection; target-clock values "
             "are composed whole-design physical-plus-link/TDM bounds"
@@ -376,12 +421,12 @@ def build_canonical_qor_comparison(
         "arms": records,
         "provider_summary": {
             provider: _summary(
-                [by_key[(provider, seed)] for seed in _SEEDS]
+                [by_key[(provider, seed)] for seed in seeds]
             )
             for provider in _PROVIDERS
         },
         "comparisons": {
-            provider: _comparison(provider, by_key)
+            provider: _comparison(provider, by_key, seeds)
             for provider in ("placement-aware", "chimew")
         },
     }

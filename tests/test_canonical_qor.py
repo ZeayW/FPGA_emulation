@@ -130,6 +130,11 @@ class CanonicalQorTest(unittest.TestCase):
             output = root / "comparison"
             report = run_canonical_qor_comparison(shared, arms, output)
             self.assertEqual(len(report["arms"]), 9)
+            self.assertEqual(report["physical_seeds"], [1, 2, 3])
+            self.assertEqual(
+                report["qualification"],
+                "paired-multi-seed-complete-phase7c-system-timing",
+            )
             self.assertEqual(
                 report["provider_effective_phase6_schedule_sha256"]["chimew"],
                 hashlib.sha256(b"chimew-provider-effective-schedule").hexdigest(),
@@ -189,11 +194,37 @@ class CanonicalQorTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "common upstream seal"):
                 validate_canonical_qor_comparison(output, shared, arms)
 
+    @patch(
+        "emuflow.canonical_qor.validate_multi_fpga_physical_report",
+        return_value={"status": "pass"},
+    )
+    def test_single_seed_comparison_is_the_supported_fast_path(self, _validate):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shared, all_arms, records = self._fixture(root)
+            arms = {key: value for key, value in all_arms.items() if key[1] == 1}
+            parsed = parse_canonical_qor_arms(
+                [record for record in records if record[1] == "1"]
+            )
+            self.assertEqual(parsed, {key: value.resolve() for key, value in arms.items()})
+            output = root / "single-seed-comparison"
+            report = run_canonical_qor_comparison(shared, arms, output)
+            self.assertEqual(report["physical_seeds"], [1])
+            self.assertEqual(len(report["arms"]), 3)
+            self.assertEqual(
+                report["qualification"],
+                "single-seed-complete-phase7c-system-timing",
+            )
+            self.assertEqual(
+                validate_canonical_qor_comparison(output, shared, arms)["arms"],
+                3,
+            )
+
     def test_arm_parser_rejects_incomplete_matrix(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             root.mkdir(exist_ok=True)
-            with self.assertRaisesRegex(ValidationError, "exactly nine"):
+            with self.assertRaisesRegex(ValidationError, "complete provider seed sets"):
                 parse_canonical_qor_arms([["baseline", "1", str(root)]])
 
 

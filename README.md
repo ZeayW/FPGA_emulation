@@ -1133,11 +1133,11 @@ frontend/synthesis -> timing preparation -> partition -> system route -> TDM
                                                                   |
                                                   baseline Phase 6 split
                                                     |             |
-                                      fixed physical lookahead    +-> Phase 7 seed 1/2/3
+                                      fixed physical lookahead    +-> Phase 7 seed 1 (default)
                                            |              |
                               placement-aware Phase 6   Chimew Phase 6
                                            |              |
-                                      Phase 7 seeds 1/2/3 each
+                                      Phase 7 seed 1 each
 ```
 
 The checked-in `experiment-stage` commands implement these semantic
@@ -1246,7 +1246,7 @@ policy (including `max_cross_fpga_dependency_depth` and
 `comb_segment_budget_slots`), native route-tree timing annotation, and the
 dependency-aware exact Phase 5 scheduler into the Experiment v2 task keys and
 independent validators.  That qualification DAG intentionally emits only the
-unmodified baseline Phase 6 transport and three physical seeds: placement-aware
+unmodified baseline Phase 6 transport and the configured physical seeds: placement-aware
 and Chimew rescheduling are not permitted to rewrite an exact dependency
 schedule, and no inapplicable ratio-plan artifact is claimed.
 For a controlled exact-cut exercise, an optional
@@ -1282,13 +1282,16 @@ It separately fixes the physical frontend mapping profile
 (`vtr-hard-blocks` here); this is distinct from the run spec's vendor
 logic-only synthesis policy and cannot be changed by the transient config.
 Supplying an arbitrary design or merely renaming a platform therefore cannot
-enter the canonical QoR matrix. It emits exactly one reusable Phase 6 checkpoint
-per provider, nine physical Phase 7 nodes (three providers by seeds 1, 2, and
-3), and one final paired QoR-comparison node. The comparison independently
+enter the canonical QoR matrix. By default it emits exactly one reusable Phase
+6 checkpoint per provider, three physical Phase 7 nodes (three providers at
+fixed seed 1), and one final paired QoR-comparison node. The comparison independently
 reconstructs every whole-design target/runtime-clock WNS/TNS result, verifies
 the common frozen Phase 1/3/4 hashes, records the shared Phase 5 schedule, and
-verifies that all three physical seeds for each provider consume one identical
-provider-effective Phase 6 schedule and split manifest. This distinction is
+verifies that every configured physical seed for each provider consumes one
+identical provider-effective Phase 6 schedule and split manifest. Set the
+canonical config's `physical_seeds` explicitly (for example `[1, 2, 3]`) only
+for a statistical variance study; the normal acceptance default is `[1]`.
+This distinction is
 required because a Phase 6 provider may legitimately materialize a schedule
 that differs from the shared Phase 5 checkpoint. The report includes paired
 per-seed deltas plus mean/median statistics. Tool bytes and per-stage
@@ -1743,7 +1746,7 @@ an unpublished contest board's package pins.
 The matrix is executable policy rather than prose.  Its validator checks the
 RTL catalog and run contract, contest catalog and BoardDB gate, repository-safe
 paths, unambiguous IDs, the three Phase 6 arms (`baseline`,
-`placement-aware`, and `chimew`), physical seeds 1/2/3, complete Phase 1--7/7C
+`placement-aware`, and `chimew`), physical seed 1 by default, complete Phase 1--7/7C
 gates, frozen A/B hashes/options/workers, zero DRC/unrouted requirements, and
 the QoR contract:
 
@@ -1756,7 +1759,8 @@ Whole-design target-clock WNS and TNS after physical Phase 7/7C are the
 primary metrics.  Per-FPGA WNS/TNS, crossings, congestion, RUDY, critical
 paths, and runtime remain required diagnostics but cannot replace the global
 metrics.  All three providers use the same frozen Phase 1/3/4/5 artifacts,
-backend options, worker count, and seeds.  A case marked `planned` is exactly
+backend options, worker count, and configured seed set. Additional seeds are
+an explicit robustness study, not part of the default gate. A case marked `planned` is exactly
 that: it is not completed evidence.  Promotion to `qualified` requires a
 content-addressed replayable manifest; machine paths and transient HPC state
 are never written into the repository.

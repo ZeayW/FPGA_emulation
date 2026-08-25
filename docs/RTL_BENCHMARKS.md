@@ -80,7 +80,8 @@ emuflow benchmark-matrix-validate \
 
 The checked-in entries start in `planned` state.  Only content-addressed,
 independently replayable Phase 1--7/7C evidence for baseline,
-placement-aware, and Chimew across the required physical seeds can change a
+placement-aware, and Chimew across the required physical seed set (seed 1 by
+default) can change a
 case to `qualified`.  Final decisions use whole-design target-clock WNS/TNS;
 per-FPGA timing and Phase 6 costs are diagnostics.
 

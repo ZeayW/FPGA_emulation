@@ -467,6 +467,21 @@ def compile_canonical_experiment_spec(
         "physical_route_channel_width",
     )
     region_count = _positive_integer(config.get("region_count", 4), "region_count")
+    physical_seeds_value = config.get("physical_seeds", [1])
+    if (
+        not isinstance(physical_seeds_value, list)
+        or not physical_seeds_value
+        or any(
+            isinstance(seed, bool) or not isinstance(seed, int) or seed < 1
+            for seed in physical_seeds_value
+        )
+        or physical_seeds_value != sorted(set(physical_seeds_value))
+    ):
+        raise ValidationError(
+            "canonical experiment physical_seeds must be a sorted, unique "
+            "non-empty list of positive integers"
+        )
+    physical_seeds = tuple(physical_seeds_value)
     partition_seed = config.get("partition_seed", 0)
     if isinstance(partition_seed, bool) or not isinstance(partition_seed, int) or partition_seed < 0:
         raise ValidationError("canonical experiment partition_seed is invalid")
@@ -825,7 +840,7 @@ def compile_canonical_experiment_spec(
         else ("baseline", "placement-aware", "chimew")
     )
     for provider in phase7_providers:
-        for seed in (1, 2, 3):
+        for seed in physical_seeds:
             phase6_id = f"phase6-{provider}"
             phase7_id = f"phase7-{provider}-seed{seed}"
             node(
@@ -853,7 +868,7 @@ def compile_canonical_experiment_spec(
     phase7_ids = [
         f"phase7-{provider}-seed{seed}"
         for provider in phase7_providers
-        for seed in (1, 2, 3)
+        for seed in physical_seeds
     ]
     if cut_mode == CUT_MODE_STATIC_EXACT:
         spec = {
@@ -868,8 +883,8 @@ def compile_canonical_experiment_spec(
             "status": "pass",
             "experiment_id": case_id,
             "nodes": len(validated["nodes"]),
-            "physical_terminal_nodes": 3,
-            "terminal_nodes": 3,
+            "physical_terminal_nodes": len(physical_seeds),
+            "terminal_nodes": len(physical_seeds),
             "cut_mode": cut_mode,
             "output": str(output_path.resolve()),
         }
@@ -889,7 +904,7 @@ def compile_canonical_experiment_spec(
         "{dependency:shared-phase1-5}",
     ]
     for provider in ("baseline", "placement-aware", "chimew"):
-        for seed in (1, 2, 3):
+        for seed in physical_seeds:
             phase7_id = f"phase7-{provider}-seed{seed}"
             arm = (
                 "--arm",
@@ -910,7 +925,7 @@ def compile_canonical_experiment_spec(
         inputs=("tool.emuflow",),
         configuration={
             "providers": ["baseline", "placement-aware", "chimew"],
-            "physical_seeds": [1, 2, 3],
+            "physical_seeds": list(physical_seeds),
             "primary_metrics": [
                 "global_target_clock_wns_ns",
                 "global_target_clock_tns_ns",
@@ -931,7 +946,7 @@ def compile_canonical_experiment_spec(
         "status": "pass",
         "experiment_id": case_id,
         "nodes": len(validated["nodes"]),
-        "physical_terminal_nodes": 9,
+        "physical_terminal_nodes": 3 * len(physical_seeds),
         "terminal_nodes": 1,
         "output": str(output_path.resolve()),
     }

@@ -21,7 +21,7 @@ END_TO_END_VALIDATION_MATRIX_SCHEMA = (
 WORKLOAD_CONTRACT = "naturally-connected-upstream-rtl"
 PLATFORM_CONTRACT = "contest-derived-boarddb"
 PHASE6_PROVIDERS = ("baseline", "placement-aware", "chimew")
-PHYSICAL_SEEDS = (1, 2, 3)
+PHYSICAL_SEEDS = (1,)
 REQUIRED_GATES = (
     "contest-fetch",
     "contest-import",

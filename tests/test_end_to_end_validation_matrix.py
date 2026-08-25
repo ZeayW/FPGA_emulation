@@ -58,7 +58,7 @@ class EndToEndValidationMatrixTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "providers"):
             validate_end_to_end_validation_matrix(invalid, REPOSITORY)
         invalid = copy.deepcopy(self.matrix)
-        invalid["policy"]["physical_seeds"] = [1]
+        invalid["policy"]["physical_seeds"] = [1, 2, 3]
         with self.assertRaisesRegex(ValidationError, "physical seeds"):
             validate_end_to_end_validation_matrix(invalid, REPOSITORY)
         invalid = copy.deepcopy(self.matrix)

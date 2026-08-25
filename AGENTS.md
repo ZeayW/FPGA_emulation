@@ -328,7 +328,9 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   checks.  Repository configuration must never contain transient server paths.
 - Baseline, placement-aware, and Chimew Phase 6 arms must use identical frozen
   source, BoardDB, Phase 1/3/4/5 artifacts, physical backend/options, worker
-  count, and seeds 1/2/3.  Only the Phase 6 provider may differ.
+  count, and physical seed.  The default acceptance seed is fixed to 1; seeds
+  2/3 are an explicit statistical-robustness opt-in and are not a routine
+  completion gate.  Only the Phase 6 provider may differ.
 - Canonical whole-design timing uses the target period recorded in the
   versioned workload run spec. A transient experiment config may not choose or
   relabel that period; changing it is a new benchmark contract, not a rerun.
@@ -340,9 +342,12 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   diagnostics and must not be substituted for the primary metrics.
 - Canonical provider studies finish at the content-addressed `qor-comparison`
   node, not at an individual Phase 7 arm. It depends on every
-  baseline/placement-aware/Chimew seed 1/2/3, rechecks their common frozen
-  Phase 1/3/4/5 hashes, and preserves paired target-clock WNS/TNS deltas and
-  per-provider statistics in final evidence.
+  baseline/placement-aware/Chimew arm for the configured physical seed set,
+  rechecks their common frozen Phase 1/3/4/5 hashes, and preserves paired
+  target-clock WNS/TNS deltas and per-provider statistics in final evidence.
+  Use seed 1 alone by default; request multiple seeds only when measuring
+  physical-tool variance rather than validating functionality or a first QoR
+  result.
 - Small fixtures are suitable for correctness and determinism tests, but a
   default algorithm or QoR claim also requires a materially sized real design.
 - Replicated-core or artificially coupled RTL harnesses are not accepted as

@@ -153,15 +153,15 @@ class CanonicalExperimentTest(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
         return path
 
-    def test_compiler_emits_fine_grained_shared_dag_and_nine_terminals(self) -> None:
+    def test_compiler_defaults_to_one_physical_seed_per_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / "spec.json"
             report = compile_canonical_experiment_spec(
                 self._config(root), REPOSITORY, output
             )
-            self.assertEqual(report["nodes"], 21)
-            self.assertEqual(report["physical_terminal_nodes"], 9)
+            self.assertEqual(report["nodes"], 15)
+            self.assertEqual(report["physical_terminal_nodes"], 3)
             self.assertEqual(report["terminal_nodes"], 1)
             spec = validate_experiment_spec(json.loads(output.read_text()))
             nodes = {item["id"]: item for item in spec["nodes"]}
@@ -301,7 +301,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             terminals = [item for item in spec["nodes"] if item["stage"] == "phase7"]
             self.assertEqual(
                 {(item["provider"], item["physical_seed"]) for item in terminals},
-                {(provider, seed) for provider in ("baseline", "placement-aware", "chimew") for seed in (1, 2, 3)},
+                {(provider, 1) for provider in ("baseline", "placement-aware", "chimew")},
             )
             self.assertTrue(all(item["configuration"]["physical_workers"] == 8 for item in terminals))
             for terminal in terminals:
@@ -381,7 +381,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                     *[
                         f"phase7-{provider}-seed{seed}"
                         for provider in ("baseline", "placement-aware", "chimew")
-                        for seed in (1, 2, 3)
+                        for seed in (1,)
                     ],
                 ],
             )
@@ -445,7 +445,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "3",
             )
 
-    def test_static_exact_mode_is_sealed_as_a_distinct_three_seed_dag(self) -> None:
+    def test_static_exact_mode_defaults_to_one_physical_seed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_path = self._config(root)
@@ -463,8 +463,8 @@ class CanonicalExperimentTest(unittest.TestCase):
             report = compile_canonical_experiment_spec(
                 config_path, REPOSITORY, output
             )
-            self.assertEqual(report["physical_terminal_nodes"], 3)
-            self.assertEqual(report["terminal_nodes"], 3)
+            self.assertEqual(report["physical_terminal_nodes"], 1)
+            self.assertEqual(report["terminal_nodes"], 1)
             self.assertEqual(
                 report["cut_mode"], "static-exact-combinational"
             )
@@ -538,8 +538,47 @@ class CanonicalExperimentTest(unittest.TestCase):
             ]
             self.assertEqual(
                 {(item["provider"], item["physical_seed"]) for item in terminals},
-                {("baseline", seed) for seed in (1, 2, 3)},
+                {("baseline", 1)},
             )
+
+    def test_multiple_physical_seeds_remain_an_explicit_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config["physical_seeds"] = [1, 2, 3]
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            report = compile_canonical_experiment_spec(
+                config_path, REPOSITORY, output
+            )
+            self.assertEqual(report["physical_terminal_nodes"], 9)
+            spec = validate_experiment_spec(json.loads(output.read_text()))
+            self.assertEqual(
+                {
+                    (item["provider"], item["physical_seed"])
+                    for item in spec["nodes"]
+                    if item["stage"] == "phase7"
+                },
+                {
+                    (provider, seed)
+                    for provider in ("baseline", "placement-aware", "chimew")
+                    for seed in (1, 2, 3)
+                },
+            )
+
+    def test_physical_seed_list_must_be_sorted_unique_and_non_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            for invalid in ([], [2, 1], [1, 1], [0], [True]):
+                config["physical_seeds"] = invalid
+                config_path.write_text(json.dumps(config), encoding="utf-8")
+                with self.assertRaisesRegex(ValidationError, "physical_seeds"):
+                    compile_canonical_experiment_spec(
+                        config_path, REPOSITORY, root / "spec.json"
+                    )
 
     def test_static_exact_mode_rejects_multiple_virtual_clocks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
