@@ -11,6 +11,7 @@ macro-cycle equivalence, and routed deadline qualification.  The production
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 from collections import defaultdict, deque
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set, Tuple
@@ -26,6 +27,19 @@ COMBINATIONAL_CUT_CHARACTERIZATION_SCHEMA = (
 STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA = (
     "emuflow.static-exact-combinational-cut/v1"
 )
+GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA = (
+    "emuflow.static-exact-combinational-cut/v2"
+)
+STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS = {
+    STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+    GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+}
+STATIC_EXACT_CANDIDATE_FRONTIER_V1 = "potential-frontier-depth-v1"
+STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2 = "assignment-derived-acyclic-v2"
+STATIC_EXACT_CANDIDATE_POLICIES = {
+    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+}
 SEQUENTIAL_TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
 SEQUENTIAL_LEGAL_CUT_CLASSES = {
     *SEQUENTIAL_TRANSPORTED_CUT_CLASSES,
@@ -252,10 +266,10 @@ def characterize_combinational_cuts(
 ) -> Dict[str, Any]:
     limits = sorted(set(depth_limits))
     if not limits or any(
-        isinstance(limit, bool) or not isinstance(limit, int) or limit not in {1, 2}
+        isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
         for limit in limits
     ):
-        raise ValidationError("depth limits must be a non-empty subset of {1, 2}")
+        raise ValidationError("depth limits must be positive integers")
 
     instances = {item["id"]: item for item in ir.value["instances"]}
     classes = {
@@ -534,6 +548,7 @@ def build_static_exact_semantic_contract(
     max_dependency_depth: int,
     comb_segment_budget_slots: int,
     frame_slots: int,
+    candidate_selection_policy: str = STATIC_EXACT_CANDIDATE_FRONTIER_V1,
 ) -> Dict[str, Any]:
     """Build the provisional Phase-3 exact-cut semantic contract.
 
@@ -542,8 +557,20 @@ def build_static_exact_semantic_contract(
     gates and are intentionally named as pending in the returned contract.
     """
 
-    if max_dependency_depth not in {1, 2}:
-        raise ValidationError("exact combinational-cut depth must be 1 or 2")
+    if candidate_selection_policy not in STATIC_EXACT_CANDIDATE_POLICIES:
+        raise ValidationError("unknown exact combinational-cut candidate policy")
+    if (
+        isinstance(max_dependency_depth, bool)
+        or not isinstance(max_dependency_depth, int)
+        or max_dependency_depth <= 0
+        or (
+            candidate_selection_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1
+            and max_dependency_depth not in {1, 2}
+        )
+    ):
+        if candidate_selection_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1:
+            raise ValidationError("legacy exact combinational-cut depth must be 1 or 2")
+        raise ValidationError("exact combinational-cut depth must be positive")
     if (
         isinstance(comb_segment_budget_slots, bool)
         or not isinstance(comb_segment_budget_slots, int)
@@ -559,7 +586,14 @@ def build_static_exact_semantic_contract(
             "exact combinational-cut frame slots must be at least two"
         )
 
-    characterization = characterize_combinational_cuts(ir, (1, 2))
+    characterization = characterize_combinational_cuts(
+        ir,
+        (
+            (1, 2)
+            if candidate_selection_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1
+            else (max_dependency_depth,)
+        ),
+    )
     eligible = {item["net"] for item in characterization["eligible_cuts"]}
     instances = {item["id"]: item for item in ir.value["instances"]}
     classes = {
@@ -896,9 +930,145 @@ def build_static_exact_semantic_contract(
             }
         )
 
+    uncongested_lower_bound = None
+    if candidate_selection_policy == STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2:
+        # Reject assignments that cannot possibly fit even before congestion
+        # and lane sharing are considered.  The concrete Phase-4 route and
+        # Phase-5 list schedule remain authoritative; this is a necessary,
+        # independently reconstructible lower bound that lets Phase 3 screen
+        # impossible generalized-cut candidates without pretending routing is
+        # already known.
+        fpga_ids = {
+            item.get("id")
+            for item in platform.get("fpgas", [])
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+        adjacency: Dict[str, List[Tuple[str, int]]] = defaultdict(list)
+        for raw_link in platform.get("links", []):
+            if not isinstance(raw_link, dict):
+                raise ValidationError("exact-cut platform link is invalid")
+            endpoints = raw_link.get("endpoints")
+            latency = raw_link.get("latency_cycles")
+            if (
+                not isinstance(endpoints, list)
+                or len(endpoints) != 2
+                or not all(isinstance(item, str) for item in endpoints)
+                or isinstance(latency, bool)
+                or not isinstance(latency, int)
+                or latency < 0
+            ):
+                raise ValidationError("exact-cut platform link timing is invalid")
+            left, right = endpoints
+            # Every additional tree hop needs one forwarding slot after the
+            # preceding arrival.  Adding latency+1 per arc and subtracting one
+            # at the destination exactly models the uncongested earliest
+            # arrival of the concrete list scheduler.
+            adjacency[left].append((right, latency + 1))
+            if raw_link.get("direction") in {"full_duplex", "half_duplex"}:
+                adjacency[right].append((left, latency + 1))
+
+        shortest_cache: Dict[str, Dict[str, int]] = {}
+
+        def earliest_offset(source: str, sink: str) -> int:
+            if source == sink:
+                return 0
+            if source not in shortest_cache:
+                distance = {source: 0}
+                queue = [(0, source)]
+                while queue:
+                    current, node = heapq.heappop(queue)
+                    if current != distance[node]:
+                        continue
+                    for neighbor, weight in adjacency.get(node, []):
+                        candidate = current + weight
+                        if candidate < distance.get(neighbor, 1 << 60):
+                            distance[neighbor] = candidate
+                            heapq.heappush(queue, (candidate, neighbor))
+                shortest_cache[source] = distance
+            raw = shortest_cache[source].get(sink)
+            if raw is None:
+                raise ValidationError(
+                    "generalized exact-cut assignment has no board path from "
+                    f"{source!r} to {sink!r}"
+                )
+            return raw - 1
+
+        arrivals: Dict[Tuple[str, str], int] = {}
+        lower_bound_nodes = []
+        maximum_arrival = 0
+        for net_id in sorted(
+            cut_by_net,
+            key=lambda item: (dependency_level[item], item),
+        ):
+            source_fpga = cut_by_net[net_id]["source_fpgas"][0]
+            if source_fpga not in fpga_ids:
+                raise ValidationError("exact-cut source FPGA is absent from platform")
+            readiness = []
+            if local_launches[net_id] or not dependencies[net_id]:
+                readiness.append(
+                    0
+                    if not local_launches[net_id] and not dependencies[net_id]
+                    else comb_segment_budget_slots
+                )
+            for predecessor in sorted(dependencies[net_id]):
+                key = (predecessor, source_fpga)
+                if key not in arrivals:
+                    raise ValidationError(
+                        "generalized exact-cut lower bound lacks predecessor arrival"
+                    )
+                readiness.append(arrivals[key] + comb_segment_budget_slots)
+            if not readiness:
+                raise ValidationError(
+                    f"generalized exact cut {net_id!r} has no readiness source"
+                )
+            ready = max(readiness)
+            sink_arrivals = {}
+            for sink_fpga in sorted(cut_by_net[net_id]["sink_fpgas"]):
+                arrival = ready + earliest_offset(source_fpga, sink_fpga)
+                arrivals[(net_id, sink_fpga)] = arrival
+                sink_arrivals[sink_fpga] = arrival
+                maximum_arrival = max(maximum_arrival, arrival)
+            lower_bound_nodes.append(
+                {
+                    "net": net_id,
+                    "source_ready_slot": ready,
+                    "sink_arrival_slots": sink_arrivals,
+                }
+            )
+        capture_slacks = []
+        for capture in capture_records:
+            arrival = arrivals.get((capture["cut_net"], capture["fpga"]))
+            if arrival is None:
+                raise ValidationError(
+                    "generalized exact-cut lower bound lacks capture arrival"
+                )
+            capture_slacks.append(
+                frame_slots
+                - 1
+                - (arrival + comb_segment_budget_slots)
+            )
+        minimum_slack = min(capture_slacks, default=frame_slots - 1)
+        if minimum_slack < 0:
+            raise ValidationError(
+                "generalized exact-cut assignment is infeasible even under an "
+                "uncongested minimum-latency board schedule: minimum capture "
+                f"slack is {minimum_slack} slots"
+            )
+        uncongested_lower_bound = {
+            "provider": "board-minimum-latency-dag-lower-bound-v1",
+            "qualification": "necessary-not-sufficient-before-routing",
+            "maximum_arrival_slot": maximum_arrival,
+            "minimum_capture_slack_slots": minimum_slack,
+            "cut_readiness": lower_bound_nodes,
+        }
+
     platform_value = dict(platform)
-    return {
-        "schema": STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+    result = {
+        "schema": (
+            STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA
+            if candidate_selection_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1
+            else GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA
+        ),
         "mode": "static-exact-combinational",
         "qualification": "partition-legality-only-provisional",
         "max_cross_fpga_dependency_depth": max_dependency_depth,
@@ -944,6 +1114,10 @@ def build_static_exact_semantic_contract(
             "global_target_and_runtime_timing": "pending",
         },
     }
+    if candidate_selection_policy == STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2:
+        result["candidate_selection_policy"] = candidate_selection_policy
+        result["uncongested_schedule_lower_bound"] = uncongested_lower_bound
+    return result
 
 
 def validate_combinational_cut_characterization(

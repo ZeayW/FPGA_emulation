@@ -426,6 +426,29 @@ The checked-in `static_exact_acceptance` RTL and
 functional/physical fixture for that gate; they are not a QoR benchmark and
 must not be mixed into benchmark-comparison tables.
 
+Generalized Static Exact v2 is available through
+`--static-exact-candidate-policy assignment-derived-acyclic-v2`.  Unlike the
+legacy `potential-frontier-depth-v1` policy, v2 does not confuse a net's depth
+in the graph of *possible* boundaries with its depth after the partitioner has
+selected actual transported boundaries.  It releases every structurally legal
+candidate, rebuilds the selected dependency DAG from the final assignment,
+and supports any positive configured depth.  Phase 3 rejects an assignment if
+that selected DAG is cyclic, exceeds the configured safety cap, has no board
+path, or cannot meet the virtual-frame commit even under an uncongested
+minimum-latency lower bound.  TritonPart seed selection includes this
+certificate and uses timing-weighted cut cost, lower-bound capture slack,
+selected depth, and cut count as deterministic ranking evidence.  Phase 4 and
+the exact Phase 5 list scheduler then bind the concrete routes, link latency,
+lane capacity, relay readiness, and capture deadline; Phase 6/7 retain the same
+macro-cycle-equivalence and routed physical-segment gates.
+
+The legacy policy remains readable for controlled A/B comparison.  Promotion
+of v2 to the production default additionally requires a canonical real-RTL,
+contest-BoardDB Phase 1--7 comparison against `sequential-only` and legacy v1,
+with one physical seed by default and final whole-design target-clock WNS/TNS,
+virtual frequency, resource, runtime, and exact-cut evidence.  Small exhaustive
+tests establish semantics but are not QoR evidence.
+
 ```bash
 emuflow phase6 \
   --ir build/phase1/design.emuir.json \

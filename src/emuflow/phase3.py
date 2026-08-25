@@ -18,6 +18,7 @@ from .repart import run_repart
 from .mfspart_provider import run_mfspart
 from .tritonpart import load_partition_net_weights, run_tritonpart
 from .routing import load_route_constraints
+from .combinational_cut import STATIC_EXACT_CANDIDATE_FRONTIER_V1
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
@@ -54,6 +55,7 @@ def run_phase3(
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = 1,
     comb_segment_budget_slots: int = 1,
+    static_exact_candidate_policy: str = STATIC_EXACT_CANDIDATE_FRONTIER_V1,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
@@ -76,6 +78,7 @@ def run_phase3(
         ),
         comb_segment_budget_slots=comb_segment_budget_slots,
         frame_slots=route_constraints["frame_slots"],
+        static_exact_candidate_policy=static_exact_candidate_policy,
     )
     if provider == "greedy":
         assignment = assign_clusters(
@@ -185,6 +188,9 @@ def run_phase3(
     }
     if cut_mode != CUT_MODE_SEQUENTIAL_ONLY:
         report["cut_mode"] = cut_mode
+        report["static_exact_candidate_policy"] = (
+            static_exact_candidate_policy
+        )
         report["qualification"] = "partition-legality-only-provisional"
         report["artifacts"]["semantic_contract"] = (
             "assignment.json#/semantic_contract"

@@ -22,6 +22,10 @@ from .experiment_identity import (
 )
 from .io import read_json, write_json
 from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
+from .combinational_cut import (
+    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    STATIC_EXACT_CANDIDATE_POLICIES,
+)
 from .platform import Platform
 from .routing import load_route_constraints
 from .tdm import TDM_STATIC_EXACT_PROVIDER
@@ -506,6 +510,14 @@ def compile_canonical_experiment_spec(
         config.get("comb_segment_budget_slots", 1),
         "comb_segment_budget_slots",
     )
+    static_exact_candidate_policy = config.get(
+        "static_exact_candidate_policy",
+        STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    )
+    if static_exact_candidate_policy not in STATIC_EXACT_CANDIDATE_POLICIES:
+        raise ValidationError(
+            "canonical experiment static_exact_candidate_policy is invalid"
+        )
     minimum_combinational_cut_nets = config.get(
         "minimum_combinational_cut_nets",
         0,
@@ -525,10 +537,11 @@ def compile_canonical_experiment_spec(
         )
     if (
         cut_mode == CUT_MODE_STATIC_EXACT
+        and static_exact_candidate_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1
         and max_cross_fpga_dependency_depth not in {1, 2}
     ):
         raise ValidationError(
-            "canonical static exact cut currently requires "
+            "canonical legacy static exact policy requires "
             "max_cross_fpga_dependency_depth to be 1 or 2"
         )
     executable = str(tools["emuflow"])
@@ -661,6 +674,7 @@ def compile_canonical_experiment_spec(
         "--max-cross-fpga-dependency-depth",
         str(max_cross_fpga_dependency_depth),
         "--comb-segment-budget-slots", str(comb_segment_budget_slots),
+        "--static-exact-candidate-policy", static_exact_candidate_policy,
         "--minimum-combinational-cut-nets",
         str(minimum_combinational_cut_nets),
         "--route-constraints", str(route_constraints), "--openroad", str(tools["openroad"]), "--hop-refiner", str(tools["hop_refiner"]),
@@ -676,6 +690,7 @@ def compile_canonical_experiment_spec(
         "--max-cross-fpga-dependency-depth",
         str(max_cross_fpga_dependency_depth),
         "--comb-segment-budget-slots", str(comb_segment_budget_slots),
+        "--static-exact-candidate-policy", static_exact_candidate_policy,
         "--minimum-combinational-cut-nets",
         str(minimum_combinational_cut_nets),
     ]
@@ -694,7 +709,7 @@ def compile_canonical_experiment_spec(
         partition_validator,
         [_artifact("clusters.json", "consumer-checkpoint"), _artifact("constraints.normalized.json", "consumer-checkpoint"), _artifact("assignment.json", "consumer-checkpoint"), _artifact("phase3_report.json", "consumer-checkpoint"), _artifact("experiment-partition-report.json", "evidence-critical")],
         inputs=("platform", "route_constraints", *( ("partition_constraints",) if partition_constraints is not None else () ), "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
-        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "partition_constraints_sha256": base_inputs.get("partition_constraints"), "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots, "minimum_combinational_cut_nets": minimum_combinational_cut_nets},
+        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "partition_constraints_sha256": base_inputs.get("partition_constraints"), "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots, "static_exact_candidate_policy": static_exact_candidate_policy, "minimum_combinational_cut_nets": minimum_combinational_cut_nets},
         peak_gib=24, retained_gib=6,
     )
     cut_command = [
@@ -888,6 +903,10 @@ def compile_canonical_experiment_spec(
             "physical_terminal_nodes": len(physical_seeds),
             "terminal_nodes": len(physical_seeds),
             "cut_mode": cut_mode,
+            "static_exact_candidate_policy": static_exact_candidate_policy,
+            "max_cross_fpga_dependency_depth": (
+                max_cross_fpga_dependency_depth
+            ),
             "output": str(output_path.resolve()),
         }
     comparison_command = [

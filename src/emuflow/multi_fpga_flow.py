@@ -984,6 +984,7 @@ def run_multi_fpga_flow(
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = 1,
     comb_segment_budget_slots: int = 1,
+    static_exact_candidate_policy: str = "potential-frontier-depth-v1",
     timing_driven: bool = True,
     timing_backend: str = "opensta",
     clock_periods: Optional[Dict[str, float]] = None,
@@ -1458,6 +1459,7 @@ def run_multi_fpga_flow(
         cut_mode=cut_mode,
         max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
         comb_segment_budget_slots=comb_segment_budget_slots,
+        static_exact_candidate_policy=static_exact_candidate_policy,
     )
     assignment_path = phase3_root / "assignment.json"
 

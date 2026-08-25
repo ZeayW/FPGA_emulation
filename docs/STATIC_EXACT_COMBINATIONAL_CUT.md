@@ -2,8 +2,9 @@
 
 ## Status and claim boundary
 
-The production flow remains `sequential-only`. The opt-in depth-1/depth-2 path now
-passes Phase 3 partition legality, Phase 4 native-route contract propagation,
+The production flow remains `sequential-only` pending real QoR promotion. The
+legacy opt-in depth-1/depth-2 path and generalized v2 path now pass Phase 3
+partition legality, Phase 4 native-route contract propagation,
 and Phase 5 dependency/capture scheduling. Safe-mode Phase 3 transports
 register outputs, transport-safe register inputs, and replicated primary
 inputs; other combinational connectivity remains atomic. The checked-in
@@ -13,9 +14,12 @@ cut dependencies, and atomic-component reductions. It does **not** change a
 partition, create a transport schedule, establish macro-cycle equivalence, or
 claim physical timing closure.
 
-The opt-in Phase 3 mode `static-exact-combinational` implements the first
-legality gate for dependency depth 1 or 2 and emits an independently reconstructed
-semantic contract. Phase 4 binds that contract through native routing. Phase 5
+The opt-in Phase 3 mode `static-exact-combinational` has two explicit candidate
+policies. `potential-frontier-depth-v1` preserves the historical depth-1/2
+behavior. `assignment-derived-acyclic-v2` releases every structurally legal
+candidate, reconstructs dependency depth from the selected assignment, accepts
+any positive safety cap, and emits the v2 semantic contract. Phase 4 binds that
+contract through native routing. Phase 5
 uses it to prove when downstream combinational values become available and
 when terminal captures are ready. Phase 6 now materializes contract-bound,
 preserved TX/RX boundaries and shadow-only consumer nets, then evaluates TX
@@ -62,9 +66,10 @@ through routes, schedule, Phase 6 split, and Phase 7C:
 
 ```json
 {
-  "schema": "emuflow.static-exact-combinational-cut/v1",
+  "schema": "emuflow.static-exact-combinational-cut/v2",
   "mode": "static-exact-combinational",
-  "max_cross_fpga_dependency_depth": 1,
+  "candidate_selection_policy": "assignment-derived-acyclic-v2",
+  "max_cross_fpga_dependency_depth": 8,
   "comb_segment_budget_slots": 1,
   "slot_edge_convention": {
     "id": "fabric-rising-edge-current-slot/v1"
@@ -106,6 +111,14 @@ The first version is intentionally fail-closed:
   suppresses the local launch branch;
 - the dependency-depth limit is reconstructed from EmuIR after each candidate
   assignment, independent of the partition provider.
+- v2 never filters a candidate using its depth in the graph of all *possible*
+  cuts. A deep potential candidate can be the only selected boundary in its
+  cone and therefore have actual depth one;
+- v2 independently computes an uncongested BoardDB minimum-latency lower bound
+  over the selected dependency DAG. An assignment that cannot reach every
+  terminal capture before commit even under this optimistic bound is rejected
+  in Phase 3. Concrete routing, contention, lane capacity, and physical delay
+  remain stricter downstream gates.
 
 The characterization report is an upper bound because it ignores capacity,
 user group/fixed constraints, BoardDB hop limits, link capacity, schedule
@@ -116,11 +129,11 @@ feasibility, and physical segment deadlines.
 1. **Characterization (implemented, no behavior change).** Read-only SCC,
    eligibility, dependency-depth, and theoretical atomic-component report;
    independent exact replay; tamper tests.
-2. **Phase 3 depth 1/2 (implemented, opt-in).** Explicit cut policy, assignment
+2. **Phase 3 legacy depth 1/2 plus generalized v2 (implemented, opt-in).** Explicit cut policy, assignment
    semantic contract, provider-independent cluster/legality reconstruction,
    and balance fixture. Its strongest qualification is
    `partition-legality-only-provisional`.
-3. **Phase 4/5 depth 1/2 (implemented, opt-in).** Exact contract propagation,
+3. **Phase 4/5 arbitrary budgeted DAG depth (implemented, opt-in).** Exact contract propagation,
    canonical contract digest binding, deterministic
    dependency-aware list scheduling, source-ready/capture certificate, fixed
    frame fail-closed diagnostics, and tamper tests.
@@ -140,9 +153,12 @@ feasibility, and physical segment deadlines.
    and replays all 195,532 original timing paths. Its negative 10 ns
    target-clock WNS/TNS is reported honestly; the gate proves complete timing
    evidence and positive causal segment deadlines, not target-clock closure.
-6. **Optimizer integration.** Path-local readiness precedes any timing-DAG or
-   ratio-provider promotion; V1 depth 2 continues to use the dedicated exact
-   scheduler.
+6. **Optimizer integration.** TritonPart screens every candidate assignment
+   against the reconstructed contract and the BoardDB lower bound before seed
+   selection. The dedicated exact scheduler is a generic topological,
+   capacity-aware list scheduler; it is no longer limited to depth two. The
+   ordinary timing-DAG/ratio optimizers remain fail-closed until they consume
+   the same dependency contract.
 
 ## Commands
 
@@ -161,7 +177,8 @@ emuflow phase3 \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --provider greedy \
   --cut-mode static-exact-combinational \
-  --max-cross-fpga-dependency-depth 1 \
+  --static-exact-candidate-policy assignment-derived-acyclic-v2 \
+  --max-cross-fpga-dependency-depth 8 \
   --comb-segment-budget-slots 1 \
   --out build/phase3-exact
 
@@ -192,7 +209,8 @@ emuflow multi-fpga compile design.v \
   --top top --clock clk --clock-period clk=10 \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --cut-mode static-exact-combinational \
-  --max-cross-fpga-dependency-depth 1 \
+  --static-exact-candidate-policy assignment-derived-acyclic-v2 \
+  --max-cross-fpga-dependency-depth 8 \
   --comb-segment-budget-slots 1 \
   --frame-slots 32 --physical --out build/exact-flow
 
@@ -214,7 +232,8 @@ Experiment v2 compiler by adding these fields to the case config:
 ```json
 {
   "cut_mode": "static-exact-combinational",
-  "max_cross_fpga_dependency_depth": 1,
+  "static_exact_candidate_policy": "assignment-derived-acyclic-v2",
+  "max_cross_fpga_dependency_depth": 8,
   "comb_segment_budget_slots": 1,
   "minimum_combinational_cut_nets": 1
 }

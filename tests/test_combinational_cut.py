@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 from emuflow.cli import main
 from emuflow.combinational_cut import (
+    GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     build_static_exact_semantic_contract,
     characterize_combinational_cuts,
     semantic_contract_sha256,
@@ -538,8 +540,14 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
             validate_combinational_cut_characterization(ir, tampered)
 
     def test_invalid_depth_limit_is_rejected(self):
-        with self.assertRaisesRegex(ValidationError, "subset of"):
-            characterize_combinational_cuts(_chain_ir(), (3,))
+        with self.assertRaisesRegex(ValidationError, "positive integers"):
+            characterize_combinational_cuts(_chain_ir(), (0,))
+
+    def test_characterization_supports_arbitrary_positive_depth(self):
+        report = characterize_combinational_cuts(_chain_ir(), (3,))
+        self.assertEqual(
+            report["depth_limits"][0]["max_dependency_depth"], 3
+        )
 
     def test_cli_writes_and_independently_validates_report(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -909,6 +917,244 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 cut_mode=CUT_MODE_STATIC_EXACT,
                 max_cross_fpga_dependency_depth=3,
             )
+
+    def test_v2_releases_deep_potential_candidate_with_actual_depth_one(self):
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_tolerance": 1.0,
+            },
+            self.ir,
+            self.platform,
+        )
+        legacy = build_clusters(
+            self.ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=1,
+        )
+        generalized = build_clusters(
+            self.ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=1,
+            comb_segment_budget_slots=1,
+            frame_slots=16,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        )
+        self.assertEqual(
+            legacy["policy"]["eligible_combinational_cut_nets"], ["n0"]
+        )
+        self.assertEqual(
+            generalized["policy"]["eligible_combinational_cut_nets"],
+            ["n0", "n1"],
+        )
+        cluster_for = {
+            instance: cluster["id"]
+            for cluster in generalized["clusters"]
+            for instance in cluster["instances"]
+        }
+        targets = {
+            "q0": "fpga0",
+            "l0": "fpga0",
+            "l1": "fpga0",
+            "l2": "fpga1",
+            "q1": "fpga1",
+        }
+        cluster_targets = {}
+        for instance, target in targets.items():
+            cluster_id = cluster_for[instance]
+            if cluster_id in cluster_targets:
+                self.assertEqual(cluster_targets[cluster_id], target)
+            cluster_targets[cluster_id] = target
+        assignment = build_partition_assignment(
+            self.ir,
+            self.platform,
+            generalized,
+            constraints,
+            cluster_targets,
+            provider="test-static-exact-v2",
+            seed=0,
+        )
+        contract = assignment["semantic_contract"]
+        self.assertEqual(
+            contract["schema"],
+            GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+        )
+        self.assertEqual(contract["metrics"]["combinational_cut_nets"], 1)
+        self.assertEqual(
+            contract["metrics"]["maximum_combinational_dependency_depth"],
+            1,
+        )
+        cut = next(
+            item for item in assignment["cut_nets"] if item["net"] == "n1"
+        )
+        self.assertEqual(cut["predecessor_cut_nets"], [])
+        self.assertEqual(cut["combinational_dependency_depth"], 1)
+        self.assertEqual(
+            validate_partition_artifacts(
+                self.ir, self.platform, generalized, assignment
+            )["status"],
+            "pass",
+        )
+        tampered = copy.deepcopy(assignment)
+        del tampered["semantic_contract"][
+            "uncongested_schedule_lower_bound"
+        ]
+        with self.assertRaisesRegex(ValidationError, "certificate is incomplete"):
+            demands_from_assignment(tampered, self.platform)
+        routes = self._exact_routes(assignment)
+        tampered_routes = copy.deepcopy(routes)
+        del tampered_routes["semantic_contract"][
+            "uncongested_schedule_lower_bound"
+        ]
+        tampered_routes["semantic_contract_sha256"] = semantic_contract_sha256(
+            tampered_routes["semantic_contract"]
+        )
+        with self.assertRaisesRegex(ValidationError, "certificate is incomplete"):
+            build_tdm_schedule(tampered_routes, self.platform)
+        schedule = build_tdm_schedule(routes, self.platform)
+        self.assertEqual(
+            validate_tdm_schedule(routes, self.platform, schedule)["status"],
+            "pass",
+        )
+
+    def test_v2_depth_three_runs_through_schedule_split_and_equivalence(self):
+        value = copy.deepcopy(self.ir.value)
+        value["instances"].insert(
+            -1,
+            {
+                "id": "l3",
+                "type": "LUT2",
+                "parameters": {"INIT": "1010"},
+                "resources": {"lut": 1},
+            },
+        )
+        terminal = next(item for item in value["nets"] if item["id"] == "d")
+        terminal["drivers"] = [_endpoint("l3", "O")]
+        value["nets"].insert(
+            -1,
+            {
+                "id": "n2",
+                "name": "n2",
+                "cut_class": "combinational",
+                "drivers": [_endpoint("l2", "O")],
+                "sinks": [_endpoint("l3", "I0")],
+            },
+        )
+        self.ir = EmuIR(value)
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_tolerance": 1.0,
+            },
+            self.ir,
+            self.platform,
+        )
+        clusters = build_clusters(
+            self.ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=3,
+            comb_segment_budget_slots=1,
+            frame_slots=24,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        )
+        cluster_for = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        targets = {
+            "q0": "fpga0",
+            "l0": "fpga0",
+            "l1": "fpga1",
+            "l2": "fpga0",
+            "l3": "fpga1",
+            "q1": "fpga1",
+        }
+        cluster_targets = {}
+        for instance, target in targets.items():
+            cluster_id = cluster_for[instance]
+            if cluster_id in cluster_targets:
+                self.assertEqual(cluster_targets[cluster_id], target)
+            cluster_targets[cluster_id] = target
+        assignment = build_partition_assignment(
+            self.ir,
+            self.platform,
+            clusters,
+            constraints,
+            cluster_targets,
+            provider="test-static-exact-v2",
+            seed=0,
+        )
+        contract = assignment["semantic_contract"]
+        self.assertEqual(
+            contract["metrics"]["maximum_combinational_dependency_depth"],
+            3,
+        )
+        self.assertEqual(
+            [
+                item["net"]
+                for item in assignment["cut_nets"]
+                if item["cut_class"] == "combinational"
+            ],
+            ["n0", "n1", "n2"],
+        )
+        lower_bound = contract["uncongested_schedule_lower_bound"]
+        self.assertEqual(
+            lower_bound["provider"],
+            "board-minimum-latency-dag-lower-bound-v1",
+        )
+        self.assertGreaterEqual(
+            lower_bound["minimum_capture_slack_slots"], 0
+        )
+        with self.assertRaisesRegex(
+            ValidationError, "uncongested minimum-latency"
+        ):
+            build_static_exact_semantic_contract(
+                self.ir,
+                self.platform.to_dict(),
+                assignment["instance_assignment"],
+                assignment["cut_nets"],
+                max_dependency_depth=3,
+                comb_segment_budget_slots=1,
+                frame_slots=8,
+                candidate_selection_policy=(
+                    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+                ),
+            )
+        routes = self._exact_routes(assignment, frame_slots=24)
+        schedule = build_tdm_schedule(routes, self.platform)
+        self.assertEqual(
+            validate_tdm_schedule(routes, self.platform, schedule)["status"],
+            "pass",
+        )
+        self.assertEqual(
+            schedule["schedule_dependency_certificate"][
+                "topological_cut_order"
+            ],
+            ["n0", "n1", "n2"],
+        )
+        split = build_split_artifacts(
+            self.ir, assignment, schedule, self.platform
+        )
+        self.assertEqual(
+            validate_split_artifacts(
+                self.ir,
+                assignment,
+                schedule,
+                self.platform,
+                split,
+            )["status"],
+            "pass",
+        )
+        self.assertEqual(
+            exhaustively_verify_static_exact_partition_equivalence(
+                self.ir, assignment, schedule
+            )["status"],
+            "pass",
+        )
 
     def test_reconvergent_depth_two_waits_for_every_predecessor(self):
         ir = _reconvergent_ir()

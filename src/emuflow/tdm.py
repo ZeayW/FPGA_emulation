@@ -43,18 +43,32 @@ def _static_exact_contract_from_routes(
             "routes exact semantic contract binding is incomplete"
         )
     from .combinational_cut import (
-        STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+        GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+        STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS,
         semantic_contract_sha256,
     )
 
     if (
-        contract.get("schema") != STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA
+        contract.get("schema") not in STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS
         or contract.get("mode") != "static-exact-combinational"
         or contract.get("qualification")
         != "partition-legality-only-provisional"
         or semantic_contract_sha256(contract) != digest
     ):
         raise ValidationError("routes exact semantic contract binding is invalid")
+    if contract.get("schema") == GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA:
+        lower_bound = contract.get("uncongested_schedule_lower_bound")
+        if (
+            contract.get("candidate_selection_policy")
+            != STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+            or not isinstance(lower_bound, dict)
+            or lower_bound.get("provider")
+            != "board-minimum-latency-dag-lower-bound-v1"
+        ):
+            raise ValidationError(
+                "routes generalized exact-cut certificate is incomplete"
+            )
     nodes = contract.get("cut_nodes")
     raw_routes = routes.get("routes")
     if not isinstance(nodes, list) or not isinstance(raw_routes, list):

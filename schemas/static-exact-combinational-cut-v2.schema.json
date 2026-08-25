@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/static-exact-combinational-cut-v2.schema.json",
+  "title": "EmuFlow Generalized Static Exact Combinational Cut Contract v2",
+  "type": "object",
+  "required": [
+    "schema",
+    "mode",
+    "qualification",
+    "candidate_selection_policy",
+    "uncongested_schedule_lower_bound",
+    "max_cross_fpga_dependency_depth",
+    "comb_segment_budget_slots",
+    "frame_slots",
+    "commit_slot",
+    "slot_edge_convention",
+    "cut_nodes",
+    "dependency_edges",
+    "logic_segments",
+    "capture_requirements",
+    "metrics",
+    "source_identity",
+    "downstream_gates"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.static-exact-combinational-cut/v2"},
+    "mode": {"const": "static-exact-combinational"},
+    "qualification": {"const": "partition-legality-only-provisional"},
+    "candidate_selection_policy": {
+      "const": "assignment-derived-acyclic-v2"
+    },
+    "uncongested_schedule_lower_bound": {"type": "object"},
+    "max_cross_fpga_dependency_depth": {"type": "integer", "minimum": 1},
+    "comb_segment_budget_slots": {"type": "integer", "minimum": 1},
+    "frame_slots": {"type": "integer", "minimum": 2},
+    "commit_slot": {"type": "integer", "minimum": 1},
+    "slot_edge_convention": {"type": "object"},
+    "cut_nodes": {"type": "array", "items": {"type": "object"}},
+    "dependency_edges": {"type": "array", "items": {"type": "object"}},
+    "logic_segments": {"type": "array", "items": {"type": "object"}},
+    "capture_requirements": {"type": "array", "items": {"type": "object"}},
+    "metrics": {"type": "object"},
+    "source_identity": {"type": "object"},
+    "downstream_gates": {"type": "object"}
+  },
+  "additionalProperties": false
+}

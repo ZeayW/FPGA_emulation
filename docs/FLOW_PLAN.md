@@ -30,7 +30,8 @@ The initial semantic envelope is intentionally narrow:
 Multi-clock designs, runtime packet switching, partial reconfiguration, and
 transparent encrypted-IP partitioning are later extensions. Controlled static
 exact combinational cuts are an active opt-in extension. Characterization,
-depth-1/depth-2 partition legality, native-route contract propagation, and dependency-
+legacy depth-1/depth-2 and generalized assignment-derived partition legality,
+native-route contract propagation, and dependency-
 aware Phase 5 scheduling, Phase 6 exact boundary materialization, and event-
 driven macro-cycle equivalence are implemented. Small LUT/FF models receive
 complete one-step state/input enumeration, while larger models are honestly
@@ -43,7 +44,8 @@ independently reconstructs whole-design target-clock and virtual-runtime
 WNS/TNS over all 195,532 original timing paths. The target-clock result is
 reported but is not closed; this acceptance proves complete accounting and
 causal correctness rather than timing QoR improvement. The production default
-remains sequential-only because static exact V1 retains its explicit
+remains sequential-only until generalized v2 passes the canonical real-RTL
+Phase 1--7 QoR promotion gate; both exact policies retain the explicit
 single-clock and fail-closed semantic scope.
 Canonical Experiment v2 exact-mode evidence additionally requires at least one
 independently reconstructed selected combinational cut. A legal zero-cut run
@@ -504,8 +506,10 @@ Acceptance:
 - every frame completes before the virtual clock-enable;
 - partitioned and unpartitioned designs are cycle-equivalent.
 
-The first three items now also have a separate exact-mode implementation for
-depth-1/depth-2 combinational cuts. Its topological list scheduler uses the shared
+The first three items now also have a separate exact-mode implementation. The
+legacy candidate policy is depth-1/depth-2; generalized v2 derives the actual
+dependency DAG from the selected assignment and accepts any positive safety
+cap. Its topological list scheduler uses the shared
 `fabric-rising-edge-current-slot/v1` convention, computes launch-to-TX,
 RX-to-TX, and RX-to-capture readiness from the Phase 3 contract, and stops
 with a precise fixed-frame infeasibility diagnostic when any arrival or

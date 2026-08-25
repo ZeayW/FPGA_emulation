@@ -109,6 +109,8 @@ from .canonical_qor import (
     validate_canonical_qor_comparison,
 )
 from .combinational_cut import (
+    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     characterize_combinational_cuts,
     validate_combinational_cut_characterization,
 )
@@ -615,6 +617,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--comb-segment-budget-slots", type=int, default=1
     )
     partition_run.add_argument(
+        "--static-exact-candidate-policy",
+        choices=(
+            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        ),
+        default=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    )
+    partition_run.add_argument(
         "--minimum-combinational-cut-nets", type=int, default=0
     )
     partition_run.add_argument("--out", type=Path, required=True)
@@ -643,6 +653,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-cross-fpga-dependency-depth", type=int
     )
     partition_validate.add_argument("--comb-segment-budget-slots", type=int)
+    partition_validate.add_argument(
+        "--static-exact-candidate-policy",
+        choices=(
+            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        ),
+    )
     partition_validate.add_argument(
         "--minimum-combinational-cut-nets", type=int
     )
@@ -1671,11 +1688,18 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--max-cross-fpga-dependency-depth",
         type=int,
-        choices=(1, 2),
         default=1,
     )
     multi_fpga_compile.add_argument(
         "--comb-segment-budget-slots", type=int, default=1
+    )
+    multi_fpga_compile.add_argument(
+        "--static-exact-candidate-policy",
+        choices=(
+            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        ),
+        default=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     )
     multi_fpga_compile.add_argument(
         "--timing-driven",
@@ -2390,7 +2414,6 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--max-cross-fpga-dependency-depth",
         type=int,
-        choices=(1, 2),
         default=1,
         help="static exact mode dependency-depth limit",
     )
@@ -2399,6 +2422,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="provisional per-FPGA combinational segment slot budget",
+    )
+    phase3.add_argument(
+        "--static-exact-candidate-policy",
+        choices=(
+            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        ),
+        default=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     )
     phase3.add_argument("--min-used-fpgas", type=int)
     phase3.add_argument("--balance-tolerance", type=float)
@@ -3374,6 +3405,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                     args.max_cross_fpga_dependency_depth
                 ),
                 comb_segment_budget_slots=args.comb_segment_budget_slots,
+                static_exact_candidate_policy=(
+                    args.static_exact_candidate_policy
+                ),
                 minimum_combinational_cut_nets=(
                     args.minimum_combinational_cut_nets
                 ),
@@ -3396,6 +3430,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ),
                 expected_comb_segment_budget_slots=(
                     args.comb_segment_budget_slots
+                ),
+                expected_static_exact_candidate_policy=(
+                    args.static_exact_candidate_policy
                 ),
                 expected_minimum_combinational_cut_nets=(
                     args.minimum_combinational_cut_nets
@@ -4563,6 +4600,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.max_cross_fpga_dependency_depth
             ),
             comb_segment_budget_slots=args.comb_segment_budget_slots,
+            static_exact_candidate_policy=(
+                args.static_exact_candidate_policy
+            ),
             timing_driven=args.timing_driven,
             timing_backend=args.timing_backend,
             clock_periods=(
@@ -4732,6 +4772,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.max_cross_fpga_dependency_depth
             ),
             comb_segment_budget_slots=args.comb_segment_budget_slots,
+            static_exact_candidate_policy=(
+                args.static_exact_candidate_policy
+            ),
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

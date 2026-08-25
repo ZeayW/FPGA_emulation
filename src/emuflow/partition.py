@@ -12,6 +12,11 @@ from .io import read_json
 from .ir import EmuIR
 from .platform import Platform
 from .resources import RESOURCE_FIELDS, ResourceVector
+from .combinational_cut import (
+    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    STATIC_EXACT_CANDIDATE_POLICIES,
+)
 
 
 CLUSTERS_SCHEMA = "emuflow.clusters/v1"
@@ -316,6 +321,7 @@ def build_clusters(
     max_cross_fpga_dependency_depth: int = 1,
     comb_segment_budget_slots: int = 1,
     frame_slots: int = 2,
+    static_exact_candidate_policy: str = STATIC_EXACT_CANDIDATE_FRONTIER_V1,
 ) -> Dict[str, Any]:
     if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
         raise ValidationError(
@@ -330,10 +336,25 @@ def build_clusters(
                 "static exact combinational cuts require exactly one "
                 "virtual DUT clock"
             )
-        if max_cross_fpga_dependency_depth not in {1, 2}:
+        if static_exact_candidate_policy not in STATIC_EXACT_CANDIDATE_POLICIES:
+            raise ValidationError("unknown static exact candidate policy")
+        if (
+            isinstance(max_cross_fpga_dependency_depth, bool)
+            or not isinstance(max_cross_fpga_dependency_depth, int)
+            or max_cross_fpga_dependency_depth <= 0
+            or (
+                static_exact_candidate_policy
+                == STATIC_EXACT_CANDIDATE_FRONTIER_V1
+                and max_cross_fpga_dependency_depth not in {1, 2}
+            )
+        ):
+            if static_exact_candidate_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1:
+                raise ValidationError(
+                    "legacy static exact candidate policy requires "
+                    "max_cross_fpga_dependency_depth to be 1 or 2"
+                )
             raise ValidationError(
-                "static exact combinational cuts require "
-                "max_cross_fpga_dependency_depth to be 1 or 2"
+                "max_cross_fpga_dependency_depth must be positive"
             )
         if (
             isinstance(comb_segment_budget_slots, bool)
@@ -352,13 +373,23 @@ def build_clusters(
         from .combinational_cut import characterize_combinational_cuts
 
         characterization = characterize_combinational_cuts(
-            ir, tuple(range(1, max_cross_fpga_dependency_depth + 1))
+            ir, (max_cross_fpga_dependency_depth,)
         )
-        released_combinational_nets = {
-            item["net"]
-            for item in characterization["eligible_cuts"]
-            if item["dependency_level"] <= max_cross_fpga_dependency_depth
-        }
+        if static_exact_candidate_policy == STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2:
+            # Candidate depth is not intrinsic to a net.  A net deep in the
+            # potential-cut DAG can still be the only transported boundary in
+            # its cone and therefore have actual dependency depth one.  V2
+            # releases every structurally legal candidate and reconstructs the
+            # depth only after the provider supplies an assignment.
+            released_combinational_nets = {
+                item["net"] for item in characterization["eligible_cuts"]
+            }
+        else:
+            released_combinational_nets = {
+                item["net"]
+                for item in characterization["eligible_cuts"]
+                if item["dependency_level"] <= max_cross_fpga_dependency_depth
+            }
     instances = {
         instance["id"]: instance for instance in ir.value["instances"]
     }
@@ -465,6 +496,10 @@ def build_clusters(
                 "qualification": "partition-legality-only-provisional",
             }
         )
+        if static_exact_candidate_policy == STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2:
+            result["policy"]["candidate_selection_policy"] = (
+                static_exact_candidate_policy
+            )
     return result
 
 
@@ -906,6 +941,10 @@ def build_partition_assignment(
                 "comb_segment_budget_slots"
             ],
             frame_slots=cut_policy["frame_slots"],
+            candidate_selection_policy=cut_policy.get(
+                "candidate_selection_policy",
+                STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            ),
         )
         contract_nodes = {
             item["net"]: item for item in semantic_contract["cut_nodes"]
@@ -1408,6 +1447,10 @@ def validate_partition_artifacts(
                 "comb_segment_budget_slots"
             ],
             frame_slots=cut_policy["frame_slots"],
+            static_exact_candidate_policy=cut_policy.get(
+                "candidate_selection_policy",
+                STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            ),
         )
         if clusters_artifact != expected_clusters:
             raise ValidationError(
@@ -1552,6 +1595,10 @@ def validate_partition_artifacts(
                 "comb_segment_budget_slots"
             ],
             frame_slots=cut_policy["frame_slots"],
+            candidate_selection_policy=cut_policy.get(
+                "candidate_selection_policy",
+                STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            ),
         )
         contract_nodes = {
             item["net"]: item for item in expected_contract["cut_nodes"]

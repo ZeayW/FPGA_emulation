@@ -518,6 +518,41 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "0",
             )
             route = nodes["route"]
+
+    def test_generalized_static_exact_accepts_depth_beyond_two(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config.update(
+                {
+                    "cut_mode": "static-exact-combinational",
+                    "static_exact_candidate_policy": (
+                        "assignment-derived-acyclic-v2"
+                    ),
+                    "max_cross_fpga_dependency_depth": 8,
+                }
+            )
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            nodes = {
+                item["id"]: item
+                for item in validate_experiment_spec(
+                    json.loads(output.read_text())
+                )["nodes"]
+            }
+            partition = nodes["partition"]
+            self.assertEqual(
+                partition["configuration"]["static_exact_candidate_policy"],
+                "assignment-derived-acyclic-v2",
+            )
+            for arguments in (partition["command"], partition["validator"]):
+                index = arguments.index("--static-exact-candidate-policy")
+                self.assertEqual(
+                    arguments[index + 1], "assignment-derived-acyclic-v2"
+                )
+            route = nodes["route"]
             self.assertEqual(
                 route["configuration"]["provider"],
                 NATIVE_TIMING_EVALUATED_PROVIDER,

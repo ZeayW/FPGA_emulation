@@ -21,6 +21,7 @@ from .experiment_upstream import (
 from .io import read_json, write_json
 from .partition_hops import validate_assignment_hop_constraints
 from .partition import CUT_MODE_SEQUENTIAL_ONLY
+from .combinational_cut import STATIC_EXACT_CANDIDATE_FRONTIER_V1
 from .phase3 import run_phase3, validate_phase3
 
 
@@ -47,6 +48,7 @@ def run_partition_checkpoint(
     max_cross_fpga_dependency_depth: int = 1,
     comb_segment_budget_slots: int = 1,
     minimum_combinational_cut_nets: int = 0,
+    static_exact_candidate_policy: str = STATIC_EXACT_CANDIDATE_FRONTIER_V1,
 ) -> Dict[str, Any]:
     if (
         isinstance(minimum_combinational_cut_nets, bool)
@@ -88,6 +90,7 @@ def run_partition_checkpoint(
         cut_mode=cut_mode,
         max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
         comb_segment_budget_slots=comb_segment_budget_slots,
+        static_exact_candidate_policy=static_exact_candidate_policy,
     )
     report = {
         "schema": EXPERIMENT_PARTITION_SCHEMA,
@@ -101,6 +104,7 @@ def run_partition_checkpoint(
             max_cross_fpga_dependency_depth
         ),
         "comb_segment_budget_slots": comb_segment_budget_slots,
+        "static_exact_candidate_policy": static_exact_candidate_policy,
         "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
         "static_exact_combinational_cut_exercised": (
             cut_mode != CUT_MODE_SEQUENTIAL_ONLY
@@ -144,6 +148,9 @@ def run_partition_checkpoint(
         expected_minimum_combinational_cut_nets=(
             minimum_combinational_cut_nets
         ),
+        expected_static_exact_candidate_policy=(
+            static_exact_candidate_policy
+        ),
     )
     return report
 
@@ -164,6 +171,7 @@ def validate_partition_checkpoint(
     expected_max_cross_fpga_dependency_depth: int | None = None,
     expected_comb_segment_budget_slots: int | None = None,
     expected_minimum_combinational_cut_nets: int | None = None,
+    expected_static_exact_candidate_policy: str | None = None,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     weights = _require(timing_root, "partition-net-weights.json")
@@ -191,6 +199,7 @@ def validate_partition_checkpoint(
         "cut_mode": CUT_MODE_SEQUENTIAL_ONLY,
         "max_cross_fpga_dependency_depth": 1,
         "comb_segment_budget_slots": 1,
+        "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         "minimum_combinational_cut_nets": 0,
     }
     for field, expected in (
@@ -200,6 +209,10 @@ def validate_partition_checkpoint(
             expected_max_cross_fpga_dependency_depth,
         ),
         ("comb_segment_budget_slots", expected_comb_segment_budget_slots),
+        (
+            "static_exact_candidate_policy",
+            expected_static_exact_candidate_policy,
+        ),
         (
             "minimum_combinational_cut_nets",
             expected_minimum_combinational_cut_nets,
@@ -313,6 +326,10 @@ def validate_partition_checkpoint(
         ),
         "comb_segment_budget_slots": cut_policy.get(
             "comb_segment_budget_slots", 1
+        ),
+        "static_exact_candidate_policy": cut_policy.get(
+            "candidate_selection_policy",
+            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         ),
     }
     for field, actual in independently_reconstructed.items():

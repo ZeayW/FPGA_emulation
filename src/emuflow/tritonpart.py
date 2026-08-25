@@ -13,6 +13,7 @@ from .io import read_json, write_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .partition import (
+    CUT_MODE_STATIC_EXACT,
     build_partition_assignment,
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
@@ -995,7 +996,7 @@ def run_tritonpart(
     selected_solution_path: Optional[Path] = None
     selected_repair_moves: List[Dict[str, Any]] = []
     selected_balance_repair: Optional[Dict[str, Any]] = None
-    selected_objective: Optional[Tuple[float, int, int]] = None
+    selected_objective: Optional[Tuple[Any, ...]] = None
     selected_attempt_mode: Optional[str] = None
     attempts = []
     attempt_specs = [
@@ -1234,6 +1235,41 @@ def run_tritonpart(
             attempts.append(attempt)
             continue
 
+        exact_risk = None
+        if clusters_artifact.get("policy", {}).get("cut_mode") == CUT_MODE_STATIC_EXACT:
+            try:
+                preview = build_partition_assignment(
+                    ir,
+                    platform,
+                    clusters_artifact,
+                    constraints,
+                    candidate,
+                    provider=TRITONPART_PROVIDER,
+                    seed=attempt_seed,
+                )
+            except ValidationError as error:
+                attempt["accepted"] = False
+                attempt["rejection"] = "static_exact_contract"
+                attempt["error"] = str(error)
+                attempts.append(attempt)
+                continue
+            contract_metrics = preview["semantic_contract"]["metrics"]
+            lower_bound = preview["semantic_contract"].get(
+                "uncongested_schedule_lower_bound", {}
+            )
+            exact_risk = {
+                "combinational_cut_nets": contract_metrics[
+                    "combinational_cut_nets"
+                ],
+                "maximum_combinational_dependency_depth": contract_metrics[
+                    "maximum_combinational_dependency_depth"
+                ],
+                "uncongested_minimum_capture_slack_slots": lower_bound.get(
+                    "minimum_capture_slack_slots"
+                ),
+            }
+            attempt["static_exact_risk"] = exact_risk
+
         attempt["accepted"] = True
         cut_edges = [
             edge
@@ -1253,6 +1289,24 @@ def run_tritonpart(
         attempts.append(attempt)
         objective = (
             float(attempt["cut_weight"]),
+            *(
+                (
+                    -int(
+                        exact_risk.get(
+                            "uncongested_minimum_capture_slack_slots"
+                        )
+                        or 0
+                    ),
+                    int(
+                        exact_risk[
+                            "maximum_combinational_dependency_depth"
+                        ]
+                    ),
+                    int(exact_risk["combinational_cut_nets"]),
+                )
+                if exact_risk is not None
+                else ()
+            ),
             int(attempt["cut_hyperedges"]),
             attempt_seed,
         )
