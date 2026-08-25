@@ -16,6 +16,7 @@ RUN apt-get update \
         libomp-dev \
         libspdlog-dev \
         ninja-build \
+        python3-dev \
         python3-pip \
         python3-venv \
         swig \

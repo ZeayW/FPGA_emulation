@@ -6,6 +6,7 @@ __pycache__/
 .emuflow-source-commit
 .pytest_cache/
 .venv/
+.venv-openparf/
 build/
 dist/
 tmp/

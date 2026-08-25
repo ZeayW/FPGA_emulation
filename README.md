@@ -780,14 +780,16 @@ build profiles instead of creating drifting images for each tool:
 | `core` | `build/codespaces-core` | Phase 1 import, Phase 3 partitioning, topology/feedback refinement, Phase 4 routing, and Phase 5 TDM | partition smoke, then the broader partition suite |
 | `frontend` | `build/codespaces-yosys` | RTL synthesis, mapping, and EmuIR frontend debugging | pinned SERV Phase 1 benchmark |
 | `timing` | `build/codespaces-opensta` | CUDD/OpenSTA TimingPathDB extraction and timing-driven Phase 3--5 integration | counter timing smoke, then pinned SERV timing flow |
-| `physical` | server/HPC install | OpenROAD/TritonPart, architecture import, OpenPARF, VPR/Vivado, Phase 7, and canonical QoR | content-addressed registered experiment and complete physical validators |
+| `physical` | `build/codespaces-physical` | CPU OpenPARF build and the real counter Phase 1--2 gate | singleton-grid numerics, runtime import, then legal root-built placement |
 
 The `core` profile is created automatically and builds the first-party
 partition, routing-feedback, and TDM support programs including the MFSPart
 serial chain and hop refiner.  `frontend` and `timing` are opt-in builds in the
-same Codespace.  The physical profile is intentionally not a Codespaces build.
-This environment is a diagnostic development machine, not a source-complete
-release or canonical evidence machine.
+same Codespace.  `physical` is an opt-in, CPU-only OpenPARF build with an
+isolated pinned Python environment.  OpenROAD/TritonPart, VPR/Vivado, Phase 7,
+and canonical QoR remain server/HPC gates.  Codespaces is a diagnostic
+development machine, not a source-complete release or canonical evidence
+machine.
 
 Use `emuflow-<profile>-dev-<cores>c` for Codespace display names.  Build trees
 remain `build/codespaces-<profile>`.  Every diagnostic attempt uses
@@ -858,6 +860,26 @@ tail -f build/logs/codespaces/serv-timing-flow-attempt-0001.log
 cat build/logs/codespaces/serv-timing-flow-attempt-0001.status
 ```
 
+Build OpenPARF only when advancing the physical Phase 2 path.  This profile
+uses `.venv-openparf`, installs pinned CPU PyTorch and NumPy versions, and
+disables unrelated native providers.  Its CTest gate checks numerical guards,
+the singleton-grid spectral boundary, runtime import, and a real counter
+Phase 1--2 run whose placement is independently reloaded and validated:
+
+```bash
+scripts/codespaces/build-openparf.sh
+```
+
+The same build can be detached before closing the browser or losing the local
+network connection.  Attempts are immutable and use the standard control
+artifact layout:
+
+```bash
+scripts/codespaces/start-openparf-build.sh attempt-0001
+tail -f build/logs/codespaces/openparf-build/attempt-0001.log
+cat build/logs/codespaces/openparf-build/attempt-0001.status
+```
+
 These helpers refuse to overwrite either an earlier output tree or detached
 control artifacts.  SERV fits on one virtual FPGA, so this diagnostic forces
 two used FPGAs to exercise routing and TDM.  If Phase 3 reports
@@ -868,8 +890,9 @@ experiment lifecycle with a naturally capacity-constrained design and a
 feasible frozen balance contract.
 
 The two-core setup intentionally does not attempt TritonPart/OpenROAD or the
-Phase 2/7 physical stack.  Those are separate opt-in builds after the
-first-party Phase 3 regressions and small real-RTL frontend gates pass.
+Phase 7 physical stack.  Those remain separate server/HPC builds after the
+first-party Phase 3 regressions and small real-RTL frontend and Phase 2 gates
+pass.
 The container also enables the standard Dev Containers SSH feature so the
 GitHub CLI can run and collect the same tests non-interactively.
 
