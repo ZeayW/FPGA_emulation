@@ -64,6 +64,18 @@ class NativeToolsTest(unittest.TestCase):
         self.assertIn("#include <fmt/ostream.h>", guide)
         self.assertIn("fmt::streamed(box)", guide)
 
+    def test_openroad_logger_publishes_ostream_compatibility(self) -> None:
+        cmake = (
+            Path(__file__).resolve().parents[1]
+            / "engines/openroad/src/utl/CMakeLists.txt"
+        ).read_text(encoding="utf-8")
+        public_interface = cmake.split(
+            "target_compile_definitions(utl_lib", 1
+        )[1].split(")", 1)[0]
+        self.assertIn("PUBLIC", public_interface)
+        self.assertIn("FMT_DEPRECATED_OSTREAM=1", public_interface)
+        self.assertNotIn("target_compile_definitions(utl\n", cmake)
+
     def test_resolves_only_configured_in_tree_install_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

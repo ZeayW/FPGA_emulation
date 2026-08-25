@@ -299,6 +299,9 @@ class ExperimentStagesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
             os.environ,
             {"EMUFLOW_REQUIRE_RESEARCH_STORAGE": "1"},
+        ), mock.patch(
+            "emuflow.experiment_storage.VALIDATION_STORAGE_ROOT",
+            Path(temporary) / "allowed",
         ):
             with self.assertRaisesRegex(Exception, "restricted"):
                 _prepare_empty_output(Path(temporary) / "outside", "checkpoint")

@@ -1420,6 +1420,15 @@ if(BUILD_TESTING)
 
   if(EMUFLOW_BUILD_OPENPARF)
     add_test(
+      NAME openparf_numerics
+      COMMAND
+        "${CMAKE_COMMAND}" -E env
+        "PYTHONPATH=${CMAKE_SOURCE_DIR}/src:${CMAKE_SOURCE_DIR}"
+        "${EMUFLOW_OPENPARF_PYTHON}"
+        "${CMAKE_SOURCE_DIR}/tests/test_openparf_numerics.py"
+    )
+
+    add_test(
       NAME openparf_import
       COMMAND
         "${CMAKE_COMMAND}" -E env
