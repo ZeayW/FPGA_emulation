@@ -1,6 +1,7 @@
 import hashlib
 import subprocess
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,55 @@ from emuflow.vpr import (
 
 
 class VprTest(unittest.TestCase):
+    def test_vtr_rr_edge_ids_cover_graphs_larger_than_uint32(self) -> None:
+        compiler = (
+            shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+        )
+        if compiler is None:
+            self.skipTest("a C++17 compiler is required")
+        repository = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "rr_edge_id_width.cpp"
+            executable = root / "rr_edge_id_width"
+            source.write_text(
+                """
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include "rr_graph_fwd.h"
+
+static_assert(sizeof(RREdgeId) >= sizeof(std::uint64_t));
+
+int main() {
+    constexpr std::uint64_t edge =
+        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 17;
+    const RREdgeId edge_id(edge);
+    return static_cast<std::size_t>(edge_id) == edge ? 0 : 1;
+}
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c++17",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-I",
+                    str(repository / "engines/vtr/libs/librrgraph/src/base"),
+                    "-I",
+                    str(repository / "engines/vtr/libs/libvtrutil/src"),
+                    str(source),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+            )
+            subprocess.run([str(executable)], check=True)
+
     def test_pack_place_checkpoint_is_source_bound_and_tamper_evident(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
