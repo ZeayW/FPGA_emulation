@@ -162,10 +162,15 @@ find_path(
 )
 set(EMUFLOW_PARSER_CMAKE_ARGS "")
 set(EMUFLOW_EXTERNAL_BUILD_ENV "")
+set(EMUFLOW_YOSYS_MAKE_ARGS "")
 if(EMUFLOW_BISON_EXECUTABLE)
   list(
     APPEND EMUFLOW_PARSER_CMAKE_ARGS
     "-DBISON_EXECUTABLE=${EMUFLOW_BISON_EXECUTABLE}"
+  )
+  list(
+    APPEND EMUFLOW_YOSYS_MAKE_ARGS
+    "BISON=${EMUFLOW_BISON_EXECUTABLE}"
   )
 endif()
 if(EMUFLOW_FLEX_EXECUTABLE)
@@ -173,11 +178,30 @@ if(EMUFLOW_FLEX_EXECUTABLE)
     APPEND EMUFLOW_PARSER_CMAKE_ARGS
     "-DFLEX_EXECUTABLE=${EMUFLOW_FLEX_EXECUTABLE}"
   )
+  # Yosys invokes flex by name from its Makefile.  Put only the directory of
+  # the configured, versioned executable ahead of the ambient PATH.
+  get_filename_component(
+    EMUFLOW_FLEX_BIN_DIR
+    "${EMUFLOW_FLEX_EXECUTABLE}"
+    DIRECTORY
+  )
+  list(
+    APPEND EMUFLOW_EXTERNAL_BUILD_ENV
+    "PATH=${EMUFLOW_FLEX_BIN_DIR}:$ENV{PATH}"
+  )
 endif()
 if(EMUFLOW_FLEX_INCLUDE_DIR)
   list(
     APPEND EMUFLOW_PARSER_CMAKE_ARGS
     "-DFLEX_INCLUDE_DIR=${EMUFLOW_FLEX_INCLUDE_DIR}"
+  )
+  # Yosys builds through its own Makefile rather than CMake, and its generated
+  # Verilog frontend includes <FlexLexer.h> directly.  Keep that compiler
+  # include path inside the configured dependency closure instead of relying
+  # on an ambient system include directory or a release-launcher workaround.
+  list(
+    APPEND EMUFLOW_EXTERNAL_BUILD_ENV
+    "CPATH=${EMUFLOW_FLEX_INCLUDE_DIR}:$ENV{CPATH}"
   )
 endif()
 if(EMUFLOW_BISON_PKGDATADIR)
@@ -828,6 +852,12 @@ if(EMUFLOW_BUILD_YOSYS)
       -f "<SOURCE_DIR>/Makefile" config-gcc
       "PREFIX=${EMUFLOW_YOSYS_INSTALL_ROOT}"
       ENABLE_READLINE=0
+      # EmuFlow invokes Yosys scripts directly and does not use its optional
+      # interactive Tcl shell.  Disable it explicitly: otherwise an ambient
+      # (and potentially relocatable) tcl.pc can select headers outside the
+      # versioned build closure.
+      ENABLE_TCL=0
+      ${EMUFLOW_YOSYS_MAKE_ARGS}
     BUILD_COMMAND
       "${CMAKE_COMMAND}" -E env
       ${EMUFLOW_EXTERNAL_BUILD_ENV}
@@ -836,11 +866,17 @@ if(EMUFLOW_BUILD_YOSYS)
       -j "${EMUFLOW_EXTERNAL_JOBS}"
       "PREFIX=${EMUFLOW_YOSYS_INSTALL_ROOT}"
       ENABLE_READLINE=0
+      ENABLE_TCL=0
+      ${EMUFLOW_YOSYS_MAKE_ARGS}
     INSTALL_COMMAND
+      "${CMAKE_COMMAND}" -E env
+      ${EMUFLOW_EXTERNAL_BUILD_ENV}
       "${EMUFLOW_MAKE_EXECUTABLE}" -C "<BINARY_DIR>"
       -f "<SOURCE_DIR>/Makefile"
       "PREFIX=${EMUFLOW_YOSYS_INSTALL_ROOT}"
       ENABLE_READLINE=0
+      ENABLE_TCL=0
+      ${EMUFLOW_YOSYS_MAKE_ARGS}
       install
     BUILD_BYPRODUCTS
       "${EMUFLOW_INSTALL_BINDIR}/yosys"

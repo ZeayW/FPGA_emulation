@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.canonical_qor import (
+    build_canonical_qor_comparison,
     parse_canonical_qor_arms,
     run_canonical_qor_comparison,
     validate_canonical_qor_comparison,
@@ -16,6 +17,23 @@ from emuflow.runtime import QOR_REPORT_SCHEMA
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _projection(qor):
+    return {
+        "schema": "emuflow.phase7-qor-projection/v1",
+        "status": "pass",
+        "design": qor["design"],
+        "platform": qor["platform"],
+        "timing": {
+            "status": "pass",
+            "qualification": qor["timing"]["qualification"],
+            "path_exactness": qor["timing"]["path_exactness"],
+            "target_clock": qor["timing"]["target_clock"],
+            "runtime_clock": qor["timing"]["runtime_clock"],
+        },
+        "physical": qor["physical"],
+    }
 
 
 class CanonicalQorTest(unittest.TestCase):
@@ -135,6 +153,8 @@ class CanonicalQorTest(unittest.TestCase):
                 report["qualification"],
                 "paired-multi-seed-complete-phase7c-system-timing",
             )
+            self.assertNotIn("design", report["arms"][0])
+            self.assertNotIn("platform", report["arms"][0])
             self.assertEqual(
                 report["provider_effective_phase6_schedule_sha256"]["chimew"],
                 hashlib.sha256(b"chimew-provider-effective-schedule").hexdigest(),
@@ -226,6 +246,36 @@ class CanonicalQorTest(unittest.TestCase):
             root.mkdir(exist_ok=True)
             with self.assertRaisesRegex(ValidationError, "complete provider seed sets"):
                 parse_canonical_qor_arms([["baseline", "1", str(root)]])
+
+    @patch(
+        "emuflow.canonical_qor.validate_multi_fpga_physical_report",
+        return_value={"status": "pass"},
+    )
+    def test_compact_phase7_v2_is_independently_bound_to_full_qor(self, _validate):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shared, arms, _records = self._fixture(root)
+            arm = arms[("chimew", 1)]
+            report_path = arm / "experiment-phase7-report.json"
+            qor = read_json(arm / "runtime/qor_report.json")
+            report = read_json(report_path)
+            report["schema"] = "emuflow.experiment-phase7-checkpoint/v2"
+            report["qor_projection"] = _projection(qor)
+            report["physical_flow_report_sha256"] = _sha256(
+                arm / "physical/multi-fpga-physical-flow-report.json"
+            )
+            del report["qor"]
+            write_json(report_path, report)
+
+            comparison = build_canonical_qor_comparison(shared, arms)
+            self.assertEqual(comparison["status"], "pass")
+
+            report["qor_projection"]["timing"]["target_clock"][
+                "worst_slack_bound_ns"
+            ] += 1.0
+            write_json(report_path, report)
+            with self.assertRaisesRegex(ValidationError, "projection disagrees"):
+                build_canonical_qor_comparison(shared, arms)
 
 
 if __name__ == "__main__":

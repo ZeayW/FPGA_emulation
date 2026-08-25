@@ -675,6 +675,64 @@ class ExperimentStoreTest(unittest.TestCase):
                 )
             self.assertTrue(twin.is_dir())
 
+    def test_legacy_retirement_seals_internal_symlink_without_following_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            candidate = runs / "failed-build"
+            outside = root / "outside.bin"
+            candidate.mkdir(parents=True)
+            outside.write_bytes(b"preserve")
+            link = candidate / "generated-library.so"
+            link.symlink_to(outside)
+            migration_path = root / "migration.json"
+            plan_legacy_run_migration(runs, migration_path)
+            plan_path = root / "retirement.json"
+            plan_legacy_run_retirement(
+                migration_path,
+                ["failed-build"],
+                plan_path,
+                reason="obsolete failed build",
+            )
+            approved = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            receipt = apply_legacy_run_retirement(
+                plan_path, approved, root / "receipt"
+            )
+            self.assertEqual(receipt["status"], "pass")
+            self.assertFalse(candidate.exists())
+            self.assertEqual(outside.read_bytes(), b"preserve")
+
+    def test_legacy_retirement_rejects_internal_symlink_retarget(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            candidate = runs / "failed-build"
+            candidate.mkdir(parents=True)
+            first = root / "first.bin"
+            second = root / "second.bin"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            link = candidate / "generated-library.so"
+            link.symlink_to(first)
+            migration_path = root / "migration.json"
+            plan_legacy_run_migration(runs, migration_path)
+            plan_path = root / "retirement.json"
+            plan_legacy_run_retirement(
+                migration_path,
+                ["failed-build"],
+                plan_path,
+                reason="obsolete failed build",
+            )
+            approved = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            link.unlink()
+            link.symlink_to(second)
+            with self.assertRaisesRegex(ValidationError, "candidate changed"):
+                apply_legacy_run_retirement(
+                    plan_path, approved, root / "receipt"
+                )
+            self.assertTrue(candidate.is_dir())
+            self.assertFalse((root / "receipt").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,11 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import EmuFlowError, ValidationError
+from emuflow.errors import (
+    EmuFlowError,
+    TDMScheduleInfeasibleError,
+    ValidationError,
+)
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.phase5 import run_phase5, validate_phase5
 from emuflow.platform import Platform
@@ -130,6 +134,64 @@ def _routes(platform, cuts, frame_slots):
     )
 
 
+def _candidate_fallback_inputs(root):
+    platform = Platform.from_dict(
+        _platform_value(
+            "candidate_fallback",
+            ["a", "b"],
+            [_link("ab", "a", "b")],
+        )
+    )
+    routes_path = root / "routes.json"
+    platform_path = root / "platform.json"
+    routes_path.write_text(json.dumps({"timing": {}}), encoding="utf-8")
+    platform_path.write_text(
+        json.dumps(platform.to_dict()), encoding="utf-8"
+    )
+    return routes_path, platform_path
+
+
+def _candidate_fallback_schedule():
+    return {
+        "design": "candidate_fallback",
+        "provider": "test-schedule-provider",
+        "metrics": {"completion_slot": 1},
+    }
+
+
+def _candidate_fallback_patches(schedule_side_effect):
+    plan = {
+        "provider": "test-ratio-provider",
+        "metrics": {
+            "discrete_worst_normalized_slack": 0.0,
+            "dp_legalized_domains": 0,
+            "greedy_legalized_domains": 1,
+        },
+    }
+    timing = {
+        "worst_normalized_slack": 0.0,
+        "p01_normalized_slack": 0.0,
+        "median_normalized_slack": 0.0,
+    }
+    plan_builder = mock.Mock(return_value=plan)
+    patcher = mock.patch.multiple(
+        "emuflow.phase5",
+        _prepare_model=mock.Mock(return_value={}),
+        build_timing_dag_ratio_plan=plan_builder,
+        validate_tdm_ratio_plan=mock.Mock(return_value={"status": "pass"}),
+        build_tdm_schedule=mock.Mock(side_effect=schedule_side_effect),
+        validate_tdm_schedule=mock.Mock(return_value={"status": "pass"}),
+        reconstruct_tdm_schedule_timing=mock.Mock(return_value=timing),
+        simulate_tdm_schedule=mock.Mock(return_value={"status": "pass"}),
+        build_transport_manifest=mock.Mock(return_value={}),
+        build_tdm_feedback=mock.Mock(return_value={}),
+        validate_tdm_feedback=mock.Mock(return_value={"status": "pass"}),
+        schedule_to_tsv=mock.Mock(return_value=""),
+        schedule_to_systemverilog_testbench=mock.Mock(return_value=""),
+    )
+    return patcher, plan_builder
+
+
 class Phase5Test(unittest.TestCase):
     def test_exact_capture_certificate_indexes_100k_segments_once(self) -> None:
         class CountingSegments(dict):
@@ -172,6 +234,102 @@ class Phase5Test(unittest.TestCase):
         self.assertEqual(len(records), count)
         self.assertEqual(minimum, 1)
         self.assertEqual(segments.values_calls, 1)
+
+    def test_phase5_skips_infeasible_candidate_and_uses_next_strategy(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            routes_path, platform_path = _candidate_fallback_inputs(root)
+            patcher, plan_builder = _candidate_fallback_patches(
+                [
+                    TDMScheduleInfeasibleError(
+                        "exact candidate has no legal schedule"
+                    ),
+                    _candidate_fallback_schedule(),
+                ]
+            )
+            with patcher:
+                report = run_phase5(
+                    routes_path=routes_path,
+                    platform_path=platform_path,
+                    output_dir=root / "phase5",
+                )
+
+        self.assertEqual(plan_builder.call_count, 2)
+        self.assertEqual(
+            report["candidate_selection"]["selected"],
+            "scalable-minimum-wire",
+        )
+        candidates = report["candidate_selection"]["candidates"]
+        self.assertEqual(
+            [candidate["strategy"] for candidate in candidates],
+            ["scalable-minimum-wire"],
+        )
+        self.assertEqual(
+            report["candidate_selection"]["rejected_candidates"],
+            [
+                {
+                    "strategy": "exact-displacement-dp",
+                    "status": "infeasible",
+                    "reason": "exact candidate has no legal schedule",
+                }
+            ],
+        )
+
+    def test_phase5_does_not_hide_candidate_validation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            routes_path, platform_path = _candidate_fallback_inputs(root)
+            patcher, plan_builder = _candidate_fallback_patches(
+                ValidationError("candidate certificate is invalid")
+            )
+            with patcher:
+                with self.assertRaisesRegex(
+                    ValidationError,
+                    "candidate certificate is invalid",
+                ) as raised:
+                    run_phase5(
+                        routes_path=routes_path,
+                        platform_path=platform_path,
+                        output_dir=root / "phase5",
+                    )
+
+        self.assertNotIsInstance(
+            raised.exception, TDMScheduleInfeasibleError
+        )
+        self.assertEqual(plan_builder.call_count, 1)
+
+    def test_phase5_reports_all_infeasible_candidate_reasons(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            routes_path, platform_path = _candidate_fallback_inputs(root)
+            patcher, plan_builder = _candidate_fallback_patches(
+                [
+                    TDMScheduleInfeasibleError("exact schedule failed"),
+                    TDMScheduleInfeasibleError("scalable schedule failed"),
+                ]
+            )
+            with patcher:
+                with self.assertRaisesRegex(
+                    TDMScheduleInfeasibleError,
+                    "all academic Phase 5 candidates are infeasible",
+                ) as raised:
+                    run_phase5(
+                        routes_path=routes_path,
+                        platform_path=platform_path,
+                        output_dir=root / "phase5",
+                    )
+
+        self.assertEqual(plan_builder.call_count, 2)
+        self.assertIn(
+            "exact-displacement-dp: exact schedule failed",
+            str(raised.exception),
+        )
+        self.assertIn(
+            "scalable-minimum-wire: scalable schedule failed",
+            str(raised.exception),
+        )
 
     def test_native_slot_optimizer_compacts_sparse_lane_ids(self) -> None:
         source = (
@@ -1931,7 +2089,9 @@ class Phase5Test(unittest.TestCase):
             [("n0", "a", ["b"]), ("n1", "a", ["b"])],
             frame_slots=2,
         )
-        with self.assertRaisesRegex(ValidationError, "infeasible"):
+        with self.assertRaisesRegex(
+            TDMScheduleInfeasibleError, "infeasible"
+        ):
             build_tdm_schedule(routes, platform)
 
     def test_scheduler_reserves_final_slot_for_runtime_barrier(self) -> None:
@@ -1947,7 +2107,9 @@ class Phase5Test(unittest.TestCase):
             [("n0", "a", ["b"])],
             frame_slots=2,
         )
-        with self.assertRaisesRegex(ValidationError, "infeasible"):
+        with self.assertRaisesRegex(
+            TDMScheduleInfeasibleError, "infeasible"
+        ):
             build_tdm_schedule(routes, platform)
 
     def test_half_duplex_opposing_directions_do_not_collide(self) -> None:

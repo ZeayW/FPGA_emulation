@@ -17,6 +17,7 @@ from .experiment_dag import (
     EXPERIMENT_PLAN_V2_SCHEMA,
     _artifact_digest,
     _cached_checkpoint,
+    _canonical_sha256,
     _load_plan,
     _portable_argv,
     _safe_artifact,
@@ -182,6 +183,62 @@ def _release_legacy_farm_launch_locks(
     for _, stream in reversed(list(streams)):
         fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
         stream.close()
+
+
+def _retirement_artifact_digest(path: Path) -> tuple[str, str, int]:
+    """Seal a legacy tree without following generated internal symlinks."""
+
+    if path.is_symlink():
+        raise ValidationError("legacy retirement candidate is a symlink")
+    if path.is_file():
+        return "file", _sha256(path), path.stat().st_size
+    records: list[dict[str, Any]] = []
+    total = 0
+    for current, directory_names, file_names in os.walk(path, followlinks=False):
+        current_path = Path(current)
+        for name in sorted(directory_names):
+            child = current_path / name
+            relative = child.relative_to(path).as_posix()
+            if child.is_symlink():
+                records.append(
+                    {
+                        "path": relative,
+                        "kind": "symlink",
+                        "target": os.readlink(child),
+                    }
+                )
+            else:
+                records.append({"path": relative, "kind": "directory"})
+        directory_names[:] = [
+            name for name in directory_names if not (current_path / name).is_symlink()
+        ]
+        for name in sorted(file_names):
+            child = current_path / name
+            relative = child.relative_to(path).as_posix()
+            if child.is_symlink():
+                records.append(
+                    {
+                        "path": relative,
+                        "kind": "symlink",
+                        "target": os.readlink(child),
+                    }
+                )
+            elif child.is_file():
+                size = child.stat().st_size
+                total += size
+                records.append(
+                    {
+                        "path": relative,
+                        "kind": "file",
+                        "bytes": size,
+                        "sha256": _sha256(child),
+                    }
+                )
+            else:
+                raise ValidationError(
+                    f"legacy retirement candidate contains special file: {relative}"
+                )
+    return "directory", _canonical_sha256(sorted(records, key=lambda item: item["path"])), total
 
 
 def _mark_legacy_farms_retiring(
@@ -948,7 +1005,7 @@ def plan_legacy_run_retirement(
                 raise ValidationError(
                     f"legacy retirement refuses active or unreconciled farm: {name}"
                 )
-            kind, digest, size = _artifact_digest(path)
+            kind, digest, size = _retirement_artifact_digest(path)
         finally:
             _release_legacy_farm_launch_locks(locks)
         if kind != "directory":
@@ -1041,7 +1098,7 @@ def apply_legacy_run_retirement(
                 raise ValidationError(
                     f"legacy retirement refuses active or unreconciled farm: {name}"
                 )
-            kind, digest, size = _artifact_digest(path)
+            kind, digest, size = _retirement_artifact_digest(path)
             if (kind, digest, size) != (
                 candidate.get("kind"),
                 candidate.get("sha256"),

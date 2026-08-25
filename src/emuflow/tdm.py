@@ -5,7 +5,7 @@ import math
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-from .errors import ValidationError
+from .errors import TDMScheduleInfeasibleError, ValidationError
 from .platform import Platform
 from .routing import (
     SYSTEM_ROUTES_SCHEMA,
@@ -815,14 +815,14 @@ def build_tdm_schedule(
                 ):
                     slot += 1
             if slot >= latest_exclusive:
-                raise ValidationError(
+                raise TDMScheduleInfeasibleError(
                     f"TDM scheduling is infeasible for demand {route['id']!r} "
                     f"edge {arc_key}: ready={ready_slot}, "
                     f"frame_slots={frame_slots}, "
                     f"latency={link.latency_cycles}"
                 )
             if plan_hop is not None and slot >= ready_slot + ratio:
-                raise ValidationError(
+                raise TDMScheduleInfeasibleError(
                     f"TDM ratio schedule is infeasible for demand "
                     f"{route['id']!r} edge {arc_key}: ready={ready_slot}, "
                     f"ratio={ratio}, lane={lane}"

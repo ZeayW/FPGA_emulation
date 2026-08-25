@@ -232,7 +232,8 @@ STA database by content hash rather than a producer-local path, so a validated
 checkpoint remains usable after content-addressed import or relocation.
 Directed extraction records a sealed
 per-cut-net query certificate (driver count and queried/emitted path counts).
-The validator independently reconstructs timed-endpoint reachability from
+The validator independently reconstructs both reachability from sequential
+timing startpoints and reachability to sequential data/setup endpoints from
 EmuIR connectivity plus the selected timing-cell model. A net may be absent
 only when OpenSTA reports zero paths and that independent graph proves there
 is no reachable sequential data/setup endpoint. For reconvergent logic,
@@ -243,8 +244,12 @@ requested mapped EmuIR net; the exporter never inserts that net synthetically.
 If OpenSTA declines to treat an internal cut-net driver as a timing startpoint
 but the independent model proves that the net directly feeds a sequential
 data/setup pin, directed extraction additionally queries that exact endpoint
-and applies the same returned-point membership check. This fallback is
-restricted to structurally identified direct timing endpoints; it does not
+and applies the same returned-point membership check. A queried path whose
+launch net was omitted from OpenSTA's point list retains the uniquely bound
+launch-net identity explicitly. A zero direct-endpoint result remains valid
+only when the same graph proves there is no sequential startpoint for that
+endpoint path. This fallback is restricted to structurally identified direct
+timing endpoints; it does not
 guess endpoint reachability, weaken the final per-net coverage check, or treat
 arbitrary internal pins as timing starts. The physical
 stage likewise keeps the complete database for same-FPGA and final set-hash
@@ -896,7 +901,13 @@ cannot race or contaminate a clean checkout. OpenROAD likewise promotes the
 headers belonging to the exact `spdlog` package selected by CMake ahead of
 broad dependency include roots and keeps imported includes in their declared
 order; a distro copy of `spdlog` can therefore not be compiled against a
-different selected `spdlog`/`fmt` library ABI.
+different selected `spdlog`/`fmt` library ABI. Its utility timer also uses the
+selected external `fmt` package's explicit streamed view, so recent `fmt`
+releases can format the timer through the existing `operator<<` contract
+without depending on an implicit fallback from `fmt/core.h`.
+The Yosys external build likewise binds its parser regeneration to the
+configured versioned Bison and Flex executables (including Flex's runtime
+header) instead of assuming those tools are installed in the host `PATH`.
 The CUDD external build consumes the checked-in Autotools outputs directly and
 disables timestamp-triggered regeneration. A clean clone therefore does not
 silently depend on the historical `aclocal-1.14` executable or modify imported
@@ -1136,6 +1147,10 @@ the launcher must preflight the user quota and leave a frontier blocked until
 enough space has been reclaimed through evidence-aware retention or archive
 cleanup.  Tool scratch such as `TMPDIR` must likewise point to an isolated
 directory under the required `/research` root.
+The boundary is enforced by the direct `experiment-stage`, canonical
+experiment compiler/QoR aggregator, DAG planner, farm-spec builder, checkpoint,
+evidence, GC, migration, and farm entry points; it is not merely a launcher
+convention.
 
 A full-flow Phase 6 provider comparison is one concrete example.  The reusable
 ancestor is a chain, not a monolithic `shared Phase 1--5` directory:
@@ -1185,6 +1200,13 @@ every declared artifact. Repeating a planner invocation fully rehashes mutable
 external references; for a managed checkpoint it instead validates the sealed
 digest table, non-writable manifest, and immutable output tree without rereading
 multi-gigabyte payloads. The planner reports each node as:
+
+Within one stage process, nested validators share a validation session. A
+dependency already checked by that process is not reparsed when the producer
+self-validates its output or when a child validator reaches the same ancestor.
+The cache exists only for that process: every later standalone validator starts
+a fresh session and therefore still detects filesystem changes. This avoids
+quadratic NFS reads without converting a previous run's `pass` label into trust.
 
 - `reuse`: a byte-valid content-addressed checkpoint already exists;
 - `revalidate`: execution output is reusable but the independent validator
@@ -1328,6 +1350,13 @@ physical summary and full multi-FPGA physical-flow report. The much larger
 per-FPGA placement/routing work directory is a diagnostic artifact: it remains
 available in the checkpoint until retention/GC policy collects it, but it is
 not multiplied into every permanent evidence bundle.
+Phase 7 checkpoint reports use a compact v2 QoR projection for design/platform,
+whole-design target/runtime WNS/TNS, and physical closure counters.  The full
+QoR and physical-flow reports remain immutable artifacts covered by SHA-256,
+and the standalone validator still reconstructs the projection from the full
+QoR and replays Phase 7C.  Legacy v1 reports embedding the full QoR remain
+readable.  Canonical nine-arm aggregation parses each full artifact once rather
+than repeatedly embedding or rereading hundreds of megabytes of timing paths.
 
 New experiment specs use `emuflow.experiment-dag-spec/v2`; v1 remains readable
 only for migration compatibility. A deliberately
@@ -1517,6 +1546,9 @@ The migration plan reports logical and allocated size separately, plus
 `exclusive_reclaimable_bytes` after accounting for hard links outside each
 tree; deleting a second pathname to shared blocks must not be advertised as
 newly freed capacity.  Its totals also distinguish bytes reclaimable by
+retirement. Generated symlinks inside an explicitly selected legacy tree are
+sealed by their link text and are never followed; top-level symlink candidates
+remain refused, and changing an internal link target invalidates the plan.
 retiring one entry from bytes freed only when the complete inventoried root is
 retired.
 
@@ -2846,6 +2878,15 @@ against the dense reconstruction, including its negative validation cases;
 this keeps public contest scale runs near-linear without weakening the
 certificate.  Academic ratio and timing-DAG providers still build their dense
 model once and share it across optimization, scheduling, timing, and feedback.
+They evaluate both the exact-displacement and scalable minimum-wire ratio
+legalizers. If one valid ratio candidate cannot be realized as a concrete
+slot schedule, Phase 5 records that candidate as `infeasible` and evaluates
+the remaining strategy instead of aborting the comparison. Passing strategies
+remain in `candidate_selection.candidates`, while rejected strategies and
+their reasons are preserved in `candidate_selection.rejected_candidates`. If
+no strategy is schedulable, the command reports all candidate-specific reasons
+together. This fallback never enlarges the frame or relaxes the configured
+ratio domain.
 Their two-round discrete legalizer jointly optimizes the round boundary and
 ratio buckets. A promotion that does not save a lane at the current boundary
 is not rejected prematurely: the checker recomputes the complete boundary

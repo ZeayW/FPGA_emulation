@@ -238,7 +238,14 @@ class VtrNetlistTest(unittest.TestCase):
             constraints = root / "partition-constraints.json"
             architecture_db = root / "architecture.json"
             timing_db = root / "architecture-timing.json"
-            write_json(source, _raw_vtr_json())
+            raw = _raw_vtr_json()
+            # Launch the cut path from the synchronous RAM output. The shared
+            # fake OpenSTA fixture emits every queried net, so this integration
+            # case must contain a structurally complete timed path as well.
+            raw["modules"]["top"]["cells"]["feed_data"]["connections"][
+                "A"
+            ] = [12, 7]
+            write_json(source, raw)
             normalize_vtr_hard_block_json(source, normalized, top="top")
             run_vtr_architecture_import(
                 input_path=VTR_ARCHITECTURE,

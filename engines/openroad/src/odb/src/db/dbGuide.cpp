@@ -41,6 +41,8 @@
 #include "dbTechLayer.h"
 #include "odb/db.h"
 // User Code Begin Includes
+#include <fmt/ostream.h>
+
 #include "dbBlock.h"
 #include "dbJournal.h"
 // User Code End Includes
@@ -219,7 +221,7 @@ dbGuide* dbGuide::create(dbNet* net,
                1,
                "ECO: create guide, layer {} box {}",
                layer->getName(),
-               box);
+               fmt::streamed(box));
     block->_journal->beginAction(dbJournal::CREATE_OBJECT);
     block->_journal->pushParam(dbGuideObj);
     block->_journal->pushParam(guide->getOID());

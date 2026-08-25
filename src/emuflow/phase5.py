@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .errors import TDMScheduleInfeasibleError
 from .io import read_json, write_json
 from .platform import Platform
 from .tdm import (
@@ -124,6 +125,7 @@ def run_phase5(
                 "provider"
             )
         candidates = []
+        rejected_candidates = []
         for strategy, exact_domain_limit in (
             ("exact-displacement-dp", DEFAULT_EXACT_DOMAIN_LIMIT),
             ("scalable-minimum-wire", 0),
@@ -163,12 +165,22 @@ def run_phase5(
                 candidate_plan,
                 prepared_model=prepared_ratio_model,
             )
-            candidate_schedule = build_tdm_schedule(
-                routes,
-                platform,
-                candidate_plan,
-                prepared_ratio_model=prepared_ratio_model,
-            )
+            try:
+                candidate_schedule = build_tdm_schedule(
+                    routes,
+                    platform,
+                    candidate_plan,
+                    prepared_ratio_model=prepared_ratio_model,
+                )
+            except TDMScheduleInfeasibleError as error:
+                rejected_candidates.append(
+                    {
+                        "strategy": strategy,
+                        "status": "infeasible",
+                        "reason": str(error),
+                    }
+                )
+                continue
             if slot_refinement_iterations > 0:
                 candidate_schedule = refine_tdm_schedule_native(
                     routes,
@@ -213,6 +225,15 @@ def run_phase5(
                     "timing_validation": candidate_timing,
                 }
             )
+        if not candidates:
+            reasons = "; ".join(
+                f"{candidate['strategy']}: {candidate['reason']}"
+                for candidate in rejected_candidates
+            )
+            raise TDMScheduleInfeasibleError(
+                "all academic Phase 5 candidates are infeasible: "
+                f"{reasons}"
+            )
         selected = max(candidates, key=lambda candidate: candidate["score"])
         ratio_plan = selected["ratio_plan"]
         ratio_validation = selected["ratio_validation"]
@@ -225,6 +246,11 @@ def run_phase5(
                 "slack; completion slot; analytical discrete slack"
             ),
             "selected": selected["strategy"],
+            **(
+                {"rejected_candidates": rejected_candidates}
+                if rejected_candidates
+                else {}
+            ),
             "candidates": [
                 {
                     "strategy": candidate["strategy"],

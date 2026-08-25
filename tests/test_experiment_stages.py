@@ -10,6 +10,8 @@ from emuflow import experiment_dag
 from emuflow.cli import _Python38BooleanOptionalAction, _build_parser
 from emuflow.errors import EmuFlowError
 from emuflow.experiment_stages import (
+    _ValidationSession,
+    _phase7_qor_projection,
     _physical_timing_databases,
     _placement_aware_positions,
     _prepare_empty_output,
@@ -26,6 +28,7 @@ from emuflow.experiment_upstream import (
 )
 from emuflow.io import read_json, write_json
 from emuflow.pin_planning import SIGNAL_POSITION_HINTS_SCHEMA
+from emuflow.runtime import QOR_REPORT_SCHEMA
 
 
 class ExperimentStagesTest(unittest.TestCase):
@@ -41,6 +44,59 @@ class ExperimentStagesTest(unittest.TestCase):
             parser.parse_args(["--no-repair-balance"]).repair_balance
         )
         self.assertIsNone(parser.parse_args([]).repair_balance)
+
+    def test_phase7_qor_projection_is_compact_and_rejects_nonfinite(self) -> None:
+        qor = {
+            "schema": QOR_REPORT_SCHEMA,
+            "status": "pass",
+            "design": "design",
+            "platform": "platform",
+            "timing": {
+                "status": "pass",
+                "qualification": "whole-design",
+                "path_exactness": {"scheduled_link_tdm": True},
+                "target_clock": {
+                    "worst_slack_bound_ns": -2.0,
+                    "total_negative_slack_bound_ns": -4.0,
+                    "negative_slack_paths": 2,
+                    "large_path_payload": [0] * 100,
+                },
+                "runtime_clock": {
+                    "worst_slack_bound_ns": 1.0,
+                    "total_negative_slack_bound_ns": 0.0,
+                    "negative_slack_paths": 0,
+                },
+            },
+            "physical": {
+                "status": "pass",
+                "worst_wns_ns": -0.5,
+                "total_tns_ns": -1.5,
+                "unrouted_nets": 0,
+                "drc_violations": 0,
+                "large_route_payload": [0] * 100,
+            },
+        }
+        projection = _phase7_qor_projection(qor)
+        self.assertNotIn(
+            "large_path_payload", projection["timing"]["target_clock"]
+        )
+        self.assertNotIn("large_route_payload", projection["physical"])
+        qor["timing"]["target_clock"]["worst_slack_bound_ns"] = float("nan")
+        with self.assertRaisesRegex(Exception, "must be finite"):
+            _phase7_qor_projection(qor)
+
+    def test_validation_session_deduplicates_one_physical_report(self) -> None:
+        report = {"schema": "fixture"}
+        session = _ValidationSession()
+        with mock.patch(
+            "emuflow.experiment_stages.validate_multi_fpga_physical_report",
+            return_value={"status": "pass"},
+        ) as validate:
+            first = session.validate_physical(report)
+            first["status"] = "mutated-by-caller"
+            second = session.validate_physical(report)
+        validate.assert_called_once_with(report)
+        self.assertEqual(second, {"status": "pass"})
 
     def test_shared_timing_uses_partition_projected_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -238,6 +294,14 @@ class ExperimentStagesTest(unittest.TestCase):
             (output / "artifact").write_text("present", encoding="utf-8")
             with self.assertRaisesRegex(EmuFlowError, "must be an empty"):
                 _prepare_empty_output(output, "checkpoint")
+
+    def test_direct_stage_output_obeys_validation_server_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+            os.environ,
+            {"EMUFLOW_REQUIRE_RESEARCH_STORAGE": "1"},
+        ):
+            with self.assertRaisesRegex(Exception, "restricted"):
+                _prepare_empty_output(Path(temporary) / "outside", "checkpoint")
 
     def test_frontend_source_artifact_cannot_escape_checkpoint(self) -> None:
         repository = Path(__file__).resolve().parents[1]

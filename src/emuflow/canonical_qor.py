@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import statistics
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
 from .errors import EmuFlowError, ValidationError
+from .experiment_storage import validate_experiment_write_path
 from .io import read_json, write_json
 from .multi_fpga_physical_flow import validate_multi_fpga_physical_report
 from .runtime import QOR_REPORT_SCHEMA
 
 
 CANONICAL_QOR_COMPARISON_SCHEMA = "emuflow.canonical-qor-comparison/v2"
+LEGACY_EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v1"
+EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v2"
+PHASE7_QOR_PROJECTION_SCHEMA = "emuflow.phase7-qor-projection/v1"
 _PROVIDERS = ("baseline", "placement-aware", "chimew")
 _METRICS = (
     "global_target_clock_wns_ns",
@@ -31,6 +36,17 @@ def _sha256(path: Path) -> str:
     with path.open("rb") as stream:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_json_sha256(value: Mapping[str, Any]) -> str:
+    """Hash the exact non-compact serialization produced by ``write_json``."""
+
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(indent=2, sort_keys=True)
+    for chunk in encoder.iterencode(value):
+        digest.update(chunk.encode("utf-8"))
+    digest.update(b"\n")
     return digest.hexdigest()
 
 
@@ -196,24 +212,45 @@ def _arm_record(
     )
     qor_path = _require(root, "runtime/qor_report.json")
     report = read_json(report_path)
-    qor = read_json(qor_path)
+    schema = report.get("schema")
     effective_schedule_sha256 = _effective_schedule_digest(
         report, common_upstream
     )
     phase6_manifest_sha256 = _digest(
         report.get("phase6_manifest_sha256"), "effective Phase 6 manifest"
     )
+    summary_sha256 = _sha256(summary_path)
+    physical_report_sha256 = _sha256(physical_report_path)
+    qor_sha256 = _sha256(qor_path)
     if (
-        report.get("schema") != "emuflow.experiment-phase7-checkpoint/v1"
+        schema not in {LEGACY_EXPERIMENT_PHASE7_SCHEMA, EXPERIMENT_PHASE7_SCHEMA}
         or report.get("status") != "pass"
         or report.get("provider") != provider
         or report.get("physical_seed") != seed
-        or report.get("physical_summary_sha256") != _sha256(summary_path)
-        or report.get("qor_sha256") != _sha256(qor_path)
-        or report.get("qor") != qor
+        or report.get("physical_summary_sha256") != summary_sha256
+        or report.get("qor_sha256") != qor_sha256
     ):
         raise ValidationError("canonical QoR Phase 7 arm seal is broken")
-    validate_multi_fpga_physical_report(read_json(physical_report_path))
+    if schema == LEGACY_EXPERIMENT_PHASE7_SCHEMA:
+        embedded_qor = report.get("qor")
+        if (
+            not isinstance(embedded_qor, dict)
+            or _write_json_sha256(embedded_qor) != qor_sha256
+        ):
+            raise ValidationError("canonical QoR legacy Phase 7 seal is broken")
+    elif (
+        report.get("physical_flow_report_sha256") != physical_report_sha256
+        or "qor" in report
+    ):
+        raise ValidationError("canonical QoR compact Phase 7 seal is broken")
+    physical_report = read_json(physical_report_path)
+    validate_multi_fpga_physical_report(physical_report)
+    del physical_report
+    qor = (
+        embedded_qor
+        if schema == LEGACY_EXPERIMENT_PHASE7_SCHEMA
+        else read_json(qor_path)
+    )
     if qor.get("schema") != QOR_REPORT_SCHEMA or qor.get("status") != "pass":
         raise ValidationError("canonical QoR arm did not reach Phase 7C closure")
     timing = qor.get("timing")
@@ -249,16 +286,51 @@ def _arm_record(
         "unrouted_nets": 0,
         "drc_violations": 0,
     }
+    projection = {
+        "schema": PHASE7_QOR_PROJECTION_SCHEMA,
+        "status": "pass",
+        "design": qor.get("design"),
+        "platform": qor.get("platform"),
+        "timing": {
+            "status": "pass",
+            "qualification": timing.get("qualification"),
+            "path_exactness": timing.get("path_exactness"),
+            "target_clock": {
+                "worst_slack_bound_ns": target_wns,
+                "total_negative_slack_bound_ns": target_tns,
+                "negative_slack_paths": target_failing,
+            },
+            "runtime_clock": {
+                "worst_slack_bound_ns": runtime_wns,
+                "total_negative_slack_bound_ns": runtime_tns,
+                "negative_slack_paths": runtime_failing,
+            },
+        },
+        "physical": {
+            "status": "pass",
+            "worst_wns_ns": metrics["per_fpga_wns_ns"],
+            "total_tns_ns": metrics["per_fpga_tns_ns"],
+            "unrouted_nets": 0,
+            "drc_violations": 0,
+        },
+    }
+    if (
+        schema == EXPERIMENT_PHASE7_SCHEMA
+        and report.get("qor_projection") != projection
+    ):
+        raise ValidationError("canonical QoR Phase 7 projection disagrees")
     return {
         "provider": provider,
         "physical_seed": seed,
+        "design": qor.get("design"),
+        "platform": qor.get("platform"),
         "effective_phase6_schedule_sha256": effective_schedule_sha256,
         "effective_phase6_manifest_sha256": phase6_manifest_sha256,
         "artifacts": {
             "phase7_report_sha256": _sha256(report_path),
-            "physical_summary_sha256": _sha256(summary_path),
-            "physical_flow_report_sha256": _sha256(physical_report_path),
-            "qor_sha256": _sha256(qor_path),
+            "physical_summary_sha256": summary_sha256,
+            "physical_flow_report_sha256": physical_report_sha256,
+            "qor_sha256": qor_sha256,
         },
         "system_timing_qualification": timing.get("qualification"),
         "path_exactness": timing.get("path_exactness"),
@@ -369,15 +441,19 @@ def build_canonical_qor_comparison(
         for record in records
     }
     design_platform = {
-        (
-            read_json(_require(arm_roots[key], "runtime/qor_report.json"))["design"],
-            read_json(_require(arm_roots[key], "runtime/qor_report.json"))["platform"],
-        )
-        for key in sorted(arm_roots)
+        (record["design"], record["platform"]) for record in records
     }
     if len(design_platform) != 1:
         raise ValidationError("canonical QoR arms do not share design/platform")
     design, platform = next(iter(design_platform))
+    public_records = [
+        {
+            key: value
+            for key, value in record.items()
+            if key not in {"design", "platform"}
+        }
+        for record in records
+    ]
     provider_schedules = {}
     provider_manifests = {}
     for provider in _PROVIDERS:
@@ -418,7 +494,7 @@ def build_canonical_qor_comparison(
         "shared_phase5_schedule_sha256": shared["schedule_sha256"],
         "provider_effective_phase6_schedule_sha256": provider_schedules,
         "provider_effective_phase6_manifest_sha256": provider_manifests,
-        "arms": records,
+        "arms": public_records,
         "provider_summary": {
             provider: _summary(
                 [by_key[(provider, seed)] for seed in seeds]
@@ -437,7 +513,7 @@ def run_canonical_qor_comparison(
     arm_roots: Mapping[Tuple[str, int], Path],
     output_dir: Path,
 ) -> Dict[str, Any]:
-    output_dir = output_dir.resolve()
+    output_dir = validate_experiment_write_path(output_dir)
     if output_dir.exists() and (
         not output_dir.is_dir() or any(output_dir.iterdir())
     ):

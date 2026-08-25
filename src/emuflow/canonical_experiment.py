@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from .errors import ValidationError
+from .experiment_storage import validate_experiment_write_path
 from .benchmark import BenchmarkRun
 from .contest_public import PUBLIC_CONTEST_BOARDDB_REPORT_SCHEMA
 from .end_to_end_validation_matrix import load_end_to_end_validation_matrix
@@ -345,6 +346,7 @@ def _artifact(path: str, role: str) -> Dict[str, str]:
 def compile_canonical_experiment_spec(
     config_path: Path, repository_root: Path, output_path: Path
 ) -> Dict[str, Any]:
+    output_path = validate_experiment_write_path(output_path)
     config = read_json(config_path)
     if config.get("schema") != CANONICAL_EXPERIMENT_CONFIG_SCHEMA:
         raise ValidationError("canonical experiment config schema is invalid")

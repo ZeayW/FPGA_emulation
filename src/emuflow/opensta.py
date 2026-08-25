@@ -855,12 +855,12 @@ def classify_through_net_timing_endpoints(
     through_nets: Sequence[str],
     instance_cell_types: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Dict[str, Any]]:
-    """Independently classify whether each net can reach a timed endpoint.
+    """Independently classify whether each net lies on a complete timed path.
 
     This graph walk uses only EmuIR connectivity and the validated timing-cell
     contract.  It intentionally does not consume OpenSTA's query results, so a
     zero-path result is accepted only when a second implementation proves that
-    no sequential data/setup endpoint is reachable through combinational logic.
+    no sequential startpoint-to-data/setup path crosses the requested net.
     """
     net_by_id = {net["id"]: net for net in ir.value["nets"]}
     if len(net_by_id) != len(ir.value["nets"]):
@@ -885,12 +885,37 @@ def classify_through_net_timing_endpoints(
                     )
                 ].append(net["id"])
 
+    forward_edges: DefaultDict[str, set[str]] = defaultdict(set)
     reverse_edges: DefaultDict[str, set[str]] = defaultdict(set)
+    timing_startpoints: set[str] = set()
     direct_timed: set[str] = set()
     direct_timed_counts: DefaultDict[str, int] = defaultdict(int)
     direct_timed_pins: DefaultDict[str, set[str]] = defaultdict(set)
     top_level_sink_counts: DefaultDict[str, int] = defaultdict(int)
     for net_id, net in net_by_id.items():
+        for driver in net["drivers"]:
+            if driver["instance"] is None:
+                continue
+            instance_id = driver["instance"]
+            instance = instance_by_id[instance_id]
+            cell_type = (
+                instance_cell_types.get(instance_id, instance["type"])
+                if instance_cell_types is not None
+                else instance["type"]
+            )
+            cell = model["cells"].get(cell_type)
+            if cell is None:
+                raise ValidationError(
+                    f"OpenSTA structural timing model lacks {cell_type!r}"
+                )
+            pin = _scalar_endpoint_pin(driver, pin_sets)
+            kind = cell["kind"]
+            if (
+                (kind == "rising_edge_ff" and pin == cell["output"])
+                or (kind == "rising_edge_bank" and pin in cell["outputs"])
+            ):
+                timing_startpoints.add(net_id)
+
         for sink in net["sinks"]:
             if sink["instance"] is None:
                 top_level_sink_counts[net_id] += 1
@@ -917,6 +942,7 @@ def classify_through_net_timing_endpoints(
                     )
                 for output in cell.get("outputs", [cell.get("output")]):
                     for successor in output_nets.get((instance_id, output), ()):
+                        forward_edges[net_id].add(successor)
                         reverse_edges[successor].add(net_id)
             elif kind == "rising_edge_ff":
                 if pin == cell["data"]:
@@ -942,6 +968,15 @@ def classify_through_net_timing_endpoints(
                     f"OpenSTA structural timing kind is unsupported: {kind!r}"
                 )
 
+    reachable_from_startpoint = set(timing_startpoints)
+    pending = list(timing_startpoints)
+    while pending:
+        predecessor = pending.pop()
+        for successor in forward_edges.get(predecessor, ()):
+            if successor not in reachable_from_startpoint:
+                reachable_from_startpoint.add(successor)
+                pending.append(successor)
+
     reaches_timed = set(direct_timed)
     pending = list(direct_timed)
     while pending:
@@ -952,7 +987,11 @@ def classify_through_net_timing_endpoints(
                 pending.append(predecessor)
     return {
         net: {
-            "status": "timed" if net in reaches_timed else "no_timed_endpoint",
+            "status": (
+                "timed"
+                if net in reachable_from_startpoint and net in reaches_timed
+                else "no_timed_endpoint"
+            ),
             "direct_timed_endpoints": direct_timed_counts[net],
             "direct_timed_endpoint_pins": sorted(direct_timed_pins[net]),
             "direct_top_level_sinks": top_level_sink_counts[net],
@@ -1248,13 +1287,13 @@ def run_opensta_path_database(
                 )
             if emitted == 0 and structural[net]["status"] != "no_timed_endpoint":
                 raise EmuFlowError(
-                    f"OpenSTA through net {net!r} has a structurally reachable "
-                    "timed endpoint but no exported path"
+                    f"OpenSTA through net {net!r} lies on a structurally "
+                    "complete timed path but has no exported path"
                 )
             if emitted > 0 and structural[net]["status"] != "timed":
                 raise EmuFlowError(
                     f"OpenSTA through net {net!r} exported a path without a "
-                    "structurally reachable timed endpoint"
+                    "structurally complete timed path"
                 )
             coverage_records.append(
                 {

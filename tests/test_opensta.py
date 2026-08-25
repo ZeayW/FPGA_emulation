@@ -389,6 +389,89 @@ print("fake OpenSTA pass")
                     classified[net["id"]]["direct_timed_endpoint_pins"], []
                 )
 
+    def test_structural_classifier_requires_sequential_startpoint(
+        self,
+    ) -> None:
+        source = {
+            "creator": "OpenSTA complete structural path test",
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "clk": {"direction": "input", "bits": [2]},
+                        "a": {"direction": "input", "bits": [3]},
+                        "q": {"direction": "output", "bits": [6]},
+                    },
+                    "cells": {
+                        "ff0": {
+                            "type": "FDRE",
+                            "parameters": {},
+                            "port_directions": {
+                                "C": "input",
+                                "CE": "input",
+                                "D": "input",
+                                "Q": "output",
+                                "R": "input",
+                            },
+                            "connections": {
+                                "C": [2],
+                                "CE": ["1"],
+                                "D": [3],
+                                "Q": [4],
+                                "R": ["0"],
+                            },
+                        },
+                        "lut": {
+                            "type": "LUT1",
+                            "parameters": {},
+                            "port_directions": {"I0": "input", "O": "output"},
+                            "connections": {"I0": [4], "O": [5]},
+                        },
+                        "ff1": {
+                            "type": "FDRE",
+                            "parameters": {},
+                            "port_directions": {
+                                "C": "input",
+                                "CE": "input",
+                                "D": "input",
+                                "Q": "output",
+                                "R": "input",
+                            },
+                            "connections": {
+                                "C": [2],
+                                "CE": ["1"],
+                                "D": [5],
+                                "Q": [6],
+                                "R": ["0"],
+                            },
+                        },
+                    },
+                    "netnames": {
+                        "clk": {"bits": [2]},
+                        "a": {"bits": [3]},
+                        "q0": {"bits": [4]},
+                        "stage": {"bits": [5]},
+                        "q": {"bits": [6]},
+                    },
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            source_path = Path(temporary) / "mapped.json"
+            source_path.write_text(json.dumps(source), encoding="utf-8")
+            ir = import_yosys_json(source_path, top="top", clocks=["clk"])
+        model = load_timing_model(DEFAULT_TIMING_MODEL)
+        classified = classify_through_net_timing_endpoints(
+            ir,
+            model,
+            [net["id"] for net in ir.value["nets"]],
+        )
+        self.assertEqual(classified["a"]["direct_timed_endpoints"], 1)
+        self.assertEqual(classified["a"]["status"], "no_timed_endpoint")
+        self.assertEqual(classified["q0"]["status"], "timed")
+        self.assertEqual(classified["stage"]["status"], "timed")
+        self.assertEqual(classified["q"]["status"], "no_timed_endpoint")
+
     def test_runner_certifies_explicit_zero_path_control_net(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -490,7 +573,7 @@ Path(os.environ["EMUFLOW_STA_THROUGH_COVERAGE"]).write_text(
                 for net in self.ir.value["nets"]
                 if net["cut_class"] == "register_input"
             )
-            with self.assertRaisesRegex(Exception, "structurally reachable"):
+            with self.assertRaisesRegex(Exception, "complete timed path"):
                 run_opensta_path_database(
                     ir_path,
                     output_path,
