@@ -1436,5 +1436,16 @@ if(BUILD_TESTING)
         "${EMUFLOW_OPENPARF_PYTHON}" -c
         "import openparf; import openparf.openparf"
     )
+
+    add_test(
+      NAME openparf_singleton_spectral
+      COMMAND
+        "${CMAKE_COMMAND}" -E env
+        "PYTHONPATH=${EMUFLOW_INSTALL_ROOT}/openparf"
+        "EMUFLOW_REQUIRE_OPENPARF_TEST=1"
+        "${EMUFLOW_OPENPARF_PYTHON}"
+        "${CMAKE_SOURCE_DIR}/tests/test_openparf_singleton_spectral.py"
+    )
+
   endif()
 endif()

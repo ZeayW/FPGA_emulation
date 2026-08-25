@@ -31,6 +31,74 @@ import pdb
 logger = logging.getLogger(__name__)
 
 
+class _DirectSpectralTransform2D(object):
+    """Exact fallback for a DCT grid with a singleton dimension.
+
+    OpenPARF's FFT-based kernels assume both dimensions are at least two. A
+    one-bin dimension makes their half-size loops empty and leaves output
+    storage uninitialized. The placement equations remain well-defined, so
+    evaluate the same cosine/sine transforms directly for this rare boundary
+    case. Production grids continue to use the FFT kernels.
+    """
+
+    def __init__(self, rows, columns, dtype, device):
+        row_bins = torch.arange(rows, dtype=dtype, device=device)
+        column_bins = torch.arange(columns, dtype=dtype, device=device)
+        row_modes = torch.arange(rows, dtype=dtype, device=device)
+        column_modes = torch.arange(columns, dtype=dtype, device=device)
+        self.rows = rows
+        self.columns = columns
+        self.row_cos = torch.cos(
+            math.pi / rows * (row_bins[:, None] + 0.5) * row_modes[None, :]
+        )
+        self.column_cos = torch.cos(
+            math.pi
+            / columns
+            * (column_bins[:, None] + 0.5)
+            * column_modes[None, :]
+        )
+        self.row_sin = torch.sin(
+            math.pi / rows * (row_bins[:, None] + 0.5) * row_modes[None, :]
+        )
+        self.column_sin = torch.sin(
+            math.pi
+            / columns
+            * (column_bins[:, None] + 0.5)
+            * column_modes[None, :]
+        )
+        self.row_inverse_weights = torch.ones(
+            rows, dtype=dtype, device=device
+        )
+        self.column_inverse_weights = torch.ones(
+            columns, dtype=dtype, device=device
+        )
+        self.row_inverse_weights[0] = 0.5
+        self.column_inverse_weights[0] = 0.5
+
+    def dct2(self, value):
+        return (
+            4.0
+            / (self.rows * self.columns)
+            * self.row_cos.t().matmul(value).matmul(self.column_cos)
+        )
+
+    def idct2(self, value):
+        weighted = (
+            self.row_inverse_weights[:, None]
+            * value
+            * self.column_inverse_weights[None, :]
+        )
+        return 4.0 * self.row_cos.matmul(weighted).matmul(self.column_cos.t())
+
+    def idxst_idct(self, value):
+        weighted = value * self.column_inverse_weights[None, :]
+        return 4.0 * self.row_sin.matmul(weighted).matmul(self.column_cos.t())
+
+    def idct_idxst(self, value):
+        weighted = self.row_inverse_weights[:, None] * value
+        return 4.0 * self.row_cos.matmul(weighted).matmul(self.column_sin.t())
+
+
 class ElectricOverflow(DensityOverflow):
     def __init__(self,
                  inst_sizes,
@@ -104,6 +172,7 @@ class ElectrostaticSystem(object):
         self.idct2 = [None] * num_area_types
         self.idct_idxst = [None] * num_area_types
         self.idxst_idct = [None] * num_area_types
+        self.direct_spectral_transform = [None] * num_area_types
 
         for area_type in range(num_area_types):
             # expk
@@ -119,6 +188,10 @@ class ElectrostaticSystem(object):
                                                        exact_expkN)
             self.idxst_idct[area_type] = dct.IdxstIdct(exact_expkM,
                                                        exact_expkN)
+            if M == 1 or N == 1:
+                self.direct_spectral_transform[
+                    area_type
+                ] = _DirectSpectralTransform2D(M, N, dtype, device)
 
             # wu and wv
             wu = torch.arange(M, dtype=dtype,
@@ -166,8 +239,11 @@ class ElectrostaticSystem(object):
                         density_maps[area_type]
                     )
                 continue
-            # compute auv
-            auv = self.dct2[area_type].forward(density_maps[area_type])
+            transform = self.direct_spectral_transform[area_type]
+            if transform is None:
+                auv = self.dct2[area_type].forward(density_maps[area_type])
+            else:
+                auv = transform.dct2(density_maps[area_type])
 
             # compute field xi
             auv_by_wu2_plus_wv2_wu = auv.mul(
@@ -175,10 +251,18 @@ class ElectrostaticSystem(object):
             auv_by_wu2_plus_wv2_wv = auv.mul(
                 self.wv_by_wu2_plus_wv2_half[area_type])
 
-            field_map_xs[area_type] = self.idxst_idct[area_type].forward(
-                auv_by_wu2_plus_wv2_wu)
-            field_map_ys[area_type] = self.idct_idxst[area_type].forward(
-                auv_by_wu2_plus_wv2_wv)
+            if transform is None:
+                field_map_xs[area_type] = self.idxst_idct[area_type].forward(
+                    auv_by_wu2_plus_wv2_wu)
+                field_map_ys[area_type] = self.idct_idxst[area_type].forward(
+                    auv_by_wu2_plus_wv2_wv)
+            else:
+                field_map_xs[area_type] = transform.idxst_idct(
+                    auv_by_wu2_plus_wv2_wu
+                )
+                field_map_ys[area_type] = transform.idct_idxst(
+                    auv_by_wu2_plus_wv2_wv
+                )
 
             # energy = \sum q*phi
             # it takes around 80% of the computation time
@@ -191,8 +275,14 @@ class ElectrostaticSystem(object):
                 # I changed auv to save memory
                 auv_by_wu2_plus_wv2 = auv.mul_(
                     self.inv_wu2_plus_wv2[area_type])
-                potential_maps[area_type] = self.idct2[area_type].forward(
-                    auv_by_wu2_plus_wv2)
+                if transform is None:
+                    potential_maps[area_type] = self.idct2[
+                        area_type
+                    ].forward(auv_by_wu2_plus_wv2)
+                else:
+                    potential_maps[area_type] = transform.idct2(
+                        auv_by_wu2_plus_wv2
+                    )
                 # compute energy
                 energy[area_type] = density_maps[area_type].mul(
                     potential_maps[area_type]).sum()
