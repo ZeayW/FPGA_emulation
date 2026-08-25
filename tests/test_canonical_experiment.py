@@ -8,6 +8,7 @@ from pathlib import Path
 from emuflow.canonical_experiment import (
     CANONICAL_EXPERIMENT_CONFIG_SCHEMA,
     compile_canonical_experiment_spec,
+    compile_static_exact_ab_experiment_spec,
 )
 from emuflow.experiment_dag import validate_experiment_spec
 from emuflow.errors import ValidationError
@@ -754,6 +755,66 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             self.assertNotIn("--repair-balance", partition["command"])
             self.assertIn("--no-repair-balance", partition["validator"])
+
+    def test_static_exact_ab_compiler_shares_only_frontend_and_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "static-exact-ab.json"
+            report = compile_static_exact_ab_experiment_spec(
+                self._config(root), REPOSITORY, output
+            )
+            self.assertEqual(report["nodes"], 27)
+            self.assertEqual(report["physical_terminal_nodes"], 3)
+            self.assertEqual(report["physical_seeds"], [1])
+            spec = validate_experiment_spec(json.loads(output.read_text()))
+            nodes = {item["id"]: item for item in spec["nodes"]}
+            self.assertEqual(
+                sum(item["stage"] == "frontend" for item in spec["nodes"]), 1
+            )
+            self.assertEqual(
+                sum(item["stage"] == "timing" for item in spec["nodes"]), 1
+            )
+            self.assertNotIn("seq-phase6-placement-aware", nodes)
+            self.assertNotIn("seq-phase6-chimew", nodes)
+            self.assertEqual(
+                nodes["seq-partition"]["configuration"]["cut_mode"],
+                "sequential-only",
+            )
+            self.assertEqual(
+                nodes["v1-partition"]["configuration"][
+                    "static_exact_candidate_policy"
+                ],
+                "potential-frontier-depth-v1",
+            )
+            self.assertEqual(
+                nodes["v2-partition"]["configuration"][
+                    "static_exact_candidate_policy"
+                ],
+                "assignment-derived-acyclic-v2",
+            )
+            comparison = nodes["static-exact-qor-comparison"]
+            self.assertEqual(
+                comparison["stage"], "static-exact-qor-compare"
+            )
+            self.assertIn(
+                "src/emuflow/static_exact_qor.py",
+                comparison["implementation"]["components"],
+            )
+            self.assertEqual(comparison["command"].count("--arm"), 3)
+            self.assertIn(
+                "{dependency:v2-phase7-baseline-seed1}",
+                comparison["command"],
+            )
+            self.assertEqual(
+                comparison["artifacts"],
+                [
+                    {
+                        "path": "static-exact-qor-comparison.json",
+                        "role": "evidence-critical",
+                        "retention": "required",
+                    }
+                ],
+            )
 
     def test_matrix_and_boarddb_materialization_contract_is_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

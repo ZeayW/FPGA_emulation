@@ -102,11 +102,19 @@ from .contest_public import (
 )
 from .contest_validation_matrix import load_contest_validation_matrix
 from .end_to_end_validation_matrix import load_end_to_end_validation_matrix
-from .canonical_experiment import compile_canonical_experiment_spec
+from .canonical_experiment import (
+    compile_canonical_experiment_spec,
+    compile_static_exact_ab_experiment_spec,
+)
 from .canonical_qor import (
     parse_canonical_qor_arms,
     run_canonical_qor_comparison,
     validate_canonical_qor_comparison,
+)
+from .static_exact_qor import (
+    parse_static_exact_qor_arms,
+    run_static_exact_qor_comparison,
+    validate_static_exact_qor_comparison,
 )
 from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
@@ -905,6 +913,54 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         required=True,
         metavar=("PROVIDER", "SEED", "ROOT"),
+    )
+    static_exact_qor_run = experiment_stage_subparsers.add_parser(
+        "static-exact-qor-compare-run",
+        help="compare sequential, legacy-v1, and generalized-v2 Phase 1-7 arms",
+    )
+    static_exact_qor_run.add_argument("--platform", type=Path, required=True)
+    static_exact_qor_run.add_argument(
+        "--arm",
+        nargs=6,
+        action="append",
+        required=True,
+        metavar=(
+            "LABEL",
+            "SEED",
+            "SHARED",
+            "LOOKAHEAD",
+            "PHASE6",
+            "PHASE7",
+        ),
+    )
+    static_exact_qor_run.add_argument(
+        "--reuse-validated-phase6-equivalence", action="store_true"
+    )
+    static_exact_qor_run.add_argument("--out", type=Path, required=True)
+    static_exact_qor_validate = experiment_stage_subparsers.add_parser(
+        "static-exact-qor-compare-validate",
+        help="independently rebuild a three-policy Static Exact QoR comparison",
+    )
+    static_exact_qor_validate.add_argument("root", type=Path)
+    static_exact_qor_validate.add_argument(
+        "--platform", type=Path, required=True
+    )
+    static_exact_qor_validate.add_argument(
+        "--arm",
+        nargs=6,
+        action="append",
+        required=True,
+        metavar=(
+            "LABEL",
+            "SEED",
+            "SHARED",
+            "LOOKAHEAD",
+            "PHASE6",
+            "PHASE7",
+        ),
+    )
+    static_exact_qor_validate.add_argument(
+        "--reuse-validated-phase6-equivalence", action="store_true"
     )
 
     platform_parser = subparsers.add_parser("platform", help="BoardDB operations")
@@ -2181,6 +2237,25 @@ def _build_parser() -> argparse.ArgumentParser:
     benchmark_experiment.add_argument("--config", type=Path, required=True)
     benchmark_experiment.add_argument("--repository-root", type=Path, required=True)
     benchmark_experiment.add_argument("--out", type=Path, required=True)
+    static_exact_experiment = subparsers.add_parser(
+        "benchmark-static-exact-ab-compile",
+        help=(
+            "compile one content-addressed sequential/v1/v2 Static Exact "
+            "Phase 1-7 comparison DAG"
+        ),
+    )
+    static_exact_experiment.add_argument("--config", type=Path, required=True)
+    static_exact_experiment.add_argument(
+        "--repository-root", type=Path, required=True
+    )
+    static_exact_experiment.add_argument("--legacy-max-depth", type=int, default=2)
+    static_exact_experiment.add_argument(
+        "--generalized-max-depth", type=int, default=8
+    )
+    static_exact_experiment.add_argument(
+        "--minimum-combinational-cut-nets", type=int, default=1
+    )
+    static_exact_experiment.add_argument("--out", type=Path, required=True)
 
     phase1 = subparsers.add_parser(
         "phase1", help="run the board-independent Phase 1 pipeline"
@@ -3641,11 +3716,29 @@ def _dispatch(args: argparse.Namespace) -> int:
                 parse_canonical_qor_arms(args.arm),
                 args.out,
             )
-        else:
+        elif args.experiment_stage_command == "qor-compare-validate":
             report = validate_canonical_qor_comparison(
                 args.root,
                 args.shared,
                 parse_canonical_qor_arms(args.arm),
+            )
+        elif args.experiment_stage_command == "static-exact-qor-compare-run":
+            report = run_static_exact_qor_comparison(
+                args.platform,
+                parse_static_exact_qor_arms(args.arm),
+                args.out,
+                reuse_validated_phase6_equivalence=(
+                    args.reuse_validated_phase6_equivalence
+                ),
+            )
+        else:
+            report = validate_static_exact_qor_comparison(
+                args.root,
+                args.platform,
+                parse_static_exact_qor_arms(args.arm),
+                reuse_validated_phase6_equivalence=(
+                    args.reuse_validated_phase6_equivalence
+                ),
             )
         _print_json(report)
         return 0
@@ -4306,6 +4399,20 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "benchmark-experiment-compile":
         report = compile_canonical_experiment_spec(
             args.config, args.repository_root, args.out
+        )
+        _print_json(report)
+        return 0
+
+    if args.command == "benchmark-static-exact-ab-compile":
+        report = compile_static_exact_ab_experiment_spec(
+            args.config,
+            args.repository_root,
+            args.out,
+            legacy_max_depth=args.legacy_max_depth,
+            generalized_max_depth=args.generalized_max_depth,
+            minimum_combinational_cut_nets=(
+                args.minimum_combinational_cut_nets
+            ),
         )
         _print_json(report)
         return 0

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import math
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
@@ -23,6 +25,7 @@ from .experiment_identity import (
 from .io import read_json, write_json
 from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
 from .combinational_cut import (
+    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_CANDIDATE_POLICIES,
 )
@@ -329,6 +332,16 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/runtime.py",
         "src/emuflow/system_timing.py",
         "src/emuflow/static_exact_timing.py",
+    ),
+    "static-exact-qor-compare": (
+        "src/emuflow/static_exact_qor.py",
+        "src/emuflow/canonical_qor.py",
+        "src/emuflow/experiment_stages.py",
+        "src/emuflow/multi_fpga_physical_flow.py",
+        "src/emuflow/runtime.py",
+        "src/emuflow/system_timing.py",
+        "src/emuflow/static_exact_timing.py",
+        "src/emuflow/combinational_cut.py",
     ),
 }
 
@@ -969,5 +982,279 @@ def compile_canonical_experiment_spec(
         "nodes": len(validated["nodes"]),
         "physical_terminal_nodes": 3 * len(physical_seeds),
         "terminal_nodes": 1,
+        "output": str(output_path.resolve()),
+    }
+
+
+def _static_exact_prefixed_node(
+    raw: Mapping[str, Any], prefix: str
+) -> Dict[str, Any]:
+    """Namespace one canonical arm while retaining common frontend/timing."""
+
+    common = {"frontend", "timing"}
+
+    def mapped(node_id: str) -> str:
+        return node_id if node_id in common else f"{prefix}-{node_id}"
+
+    def rewrite(value: Any) -> Any:
+        if isinstance(value, str):
+            for dependency in raw.get("dependencies", []):
+                value = value.replace(
+                    f"{{dependency:{dependency}}}",
+                    f"{{dependency:{mapped(dependency)}}}",
+                )
+            return value
+        if isinstance(value, list):
+            return [rewrite(item) for item in value]
+        if isinstance(value, dict):
+            return {key: rewrite(item) for key, item in value.items()}
+        return value
+
+    result = rewrite(copy.deepcopy(dict(raw)))
+    result["id"] = mapped(raw["id"])
+    result["dependencies"] = [
+        mapped(dependency) for dependency in raw.get("dependencies", [])
+    ]
+    return result
+
+
+def compile_static_exact_ab_experiment_spec(
+    config_path: Path,
+    repository_root: Path,
+    output_path: Path,
+    *,
+    legacy_max_depth: int = 2,
+    generalized_max_depth: int = 8,
+    minimum_combinational_cut_nets: int = 1,
+) -> Dict[str, Any]:
+    """Compile one cache DAG with three Phase 3--7 cut-policy branches.
+
+    The canonical frontend and complete TimingPathDB are emitted once.  Each
+    policy then owns its assignment, routing, schedule, lookahead, split, and
+    physical terminal.  The final node independently rebuilds the complete
+    Phase 7 comparison rather than comparing Phase 3 or Phase 6 proxies.
+    """
+
+    output_path = validate_experiment_write_path(output_path)
+    repository_root = _directory(str(repository_root), "repository_root")
+    config = read_json(config_path)
+    if config.get("schema") != CANONICAL_EXPERIMENT_CONFIG_SCHEMA:
+        raise ValidationError("canonical experiment config schema is invalid")
+    for name, value in (
+        ("legacy_max_depth", legacy_max_depth),
+        ("generalized_max_depth", generalized_max_depth),
+        ("minimum_combinational_cut_nets", minimum_combinational_cut_nets),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValidationError(f"Static Exact A/B {name} must be positive")
+    if legacy_max_depth not in {1, 2}:
+        raise ValidationError("Static Exact legacy A/B depth must be 1 or 2")
+    physical_seeds = config.get("physical_seeds", [1])
+    if (
+        not isinstance(physical_seeds, list)
+        or not physical_seeds
+        or any(
+            isinstance(seed, bool) or not isinstance(seed, int) or seed < 1
+            for seed in physical_seeds
+        )
+        or physical_seeds != sorted(set(physical_seeds))
+    ):
+        raise ValidationError("Static Exact A/B physical seeds are invalid")
+    arm_configs = {
+        "seq": {
+            "label": "sequential-only",
+            "cut_mode": CUT_MODE_SEQUENTIAL_ONLY,
+            "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            "max_cross_fpga_dependency_depth": 1,
+            "minimum_combinational_cut_nets": 0,
+        },
+        "v1": {
+            "label": "legacy-static-exact-v1",
+            "cut_mode": CUT_MODE_STATIC_EXACT,
+            "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            "max_cross_fpga_dependency_depth": legacy_max_depth,
+            "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
+        },
+        "v2": {
+            "label": "generalized-static-exact-v2",
+            "cut_mode": CUT_MODE_STATIC_EXACT,
+            "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+            "max_cross_fpga_dependency_depth": generalized_max_depth,
+            "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
+        },
+    }
+    compiled: Dict[str, Dict[str, Any]] = {}
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        dir=output_path.parent, prefix=".static-exact-ab-compile-"
+    ) as temporary:
+        temporary_root = Path(temporary)
+        for prefix, arm in arm_configs.items():
+            arm_config = dict(config)
+            arm_config.update(
+                {
+                    key: value
+                    for key, value in arm.items()
+                    if key != "label"
+                }
+            )
+            arm_config_path = temporary_root / f"{prefix}-config.json"
+            arm_spec_path = temporary_root / f"{prefix}-spec.json"
+            write_json(arm_config_path, arm_config)
+            compile_canonical_experiment_spec(
+                arm_config_path, repository_root, arm_spec_path
+            )
+            compiled[prefix] = read_json(arm_spec_path)
+
+    common_ids = {"frontend", "timing"}
+    sequential_keep = {
+        *common_ids,
+        "partition",
+        "cut-timing",
+        "route",
+        "tdm",
+        "shared-phase1-5",
+        "phase6-baseline",
+        "physical-lookahead",
+        *{
+            f"phase7-baseline-seed{seed}" for seed in physical_seeds
+        },
+    }
+    reference_common = [
+        node
+        for node in compiled["seq"]["nodes"]
+        if node["id"] in common_ids
+    ]
+    for prefix in ("v1", "v2"):
+        candidate_common = [
+            node
+            for node in compiled[prefix]["nodes"]
+            if node["id"] in common_ids
+        ]
+        if candidate_common != reference_common:
+            raise ValidationError(
+                "Static Exact A/B frontend/timing branches are not identical"
+            )
+    nodes = copy.deepcopy(reference_common)
+    for prefix in ("seq", "v1", "v2"):
+        arm_nodes = compiled[prefix]["nodes"]
+        for raw in arm_nodes:
+            if raw["id"] in common_ids:
+                continue
+            if prefix == "seq" and raw["id"] not in sequential_keep:
+                continue
+            nodes.append(_static_exact_prefixed_node(raw, prefix))
+
+    executable = str(_file(config["tools"]["emuflow"], "tool emuflow"))
+    platform = _file(config.get("platform"), "platform")
+    dependencies: list[str] = []
+    command = [
+        executable,
+        "experiment-stage",
+        "static-exact-qor-compare-run",
+        "--platform",
+        str(platform),
+        "--reuse-validated-phase6-equivalence",
+    ]
+    validator = [
+        executable,
+        "experiment-stage",
+        "static-exact-qor-compare-validate",
+        "{artifact_root}",
+        "--platform",
+        str(platform),
+        "--reuse-validated-phase6-equivalence",
+    ]
+    for prefix, arm in arm_configs.items():
+        shared_id = f"{prefix}-shared-phase1-5"
+        lookahead_id = f"{prefix}-physical-lookahead"
+        phase6_id = f"{prefix}-phase6-baseline"
+        for seed in physical_seeds:
+            phase7_id = f"{prefix}-phase7-baseline-seed{seed}"
+            for dependency in (
+                shared_id,
+                lookahead_id,
+                phase6_id,
+                phase7_id,
+            ):
+                if dependency not in dependencies:
+                    dependencies.append(dependency)
+            arguments = [
+                "--arm",
+                arm["label"],
+                str(seed),
+                f"{{dependency:{shared_id}}}",
+                f"{{dependency:{lookahead_id}}}",
+                f"{{dependency:{phase6_id}}}",
+                f"{{dependency:{phase7_id}}}",
+            ]
+            command.extend(arguments)
+            validator.extend(arguments)
+    command.extend(("--out", "{output_dir}"))
+    input_hashes = {
+        "platform": _sha256(platform),
+        "tool.emuflow": _sha256(Path(executable)),
+    }
+    bindings = {"platform": str(platform), "tool.emuflow": executable}
+    closure = _closure(repository_root, "static-exact-qor-compare")
+    nodes.append(
+        {
+            "id": "static-exact-qor-comparison",
+            "stage": "static-exact-qor-compare",
+            "dependencies": dependencies,
+            "inputs": input_hashes,
+            "configuration": {
+                "labels": [
+                    arm_configs[prefix]["label"]
+                    for prefix in ("seq", "v1", "v2")
+                ],
+                "physical_seeds": physical_seeds,
+                "legacy_max_depth": legacy_max_depth,
+                "generalized_max_depth": generalized_max_depth,
+                "minimum_combinational_cut_nets": (
+                    minimum_combinational_cut_nets
+                ),
+                "primary_metrics": [
+                    "global_target_clock_wns_ns",
+                    "global_target_clock_tns_ns",
+                ],
+            },
+            "implementation": closure,
+            "execution_bindings": bindings,
+            "command": command,
+            "command_identity": _identity_argv(command, bindings),
+            "validator_implementation": closure,
+            "validator": validator,
+            "validator_identity": _identity_argv(validator, bindings),
+            "environment": {
+                "EMUFLOW_EXPERIMENT_POLICY": "static-exact-ab-v1"
+            },
+            "storage_estimate": {
+                "peak_bytes": 2 * 1024**3,
+                "retained_bytes": 1024**3,
+            },
+            "artifacts": [
+                _artifact(
+                    "static-exact-qor-comparison.json", "evidence-critical"
+                )
+            ],
+        }
+    )
+    case_id = config.get("case_id")
+    spec = {
+        "schema": EXPERIMENT_SPEC_V2_SCHEMA,
+        "experiment_id": f"{case_id}-static-exact-ab",
+        "source_commit": config.get("source_commit"),
+        "nodes": nodes,
+    }
+    validated = validate_experiment_spec(spec)
+    write_json(output_path, spec)
+    return {
+        "status": "pass",
+        "experiment_id": spec["experiment_id"],
+        "nodes": len(validated["nodes"]),
+        "physical_terminal_nodes": 3 * len(physical_seeds),
+        "terminal_nodes": 1,
+        "physical_seeds": physical_seeds,
         "output": str(output_path.resolve()),
     }

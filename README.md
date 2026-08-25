@@ -449,6 +449,44 @@ with one physical seed by default and final whole-design target-clock WNS/TNS,
 virtual frequency, resource, runtime, and exact-cut evidence.  Small exhaustive
 tests establish semantics but are not QoR evidence.
 
+The three policies have different assignments, routes, and schedules, so the
+ordinary Phase 6 provider comparator is intentionally not used for this gate.
+Compile one content-addressed DAG that shares only the byte-identical frontend
+and TimingPathDB, forks at Phase 3, and terminates in a dedicated cross-policy
+certificate:
+
+```bash
+emuflow benchmark-static-exact-ab-compile \
+  --config "$CANONICAL_CASE_CONFIG" --repository-root "$SOURCE" \
+  --legacy-max-depth 2 --generalized-max-depth 8 \
+  --minimum-combinational-cut-nets 1 \
+  --out "$EXPERIMENT/static-exact-ab-spec.json"
+```
+
+The final DAG node is equivalent to this explicit checkpoint command:
+
+```bash
+emuflow experiment-stage static-exact-qor-compare-run \
+  --platform "$PLATFORM" \
+  --arm sequential-only 1 "$SEQ_SHARED" "$SEQ_LOOKAHEAD" "$SEQ_PHASE6" "$SEQ_PHASE7" \
+  --arm legacy-static-exact-v1 1 "$V1_SHARED" "$V1_LOOKAHEAD" "$V1_PHASE6" "$V1_PHASE7" \
+  --arm generalized-static-exact-v2 1 "$V2_SHARED" "$V2_LOOKAHEAD" "$V2_PHASE6" "$V2_PHASE7" \
+  --out "$EVIDENCE/static-exact-qor"
+```
+
+The compiler removes the unrelated placement-aware/Chimew Phase 6 arms from
+the sequential branch, so only three physical terminals are run per requested
+seed.  The independent replay requires byte-identical EmuIR, complete TimingPathDB,
+partition weights, BoardDB, constraints, timing model, and physical channel
+width across all arms.  It permits only the intended Phase 3--6 differences,
+revalidates each complete Phase 7 chain, reports whole-design target/runtime
+WNS and TNS, per-FPGA diagnostics, virtual frequency, transport/physical cell
+counts, cut count, scheduled bit-hops, frame size, and completion slot, and
+refuses default promotion if the generalized arm is vacuous or its target-clock
+WNS/TNS result is not improved.  `--reuse-validated-phase6-equivalence` is
+allowed only for immutable managed checkpoints carrying an independent
+validation certificate; standalone roots receive full replay.
+
 ```bash
 emuflow phase6 \
   --ir build/phase1/design.emuir.json \

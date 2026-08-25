@@ -160,6 +160,50 @@ feasibility, and physical segment deadlines.
    ordinary timing-DAG/ratio optimizers remain fail-closed until they consume
    the same dependency contract.
 
+### Cross-policy Phase 7 promotion certificate
+
+Sequential-only, legacy Static Exact v1, and generalized Static Exact v2 do
+not share Phase 3--5 artifacts.  They must therefore be three branches from
+the same content-addressed frontend/timing inputs, not three Phase 6 providers
+under one shared assignment.  Compile that complete DAG with:
+
+```bash
+emuflow benchmark-static-exact-ab-compile \
+  --config "$CANONICAL_CASE_CONFIG" --repository-root "$SOURCE" \
+  --legacy-max-depth 2 --generalized-max-depth 8 \
+  --minimum-combinational-cut-nets 1 \
+  --out "$EXPERIMENT/static-exact-ab-spec.json"
+```
+
+The compiler retains one frontend and one complete TimingPathDB node, forks
+the partition/route/TDM/lookahead/split/physical nodes by cut policy, and adds
+the comparison as the sole terminal.  Its final producer/validator command is:
+
+```bash
+emuflow experiment-stage static-exact-qor-compare-run \
+  --platform "$PLATFORM" \
+  --arm sequential-only 1 "$SEQ_SHARED" "$SEQ_LOOKAHEAD" "$SEQ_PHASE6" "$SEQ_PHASE7" \
+  --arm legacy-static-exact-v1 1 "$V1_SHARED" "$V1_LOOKAHEAD" "$V1_PHASE6" "$V1_PHASE7" \
+  --arm generalized-static-exact-v2 1 "$V2_SHARED" "$V2_LOOKAHEAD" "$V2_PHASE6" "$V2_PHASE7" \
+  --out "$EVIDENCE/static-exact-qor"
+
+emuflow experiment-stage static-exact-qor-compare-validate \
+  "$EVIDENCE/static-exact-qor" --platform "$PLATFORM" \
+  --arm sequential-only 1 "$SEQ_SHARED" "$SEQ_LOOKAHEAD" "$SEQ_PHASE6" "$SEQ_PHASE7" \
+  --arm legacy-static-exact-v1 1 "$V1_SHARED" "$V1_LOOKAHEAD" "$V1_PHASE6" "$V1_PHASE7" \
+  --arm generalized-static-exact-v2 1 "$V2_SHARED" "$V2_LOOKAHEAD" "$V2_PHASE6" "$V2_PHASE7"
+```
+
+The checker independently replays each complete terminal chain, binds the
+three arms to identical source/timing/platform inputs and physical settings,
+and compares whole-original-design target-clock and virtual-runtime WNS/TNS.
+It also records exact-cut count/depth, virtual frequency, transport and total
+physical cells, cut nets, scheduled bit-hops, frame size, and completion slot.
+The generated promotion gate is false unless v2 exercises at least one real
+combinational cut and improves the paired target-clock result over
+sequential-only.  A single physical seed is the routine gate; more seeds are
+an explicit robustness study.
+
 ## Commands
 
 ```bash
