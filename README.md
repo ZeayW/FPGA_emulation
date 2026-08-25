@@ -481,8 +481,13 @@ partition weights, BoardDB, constraints, timing model, and physical channel
 width across all arms.  It permits only the intended Phase 3--6 differences,
 revalidates each complete Phase 7 chain, reports whole-design target/runtime
 WNS and TNS, per-FPGA diagnostics, virtual frequency, transport/physical cell
-counts, cut count, scheduled bit-hops, frame size, and completion slot, and
-refuses default promotion if the generalized arm is vacuous or its target-clock
+counts, cut count, scheduled bit-hops, frame size, completion slot, and sealed
+wall-clock times for Phase 3--7 and the physical lookahead/Phase 7 pair.  Node
+wall time is stored in the immutable checkpoint manifest rather than mutable
+farm state, so the final bundle can replay the runtime comparison without the
+original attempt directories.  Historical imported checkpoints without this
+field remain readable but cannot supply runtime evidence.  The checker refuses
+default promotion if the generalized arm is vacuous or its target-clock
 WNS/TNS result is not improved.  `--reuse-validated-phase6-equivalence` is
 allowed only for immutable managed checkpoints carrying an independent
 validation certificate; standalone roots receive full replay.

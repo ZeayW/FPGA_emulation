@@ -199,6 +199,12 @@ three arms to identical source/timing/platform inputs and physical settings,
 and compares whole-original-design target-clock and virtual-runtime WNS/TNS.
 It also records exact-cut count/depth, virtual frequency, transport and total
 physical cells, cut nets, scheduled bit-hops, frame size, and completion slot.
+New managed checkpoints seal each node's measured wall time.  The comparison
+therefore also reports partition, routing, TDM, Phase 6, physical-lookahead,
+and Phase 7 wall times plus paired physical and Phase 3--7 totals.  These
+measurements come from immutable checkpoint manifests, not mutable farm task
+state; a historical imported checkpoint without runtime metadata remains
+valid but is not runtime-qualified.
 The generated promotion gate is false unless v2 exercises at least one real
 combinational cut and improves the paired target-clock result over
 sequential-only.  A single physical seed is the routine gate; more seeds are

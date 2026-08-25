@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -713,6 +714,14 @@ def validate_experiment_checkpoint(
                 )
     if value.get("status") != "pass":
         raise ValidationError("experiment checkpoint did not pass")
+    elapsed = value.get("execution_elapsed_seconds")
+    if elapsed is not None and (
+        isinstance(elapsed, bool)
+        or not isinstance(elapsed, (int, float))
+        or not math.isfinite(float(elapsed))
+        or elapsed < 0
+    ):
+        raise ValidationError("experiment checkpoint elapsed time is invalid")
     if value.get("storage") == "managed" and (
         schema == EXPERIMENT_CHECKPOINT_V2_SCHEMA
         or value.get("output_immutable") is True
@@ -888,6 +897,7 @@ def _checkpoint_value(
     declared_output_dir: Path,
     *,
     storage: str,
+    execution_elapsed_seconds: float | None = None,
 ) -> Dict[str, Any]:
     artifacts: Dict[str, Any] = {}
     for relative in _artifact_paths(node):
@@ -911,6 +921,8 @@ def _checkpoint_value(
         "status": "pass",
     }
     manifest["execution_key" if v2 else "key"] = node["key"]
+    if execution_elapsed_seconds is not None:
+        manifest["execution_elapsed_seconds"] = execution_elapsed_seconds
     return manifest
 
 
@@ -1244,11 +1256,13 @@ def run_experiment_node(
             return report
         final_root = cache_root / "objects" / node["key"]
         final_root.parent.mkdir(parents=True, exist_ok=True)
+        execution_elapsed_seconds = time.monotonic() - started
         checkpoint_value = _checkpoint_value(
             node,
             output_dir,
             final_root / "output",
             storage="managed",
+            execution_elapsed_seconds=execution_elapsed_seconds,
         )
         write_json(staging / "checkpoint.json", checkpoint_value)
         _make_tree_immutable(output_dir)
@@ -1262,7 +1276,7 @@ def run_experiment_node(
         report = {
             "status": "pass",
             "node_id": node_id,
-            "elapsed_seconds": time.monotonic() - started,
+            "elapsed_seconds": execution_elapsed_seconds,
             "checkpoint": checkpoint,
         }
         if "validation_key" in node:

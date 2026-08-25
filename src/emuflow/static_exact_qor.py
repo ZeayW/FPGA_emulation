@@ -10,6 +10,7 @@ physical seed to be common.
 from __future__ import annotations
 
 import json
+import math
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +72,8 @@ _SCALAR_METRICS = (
     "scheduled_bit_hops",
     "frame_slots",
     "completion_slot",
+    "physical_wall_seconds",
+    "phase3_to_7_wall_seconds",
 )
 
 
@@ -80,6 +83,119 @@ class StaticExactArm:
     lookahead_root: Path
     phase6_root: Path
     phase7_root: Path
+
+
+def _checkpoint(root: Path, expected_stage: str) -> Dict[str, Any] | None:
+    """Read execution metadata for a managed content-addressed output."""
+
+    manifest_path = root.parent / "checkpoint.json"
+    if not manifest_path.is_file():
+        return None
+    value = read_json(manifest_path)
+    if (
+        value.get("schema") != "emuflow.experiment-checkpoint/v2"
+        or value.get("storage") != "managed"
+        or value.get("output_immutable") is not True
+        or value.get("execution_key") != root.parent.name
+        or manifest_path.stat().st_mode & 0o222
+        or value.get("stage") != expected_stage
+        or Path(str(value.get("output_dir", ""))).resolve() != root.resolve()
+        or value.get("status") != "pass"
+    ):
+        raise ValidationError(
+            f"Static Exact QoR {expected_stage} checkpoint metadata is invalid"
+        )
+    elapsed = value.get("execution_elapsed_seconds")
+    if (
+        isinstance(elapsed, bool)
+        or not isinstance(elapsed, (int, float))
+        or not math.isfinite(float(elapsed))
+        or elapsed < 0
+    ):
+        raise ValidationError(
+            f"Static Exact QoR {expected_stage} runtime evidence is missing"
+        )
+    return value
+
+
+def _execution_runtime(
+    shared_root: Path,
+    lookahead_root: Path,
+    phase6_root: Path,
+    phase7_root: Path,
+) -> Dict[str, float] | None:
+    """Collect sealed wall times without consulting mutable farm state."""
+
+    shared = _checkpoint(shared_root, "shared")
+    lookahead = _checkpoint(lookahead_root, "physical-lookahead")
+    phase6 = _checkpoint(phase6_root, "phase6")
+    phase7 = _checkpoint(phase7_root, "phase7")
+    checkpoints = (shared, lookahead, phase6, phase7)
+    if all(value is None for value in checkpoints):
+        # Unit fixtures and historical imported checkpoints can legitimately
+        # predate sealed runtime metadata. New canonical executions cannot.
+        return None
+    if any(value is None for value in checkpoints):
+        raise ValidationError("Static Exact QoR runtime checkpoint set is incomplete")
+    assert shared is not None and lookahead is not None
+    assert phase6 is not None and phase7 is not None
+    cache_root = shared_root.parent.parent.parent
+    dependencies = shared.get("dependency_keys")
+    if not isinstance(dependencies, dict):
+        raise ValidationError("Static Exact QoR shared dependency seal is invalid")
+    records: Dict[str, float] = {}
+    for label, stage in (
+        ("partition", "partition"),
+        ("route", "route"),
+        ("tdm", "tdm"),
+    ):
+        key = dependencies.get(label)
+        if not isinstance(key, str):
+            raise ValidationError(
+                f"Static Exact QoR {label} runtime dependency is missing"
+            )
+        output = cache_root / "objects" / key / "output"
+        value = _checkpoint(output, stage)
+        if value is None:
+            raise ValidationError(
+                f"Static Exact QoR {label} runtime checkpoint is missing"
+            )
+        elapsed = value.get("execution_elapsed_seconds")
+        if (
+            isinstance(elapsed, bool)
+            or not isinstance(elapsed, (int, float))
+            or not math.isfinite(float(elapsed))
+            or elapsed < 0
+        ):
+            raise ValidationError(
+                f"Static Exact QoR {label} runtime evidence is invalid"
+            )
+        records[f"{label}_wall_seconds"] = float(elapsed)
+    records.update(
+        {
+            "phase6_wall_seconds": float(phase6["execution_elapsed_seconds"]),
+            "physical_lookahead_wall_seconds": float(
+                lookahead["execution_elapsed_seconds"]
+            ),
+            "phase7_wall_seconds": float(phase7["execution_elapsed_seconds"]),
+        }
+    )
+    records["physical_wall_seconds"] = (
+        records["physical_lookahead_wall_seconds"]
+        + records["phase7_wall_seconds"]
+    )
+    records["phase3_to_7_wall_seconds"] = sum(
+        records[name]
+        for name in (
+            "partition_wall_seconds",
+            "route_wall_seconds",
+            "tdm_wall_seconds",
+            "phase6_wall_seconds",
+            "physical_lookahead_wall_seconds",
+            "phase7_wall_seconds",
+        )
+    )
+    return records
 
 
 def _directory(text: str, label: str) -> Path:
@@ -393,6 +509,23 @@ def _arm_record(
             tdm.get("completion_slot"), "Static Exact completion slot"
         ),
     }
+    execution_runtime = _execution_runtime(
+        arm.shared_root,
+        arm.lookahead_root,
+        arm.phase6_root,
+        arm.phase7_root,
+    )
+    if execution_runtime is not None:
+        metrics.update(
+            {
+                "physical_wall_seconds": execution_runtime[
+                    "physical_wall_seconds"
+                ],
+                "phase3_to_7_wall_seconds": execution_runtime[
+                    "phase3_to_7_wall_seconds"
+                ],
+            }
+        )
     return {
         "label": label,
         "physical_seed": seed,
@@ -407,6 +540,7 @@ def _arm_record(
         "system_timing_qualification": timing.get("qualification"),
         "path_exactness": timing.get("path_exactness"),
         "metrics": metrics,
+        "execution_runtime": execution_runtime,
         "artifacts": {
             "phase6_manifest_sha256": _digest(
                 report.get("phase6_manifest_sha256"), "Phase 6 manifest"
@@ -444,12 +578,17 @@ def _comparison(
     for seed in seeds:
         baseline = by_key[(reference, seed)]["metrics"]
         selected = by_key[(candidate, seed)]["metrics"]
+        scalar_metrics = tuple(
+            metric
+            for metric in _SCALAR_METRICS
+            if metric in baseline and metric in selected
+        )
         deltas.append(
             {
                 "physical_seed": seed,
                 **{
                     metric: float(selected[metric]) - float(baseline[metric])
-                    for metric in _SCALAR_METRICS
+                    for metric in scalar_metrics
                 },
             }
         )
@@ -477,7 +616,8 @@ def _comparison(
         "paired_seed_deltas": deltas,
         "mean_deltas": {
             metric: statistics.fmean([record[metric] for record in deltas])
-            for metric in _SCALAR_METRICS
+            for metric in deltas[0]
+            if metric != "physical_seed"
         },
         "timing_metric_classification": classes,
         "target_clock_result": target_result,
@@ -542,6 +682,15 @@ def build_static_exact_qor_comparison(
         }
         for record in records
     ]
+    runtime_qualified = all(
+        record["execution_runtime"] is not None for record in records
+    )
+    if any(record["execution_runtime"] is not None for record in records) and not (
+        runtime_qualified
+    ):
+        raise ValidationError(
+            "Static Exact QoR runtime evidence is incomplete across arms"
+        )
     comparisons = {
         "legacy-v1-vs-sequential": _comparison(
             "legacy-static-exact-v1", "sequential-only", by_key, seeds
@@ -591,8 +740,11 @@ def build_static_exact_qor_comparison(
                 generalized_exercised
             ),
             "generalized_v2_target_clock_result": target_result,
+            "sealed_execution_runtime_available": runtime_qualified,
             "eligible_for_default_promotion": (
-                generalized_exercised and target_result == "improved"
+                generalized_exercised
+                and target_result == "improved"
+                and runtime_qualified
             ),
         },
     }

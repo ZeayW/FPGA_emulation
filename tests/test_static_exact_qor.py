@@ -7,6 +7,7 @@ from unittest.mock import patch
 from emuflow.io import read_json, write_json
 from emuflow.runtime import QOR_REPORT_SCHEMA
 from emuflow.static_exact_qor import (
+    _execution_runtime,
     build_static_exact_qor_comparison,
     parse_static_exact_qor_arms,
     run_static_exact_qor_comparison,
@@ -20,6 +21,68 @@ def _sha256(path: Path) -> str:
 
 
 class StaticExactQorTest(unittest.TestCase):
+    def test_managed_checkpoint_runtime_is_aggregated(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary) / "cache"
+            roots = {}
+            dependency_keys = {
+                "partition": "1" * 64,
+                "route": "2" * 64,
+                "tdm": "3" * 64,
+            }
+            for name, stage, key, elapsed in (
+                ("shared", "shared", "4" * 64, 0.1),
+                ("lookahead", "physical-lookahead", "5" * 64, 4.0),
+                ("phase6", "phase6", "6" * 64, 0.5),
+                ("phase7", "phase7", "7" * 64, 1.0),
+            ):
+                output = cache / "objects" / key / "output"
+                output.mkdir(parents=True)
+                roots[name] = output
+                value = {
+                    "schema": "emuflow.experiment-checkpoint/v2",
+                    "storage": "managed",
+                    "output_immutable": True,
+                    "execution_key": key,
+                    "stage": stage,
+                    "output_dir": str(output.resolve()),
+                    "status": "pass",
+                    "execution_elapsed_seconds": elapsed,
+                    "dependency_keys": dependency_keys if name == "shared" else {},
+                }
+                write_json(output.parent / "checkpoint.json", value)
+                (output.parent / "checkpoint.json").chmod(0o444)
+            for label, stage, elapsed in (
+                ("partition", "partition", 2.0),
+                ("route", "route", 3.0),
+                ("tdm", "tdm", 1.5),
+            ):
+                object_root = cache / "objects" / dependency_keys[label]
+                output = object_root / "output"
+                output.mkdir(parents=True)
+                write_json(
+                    object_root / "checkpoint.json",
+                    {
+                        "schema": "emuflow.experiment-checkpoint/v2",
+                        "storage": "managed",
+                        "output_immutable": True,
+                        "execution_key": dependency_keys[label],
+                        "stage": stage,
+                        "output_dir": str(output.resolve()),
+                        "status": "pass",
+                        "execution_elapsed_seconds": elapsed,
+                    },
+                )
+                (object_root / "checkpoint.json").chmod(0o444)
+            runtime = _execution_runtime(
+                roots["shared"],
+                roots["lookahead"],
+                roots["phase6"],
+                roots["phase7"],
+            )
+            self.assertEqual(runtime["physical_wall_seconds"], 5.0)
+            self.assertEqual(runtime["phase3_to_7_wall_seconds"], 12.0)
+
     def _fixture(self, root: Path):
         root.mkdir(parents=True, exist_ok=True)
         platform = root / "platform.json"
@@ -208,8 +271,11 @@ class StaticExactQorTest(unittest.TestCase):
                 ],
                 "improved",
             )
-            self.assertTrue(
+            self.assertFalse(
                 report["promotion_gate"]["eligible_for_default_promotion"]
+            )
+            self.assertFalse(
+                report["promotion_gate"]["sealed_execution_runtime_available"]
             )
             self.assertEqual(
                 validate_static_exact_qor_comparison(
