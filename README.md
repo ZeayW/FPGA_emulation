@@ -398,8 +398,18 @@ also reflected at the one-command CLI boundary: exact mode defaults slot
 refinement to zero, while an explicit nonzero request remains fail-closed until
 that optimizer is dependency-qualified. This is
 implemented qualification machinery. Small real-RTL physical acceptance
-exercises the exact-cut path; the mode remains opt-in while scalable
-real-design acceptance is completed.
+exercises the exact-cut path. A scalable open-physical acceptance now also
+exists on the naturally connected DLA design and a four-FPGA academic
+BoardDB: the unconstrained partition selected five real combinational cuts
+among 6,069 transported cuts, and the independent Phase 7 replay covered all
+157,811 exact source/capture segments with endpoint-exact routed evidence,
+zero missing segments, and zero failed segment deadlines. The same replay
+covered all 195,532 original timing paths exactly once and reported
+whole-design target-clock WNS/TNS of -181.086692873 ns and
+-681,968.5909773472 ns, with 8,700 negative paths; virtual-runtime WNS/TNS
+were 14,566,048.913307127 ns and 0 ns. These numbers prove complete timing
+accounting and the static-exact causal deadlines, not 10 ns target-clock
+closure or a QoR improvement over sequential-only mode.
 
 Canonical Experiment v2 defaults the static-exact combinational-cut threshold
 to zero. This permits a real design to complete the full flow when the legal
@@ -447,9 +457,11 @@ the minimum-cut gate prevents a vacuous exact-mode result.
 The shared slot-edge convention, semantic contract, fail-closed policy, and
 Phase 3--7 acceptance sequence are specified in
 [Static exact combinational-cut mode](docs/STATIC_EXACT_COMBINATIONAL_CUT.md).
-The default remains sequential-only until macro-cycle equivalence, routed
-segment deadlines, and whole-design target and virtual-runtime WNS/TNS all
-pass.
+The production default remains sequential-only even though those gates now
+pass for both the capacity-limited fixture and the large DLA acceptance.
+Static exact V1 is intentionally opt-in because it supports only the declared
+single-clock, synchronous-reset, deterministic-schedule envelope; one
+successful acceptance design does not broaden that semantic scope.
 Static-exact physical evidence preserves each reached state-capture input pin
 and bit through lowering; a VTR query rejects an endpoint that is absent from
 the emitted primitive contract before physical routing begins.

@@ -36,9 +36,15 @@ driven macro-cycle equivalence are implemented. Small LUT/FF models receive
 complete one-step state/input enumeration, while larger models are honestly
 qualified as multi-seed trace validation rather than proof. Phase 7C now binds
 physical logic-segment evidence to the semantic contract and independently
-checks source-ready and final-capture deadlines. A real routed complete-flow
-acceptance result is still pending; the production default therefore remains
-sequential-only.
+checks source-ready and final-capture deadlines. A real routed DLA complete-
+flow acceptance now exercises five naturally selected combinational cuts,
+covers all 157,811 semantic segments with endpoint-exact routed evidence, and
+independently reconstructs whole-design target-clock and virtual-runtime
+WNS/TNS over all 195,532 original timing paths. The target-clock result is
+reported but is not closed; this acceptance proves complete accounting and
+causal correctness rather than timing QoR improvement. The production default
+remains sequential-only because static exact V1 retains its explicit
+single-clock and fail-closed semantic scope.
 Canonical Experiment v2 exact-mode evidence additionally requires at least one
 independently reconstructed selected combinational cut. A legal zero-cut run
 remains useful as a compatibility smoke but cannot satisfy this acceptance
