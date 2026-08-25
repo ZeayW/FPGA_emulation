@@ -13,6 +13,7 @@ from emuflow.vpr import (
     run_vpr_pack_place,
     run_vpr_route_packed,
     validate_vpr_pack_place_checkpoint,
+    validate_vpr_route_checkpoint,
     validate_vpr_timing_summary,
     validate_vpr_outputs,
 )
@@ -575,6 +576,305 @@ int main() {
         self.assertIn("boundary_timing", report)
         self.assertIn("logic_segment_timing", report)
         self.assertIn("local_path_timing", report)
+
+    def test_route_resume_reuses_only_an_independently_valid_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            architecture = root / "arch.xml"
+            circuit = root / "cpu.eblif"
+            netlist = root / "cpu.net"
+            packed_contract = root / "packed.json"
+            placement = root / "cpu.place"
+            sdc = root / "runtime.sdc"
+            for path in (
+                architecture,
+                circuit,
+                netlist,
+                packed_contract,
+                placement,
+                sdc,
+            ):
+                path.write_text(path.name, encoding="utf-8")
+            boundary_query = root / "boundary-query.tsv"
+            logic_query = root / "logic-query.tsv"
+            local_query = root / "local-query.tsv"
+            for path in (boundary_query, logic_query, local_query):
+                path.write_text(
+                    "endpoint\tkind\tstart_pin\tend_pin\n", encoding="utf-8"
+                )
+            output = root / "route"
+            boundary_output = output / "boundary-timing.tsv"
+            logic_output = output / "logic-timing.tsv"
+            local_output = output / "local-timing.tsv"
+
+            def fake_run(arguments, **_kwargs):
+                Path(arguments[arguments.index("--route_file") + 1]).write_text(
+                    "route", encoding="utf-8"
+                )
+                rr_graph = Path(
+                    arguments[arguments.index("--write_rr_graph") + 1]
+                )
+                rr_graph.write_text("rr-graph", encoding="utf-8")
+                Path(
+                    arguments[arguments.index("--write_timing_summary") + 1]
+                ).write_text(
+                    json.dumps(
+                        {
+                            "cpd": 1.0,
+                            "fmax": 1000.0,
+                            "swns": 0.0,
+                            "worst_slack": 3.0,
+                            "stns": 0.0,
+                            "sfec": 0,
+                            "failing_endpoints": 0,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                for path in (boundary_output, logic_output, local_output):
+                    path.write_text("timing\n", encoding="utf-8")
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    """
+                    Netlist num_nets: 2
+                    Netlist num_blocks: 3
+                    Total wirelength: 12
+                    Final critical path delay (least slack): 1 ns, Fmax: 1000 MHz
+                    Final setup Worst Negative Slack (sWNS): 0 ns
+                    Final setup Worst Slack: 3 ns
+                    Final setup Total Negative Slack (sTNS): 0 ns
+                    Final setup Failing Endpoint Constraints (sFEC): 0
+                    Final setup Failing Endpoints: 0
+                    VPR succeeded
+                    """,
+                )
+
+            def fake_route_check(route, rr_graph, contract, place, *_args, **_kwargs):
+                sha256 = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+                report = {
+                    "schema": "emuflow.vpr-route-check/v1",
+                    "status": "pass",
+                    "provider": "emuflow-cpp-vpr-route-checker",
+                    "checks": {"net_coverage": "pass"},
+                    "artifacts": {
+                        name: {
+                            "path": str(path.resolve()),
+                            "bytes": path.stat().st_size,
+                            "sha256": sha256(path),
+                        }
+                        for name, path in (
+                            ("packed_contract", contract),
+                            ("placement", place),
+                            ("route", route),
+                            ("rr_graph", rr_graph),
+                        )
+                    },
+                }
+                Path(_args[0]).write_text(json.dumps(report), encoding="utf-8")
+                return report
+
+            kwargs = {
+                "executable": "/source-built/vpr",
+                "route_checker": "/source-built/checker",
+                "boundary_query": boundary_query,
+                "boundary_output": boundary_output,
+                "logic_query": logic_query,
+                "logic_output": logic_output,
+                "local_path_query": local_query,
+                "local_path_output": local_output,
+                "sdc_file": sdc,
+            }
+            with (
+                patch("emuflow.vpr.subprocess.run", side_effect=fake_run),
+                patch(
+                    "emuflow.vpr.validate_vpr_route_artifacts",
+                    side_effect=fake_route_check,
+                ),
+            ):
+                first = run_vpr_route_packed(
+                    architecture,
+                    circuit,
+                    netlist,
+                    packed_contract,
+                    placement,
+                    output,
+                    **kwargs,
+                )
+            with patch(
+                "emuflow.vpr.subprocess.run",
+                side_effect=AssertionError("route must not rerun"),
+            ):
+                resumed = run_vpr_route_packed(
+                    architecture,
+                    circuit,
+                    netlist,
+                    packed_contract,
+                    placement,
+                    output,
+                    resume=True,
+                    **kwargs,
+                )
+            self.assertEqual(resumed, first)
+            validate_vpr_route_checkpoint(
+                architecture,
+                circuit,
+                netlist,
+                packed_contract,
+                placement,
+                output,
+                boundary_query=boundary_query,
+                boundary_output=boundary_output,
+                logic_query=logic_query,
+                logic_output=logic_output,
+                local_path_query=local_query,
+                local_path_output=local_output,
+                sdc_file=sdc,
+            )
+            (output / "cpu.route").write_text("tampered", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "route seal"):
+                validate_vpr_route_checkpoint(
+                    architecture,
+                    circuit,
+                    netlist,
+                    packed_contract,
+                    placement,
+                    output,
+                    boundary_query=boundary_query,
+                    boundary_output=boundary_output,
+                    logic_query=logic_query,
+                    logic_output=logic_output,
+                    local_path_query=local_query,
+                    local_path_output=local_output,
+                    sdc_file=sdc,
+                )
+
+    def test_route_resume_accepts_only_an_atomic_root_relocation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = root / "staging"
+            fpga = staging / "fpga_0"
+            output = fpga / "vpr-route"
+            architecture = fpga / "arch.xml"
+            circuit = fpga / "cpu.eblif"
+            netlist = fpga / "cpu.net"
+            contract = fpga / "packed.json"
+            placement = fpga / "cpu.place"
+            output.mkdir(parents=True)
+            for path in (architecture, circuit, netlist, contract, placement):
+                path.write_text(path.name, encoding="utf-8")
+            route = output / "cpu.route"
+            log = output / "vpr.console.log"
+            summary = output / "timing-summary.json"
+            route.write_text("route", encoding="utf-8")
+            log.write_text(
+                """
+                Netlist num_nets: 2
+                Netlist num_blocks: 3
+                Total wirelength: 12
+                Final critical path delay (least slack): 1 ns, Fmax: 1000 MHz
+                Final setup Worst Negative Slack (sWNS): 0 ns
+                Final setup Worst Slack: 3 ns
+                Final setup Total Negative Slack (sTNS): 0 ns
+                Final setup Failing Endpoint Constraints (sFEC): 0
+                Final setup Failing Endpoints: 0
+                VPR succeeded
+                """,
+                encoding="utf-8",
+            )
+            summary.write_text(
+                json.dumps(
+                    {
+                        "cpd": 1.0,
+                        "fmax": 1000.0,
+                        "swns": 0.0,
+                        "worst_slack": 3.0,
+                        "stns": 0.0,
+                        "sfec": 0,
+                        "failing_endpoints": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            sha256 = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+            artifact = lambda path: {
+                "path": str(path.resolve()),
+                "bytes": path.stat().st_size,
+                "sha256": sha256(path),
+            }
+            checker = {
+                "schema": "emuflow.vpr-route-check/v1",
+                "status": "pass",
+                "provider": "emuflow-cpp-vpr-route-checker",
+                "checks": {"net_coverage": "pass"},
+                "artifacts": {
+                    "packed_contract": artifact(contract),
+                    "placement": artifact(placement),
+                    "route": artifact(route),
+                    "rr_graph": {
+                        "path": str((output / "rr_graph.xml").resolve()),
+                        "bytes": 8,
+                        "sha256": "a" * 64,
+                    },
+                },
+            }
+            (output / "vpr-route-check.json").write_text(
+                json.dumps(checker), encoding="utf-8"
+            )
+            embedded_checker = json.loads(json.dumps(checker))
+            embedded_checker["artifacts"]["rr_graph"]["retained"] = False
+            base = validate_vpr_outputs(
+                log.read_text(encoding="utf-8"),
+                packed_netlist=netlist,
+                placement=placement,
+                route=route,
+                stages=("route", "analysis"),
+            )
+            timing = validate_vpr_timing_summary(summary, base["metrics"])
+            base["metrics"].update(timing["metrics"])
+            report = {
+                **base,
+                "architecture": {"path": str(architecture), "sha256": sha256(architecture)},
+                "circuit": {"path": str(circuit), "sha256": sha256(circuit)},
+                "packed_netlist": {"path": str(netlist), "sha256": sha256(netlist)},
+                "packed_contract": {"path": str(contract), "sha256": sha256(contract)},
+                "placement": {"path": str(placement), "sha256": sha256(placement)},
+                "configuration": {"route_channel_width": 300, "retain_rr_graph": False},
+                "command": ["vpr", "--route", "--analysis"],
+                "log": str(log),
+                "route_check": embedded_checker,
+                "timing_summary": timing,
+            }
+            (output / "vpr-route-report.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+
+            cached = root / "cached"
+            staging.rename(cached)
+            current_fpga = cached / "fpga_0"
+            validated = validate_vpr_route_checkpoint(
+                current_fpga / "arch.xml",
+                current_fpga / "cpu.eblif",
+                current_fpga / "cpu.net",
+                current_fpga / "packed.json",
+                current_fpga / "cpu.place",
+                current_fpga / "vpr-route",
+            )
+            self.assertEqual(
+                validated["artifacts"]["route"]["path"],
+                str((current_fpga / "vpr-route" / "cpu.route").resolve()),
+            )
+
+            shutil.copytree(cached, staging)
+            with self.assertRaisesRegex(ValidationError, "binding disagrees"):
+                validate_vpr_route_checkpoint(
+                    current_fpga / "arch.xml",
+                    current_fpga / "cpu.eblif",
+                    current_fpga / "cpu.net",
+                    current_fpga / "packed.json",
+                    current_fpga / "cpu.place",
+                    current_fpga / "vpr-route",
+                )
 
 
 if __name__ == "__main__":

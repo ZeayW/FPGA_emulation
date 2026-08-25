@@ -861,6 +861,7 @@ def run_multi_fpga_physical_flow(
                 local_path_query=local_query_path,
                 local_path_output=local_raw_path,
                 sdc_file=runtime_sdc,
+                resume=resume,
             )
             boundary_timing_path = fpga_root / "boundary-timing.json"
             boundary_import_report = import_vpr_boundary_timing(
@@ -1212,6 +1213,7 @@ def run_multi_fpga_physical_flow(
             "effective_workers": effective_workers,
             "ordering": "boarddb-fpga-order",
             "pack_place_resume": resume,
+            "route_resume": resume,
         },
         "expected_fpgas": expected_fpgas,
         "fpgas": records,

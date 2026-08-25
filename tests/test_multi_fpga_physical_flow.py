@@ -486,6 +486,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
         self.assertEqual(report["execution"]["requested_workers"], 2)
         self.assertEqual(report["execution"]["effective_workers"], 2)
         self.assertFalse(report["execution"]["pack_place_resume"])
+        self.assertFalse(report["execution"]["route_resume"])
 
     def test_rejects_non_positive_worker_count(self):
         with tempfile.TemporaryDirectory() as temporary:

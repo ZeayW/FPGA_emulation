@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
@@ -718,6 +719,315 @@ def validate_vpr_pack_place_checkpoint(
     return validated
 
 
+def validate_vpr_route_checkpoint(
+    architecture: Path,
+    circuit: Path,
+    packed_netlist: Path,
+    packed_contract: Path,
+    placement: Path,
+    output_dir: Path,
+    *,
+    route_channel_width: int = 300,
+    boundary_query: Optional[Path] = None,
+    boundary_output: Optional[Path] = None,
+    logic_query: Optional[Path] = None,
+    logic_output: Optional[Path] = None,
+    local_path_query: Optional[Path] = None,
+    local_path_output: Optional[Path] = None,
+    retain_rr_graph: bool = False,
+    sdc_file: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Independently validate a completed packed-route checkpoint.
+
+    The multi-gigabyte RR graph is normally deleted only after the independent
+    C++ route checker has consumed it.  A resumable checkpoint therefore binds
+    the retained route, timing/query artifacts, and the complete prior checker
+    report while requiring the RR graph to be absent when it was not retained.
+    """
+
+    inputs = {
+        "architecture": architecture.resolve(),
+        "circuit": circuit.resolve(),
+        "packed_netlist": packed_netlist.resolve(),
+        "packed_contract": packed_contract.resolve(),
+        "placement": placement.resolve(),
+    }
+    if sdc_file is not None:
+        inputs["sdc_file"] = sdc_file.resolve()
+    for name, path in inputs.items():
+        if path.is_symlink() or not path.is_file():
+            raise ValidationError(
+                f"VPR route checkpoint {name} input is missing"
+            )
+    if route_channel_width <= 0 or route_channel_width % 2:
+        raise ValidationError("VPR route checkpoint channel width is invalid")
+
+    query_pairs = {
+        "boundary_timing": (boundary_query, boundary_output),
+        "logic_segment_timing": (logic_query, logic_output),
+        "local_path_timing": (local_path_query, local_path_output),
+    }
+    resolved_queries: Dict[str, tuple[Path, Path]] = {}
+    for name, (query, output) in query_pairs.items():
+        if (query is None) != (output is None):
+            raise ValidationError(
+                f"VPR route checkpoint {name} binding is incomplete"
+            )
+        if query is not None and output is not None:
+            resolved_queries[name] = (query.resolve(), output.resolve())
+
+    output_dir = output_dir.resolve()
+    report_path = output_dir / "vpr-route-report.json"
+    if report_path.is_symlink() or not report_path.is_file():
+        raise ValidationError("VPR route checkpoint report is missing")
+    report = read_json(report_path)
+    if (
+        report.get("status") != "pass"
+        or report.get("provider") != VPR_PROVIDER
+        or report.get("stages") != ["route", "analysis"]
+        or report.get("configuration")
+        != {
+            "route_channel_width": route_channel_width,
+            "retain_rr_graph": retain_rr_graph,
+        }
+    ):
+        raise ValidationError("VPR route checkpoint identity is invalid")
+
+    stored_log = report.get("log")
+    if not isinstance(stored_log, str):
+        raise ValidationError("VPR route checkpoint log binding is missing")
+    stored_output_dir = Path(stored_log)
+    if not stored_output_dir.is_absolute():
+        raise ValidationError("VPR route checkpoint paths are invalid")
+    stored_output_dir = stored_output_dir.resolve(strict=False).parent
+    stored_physical_root = stored_output_dir.parent.parent
+    current_physical_root = output_dir.parent.parent
+
+    def _path_matches(stored_value: Any, expected: Path) -> bool:
+        if not isinstance(stored_value, str):
+            return False
+        stored = Path(stored_value)
+        normalized_stored = stored.resolve(strict=False)
+        if normalized_stored == expected:
+            return True
+        # Managed checkpoints are first written below an immutable staging
+        # root and then atomically moved into the content-addressed cache.  A
+        # later attempt may materialize that cache below another root.  Accept
+        # only that relocation: the original staging path must no longer
+        # exist, and the path below the physical-flow root must be identical.
+        if not stored.is_absolute() or stored.exists():
+            return False
+        try:
+            stored_relative = normalized_stored.relative_to(stored_physical_root)
+            expected_relative = expected.relative_to(current_physical_root)
+        except ValueError:
+            return False
+        return stored_relative == expected_relative
+
+    def _exact_binding(binding: Any, expected: Path, label: str) -> None:
+        if (
+            not isinstance(binding, dict)
+            or not _path_matches(binding.get("path"), expected)
+            or binding.get("sha256") != _sha256(expected)
+        ):
+            raise ValidationError(
+                f"VPR route checkpoint {label} binding disagrees"
+            )
+
+    for label, path in inputs.items():
+        _exact_binding(report.get(label), path, label)
+
+    route = output_dir / f"{inputs['circuit'].stem}.route"
+    log_path = output_dir / "vpr.console.log"
+    timing_summary_path = output_dir / "timing-summary.json"
+    for label, path in (
+        ("route", route),
+        ("log", log_path),
+        ("timing summary", timing_summary_path),
+    ):
+        if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+            raise ValidationError(
+                f"VPR route checkpoint {label} artifact is missing"
+            )
+    if not _path_matches(report.get("log"), log_path):
+        raise ValidationError("VPR route checkpoint log binding disagrees")
+
+    log_text = log_path.read_text(encoding="utf-8")
+    base = validate_vpr_outputs(
+        log_text,
+        packed_netlist=inputs["packed_netlist"],
+        placement=inputs["placement"],
+        route=route,
+        stages=("route", "analysis"),
+    )
+    timing = validate_vpr_timing_summary(timing_summary_path, base["metrics"])
+    expected_metrics = dict(base["metrics"])
+    expected_metrics.update(timing["metrics"])
+    stored_artifacts = report.get("artifacts")
+    expected_artifacts = {
+        "packed_netlist": inputs["packed_netlist"],
+        "placement": inputs["placement"],
+        "route": route,
+    }
+    if not isinstance(stored_artifacts, dict) or set(stored_artifacts) != set(
+        expected_artifacts
+    ):
+        raise ValidationError("VPR route checkpoint artifacts are incomplete")
+    for label, path in expected_artifacts.items():
+        binding = stored_artifacts[label]
+        if (
+            not isinstance(binding, dict)
+            or set(binding) != {"path", "bytes", "sha256"}
+            or not _path_matches(binding.get("path"), path)
+            or binding.get("bytes") != path.stat().st_size
+            or binding.get("sha256") != _sha256(path)
+        ):
+            raise ValidationError(
+                f"VPR route checkpoint {label} seal disagrees"
+            )
+    stored_timing = report.get("timing_summary")
+    if (
+        not isinstance(stored_timing, dict)
+        or set(stored_timing) != set(timing)
+        or not _path_matches(stored_timing.get("path"), timing_summary_path)
+        or any(
+            stored_timing.get(key) != value
+            for key, value in timing.items()
+            if key != "path"
+        )
+        or report.get("metrics") != expected_metrics
+    ):
+        raise ValidationError("VPR route checkpoint route/timing seal disagrees")
+
+    for name, (query, output) in resolved_queries.items():
+        for label, path in (("query", query), ("output", output)):
+            if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+                raise ValidationError(
+                    f"VPR route checkpoint {name} {label} is missing"
+                )
+        stored = report.get(name)
+        if not isinstance(stored, dict) or set(stored) != {"query", "output"}:
+            raise ValidationError(
+                f"VPR route checkpoint {name} seal disagrees"
+            )
+        for label, path in (("query", query), ("output", output)):
+            binding = stored[label]
+            if (
+                not isinstance(binding, dict)
+                or set(binding) != {"path", "sha256"}
+                or not _path_matches(binding.get("path"), path)
+                or binding.get("sha256") != _sha256(path)
+            ):
+                raise ValidationError(
+                    f"VPR route checkpoint {name} seal disagrees"
+                )
+    for name in set(query_pairs) - set(resolved_queries):
+        if name in report:
+            raise ValidationError(
+                f"VPR route checkpoint has unexpected {name} artifacts"
+            )
+
+    route_check_path = output_dir / "vpr-route-check.json"
+    if route_check_path.is_symlink() or not route_check_path.is_file():
+        raise ValidationError("VPR route checkpoint checker report is missing")
+    route_check = read_json(route_check_path)
+    if (
+        route_check.get("schema") != "emuflow.vpr-route-check/v1"
+        or route_check.get("status") != "pass"
+        or route_check.get("provider") != "emuflow-cpp-vpr-route-checker"
+        or not isinstance(route_check.get("checks"), dict)
+        or not route_check["checks"]
+        or set(route_check["checks"].values()) != {"pass"}
+    ):
+        raise ValidationError("VPR route checkpoint checker identity is invalid")
+    checker_artifacts = route_check.get("artifacts")
+    expected_checker_paths = {
+        "packed_contract": inputs["packed_contract"],
+        "placement": inputs["placement"],
+        "route": route,
+    }
+    if not isinstance(checker_artifacts, dict) or set(checker_artifacts) != {
+        *expected_checker_paths,
+        "rr_graph",
+    }:
+        raise ValidationError("VPR route checkpoint checker artifacts are incomplete")
+    for label, path in expected_checker_paths.items():
+        binding = checker_artifacts.get(label)
+        if not isinstance(binding, dict) or set(binding) != {
+            "path",
+            "bytes",
+            "sha256",
+        }:
+            raise ValidationError(
+                f"VPR route checkpoint checker {label} binding is invalid"
+            )
+        if not _path_matches(binding.get("path"), path):
+            raise ValidationError(
+                f"VPR route checkpoint checker {label} path disagrees"
+            )
+        if (
+            binding.get("bytes") != path.stat().st_size
+            or binding.get("sha256") != _sha256(path)
+        ):
+            raise ValidationError(
+                f"VPR route checkpoint checker {label} seal disagrees"
+            )
+    rr_graph = output_dir / "rr_graph.xml"
+    rr_binding = checker_artifacts["rr_graph"]
+    if (
+        not isinstance(rr_binding, dict)
+        or not _path_matches(rr_binding.get("path"), rr_graph)
+        or isinstance(rr_binding.get("bytes"), bool)
+        or not isinstance(rr_binding.get("bytes"), int)
+        or rr_binding["bytes"] <= 0
+        or not isinstance(rr_binding.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", rr_binding["sha256"]) is None
+    ):
+        raise ValidationError("VPR route checkpoint RR-graph seal is invalid")
+    if retain_rr_graph:
+        if (
+            rr_graph.is_symlink()
+            or not rr_graph.is_file()
+            or rr_binding["bytes"] != rr_graph.stat().st_size
+            or rr_binding["sha256"] != _sha256(rr_graph)
+        ):
+            raise ValidationError("VPR route checkpoint RR graph disagrees")
+    elif rr_graph.exists() or rr_graph.is_symlink():
+        raise ValidationError("VPR route checkpoint unexpectedly retains RR graph")
+
+    embedded_route_check = json.loads(json.dumps(route_check))
+    embedded_route_check["artifacts"]["rr_graph"]["retained"] = retain_rr_graph
+    if report.get("route_check") != embedded_route_check:
+        raise ValidationError("VPR route checkpoint checker seal disagrees")
+    command = report.get("command")
+    if (
+        not isinstance(command, list)
+        or "--route" not in command
+        or "--analysis" not in command
+    ):
+        raise ValidationError("VPR route checkpoint command is invalid")
+    # Preserve the immutable on-disk certificate but return a runtime view
+    # whose consumable paths refer to the independently validated current
+    # materialization.
+    validated = json.loads(json.dumps(report))
+    for label, path in inputs.items():
+        validated[label]["path"] = str(path)
+    validated["log"] = str(log_path)
+    validated["timing_summary"]["path"] = str(timing_summary_path)
+    for label, path in expected_artifacts.items():
+        validated["artifacts"][label]["path"] = str(path)
+    for name, (query, output) in resolved_queries.items():
+        validated[name]["query"]["path"] = str(query)
+        validated[name]["output"]["path"] = str(output)
+    runtime_checker_paths = {
+        **expected_checker_paths,
+        "rr_graph": rr_graph,
+    }
+    for label, path in runtime_checker_paths.items():
+        validated["route_check"]["artifacts"][label]["path"] = str(path)
+    return validated
+
+
 def run_vpr_route_packed(
     architecture: Path,
     circuit: Path,
@@ -737,6 +1047,7 @@ def run_vpr_route_packed(
     local_path_output: Optional[Path] = None,
     retain_rr_graph: bool = False,
     sdc_file: Optional[Path] = None,
+    resume: bool = False,
 ) -> Dict[str, Any]:
     """Route an existing VPR packing and OpenPARF cluster placement."""
 
@@ -805,6 +1116,31 @@ def run_vpr_route_packed(
     route = output_dir / f"{inputs['circuit'].stem}.route"
     rr_graph = output_dir / "rr_graph.xml"
     timing_summary = output_dir / "timing-summary.json"
+    checkpoint = output_dir / "vpr-route-report.json"
+    if resume and (checkpoint.is_file() or checkpoint.is_symlink()):
+        return validate_vpr_route_checkpoint(
+            inputs["architecture"],
+            inputs["circuit"],
+            inputs["packed_netlist"],
+            inputs["packed_contract"],
+            inputs["placement"],
+            output_dir,
+            route_channel_width=route_channel_width,
+            boundary_query=boundary_query_path,
+            boundary_output=boundary_output_path,
+            logic_query=logic_query_path,
+            logic_output=logic_output_path,
+            local_path_query=local_path_query_path,
+            local_path_output=local_path_output_path,
+            retain_rr_graph=retain_rr_graph,
+            sdc_file=inputs.get("sdc_file"),
+        )
+    if resume and any(output_dir.iterdir()):
+        # A failed route has no reusable certificate.  Remove only its route
+        # directory before retrying; upstream pack/place and OpenPARF outputs
+        # remain independently checkpointed outside this directory.
+        shutil.rmtree(output_dir)
+        output_dir.mkdir(parents=True)
     command = resolve_native_executable("vpr", executable)
     arguments = [
         command,
