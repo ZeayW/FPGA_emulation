@@ -88,6 +88,14 @@ target_link_libraries(utl_lib
     spdlog::spdlog
 )
 
+# Logger.h is part of utl_lib's public interface.  External fmt 9 only enables
+# its operator<< fallback when this compatibility definition is visible before
+# fmt/core.h, so publish it to every target that instantiates Logger templates.
+target_compile_definitions(utl_lib
+  PUBLIC
+    FMT_DEPRECATED_OSTREAM=1
+)
+
 target_sources(utl
   PRIVATE
     src/LoggerCommon.cpp
@@ -100,11 +108,6 @@ target_include_directories(utl
   PRIVATE
     src
     ${Boost_INCLUDE_DIRS}
-)
-
-target_compile_definitions(utl
-  PUBLIC
-    FMT_DEPRECATED_OSTREAM=1
 )
 
 target_link_libraries(utl
