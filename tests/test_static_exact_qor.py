@@ -345,6 +345,58 @@ class StaticExactQorTest(unittest.TestCase):
                 report["promotion_gate"]["eligible_for_default_promotion"]
             )
 
+    @patch(
+        "emuflow.static_exact_qor.validate_phase7_checkpoint",
+        return_value={"status": "pass", "provider": "baseline"},
+    )
+    def test_vacuous_legacy_arm_is_an_explicit_negative_control(self, _validate):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            platform, roots, records = self._fixture(root)
+            partition_report_path = (
+                roots["legacy-static-exact-v1"][0]
+                / "partition/experiment-partition-report.json"
+            )
+            partition = read_json(partition_report_path)
+            partition["phase3"]["validation"]["combinational_cut_nets"] = 0
+            partition["phase3"]["validation"][
+                "maximum_combinational_dependency_depth"
+            ] = 0
+            partition["static_exact_combinational_cut_exercised"] = False
+            write_json(partition_report_path, partition)
+            report = build_static_exact_qor_comparison(
+                platform, parse_static_exact_qor_arms(records)
+            )
+            self.assertEqual(
+                report["exercise_evidence"]["legacy_v1_classification"],
+                "vacuous-negative-control",
+            )
+            self.assertTrue(
+                report["exercise_evidence"][
+                    "generalized_v2_exercised_real_combinational_cuts"
+                ]
+            )
+
+    @patch(
+        "emuflow.static_exact_qor.validate_phase7_checkpoint",
+        return_value={"status": "pass", "provider": "baseline"},
+    )
+    def test_exercise_flag_must_match_selected_cut_count(self, _validate):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            platform, roots, records = self._fixture(root)
+            partition_report_path = (
+                roots["legacy-static-exact-v1"][0]
+                / "partition/experiment-partition-report.json"
+            )
+            partition = read_json(partition_report_path)
+            partition["static_exact_combinational_cut_exercised"] = False
+            write_json(partition_report_path, partition)
+            with self.assertRaisesRegex(ValidationError, "exercise evidence"):
+                build_static_exact_qor_comparison(
+                    platform, parse_static_exact_qor_arms(records)
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

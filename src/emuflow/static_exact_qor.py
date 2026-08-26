@@ -38,7 +38,7 @@ from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
 from .runtime import QOR_REPORT_SCHEMA
 
 
-STATIC_EXACT_QOR_COMPARISON_SCHEMA = "emuflow.static-exact-qor-comparison/v1"
+STATIC_EXACT_QOR_COMPARISON_SCHEMA = "emuflow.static-exact-qor-comparison/v2"
 STATIC_EXACT_ARM_LABELS = (
     "sequential-only",
     "legacy-static-exact-v1",
@@ -373,6 +373,11 @@ def _partition_evidence(label: str, shared_root: Path) -> Dict[str, Any]:
         raise ValidationError(
             "sequential-only QoR arm contains combinational cut evidence"
         )
+    exercised = report.get("static_exact_combinational_cut_exercised", False)
+    if not isinstance(exercised, bool) or exercised != (combinational > 0):
+        raise ValidationError(
+            "Static Exact QoR combinational-cut exercise evidence is inconsistent"
+        )
     return {
         "cut_mode": mode,
         "candidate_policy": policy,
@@ -381,9 +386,7 @@ def _partition_evidence(label: str, shared_root: Path) -> Dict[str, Any]:
         ),
         "combinational_cut_nets": combinational,
         "maximum_combinational_dependency_depth": dependency_depth,
-        "static_exact_combinational_cut_exercised": report.get(
-            "static_exact_combinational_cut_exercised", False
-        ),
+        "static_exact_combinational_cut_exercised": exercised,
         "assignment_sha256": _sha256(
             _require(shared_root, "partition/assignment.json")
         ),
@@ -712,6 +715,13 @@ def build_static_exact_qor_comparison(
         > 0
         for seed in seeds
     )
+    legacy_exercised = all(
+        by_key[("legacy-static-exact-v1", seed)]["partition"][
+            "combinational_cut_nets"
+        ]
+        > 0
+        for seed in seeds
+    )
     target_result = comparisons["generalized-v2-vs-sequential"][
         "target_clock_result"
     ]
@@ -731,8 +741,18 @@ def build_static_exact_qor_comparison(
         "physical_route_channel_width": next(iter(channel_widths)),
         "claim_scope": (
             "whole-original-design target/runtime timing after complete open "
-            "physical Phase 7; per-FPGA timing is diagnostic"
+            "physical Phase 7; per-FPGA timing is diagnostic; legacy v1 is "
+            "a compatibility negative control when its selected cut count is zero"
         ),
+        "exercise_evidence": {
+            "legacy_v1_exercised_real_combinational_cuts": legacy_exercised,
+            "legacy_v1_classification": (
+                "exercised" if legacy_exercised else "vacuous-negative-control"
+            ),
+            "generalized_v2_exercised_real_combinational_cuts": (
+                generalized_exercised
+            ),
+        },
         "arms": public_records,
         "comparisons": comparisons,
         "promotion_gate": {

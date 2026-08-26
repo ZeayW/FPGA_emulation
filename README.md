@@ -442,9 +442,17 @@ the exact Phase 5 list scheduler then bind the concrete routes, link latency,
 lane capacity, relay readiness, and capture deadline; Phase 6/7 retain the same
 macro-cycle-equivalence and routed physical-segment gates.
 
-The legacy policy remains readable for controlled A/B comparison.  Promotion
-of v2 to the production default additionally requires a canonical real-RTL,
-contest-BoardDB Phase 1--7 comparison against `sequential-only` and legacy v1,
+The legacy policy remains readable for controlled A/B comparison. In that
+three-arm comparison, the positive `--minimum-combinational-cut-nets` exercise
+gate applies to generalized v2 only. Legacy v1 runs the complete Phase 1--7
+chain with a zero minimum: if its potential-frontier filter selects no real
+combinational boundary, the final certificate labels it a
+`vacuous-negative-control` rather than failing the experiment or claiming that
+Static Exact was exercised. The sequential arm must still contain zero
+combinational cuts, while generalized v2 must satisfy the requested positive
+minimum. Promotion of v2 to the production default additionally requires a
+canonical real-RTL, contest-BoardDB Phase 1--7 comparison against
+`sequential-only` and legacy v1,
 with one physical seed by default and final whole-design target-clock WNS/TNS,
 virtual frequency, resource, runtime, and exact-cut evidence.  Small exhaustive
 tests establish semantics but are not QoR evidence.
@@ -486,9 +494,11 @@ wall-clock times for Phase 3--7 and the physical lookahead/Phase 7 pair.  Node
 wall time is stored in the immutable checkpoint manifest rather than mutable
 farm state, so the final bundle can replay the runtime comparison without the
 original attempt directories.  Historical imported checkpoints without this
-field remain readable but cannot supply runtime evidence.  The checker refuses
-default promotion if the generalized arm is vacuous or its target-clock
-WNS/TNS result is not improved.  `--reuse-validated-phase6-equivalence` is
+field remain readable but cannot supply runtime evidence. The checker refuses
+default promotion if the generalized arm is vacuous or its target-clock WNS/TNS
+result is not improved. A vacuous legacy arm remains an honest compatibility
+negative control and is never presented as exercised Static Exact evidence.
+`--reuse-validated-phase6-equivalence` is
 allowed only for immutable managed checkpoints carrying an independent
 validation certificate; standalone roots receive full replay.
 

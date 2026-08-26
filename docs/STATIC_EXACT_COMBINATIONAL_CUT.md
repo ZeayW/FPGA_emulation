@@ -306,6 +306,15 @@ positive threshold is an explicit exercise contract, used by the small
 capacity-limited acceptance fixture; a zero-cut large run is compatible
 evidence, not an exercised exact-cut result.
 
+The canonical three-policy QoR experiment makes this distinction explicit.
+Its sequential arm requires zero combinational cuts, its legacy v1 arm uses a
+zero minimum and becomes a `vacuous-negative-control` when the historical
+potential-frontier filter releases no selected boundary, and its generalized
+v2 arm alone inherits the requested positive exercise threshold. All three
+arms still complete Phase 1--7 so compatibility, runtime, resources, and final
+whole-design WNS/TNS remain comparable. Only an exercised generalized-v2 arm
+can satisfy the default-promotion gate.
+
 `examples/rtl/static_exact_acceptance.v` is the small real-RTL acceptance
 source. Its 33-input next-state parity needs at least seven 6-input LUTs, while
 each FPGA in

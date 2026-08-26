@@ -787,10 +787,22 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "potential-frontier-depth-v1",
             )
             self.assertEqual(
+                nodes["v1-partition"]["configuration"][
+                    "minimum_combinational_cut_nets"
+                ],
+                0,
+            )
+            self.assertEqual(
                 nodes["v2-partition"]["configuration"][
                     "static_exact_candidate_policy"
                 ],
                 "assignment-derived-acyclic-v2",
+            )
+            self.assertEqual(
+                nodes["v2-partition"]["configuration"][
+                    "minimum_combinational_cut_nets"
+                ],
+                1,
             )
             comparison = nodes["static-exact-qor-comparison"]
             self.assertEqual(
@@ -801,6 +813,18 @@ class CanonicalExperimentTest(unittest.TestCase):
                 comparison["implementation"]["components"],
             )
             self.assertEqual(comparison["command"].count("--arm"), 3)
+            self.assertEqual(
+                comparison["configuration"][
+                    "legacy_minimum_combinational_cut_nets"
+                ],
+                0,
+            )
+            self.assertEqual(
+                comparison["configuration"][
+                    "generalized_minimum_combinational_cut_nets"
+                ],
+                1,
+            )
             self.assertIn(
                 "{dependency:v2-phase7-baseline-seed1}",
                 comparison["command"],

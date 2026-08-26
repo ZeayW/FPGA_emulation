@@ -1073,7 +1073,11 @@ def compile_static_exact_ab_experiment_spec(
             "cut_mode": CUT_MODE_STATIC_EXACT,
             "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_FRONTIER_V1,
             "max_cross_fpga_dependency_depth": legacy_max_depth,
-            "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
+            # Legacy v1 is a compatibility/negative-control arm. Its
+            # potential-frontier filter can legitimately release no selected
+            # combinational boundary, so only generalized v2 owns the positive
+            # exercise contract below.
+            "minimum_combinational_cut_nets": 0,
         },
         "v2": {
             "label": "generalized-static-exact-v2",
@@ -1211,7 +1215,8 @@ def compile_static_exact_ab_experiment_spec(
                 "physical_seeds": physical_seeds,
                 "legacy_max_depth": legacy_max_depth,
                 "generalized_max_depth": generalized_max_depth,
-                "minimum_combinational_cut_nets": (
+                "legacy_minimum_combinational_cut_nets": 0,
+                "generalized_minimum_combinational_cut_nets": (
                     minimum_combinational_cut_nets
                 ),
                 "primary_metrics": [
