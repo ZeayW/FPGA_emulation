@@ -468,6 +468,39 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(
                 reused["algorithm_validation"]["status"], "pass"
             )
+            legacy = copy.deepcopy(self.initial)
+            legacy["cluster_assignment"] = {
+                f"legacy-{index}": fpga
+                for index, fpga in enumerate(
+                    self.initial["cluster_assignment"].values()
+                )
+            }
+            legacy_path = root / "legacy-cluster-ids.json"
+            write_json(legacy_path, legacy)
+            rebased = run_phase3(
+                ir_path,
+                platform_path,
+                root / "phase3-rebased",
+                min_used_fpgas=2,
+                balance_tolerance=1.0,
+                provider="patron",
+                route_constraints_path=route_path,
+                timing_database_path=timing_path,
+                patron_refiner=str(patron_refiner()),
+                patron_initial_assignment_path=legacy_path,
+            )
+            self.assertEqual(rebased["status"], "pass")
+            rebased_initial = read_json(
+                root / "phase3-rebased/patron/initial_assignment.json"
+            )
+            self.assertEqual(
+                rebased_initial["instance_assignment"],
+                self.initial["instance_assignment"],
+            )
+            self.assertEqual(
+                set(rebased_initial["cluster_assignment"]),
+                set(self.initial["cluster_assignment"]),
+            )
 
     def test_scalable_native_sweep_improves_a_sparse_chain(self) -> None:
         ir = _chain_ir(300)

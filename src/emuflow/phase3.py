@@ -6,9 +6,11 @@ from .ir import EmuIR
 from .partition import (
     assign_clusters,
     build_clusters,
+    build_partition_assignment,
     load_partition_constraints,
     validate_partition_artifacts,
 )
+from .errors import ValidationError
 from .partition_hops import refine_partition_hops
 from .partition_pressure import (
     build_partition_pressure_model,
@@ -23,6 +25,70 @@ from .routing import load_route_constraints
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
+
+
+def _rebase_patron_initial_assignment(
+    ir: EmuIR,
+    platform: Platform,
+    clusters: Dict[str, Any],
+    constraints: Dict[str, Any],
+    frozen: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Re-express a frozen instance placement using the current clusters.
+
+    Content-addressed experiment reuse may import an assignment produced by an
+    older, semantically compatible cluster-ID scheme.  PATRON must preserve the
+    actual instance placement, not require those incidental IDs to match.  A
+    current cluster is accepted only when all of its instances already occupy
+    one FPGA in the frozen assignment; this never invents or changes a move.
+    """
+
+    raw = frozen.get("instance_assignment")
+    if not isinstance(raw, dict):
+        raise ValidationError(
+            "PATRON frozen assignment requires instance_assignment"
+        )
+    instance_ids = {instance["id"] for instance in ir.value["instances"]}
+    if set(raw) != instance_ids:
+        raise ValidationError(
+            "PATRON frozen assignment has incompatible instance coverage"
+        )
+    fpga_ids = {fpga.id for fpga in platform.fpgas}
+    unknown = sorted(set(raw.values()) - fpga_ids)
+    if unknown:
+        raise ValidationError(
+            f"PATRON frozen assignment references unknown FPGAs {unknown}"
+        )
+
+    cluster_assignment: Dict[str, str] = {}
+    split_clusters = []
+    for cluster in clusters["clusters"]:
+        targets = {raw[instance] for instance in cluster["instances"]}
+        if len(targets) != 1:
+            split_clusters.append(cluster["id"])
+            continue
+        cluster_assignment[cluster["id"]] = next(iter(targets))
+    if split_clusters:
+        raise ValidationError(
+            "PATRON frozen instance placement splits current clusters; "
+            f"clusters={split_clusters[:8]}"
+        )
+
+    rebased = build_partition_assignment(
+        ir,
+        platform,
+        clusters,
+        constraints,
+        cluster_assignment,
+        provider=str(frozen.get("provider", "frozen-partition-v1")),
+        seed=int(frozen.get("seed", 0)),
+    )
+    if rebased["instance_assignment"] != raw:
+        raise ValidationError(
+            "PATRON frozen assignment rebase changed instance placement"
+        )
+    validate_partition_artifacts(ir, platform, clusters, rebased)
+    return rebased
 
 
 def run_phase3(
@@ -156,8 +222,13 @@ def run_phase3(
                 repair_balance=tritonpart_repair_balance,
             )
         else:
-            initial = read_json(patron_initial_assignment_path)
-            validate_partition_artifacts(ir, platform, clusters, initial)
+            initial = _rebase_patron_initial_assignment(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                read_json(patron_initial_assignment_path),
+            )
         initial, patron_initial_hop = refine_partition_hops(
             ir,
             platform,

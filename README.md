@@ -967,7 +967,11 @@ metrics.  The scalable sweep is a deterministic heuristic and is not claimed
 globally optimal.  Canonical experiment configs may set
 `partition_provider=patron`, reuse `patron_initial_assignment`, and restrict
 `phase6_providers` plus `physical_seeds` (for example Chimew/seed 1) so an A/B
-run computes only the missing branch.  PATRON remains non-default until the
+run computes only the missing branch.  A frozen assignment is rebound through
+its exact instance-to-FPGA map when a compatible source revision changed only
+cluster identifiers; every current cluster must remain wholly on one frozen
+FPGA and the rebuilt instance map must be byte-for-byte equivalent, otherwise
+the import fails closed.  PATRON remains non-default until the
 real large-design Phase 7 WNS/TNS gate passes.  The complete design and gate are
 documented in
 [the timing/TDM partitioning upgrade plan](docs/PARTITIONING_TIMING_TDM_UPGRADE.md).
