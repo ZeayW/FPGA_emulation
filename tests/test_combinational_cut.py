@@ -14,6 +14,7 @@ from emuflow.cli import main
 from emuflow.combinational_cut import (
     GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+    _build_combinational_cut_candidate_index,
     build_static_exact_semantic_contract,
     characterize_combinational_cuts,
     semantic_contract_sha256,
@@ -474,6 +475,41 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
             validate_combinational_cut_characterization(ir, report)["status"],
             "pass",
         )
+
+    def test_compact_candidate_index_matches_full_characterization(self):
+        ir = _chain_ir()
+        report = characterize_combinational_cuts(ir)
+        compact = _build_combinational_cut_candidate_index(
+            ir,
+            include_dependency_levels=True,
+            include_source_identity=True,
+        )
+        self.assertEqual(
+            compact["eligible_ids"],
+            {item["net"] for item in report["eligible_cuts"]},
+        )
+        self.assertEqual(
+            compact["dependency_levels"],
+            {
+                item["net"]: item["dependency_level"]
+                for item in report["eligible_cuts"]
+            },
+        )
+        self.assertEqual(
+            compact["canonical_emuir_sha256"],
+            report["source_identity"]["canonical_emuir_sha256"],
+        )
+
+    def test_compact_v2_candidate_index_skips_frontier_levels(self):
+        ir = _chain_ir()
+        compact = _build_combinational_cut_candidate_index(
+            ir,
+            include_dependency_levels=False,
+            include_source_identity=False,
+        )
+        self.assertEqual(compact["eligible_ids"], {"n0", "n1"})
+        self.assertEqual(compact["dependency_levels"], {})
+        self.assertNotIn("canonical_emuir_sha256", compact)
 
     def test_cycle_is_fail_closed_and_stays_atomic(self):
         value = _chain_ir().to_dict()

@@ -261,15 +261,22 @@ def _splittable_instances(
     )
 
 
-def characterize_combinational_cuts(
-    ir: EmuIR, depth_limits: Sequence[int] = (1, 2)
+def _build_combinational_cut_candidate_index(
+    ir: EmuIR,
+    *,
+    include_dependency_levels: bool,
+    include_source_identity: bool,
 ) -> Dict[str, Any]:
-    limits = sorted(set(depth_limits))
-    if not limits or any(
-        isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
-        for limit in limits
-    ):
-        raise ValidationError("depth limits must be positive integers")
+    """Build the compact candidate index used by Phase 3 hot paths.
+
+    Full characterization also computes per-net audit records, atomic-component
+    summaries for every requested depth, and large human-facing metric tables.
+    Partition construction and semantic-contract reconstruction need only the
+    structurally eligible net IDs (plus legacy frontier levels).  Keeping that
+    production query separate avoids repeatedly materializing a full analysis
+    report for a real synthesized design while preserving the explicit
+    characterization command unchanged.
+    """
 
     instances = {item["id"]: item for item in ir.value["instances"]}
     classes = {
@@ -281,19 +288,15 @@ def characterize_combinational_cuts(
         for instance_id, classification in classes.items()
         if classification != "architectural-state-or-memory"
     )
-    # The ordered list is retained for deterministic SCC traversal, while
-    # graph construction must use a set for membership.  Real synthesized
-    # designs contain hundreds of thousands of instances and nets; testing
-    # membership in ``combinational_nodes`` directly would turn this otherwise
-    # linear scan into O(|nets| * |instances|).
     combinational_set = set(combinational_nodes)
     adjacency: Dict[str, Set[str]] = defaultdict(set)
     self_loops: Set[str] = set()
     incoming_by_instance: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
     for net in ir.value["nets"]:
-        for endpoint in net["sinks"]:
-            if endpoint["instance"] is not None:
-                incoming_by_instance[endpoint["instance"]].append(net)
+        if include_dependency_levels:
+            for endpoint in net["sinks"]:
+                if endpoint["instance"] is not None:
+                    incoming_by_instance[endpoint["instance"]].append(net)
         driver_instances = sorted(
             {
                 endpoint["instance"]
@@ -326,11 +329,14 @@ def characterize_combinational_cuts(
         for component in components
         if len(component) > 1 or component[0] in self_loops
     ]
-    cyclic_instances = {member for item in cyclic_components for member in item}
+    cyclic_instances = {
+        member
+        for component in cyclic_components
+        for member in component
+    }
 
     eligible_ids: Set[str] = set()
     ineligible: List[Dict[str, Any]] = []
-    net_by_id = {net["id"]: net for net in ir.value["nets"]}
     for net in ir.value["nets"]:
         if net["cut_class"] != "combinational":
             continue
@@ -341,7 +347,11 @@ def characterize_combinational_cuts(
         ]
         if len(drivers) != 1 or len(instance_drivers) != 1:
             reasons.add("not-single-instance-driver")
-        source = instance_drivers[0]["instance"] if len(instance_drivers) == 1 else None
+        source = (
+            instance_drivers[0]["instance"]
+            if len(instance_drivers) == 1
+            else None
+        )
         if source is not None:
             if classes[source] != "supported-soft-combinational":
                 reasons.add("driver-not-supported-soft-logic")
@@ -369,69 +379,127 @@ def characterize_combinational_cuts(
         else:
             eligible_ids.add(net["id"])
 
-    supported_nodes = sorted(
-        instance_id
-        for instance_id, classification in classes.items()
-        if classification == "supported-soft-combinational"
-        and instance_id not in cyclic_instances
-    )
-    supported_set = set(supported_nodes)
-    supported_successors: Dict[str, Set[str]] = defaultdict(set)
-    supported_indegree = {node: 0 for node in supported_nodes}
-    for source in supported_nodes:
-        for sink in adjacency.get(source, set()):
-            if sink in supported_set and sink not in supported_successors[source]:
-                supported_successors[source].add(sink)
-                supported_indegree[sink] += 1
-    supported_queue = deque(
-        sorted(node for node, degree in supported_indegree.items() if degree == 0)
-    )
-    frontier_by_instance: Dict[str, Set[str]] = {}
-    while supported_queue:
-        instance_id = supported_queue.popleft()
-        frontier: Set[str] = set()
-        for incoming in incoming_by_instance.get(instance_id, []):
-            if incoming["id"] in eligible_ids:
-                frontier.add(incoming["id"])
-                continue
-            for endpoint in incoming["drivers"]:
-                source = endpoint["instance"]
-                if source in supported_set:
-                    frontier.update(frontier_by_instance.get(source, set()))
-        frontier_by_instance[instance_id] = frontier
-        for sink in sorted(supported_successors.get(instance_id, set())):
-            supported_indegree[sink] -= 1
-            if supported_indegree[sink] == 0:
-                supported_queue.append(sink)
-    if len(frontier_by_instance) != len(supported_nodes):
-        raise ValidationError("supported soft-logic graph unexpectedly contains a cycle")
-
-    dependencies: Dict[str, Set[str]] = {}
-    for net_id in sorted(eligible_ids):
-        driver = next(
-            endpoint["instance"]
-            for endpoint in net_by_id[net_id]["drivers"]
-            if endpoint["instance"] is not None
-        )
-        dependencies[net_id] = set(frontier_by_instance.get(driver, set()))
-    successors: Dict[str, Set[str]] = defaultdict(set)
-    indegree = {net_id: len(items) for net_id, items in dependencies.items()}
-    for sink, sources in dependencies.items():
-        for source in sources:
-            successors[source].add(sink)
-    queue = deque(sorted(net_id for net_id, value in indegree.items() if value == 0))
     levels: Dict[str, int] = {}
-    while queue:
-        net_id = queue.popleft()
-        levels[net_id] = 1 + max(
-            (levels[source] for source in dependencies[net_id]), default=0
+    dependencies: Dict[str, Set[str]] = {}
+    if include_dependency_levels:
+        supported_nodes = sorted(
+            instance_id
+            for instance_id, classification in classes.items()
+            if classification == "supported-soft-combinational"
+            and instance_id not in cyclic_instances
         )
-        for sink in sorted(successors.get(net_id, set())):
-            indegree[sink] -= 1
-            if indegree[sink] == 0:
-                queue.append(sink)
-    if len(levels) != len(eligible_ids):
-        raise ValidationError("eligible combinational-cut dependency graph is cyclic")
+        supported_set = set(supported_nodes)
+        supported_successors: Dict[str, Set[str]] = defaultdict(set)
+        supported_indegree = {node: 0 for node in supported_nodes}
+        for source in supported_nodes:
+            for sink in adjacency.get(source, set()):
+                if sink in supported_set and sink not in supported_successors[source]:
+                    supported_successors[source].add(sink)
+                    supported_indegree[sink] += 1
+        supported_queue = deque(
+            sorted(
+                node for node, degree in supported_indegree.items() if degree == 0
+            )
+        )
+        frontier_by_instance: Dict[str, Set[str]] = {}
+        while supported_queue:
+            instance_id = supported_queue.popleft()
+            frontier: Set[str] = set()
+            for incoming in incoming_by_instance.get(instance_id, []):
+                if incoming["id"] in eligible_ids:
+                    frontier.add(incoming["id"])
+                    continue
+                for endpoint in incoming["drivers"]:
+                    source = endpoint["instance"]
+                    if source in supported_set:
+                        frontier.update(frontier_by_instance.get(source, set()))
+            frontier_by_instance[instance_id] = frontier
+            for sink in sorted(supported_successors.get(instance_id, set())):
+                supported_indegree[sink] -= 1
+                if supported_indegree[sink] == 0:
+                    supported_queue.append(sink)
+        if len(frontier_by_instance) != len(supported_nodes):
+            raise ValidationError(
+                "supported soft-logic graph unexpectedly contains a cycle"
+            )
+
+        net_by_id = {net["id"]: net for net in ir.value["nets"]}
+        for net_id in sorted(eligible_ids):
+            driver = next(
+                endpoint["instance"]
+                for endpoint in net_by_id[net_id]["drivers"]
+                if endpoint["instance"] is not None
+            )
+            dependencies[net_id] = set(frontier_by_instance.get(driver, set()))
+        successors: Dict[str, Set[str]] = defaultdict(set)
+        indegree = {
+            net_id: len(items) for net_id, items in dependencies.items()
+        }
+        for sink, sources in dependencies.items():
+            for source in sources:
+                successors[source].add(sink)
+        queue = deque(
+            sorted(net_id for net_id, value in indegree.items() if value == 0)
+        )
+        while queue:
+            net_id = queue.popleft()
+            levels[net_id] = 1 + max(
+                (levels[source] for source in dependencies[net_id]), default=0
+            )
+            for sink in sorted(successors.get(net_id, set())):
+                indegree[sink] -= 1
+                if indegree[sink] == 0:
+                    queue.append(sink)
+        if len(levels) != len(eligible_ids):
+            raise ValidationError(
+                "eligible combinational-cut dependency graph is cyclic"
+            )
+
+    result: Dict[str, Any] = {
+        "instances": instances,
+        "classes": classes,
+        "combinational_nodes": combinational_nodes,
+        "adjacency": adjacency,
+        "self_loops": self_loops,
+        "cyclic_components": cyclic_components,
+        "cyclic_instances": cyclic_instances,
+        "eligible_ids": eligible_ids,
+        "ineligible": ineligible,
+        "net_by_id": {net["id"]: net for net in ir.value["nets"]},
+        "dependencies": dependencies,
+        "dependency_levels": levels,
+    }
+    if include_source_identity:
+        result["canonical_emuir_sha256"] = _canonical_sha256(ir.to_dict())
+    return result
+
+
+def characterize_combinational_cuts(
+    ir: EmuIR, depth_limits: Sequence[int] = (1, 2)
+) -> Dict[str, Any]:
+    limits = sorted(set(depth_limits))
+    if not limits or any(
+        isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
+        for limit in limits
+    ):
+        raise ValidationError("depth limits must be positive integers")
+
+    candidate_index = _build_combinational_cut_candidate_index(
+        ir,
+        include_dependency_levels=True,
+        include_source_identity=False,
+    )
+    instances = candidate_index["instances"]
+    classes = candidate_index["classes"]
+    combinational_nodes = candidate_index["combinational_nodes"]
+    self_loops = candidate_index["self_loops"]
+    cyclic_components = candidate_index["cyclic_components"]
+    cyclic_instances = candidate_index["cyclic_instances"]
+    eligible_ids = candidate_index["eligible_ids"]
+    ineligible = candidate_index["ineligible"]
+    net_by_id = candidate_index["net_by_id"]
+    dependencies = candidate_index["dependencies"]
+    levels = candidate_index["dependency_levels"]
 
     eligible = []
     for net_id in sorted(eligible_ids):
@@ -586,15 +654,12 @@ def build_static_exact_semantic_contract(
             "exact combinational-cut frame slots must be at least two"
         )
 
-    characterization = characterize_combinational_cuts(
+    candidate_index = _build_combinational_cut_candidate_index(
         ir,
-        (
-            (1, 2)
-            if candidate_selection_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1
-            else (max_dependency_depth,)
-        ),
+        include_dependency_levels=False,
+        include_source_identity=False,
     )
-    eligible = {item["net"] for item in characterization["eligible_cuts"]}
+    eligible = set(candidate_index["eligible_ids"])
     instances = {item["id"]: item for item in ir.value["instances"]}
     classes = {
         instance_id: _instance_class(instance)

@@ -16,6 +16,7 @@ from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_CANDIDATE_POLICIES,
+    _build_combinational_cut_candidate_index,
 )
 
 
@@ -329,7 +330,7 @@ def build_clusters(
             "'static-exact-combinational'"
         )
     released_combinational_nets: Set[str] = set()
-    characterization = None
+    candidate_index = None
     if cut_mode == CUT_MODE_STATIC_EXACT:
         if len(ir.value["clocks"]) != 1:
             raise ValidationError(
@@ -370,10 +371,13 @@ def build_clusters(
             or frame_slots < 2
         ):
             raise ValidationError("frame_slots must be an integer at least two")
-        from .combinational_cut import characterize_combinational_cuts
-
-        characterization = characterize_combinational_cuts(
-            ir, (max_cross_fpga_dependency_depth,)
+        candidate_index = _build_combinational_cut_candidate_index(
+            ir,
+            include_dependency_levels=(
+                static_exact_candidate_policy
+                == STATIC_EXACT_CANDIDATE_FRONTIER_V1
+            ),
+            include_source_identity=True,
         )
         if static_exact_candidate_policy == STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2:
             # Candidate depth is not intrinsic to a net.  A net deep in the
@@ -381,14 +385,14 @@ def build_clusters(
             # its cone and therefore have actual dependency depth one.  V2
             # releases every structurally legal candidate and reconstructs the
             # depth only after the provider supplies an assignment.
-            released_combinational_nets = {
-                item["net"] for item in characterization["eligible_cuts"]
-            }
+            released_combinational_nets = set(candidate_index["eligible_ids"])
         else:
             released_combinational_nets = {
-                item["net"]
-                for item in characterization["eligible_cuts"]
-                if item["dependency_level"] <= max_cross_fpga_dependency_depth
+                net_id
+                for net_id, level in candidate_index[
+                    "dependency_levels"
+                ].items()
+                if level <= max_cross_fpga_dependency_depth
             }
     instances = {
         instance["id"]: instance for instance in ir.value["instances"]
@@ -475,7 +479,7 @@ def build_clusters(
         },
     }
     if cut_mode == CUT_MODE_STATIC_EXACT:
-        assert characterization is not None
+        assert candidate_index is not None
         result["policy"].update(
             {
                 "cut_mode": cut_mode,
@@ -490,9 +494,9 @@ def build_clusters(
                 "transported_cut_classes": sorted(
                     {*TRANSPORTED_CUT_CLASSES, "combinational"}
                 ),
-                "characterization_source_sha256": characterization[
-                    "source_identity"
-                ]["canonical_emuir_sha256"],
+                "characterization_source_sha256": candidate_index[
+                    "canonical_emuir_sha256"
+                ],
                 "qualification": "partition-legality-only-provisional",
             }
         )
