@@ -831,6 +831,101 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             ],
         )
 
+    def test_downstream_cut_keeps_local_source_fpga_capture(self):
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "local_cut_fanout",
+                    "top": "local_cut_fanout",
+                    "source_format": "test",
+                },
+                "ports": [],
+                "instances": [
+                    {"id": "q0", "type": "FDRE", "resources": {"ff": 1}},
+                    {"id": "l0", "type": "LUT2", "resources": {"lut": 1}},
+                    {"id": "l1", "type": "LUT2", "resources": {"lut": 1}},
+                    {
+                        "id": "local_q",
+                        "type": "FDRE",
+                        "resources": {"ff": 1},
+                    },
+                    {
+                        "id": "remote_q",
+                        "type": "FDRE",
+                        "resources": {"ff": 1},
+                    },
+                ],
+                "nets": [
+                    {
+                        "id": "launch",
+                        "name": "launch",
+                        "cut_class": "register_output",
+                        "drivers": [_endpoint("q0", "Q")],
+                        "sinks": [_endpoint("l0", "I0")],
+                    },
+                    {
+                        "id": "cut0",
+                        "name": "cut0",
+                        "cut_class": "combinational",
+                        "drivers": [_endpoint("l0", "O")],
+                        "sinks": [_endpoint("l1", "I0")],
+                    },
+                    {
+                        "id": "cut1",
+                        "name": "cut1",
+                        "cut_class": "combinational",
+                        "drivers": [_endpoint("l1", "O")],
+                        "sinks": [
+                            _endpoint("local_q", "D"),
+                            _endpoint("remote_q", "D"),
+                        ],
+                    },
+                ],
+                "clocks": [
+                    {
+                        "id": "clk",
+                        "name": "clk",
+                        "source_port": "clk",
+                        "period_ns": None,
+                    }
+                ],
+                "warnings": [],
+            }
+        )
+        contract = build_static_exact_semantic_contract(
+            ir,
+            _three_fpga_platform("star").to_dict(),
+            {
+                "q0": "fpga0",
+                "l0": "fpga0",
+                "l1": "fpga1",
+                "local_q": "fpga1",
+                "remote_q": "fpga2",
+            },
+            [
+                {
+                    "net": "cut0",
+                    "source_fpgas": ["fpga0"],
+                    "sink_fpgas": ["fpga1"],
+                },
+                {
+                    "net": "cut1",
+                    "source_fpgas": ["fpga1"],
+                    "sink_fpgas": ["fpga2"],
+                },
+            ],
+            max_dependency_depth=2,
+            comb_segment_budget_slots=1,
+            frame_slots=16,
+        )
+        captures = {
+            (item["cut_net"], item["fpga"], item["endpoint"])
+            for item in contract["capture_requirements"]
+        }
+        self.assertIn(("cut0", "fpga1", "local_q"), captures)
+        self.assertIn(("cut1", "fpga2", "remote_q"), captures)
+
     def test_contract_tamper_is_rejected(self):
         clusters, assignment = self._exact_artifacts()
         tampered = copy.deepcopy(assignment)

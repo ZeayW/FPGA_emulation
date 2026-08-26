@@ -763,13 +763,23 @@ def build_static_exact_semantic_contract(
                 visited.add(instance_id)
                 for outgoing in outgoing_by_instance.get(instance_id, []):
                     downstream_cut = cut_by_net.get(outgoing["id"])
-                    if (
-                        downstream_cut is not None
-                        and downstream_cut["source_fpgas"][0] == sink_fpga
-                    ):
-                        continue
                     for endpoint in outgoing["sinks"]:
                         sink = endpoint["instance"]
+                        # A transported downstream net can still have local
+                        # fanout on its source FPGA.  The downstream cut
+                        # contract owns only the remote branches; suppressing
+                        # the whole net drops real local architectural
+                        # captures and leaves Phase 7 unable to bind their
+                        # physical RX-to-capture segments.  Stop only at the
+                        # endpoints that actually leave ``sink_fpga``.
+                        if (
+                            downstream_cut is not None
+                            and downstream_cut["source_fpgas"][0]
+                            == sink_fpga
+                            and sink is not None
+                            and instance_assignment.get(sink) != sink_fpga
+                        ):
+                            continue
                         if sink is None:
                             capture_records.append(
                                 {
