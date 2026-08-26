@@ -577,20 +577,33 @@ Evaluation proxy_evaluation(const ProxyState& state) {
   return result;
 }
 
-ProxyState build_proxy_state(const Model& model) {
+ProxyState build_proxy_state(
+    const Model& model,
+    const std::vector<int>* assignment_override = nullptr) {
   ProxyState state;
   state.assignment.resize(model.clusters);
   state.resource_load.assign(
       model.parts, std::vector<double>(model.dimensions, 0.0));
   state.part_counts.assign(model.parts, 0);
   for (int cluster = 0; cluster < model.clusters; ++cluster) {
-    const int part = model.cluster[cluster].part;
+    const int part = assignment_override == nullptr
+                         ? model.cluster[cluster].part
+                         : assignment_override->at(cluster);
+    require(part >= 0 && part < model.parts,
+            "scalable assignment part is invalid");
+    require(model.cluster[cluster].fixed < 0
+                || model.cluster[cluster].fixed == part,
+            "scalable assignment violates a fixed cluster");
     state.assignment[cluster] = part;
     ++state.part_counts[part];
     for (int dim = 0; dim < model.dimensions; ++dim) {
       state.resource_load[part][dim] += model.cluster[cluster].weight[dim];
     }
   }
+  require(std::count_if(state.part_counts.begin(), state.part_counts.end(),
+                        [](int count) { return count > 0; })
+              >= model.min_used_parts,
+          "scalable assignment violates minimum used parts");
   state.domain_load.assign(model.domains, 0);
   state.net.resize(model.nets);
   for (int net = 0; net < model.nets; ++net) {
@@ -1033,10 +1046,11 @@ void run_scalable(const Model& model, const std::string& output_path) {
                                before,
                                state.evaluation});
   }
+  const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
                "scalable-critical-sweep-v1",
                initial,
-               state.evaluation,
+               endpoint.evaluation,
                moves,
                state.assignment);
 }

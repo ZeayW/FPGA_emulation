@@ -260,6 +260,21 @@ def run_phase3(
             executable=patron_refiner,
             max_moves=patron_max_moves,
         )
+        write_json(output_dir / "patron" / "pressure_model.json", model)
+        write_json(
+            output_dir / "patron" / "refinement_trace.json", patron_trace
+        )
+        write_json(
+            output_dir / "patron" / "initial_assignment.json", initial
+        )
+        write_json(
+            output_dir / "patron" / "candidate_assignment.json",
+            assignment,
+        )
+        write_json(
+            output_dir / "patron" / "initial_hop_refinement.json",
+            patron_initial_hop,
+        )
         patron_validation = validate_partition_pressure_native_bundle(
             ir,
             platform,
@@ -271,17 +286,6 @@ def run_phase3(
             initial,
             assignment,
             patron_trace,
-        )
-        write_json(output_dir / "patron" / "pressure_model.json", model)
-        write_json(
-            output_dir / "patron" / "refinement_trace.json", patron_trace
-        )
-        write_json(
-            output_dir / "patron" / "initial_assignment.json", initial
-        )
-        write_json(
-            output_dir / "patron" / "initial_hop_refinement.json",
-            patron_initial_hop,
         )
     else:
         raise ValueError(
@@ -347,6 +351,9 @@ def run_phase3(
                 "patron_trace": "patron/refinement_trace.json",
                 "patron_initial_assignment": (
                     "patron/initial_assignment.json"
+                ),
+                "patron_candidate_assignment": (
+                    "patron/candidate_assignment.json"
                 ),
                 "patron_initial_hop_refinement": (
                     "patron/initial_hop_refinement.json"

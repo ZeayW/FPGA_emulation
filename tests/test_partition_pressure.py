@@ -437,6 +437,9 @@ class PartitionPressureTest(unittest.TestCase):
             trace = (root / "phase3/patron/refinement_trace.json")
             self.assertEqual(report["status"], "pass")
             self.assertTrue(trace.is_file())
+            self.assertTrue(
+                (root / "phase3/patron/candidate_assignment.json").is_file()
+            )
             self.assertEqual(report["provider"], "patron-native-exact-v1")
             baseline = promote_patron_baseline(
                 ir_path, platform_path, root / "phase3"
@@ -632,6 +635,10 @@ class PartitionPressureTest(unittest.TestCase):
             bundle["qualification"],
             "linear-transition-and-endpoint-reconstruction",
         )
+        self.assertLessEqual(
+            bundle["maximum_endpoint_relative_objective_error"],
+            1.0e-12,
+        )
         tampered = copy.deepcopy(trace)
         tampered["moves"][0]["target"] = tampered["moves"][0]["source"]
         with self.assertRaisesRegex(ValidationError, "transition"):
@@ -646,6 +653,21 @@ class PartitionPressureTest(unittest.TestCase):
                 initial,
                 final,
                 tampered,
+            )
+        endpoint_tampered = copy.deepcopy(trace)
+        endpoint_tampered["final_metrics"]["objective_key"][1] += 1.0e-4
+        with self.assertRaisesRegex(ValidationError, "endpoint objective"):
+            validate_partition_pressure_native_bundle(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                timing,
+                route_constraints,
+                model,
+                initial,
+                final,
+                endpoint_tampered,
             )
         self.assertLess(
             after["metrics"]["objective_key"],

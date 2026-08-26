@@ -971,7 +971,10 @@ run computes only the missing branch.  A frozen assignment is rebound through
 its exact instance-to-FPGA map when a compatible source revision changed only
 cluster identifiers; every current cluster must remain wholly on one frozen
 FPGA and the rebuilt instance map must be byte-for-byte equivalent, otherwise
-the import fails closed.  PATRON remains non-default until the
+the import fails closed.  Scalable native endpoint metrics are re-anchored by
+a full reconstruction after incremental search, and the Python checker
+requires exact discrete metrics plus 1e-12 relative agreement for accumulated
+slack.  PATRON remains non-default until the
 real large-design Phase 7 WNS/TNS gate passes.  The complete design and gate are
 documented in
 [the timing/TDM partitioning upgrade plan](docs/PARTITIONING_TIMING_TDM_UPGRADE.md).

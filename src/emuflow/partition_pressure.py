@@ -1464,6 +1464,7 @@ def validate_partition_pressure_native_bundle(
         include_tdm_wait=False,
     )
     maximum_endpoint_error = 0.0
+    maximum_endpoint_relative_error = 0.0
     for actual, expected in (
         (
             native_trace.get("initial_metrics", {}).get("objective_key"),
@@ -1478,15 +1479,32 @@ def validate_partition_pressure_native_bundle(
             raise ValidationError(
                 "native PATRON endpoint objective is invalid"
             )
-        maximum_endpoint_error = max(
-            maximum_endpoint_error,
-            max(
-                abs(float(left) - float(right))
-                for left, right in zip(actual, expected)
-            ),
-        )
-    if maximum_endpoint_error > 1.0e-9:
-        raise ValidationError("native PATRON endpoint objective mismatch")
+        for objective_index, (left, right) in enumerate(
+            zip(actual, expected)
+        ):
+            left_value = float(left)
+            right_value = float(right)
+            error = abs(left_value - right_value)
+            maximum_endpoint_error = max(maximum_endpoint_error, error)
+            maximum_endpoint_relative_error = max(
+                maximum_endpoint_relative_error,
+                error / max(1.0, abs(right_value)),
+            )
+            if objective_index < 2:
+                matches = math.isclose(
+                    left_value,
+                    right_value,
+                    rel_tol=1.0e-12,
+                    abs_tol=1.0e-9,
+                )
+            else:
+                matches = left_value == right_value
+            if not matches:
+                raise ValidationError(
+                    "native PATRON endpoint objective mismatch: "
+                    f"field={objective_index}, native={left_value}, "
+                    f"independent={right_value}, error={error}"
+                )
     return {
         "status": "pass",
         "mode": mode,
@@ -1495,6 +1513,9 @@ def validate_partition_pressure_native_bundle(
         "moves": len(moves),
         "maximum_objective_chain_error": maximum_chain_error,
         "maximum_endpoint_objective_error": maximum_endpoint_error,
+        "maximum_endpoint_relative_objective_error": (
+            maximum_endpoint_relative_error
+        ),
     }
 
 
