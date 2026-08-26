@@ -10,6 +10,11 @@ from .partition import (
     validate_partition_artifacts,
 )
 from .partition_hops import refine_partition_hops
+from .partition_pressure import (
+    build_partition_pressure_model,
+    run_partition_pressure_native,
+    validate_partition_pressure_native_bundle,
+)
 from .platform import Platform
 from .repart import run_repart
 from .mfspart_provider import run_mfspart
@@ -48,6 +53,10 @@ def run_phase3(
     mfspart_refiner: Optional[str] = None,
     mfspart_refiner_checker: Optional[str] = None,
     mfspart_legalizer: Optional[str] = None,
+    timing_database_path: Optional[Path] = None,
+    patron_refiner: Optional[str] = None,
+    patron_max_moves: Optional[int] = None,
+    patron_initial_assignment_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
@@ -62,6 +71,7 @@ def run_phase3(
     route_constraints = load_route_constraints(
         route_constraints_path, platform
     )
+    patron_validation = None
     if provider == "greedy":
         assignment = assign_clusters(
             ir,
@@ -120,11 +130,93 @@ def run_phase3(
             refiner_checker=mfspart_refiner_checker,
             legalizer=mfspart_legalizer,
         )
+    elif provider == "patron":
+        if timing_database_path is None:
+            raise ValueError(
+                "PATRON Phase 3 requires a complete TimingPathDB"
+            )
+        if patron_initial_assignment_path is None:
+            initial = run_tritonpart(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                output_dir / "patron" / "tritonpart",
+                seed=seed,
+                executable=openroad,
+                solution_input=tritonpart_solution,
+                net_weights=load_partition_net_weights(net_weights_path),
+                timeout_seconds=tritonpart_timeout_seconds,
+                seed_attempts=tritonpart_seed_attempts,
+                num_initial_solutions=tritonpart_num_initial_solutions,
+                num_best_initial_solutions=(
+                    tritonpart_num_best_initial_solutions
+                ),
+                repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
+                repair_balance=tritonpart_repair_balance,
+            )
+        else:
+            initial = read_json(patron_initial_assignment_path)
+            validate_partition_artifacts(ir, platform, clusters, initial)
+        initial, patron_initial_hop = refine_partition_hops(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            initial,
+            output_dir / "patron" / "initial-hop-refinement",
+            route_constraints_path=route_constraints_path,
+            net_weights_path=net_weights_path,
+            executable=hop_refiner,
+        )
+        timing_database = read_json(timing_database_path)
+        model = build_partition_pressure_model(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            timing_database,
+            route_constraints,
+        )
+        assignment, patron_trace = run_partition_pressure_native(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            route_constraints,
+            model,
+            initial,
+            executable=patron_refiner,
+            max_moves=patron_max_moves,
+        )
+        patron_validation = validate_partition_pressure_native_bundle(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            timing_database,
+            route_constraints,
+            model,
+            initial,
+            assignment,
+            patron_trace,
+        )
+        write_json(output_dir / "patron" / "pressure_model.json", model)
+        write_json(
+            output_dir / "patron" / "refinement_trace.json", patron_trace
+        )
+        write_json(
+            output_dir / "patron" / "initial_assignment.json", initial
+        )
+        write_json(
+            output_dir / "patron" / "initial_hop_refinement.json",
+            patron_initial_hop,
+        )
     else:
         raise ValueError(
             f"unknown Phase 3 provider {provider!r}; "
             "expected 'repart-replication', 'repart', 'tritonpart', "
-            "'mfspart', or 'greedy'"
+            "'mfspart', 'patron', or 'greedy'"
         )
     assignment, hop_refinement = refine_partition_hops(
         ir,
@@ -176,6 +268,24 @@ def run_phase3(
             report["artifacts"]["replication"] = "replication.json"
     elif provider == "mfspart":
         report["artifacts"]["mfspart"] = "mfspart/hierarchy.json"
+    elif provider == "patron":
+        report["algorithm_validation"] = patron_validation
+        report["artifacts"].update(
+            {
+                "patron_model": "patron/pressure_model.json",
+                "patron_trace": "patron/refinement_trace.json",
+                "patron_initial_assignment": (
+                    "patron/initial_assignment.json"
+                ),
+                "patron_initial_hop_refinement": (
+                    "patron/initial_hop_refinement.json"
+                ),
+            }
+        )
+        if patron_initial_assignment_path is None:
+            report["artifacts"]["tritonpart"] = (
+                "patron/tritonpart/tritonpart_input.json"
+            )
     if hop_refinement["enabled"]:
         report["artifacts"]["hop_refinement"] = (
             "hop-refinement/hop_refinement.json"
@@ -193,6 +303,67 @@ def run_phase3(
             hop_refinement,
         )
     write_json(output_dir / "phase3_report.json", report)
+    return report
+
+
+def promote_patron_baseline(
+    ir_path: Path,
+    platform_path: Path,
+    phase3_root: Path,
+) -> Dict[str, Any]:
+    """Restore PATRON's frozen TritonPart+hop candidate after exact rejection."""
+
+    ir = EmuIR.load(ir_path)
+    platform = Platform.load(platform_path)
+    clusters = read_json(phase3_root / "clusters.json")
+    initial = read_json(phase3_root / "patron/initial_assignment.json")
+    validation = validate_partition_artifacts(ir, platform, clusters, initial)
+    hop_refinement = read_json(
+        phase3_root / "patron/initial_hop_refinement.json"
+    )
+    report = read_json(phase3_root / "phase3_report.json")
+    report.update(
+        {
+            "provider": initial["provider"],
+            "seed": initial["seed"],
+            "validation": validation,
+            "hop_refinement": hop_refinement,
+            "partitions": [
+                {
+                    key: value
+                    for key, value in partition.items()
+                    if key != "clusters"
+                }
+                for partition in initial["partitions"]
+            ],
+        }
+    )
+    report.pop("algorithm_validation", None)
+    report["artifacts"] = {
+        "clusters": "clusters.json",
+        "constraints": "constraints.normalized.json",
+        "assignment": "assignment.json",
+        "report": "phase3_report.json",
+        **(
+            {
+                "hop_refinement": (
+                    "patron/initial_hop_refinement.json"
+                )
+            }
+            if hop_refinement["enabled"]
+            else {}
+        ),
+        **(
+            {"tritonpart": "patron/tritonpart/tritonpart_input.json"}
+            if (
+                phase3_root
+                / "patron/tritonpart/tritonpart_input.json"
+            ).is_file()
+            else {}
+        ),
+    }
+    write_json(phase3_root / "assignment.json", initial)
+    write_json(phase3_root / "phase3_report.json", report)
     return report
 
 

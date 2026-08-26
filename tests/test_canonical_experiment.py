@@ -283,10 +283,55 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "--chimew-assigner",
             ):
                 self.assertIn(argument, nodes["phase6-chimew"]["command"])
+
+    def test_compiler_can_reuse_a_frozen_baseline_for_patron(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            initial = root / "baseline-assignment.json"
+            initial.write_text('{"frozen":"fixture"}\n', encoding="utf-8")
+            config["partition_provider"] = "patron"
+            config["patron_initial_assignment"] = str(initial)
+            config["tools"]["patron_refiner"] = sys.executable
+            config["phase6_providers"] = ["chimew"]
+            config["physical_seeds"] = [1]
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "patron-spec.json"
+            compile_canonical_experiment_spec(
+                config_path, REPOSITORY, output
+            )
+            spec = validate_experiment_spec(json.loads(output.read_text()))
+            nodes = {node["id"]: node for node in spec["nodes"]}
+            partition = next(
+                node for node in spec["nodes"] if node["id"] == "partition"
+            )
+            self.assertEqual(partition["configuration"]["provider"], "patron")
+            self.assertIn("--patron-refiner", partition["command"])
+            self.assertIn(
+                "--patron-initial-assignment", partition["command"]
+            )
+            self.assertIn(
+                "--patron-initial-assignment", partition["validator"]
+            )
+            self.assertIn(
+                "src/emuflow/partition_pressure.py",
+                partition["implementation"]["components"],
+            )
+            self.assertIn(
+                "src/native/patron_refiner.cpp",
+                partition["implementation"]["components"],
+            )
+            self.assertTrue(
+                any(
+                    artifact["path"] == "patron"
+                    for artifact in partition["artifacts"]
+                )
+            )
             terminals = [item for item in spec["nodes"] if item["stage"] == "phase7"]
             self.assertEqual(
                 {(item["provider"], item["physical_seed"]) for item in terminals},
-                {(provider, seed) for provider in ("baseline", "placement-aware", "chimew") for seed in (1, 2, 3)},
+                {("chimew", 1)},
             )
             self.assertTrue(all(item["configuration"]["physical_workers"] == 8 for item in terminals))
             for terminal in terminals:
@@ -321,11 +366,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 comparison["dependencies"],
                 [
                     "shared-phase1-5",
-                    *[
-                        f"phase7-{provider}-seed{seed}"
-                        for provider in ("baseline", "placement-aware", "chimew")
-                        for seed in (1, 2, 3)
-                    ],
+                    "phase7-chimew-seed1",
                 ],
             )
             self.assertEqual(

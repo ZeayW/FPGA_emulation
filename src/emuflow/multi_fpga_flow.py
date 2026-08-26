@@ -32,7 +32,7 @@ from .multi_fpga_bsp_flow import (
 )
 from .opensta import DEFAULT_TIMING_MODEL, run_opensta_path_database
 from .phase1 import run_phase1
-from .phase3 import run_phase3
+from .phase3 import promote_patron_baseline, run_phase3
 from .phase4 import run_phase4
 from .phase5 import run_phase5
 from .phase6 import run_phase6
@@ -726,6 +726,8 @@ def run_multi_fpga_flow(
     balance_tolerance: Optional[float] = None,
     openroad: Optional[str] = None,
     repart: Optional[str] = None,
+    patron_refiner: Optional[str] = None,
+    patron_max_moves: Optional[int] = None,
     partition_timeout_seconds: int = 3600,
     partition_seed_attempts: int = 1,
     partition_num_initial_solutions: int = 50,
@@ -837,6 +839,17 @@ def run_multi_fpga_flow(
             "--timing-vivado applies only to timing-backend=vivado"
         )
     internal_timing_database = timing_paths is None
+    if partition_provider == "patron" and not internal_timing_database:
+        raise EmuFlowError(
+            "--partition-provider patron requires the internally generated "
+            "complete TimingPathDB"
+        )
+    if partition_provider == "patron" and cross_stage_iterations < 1:
+        raise EmuFlowError(
+            "--partition-provider patron requires --cross-stage-iterations "
+            "of at least 1 so the frozen TritonPart fallback and PATRON "
+            "candidate receive exact Phase 4/5 promotion"
+        )
     if timing_paths is not None and (
         timing_driven or architecture_timing_db is not None
     ):
@@ -1167,6 +1180,11 @@ def run_multi_fpga_flow(
             else None
         ),
         route_constraints_path=effective_route_constraints,
+        timing_database_path=(
+            path_database_path if partition_provider == "patron" else None
+        ),
+        patron_refiner=patron_refiner,
+        patron_max_moves=patron_max_moves,
     )
     assignment_path = phase3_root / "assignment.json"
 
@@ -1243,8 +1261,15 @@ def run_multi_fpga_flow(
             ir_path=ir_path,
             platform_path=platform_path,
             database_path=path_database_path,
-            initial_assignment_path=assignment_path,
+            initial_assignment_path=(
+                phase3_root / "patron/initial_assignment.json"
+                if partition_provider == "patron"
+                else assignment_path
+            ),
             output_dir=cross_stage_root,
+            seed_candidate_phase3_root=(
+                phase3_root if partition_provider == "patron" else None
+            ),
             phase3_constraints_path=(
                 phase3_root / "constraints.normalized.json"
             ),
@@ -1257,6 +1282,8 @@ def run_multi_fpga_flow(
             balance_tolerance=balance_tolerance,
             openroad=openroad,
             repart=repart,
+            patron_refiner=patron_refiner,
+            patron_max_moves=patron_max_moves,
             partition_timeout_seconds=partition_timeout_seconds,
             partition_seed_attempts=partition_seed_attempts,
             partition_num_initial_solutions=partition_num_initial_solutions,
@@ -1297,6 +1324,11 @@ def run_multi_fpga_flow(
             shutil.rmtree(phase3_root)
             shutil.copytree(selected_phase3_root, phase3_root)
             phase3_report = read_json(phase3_root / "phase3_report.json")
+            assignment_path = phase3_root / "assignment.json"
+        elif partition_provider == "patron":
+            phase3_report = promote_patron_baseline(
+                ir_path, platform_path, phase3_root
+            )
             assignment_path = phase3_root / "assignment.json"
         projected_timing_paths = timing_root / "cut-timing-paths.json"
         shutil.copy2(

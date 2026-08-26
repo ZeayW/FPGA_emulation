@@ -161,6 +161,7 @@ from .packed_netlist import (
 )
 from .packed_placement import run_packed_openparf_placement
 from .partition_feedback import run_partition_feedback
+from .partition_pressure import run_partition_pressure_reference
 from .physical_pins import (
     SERIAL_TRANSCEIVER_PROVIDER,
     run_phase6b,
@@ -539,7 +540,14 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--platform", type=Path, required=True)
     partition_run.add_argument(
         "--provider",
-        choices=("tritonpart", "greedy", "repart", "repart-replication", "mfspart"),
+        choices=(
+            "tritonpart",
+            "greedy",
+            "repart",
+            "repart-replication",
+            "mfspart",
+            "patron",
+        ),
         default="tritonpart",
     )
     partition_run.add_argument("--seed", type=int, default=0)
@@ -549,6 +557,9 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--balance-tolerance", type=float)
     partition_run.add_argument("--openroad")
     partition_run.add_argument("--hop-refiner")
+    partition_run.add_argument("--patron-refiner")
+    partition_run.add_argument("--patron-max-moves", type=int)
+    partition_run.add_argument("--patron-initial-assignment", type=Path)
     partition_run.add_argument("--timeout-seconds", type=int, default=3600)
     partition_run.add_argument("--seed-attempts", type=int, default=1)
     partition_run.add_argument(
@@ -571,6 +582,7 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--platform", type=Path, required=True)
     partition_validate.add_argument("--route-constraints", type=Path)
     partition_validate.add_argument("--provider")
+    partition_validate.add_argument("--patron-initial-assignment", type=Path)
     partition_validate.add_argument("--seed", type=int)
     partition_validate.add_argument("--seed-attempts", type=int)
     partition_validate.add_argument(
@@ -1498,7 +1510,14 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--partition-constraints", type=Path)
     multi_fpga_compile.add_argument(
         "--partition-provider",
-        choices=("repart-replication", "repart", "tritonpart", "mfspart", "greedy"),
+        choices=(
+            "repart-replication",
+            "repart",
+            "tritonpart",
+            "mfspart",
+            "patron",
+            "greedy",
+        ),
         default="tritonpart",
     )
     multi_fpga_compile.add_argument("--seed", type=int, default=0)
@@ -1506,6 +1525,8 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--balance-tolerance", type=float)
     multi_fpga_compile.add_argument("--openroad")
     multi_fpga_compile.add_argument("--repart")
+    multi_fpga_compile.add_argument("--patron-refiner")
+    multi_fpga_compile.add_argument("--patron-max-moves", type=int)
     multi_fpga_compile.add_argument(
         "--partition-timeout-seconds", type=int, default=3600
     )
@@ -2229,7 +2250,14 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--balance-tolerance", type=float)
     phase3.add_argument(
         "--provider",
-        choices=("repart-replication", "repart", "tritonpart", "mfspart", "greedy"),
+        choices=(
+            "repart-replication",
+            "repart",
+            "tritonpart",
+            "mfspart",
+            "patron",
+            "greedy",
+        ),
         default="tritonpart",
         help="partition provider (default: tritonpart)",
     )
@@ -2318,6 +2346,14 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--mfspart-refiner")
     phase3.add_argument("--mfspart-refiner-checker")
     phase3.add_argument("--mfspart-legalizer")
+    phase3.add_argument(
+        "--timing-database",
+        type=Path,
+        help="complete TimingPathDB required by --provider patron",
+    )
+    phase3.add_argument("--patron-refiner")
+    phase3.add_argument("--patron-max-moves", type=int)
+    phase3.add_argument("--patron-initial-assignment", type=Path)
 
     sta_parser = subparsers.add_parser(
         "sta", help="STA path extraction artifact operations"
@@ -2604,6 +2640,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "--pair-pressure-weight", type=float, default=1.0
     )
 
+    partition_pressure = subparsers.add_parser(
+        "partition-pressure-reference",
+        help="run the compact exhaustive path/TDM-aware partition oracle",
+    )
+    partition_pressure.add_argument("--ir", type=Path, required=True)
+    partition_pressure.add_argument("--platform", type=Path, required=True)
+    partition_pressure.add_argument("--clusters", type=Path, required=True)
+    partition_pressure.add_argument("--constraints", type=Path, required=True)
+    partition_pressure.add_argument(
+        "--timing-database", type=Path, required=True
+    )
+    partition_pressure.add_argument(
+        "--route-constraints", type=Path, required=True
+    )
+    partition_pressure.add_argument(
+        "--initial-assignment", type=Path, required=True
+    )
+    partition_pressure.add_argument("--out", type=Path, required=True)
+    partition_pressure.add_argument("--max-moves", type=int)
+
     cross_stage = subparsers.add_parser(
         "cross-stage",
         help="checked Phase 3--5 feedback optimization operations",
@@ -2682,6 +2738,9 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument(
         "--initial-assignment", type=Path, required=True
     )
+    cross_stage_optimize.add_argument(
+        "--seed-candidate-phase3-root", type=Path
+    )
     cross_stage_optimize.add_argument("--out", type=Path, required=True)
     cross_stage_optimize.add_argument(
         "--phase3-constraints", type=Path
@@ -2699,7 +2758,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cross_stage_optimize.add_argument(
         "--phase3-provider",
-        choices=("repart-replication", "repart", "tritonpart", "mfspart"),
+        choices=(
+            "repart-replication",
+            "repart",
+            "tritonpart",
+            "mfspart",
+            "patron",
+        ),
         default="repart-replication",
     )
     cross_stage_optimize.add_argument(
@@ -2712,6 +2777,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cross_stage_optimize.add_argument("--openroad")
     cross_stage_optimize.add_argument("--repart")
+    cross_stage_optimize.add_argument("--patron-refiner")
+    cross_stage_optimize.add_argument("--patron-max-moves", type=int)
     cross_stage_optimize.add_argument(
         "--partition-timeout-seconds", type=int, default=3600
     )
@@ -3192,6 +3259,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 repair_balance=args.repair_balance,
                 num_initial_solutions=args.num_initial_solutions,
                 num_best_initial_solutions=args.num_best_initial_solutions,
+                patron_refiner=args.patron_refiner,
+                patron_max_moves=args.patron_max_moves,
+                patron_initial_assignment_path=(
+                    args.patron_initial_assignment
+                ),
             )
         elif args.experiment_stage_command == "partition-validate":
             report = validate_partition_checkpoint(
@@ -3204,6 +3276,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_seed=args.seed,
                 expected_seed_attempts=args.seed_attempts,
                 expected_repair_balance=args.repair_balance,
+                patron_initial_assignment_path=(
+                    args.patron_initial_assignment
+                ),
             )
         elif args.experiment_stage_command == "cut-timing-run":
             report = run_cut_timing_checkpoint(
@@ -4299,6 +4374,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             balance_tolerance=args.balance_tolerance,
             openroad=args.openroad,
             repart=args.repart,
+            patron_refiner=args.patron_refiner,
+            patron_max_moves=args.patron_max_moves,
             partition_timeout_seconds=args.partition_timeout_seconds,
             partition_seed_attempts=args.partition_seed_attempts,
             partition_num_initial_solutions=(
@@ -4475,6 +4552,12 @@ def _dispatch(args: argparse.Namespace) -> int:
             mfspart_refiner=args.mfspart_refiner,
             mfspart_refiner_checker=args.mfspart_refiner_checker,
             mfspart_legalizer=args.mfspart_legalizer,
+            timing_database_path=args.timing_database,
+            patron_refiner=args.patron_refiner,
+            patron_max_moves=args.patron_max_moves,
+            patron_initial_assignment_path=(
+                args.patron_initial_assignment
+            ),
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
@@ -4607,6 +4690,21 @@ def _dispatch(args: argparse.Namespace) -> int:
         _print_json(report)
         return 0
 
+    if args.command == "partition-pressure-reference":
+        report = run_partition_pressure_reference(
+            args.ir,
+            args.platform,
+            args.clusters,
+            args.constraints,
+            args.timing_database,
+            args.route_constraints,
+            args.initial_assignment,
+            args.out,
+            max_moves=args.max_moves,
+        )
+        _print_json(report)
+        return 0
+
     if args.command == "cross-stage":
         if args.cross_stage_command == "evaluate":
             report = evaluate_cross_stage_candidate(
@@ -4642,6 +4740,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 database_path=args.database,
                 initial_assignment_path=args.initial_assignment,
                 output_dir=args.out,
+                seed_candidate_phase3_root=(
+                    args.seed_candidate_phase3_root
+                ),
                 phase3_constraints_path=args.phase3_constraints,
                 route_constraints_path=args.route_constraints,
                 board_link_timing_path=args.board_link_timing_db,
@@ -4652,6 +4753,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 balance_tolerance=args.balance_tolerance,
                 openroad=args.openroad,
                 repart=args.repart,
+                patron_refiner=args.patron_refiner,
+                patron_max_moves=args.patron_max_moves,
                 partition_timeout_seconds=(
                     args.partition_timeout_seconds
                 ),

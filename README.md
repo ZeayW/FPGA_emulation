@@ -949,6 +949,29 @@ initial/final cut, connectivity, hop, capacity, and fixed-node checks. The
 checker can be overridden for source-build validation with
 `--mfspart-refiner-checker`; installed builds resolve it automatically.
 
+The partitioning-upgrade branch also exposes the compact, exhaustive PATRON
+reference with `emuflow partition-pressure-reference`.  It consumes a frozen
+EmuIR, normalized Phase 3 clusters/constraints, TimingPathDB, BoardDB route
+constraints, and initial assignment.  The emitted source-bound model and move
+trace independently reconstruct target-specific directed-link pressure,
+predicted TDM ratio, ordered timing-path delay, capacity/topology legality, and
+the globally best improving move.  The source-built native PATRON engine
+matches that oracle move-for-move on compact graphs and switches above 256
+clusters to an indexed, criticality-ordered best-target sweep; the latter
+updates only incident nets, paths, resource loads, and capacity domains.
+`--partition-provider patron` is an explicit non-default research provider.
+Its initial result and frozen TritonPart fallback are both scored by checked
+Phase 4/5 before promotion, and large checkpoints independently rebuild the
+model, transition chain, assignment legality, and complete initial/final
+metrics.  The scalable sweep is a deterministic heuristic and is not claimed
+globally optimal.  Canonical experiment configs may set
+`partition_provider=patron`, reuse `patron_initial_assignment`, and restrict
+`phase6_providers` plus `physical_seeds` (for example Chimew/seed 1) so an A/B
+run computes only the missing branch.  PATRON remains non-default until the
+real large-design Phase 7 WNS/TNS gate passes.  The complete design and gate are
+documented in
+[the timing/TDM partitioning upgrade plan](docs/PARTITIONING_TIMING_TDM_UPGRADE.md).
+
 ### Automatic validation archives
 
 A successful full-flow run can be archived as part of the same command. The
@@ -3251,6 +3274,7 @@ docs/              architecture, algorithm, and benchmark plans
 
 - [Flow architecture and phase contracts](docs/FLOW_PLAN.md)
 - [Academic algorithm upgrade plan](docs/ALGORITHM_UPGRADE_PLAN.md)
+- [Timing- and TDM-aware partitioning upgrade](docs/PARTITIONING_TIMING_TDM_UPGRADE.md)
 - [Open-source components and provenance](OPEN_SOURCE_COMPONENTS.md)
 
 Machine-specific configurations, raw results, QoR tables, and experiment
