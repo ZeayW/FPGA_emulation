@@ -10,6 +10,7 @@ from emuflow import chimew_bank_channel as bank_channel_module
 from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
+    CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1,
     CHIMEW_BANK_CHANNEL_PROVIDER,
     _verify_certificate,
     _verify_stage2_certificate,
@@ -192,6 +193,65 @@ class ChimewBankChannelTest(unittest.TestCase):
             record for record in result["assignments"] if record["group"] == "common_near"
         )
         self.assertEqual(common["channel_cost"], 0.5)
+
+    def test_bidirectional_tdm_bundle_uses_member_specific_costs(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["groups"] = [
+            {
+                "id": "shared_bundle",
+                "domain": "AB",
+                "kind": "tdm_group",
+                "direction": "bidirectional",
+                "members": [
+                    {
+                        **member("forward", 0.0, 0.0),
+                        "direction": "a_to_b",
+                    },
+                    {
+                        "id": "reverse",
+                        "direction": "b_to_a",
+                        "fanout": {"x": 100.0, "y": 20.0},
+                        "fanins": [{"x": 0.0, "y": 20.0}],
+                    },
+                ],
+            }
+        ]
+        document["metrics"] = {
+            "groups": 1,
+            "signals": 2,
+            "fanins": 2,
+            "bank_pairs": 2,
+            "channels": 4,
+            "bidirectional_bundles": 1,
+        }
+        report = evaluate_chimew_bank_channel_assignment(
+            document, executable=str(self.executable)
+        )
+        self.assertEqual(report["metrics"]["bidirectional_bundles"], 1)
+        self.assertEqual(len(report["assignments"]), 1)
+        self.assertEqual(
+            report,
+            evaluate_chimew_bank_channel_assignment(
+                document, executable=str(self.executable)
+            ),
+        )
+
+        malformed = copy.deepcopy(document)
+        malformed["groups"][0]["members"][1]["direction"] = "a_to_b"
+        with self.assertRaisesRegex(ValidationError, "both directions"):
+            validate_chimew_bank_channel_input(malformed)
+
+    def test_legacy_v1_input_remains_supported(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["schema"] = CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1
+        validated = validate_chimew_bank_channel_input(document)
+        self.assertEqual(validated["metrics"]["bidirectional_bundles"], 0)
+        self.assertEqual(
+            evaluate_chimew_bank_channel_assignment(
+                document, executable=str(self.executable)
+            )["metrics"]["groups"],
+            len(document["groups"]),
+        )
 
     def test_dedicated_direction_bank_uses_its_full_lane_inventory(self) -> None:
         document = copy.deepcopy(self.document)

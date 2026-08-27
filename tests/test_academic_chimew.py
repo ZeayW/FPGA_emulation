@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.academic_chimew import (
+    _bundle_shared_bidirectional_groups,
     _coalesce_timing_guard_lanes,
     _timing_weights,
     materialize_academic_chimew_inputs,
@@ -487,10 +488,125 @@ class AcademicChimewTest(unittest.TestCase):
                 "pass",
             )
 
-    def test_shared_bidirectional_timing_guard_relaxes_opposite_directions(
+    def test_shared_bidirectional_bundling_is_exact_and_capacity_safe(self) -> None:
+        grouped = {}
+        schedule = {}
+        for direction, count, slot_offset in (
+            ("a_to_b", 152, 0),
+            ("b_to_a", 196, 1),
+        ):
+            for index in range(count):
+                key = ("shared", direction, index)
+                entry_id = f"{direction}-{index}"
+                slot = (index + slot_offset) % 4
+                grouped[key] = [
+                    {
+                        "id": entry_id,
+                        "fanout": {"x": 0.0, "y": float(index % 31)},
+                        "fanins": [
+                            {"x": 1.0, "y": float((index * 3) % 31)}
+                        ],
+                    }
+                ]
+                schedule[entry_id] = {
+                    "id": entry_id,
+                    "tdm_ratio": 4,
+                    "slot": slot,
+                }
+        first = _bundle_shared_bidirectional_groups(
+            link_id="shared",
+            lane_count=300,
+            grouped=grouped,
+            fixed_lane_by_group={},
+            schedule_by_id=schedule,
+        )
+        second = _bundle_shared_bidirectional_groups(
+            link_id="shared",
+            lane_count=300,
+            grouped=grouped,
+            fixed_lane_by_group={},
+            schedule_by_id=schedule,
+        )
+        self.assertEqual(first, second)
+        materialized, fixed, _sources, metrics = first
+        self.assertEqual(fixed, {})
+        self.assertEqual(len(materialized), 300)
+        self.assertEqual(metrics["required_pairs"], 48)
+        self.assertEqual(metrics["selected_pairs"], 48)
+        self.assertGreaterEqual(metrics["maximum_compatible_pairs"], 48)
+        bundles = [
+            members
+            for key, members in materialized.items()
+            if key[1] == "bidirectional"
+        ]
+        self.assertEqual(len(bundles), 48)
+        for members in bundles:
+            self.assertEqual({member["direction"] for member in members}, {
+                "a_to_b",
+                "b_to_a",
+            })
+            slots = {schedule[member["id"]]["slot"] for member in members}
+            self.assertEqual(len(slots), len(members))
+
+        colliding_schedule = {
+            entry_id: {**entry, "slot": 0}
+            for entry_id, entry in schedule.items()
+        }
+        with self.assertRaisesRegex(
+            ValidationError, "maximum_compatible_pairs=0"
+        ):
+            _bundle_shared_bidirectional_groups(
+                link_id="shared",
+                lane_count=347,
+                grouped=grouped,
+                fixed_lane_by_group={},
+                schedule_by_id=colliding_schedule,
+            )
+
+    def test_shared_bidirectional_matching_agrees_with_small_exact_oracle(self) -> None:
+        grouped = {}
+        schedule = {}
+        for direction, values, slot in (
+            ("a_to_b", (0.0, 10.0), 0),
+            ("b_to_a", (9.0, 1.0), 1),
+        ):
+            for index, value in enumerate(values):
+                key = ("shared", direction, index)
+                entry_id = f"{direction}-{index}"
+                grouped[key] = [
+                    {
+                        "id": entry_id,
+                        "fanout": {"x": 0.0, "y": value},
+                        "fanins": [{"x": 1.0, "y": value}],
+                    }
+                ]
+                schedule[entry_id] = {
+                    "id": entry_id,
+                    "tdm_ratio": 2,
+                    "slot": slot,
+                }
+        _groups, _fixed, sources, metrics = _bundle_shared_bidirectional_groups(
+            link_id="shared",
+            lane_count=2,
+            grouped=grouped,
+            fixed_lane_by_group={},
+            schedule_by_id=schedule,
+        )
+        selected = {
+            (members[0][2], members[1][2])
+            for key, members in sources.items()
+            if key[1] == "bidirectional"
+        }
+        # Exhaustive 2x2 oracle: (0->1, 1->0) has total endpoint mismatch 4;
+        # the crossed alternative has total mismatch 36.
+        self.assertEqual(selected, {(0, 1), (1, 0)})
+        self.assertEqual(metrics["required_pairs"], 2)
+        self.assertEqual(metrics["maximum_compatible_pairs"], 2)
+
+    def test_shared_bidirectional_timing_guard_preserves_one_bundled_lane(
         self,
     ) -> None:
-        """A dynamic opposite-direction lane is never duplicated as static I/O."""
+        """Opposite timing guards become one slot-safe static channel."""
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -513,8 +629,12 @@ class AcademicChimewTest(unittest.TestCase):
                 if (entry["from"], entry["to"]) == ("fpga1", "fpga0")
             )
             # Phase 5 may use the same concrete shared lane in different
-            # TDM slots; this is precisely the static-channel boundary.
+            # TDM slots; the materializer must preserve it as one bundle.
             reverse["lane"] = forward["lane"]
+            forward["tdm_ratio"] = 2
+            reverse["tdm_ratio"] = 2
+            forward["slot"] = 0
+            reverse["slot"] = 1
             write_json(schedule, schedule_document)
             timing = root / "timing.json"
             write_json(
@@ -550,14 +670,14 @@ class AcademicChimewTest(unittest.TestCase):
             )
             timing_guard = materialized_schedule["chimew_timing_guard"]
             self.assertEqual(
-                set(timing_guard["relaxed_shared_bidirectional_entries"]),
+                set(timing_guard["fixed_lane_entries"]),
                 {forward["id"], reverse["id"]},
             )
-            self.assertEqual(len(timing_guard["relaxed_shared_bidirectional_lanes"]), 1)
-            self.assertFalse(
-                {forward["id"], reverse["id"]}
-                & set(timing_guard["fixed_lane_entries"])
+            self.assertEqual(
+                set(timing_guard["relaxed_shared_bidirectional_entries"]),
+                set(),
             )
+            self.assertEqual(timing_guard["relaxed_shared_bidirectional_lanes"], [])
             bank_input = read_json(
                 Path(lookahead["artifacts"]["bank_channel_input"]["path"])
             )
@@ -568,7 +688,17 @@ class AcademicChimewTest(unittest.TestCase):
                 bank_input["metrics"][
                     "timing_guard_relaxed_shared_bidirectional_lanes"
                 ],
-                1,
+                0,
+            )
+            bundles = [
+                group
+                for group in bank_input["groups"]
+                if group["direction"] == "bidirectional"
+            ]
+            self.assertEqual(len(bundles), 1)
+            self.assertEqual(
+                {member["id"] for member in bundles[0]["members"]},
+                {forward["id"], reverse["id"]},
             )
             concrete_lanes = [
                 channel["physical_lane"] for channel in electrical_map["channels"]

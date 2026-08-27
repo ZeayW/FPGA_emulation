@@ -28,6 +28,7 @@ struct Point {
 };
 
 struct Member {
+  int direction = -1;  // 0: FPGA A -> B, 1: FPGA B -> A.
   double timing_weight = 1.0;
   Point fanout;
   std::vector<Point> fanins;
@@ -37,7 +38,7 @@ struct Group {
   int index = -1;
   int domain = -1;
   int kind = -1;       // 0: TDM group, 1: common signal.
-  int direction = -1;  // 0: FPGA A -> B, 1: FPGA B -> A.
+  int direction = -1;  // 0: A -> B, 1: B -> A, 2: shared TDM bundle.
   int expected_members = 0;
   std::vector<Member> members;
 };
@@ -77,9 +78,11 @@ Input read_input(const std::string& path) {
   std::ifstream stream(path);
   std::string header;
   if (!(stream >> header) ||
-      header != "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V1") {
+      (header != "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V1" &&
+       header != "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V2")) {
     throw std::runtime_error("invalid Chimew bank/channel input header");
   }
+  const bool input_v2 = header == "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V2";
   Input input;
   std::string record;
   while (stream >> record) {
@@ -118,7 +121,8 @@ Input read_input(const std::string& path) {
             group.direction >> group.expected_members) ||
           group.index != static_cast<int>(input.groups.size()) ||
           group.domain < 0 || (group.kind != 0 && group.kind != 1) ||
-          (group.direction != 0 && group.direction != 1) ||
+          (group.direction != 0 && group.direction != 1 &&
+           (!input_v2 || group.direction != 2)) ||
           group.expected_members <= 0 ||
           (group.kind == 1 && group.expected_members != 1)) {
         throw std::runtime_error("invalid Chimew signal group");
@@ -129,7 +133,9 @@ Input read_input(const std::string& path) {
       int member_index = -1;
       int fanin_count = 0;
       Member member;
-      if (!(stream >> group_index >> member_index >> member.timing_weight >>
+      if (!(stream >> group_index >> member_index) ||
+          (input_v2 && !(stream >> member.direction)) ||
+          !(stream >> member.timing_weight >>
             member.fanout.x >>
             member.fanout.y >> fanin_count) ||
           group_index < 0 ||
@@ -139,6 +145,14 @@ Input read_input(const std::string& path) {
           fanin_count <= 0 || !std::isfinite(member.timing_weight) ||
           member.timing_weight <= 0.0 || !finite_point(member.fanout)) {
         throw std::runtime_error("invalid Chimew signal member");
+      }
+      if (!input_v2) {
+        member.direction = input.groups[group_index].direction;
+      }
+      if ((member.direction != 0 && member.direction != 1) ||
+          (input.groups[group_index].direction != 2 &&
+           member.direction != input.groups[group_index].direction)) {
+        throw std::runtime_error("invalid Chimew member direction");
       }
       member.fanins.resize(fanin_count);
       for (Point& fanin : member.fanins) {
@@ -176,16 +190,26 @@ Input read_input(const std::string& path) {
     if (static_cast<int>(group.members.size()) != group.expected_members) {
       throw std::runtime_error("Chimew group member count does not agree");
     }
+    if (group.direction == 2) {
+      bool seen_direction[2] = {false, false};
+      for (const Member& member : group.members) {
+        seen_direction[member.direction] = true;
+      }
+      if (!seen_direction[0] || !seen_direction[1]) {
+        throw std::runtime_error(
+            "bidirectional Chimew bundle lacks one direction");
+      }
+    }
   }
   return input;
 }
 
 double raw_cost(const Group& group, const Point& endpoint_a,
                 const Point& endpoint_b) {
-  const Point& output = group.direction == 0 ? endpoint_a : endpoint_b;
-  const Point& input = group.direction == 0 ? endpoint_b : endpoint_a;
   double cost = 0.0;
   for (const Member& member : group.members) {
+    const Point& output = member.direction == 0 ? endpoint_a : endpoint_b;
+    const Point& input = member.direction == 0 ? endpoint_b : endpoint_a;
     double member_cost = manhattan(member.fanout, output);
     double fanin_distance = 0.0;
     for (const Point& fanin : member.fanins) {
@@ -644,7 +668,7 @@ int bank_worker_count(std::size_t jobs) {
 Stage2Result solve_bank(const Input& input, int bank_index,
                         const std::vector<int>& groups, int priority) {
   const BankPair& bank = input.banks[bank_index];
-  int direction_counts[2] = {0, 0};
+  int direction_counts[3] = {0, 0, 0};
   int common_count = 0;
   for (int group_index : groups) {
     const Group& group = input.groups[group_index];
@@ -656,10 +680,15 @@ Stage2Result solve_bank(const Input& input, int bank_index,
   }
   int dedicated_direction = -1;
   if (common_count == 0) {
-    if (direction_counts[0] > 0 && direction_counts[1] == 0) {
+    if (direction_counts[0] > 0 && direction_counts[1] == 0 &&
+        direction_counts[2] == 0) {
       dedicated_direction = 0;
-    } else if (direction_counts[1] > 0 && direction_counts[0] == 0) {
+    } else if (direction_counts[1] > 0 && direction_counts[0] == 0 &&
+               direction_counts[2] == 0) {
       dedicated_direction = 1;
+    } else if (direction_counts[2] > 0 && direction_counts[0] == 0 &&
+               direction_counts[1] == 0) {
+      dedicated_direction = 2;
     }
   }
   std::vector<CandidateEdge> candidates;
@@ -675,6 +704,11 @@ Stage2Result solve_bank(const Input& input, int bank_index,
                            direction_counts[second_direction]) {
       required_kind = 0;
       required_direction = second_direction;
+    } else if (right < direction_counts[first_direction] +
+                           direction_counts[second_direction] +
+                           direction_counts[2]) {
+      required_kind = 0;
+      required_direction = 2;
     }
     const Channel& channel = input.channels[bank.channels[right]];
     for (int left = 0; left < static_cast<int>(groups.size()); ++left) {

@@ -3212,9 +3212,23 @@ Four Chimew kernels now sit beside that production baseline and are composed
 by the default open academic physical path described above.  Its electrical
 materializer follows the BoardDB capacity contract: full-duplex
 `per_direction` links use two direction-qualified assignment domains, while
-`shared_bidirectional` contest links put both directional groups in one
-exclusive lane domain with direction-agnostic channels.  It never widens a
-shared contest link into two independent lane pools merely to run Chimew. The first
+`shared_bidirectional` contest links put both directions in one physical lane
+domain with direction-agnostic channels.  Before bank/channel assignment, the
+v2 materializer computes how many opposite-direction groups must share a lane
+to satisfy the BoardDB capacity.  It accepts a pair only when both groups have
+the same TDM ratio, their concrete Phase-5 slot sets are disjoint, and any
+timing-guarded fixed lanes agree.  A deterministic maximum-cardinality check
+first proves that the requested packing is feasible; an exact min-cost
+bipartite matching then selects only the required number of pairs.  Each
+selected pair becomes one bidirectional TDM bundle with member-specific
+directions and one `either` electrical channel/package-pin pair.  The native
+two-stage assignment, Python certificate checker, Phase-6 builder, generic pin
+plan validator, and standalone electrical-binding validator all independently
+enforce the combined slot capacity and reject a same-slot collision.  Legacy
+`emuflow.chimew-bank-channel-input/v1` documents remain readable; v2 is required
+to represent a bidirectional bundle.  The flow never widens a shared contest
+link into two independent lane pools and never treats every directional group
+as an exclusive static lane merely to run Chimew. The first
 reproduces FPGA 2026 Algorithm 1 from explicit,
 source-qualified physical SLL-crossing encodings. The second only swaps
 equal-encoding signals using physical-site source-y coordinates, preserving
