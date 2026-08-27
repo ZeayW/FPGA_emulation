@@ -1729,105 +1729,120 @@ void run_scalable(const Model& model, const std::string& output_path) {
   bool found_corridor = false;
   ProxyDelta best_corridor;
   std::vector<int> best_corridor_clusters;
-  const int corridor_critical_limit = std::min(512, critical_limit);
-  for (int order_index = 0;
-       order_index < corridor_critical_limit;
-       ++order_index) {
-    const int cluster = order[order_index];
-    if (model.cluster[cluster].fixed >= 0) {
-      continue;
-    }
-    const int source = state.assignment[cluster];
-    std::set<int> neighbor_set;
-    for (int net : cluster_nets[cluster]) {
-      neighbor_set.insert(model.net[net].drivers.begin(),
-                          model.net[net].drivers.end());
-      neighbor_set.insert(model.net[net].sinks.begin(),
-                          model.net[net].sinks.end());
-    }
-    std::vector<int> neighbors;
-    for (int neighbor : neighbor_set) {
-      if (neighbor != cluster && state.assignment[neighbor] == source
-          && model.cluster[neighbor].fixed < 0) {
-        neighbors.push_back(neighbor);
+  std::vector<int> current_paths(model.paths);
+  std::iota(current_paths.begin(), current_paths.end(), 0);
+  std::sort(current_paths.begin(), current_paths.end(), [&](int left, int right) {
+    return std::tie(state.path[left].normalized_slack, left)
+           < std::tie(state.path[right].normalized_slack, right);
+  });
+  if (!current_paths.empty()) {
+    std::cerr << "PATRON_CURRENT_WORST path=" << current_paths.front()
+              << " normalized_slack="
+              << state.path[current_paths.front()].normalized_slack
+              << " nets=" << model.path[current_paths.front()].nets.size()
+              << '\n';
+  }
+  const int path_limit = std::min(16, model.paths);
+  for (int path_index = 0; path_index < path_limit; ++path_index) {
+    const int path = current_paths[path_index];
+    std::map<int, int> touch_count;
+    for (int net : model.path[path].nets) {
+      for (int touched : model.net[net].drivers) {
+        ++touch_count[touched];
+      }
+      for (int touched : model.net[net].sinks) {
+        ++touch_count[touched];
       }
     }
-    std::sort(neighbors.begin(), neighbors.end(), [&](int left, int right) {
-      return std::tie(exposure[right], left)
-             < std::tie(exposure[left], right);
-    });
-    if (neighbors.size() > 12) {
-      neighbors.resize(12);
-    }
-    for (int target = 0; target < model.parts; ++target) {
-      if (target == source) {
-        continue;
-      }
-      for (std::size_t first = 0; first < neighbors.size(); ++first) {
-        for (std::size_t second = first + 1;
-             second < neighbors.size();
-             ++second) {
-          for (int extra_count = 0; extra_count <= 1; ++extra_count) {
-            const std::size_t third_begin = second + 1;
-            const std::size_t third_end = extra_count == 0
-                                              ? third_begin + 1
-                                              : neighbors.size();
-            for (std::size_t third = third_begin;
-                 third < third_end;
-                 ++third) {
-              if (extra_count == 1 && third >= neighbors.size()) {
-                continue;
-              }
-              std::vector<std::pair<int, int>> extras = {
-                  {neighbors[second], target}};
-              std::vector<int> selected = {
-                  cluster, neighbors[first], neighbors[second]};
-              if (extra_count == 1) {
-                extras.emplace_back(neighbors[third], target);
-                selected.push_back(neighbors[third]);
-              }
-              ProxyDelta candidate = evaluate_proxy_changes(
-                  model,
-                  state,
-                  cluster_nets,
-                  net_paths,
-                  cluster,
-                  target,
-                  neighbors[first],
-                  target,
-                  extras);
-              ++evaluated_corridors;
-              if (!candidate.feasible) {
-                continue;
-              }
-              ++feasible_corridors;
-              if (candidate.evaluation.ranked[0]
-                  < state.evaluation.ranked[0]) {
-                ++wns_improving_corridors;
-              }
-              if (!less_ranked(candidate.evaluation.ranked,
-                               state.evaluation.ranked)) {
-                continue;
-              }
-              ++improving_corridors;
-              if (!found_corridor
-                  || less_ranked(candidate.evaluation.ranked,
-                                 best_corridor.evaluation.ranked)
-                  || (candidate.evaluation.ranked
-                          == best_corridor.evaluation.ranked
-                      && selected < best_corridor_clusters)) {
-                found_corridor = true;
-                best_corridor = std::move(candidate);
-                best_corridor_clusters = std::move(selected);
-              }
+    for (int left_part = 0; left_part < model.parts; ++left_part) {
+      for (int right_part = left_part + 1;
+           right_part < model.parts;
+           ++right_part) {
+        std::vector<int> corridor;
+        bool has_left = false;
+        bool has_right = false;
+        for (const auto& touched : touch_count) {
+          const int cluster = touched.first;
+          const int part = state.assignment[cluster];
+          if ((part == left_part || part == right_part)
+              && model.cluster[cluster].fixed < 0) {
+            corridor.push_back(cluster);
+            has_left = has_left || part == left_part;
+            has_right = has_right || part == right_part;
+          }
+        }
+        if (!has_left || !has_right || corridor.size() < 2) {
+          continue;
+        }
+        std::sort(corridor.begin(), corridor.end(), [&](int left, int right) {
+          return std::tie(touch_count[right], exposure[right], left)
+                 < std::tie(touch_count[left], exposure[left], right);
+        });
+        if (corridor.size() > 12) {
+          corridor.resize(12);
+        }
+        const std::uint64_t limit = std::uint64_t{1} << corridor.size();
+        for (std::uint64_t mask = 1; mask < limit; ++mask) {
+          std::vector<std::pair<int, int>> changes;
+          std::vector<int> selected;
+          for (std::size_t bit = 0; bit < corridor.size(); ++bit) {
+            if ((mask & (std::uint64_t{1} << bit)) == 0) {
+              continue;
             }
+            const int cluster = corridor[bit];
+            const int target = state.assignment[cluster] == left_part
+                                   ? right_part
+                                   : left_part;
+            changes.emplace_back(cluster, target);
+            selected.push_back(cluster);
+          }
+          if (changes.size() < 2) {
+            continue;
+          }
+          std::vector<std::pair<int, int>> extras;
+          if (changes.size() > 2) {
+            extras.assign(changes.begin() + 2, changes.end());
+          }
+          ProxyDelta candidate = evaluate_proxy_changes(
+              model,
+              state,
+              cluster_nets,
+              net_paths,
+              changes[0].first,
+              changes[0].second,
+              changes[1].first,
+              changes[1].second,
+              extras);
+          ++evaluated_corridors;
+          if (!candidate.feasible) {
+            continue;
+          }
+          ++feasible_corridors;
+          if (candidate.evaluation.ranked[0]
+              < state.evaluation.ranked[0]) {
+            ++wns_improving_corridors;
+          }
+          if (!less_ranked(candidate.evaluation.ranked,
+                           state.evaluation.ranked)) {
+            continue;
+          }
+          ++improving_corridors;
+          if (!found_corridor
+              || less_ranked(candidate.evaluation.ranked,
+                             best_corridor.evaluation.ranked)
+              || (candidate.evaluation.ranked
+                      == best_corridor.evaluation.ranked
+                  && selected < best_corridor_clusters)) {
+            found_corridor = true;
+            best_corridor = std::move(candidate);
+            best_corridor_clusters = std::move(selected);
           }
         }
       }
     }
   }
-  std::cerr << "PATRON_CORRIDOR_STATS evaluated=" << evaluated_corridors
-            << " feasible=" << feasible_corridors
+  std::cerr << "PATRON_CURRENT_CORRIDOR_STATS evaluated="
+            << evaluated_corridors << " feasible=" << feasible_corridors
             << " improving=" << improving_corridors
             << " wns_improving=" << wns_improving_corridors;
   if (found_corridor) {
