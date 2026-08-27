@@ -39,6 +39,7 @@ from .runtime import QOR_REPORT_SCHEMA
 
 
 STATIC_EXACT_QOR_COMPARISON_SCHEMA = "emuflow.static-exact-qor-comparison/v2"
+EXPERIMENT_SHARED_SCHEMA = "emuflow.experiment-shared-phase1-5/v1"
 STATIC_EXACT_ARM_LABELS = (
     "sequential-only",
     "legacy-static-exact-v1",
@@ -287,11 +288,73 @@ def _physical_seeds(
 
 
 def _common_source_record(shared_root: Path) -> Dict[str, Any]:
+    timing_report_path = shared_root / "timing/experiment-timing-report.json"
+    partition_report_path = (
+        shared_root / "partition/experiment-partition-report.json"
+    )
+    if not timing_report_path.is_file() and not partition_report_path.is_file():
+        timing_dependency = _managed_dependency_root(
+            shared_root, "timing", "timing"
+        )
+        partition_dependency = _managed_dependency_root(
+            shared_root, "partition", "partition"
+        )
+        if timing_dependency is not None and partition_dependency is not None:
+            timing_report_path = _managed_dependency_artifact(
+                shared_root,
+                "timing",
+                "timing",
+                "experiment-timing-report.json",
+            )
+            partition_report_path = _managed_dependency_artifact(
+                shared_root,
+                "partition",
+                "partition",
+                "experiment-partition-report.json",
+            )
+    if not timing_report_path.is_file() and not partition_report_path.is_file():
+        shared_report = _managed_shared_report(shared_root)
+        paths = {
+            "emuir_sha256": "frontend/phase1/design.emuir.json",
+            "timing_path_database_sha256": "timing/path-database.json",
+            "partition_weights_sha256": "timing/partition-net-weights.json",
+        }
+        source = {
+            label: _managed_shared_artifact(
+                shared_root, shared_report, relative
+            )
+            for label, relative in paths.items()
+        }
+        phase3 = read_json(
+            _require(shared_root, "partition/phase3_report.json")
+        )
+        if not isinstance(phase3, dict) or phase3.get("status") != "pass":
+            raise ValidationError(
+                "Static Exact QoR managed Phase 3 report is invalid"
+            )
+        source.update(
+            {
+                "platform_sha256": _digest(
+                    shared_report.get("platform_sha256"), "platform"
+                ),
+                "route_constraints_sha256": None,
+                "partition_constraints_sha256": None,
+                "target_clocks": None,
+                "timing_model_sha256": None,
+                "architecture_timing_db_sha256": None,
+                "qualification": "managed-shared-v1-core-source-seal",
+            }
+        )
+        return source
+    if not timing_report_path.is_file() or not partition_report_path.is_file():
+        raise ValidationError(
+            "Static Exact QoR shared source evidence is incomplete"
+        )
     timing_report = read_json(
-        _require(shared_root, "timing/experiment-timing-report.json")
+        timing_report_path
     )
     partition_report = read_json(
-        _require(shared_root, "partition/experiment-partition-report.json")
+        partition_report_path
     )
     for name, report in (
         ("timing", timing_report),
@@ -339,11 +402,196 @@ def _common_source_record(shared_root: Path) -> Dict[str, Any]:
     return source
 
 
-def _partition_evidence(label: str, shared_root: Path) -> Dict[str, Any]:
-    report_path = _require(
-        shared_root, "partition/experiment-partition-report.json"
+def _managed_dependency_root(
+    shared_root: Path, dependency: str, expected_stage: str
+) -> Path | None:
+    """Resolve a managed shared node's original validated dependency output."""
+
+    shared_checkpoint = _checkpoint(shared_root, "shared")
+    if shared_checkpoint is None:
+        return None
+    dependency_keys = shared_checkpoint.get("dependency_keys")
+    if not isinstance(dependency_keys, dict):
+        raise ValidationError(
+            "Static Exact QoR shared dependency seal is invalid"
+        )
+    key = dependency_keys.get(dependency)
+    if not isinstance(key, str):
+        raise ValidationError(
+            f"Static Exact QoR shared {dependency} dependency is missing"
+        )
+    cache_root = shared_root.parent.parent.parent
+    manifest_path = cache_root / "objects" / key / "checkpoint.json"
+    if (
+        manifest_path.is_symlink()
+        or not manifest_path.is_file()
+        or manifest_path.stat().st_mode & 0o222
+    ):
+        raise ValidationError(
+            f"Static Exact QoR shared {dependency} checkpoint is missing"
+        )
+    checkpoint = read_json(manifest_path)
+    if (
+        checkpoint.get("schema") != "emuflow.experiment-checkpoint/v2"
+        or checkpoint.get("execution_key") != key
+        or checkpoint.get("stage") != expected_stage
+        or checkpoint.get("storage") != "managed"
+        or checkpoint.get("output_immutable") is not True
+        or checkpoint.get("status") != "pass"
+        or not isinstance(checkpoint.get("artifacts"), dict)
+    ):
+        raise ValidationError(
+            f"Static Exact QoR shared {dependency} checkpoint is invalid"
+        )
+    output_text = checkpoint.get("output_dir")
+    if not isinstance(output_text, str):
+        raise ValidationError(
+            f"Static Exact QoR shared {dependency} output is invalid"
+        )
+    output = Path(output_text).resolve()
+    try:
+        relative = output.relative_to((cache_root / "objects").resolve())
+    except ValueError as error:
+        raise ValidationError(
+            f"Static Exact QoR shared {dependency} output escapes the cache"
+        ) from error
+    if (
+        len(relative.parts) != 2
+        or relative.parts[1] != "output"
+        or output.is_symlink()
+        or not output.is_dir()
+    ):
+        raise ValidationError(
+            f"Static Exact QoR shared {dependency} output is invalid"
+        )
+    dependency_checkpoint = _checkpoint(output, expected_stage)
+    if dependency_checkpoint is None:
+        raise ValidationError(
+            f"Static Exact QoR shared {dependency} checkpoint is invalid"
+        )
+    return output
+
+
+def _managed_dependency_artifact(
+    shared_root: Path,
+    dependency: str,
+    expected_stage: str,
+    relative: str,
+) -> Path:
+    output = _managed_dependency_root(
+        shared_root, dependency, expected_stage
     )
-    report = read_json(report_path)
+    if output is None:
+        raise ValidationError(
+            f"Static Exact QoR shared {dependency} checkpoint is missing"
+        )
+    shared_checkpoint = _checkpoint(shared_root, "shared")
+    assert shared_checkpoint is not None
+    key = shared_checkpoint["dependency_keys"][dependency]
+    cache_root = shared_root.parent.parent.parent
+    checkpoint = read_json(
+        cache_root / "objects" / key / "checkpoint.json"
+    )
+    record = checkpoint["artifacts"].get(relative)
+    path = _require(output, relative)
+    try:
+        path.resolve().relative_to(output.resolve())
+    except ValueError as error:
+        raise ValidationError(
+            f"Static Exact QoR shared {dependency} artifact escapes its output"
+        ) from error
+    if (
+        path.is_symlink()
+        or path.stat().st_mode & 0o222
+        or not isinstance(record, dict)
+        or record.get("sha256") != _sha256(path)
+    ):
+        raise ValidationError(
+            f"Static Exact QoR shared {dependency} artifact seal is broken: "
+            f"{relative}"
+        )
+    return path
+
+
+def _managed_shared_report(shared_root: Path) -> Dict[str, Any]:
+    report = read_json(_require(shared_root, "experiment-shared-report.json"))
+    if (
+        not isinstance(report, dict)
+        or report.get("schema") != EXPERIMENT_SHARED_SCHEMA
+        or report.get("status") != "pass"
+        or not isinstance(report.get("artifacts"), dict)
+    ):
+        raise ValidationError("Static Exact QoR managed shared report is invalid")
+    return report
+
+
+def _managed_shared_artifact(
+    shared_root: Path,
+    shared_report: Mapping[str, Any],
+    relative: str,
+) -> str:
+    record = shared_report["artifacts"].get(relative)
+    if not isinstance(record, dict):
+        raise ValidationError(
+            f"Static Exact QoR managed shared seal is missing: {relative}"
+        )
+    expected = record.get("sha256")
+    path = _require(shared_root, relative)
+    actual = _sha256(path)
+    if expected != actual:
+        raise ValidationError(
+            f"Static Exact QoR managed shared seal is broken: {relative}"
+        )
+    return actual
+
+
+def _partition_evidence(label: str, shared_root: Path) -> Dict[str, Any]:
+    report_path = shared_root / "partition/experiment-partition-report.json"
+    if not report_path.is_file():
+        dependency_root = _managed_dependency_root(
+            shared_root, "partition", "partition"
+        )
+        if dependency_root is not None:
+            report_path = _managed_dependency_artifact(
+                shared_root,
+                "partition",
+                "partition",
+                "experiment-partition-report.json",
+            )
+    if report_path.is_file():
+        report = read_json(report_path)
+        phase3 = report.get("phase3")
+        validation = (
+            phase3.get("validation") if isinstance(phase3, dict) else None
+        )
+        exercised = report.get(
+            "static_exact_combinational_cut_exercised", False
+        )
+        configured_depth = report.get("max_cross_fpga_dependency_depth", 1)
+    else:
+        shared_report = _managed_shared_report(shared_root)
+        _managed_shared_artifact(
+            shared_root, shared_report, "partition/phase3_report.json"
+        )
+        report_path = _require(shared_root, "partition/phase3_report.json")
+        report = read_json(report_path)
+        validation = report.get("validation")
+        semantic = (
+            validation.get("semantic_contract", {})
+            if isinstance(validation, dict)
+            else {}
+        )
+        configured_depth = semantic.get(
+            "maximum_combinational_dependency_depth",
+            validation.get("maximum_combinational_dependency_depth", 0)
+            if isinstance(validation, dict)
+            else 0,
+        )
+        exercised = (
+            validation.get("combinational_cut_nets", 0) > 0
+            if isinstance(validation, dict)
+            else False
+        )
     expected_mode, expected_policy = _LABEL_CONTRACTS[label]
     mode = report.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
     policy = report.get(
@@ -355,8 +603,6 @@ def _partition_evidence(label: str, shared_root: Path) -> Dict[str, Any]:
         raise ValidationError(
             f"Static Exact QoR arm {label} does not match its cut contract"
         )
-    phase3 = report.get("phase3")
-    validation = phase3.get("validation") if isinstance(phase3, dict) else None
     if not isinstance(validation, dict) or validation.get("status") != "pass":
         raise ValidationError("Static Exact QoR partition validation is missing")
     combinational = validation.get("combinational_cut_nets", 0)
@@ -373,7 +619,6 @@ def _partition_evidence(label: str, shared_root: Path) -> Dict[str, Any]:
         raise ValidationError(
             "sequential-only QoR arm contains combinational cut evidence"
         )
-    exercised = report.get("static_exact_combinational_cut_exercised", False)
     if not isinstance(exercised, bool) or exercised != (combinational > 0):
         raise ValidationError(
             "Static Exact QoR combinational-cut exercise evidence is inconsistent"
@@ -381,9 +626,7 @@ def _partition_evidence(label: str, shared_root: Path) -> Dict[str, Any]:
     return {
         "cut_mode": mode,
         "candidate_policy": policy,
-        "configured_max_dependency_depth": report.get(
-            "max_cross_fpga_dependency_depth", 1
-        ),
+        "configured_max_dependency_depth": configured_depth,
         "combinational_cut_nets": combinational,
         "maximum_combinational_dependency_depth": dependency_depth,
         "static_exact_combinational_cut_exercised": exercised,
@@ -677,6 +920,10 @@ def build_static_exact_qor_comparison(
         )
     design, platform = next(iter(design_platform))
     common_source = records[0]["common_source"]
+    common_source_qualified = (
+        common_source.get("qualification")
+        != "managed-shared-v1-core-source-seal"
+    )
     public_records = [
         {
             key: value
@@ -756,13 +1003,15 @@ def build_static_exact_qor_comparison(
         "arms": public_records,
         "comparisons": comparisons,
         "promotion_gate": {
+            "complete_common_source_evidence": common_source_qualified,
             "generalized_v2_exercised_real_combinational_cuts": (
                 generalized_exercised
             ),
             "generalized_v2_target_clock_result": target_result,
             "sealed_execution_runtime_available": runtime_qualified,
             "eligible_for_default_promotion": (
-                generalized_exercised
+                common_source_qualified
+                and generalized_exercised
                 and target_result == "improved"
                 and runtime_qualified
             ),

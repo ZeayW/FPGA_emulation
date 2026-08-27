@@ -498,6 +498,15 @@ field remain readable but cannot supply runtime evidence. The checker refuses
 default promotion if the generalized arm is vacuous or its target-clock WNS/TNS
 result is not improved. A vacuous legacy arm remains an honest compatibility
 negative control and is never presented as exercised Static Exact evidence.
+The managed shared-Phase-1--5 view intentionally contains only consumer
+artifacts, not duplicate timing/partition evidence reports.  For that layout,
+the comparator follows the immutable shared checkpoint's dependency keys back
+to the original validated timing and partition checkpoints and rechecks their
+full reports, while separately rehashing every consumer artifact against the
+shared report.  An unmanaged historical view with neither evidence reports nor
+managed dependency metadata is accepted only at the explicitly lower
+`managed-shared-v1-core-source-seal` qualification and cannot satisfy a
+canonical default-promotion claim.
 `--reuse-validated-phase6-equivalence` is
 allowed only for immutable managed checkpoints carrying an independent
 validation certificate; standalone roots receive full replay.

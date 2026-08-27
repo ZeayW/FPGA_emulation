@@ -1,4 +1,5 @@
 import hashlib
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,9 @@ from unittest.mock import patch
 from emuflow.io import read_json, write_json
 from emuflow.runtime import QOR_REPORT_SCHEMA
 from emuflow.static_exact_qor import (
+    _common_source_record,
     _execution_runtime,
+    _partition_evidence,
     build_static_exact_qor_comparison,
     parse_static_exact_qor_arms,
     run_static_exact_qor_comparison,
@@ -283,6 +286,194 @@ class StaticExactQorTest(unittest.TestCase):
                 )["arms"],
                 3,
             )
+
+    @patch(
+        "emuflow.static_exact_qor.validate_phase7_checkpoint",
+        return_value={"status": "pass", "provider": "baseline"},
+    )
+    def test_materialized_shared_v1_layout_is_replayable_and_sealed(
+        self, _validate
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            platform, roots, records = self._fixture(root)
+            for shared, _, _, _ in roots.values():
+                partition_path = (
+                    shared / "partition/experiment-partition-report.json"
+                )
+                partition = read_json(partition_path)
+                write_json(
+                    shared / "partition/phase3_report.json",
+                    {
+                        "schema": "emuflow.phase3-report/v1",
+                        "status": "pass",
+                        "cut_mode": partition["cut_mode"],
+                        "static_exact_candidate_policy": partition[
+                            "static_exact_candidate_policy"
+                        ],
+                        "validation": partition["phase3"]["validation"],
+                    },
+                )
+                partition_path.unlink()
+                (shared / "timing/experiment-timing-report.json").unlink()
+                artifacts = {}
+                for relative in (
+                    "frontend/phase1/design.emuir.json",
+                    "timing/path-database.json",
+                    "timing/partition-net-weights.json",
+                    "partition/assignment.json",
+                    "partition/phase3_report.json",
+                    "system-route/routes.json",
+                    "tdm/schedule.json",
+                ):
+                    artifacts[relative] = {
+                        "sha256": _sha256(shared / relative)
+                    }
+                write_json(
+                    shared / "experiment-shared-report.json",
+                    {
+                        "schema": "emuflow.experiment-shared-phase1-5/v1",
+                        "status": "pass",
+                        "platform_sha256": _sha256(platform),
+                        "artifacts": artifacts,
+                    },
+                )
+
+            arms = parse_static_exact_qor_arms(records)
+            report = build_static_exact_qor_comparison(platform, arms)
+            generalized = next(
+                arm
+                for arm in report["arms"]
+                if arm["label"] == "generalized-static-exact-v2"
+            )
+            self.assertEqual(
+                generalized["partition"]["combinational_cut_nets"], 23
+            )
+            self.assertEqual(
+                report["common_source"]["qualification"],
+                "managed-shared-v1-core-source-seal",
+            )
+            self.assertFalse(
+                report["promotion_gate"]["complete_common_source_evidence"]
+            )
+            self.assertFalse(
+                report["promotion_gate"]["eligible_for_default_promotion"]
+            )
+
+            phase3_path = (
+                roots["generalized-static-exact-v2"][0]
+                / "partition/phase3_report.json"
+            )
+            phase3 = read_json(phase3_path)
+            phase3["cut_mode"] = "sequential-only"
+            write_json(phase3_path, phase3)
+            with self.assertRaisesRegex(ValidationError, "shared seal is broken"):
+                build_static_exact_qor_comparison(platform, arms)
+
+    def test_managed_shared_v1_replays_original_dependency_reports(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            platform, roots, _ = self._fixture(root / "fixture")
+            original = roots["generalized-static-exact-v2"][0]
+            cache = root / "cache"
+            timing_key = "8" * 64
+            partition_key = "9" * 64
+            shared_key = "a" * 64
+
+            timing_output = cache / "objects" / timing_key / "output"
+            partition_output = cache / "objects" / partition_key / "output"
+            shared_output = cache / "objects" / shared_key / "output"
+            timing_output.mkdir(parents=True)
+            partition_output.mkdir(parents=True)
+            shutil.copy2(
+                original / "timing/experiment-timing-report.json",
+                timing_output / "experiment-timing-report.json",
+            )
+            shutil.copy2(
+                original / "partition/experiment-partition-report.json",
+                partition_output / "experiment-partition-report.json",
+            )
+            shutil.copytree(original, shared_output)
+            (shared_output / "timing/experiment-timing-report.json").unlink()
+            (shared_output / "partition/experiment-partition-report.json").unlink()
+
+            def checkpoint(
+                key, stage, output, artifacts, dependencies=None
+            ):
+                manifest = output.parent / "checkpoint.json"
+                write_json(
+                    manifest,
+                    {
+                        "schema": "emuflow.experiment-checkpoint/v2",
+                        "storage": "managed",
+                        "output_immutable": True,
+                        "execution_key": key,
+                        "stage": stage,
+                        "output_dir": str(output.resolve()),
+                        "status": "pass",
+                        "execution_elapsed_seconds": 0.1,
+                        "dependency_keys": dependencies or {},
+                        "artifacts": artifacts,
+                    },
+                )
+                manifest.chmod(0o444)
+
+            for path in (
+                timing_output / "experiment-timing-report.json",
+                partition_output / "experiment-partition-report.json",
+            ):
+                path.chmod(0o444)
+            checkpoint(
+                timing_key,
+                "timing",
+                timing_output,
+                {
+                    "experiment-timing-report.json": {
+                        "sha256": _sha256(
+                            timing_output / "experiment-timing-report.json"
+                        )
+                    }
+                },
+            )
+            checkpoint(
+                partition_key,
+                "partition",
+                partition_output,
+                {
+                    "experiment-partition-report.json": {
+                        "sha256": _sha256(
+                            partition_output
+                            / "experiment-partition-report.json"
+                        )
+                    }
+                },
+            )
+            checkpoint(
+                shared_key,
+                "shared",
+                shared_output,
+                {},
+                {"timing": timing_key, "partition": partition_key},
+            )
+
+            source = _common_source_record(shared_output)
+            self.assertEqual(source["target_clocks"], {"clk": 10.0})
+            self.assertNotIn("qualification", source)
+            evidence = _partition_evidence(
+                "generalized-static-exact-v2", shared_output
+            )
+            self.assertEqual(evidence["combinational_cut_nets"], 23)
+            self.assertEqual(evidence["configured_max_dependency_depth"], 3)
+
+            report_path = partition_output / "experiment-partition-report.json"
+            report_path.chmod(0o644)
+            report = read_json(report_path)
+            report["max_cross_fpga_dependency_depth"] = 99
+            write_json(report_path, report)
+            with self.assertRaisesRegex(ValidationError, "artifact seal is broken"):
+                _partition_evidence(
+                    "generalized-static-exact-v2", shared_output
+                )
 
     @patch(
         "emuflow.static_exact_qor.validate_phase7_checkpoint",
