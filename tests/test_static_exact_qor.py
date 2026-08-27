@@ -187,6 +187,8 @@ class StaticExactQorTest(unittest.TestCase):
             )
             partition_report = {
                 "status": "pass",
+                "seed": 2,
+                "seed_attempts": 1,
                 "cut_mode": config["mode"],
                 "static_exact_candidate_policy": config["policy"],
                 "max_cross_fpga_dependency_depth": max(1, config["depth"]),
@@ -199,6 +201,7 @@ class StaticExactQorTest(unittest.TestCase):
                 "route_constraints_sha256": "3" * 64,
                 "constraints_sha256": None,
                 "phase3": {
+                    "seed": 2,
                     "validation": {
                         "status": "pass",
                         "combinational_cut_nets": config["cuts"],
@@ -301,6 +304,11 @@ class StaticExactQorTest(unittest.TestCase):
             )
             self.assertEqual(len(report["arms"]), 3)
             self.assertEqual(report["physical_seeds"], [1])
+            self.assertEqual(report["partition_seed"], 2)
+            self.assertEqual(report["partition_seed_attempts"], 1)
+            self.assertTrue(
+                report["promotion_gate"]["controlled_partition_seed"]
+            )
             self.assertEqual(
                 report["comparisons"]["generalized-v2-vs-sequential"][
                     "target_clock_result"
@@ -340,6 +348,8 @@ class StaticExactQorTest(unittest.TestCase):
                     {
                         "schema": "emuflow.phase3-report/v1",
                         "status": "pass",
+                        "seed": 2,
+                        "seed_attempts": 1,
                         "cut_mode": partition["cut_mode"],
                         "static_exact_candidate_policy": partition[
                             "static_exact_candidate_policy"
@@ -401,6 +411,26 @@ class StaticExactQorTest(unittest.TestCase):
             phase3["cut_mode"] = "sequential-only"
             write_json(phase3_path, phase3)
             with self.assertRaisesRegex(ValidationError, "shared seal is broken"):
+                build_static_exact_qor_comparison(platform, arms)
+
+    @patch(
+        "emuflow.static_exact_qor.validate_phase7_checkpoint",
+        return_value={"status": "pass", "provider": "baseline"},
+    )
+    def test_partition_seed_mismatch_is_rejected(self, _validate):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            platform, roots, records = self._fixture(root)
+            shared = roots["generalized-static-exact-v2"][0]
+            path = shared / "partition/experiment-partition-report.json"
+            report = read_json(path)
+            report["seed"] = 3
+            report["phase3"]["seed"] = 3
+            write_json(path, report)
+            arms = parse_static_exact_qor_arms(records)
+            with self.assertRaisesRegex(
+                ValidationError, "do not share one controlled partition seed"
+            ):
                 build_static_exact_qor_comparison(platform, arms)
 
     def test_managed_shared_v1_replays_original_dependency_reports(self):

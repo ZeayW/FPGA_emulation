@@ -2255,6 +2255,14 @@ def _build_parser() -> argparse.ArgumentParser:
     static_exact_experiment.add_argument(
         "--minimum-combinational-cut-nets", type=int, default=1
     )
+    static_exact_experiment.add_argument(
+        "--partition-seed",
+        type=int,
+        help=(
+            "single controlled Phase 3 seed shared by all A/B arms; "
+            "defaults to partition_seed in the canonical config"
+        ),
+    )
     static_exact_experiment.add_argument("--out", type=Path, required=True)
 
     phase1 = subparsers.add_parser(
@@ -4413,6 +4421,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             minimum_combinational_cut_nets=(
                 args.minimum_combinational_cut_nets
             ),
+            partition_seed=args.partition_seed,
         )
         _print_json(report)
         return 0

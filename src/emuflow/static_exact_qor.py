@@ -38,7 +38,7 @@ from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
 from .runtime import QOR_REPORT_SCHEMA
 
 
-STATIC_EXACT_QOR_COMPARISON_SCHEMA = "emuflow.static-exact-qor-comparison/v2"
+STATIC_EXACT_QOR_COMPARISON_SCHEMA = "emuflow.static-exact-qor-comparison/v3"
 EXPERIMENT_SHARED_SCHEMA = "emuflow.experiment-shared-phase1-5/v1"
 STATIC_EXACT_ARM_LABELS = (
     "sequential-only",
@@ -620,6 +620,9 @@ def _partition_evidence(label: str, shared_root: Path) -> Dict[str, Any]:
             "static_exact_combinational_cut_exercised", False
         )
         configured_depth = report.get("max_cross_fpga_dependency_depth", 1)
+        requested_seed = report.get("seed")
+        seed_attempts = report.get("seed_attempts")
+        selected_seed = phase3.get("seed") if isinstance(phase3, dict) else None
     else:
         shared_report = _managed_shared_report(shared_root)
         _managed_shared_artifact(
@@ -644,6 +647,9 @@ def _partition_evidence(label: str, shared_root: Path) -> Dict[str, Any]:
             if isinstance(validation, dict)
             else False
         )
+        requested_seed = report.get("requested_seed", report.get("seed"))
+        seed_attempts = report.get("seed_attempts")
+        selected_seed = report.get("seed")
     expected_mode, expected_policy = _LABEL_CONTRACTS[label]
     mode = report.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
     policy = report.get(
@@ -657,6 +663,21 @@ def _partition_evidence(label: str, shared_root: Path) -> Dict[str, Any]:
         )
     if not isinstance(validation, dict) or validation.get("status") != "pass":
         raise ValidationError("Static Exact QoR partition validation is missing")
+    for name, value in (
+        ("requested partition seed", requested_seed),
+        ("selected partition seed", selected_seed),
+        ("partition seed attempts", seed_attempts),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < (1 if name == "partition seed attempts" else 0)
+        ):
+            raise ValidationError(f"Static Exact QoR {name} is invalid")
+    if seed_attempts != 1 or selected_seed != requested_seed:
+        raise ValidationError(
+            "Static Exact QoR requires one controlled partition seed per arm"
+        )
     combinational = validation.get("combinational_cut_nets", 0)
     dependency_depth = validation.get(
         "maximum_combinational_dependency_depth", 0
@@ -682,6 +703,8 @@ def _partition_evidence(label: str, shared_root: Path) -> Dict[str, Any]:
         "combinational_cut_nets": combinational,
         "maximum_combinational_dependency_depth": dependency_depth,
         "static_exact_combinational_cut_exercised": exercised,
+        "partition_seed": selected_seed,
+        "partition_seed_attempts": seed_attempts,
         "assignment_sha256": _sha256(
             _require(shared_root, "partition/assignment.json")
         ),
@@ -957,6 +980,20 @@ def build_static_exact_qor_comparison(
         raise ValidationError(
             "Static Exact QoR arms do not share exact source/timing inputs"
         )
+    partition_seed_contracts = {
+        (
+            record["partition"]["partition_seed"],
+            record["partition"]["partition_seed_attempts"],
+        )
+        for record in records
+    }
+    if len(partition_seed_contracts) != 1:
+        raise ValidationError(
+            "Static Exact QoR arms do not share one controlled partition seed"
+        )
+    partition_seed, partition_seed_attempts = next(
+        iter(partition_seed_contracts)
+    )
     design_platform = {
         (record["design"], record["platform"]) for record in records
     }
@@ -1030,10 +1067,14 @@ def build_static_exact_qor_comparison(
         "design": design,
         "platform": platform,
         "qualification": (
-            "single-seed-complete-phase1-7c-static-exact-ab"
+            "controlled-partition-seed-single-physical-seed-complete-"
+            "phase1-7c-static-exact-ab"
             if len(seeds) == 1
-            else "paired-multi-seed-complete-phase1-7c-static-exact-ab"
+            else "controlled-partition-seed-paired-multi-physical-seed-"
+            "complete-phase1-7c-static-exact-ab"
         ),
+        "partition_seed": partition_seed,
+        "partition_seed_attempts": partition_seed_attempts,
         "physical_seeds": list(seeds),
         "common_source": common_source,
         "platform_file_sha256": _sha256(platform_path),
@@ -1056,6 +1097,7 @@ def build_static_exact_qor_comparison(
         "comparisons": comparisons,
         "promotion_gate": {
             "complete_common_source_evidence": common_source_qualified,
+            "controlled_partition_seed": True,
             "generalized_v2_exercised_real_combinational_cuts": (
                 generalized_exercised
             ),

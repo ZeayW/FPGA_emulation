@@ -461,12 +461,17 @@ The three policies have different assignments, routes, and schedules, so the
 ordinary Phase 6 provider comparator is intentionally not used for this gate.
 Compile one content-addressed DAG that shares only the byte-identical frontend
 and TimingPathDB, forks at Phase 3, and terminates in a dedicated cross-policy
-certificate:
+certificate.  The comparison uses one explicit Phase 3 seed for every arm;
+it never lets each policy search a multi-seed portfolio and then compares
+unrelated winners.  Physical seed remains a separate paired axis.  For the
+canonical case6 exercise, seed 2 is the characterized controlled seed that
+releases a non-vacuous generalized boundary:
 
 ```bash
 emuflow benchmark-static-exact-ab-compile \
   --config "$CANONICAL_CASE_CONFIG" --repository-root "$SOURCE" \
   --legacy-max-depth 2 --generalized-max-depth 8 \
+  --partition-seed 2 \
   --minimum-combinational-cut-nets 1 \
   --out "$EXPERIMENT/static-exact-ab-spec.json"
 ```
@@ -486,7 +491,11 @@ The compiler removes the unrelated placement-aware/Chimew Phase 6 arms from
 the sequential branch, so only three physical terminals are run per requested
 seed.  The independent replay requires byte-identical EmuIR, complete TimingPathDB,
 partition weights, BoardDB, constraints, timing model, and physical channel
-width across all arms.  It permits only the intended Phase 3--6 differences,
+width across all arms.  It also replays each partition report and requires
+`seed_attempts == 1`, requested seed equal to selected seed, and the same
+selected partition seed across all arms.  A comparison with different selected
+partition seeds fails closed and cannot provide promotion evidence.  It
+permits only the intended Phase 3--6 differences,
 revalidates each complete Phase 7 chain, reports whole-design target/runtime
 WNS and TNS, per-FPGA diagnostics, virtual frequency, transport/physical cell
 counts, cut count, scheduled bit-hops, frame size, completion slot, and sealed

@@ -1026,6 +1026,7 @@ def compile_static_exact_ab_experiment_spec(
     legacy_max_depth: int = 2,
     generalized_max_depth: int = 8,
     minimum_combinational_cut_nets: int = 1,
+    partition_seed: int | None = None,
 ) -> Dict[str, Any]:
     """Compile one cache DAG with three Phase 3--7 cut-policy branches.
 
@@ -1049,6 +1050,17 @@ def compile_static_exact_ab_experiment_spec(
             raise ValidationError(f"Static Exact A/B {name} must be positive")
     if legacy_max_depth not in {1, 2}:
         raise ValidationError("Static Exact legacy A/B depth must be 1 or 2")
+    controlled_partition_seed = (
+        config.get("partition_seed", 0)
+        if partition_seed is None
+        else partition_seed
+    )
+    if (
+        isinstance(controlled_partition_seed, bool)
+        or not isinstance(controlled_partition_seed, int)
+        or controlled_partition_seed < 0
+    ):
+        raise ValidationError("Static Exact A/B partition seed is invalid")
     physical_seeds = config.get("physical_seeds", [1])
     if (
         not isinstance(physical_seeds, list)
@@ -1102,6 +1114,12 @@ def compile_static_exact_ab_experiment_spec(
                     if key != "label"
                 }
             )
+            # A policy comparison must not let each arm search a different
+            # random-seed portfolio and then compare unrelated winners.  One
+            # explicit partition seed is shared by all arms; physical-tool
+            # seeds remain a separate paired axis below.
+            arm_config["partition_seed"] = controlled_partition_seed
+            arm_config["partition_seed_attempts"] = 1
             arm_config_path = temporary_root / f"{prefix}-config.json"
             arm_spec_path = temporary_root / f"{prefix}-spec.json"
             write_json(arm_config_path, arm_config)
@@ -1219,6 +1237,8 @@ def compile_static_exact_ab_experiment_spec(
                 "generalized_minimum_combinational_cut_nets": (
                     minimum_combinational_cut_nets
                 ),
+                "partition_seed": controlled_partition_seed,
+                "partition_seed_attempts": 1,
                 "primary_metrics": [
                     "global_target_clock_wns_ns",
                     "global_target_clock_tns_ns",

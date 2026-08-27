@@ -804,6 +804,17 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
                 1,
             )
+            for prefix in ("seq", "v1", "v2"):
+                self.assertEqual(
+                    nodes[f"{prefix}-partition"]["configuration"]["seed"],
+                    0,
+                )
+                self.assertEqual(
+                    nodes[f"{prefix}-partition"]["configuration"][
+                        "seed_attempts"
+                    ],
+                    1,
+                )
             comparison = nodes["static-exact-qor-comparison"]
             self.assertEqual(
                 comparison["stage"], "static-exact-qor-compare"
@@ -824,6 +835,10 @@ class CanonicalExperimentTest(unittest.TestCase):
                     "generalized_minimum_combinational_cut_nets"
                 ],
                 1,
+            )
+            self.assertEqual(comparison["configuration"]["partition_seed"], 0)
+            self.assertEqual(
+                comparison["configuration"]["partition_seed_attempts"], 1
             )
             self.assertIn(
                 "{dependency:v2-phase7-baseline-seed1}",
