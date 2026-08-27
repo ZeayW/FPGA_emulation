@@ -140,6 +140,7 @@ from .experiment_store import (
     plan_experiment_gc,
     plan_legacy_run_migration,
     plan_legacy_run_retirement,
+    resume_legacy_run_retirement,
     validate_experiment_evidence_bundle,
 )
 from .experiment_stages import (
@@ -484,6 +485,14 @@ def _build_parser() -> argparse.ArgumentParser:
     experiment_retire_apply.add_argument("--plan", type=Path, required=True)
     experiment_retire_apply.add_argument("--expected-plan-sha256", required=True)
     experiment_retire_apply.add_argument("--receipt-root", type=Path, required=True)
+    experiment_retire_resume = experiment_subparsers.add_parser(
+        "retirement-resume",
+        help="resume removal of an unchanged atomically quarantined retirement",
+    )
+    experiment_retire_resume.add_argument("--receipt-root", type=Path, required=True)
+    experiment_retire_resume.add_argument(
+        "--expected-receipt-sha256", required=True
+    )
     experiment_plan = experiment_subparsers.add_parser(
         "plan", help="resolve cache hits and the next runnable DAG frontier"
     )
@@ -3794,6 +3803,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.plan,
                 args.expected_plan_sha256,
                 args.receipt_root,
+            )
+        elif args.experiment_command == "retirement-resume":
+            report = resume_legacy_run_retirement(
+                args.receipt_root,
+                args.expected_receipt_sha256,
             )
         elif args.experiment_command == "plan":
             report = plan_experiment(args.spec, args.cache, args.out)

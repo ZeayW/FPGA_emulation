@@ -1741,6 +1741,10 @@ emuflow experiment-cache retirement-apply \
   --plan /research/d4/gds/ziyiwang21/experiments/retirement.json \
   --expected-plan-sha256 "$RETIREMENT_PLAN_SHA256" \
   --receipt-root /research/d4/gds/ziyiwang21/experiments/retirement-receipt
+# Only after an interrupted apply left a sealed in-progress receipt:
+emuflow experiment-cache retirement-resume \
+  --receipt-root /research/d4/gds/ziyiwang21/experiments/retirement-receipt \
+  --expected-receipt-sha256 "$CURRENT_RETIREMENT_RECEIPT_SHA256"
 emuflow experiment-cache gc-plan --cache /research/d4/gds/ziyiwang21/emuflow/checkpoints \
   --root-plan experiment.plan.json --out /research/d4/gds/ziyiwang21/experiments/gc.json
 emuflow experiment-cache gc-apply --plan /research/d4/gds/ziyiwang21/experiments/gc.json \
@@ -1751,11 +1755,15 @@ The migration plan reports logical and allocated size separately, plus
 `exclusive_reclaimable_bytes` after accounting for hard links outside each
 tree; deleting a second pathname to shared blocks must not be advertised as
 newly freed capacity.  Its totals also distinguish bytes reclaimable by
-retirement. Generated symlinks inside an explicitly selected legacy tree are
+retiring one entry from bytes freed only when the complete inventoried root is
+retired. Generated symlinks inside an explicitly selected legacy tree are
 sealed by their link text and are never followed; top-level symlink candidates
 remain refused, and changing an internal link target invalidates the plan.
-retiring one entry from bytes freed only when the complete inventoried root is
-retired.
+Live and dangling internal symlinks are unlinked without chmod'ing either link
+target. If recursive removal is interrupted after the atomic quarantine rename,
+`retirement-resume` revalidates the copied plan, exact current receipt, original
+name absence, quarantine name, retirement marker, and remaining content before
+removing another byte.
 
 Retirement is only for an explicitly selected noncanonical legacy tree.  It
 content-seals the complete tree, revalidates all candidates before deleting the

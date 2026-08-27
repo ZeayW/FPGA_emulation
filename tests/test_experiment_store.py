@@ -18,6 +18,7 @@ from emuflow.experiment_store import (
     plan_experiment_gc,
     plan_legacy_run_migration,
     plan_legacy_run_retirement,
+    resume_legacy_run_retirement,
     validate_experiment_evidence_bundle,
 )
 from emuflow.io import write_json
@@ -576,6 +577,47 @@ class ExperimentStoreTest(unittest.TestCase):
             quarantine = Path(receipt["quarantine"][0]["path"])
             self.assertTrue(quarantine.is_dir())
             self.assertTrue((quarantine / "RETIREMENT_PENDING.json").is_file())
+            receipt_path = root / "receipt/retirement-receipt.json"
+            receipt_sha256 = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+            resumed = resume_legacy_run_retirement(
+                root / "receipt", receipt_sha256
+            )
+            self.assertEqual(resumed["status"], "pass")
+            self.assertFalse(quarantine.exists())
+
+    def test_legacy_retirement_resume_rejects_quarantine_tamper(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            candidate = runs / "partial-old"
+            candidate.mkdir(parents=True)
+            (candidate / "payload.bin").write_bytes(b"before")
+            migration_path = root / "migration.json"
+            plan_legacy_run_migration(runs, migration_path)
+            plan_path = root / "retirement.json"
+            plan_legacy_run_retirement(
+                migration_path,
+                ["partial-old"],
+                plan_path,
+                reason="obsolete failed attempt",
+            )
+            approved = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            with mock.patch(
+                "emuflow.experiment_store.shutil.rmtree",
+                side_effect=OSError("injected removal failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "injected removal failure"):
+                    apply_legacy_run_retirement(
+                        plan_path, approved, root / "receipt"
+                    )
+            receipt_path = root / "receipt/retirement-receipt.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            quarantine = Path(receipt["quarantine"][0]["path"])
+            (quarantine / "payload.bin").write_bytes(b"after")
+            receipt_sha256 = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(ValidationError, "content changed"):
+                resume_legacy_run_retirement(root / "receipt", receipt_sha256)
+            self.assertTrue(quarantine.is_dir())
 
     def test_legacy_retirement_apply_rechecks_farm_activity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -701,6 +743,30 @@ class ExperimentStoreTest(unittest.TestCase):
             self.assertEqual(receipt["status"], "pass")
             self.assertFalse(candidate.exists())
             self.assertEqual(outside.read_bytes(), b"preserve")
+
+    def test_legacy_retirement_removes_dangling_internal_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            candidate = runs / "failed-build"
+            candidate.mkdir(parents=True)
+            (candidate / "payload.bin").write_bytes(b"build output")
+            (candidate / "generated-library.so").symlink_to("missing-library.so")
+            migration_path = root / "migration.json"
+            plan_legacy_run_migration(runs, migration_path)
+            plan_path = root / "retirement.json"
+            plan_legacy_run_retirement(
+                migration_path,
+                ["failed-build"],
+                plan_path,
+                reason="obsolete failed build",
+            )
+            approved = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            receipt = apply_legacy_run_retirement(
+                plan_path, approved, root / "receipt"
+            )
+            self.assertEqual(receipt["status"], "pass")
+            self.assertFalse(candidate.exists())
 
     def test_legacy_retirement_rejects_internal_symlink_retarget(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
