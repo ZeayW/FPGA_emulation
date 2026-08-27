@@ -1136,7 +1136,7 @@ EmuIR, normalized Phase 3 clusters/constraints, TimingPathDB, BoardDB route
 constraints, and initial assignment.  The emitted source-bound model and move
 trace independently reconstruct target-specific directed-link pressure,
 predicted TDM ratio, ordered timing-path delay, capacity/topology legality, and
-the globally best improving move.  PATRON v3 preserves structured timing-path
+the globally best improving move.  PATRON v4 preserves structured timing-path
 launch/capture clusters and reconstructs the concrete fanout branch used by
 each path by walking transported nets backwards from capture to launch.  A
 path without sufficient endpoint information is explicitly retained under a
@@ -1147,11 +1147,13 @@ surrogate.  This closes the v2 model gap in which a three-sink data net and a
 created a materially worse routed physical endpoint.  Global directed-domain
 load still sets the TDM ratio, so endpoint precision and the fanout surrogate
 do not discard shared-link contention.
-The source-built native PATRON engine
-matches that oracle move-for-move on compact graphs and switches above 256
-clusters to an indexed, criticality-ordered best-target sweep; the latter
-updates only incident nets, paths, resource loads, and capacity domains, plus
-paths indexed under a domain whose TDM ratio changes.
+The source-built native PATRON engine matches that oracle move-for-move on
+compact graphs and switches above 256 clusters to an indexed,
+criticality-ordered best-target coordinate descent.  It performs up to four
+strictly improving sweeps, allowing capacity released late in one sweep to
+make an earlier cluster movable in the next; each candidate still updates only
+incident nets, paths, resource loads, and capacity domains, plus paths indexed
+under a domain whose TDM ratio changes.
 `--partition-provider patron` is an explicit non-default research provider.
 Its initial result and frozen TritonPart fallback are both scored by checked
 Phase 4/5 before promotion, and large checkpoints independently rebuild the
@@ -1187,9 +1189,14 @@ These complete-flow numbers are the accepted PATRON v1 baseline.  Endpoint-
 exact v2 completed the same canonical Phase 7 gate with
 `-83.408581897 ns` WNS and `-101,871.67583775386 ns` TNS: TNS improved by
 68.6333%, but WNS regressed by `0.9104793575 ns`, so v2 was correctly rejected.
-Fanout-aware v3 is a research candidate and is accepted only if a new cached
-canonical Phase 7 comparison improves both `-82.4981025395 ns` WNS and
-`-324,776.89798473305 ns` TNS; proxy-only improvement is insufficient.
+Fanout-only v3 was also rejected before Phase 7: on the frozen canonical
+Phase 3 model its original-objective WNS proxy stayed at `1.1606340893904894`
+while its negative-slack objective worsened from `3,232.26875` to
+`3,574.2201128740244`; the worst reset branch lost only one of 50 remote sink
+clusters.  No expensive physical run was launched for that failed candidate.
+Fanout-aware multipass v4 is a research candidate and is accepted only if a
+new cached canonical Phase 7 comparison improves both `-82.4981025395 ns` WNS
+and `-324,776.89798473305 ns` TNS; proxy-only improvement is insufficient.
 PATRON remains explicit and non-default until
 case7/case9 topology replication
 is complete; the primary branch acceptance requested here does not silently

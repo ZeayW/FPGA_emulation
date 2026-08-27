@@ -38,13 +38,14 @@ from .routing import (
 from .sta import _normalized_slack, _validate_database_normalization
 
 
-PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v3"
-PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v3"
-PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v3"
-PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v3"
-PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v3"
+PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v4"
+PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v4"
+PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v4"
+PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v4"
+PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v4"
 GAIN_QUANTUM = 1.0e-9
 BOUNDARY_FANOUT_PENALTY_SCALE_NS = 0.25
+MAX_SCALABLE_SWEEPS = 4
 
 
 def _canonical_digest(value: Any) -> str:
@@ -306,6 +307,7 @@ def _reconstruct_partition_pressure_model(
             "boundary_fanout_penalty_scale_ns": (
                 BOUNDARY_FANOUT_PENALTY_SCALE_NS
             ),
+            "max_scalable_sweeps": MAX_SCALABLE_SWEEPS,
             "max_route_hops": route_constraints.get("max_route_hops"),
             "frame_slots": route_constraints["frame_slots"],
             "tdm_ratio_quantum": route_constraints["tdm_ratio_quantum"],
@@ -1066,7 +1068,7 @@ def _write_patron_native_input(
     max_hops = model["configuration"]["max_route_hops"]
 
     lines = [
-        "EMUFLOW_PATRON_INPUT_V3",
+        "EMUFLOW_PATRON_INPUT_V4",
         (
             f"PARAM {len(parts)} {len(clusters)} {len(dimensions)} "
             f"{len(domains)} {len(nets)} {len(model['paths'])} "
@@ -1077,7 +1079,8 @@ def _write_patron_native_input(
             f"{model['normalization']['positive_slack_scale_ns']:.17g} "
             f"{model['normalization']['negative_slack_scale_ns']:.17g} "
             f"{model['normalization']['max_clock_period_ns']:.17g} "
-            f"{model['configuration']['boundary_fanout_penalty_scale_ns']:.17g}"
+            f"{model['configuration']['boundary_fanout_penalty_scale_ns']:.17g} "
+            f"{model['configuration']['max_scalable_sweeps']}"
         ),
     ]
     total_cells = sum(cluster["cells"] for cluster in clusters)
@@ -1237,7 +1240,7 @@ def _parse_patron_native_output(
     str,
 ]:
     lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_PATRON_OUTPUT_V3":
+    if not lines or lines[0] != "EMUFLOW_PATRON_OUTPUT_V4":
         raise ValidationError("native PATRON output header is invalid")
     moves = []
     assignment: Dict[str, str] = {}
@@ -1258,16 +1261,17 @@ def _parse_patron_native_output(
             initial_metrics = _metrics_from_objective(
                 [float(item) for item in fields[1:]]
             )
-        elif fields[0] == "MOVE" and len(fields) == 29:
-            index, cluster, source, target = map(int, fields[1:5])
+        elif fields[0] == "MOVE" and len(fields) == 30:
+            index, sweep, cluster, source, target = map(int, fields[1:6])
             if index != len(moves):
                 raise ValidationError("native PATRON move indexes are invalid")
-            before = [float(item) for item in fields[5:13]]
-            after = [float(item) for item in fields[13:21]]
-            ranked = [int(item) for item in fields[21:29]]
+            before = [float(item) for item in fields[6:14]]
+            after = [float(item) for item in fields[14:22]]
+            ranked = [int(item) for item in fields[22:30]]
             moves.append(
                 {
                     "index": index,
+                    "sweep": sweep,
                     "cluster": indexes["clusters"][cluster],
                     "source": indexes["parts"][source],
                     "target": indexes["parts"][target],
@@ -1372,7 +1376,12 @@ def run_partition_pressure_native(
         "platform": model["platform"],
         "provider": PARTITION_PRESSURE_NATIVE_PROVIDER,
         "mode": mode,
-        "configuration": {"max_moves": limit},
+        "configuration": {
+            "max_moves": limit,
+            "max_scalable_sweeps": model["configuration"][
+                "max_scalable_sweeps"
+            ],
+        },
         "model_sha256": _canonical_digest(model),
         "initial_assignment_sha256": _canonical_digest(initial_assignment),
         "initial_metrics": initial_metrics,
@@ -1416,6 +1425,10 @@ def validate_partition_pressure_native_against_exhaustive(
     for native, expected in zip(
         native_trace["moves"], expected_trace["moves"]
     ):
+        if native.get("sweep") != 0:
+            raise ValidationError(
+                f"native PATRON move {native['index']} sweep mismatch"
+            )
         for field in ("index", "cluster", "source", "target"):
             if native[field] != expected[field]:
                 raise ValidationError(
@@ -1462,7 +1475,7 @@ def validate_partition_pressure_native_bundle(
     Compact exact mode is reconstructed move-for-move.  Scalable mode is a
     deterministic heuristic rather than a global-optimality claim; its gate
     independently rebuilds the immutable model, complete initial/final
-    objectives, legal assignment, critical-sweep order, and every recorded
+    objectives, legal assignment, critical multipass order, and every recorded
     assignment transition in linear or near-linear work.
     """
 
@@ -1494,7 +1507,7 @@ def validate_partition_pressure_native_bundle(
     ):
         raise ValidationError("native PATRON final assignment seal is invalid")
     mode = native_trace.get("mode")
-    if mode == "endpoint-exact-global-best-v3":
+    if mode == "endpoint-exact-global-best-v4":
         exact = validate_partition_pressure_native_against_exhaustive(
             ir,
             platform,
@@ -1513,17 +1526,25 @@ def validate_partition_pressure_native_bundle(
             "model_validation": model_validation,
             **exact,
         }
-    if mode != "endpoint-exact-critical-sweep-v3":
+    if mode != "endpoint-exact-critical-multipass-v4":
         raise ValidationError("native PATRON trace mode is invalid")
 
     moves = native_trace.get("moves")
     max_moves = native_trace.get("configuration", {}).get("max_moves")
+    max_sweeps = native_trace.get("configuration", {}).get(
+        "max_scalable_sweeps"
+    )
     if (
         not isinstance(moves, list)
         or isinstance(max_moves, bool)
         or not isinstance(max_moves, int)
         or max_moves < 0
         or len(moves) > max_moves
+        or isinstance(max_sweeps, bool)
+        or not isinstance(max_sweeps, int)
+        or max_sweeps <= 0
+        or max_sweeps
+        != model["configuration"].get("max_scalable_sweeps")
     ):
         raise ValidationError("native PATRON scalable trace bounds are invalid")
     cluster_ids = {
@@ -1560,6 +1581,7 @@ def validate_partition_pressure_native_bundle(
     )
     sweep_index = {cluster: index for index, cluster in enumerate(sweep_order)}
     current = dict(initial_assignment["cluster_assignment"])
+    previous_sweep = -1
     previous_sweep_index = -1
     previous_after = None
     maximum_chain_error = 0.0
@@ -1567,16 +1589,26 @@ def validate_partition_pressure_native_bundle(
         if not isinstance(move, dict) or move.get("index") != index:
             raise ValidationError("native PATRON move index is invalid")
         cluster = move.get("cluster")
+        sweep = move.get("sweep")
         source = move.get("source")
         target = move.get("target")
         if (
-            cluster not in cluster_ids
+            isinstance(sweep, bool)
+            or not isinstance(sweep, int)
+            or sweep < 0
+            or sweep >= max_sweeps
+            or sweep > previous_sweep + 1
+            or (previous_sweep < 0 and sweep != 0)
+            or (
+                sweep == previous_sweep
+                and sweep_index.get(cluster, -1) <= previous_sweep_index
+            )
+            or cluster not in cluster_ids
             or source not in fpga_ids
             or target not in fpga_ids
             or source == target
             or fixed[cluster] is not None
             or current.get(cluster) != source
-            or sweep_index[cluster] <= previous_sweep_index
         ):
             raise ValidationError(
                 f"native PATRON move {index} transition is invalid"
@@ -1631,6 +1663,9 @@ def validate_partition_pressure_native_bundle(
             )
         current[cluster] = target
         previous_after = after
+        if sweep != previous_sweep:
+            previous_sweep_index = -1
+        previous_sweep = sweep
         previous_sweep_index = sweep_index[cluster]
     if current != native_assignment["cluster_assignment"]:
         raise ValidationError("native PATRON move chain assignment mismatch")
@@ -1730,11 +1765,22 @@ def validate_partition_pressure_scalable_trace(
     instances.  Large production bundles use the indexed certificate checker.
     """
 
-    if native_trace.get("mode") != "endpoint-exact-critical-sweep-v3":
+    if native_trace.get("mode") != "endpoint-exact-critical-multipass-v4":
         raise ValidationError("native PATRON scalable trace mode is invalid")
     max_moves = native_trace.get("configuration", {}).get("max_moves")
     if isinstance(max_moves, bool) or not isinstance(max_moves, int) or max_moves < 0:
         raise ValidationError("native PATRON scalable max_moves is invalid")
+    max_sweeps = native_trace.get("configuration", {}).get(
+        "max_scalable_sweeps"
+    )
+    if (
+        isinstance(max_sweeps, bool)
+        or not isinstance(max_sweeps, int)
+        or max_sweeps <= 0
+        or max_sweeps
+        != model["configuration"].get("max_scalable_sweeps")
+    ):
+        raise ValidationError("native PATRON scalable sweep limit is invalid")
     clusters = sorted(record["cluster"] for record in model["clusters"])
     parts = sorted(record["fpga"] for record in model["fpgas"])
     exposure = {cluster: 0.0 for cluster in clusters}
@@ -1776,69 +1822,83 @@ def validate_partition_pressure_scalable_trace(
         raise ValidationError("native PATRON scalable moves are invalid")
     move_index = 0
     maximum_error = 0.0
-    for cluster in order:
-        if move_index >= max_moves:
-            break
-        candidates = []
-        source = current[cluster]
-        for target in parts:
-            if target == source:
+    for _sweep in range(max_sweeps):
+        sweep_start = move_index
+        for cluster in order:
+            if move_index >= max_moves:
+                break
+            candidates = []
+            source = current[cluster]
+            for target in parts:
+                if target == source:
+                    continue
+                trial = dict(current)
+                trial[cluster] = target
+                try:
+                    evaluation = evaluate_partition_pressure(
+                        ir,
+                        platform,
+                        clusters_artifact,
+                        constraints,
+                        route_constraints,
+                        model,
+                        trial,
+                        include_tdm_wait=True,
+                    )
+                except ValidationError:
+                    continue
+                ranked = _ranked_key(evaluation)
+                if ranked < _ranked_key(current_evaluation):
+                    candidates.append((ranked, target, evaluation))
+            if not candidates:
                 continue
-            trial = dict(current)
-            trial[cluster] = target
-            try:
-                evaluation = evaluate_partition_pressure(
-                    ir,
-                    platform,
-                    clusters_artifact,
-                    constraints,
-                    route_constraints,
-                    model,
-                    trial,
-                    include_tdm_wait=True,
-                )
-            except ValidationError:
-                continue
-            ranked = _ranked_key(evaluation)
-            if ranked < _ranked_key(current_evaluation):
-                candidates.append((ranked, target, evaluation))
-        if not candidates:
-            continue
-        ranked, target, selected = min(
-            candidates, key=lambda item: (item[0], item[1])
-        )
-        if move_index >= len(moves):
-            raise ValidationError("native PATRON scalable trace omitted a move")
-        actual = moves[move_index]
-        expected_identity = {
-            "index": move_index,
-            "cluster": cluster,
-            "source": source,
-            "target": target,
-        }
-        for field, expected in expected_identity.items():
-            if actual.get(field) != expected:
+            ranked, target, selected = min(
+                candidates, key=lambda item: (item[0], item[1])
+            )
+            if move_index >= len(moves):
                 raise ValidationError(
-                    f"native PATRON scalable move {move_index} {field} mismatch"
+                    "native PATRON scalable trace omitted a move"
                 )
-        if actual.get("ranked_objective_key") != list(ranked):
-            raise ValidationError(
-                f"native PATRON scalable move {move_index} rank mismatch"
-            )
-        for actual_key, expected_key in (
-            (actual["before_objective_key"], current_evaluation["metrics"]["objective_key"]),
-            (actual["after_objective_key"], selected["metrics"]["objective_key"]),
-        ):
-            maximum_error = max(
-                maximum_error,
-                max(
-                    abs(float(left) - float(right))
-                    for left, right in zip(actual_key, expected_key)
+            actual = moves[move_index]
+            expected_identity = {
+                "index": move_index,
+                "sweep": _sweep,
+                "cluster": cluster,
+                "source": source,
+                "target": target,
+            }
+            for field, expected in expected_identity.items():
+                if actual.get(field) != expected:
+                    raise ValidationError(
+                        f"native PATRON scalable move {move_index} "
+                        f"{field} mismatch"
+                    )
+            if actual.get("ranked_objective_key") != list(ranked):
+                raise ValidationError(
+                    f"native PATRON scalable move {move_index} rank mismatch"
+                )
+            for actual_key, expected_key in (
+                (
+                    actual["before_objective_key"],
+                    current_evaluation["metrics"]["objective_key"],
                 ),
-            )
-        current[cluster] = target
-        current_evaluation = selected
-        move_index += 1
+                (
+                    actual["after_objective_key"],
+                    selected["metrics"]["objective_key"],
+                ),
+            ):
+                maximum_error = max(
+                    maximum_error,
+                    max(
+                        abs(float(left) - float(right))
+                        for left, right in zip(actual_key, expected_key)
+                    ),
+                )
+            current[cluster] = target
+            current_evaluation = selected
+            move_index += 1
+        if move_index >= max_moves or move_index == sweep_start:
+            break
     if move_index != len(moves):
         raise ValidationError("native PATRON scalable trace has extra moves")
     if current != native_assignment.get("cluster_assignment"):

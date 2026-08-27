@@ -210,18 +210,23 @@ domain crosses a TDM-ratio threshold.  This also corrects the v1 scalable
 proxy's omission of TDM wait from its path objective.
 
 Compact mode remains move-for-move identical to the independent exhaustive
-Python oracle.  Scalable mode is checked by a separate critical-sweep replay
-on reduced graphs and by a near-linear certificate checker on large graphs.
+Python oracle.  Scalable mode is checked by a separate critical-multipass
+replay on reduced graphs and by a near-linear certificate checker on large
+graphs.  A capacity-release fixture proves that a cluster rejected early in
+one pass is reconsidered after a later move frees capacity.
 The fanout regression proves that a local sink receives zero transport delay
 while a remote sink on the same net receives its concrete routed delay; the
 legacy endpoint-free copy of that fixture deliberately retains the old
 worst-fanout charge.
 
-The v2 success gate is stricter than the original branch gate: on the same
+The v4 success gate is stricter than the original branch gate: on the same
 canonical DLA/case6/seed-1 ancestor it must improve both complete-global Phase
 7 WNS and TNS relative to the already improved v1 values of
 `-82.4981025395 ns` and `-324,776.89798473305 ns`.  Phase 3 proxy improvements
-alone do not satisfy this gate.
+alone do not satisfy this gate.  Endpoint-exact v2 failed that gate because
+its complete-global WNS regressed despite a substantial TNS improvement;
+fanout-only v3 was rejected before physical execution after its frozen Phase 3
+diagnostic preserved the original proxy WNS and worsened proxy TNS.
 
 ## Exact Phase 4/5 promotion
 
@@ -246,14 +251,14 @@ Phase 4/5 logic into an approximate partitioner.
 
 Implemented artifacts are versioned and hash-bound:
 
-- `partition-pressure-model/v3`: TimingPathDB paths, structured launch/capture
+- `partition-pressure-model/v4`: TimingPathDB paths, structured launch/capture
   clusters when available, explicit exact/fallback transition semantics,
   predicted route/domain costs, a source-derived logarithmic remote-sink
   fanout surrogate, immutable constraints, and source hashes;
-- `partition-pressure-trace/v3`: every considered/selected move, raw and
+- `partition-pressure-trace/v4`: every selected move, raw and
   ranked objective deltas, feasibility certificate, best prefix, and final
   assignment hash;
-- `partition-pressure-report/v3`: the selected native provider, sealed model
+- `partition-pressure-report/v4`: the selected native provider, sealed model
   and trace, final assignment, and independent validation summary;
 - the existing checked cross-stage report records the frozen seed candidate,
   exact Phase 4/5 score, rejection reason, and selected candidate;

@@ -71,6 +71,7 @@ struct Model {
   int ratio_quantum = 1;
   int min_used_parts = 1;
   int max_moves = 0;
+  int max_sweeps = 1;
   double positive_scale = 1.0;
   double negative_scale = 1.0;
   double max_period = 1.0;
@@ -206,7 +207,7 @@ Model read_model(const std::string& path) {
   require(stream.good(), "cannot open input");
   std::string token;
   stream >> token;
-  require(token == "EMUFLOW_PATRON_INPUT_V3", "invalid input header");
+  require(token == "EMUFLOW_PATRON_INPUT_V4", "invalid input header");
   Model model;
   stream >> token;
   require(token == "PARAM", "missing PARAM");
@@ -214,12 +215,13 @@ Model read_model(const std::string& path) {
       >> model.nets >> model.paths >> model.max_hops >> model.frame_slots
       >> model.ratio_quantum >> model.min_used_parts >> model.max_moves
       >> model.positive_scale >> model.negative_scale >> model.max_period
-      >> model.boundary_fanout_penalty_scale_ns;
+      >> model.boundary_fanout_penalty_scale_ns >> model.max_sweeps;
   require(stream.good() && model.parts > 0 && model.clusters > 0
               && model.dimensions > 0 && model.domains > 0
               && model.nets > 0 && model.paths > 0
               && model.frame_slots > 0 && model.ratio_quantum > 0
               && model.min_used_parts > 0 && model.max_moves >= 0
+              && model.max_sweeps > 0
               && std::isfinite(model.boundary_fanout_penalty_scale_ns)
               && model.boundary_fanout_penalty_scale_ns >= 0.0,
           "invalid PARAM");
@@ -1080,6 +1082,7 @@ void write_vector(std::ostream& stream,
 
 struct NativeMove {
   int index = 0;
+  int sweep = 0;
   int cluster = -1;
   int source = -1;
   int target = -1;
@@ -1095,13 +1098,14 @@ void write_output(const std::string& output_path,
                   const std::vector<int>& assignment) {
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
-  output << "EMUFLOW_PATRON_OUTPUT_V3\n";
+  output << "EMUFLOW_PATRON_OUTPUT_V4\n";
   output << "MODE " << mode << '\n';
   output << "INITIAL";
   write_vector(output, initial.objective);
   output << '\n';
   for (const NativeMove& move : moves) {
-    output << "MOVE " << move.index << ' ' << move.cluster << ' '
+    output << "MOVE " << move.index << ' ' << move.sweep << ' '
+           << move.cluster << ' '
            << move.source << ' ' << move.target;
     write_vector(output, move.before.objective);
     write_vector(output, move.after.objective);
@@ -1164,6 +1168,7 @@ void run_exact(const Model& model, const std::string& output_path) {
     }
     const int source = assignment[best_cluster];
     moves.push_back(NativeMove{static_cast<int>(moves.size()),
+                               0,
                                best_cluster,
                                source,
                                best_target,
@@ -1174,7 +1179,7 @@ void run_exact(const Model& model, const std::string& output_path) {
   }
 
   write_output(output_path,
-               "endpoint-exact-global-best-v3",
+               "endpoint-exact-global-best-v4",
                initial,
                current,
                moves,
@@ -1211,44 +1216,52 @@ void run_scalable(const Model& model, const std::string& output_path) {
   });
 
   std::vector<NativeMove> moves;
-  for (int cluster : order) {
-    if (static_cast<int>(moves.size()) >= model.max_moves) {
-      break;
-    }
-    bool found = false;
-    ProxyDelta best;
-    for (int target = 0; target < model.parts; ++target) {
-      ProxyDelta candidate = evaluate_proxy_move(
-          model, state, cluster_nets, net_paths, cluster, target);
-      if (!candidate.feasible
-          || !less_ranked(candidate.evaluation.ranked,
-                          state.evaluation.ranked)) {
+  for (int sweep = 0; sweep < model.max_sweeps; ++sweep) {
+    const std::size_t sweep_start = moves.size();
+    for (int cluster : order) {
+      if (static_cast<int>(moves.size()) >= model.max_moves) {
+        break;
+      }
+      bool found = false;
+      ProxyDelta best;
+      for (int target = 0; target < model.parts; ++target) {
+        ProxyDelta candidate = evaluate_proxy_move(
+            model, state, cluster_nets, net_paths, cluster, target);
+        if (!candidate.feasible
+            || !less_ranked(candidate.evaluation.ranked,
+                            state.evaluation.ranked)) {
+          continue;
+        }
+        if (!found
+            || less_ranked(candidate.evaluation.ranked,
+                           best.evaluation.ranked)
+            || (candidate.evaluation.ranked == best.evaluation.ranked
+                && candidate.target < best.target)) {
+          found = true;
+          best = std::move(candidate);
+        }
+      }
+      if (!found) {
         continue;
       }
-      if (!found
-          || less_ranked(candidate.evaluation.ranked,
-                         best.evaluation.ranked)
-          || (candidate.evaluation.ranked == best.evaluation.ranked
-              && candidate.target < best.target)) {
-        found = true;
-        best = std::move(candidate);
-      }
+      const Evaluation before = state.evaluation;
+      apply_proxy_delta(model, state, best);
+      moves.push_back(NativeMove{static_cast<int>(moves.size()),
+                                 sweep,
+                                 cluster,
+                                 best.source,
+                                 best.target,
+                                 before,
+                                 state.evaluation});
     }
-    if (!found) {
-      continue;
+    if (static_cast<int>(moves.size()) >= model.max_moves
+        || moves.size() == sweep_start) {
+      break;
     }
-    const Evaluation before = state.evaluation;
-    apply_proxy_delta(model, state, best);
-    moves.push_back(NativeMove{static_cast<int>(moves.size()),
-                               cluster,
-                               best.source,
-                               best.target,
-                               before,
-                               state.evaluation});
   }
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
-               "endpoint-exact-critical-sweep-v3",
+               "endpoint-exact-critical-multipass-v4",
                initial,
                endpoint.evaluation,
                moves,
