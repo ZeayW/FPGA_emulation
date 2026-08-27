@@ -35,7 +35,7 @@ class StaticExactQorTest(unittest.TestCase):
             }
             for name, stage, key, elapsed in (
                 ("shared", "shared", "4" * 64, 0.1),
-                ("lookahead", "physical-lookahead", "5" * 64, 4.0),
+                ("lookahead", "lookahead", "5" * 64, 4.0),
                 ("phase6", "phase6", "6" * 64, 0.5),
                 ("phase7", "phase7", "7" * 64, 1.0),
             ):

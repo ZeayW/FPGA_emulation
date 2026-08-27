@@ -128,7 +128,7 @@ def _execution_runtime(
     """Collect sealed wall times without consulting mutable farm state."""
 
     shared = _checkpoint(shared_root, "shared")
-    lookahead = _checkpoint(lookahead_root, "physical-lookahead")
+    lookahead = _checkpoint(lookahead_root, "lookahead")
     phase6 = _checkpoint(phase6_root, "phase6")
     phase7 = _checkpoint(phase7_root, "phase7")
     checkpoints = (shared, lookahead, phase6, phase7)
