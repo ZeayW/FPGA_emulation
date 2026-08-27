@@ -1,0 +1,33 @@
+{
+  "schema": "emuflow.partition-qualification-config/v1",
+  "case_id": "koios-dla-medium-l5__eda2023-case6",
+  "source_commit": "0000000000000000000000000000000000000000",
+  "rtl_source": "replace-with-pinned-dla_like.medium.v",
+  "platform": "replace-with-materialized-boarddb.json",
+  "boarddb_report": "replace-with-boarddb_report.json",
+  "route_constraints": "replace-with-route_constraints.json",
+  "timing_model": "replace-with-timing-model.json",
+  "architecture_timing_db": "replace-with-architecture-timing-db.json",
+  "tools": {
+    "emuflow": "replace-with-installed-emuflow",
+    "hop_refiner": "replace-with-emuflow_hop_partition_refiner",
+    "mfspart_coarsener": "replace-with-emuflow_mfspart_coarsener",
+    "mfspart_initializer": "replace-with-emuflow_mfspart_initializer",
+    "mfspart_legalizer": "replace-with-emuflow_mfspart_legalizer",
+    "mfspart_refiner": "replace-with-emuflow_mfspart_refiner",
+    "mfspart_refiner_checker": "replace-with-emuflow_mfspart_refiner_checker",
+    "opensta": "replace-with-pinned-opensta",
+    "yosys": "replace-with-pinned-yosys"
+  },
+  "top": "DLA",
+  "clocks": [
+    "clk"
+  ],
+  "clock_periods": {
+    "clk": 10.0
+  },
+  "partition_provider": "mfspart",
+  "partition_seed": 0,
+  "partition_seed_attempts": 1,
+  "partition_repair_balance": false
+}

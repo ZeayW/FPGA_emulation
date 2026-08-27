@@ -103,6 +103,7 @@ from .contest_public import (
 from .contest_validation_matrix import load_contest_validation_matrix
 from .end_to_end_validation_matrix import load_end_to_end_validation_matrix
 from .canonical_experiment import compile_canonical_experiment_spec
+from .partition_qualification import compile_partition_qualification_spec
 from .canonical_qor import (
     parse_canonical_qor_arms,
     run_canonical_qor_comparison,
@@ -602,6 +603,11 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--patron-refiner")
     partition_run.add_argument("--patron-max-moves", type=int)
     partition_run.add_argument("--patron-initial-assignment", type=Path)
+    partition_run.add_argument("--mfspart-coarsener")
+    partition_run.add_argument("--mfspart-initializer")
+    partition_run.add_argument("--mfspart-refiner")
+    partition_run.add_argument("--mfspart-refiner-checker")
+    partition_run.add_argument("--mfspart-legalizer")
     partition_run.add_argument("--timeout-seconds", type=int, default=3600)
     partition_run.add_argument("--seed-attempts", type=int, default=1)
     partition_run.add_argument(
@@ -2178,6 +2184,15 @@ def _build_parser() -> argparse.ArgumentParser:
     benchmark_experiment.add_argument("--config", type=Path, required=True)
     benchmark_experiment.add_argument("--repository-root", type=Path, required=True)
     benchmark_experiment.add_argument("--out", type=Path, required=True)
+    partition_qualification = subparsers.add_parser(
+        "benchmark-partition-experiment-compile",
+        help="compile one canonical real-RTL Phase 1-3 partition qualification DAG",
+    )
+    partition_qualification.add_argument("--config", type=Path, required=True)
+    partition_qualification.add_argument(
+        "--repository-root", type=Path, required=True
+    )
+    partition_qualification.add_argument("--out", type=Path, required=True)
 
     phase1 = subparsers.add_parser(
         "phase1", help="run the board-independent Phase 1 pipeline"
@@ -3431,6 +3446,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 balance_tolerance=args.balance_tolerance,
                 openroad=args.openroad,
                 hop_refiner=args.hop_refiner,
+                mfspart_coarsener=args.mfspart_coarsener,
+                mfspart_initializer=args.mfspart_initializer,
+                mfspart_refiner=args.mfspart_refiner,
+                mfspart_refiner_checker=args.mfspart_refiner_checker,
+                mfspart_legalizer=args.mfspart_legalizer,
                 timeout_seconds=args.timeout_seconds,
                 seed_attempts=args.seed_attempts,
                 repair_balance=args.repair_balance,
@@ -4343,6 +4363,13 @@ def _dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "benchmark-experiment-compile":
         report = compile_canonical_experiment_spec(
+            args.config, args.repository_root, args.out
+        )
+        _print_json(report)
+        return 0
+
+    if args.command == "benchmark-partition-experiment-compile":
+        report = compile_partition_qualification_spec(
             args.config, args.repository_root, args.out
         )
         _print_json(report)

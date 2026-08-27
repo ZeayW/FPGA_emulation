@@ -1423,7 +1423,45 @@ descendants, while changing RTL or BoardDB invalidates the shared Phase 1--5
 node and all descendants.  A corrupt or modified checkpoint is rejected rather
 than silently rerun or reused.
 
-Plan the first frontier:
+### Canonical MFSPart Phase 3 qualification
+
+Partition-provider development can stop at the first independently validated
+Phase 3 checkpoint without claiming that Phase 4--7 or a physical backend was
+qualified.  Start from
+`benchmarks/partition_qualification.config.example.json`, copy it outside the
+source tree, and replace every placeholder with a pinned regular file.  The
+compiler validates the same real-RTL run spec, contest-derived BoardDB report,
+route constraints, mapping profile, clocks, and timing model used by the full
+canonical experiment.  It accepts exactly one deterministic MFSPart seed and
+forbids post-provider balance repair.
+
+Every MFSPart native program is an explicit byte-sealed input.  The generated
+runtime command therefore does not depend on `EMUFLOW_NATIVE_ROOT` or another
+mutable machine-wide tool selection.  Compile and plan the three-node
+`frontend -> timing -> partition` DAG with:
+
+`source_commit` must be the lowercase SHA-1 of the clean repository checkout
+used to build the implementation closures.  The compiler rejects a mismatched
+commit, tracked source edits, and direct symbolic links supplied in place of
+pinned source, platform, timing, or tool files.
+
+```bash
+emuflow benchmark-partition-experiment-compile \
+  --config /absolute/path/dla-case6-mfspart.config.json \
+  --repository-root "$PWD" \
+  --out /absolute/path/dla-case6-mfspart.spec.json
+emuflow experiment-cache plan \
+  --spec /absolute/path/dla-case6-mfspart.spec.json \
+  --cache /absolute/path/checkpoints \
+  --out /absolute/path/dla-case6-mfspart.plan.json
+```
+
+The partition checkpoint retains the MFSPart hierarchy, assignment, clusters,
+normalized constraints, Phase 3 report, and independent experiment report.
+Replanning must resolve all three nodes to `reuse`.  This gate is a canonical
+real-RTL MFSPart Phase 3 qualification, not full-flow or physical evidence.
+
+Plan the first full-flow frontier:
 
 ```bash
 emuflow benchmark-experiment-compile \

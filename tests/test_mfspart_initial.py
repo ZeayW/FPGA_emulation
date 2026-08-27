@@ -11,6 +11,7 @@ from emuflow.mfspart_initial import (
     _expected,
     _expected_exhaustive,
     _normalise_problem,
+    _sequential_float_sum,
     build_mfspart_initial_partition,
     exhaustively_enumerate_mfspart_assignments,
     validate_mfspart_initial_partition,
@@ -294,6 +295,42 @@ class MFSPartInitialPartitionTest(unittest.TestCase):
             )
         first = artifact["assignment_trace"][0]
         self.assertEqual((first["node"], first["part"], first["phase"]), (1, 1, 0))
+
+    def test_oracle_uses_native_ordered_float_accumulation(self) -> None:
+        self.assertEqual(_sequential_float_sum([1e16, 1.0, 1.0]), 1e16)
+        hierarchy = _hierarchy(
+            [
+                {"fixed_part": -1, "weights": [1]}
+                for _ in range(8)
+            ],
+            [
+                {"weight": 1e16, "source": 0, "sinks": [4]},
+                {"weight": 1e16, "source": 1, "sinks": [5]},
+                {"weight": 1.0, "source": 1, "sinks": [6]},
+                {"weight": 1.0, "source": 1, "sinks": [7]},
+            ],
+        )
+        parts = ["F0", "F1"]
+        distances = {
+            "F0": {"F0": 0, "F1": 1},
+            "F1": {"F0": 1, "F1": 0},
+        }
+        capacities = {part: {"cells": 16} for part in parts}
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = build_mfspart_initial_partition(
+                hierarchy,
+                parts,
+                distances,
+                capacities,
+                {"F0": 1.0, "F1": 1.0},
+                Path(temporary_directory),
+                hmax=1,
+                seed=37,
+                executable=str(self.executable),
+            )
+        first = artifact["assignment_trace"][0]
+        self.assertEqual((first["node"], first["phase"]), (0, 0))
+        self.assertEqual(artifact["validation"]["status"], "pass")
 
     def test_oracle_rejects_corrupt_probabilistic_assignment(self) -> None:
         hierarchy = _hierarchy(
