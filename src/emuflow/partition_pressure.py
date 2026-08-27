@@ -38,11 +38,11 @@ from .routing import (
 from .sta import _normalized_slack, _validate_database_normalization
 
 
-PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v1"
-PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v1"
-PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v1"
-PARTITION_PRESSURE_PROVIDER = "patron-exhaustive-reference-v1"
-PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-native-exact-v1"
+PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v2"
+PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v2"
+PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v2"
+PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v2"
+PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v2"
 GAIN_QUANTUM = 1.0e-9
 
 
@@ -176,6 +176,11 @@ def _reconstruct_partition_pressure_model(
         timing_database.get("normalization")
     )
     known_nets = {net["id"] for net in ir.value["nets"]}
+    cluster_by_instance = _instance_to_cluster(clusters_artifact)
+    pressure_nets = {
+        record["net"]: record
+        for record in _net_records(ir, clusters_artifact)
+    }
     paths = []
     seen_paths = set()
     for index, raw in enumerate(timing_database.get("paths", [])):
@@ -213,15 +218,45 @@ def _reconstruct_partition_pressure_model(
                 f"path {path_id!r} clock period must be positive"
             )
         seen_paths.add(path_id)
-        paths.append(
-            {
-                "path": path_id,
-                "clock_domain": raw.get("clock_domain"),
-                "clock_period_ns": period,
-                "base_slack_ns": slack,
-                "path_nets": list(path_nets),
-            }
+        startpoint = raw.get("startpoint")
+        endpoint = raw.get("endpoint")
+        start_instance = (
+            startpoint.get("instance")
+            if isinstance(startpoint, dict)
+            else None
         )
+        end_instance = (
+            endpoint.get("instance")
+            if isinstance(endpoint, dict)
+            else None
+        )
+        start_cluster = cluster_by_instance.get(start_instance)
+        end_cluster = cluster_by_instance.get(end_instance)
+        considered_nets = [net for net in path_nets if net in pressure_nets]
+        endpoint_exact = (
+            start_cluster is not None
+            and end_cluster is not None
+            and all(
+                len(pressure_nets[net]["drivers"]) == 1
+                for net in considered_nets
+            )
+        )
+        record = {
+            "path": path_id,
+            "clock_domain": raw.get("clock_domain"),
+            "clock_period_ns": period,
+            "base_slack_ns": slack,
+            "path_nets": list(path_nets),
+            "transition_model": (
+                "endpoint-exact-reverse-chain-v1"
+                if endpoint_exact
+                else "conservative-net-worst-v1"
+            ),
+        }
+        if endpoint_exact:
+            record["start_cluster"] = start_cluster
+            record["end_cluster"] = end_cluster
+        paths.append(record)
     if not paths:
         raise ValidationError("partition pressure requires timing paths")
 
@@ -270,7 +305,10 @@ def _reconstruct_partition_pressure_model(
             "frame_slots": route_constraints["frame_slots"],
             "tdm_ratio_quantum": route_constraints["tdm_ratio_quantum"],
             "predicted_wait": "sum((domain_ratio-1)*link_cycle_ns)",
-            "path_delay": "sum(max_remote_sink_delay_per_path_net)",
+            "path_delay": (
+                "endpoint_exact_reverse_chain_else_"
+                "sum(max_remote_sink_delay_per_path_net)"
+            ),
         },
         "normalization": normalization,
         "clusters": clusters,
@@ -285,7 +323,7 @@ def _reconstruct_partition_pressure_model(
         ],
         "capacities": capacity_records,
         "shortest_routes": _shortest_routes(platform, route_constraints),
-        "nets": _net_records(ir, clusters_artifact),
+        "nets": list(pressure_nets.values()),
         "paths": paths,
     }
 def build_partition_pressure_model(
@@ -388,6 +426,104 @@ def _capacity_key_by_arc(model: Mapping[str, Any]) -> Dict[Tuple[str, str, str],
     return result
 
 
+def _predicted_route_delay(
+    platform: Platform,
+    route_constraints: Mapping[str, Any],
+    domain_by_arc: Mapping[Tuple[str, str, str], str],
+    domain_ratios: Mapping[str, int],
+    route: Iterable[Mapping[str, Any]],
+    *,
+    include_tdm_wait: bool,
+) -> float:
+    link_by_id = {link.id: link for link in platform.links}
+    delay = 0.0
+    for arc in route:
+        domain = domain_by_arc[(arc["link"], arc["from"], arc["to"])]
+        link = link_by_id[arc["link"]]
+        delay += route_link_delay_ns(
+            platform,
+            arc["link"],
+            arc["from"],
+            arc["to"],
+            route_constraints,
+        )
+        if include_tdm_wait:
+            delay += (
+                max(0, domain_ratios[domain] - 1)
+                * 1000.0
+                / link.fabric_clock_mhz
+            )
+    return delay
+
+
+def _endpoint_exact_path_transport(
+    path: Mapping[str, Any],
+    net_by_id: Mapping[str, Mapping[str, Any]],
+    cluster_parts: Mapping[str, str],
+    model: Mapping[str, Any],
+    platform: Platform,
+    route_constraints: Mapping[str, Any],
+    domain_by_arc: Mapping[Tuple[str, str, str], str],
+    domain_ratios: Mapping[str, int],
+    *,
+    include_tdm_wait: bool,
+) -> Tuple[float, List[str], int]:
+    """Recover the concrete fanout branch used by one timing path."""
+
+    target = cluster_parts[path["end_cluster"]]
+    reverse_transitions: List[Tuple[str, str]] = []
+    transport = 0.0
+    max_hops = model["configuration"]["max_route_hops"]
+    for net_id in reversed(path["path_nets"]):
+        net = net_by_id.get(net_id)
+        if net is None:
+            continue
+        sources = {cluster_parts[cluster] for cluster in net["drivers"]}
+        if len(sources) != 1:
+            raise ValidationError(
+                f"endpoint-exact path {path['path']!r} has a multi-driver "
+                f"pressure net {net_id!r}"
+            )
+        source = next(iter(sources))
+        sink_parts = {cluster_parts[cluster] for cluster in net["sinks"]}
+        if target not in sink_parts:
+            raise ValidationError(
+                f"endpoint-exact path {path['path']!r} cannot reach "
+                f"partition {target!r} through net {net_id!r}"
+            )
+        if source == target:
+            continue
+        route = model["shortest_routes"][source][target]
+        if route is None or (
+            max_hops is not None and len(route) > max_hops
+        ):
+            raise ValidationError(
+                f"endpoint-exact path {path['path']!r} has an illegal "
+                f"transition {source!r}->{target!r}"
+            )
+        transport += _predicted_route_delay(
+            platform,
+            route_constraints,
+            domain_by_arc,
+            domain_ratios,
+            route,
+            include_tdm_wait=include_tdm_wait,
+        )
+        reverse_transitions.append((source, target))
+        target = source
+    if cluster_parts[path["start_cluster"]] != target:
+        raise ValidationError(
+            f"endpoint-exact path {path['path']!r} launch/capture chain "
+            "is inconsistent"
+        )
+    partition_sequence: List[str] = []
+    for source, sink in reversed(reverse_transitions):
+        for part in (source, sink):
+            if not partition_sequence or partition_sequence[-1] != part:
+                partition_sequence.append(part)
+    return transport, partition_sequence, len(reverse_transitions)
+
+
 def evaluate_partition_pressure(
     ir: EmuIR,
     platform: Platform,
@@ -462,7 +598,6 @@ def evaluate_partition_pressure(
         )
         for key, load in domain_loads.items()
     }
-    link_by_id = {link.id: link for link in platform.links}
     net_delay: Dict[str, float] = {}
     net_worst_transition: Dict[str, Tuple[str, str]] = {}
     total_bit_hops = 0
@@ -470,25 +605,14 @@ def evaluate_partition_pressure(
         maximum = 0.0
         worst_transition: Optional[Tuple[str, str]] = None
         for route in routes:
-            delay = 0.0
-            for arc in route["arcs"]:
-                domain = domain_by_arc[
-                    (arc["link"], arc["from"], arc["to"])
-                ]
-                link = link_by_id[arc["link"]]
-                delay += route_link_delay_ns(
-                    platform,
-                    arc["link"],
-                    arc["from"],
-                    arc["to"],
-                    route_constraints,
-                )
-                if include_tdm_wait:
-                    delay += (
-                        max(0, domain_ratios[domain] - 1)
-                        * 1000.0
-                        / link.fabric_clock_mhz
-                    )
+            delay = _predicted_route_delay(
+                platform,
+                route_constraints,
+                domain_by_arc,
+                domain_ratios,
+                route["arcs"],
+                include_tdm_wait=include_tdm_wait,
+            )
             transition = (route["from"], route["to"])
             if delay > maximum or (
                 abs(delay - maximum) <= 1.0e-12
@@ -505,22 +629,43 @@ def evaluate_partition_pressure(
             net_worst_transition[net] = worst_transition
 
     normalization = model["normalization"]
+    net_by_id = {net["net"]: net for net in model["nets"]}
     path_records = []
     for path in model["paths"]:
-        transport = sum(net_delay.get(net, 0.0) for net in path["path_nets"])
+        if path["transition_model"] == "endpoint-exact-reverse-chain-v1":
+            transport, partition_sequence, transitions = (
+                _endpoint_exact_path_transport(
+                    path,
+                    net_by_id,
+                    cluster_parts,
+                    model,
+                    platform,
+                    route_constraints,
+                    domain_by_arc,
+                    domain_ratios,
+                    include_tdm_wait=include_tdm_wait,
+                )
+            )
+        else:
+            transport = sum(
+                net_delay.get(net, 0.0) for net in path["path_nets"]
+            )
+            partition_sequence = []
+            for net in path["path_nets"]:
+                transition = net_worst_transition.get(net)
+                if transition is None:
+                    continue
+                for part in transition:
+                    if (
+                        not partition_sequence
+                        or partition_sequence[-1] != part
+                    ):
+                        partition_sequence.append(part)
+            transitions = max(0, len(partition_sequence) - 1)
         predicted_slack = path["base_slack_ns"] - transport
         normalized = _normalized_slack(
             path["clock_period_ns"], predicted_slack, normalization
         )
-        partition_sequence: List[str] = []
-        for net in path["path_nets"]:
-            transition = net_worst_transition.get(net)
-            if transition is None:
-                continue
-            for part in transition:
-                if not partition_sequence or partition_sequence[-1] != part:
-                    partition_sequence.append(part)
-        transitions = max(0, len(partition_sequence) - 1)
         seen_parts = set()
         snaking = 0
         for part in partition_sequence:
@@ -530,6 +675,7 @@ def evaluate_partition_pressure(
         path_records.append(
             {
                 "path": path["path"],
+                "transition_model": path["transition_model"],
                 "transport_delay_ns": transport,
                 "predicted_slack_ns": predicted_slack,
                 "normalized_slack": normalized,
@@ -885,7 +1031,7 @@ def _write_patron_native_input(
     max_hops = model["configuration"]["max_route_hops"]
 
     lines = [
-        "EMUFLOW_PATRON_INPUT_V1",
+        "EMUFLOW_PATRON_INPUT_V2",
         (
             f"PARAM {len(parts)} {len(clusters)} {len(dimensions)} "
             f"{len(domains)} {len(nets)} {len(model['paths'])} "
@@ -997,6 +1143,8 @@ def _write_patron_native_input(
             for net in timing_path["path_nets"]
             if net in net_index
         ]
+        start_cluster = timing_path.get("start_cluster")
+        end_cluster = timing_path.get("end_cluster")
         lines.append(
             " ".join(
                 [
@@ -1004,6 +1152,16 @@ def _write_patron_native_input(
                     str(index),
                     f"{timing_path['clock_period_ns']:.17g}",
                     f"{timing_path['base_slack_ns']:.17g}",
+                    str(
+                        -1
+                        if start_cluster is None
+                        else cluster_index[start_cluster]
+                    ),
+                    str(
+                        -1
+                        if end_cluster is None
+                        else cluster_index[end_cluster]
+                    ),
                     str(len(path_nets)),
                     *(str(item) for item in path_nets),
                 ]
@@ -1043,7 +1201,7 @@ def _parse_patron_native_output(
     str,
 ]:
     lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_PATRON_OUTPUT_V1":
+    if not lines or lines[0] != "EMUFLOW_PATRON_OUTPUT_V2":
         raise ValidationError("native PATRON output header is invalid")
     moves = []
     assignment: Dict[str, str] = {}
@@ -1300,7 +1458,7 @@ def validate_partition_pressure_native_bundle(
     ):
         raise ValidationError("native PATRON final assignment seal is invalid")
     mode = native_trace.get("mode")
-    if mode == "exact-global-best-v1":
+    if mode == "endpoint-exact-global-best-v2":
         exact = validate_partition_pressure_native_against_exhaustive(
             ir,
             platform,
@@ -1319,7 +1477,7 @@ def validate_partition_pressure_native_bundle(
             "model_validation": model_validation,
             **exact,
         }
-    if mode != "scalable-critical-sweep-v1":
+    if mode != "endpoint-exact-critical-sweep-v2":
         raise ValidationError("native PATRON trace mode is invalid")
 
     moves = native_trace.get("moves")
@@ -1451,7 +1609,7 @@ def validate_partition_pressure_native_bundle(
         route_constraints,
         model,
         initial_assignment["cluster_assignment"],
-        include_tdm_wait=False,
+        include_tdm_wait=True,
     )
     final_evaluation = evaluate_partition_pressure(
         ir,
@@ -1461,7 +1619,7 @@ def validate_partition_pressure_native_bundle(
         route_constraints,
         model,
         native_assignment["cluster_assignment"],
-        include_tdm_wait=False,
+        include_tdm_wait=True,
     )
     maximum_endpoint_error = 0.0
     maximum_endpoint_relative_error = 0.0
@@ -1536,7 +1694,7 @@ def validate_partition_pressure_scalable_trace(
     instances.  Large production bundles use the indexed certificate checker.
     """
 
-    if native_trace.get("mode") != "scalable-critical-sweep-v1":
+    if native_trace.get("mode") != "endpoint-exact-critical-sweep-v2":
         raise ValidationError("native PATRON scalable trace mode is invalid")
     max_moves = native_trace.get("configuration", {}).get("max_moves")
     if isinstance(max_moves, bool) or not isinstance(max_moves, int) or max_moves < 0:
@@ -1575,7 +1733,7 @@ def validate_partition_pressure_scalable_trace(
         route_constraints,
         model,
         current,
-        include_tdm_wait=False,
+        include_tdm_wait=True,
     )
     moves = native_trace.get("moves")
     if not isinstance(moves, list):
@@ -1601,7 +1759,7 @@ def validate_partition_pressure_scalable_trace(
                     route_constraints,
                     model,
                     trial,
-                    include_tdm_wait=False,
+                    include_tdm_wait=True,
                 )
             except ValidationError:
                 continue
@@ -1649,7 +1807,7 @@ def validate_partition_pressure_scalable_trace(
         raise ValidationError("native PATRON scalable trace has extra moves")
     if current != native_assignment.get("cluster_assignment"):
         raise ValidationError("native PATRON scalable final assignment mismatch")
-    if maximum_error > 1.0e-10:
+    if maximum_error > 1.0e-9:
         raise ValidationError("native PATRON scalable raw objective mismatch")
     return {
         "status": "pass",

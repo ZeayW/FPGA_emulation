@@ -165,6 +165,8 @@ class PartitionPressureTest(unittest.TestCase):
             "paths": [
                 {
                     "id": "p-critical",
+                    "startpoint": _endpoint("u0", "O"),
+                    "endpoint": _endpoint("u1", "I"),
                     "clock_domain": "clk",
                     "clock_period_ns": 10.0,
                     "slack_ns": 3.0,
@@ -174,6 +176,8 @@ class PartitionPressureTest(unittest.TestCase):
                 },
                 {
                     "id": "p-relaxed",
+                    "startpoint": _endpoint("u2", "O"),
+                    "endpoint": _endpoint("u3", "I"),
                     "clock_domain": "clk",
                     "clock_period_ns": 20.0,
                     "slack_ns": 20.0,
@@ -216,6 +220,159 @@ class PartitionPressureTest(unittest.TestCase):
                 self.route_constraints,
                 broken,
             )
+
+    def test_endpoint_exact_fanout_does_not_charge_an_unrelated_sink(self) -> None:
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "fanout_pressure",
+                    "top": "fanout_pressure",
+                    "source_format": "fixture",
+                },
+                "ports": [],
+                "instances": [
+                    {"id": item, "type": "LUT1", "resources": {"lut": 1}}
+                    for item in ("driver", "local", "remote")
+                ],
+                "nets": [
+                    {
+                        "id": "fanout",
+                        "cut_class": "register_output",
+                        "drivers": [_endpoint("driver", "O")],
+                        "sinks": [
+                            _endpoint("local", "I"),
+                            _endpoint("remote", "I"),
+                        ],
+                    }
+                ],
+                "clocks": [],
+                "warnings": [],
+            }
+        )
+        platform = Platform.from_dict(
+            _platform_value(
+                "fanout_platform",
+                ["a", "b", "c"],
+                [
+                    _link("ab", "a", "b", lanes=1, latency=1),
+                    _link("bc", "b", "c", lanes=1, latency=1),
+                ],
+            )
+        )
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "min_used_fpgas": 2,
+                "balance_tolerance": 2.0,
+            },
+            ir,
+            platform,
+        )
+        clusters = build_clusters(ir, constraints)
+        cluster_by_instance = {
+            cluster["instances"][0]: cluster["id"]
+            for cluster in clusters["clusters"]
+        }
+        assignment = {
+            cluster_by_instance["driver"]: "a",
+            cluster_by_instance["local"]: "a",
+            cluster_by_instance["remote"]: "c",
+        }
+        routes = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 8,
+                "tdm_ratio_quantum": 1,
+                "max_route_hops": 2,
+            },
+            platform,
+        )
+        timing = {
+            "schema": "emuflow.sta-path-database/v1",
+            "design": "fanout_pressure",
+            "source": {"provider": "fixture", "input": "fixture"},
+            "normalization": {
+                "positive_slack_scale_ns": 10.0,
+                "negative_slack_scale_ns": 1.0,
+                "max_clock_period_ns": 10.0,
+            },
+            "paths": [
+                {
+                    "id": "to-local",
+                    "startpoint": _endpoint("driver", "O"),
+                    "endpoint": _endpoint("local", "I"),
+                    "clock_domain": "clk",
+                    "clock_period_ns": 10.0,
+                    "slack_ns": 5.0,
+                    "fixed_delay_ns": 5.0,
+                    "path_nets": ["fanout"],
+                    "normalized_slack": 0.5,
+                },
+                {
+                    "id": "to-remote",
+                    "startpoint": _endpoint("driver", "O"),
+                    "endpoint": _endpoint("remote", "I"),
+                    "clock_domain": "clk",
+                    "clock_period_ns": 10.0,
+                    "slack_ns": 5.0,
+                    "fixed_delay_ns": 5.0,
+                    "path_nets": ["fanout"],
+                    "normalized_slack": 0.5,
+                },
+            ],
+        }
+        model = build_partition_pressure_model(
+            ir, platform, clusters, constraints, timing, routes
+        )
+        evaluated = evaluate_partition_pressure(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            routes,
+            model,
+            assignment,
+        )
+        paths = {record["path"]: record for record in evaluated["paths"]}
+        self.assertEqual(paths["to-local"]["transport_delay_ns"], 0.0)
+        self.assertGreater(paths["to-remote"]["transport_delay_ns"], 0.0)
+        self.assertEqual(
+            paths["to-local"]["transition_model"],
+            "endpoint-exact-reverse-chain-v1",
+        )
+
+        conservative_timing = copy.deepcopy(timing)
+        for record in conservative_timing["paths"]:
+            record.pop("startpoint")
+            record.pop("endpoint")
+        conservative_model = build_partition_pressure_model(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            conservative_timing,
+            routes,
+        )
+        conservative = evaluate_partition_pressure(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            routes,
+            conservative_model,
+            assignment,
+        )
+        conservative_paths = {
+            record["path"]: record for record in conservative["paths"]
+        }
+        self.assertEqual(
+            conservative_paths["to-local"]["transport_delay_ns"],
+            conservative_paths["to-remote"]["transport_delay_ns"],
+        )
+        self.assertGreater(
+            conservative_paths["to-local"]["transport_delay_ns"], 0.0
+        )
 
     def test_global_best_move_improves_critical_path_and_replays(self) -> None:
         before = evaluate_partition_pressure(
@@ -392,6 +549,46 @@ class PartitionPressureTest(unittest.TestCase):
             bundle["qualification"], "move-for-move-exhaustive"
         )
 
+    def test_native_legacy_fallback_matches_exhaustive(self) -> None:
+        timing = copy.deepcopy(self.timing)
+        for path in timing["paths"]:
+            path.pop("startpoint")
+            path.pop("endpoint")
+        model = build_partition_pressure_model(
+            self.ir,
+            self.platform,
+            self.clusters,
+            self.constraints,
+            timing,
+            self.route_constraints,
+        )
+        self.assertEqual(
+            {path["transition_model"] for path in model["paths"]},
+            {"conservative-net-worst-v1"},
+        )
+        final, trace = run_partition_pressure_native(
+            self.ir,
+            self.platform,
+            self.clusters,
+            self.constraints,
+            self.route_constraints,
+            model,
+            self.initial,
+            executable=str(patron_refiner()),
+        )
+        checked = validate_partition_pressure_native_against_exhaustive(
+            self.ir,
+            self.platform,
+            self.clusters,
+            self.constraints,
+            self.route_constraints,
+            model,
+            self.initial,
+            final,
+            trace,
+        )
+        self.assertEqual(checked["status"], "pass")
+
     def test_phase3_patron_provider_refines_imported_tritonpart(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -440,7 +637,9 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertTrue(
                 (root / "phase3/patron/candidate_assignment.json").is_file()
             )
-            self.assertEqual(report["provider"], "patron-native-exact-v1")
+            self.assertEqual(
+                report["provider"], "patron-endpoint-exact-native-v2"
+            )
             baseline = promote_patron_baseline(
                 ir_path, platform_path, root / "phase3"
             )
@@ -558,6 +757,8 @@ class PartitionPressureTest(unittest.TestCase):
             "paths": [
                 {
                     "id": f"p{index:05d}",
+                    "startpoint": _endpoint(f"u{index:05d}", "O"),
+                    "endpoint": _endpoint(f"u{index + 1:05d}", "I"),
                     "clock_domain": "clk",
                     "clock_period_ns": 10.0,
                     "slack_ns": 3.0,
@@ -605,7 +806,9 @@ class PartitionPressureTest(unittest.TestCase):
             model,
             final["cluster_assignment"],
         )
-        self.assertEqual(trace["mode"], "scalable-critical-sweep-v1")
+        self.assertEqual(
+            trace["mode"], "endpoint-exact-critical-sweep-v2"
+        )
         self.assertGreater(len(trace["moves"]), 0)
         scalable_checked = validate_partition_pressure_scalable_trace(
             ir,

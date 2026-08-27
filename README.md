@@ -1136,10 +1136,17 @@ EmuIR, normalized Phase 3 clusters/constraints, TimingPathDB, BoardDB route
 constraints, and initial assignment.  The emitted source-bound model and move
 trace independently reconstruct target-specific directed-link pressure,
 predicted TDM ratio, ordered timing-path delay, capacity/topology legality, and
-the globally best improving move.  The source-built native PATRON engine
+the globally best improving move.  PATRON v2 preserves structured timing-path
+launch/capture clusters and reconstructs the concrete fanout branch used by
+each path by walking transported nets backwards from capture to launch.  A
+path without sufficient endpoint information is explicitly retained under a
+conservative worst-fanout fallback.  Global directed-domain load still sets
+the TDM ratio, so endpoint precision does not discard shared-link contention.
+The source-built native PATRON engine
 matches that oracle move-for-move on compact graphs and switches above 256
 clusters to an indexed, criticality-ordered best-target sweep; the latter
-updates only incident nets, paths, resource loads, and capacity domains.
+updates only incident nets, paths, resource loads, and capacity domains, plus
+paths indexed under a domain whose TDM ratio changes.
 `--partition-provider patron` is an explicit non-default research provider.
 Its initial result and frozen TritonPart fallback are both scored by checked
 Phase 4/5 before promotion, and large checkpoints independently rebuild the
@@ -1171,7 +1178,11 @@ improved from -95.310052262 ns to -82.4981025395 ns (+12.8119497225 ns;
 8,803, so that diagnostic is reported as a regression rather than hidden.
 Both arms retained 100% original-path coverage and the accepted result is
 sealed by an independently replayed nine-file Phase 7 evidence manifest.
-PATRON remains explicit and non-default until case7/case9 topology replication
+These complete-flow numbers are the accepted PATRON v1 baseline.  Endpoint-
+exact v2 is accepted only if the same canonical Phase 7 comparison improves
+both `-82.4981025395 ns` WNS and `-324,776.89798473305 ns` TNS; proxy-only
+improvement is insufficient.  PATRON remains explicit and non-default until
+case7/case9 topology replication
 is complete; the primary branch acceptance requested here does not silently
 promote a one-topology result into a universal default.  The complete design,
 literature basis, and gate are documented in

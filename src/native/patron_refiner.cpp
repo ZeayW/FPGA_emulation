@@ -48,6 +48,8 @@ struct Net {
 struct Path {
   double period_ns = 0.0;
   double slack_ns = 0.0;
+  int start_cluster = -1;
+  int end_cluster = -1;
   std::vector<int> nets;
 };
 
@@ -85,6 +87,7 @@ struct ProxyNetState {
   bool feasible = true;
   double delay_ns = 0.0;
   std::pair<int, int> worst_transition = {-1, -1};
+  std::vector<std::pair<int, int>> transitions;
   std::vector<std::pair<int, int>> domain_counts;
   long long hops = 0;
   long long cuts = 0;
@@ -94,6 +97,7 @@ struct ProxyPathState {
   double normalized_slack = 0.0;
   bool negative = false;
   long long snaking = 0;
+  std::vector<int> dependency_domains;
 };
 
 struct ProxyState {
@@ -105,6 +109,7 @@ struct ProxyState {
   std::multiset<int> ratio_order;
   std::vector<ProxyNetState> net;
   std::vector<ProxyPathState> path;
+  std::vector<std::set<int>> domain_paths;
   std::multiset<double> slack_order;
   double total_negative = 0.0;
   long long negative_paths = 0;
@@ -166,12 +171,24 @@ int tdm_ratio(const Model& model, int load, const Domain& domain) {
   return std::min(model.frame_slots, raw);
 }
 
+double predicted_route_delay(const Model& model,
+                             const Route& route,
+                             const std::vector<int>& ratios) {
+  double delay = 0.0;
+  for (const Arc& arc : route.arcs) {
+    delay += arc.delay_ns
+             + std::max(0, ratios[arc.domain] - 1)
+                   * model.domain[arc.domain].cycle_ns;
+  }
+  return delay;
+}
+
 Model read_model(const std::string& path) {
   std::ifstream stream(path);
   require(stream.good(), "cannot open input");
   std::string token;
   stream >> token;
-  require(token == "EMUFLOW_PATRON_INPUT_V1", "invalid input header");
+  require(token == "EMUFLOW_PATRON_INPUT_V2", "invalid input header");
   Model model;
   stream >> token;
   require(token == "PARAM", "missing PARAM");
@@ -287,10 +304,19 @@ Model read_model(const std::string& path) {
     int index = -1;
     int nets = -1;
     stream >> index >> model.path[path_index].period_ns
-        >> model.path[path_index].slack_ns >> nets;
+        >> model.path[path_index].slack_ns
+        >> model.path[path_index].start_cluster
+        >> model.path[path_index].end_cluster >> nets;
     require(index == path_index && model.path[path_index].period_ns > 0.0
                 && std::isfinite(model.path[path_index].slack_ns) && nets >= 0,
             "invalid PATH");
+    require((model.path[path_index].start_cluster < 0
+             && model.path[path_index].end_cluster < 0)
+                || (model.path[path_index].start_cluster >= 0
+                    && model.path[path_index].start_cluster < model.clusters
+                    && model.path[path_index].end_cluster >= 0
+                    && model.path[path_index].end_cluster < model.clusters),
+            "invalid PATH endpoints");
     for (int count = 0; count < nets; ++count) {
       int net = -1;
       stream >> net;
@@ -381,12 +407,7 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
   for (int net_index = 0; net_index < model.nets; ++net_index) {
     for (const auto& transition : transitions[net_index]) {
       const Route& route = model.route[transition.first][transition.second];
-      double delay = 0.0;
-      for (const Arc& arc : route.arcs) {
-        delay += arc.delay_ns
-                 + std::max(0, ratios[arc.domain] - 1)
-                       * model.domain[arc.domain].cycle_ns;
-      }
+      const double delay = predicted_route_delay(model, route, ratios);
       if (delay > net_delay[net_index]
           || (std::abs(delay - net_delay[net_index]) <= 1.0e-12
               && (worst_transition[net_index].first < 0
@@ -406,15 +427,57 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
   for (const Path& path : model.path) {
     double transport = 0.0;
     std::vector<int> sequence;
-    for (int net : path.nets) {
-      transport += net_delay[net];
-      const auto transition = worst_transition[net];
-      if (transition.first < 0) {
-        continue;
+    if (path.start_cluster >= 0) {
+      int target = assignment[path.end_cluster];
+      std::vector<std::pair<int, int>> reverse_transitions;
+      for (auto item = path.nets.rbegin(); item != path.nets.rend(); ++item) {
+        const Net& net = model.net[*item];
+        if (net.drivers.size() != 1) {
+          return result;
+        }
+        const int source = assignment[net.drivers.front()];
+        bool reaches_target = false;
+        for (int sink : net.sinks) {
+          reaches_target = reaches_target || assignment[sink] == target;
+        }
+        if (!reaches_target) {
+          return result;
+        }
+        if (source == target) {
+          continue;
+        }
+        const Route& route = model.route[source][target];
+        if (!route.reachable
+            || (model.max_hops >= 0
+                && static_cast<int>(route.arcs.size()) > model.max_hops)) {
+          return result;
+        }
+        transport += predicted_route_delay(model, route, ratios);
+        reverse_transitions.emplace_back(source, target);
+        target = source;
       }
-      for (int part : {transition.first, transition.second}) {
-        if (sequence.empty() || sequence.back() != part) {
-          sequence.push_back(part);
+      if (assignment[path.start_cluster] != target) {
+        return result;
+      }
+      for (auto item = reverse_transitions.rbegin();
+           item != reverse_transitions.rend(); ++item) {
+        for (int part : {item->first, item->second}) {
+          if (sequence.empty() || sequence.back() != part) {
+            sequence.push_back(part);
+          }
+        }
+      }
+    } else {
+      for (int net : path.nets) {
+        transport += net_delay[net];
+        const auto transition = worst_transition[net];
+        if (transition.first < 0) {
+          continue;
+        }
+        for (int part : {transition.first, transition.second}) {
+          if (sequence.empty() || sequence.back() != part) {
+            sequence.push_back(part);
+          }
         }
       }
     }
@@ -489,6 +552,7 @@ ProxyNetState build_proxy_net(const Model& model,
         ++domain_counts[arc.domain];
       }
       const std::pair<int, int> transition = {source, sink};
+      state.transitions.push_back(transition);
       if (delay > state.delay_ns
           || (std::abs(delay - state.delay_ns) <= 1.0e-12
               && (state.worst_transition.first < 0
@@ -517,20 +581,78 @@ ProxyPathState build_proxy_path(
     const Model& model,
     const ProxyState& state,
     const std::map<int, ProxyNetState>& replacements,
+    const std::vector<int>& ratios,
     int path_index) {
   const Path& path = model.path[path_index];
   double transport = 0.0;
   std::vector<int> sequence;
-  for (int net : path.nets) {
-    const ProxyNetState& net_state = selected_proxy_net(state, replacements, net);
-    transport += net_state.delay_ns;
-    if (net_state.worst_transition.first < 0) {
-      continue;
+  std::set<int> dependency_domains;
+  if (path.start_cluster >= 0) {
+    int target = state.assignment[path.end_cluster];
+    std::vector<std::pair<int, int>> reverse_transitions;
+    for (auto item = path.nets.rbegin(); item != path.nets.rend(); ++item) {
+      const Net& net = model.net[*item];
+      require(net.drivers.size() == 1,
+              "endpoint-exact scalable path has multiple drivers");
+      const int source = state.assignment[net.drivers.front()];
+      bool reaches_target = false;
+      for (int sink : net.sinks) {
+        reaches_target = reaches_target || state.assignment[sink] == target;
+      }
+      require(reaches_target,
+              "endpoint-exact scalable path cannot reach its target");
+      if (source == target) {
+        continue;
+      }
+      const Route& route = model.route[source][target];
+      require(route.reachable
+                  && (model.max_hops < 0
+                      || static_cast<int>(route.arcs.size()) <= model.max_hops),
+              "endpoint-exact scalable path chain is invalid");
+      transport += predicted_route_delay(model, route, ratios);
+      for (const Arc& arc : route.arcs) {
+        dependency_domains.insert(arc.domain);
+      }
+      reverse_transitions.emplace_back(source, target);
+      target = source;
     }
-    for (int part : {net_state.worst_transition.first,
-                     net_state.worst_transition.second}) {
-      if (sequence.empty() || sequence.back() != part) {
-        sequence.push_back(part);
+    require(state.assignment[path.start_cluster] == target,
+            "endpoint-exact scalable path endpoints are inconsistent");
+    for (auto item = reverse_transitions.rbegin();
+         item != reverse_transitions.rend(); ++item) {
+      for (int part : {item->first, item->second}) {
+        if (sequence.empty() || sequence.back() != part) {
+          sequence.push_back(part);
+        }
+      }
+    }
+  } else {
+    for (int net : path.nets) {
+      const ProxyNetState& net_state = selected_proxy_net(
+          state, replacements, net);
+      double worst_delay = 0.0;
+      std::pair<int, int> worst = {-1, -1};
+      for (const auto& transition : net_state.transitions) {
+        const Route& route = model.route[transition.first][transition.second];
+        const double delay = predicted_route_delay(model, route, ratios);
+        for (const Arc& arc : route.arcs) {
+          dependency_domains.insert(arc.domain);
+        }
+        if (delay > worst_delay
+            || (std::abs(delay - worst_delay) <= 1.0e-12
+                && (worst.first < 0 || transition < worst))) {
+          worst_delay = delay;
+          worst = transition;
+        }
+      }
+      transport += worst_delay;
+      if (worst.first < 0) {
+        continue;
+      }
+      for (int part : {worst.first, worst.second}) {
+        if (sequence.empty() || sequence.back() != part) {
+          sequence.push_back(part);
+        }
       }
     }
   }
@@ -544,7 +666,12 @@ ProxyPathState build_proxy_path(
   }
   const double predicted = path.slack_ns - transport;
   const double slack = normalized_slack(model, path.period_ns, predicted);
-  return ProxyPathState{slack, slack < 0.0, snaking};
+  return ProxyPathState{
+      slack,
+      slack < 0.0,
+      snaking,
+      std::vector<int>(dependency_domains.begin(), dependency_domains.end()),
+  };
 }
 
 Evaluation proxy_evaluation(const ProxyState& state) {
@@ -622,9 +749,14 @@ ProxyState build_proxy_state(
     state.ratio_order.insert(state.domain_ratio[domain]);
   }
   state.path.resize(model.paths);
+  state.domain_paths.resize(model.domains);
   const std::map<int, ProxyNetState> empty;
   for (int path = 0; path < model.paths; ++path) {
-    state.path[path] = build_proxy_path(model, state, empty, path);
+    state.path[path] = build_proxy_path(
+        model, state, empty, state.domain_ratio, path);
+    for (int domain : state.path[path].dependency_domains) {
+      state.domain_paths[domain].insert(path);
+    }
     state.slack_order.insert(state.path[path].normalized_slack);
     state.total_negative += std::min(0.0, state.path[path].normalized_slack);
     state.negative_paths += state.path[path].negative ? 1 : 0;
@@ -718,8 +850,6 @@ ProxyDelta evaluate_proxy_move(
     }
     delta.nets.emplace(net, std::move(replacement));
   }
-  state.assignment[cluster] = delta.source;
-
   for (const auto& item : delta.nets) {
     for (const auto& domain : state.net[item.first].domain_counts) {
       delta.domain_delta[domain.first] -= domain.second;
@@ -739,15 +869,32 @@ ProxyDelta evaluate_proxy_move(
       ++item;
     }
   }
+  std::vector<int> projected_ratios = state.domain_ratio;
+  std::set<int> ratio_changed_domains;
+  for (const auto& item : delta.domain_delta) {
+    const int projected_load = state.domain_load[item.first] + item.second;
+    projected_ratios[item.first] = tdm_ratio(
+        model, projected_load, model.domain[item.first]);
+    if (projected_ratios[item.first] != state.domain_ratio[item.first]) {
+      ratio_changed_domains.insert(item.first);
+    }
+  }
   std::set<int> affected_paths;
   for (const auto& item : delta.nets) {
     affected_paths.insert(
         net_paths[item.first].begin(), net_paths[item.first].end());
   }
+  for (int domain : ratio_changed_domains) {
+    affected_paths.insert(
+        state.domain_paths[domain].begin(), state.domain_paths[domain].end());
+  }
   for (int path : affected_paths) {
     delta.paths.emplace(
-        path, build_proxy_path(model, state, delta.nets, path));
+        path,
+        build_proxy_path(
+            model, state, delta.nets, projected_ratios, path));
   }
+  state.assignment[cluster] = delta.source;
 
   double candidate_negative = state.total_negative;
   long long candidate_negative_paths = state.negative_paths;
@@ -851,6 +998,10 @@ void apply_proxy_delta(const Model& model,
   }
   for (const auto& item : delta.paths) {
     ProxyPathState& old = state.path[item.first];
+    for (int domain : old.dependency_domains) {
+      const std::size_t erased = state.domain_paths[domain].erase(item.first);
+      require(erased == 1, "missing scalable domain/path dependency");
+    }
     erase_one(state.slack_order, old.normalized_slack);
     state.total_negative += std::min(0.0, item.second.normalized_slack)
                             - std::min(0.0, old.normalized_slack);
@@ -858,6 +1009,9 @@ void apply_proxy_delta(const Model& model,
                             - (old.negative ? 1 : 0);
     state.snaking += item.second.snaking - old.snaking;
     old = item.second;
+    for (int domain : old.dependency_domains) {
+      state.domain_paths[domain].insert(item.first);
+    }
     state.slack_order.insert(old.normalized_slack);
   }
   state.evaluation = proxy_evaluation(state);
@@ -895,7 +1049,7 @@ void write_output(const std::string& output_path,
                   const std::vector<int>& assignment) {
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
-  output << "EMUFLOW_PATRON_OUTPUT_V1\n";
+  output << "EMUFLOW_PATRON_OUTPUT_V2\n";
   output << "MODE " << mode << '\n';
   output << "INITIAL";
   write_vector(output, initial.objective);
@@ -974,7 +1128,7 @@ void run_exact(const Model& model, const std::string& output_path) {
   }
 
   write_output(output_path,
-               "exact-global-best-v1",
+               "endpoint-exact-global-best-v2",
                initial,
                current,
                moves,
@@ -1048,7 +1202,7 @@ void run_scalable(const Model& model, const std::string& output_path) {
   }
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
-               "scalable-critical-sweep-v1",
+               "endpoint-exact-critical-sweep-v2",
                initial,
                endpoint.evaluation,
                moves,

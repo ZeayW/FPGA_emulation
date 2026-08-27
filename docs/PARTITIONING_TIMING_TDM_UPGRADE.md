@@ -181,6 +181,48 @@ then updates only its incident indexes.  This avoids pretending that an
 algorithm.  Actual Phase 4/5 scoring remains the promotion authority for both
 modes.
 
+### 3. Endpoint-exact PATRON v2
+
+The accepted v1 result above is the frozen comparison point for the next
+iteration.  Inspection found that v1 represented each multi-fanout net by its
+slowest source-to-sink transition and charged that transition to every timing
+path containing the net.  This is conservative, but it loses the identity of
+the sink actually used by a path.  It can therefore charge a local capture
+path for an unrelated remote fanout branch and weaken correlation with final
+Phase 7 timing.
+
+PATRON v2 preserves the TimingPathDB launch and capture instances in the
+pressure model.  For a path with structured endpoints and single-driver
+transported nets, it walks the path nets backwards from the capture FPGA.  At
+each transported net it selects only the source-to-current-capture branch,
+checks that the branch reaches a real sink partition, accumulates that route's
+BoardDB delay and current global TDM wait, and advances to the source FPGA.
+The recovered chain must terminate at the path's launch FPGA.  Paths without
+enough endpoint information remain explicitly labelled
+`conservative-net-worst-v1`; they are not silently treated as exact.
+
+The TDM ratio is still computed from all routed fanout demand, not merely from
+the timing path being evaluated.  Thus v2 changes path attribution without
+under-counting shared-link contention.  The scalable native refiner maintains
+both net-to-path and capacity-domain-to-path indexes.  A move recomputes paths
+containing an incident net and every current path whose delay changes when a
+domain crosses a TDM-ratio threshold.  This also corrects the v1 scalable
+proxy's omission of TDM wait from its path objective.
+
+Compact mode remains move-for-move identical to the independent exhaustive
+Python oracle.  Scalable mode is checked by a separate critical-sweep replay
+on reduced graphs and by a near-linear certificate checker on large graphs.
+The fanout regression proves that a local sink receives zero transport delay
+while a remote sink on the same net receives its concrete routed delay; the
+legacy endpoint-free copy of that fixture deliberately retains the old
+worst-fanout charge.
+
+The v2 success gate is stricter than the original branch gate: on the same
+canonical DLA/case6/seed-1 ancestor it must improve both complete-global Phase
+7 WNS and TNS relative to the already improved v1 values of
+`-82.4981025395 ns` and `-324,776.89798473305 ns`.  Phase 3 proxy improvements
+alone do not satisfy this gate.
+
 ## Exact Phase 4/5 promotion
 
 The predictor is only a search heuristic.  Each surviving portfolio/refinement
@@ -204,9 +246,11 @@ Phase 4/5 logic into an approximate partitioner.
 
 Implemented artifacts are versioned and hash-bound:
 
-- `partition-pressure-model/v1`: TimingPathDB paths, predicted route/domain
+- `partition-pressure-model/v2`: TimingPathDB paths, structured launch/capture
+  clusters when available, explicit exact/fallback transition semantics,
+  predicted route/domain
   costs, immutable constraints, and source hashes;
-- `partition-refinement-trace/v1`: every considered/selected move, raw and
+- `partition-pressure-trace/v2`: every considered/selected move, raw and
   ranked objective deltas, feasibility certificate, best prefix, and final
   assignment hash;
 - the existing checked cross-stage report records the frozen seed candidate,
