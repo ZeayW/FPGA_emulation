@@ -1988,6 +1988,118 @@ void run_scalable(const Model& model, const std::string& output_path) {
               << " feasible=" << feasible_cover_ejections
               << " operations=" << cover_operations.size() << '\n';
 
+    constexpr int kCoverGroupLimit = 256;
+    std::set<std::vector<std::pair<int, int>>> seen_cover_groups;
+    long long cover_transition_options = 0;
+    long long evaluated_cover_groups = 0;
+    long long reducing_cover_groups = 0;
+    long long feasible_cover_groups = 0;
+    long long skipped_large_cover_groups = 0;
+    int maximum_cover_group_size = 0;
+    int maximum_cover_group_reduction = 0;
+    const auto evaluate_cover_group = [&](const std::vector<int>& members,
+                                          int source,
+                                          int target) {
+      ++cover_transition_options;
+      std::map<int, int> change_map;
+      for (int cluster : members) {
+        if (state.assignment[cluster] != source) {
+          continue;
+        }
+        if (model.cluster[cluster].fixed >= 0) {
+          return;
+        }
+        change_map[cluster] = target;
+      }
+      std::vector<std::pair<int, int>> changes(
+          change_map.begin(), change_map.end());
+      if (changes.empty()) {
+        return;
+      }
+      maximum_cover_group_size = std::max(
+          maximum_cover_group_size, static_cast<int>(changes.size()));
+      if (static_cast<int>(changes.size()) > kCoverGroupLimit) {
+        ++skipped_large_cover_groups;
+        return;
+      }
+      if (!seen_cover_groups.insert(changes).second) {
+        return;
+      }
+      std::vector<std::pair<int, int>> extras;
+      if (changes.size() > 1) {
+        extras.assign(changes.begin() + 1, changes.end());
+      }
+      ProxyDelta raw = evaluate_proxy_changes(
+          model,
+          state,
+          cluster_nets,
+          net_paths,
+          changes[0].first,
+          changes[0].second,
+          -1,
+          -1,
+          extras,
+          false);
+      ++evaluated_cover_groups;
+      if (!raw.feasible) {
+        return;
+      }
+      const auto raw_delta = raw.domain_delta.find(cover_domain);
+      if (raw_delta == raw.domain_delta.end() || raw_delta->second >= 0) {
+        return;
+      }
+      ++reducing_cover_groups;
+      maximum_cover_group_reduction = std::max(
+          maximum_cover_group_reduction, -raw_delta->second);
+      ProxyDelta feasible = evaluate_proxy_changes(
+          model,
+          state,
+          cluster_nets,
+          net_paths,
+          changes[0].first,
+          changes[0].second,
+          -1,
+          -1,
+          extras);
+      if (!feasible.feasible) {
+        return;
+      }
+      ++feasible_cover_groups;
+      cover_operations.push_back(CoverOperation{
+          changes,
+          -raw_delta->second,
+          feasible.evaluation.ranked[1] - state.evaluation.ranked[1]});
+    };
+    for (int net = 0; net < model.nets; ++net) {
+      for (const Transition& transition : state.net[net].transitions) {
+        const Route& route = model.route[transition.source][transition.sink];
+        const bool uses_cover_domain = std::any_of(
+            route.arcs.begin(), route.arcs.end(), [&](const Arc& arc) {
+              return arc.domain == cover_domain;
+            });
+        if (!uses_cover_domain) {
+          continue;
+        }
+        evaluate_cover_group(model.net[net].sinks,
+                             transition.sink,
+                             transition.source);
+        evaluate_cover_group(model.net[net].drivers,
+                             transition.source,
+                             transition.sink);
+      }
+    }
+    std::cerr << "PATRON_COVER_GROUP_INPUT options="
+              << cover_transition_options
+              << " unique=" << seen_cover_groups.size()
+              << " evaluated=" << evaluated_cover_groups
+              << " reducing=" << reducing_cover_groups
+              << " feasible=" << feasible_cover_groups
+              << " maximum_group_size=" << maximum_cover_group_size
+              << " maximum_group_reduction="
+              << maximum_cover_group_reduction
+              << " skipped_large=" << skipped_large_cover_groups
+              << " operations=" << cover_operations.size() << '\n';
+
     for (int heuristic = 0; heuristic < 3; ++heuristic) {
       std::vector<CoverOperation> ordered = cover_operations;
       std::sort(ordered.begin(), ordered.end(), [&](const CoverOperation& left,
