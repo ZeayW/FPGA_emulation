@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import math
+import shutil
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -980,6 +981,7 @@ def run_cross_stage_optimization(
     database_path: Path,
     initial_assignment_path: Path,
     output_dir: Path,
+    seed_candidate_phase3_root: Optional[Path] = None,
     phase3_constraints_path: Optional[Path] = None,
     route_constraints_path: Optional[Path] = None,
     board_link_timing_path: Optional[Path] = None,
@@ -990,6 +992,8 @@ def run_cross_stage_optimization(
     balance_tolerance: Optional[float] = None,
     openroad: Optional[str] = None,
     repart: Optional[str] = None,
+    patron_refiner: Optional[str] = None,
+    patron_max_moves: Optional[int] = None,
     partition_timeout_seconds: int = 3600,
     partition_seed_attempts: int = 1,
     partition_num_initial_solutions: int = 50,
@@ -1203,6 +1207,101 @@ def run_cross_stage_optimization(
     incumbent_index = 0
     termination = "iteration-limit"
 
+    if seed_candidate_phase3_root is not None:
+        source_phase3_root = seed_candidate_phase3_root.resolve()
+        seed_assignment_path = source_phase3_root / "assignment.json"
+        seed_clusters_path = source_phase3_root / "clusters.json"
+        seed_constraints_path = (
+            source_phase3_root / "constraints.normalized.json"
+        )
+        for path in (
+            seed_assignment_path,
+            seed_clusters_path,
+            seed_constraints_path,
+        ):
+            if not path.is_file():
+                raise ValidationError(
+                    f"cross-stage seed candidate artifact is missing: {path}"
+                )
+        seed_assignment = read_json(seed_assignment_path)
+        seed_clusters = read_json(seed_clusters_path)
+        seed_validation = validate_partition_artifacts(
+            ir, platform, seed_clusters, seed_assignment
+        )
+        if seed_clusters != clusters:
+            raise ValidationError(
+                "cross-stage seed candidate clusters disagree with inputs"
+            )
+        if read_json(seed_constraints_path) != partition_constraints:
+            raise ValidationError(
+                "cross-stage seed candidate constraints disagree with inputs"
+            )
+        iteration = len(candidates)
+        seed_root = output_dir / f"iteration_{iteration:03d}"
+        shutil.copytree(source_phase3_root, seed_root / "phase3")
+        candidate = _run_candidate_flow(
+            root=output_dir,
+            iteration=iteration,
+            assignment_path=seed_root / "phase3/assignment.json",
+            database_path=database_path,
+            platform_path=platform_path,
+            route_constraints_path=effective_route_constraints_path,
+            frame_slots=frame_slots,
+            optimize_frame_slots=optimize_frame_slots,
+            route_max_iterations=route_max_iterations,
+            router=router,
+            route_provider=route_provider,
+            route_candidate_workers=route_candidate_workers,
+            simulation_frames=simulation_frames,
+            tdm_provider=tdm_provider,
+            ratio_optimizer=ratio_optimizer,
+            timing_dag_optimizer=timing_dag_optimizer,
+            slot_optimizer=slot_optimizer,
+            ratio_max_iterations=ratio_max_iterations,
+            max_ratio=max_ratio,
+            ratio_quantum=ratio_quantum,
+            post_refinement_iterations=post_refinement_iterations,
+            slot_refinement_iterations=slot_refinement_iterations,
+            ratio_convergence=ratio_convergence,
+        )
+        candidate.update(
+            {
+                "candidate_origin": "seed",
+                "outer_iteration": 0,
+                "trial": None,
+                "phase3_validation": seed_validation,
+                "partition_migration": reconstruct_partition_migration(
+                    initial_assignment,
+                    seed_assignment,
+                    platform,
+                    migration_route_constraints,
+                ),
+                "partition_class": reconstruct_partition_class(
+                    seed_assignment,
+                    platform,
+                    migration_route_constraints,
+                ),
+            }
+        )
+        partition_signature = candidate["partition_class"]["sha256"]
+        equivalent_iteration = evaluated_partition_classes.get(
+            partition_signature
+        )
+        if equivalent_iteration is not None:
+            candidate["equivalent_partition_iteration"] = (
+                equivalent_iteration
+            )
+        else:
+            evaluated_partition_classes[partition_signature] = iteration
+        decision = compare_candidate_objectives(
+            read_json(output_dir / candidate["score"]),
+            read_json(output_dir / baseline["score"]),
+        )
+        candidate["decision"] = decision
+        candidates.append(candidate)
+        if decision["accepted"]:
+            incumbent_index = iteration
+
     for outer_iteration in range(1, max_outer_iterations + 1):
         incumbent = candidates[incumbent_index]
         incumbent_root = output_dir / f"iteration_{incumbent_index:03d}"
@@ -1280,6 +1379,13 @@ def run_cross_stage_optimization(
                     route_constraints_path=(
                         effective_route_constraints_path
                     ),
+                    timing_database_path=(
+                        database_path
+                        if phase3_provider == "patron"
+                        else None
+                    ),
+                    patron_refiner=patron_refiner,
+                    patron_max_moves=patron_max_moves,
                 )
                 candidate = _run_candidate_flow(
                     root=output_dir,
@@ -1433,6 +1539,8 @@ def run_cross_stage_optimization(
                 partition_repair_min_used_fpgas
             ),
             "partition_repair_balance": partition_repair_balance,
+            "patron_max_moves": patron_max_moves,
+            "seed_candidate": seed_candidate_phase3_root is not None,
             "frame_slots": frame_slots,
             "optimize_frame_slots": optimize_frame_slots,
             "route_provider": (
@@ -1453,6 +1561,16 @@ def run_cross_stage_optimization(
             "platform": _sha256(platform_path),
             "database": _sha256(database_path),
             "initial_assignment": _sha256(initial_assignment_path),
+            **(
+                {
+                    "seed_candidate_assignment": _sha256(
+                        seed_candidate_phase3_root.resolve()
+                        / "assignment.json"
+                    )
+                }
+                if seed_candidate_phase3_root is not None
+                else {}
+            ),
             **(
                 {
                     "phase3_constraints": _sha256(
@@ -1536,6 +1654,31 @@ def validate_cross_stage_report(
     if not isinstance(configuration, dict):
         raise ValidationError(
             "cross-stage report configuration is invalid"
+        )
+    has_seed_candidate = configuration.get("seed_candidate", False)
+    if not isinstance(has_seed_candidate, bool):
+        raise ValidationError(
+            "cross-stage seed candidate flag is invalid"
+        )
+    if has_seed_candidate:
+        if (
+            len(candidates) < 2
+            or candidates[1].get("candidate_origin") != "seed"
+            or source_hashes.get("seed_candidate_assignment")
+            != _sha256(root / candidates[1]["assignment"])
+        ):
+            raise ValidationError(
+                "cross-stage seed candidate seal is invalid"
+            )
+    elif (
+        "seed_candidate_assignment" in source_hashes
+        or any(
+            candidate.get("candidate_origin") == "seed"
+            for candidate in candidates
+        )
+    ):
+        raise ValidationError(
+            "cross-stage unexpected seed candidate metadata"
         )
     raw_steps = configuration.get("feedback_steps")
     if not isinstance(raw_steps, list):
@@ -1703,7 +1846,12 @@ def validate_cross_stage_report(
             raise ValidationError(
                 "cross-stage candidate iterations are not contiguous"
             )
-        if index > 0:
+        is_seed_candidate = (
+            index == 1
+            and has_seed_candidate
+            and candidate.get("candidate_origin") == "seed"
+        )
+        if index > 0 and not is_seed_candidate:
             if candidate.get("outer_iteration") != active_outer:
                 raise ValidationError(
                     "cross-stage candidate outer iteration mismatch"
@@ -1743,7 +1891,7 @@ def validate_cross_stage_report(
                 raise ValidationError(
                     "cross-stage candidate link timing constraints mismatch"
                 )
-        if index > 0:
+        if index > 0 and not is_seed_candidate:
             assert incumbent_record is not None
             raw_feedback = read_json(root / candidate["raw_feedback"])
             expected_raw_validation = validate_partition_feedback(
@@ -1902,8 +2050,9 @@ def validate_cross_stage_report(
                 incumbent = score
                 incumbent_record = candidate
                 selected = index
-                active_outer += 1
-                expected_trial = 0
+                if not is_seed_candidate:
+                    active_outer += 1
+                    expected_trial = 0
         validated += 1
     if report.get("selected_iteration") != selected:
         raise ValidationError(

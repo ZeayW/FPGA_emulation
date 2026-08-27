@@ -19,9 +19,13 @@ from .experiment_upstream import (
     validate_timing_checkpoint,
 )
 from .io import read_json, write_json
-from .partition_hops import validate_assignment_hop_constraints
 from .partition import CUT_MODE_SEQUENTIAL_ONLY
+from .partition_hops import validate_assignment_hop_constraints
+from .partition_pressure import validate_partition_pressure_native_bundle
 from .phase3 import run_phase3, validate_phase3
+from .ir import EmuIR
+from .platform import Platform
+from .routing import load_route_constraints
 
 
 def run_partition_checkpoint(
@@ -47,6 +51,9 @@ def run_partition_checkpoint(
     max_cross_fpga_dependency_depth: int = 1,
     comb_segment_budget_slots: int = 1,
     minimum_combinational_cut_nets: int = 0,
+    patron_refiner: Optional[str] = None,
+    patron_max_moves: Optional[int] = None,
+    patron_initial_assignment_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     if (
         isinstance(minimum_combinational_cut_nets, bool)
@@ -88,6 +95,14 @@ def run_partition_checkpoint(
         cut_mode=cut_mode,
         max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
         comb_segment_budget_slots=comb_segment_budget_slots,
+        timing_database_path=(
+            _require(timing_root, "path-database.json")
+            if provider == "patron"
+            else None
+        ),
+        patron_refiner=patron_refiner,
+        patron_max_moves=patron_max_moves,
+        patron_initial_assignment_path=patron_initial_assignment_path,
     )
     report = {
         "schema": EXPERIMENT_PARTITION_SCHEMA,
@@ -122,8 +137,21 @@ def run_partition_checkpoint(
             if constraints_path is not None
             else None
         ),
+        "patron_initial_assignment_sha256": (
+            _sha256(patron_initial_assignment_path.resolve())
+            if patron_initial_assignment_path is not None
+            else None
+        ),
         "phase3": phase3,
     }
+    if provider == "patron":
+        report["patron_artifact_sha256"] = {
+            "model": _sha256(output_dir / "patron/pressure_model.json"),
+            "trace": _sha256(output_dir / "patron/refinement_trace.json"),
+            "initial_assignment": _sha256(
+                output_dir / "patron/initial_assignment.json"
+            ),
+        }
     write_json(output_dir / "experiment-partition-report.json", report)
     validate_partition_checkpoint(
         frontend_root,
@@ -144,6 +172,7 @@ def run_partition_checkpoint(
         expected_minimum_combinational_cut_nets=(
             minimum_combinational_cut_nets
         ),
+        patron_initial_assignment_path=patron_initial_assignment_path,
     )
     return report
 
@@ -164,6 +193,7 @@ def validate_partition_checkpoint(
     expected_max_cross_fpga_dependency_depth: int | None = None,
     expected_comb_segment_budget_slots: int | None = None,
     expected_minimum_combinational_cut_nets: int | None = None,
+    patron_initial_assignment_path: Path | None = None,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     weights = _require(timing_root, "partition-net-weights.json")
@@ -223,6 +253,15 @@ def validate_partition_checkpoint(
     )
     if report.get("constraints_sha256") != expected_constraints_sha256:
         raise ValidationError("partition constraints seal is broken")
+    expected_patron_initial = (
+        _sha256(patron_initial_assignment_path.resolve())
+        if patron_initial_assignment_path is not None
+        else None
+    )
+    if report.get("patron_initial_assignment_sha256") != expected_patron_initial:
+        raise ValidationError(
+            "partition PATRON initial-assignment seal is broken"
+        )
     seals = {
         "emuir_sha256": ir_path,
         "platform_sha256": platform_path.resolve(),
@@ -321,6 +360,47 @@ def validate_partition_checkpoint(
                 f"partition {field.replace('_', '-')} seal disagrees with "
                 "the independently validated assignment"
             )
+    algorithm_validation = None
+    if report["provider"] == "patron":
+        patron_paths = {
+            "model": _require(root, "patron/pressure_model.json"),
+            "trace": _require(root, "patron/refinement_trace.json"),
+            "initial_assignment": _require(
+                root, "patron/initial_assignment.json"
+            ),
+        }
+        expected_artifact_hashes = report.get("patron_artifact_sha256")
+        if (
+            not isinstance(expected_artifact_hashes, dict)
+            or expected_artifact_hashes
+            != {
+                label: _sha256(path)
+                for label, path in patron_paths.items()
+            }
+        ):
+            raise ValidationError(
+                "partition PATRON artifact seal is broken"
+            )
+        ir = EmuIR.load(ir_path)
+        platform = Platform.load(platform_path)
+        algorithm_validation = validate_partition_pressure_native_bundle(
+            ir,
+            platform,
+            read_json(seals["clusters_sha256"]),
+            read_json(_require(root, "constraints.normalized.json")),
+            read_json(_require(timing_root, "path-database.json")),
+            load_route_constraints(route_constraints_path, platform),
+            read_json(patron_paths["model"]),
+            read_json(patron_paths["initial_assignment"]),
+            assignment,
+            read_json(patron_paths["trace"]),
+        )
+        if report.get("phase3", {}).get("algorithm_validation") != (
+            algorithm_validation
+        ):
+            raise ValidationError(
+                "partition PATRON algorithm validation mismatch"
+            )
     hop_audit = (
         validate_assignment_hop_constraints(
             seals["assignment_sha256"], platform_path, route_constraints_path
@@ -332,5 +412,10 @@ def validate_partition_checkpoint(
         "status": "pass",
         "provider": report["provider"],
         "hop_audit": hop_audit,
+        **(
+            {"algorithm_validation": algorithm_validation}
+            if algorithm_validation is not None
+            else {}
+        ),
         **checked,
     }

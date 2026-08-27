@@ -218,6 +218,17 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/routing.py",
         "src/native/hop_partition_refiner.cpp",
     ),
+    "partition-patron": (
+        "src/emuflow/experiment_upstream.py::validate_timing_checkpoint",
+        "src/emuflow/experiment_partition.py",
+        "src/emuflow/phase3.py",
+        "src/emuflow/partition.py",
+        "src/emuflow/partition_hops.py",
+        "src/emuflow/partition_pressure.py",
+        "src/emuflow/routing.py",
+        "src/native/hop_partition_refiner.cpp",
+        "src/native/patron_refiner.cpp",
+    ),
     "cut-timing": (
         "src/emuflow/experiment_upstream.py::run_cut_timing_checkpoint,validate_cut_timing_checkpoint",
         "src/emuflow/opensta.py",
@@ -381,6 +392,12 @@ def compile_canonical_experiment_spec(
     tools_raw = config.get("tools")
     if not isinstance(tools_raw, dict):
         raise ValidationError("canonical experiment tools must be an object")
+    partition_provider = config.get("partition_provider", "tritonpart")
+    if partition_provider not in {"tritonpart", "patron"}:
+        raise ValidationError(
+            "canonical experiment partition_provider must be "
+            "'tritonpart' or 'patron'"
+        )
     required_tools = {
         "emuflow",
         "yosys",
@@ -402,6 +419,8 @@ def compile_canonical_experiment_spec(
         "route_checker",
         "openparf_python",
     }
+    if partition_provider == "patron":
+        required_tools.add("patron_refiner")
     if set(tools_raw) != required_tools:
         raise ValidationError(
             "canonical experiment tools must exactly cover " + ", ".join(sorted(required_tools))
@@ -469,6 +488,21 @@ def compile_canonical_experiment_spec(
         "physical_route_channel_width",
     )
     region_count = _positive_integer(config.get("region_count", 4), "region_count")
+    phase6_providers = config.get(
+        "phase6_providers", ["baseline", "placement-aware", "chimew"]
+    )
+    if (
+        not isinstance(phase6_providers, list)
+        or not phase6_providers
+        or len(phase6_providers) != len(set(phase6_providers))
+        or any(
+            provider not in {"baseline", "placement-aware", "chimew"}
+            for provider in phase6_providers
+        )
+    ):
+        raise ValidationError(
+            "canonical experiment phase6_providers are invalid"
+        )
     physical_seeds_value = config.get("physical_seeds", [1])
     if (
         not isinstance(physical_seeds_value, list)
@@ -531,6 +565,17 @@ def compile_canonical_experiment_spec(
             "canonical static exact cut currently requires "
             "max_cross_fpga_dependency_depth to be 1 or 2"
         )
+    if cut_mode == CUT_MODE_STATIC_EXACT and partition_provider == "patron":
+        raise ValidationError(
+            "canonical PATRON does not yet consume static exact dependency "
+            "constraints"
+        )
+    patron_initial_assignment = None
+    if partition_provider == "patron":
+        patron_initial_assignment = _file(
+            config.get("patron_initial_assignment"),
+            "patron_initial_assignment",
+        )
     executable = str(tools["emuflow"])
     base_inputs = {
         "rtl": _sha256(rtl),
@@ -545,6 +590,15 @@ def compile_canonical_experiment_spec(
         "openparf_manifest": _sha256(openparf_manifest),
         "openparf_implementation": openparf_closure["implementation_sha256"],
         **{f"tool.{label}": _sha256(path) for label, path in sorted(tools.items())},
+        **(
+            {
+                "patron_initial_assignment": _sha256(
+                    patron_initial_assignment
+                )
+            }
+            if patron_initial_assignment is not None
+            else {}
+        ),
     }
     if partition_constraints is not None:
         base_inputs["partition_constraints"] = _sha256(partition_constraints)
@@ -561,6 +615,15 @@ def compile_canonical_experiment_spec(
         "openparf_manifest": str(openparf_manifest),
         "openparf_implementation": str(openparf_install),
         **{f"tool.{label}": str(path) for label, path in sorted(tools.items())},
+        **(
+            {
+                "patron_initial_assignment": str(
+                    patron_initial_assignment
+                )
+            }
+            if patron_initial_assignment is not None
+            else {}
+        ),
     }
     if partition_constraints is not None:
         base_bindings["partition_constraints"] = str(partition_constraints)
@@ -655,7 +718,7 @@ def compile_canonical_experiment_spec(
     partition_command = [
         executable, "experiment-stage", "partition-run", "--frontend", "{dependency:frontend}",
         "--timing", "{dependency:timing}", "--platform", str(platform),
-        "--provider", "tritonpart", "--seed", str(partition_seed),
+        "--provider", partition_provider, "--seed", str(partition_seed),
         "--seed-attempts", str(partition_seed_attempts),
         "--cut-mode", cut_mode,
         "--max-cross-fpga-dependency-depth",
@@ -670,7 +733,7 @@ def compile_canonical_experiment_spec(
         executable, "experiment-stage", "partition-validate", "{artifact_root}",
         "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}",
         "--platform", str(platform), "--route-constraints", str(route_constraints),
-        "--provider", "tritonpart", "--seed", str(partition_seed),
+        "--provider", partition_provider, "--seed", str(partition_seed),
         "--seed-attempts", str(partition_seed_attempts),
         "--cut-mode", cut_mode,
         "--max-cross-fpga-dependency-depth",
@@ -689,12 +752,78 @@ def compile_canonical_experiment_spec(
         if partition_repair_balance
         else "--no-repair-balance"
     )
+    partition_inputs = [
+        "platform",
+        "route_constraints",
+        "tool.emuflow",
+        "tool.openroad",
+        "tool.hop_refiner",
+    ]
+    partition_artifacts = [
+        _artifact("clusters.json", "consumer-checkpoint"),
+        _artifact("constraints.normalized.json", "consumer-checkpoint"),
+        _artifact("assignment.json", "consumer-checkpoint"),
+        _artifact("phase3_report.json", "consumer-checkpoint"),
+        _artifact("experiment-partition-report.json", "evidence-critical"),
+    ]
+    if partition_provider == "patron":
+        partition_command[-2:-2] = [
+            "--patron-refiner",
+            str(tools["patron_refiner"]),
+            "--patron-initial-assignment",
+            str(patron_initial_assignment),
+        ]
+        partition_validator.extend(
+            [
+                "--patron-initial-assignment",
+                str(patron_initial_assignment),
+            ]
+        )
+        partition_inputs.extend(
+            ["tool.patron_refiner", "patron_initial_assignment"]
+        )
+        partition_artifacts.append(
+            _artifact("patron", "evidence-critical")
+        )
     node(
-        "partition", "partition", ["frontend", "timing"], partition_command,
+        "partition",
+        (
+            "partition-patron"
+            if partition_provider == "patron"
+            else "partition"
+        ),
+        ["frontend", "timing"], partition_command,
         partition_validator,
-        [_artifact("clusters.json", "consumer-checkpoint"), _artifact("constraints.normalized.json", "consumer-checkpoint"), _artifact("assignment.json", "consumer-checkpoint"), _artifact("phase3_report.json", "consumer-checkpoint"), _artifact("experiment-partition-report.json", "evidence-critical")],
-        inputs=("platform", "route_constraints", *( ("partition_constraints",) if partition_constraints is not None else () ), "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
-        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "partition_constraints_sha256": base_inputs.get("partition_constraints"), "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots, "minimum_combinational_cut_nets": minimum_combinational_cut_nets},
+        partition_artifacts,
+        inputs=tuple(
+            [
+                *partition_inputs,
+                *(
+                    ["partition_constraints"]
+                    if partition_constraints is not None
+                    else []
+                ),
+            ]
+        ),
+        configuration={
+            "provider": partition_provider,
+            "seed": partition_seed,
+            "seed_attempts": partition_seed_attempts,
+            "repair_balance": partition_repair_balance,
+            "route_constraints": contract["route_constraints"],
+            "partition_constraints_sha256": base_inputs.get(
+                "partition_constraints"
+            ),
+            "timeout_seconds": 3600,
+            "num_initial_solutions": 50,
+            "num_best_initial_solutions": 10,
+            "cut_mode": cut_mode,
+            "max_cross_fpga_dependency_depth": (
+                max_cross_fpga_dependency_depth
+            ),
+            "comb_segment_budget_slots": comb_segment_budget_slots,
+            "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
+        },
         peak_gib=24, retained_gib=6,
     )
     cut_command = [
@@ -839,7 +968,7 @@ def compile_canonical_experiment_spec(
     phase7_providers = (
         ("baseline",)
         if cut_mode == CUT_MODE_STATIC_EXACT
-        else ("baseline", "placement-aware", "chimew")
+        else tuple(phase6_providers)
     )
     for provider in phase7_providers:
         for seed in physical_seeds:
@@ -905,7 +1034,7 @@ def compile_canonical_experiment_spec(
         "--shared",
         "{dependency:shared-phase1-5}",
     ]
-    for provider in ("baseline", "placement-aware", "chimew"):
+    for provider in phase7_providers:
         for seed in physical_seeds:
             phase7_id = f"phase7-{provider}-seed{seed}"
             arm = (
@@ -926,7 +1055,7 @@ def compile_canonical_experiment_spec(
         [_artifact("canonical-qor-comparison.json", "evidence-critical")],
         inputs=("tool.emuflow",),
         configuration={
-            "providers": ["baseline", "placement-aware", "chimew"],
+            "providers": list(phase7_providers),
             "physical_seeds": list(physical_seeds),
             "primary_metrics": [
                 "global_target_clock_wns_ns",
@@ -948,7 +1077,7 @@ def compile_canonical_experiment_spec(
         "status": "pass",
         "experiment_id": case_id,
         "nodes": len(validated["nodes"]),
-        "physical_terminal_nodes": 3 * len(physical_seeds),
+        "physical_terminal_nodes": len(phase7_providers) * len(physical_seeds),
         "terminal_nodes": 1,
         "output": str(output_path.resolve()),
     }

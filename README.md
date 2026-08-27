@@ -1130,6 +1130,53 @@ initial/final cut, connectivity, hop, capacity, and fixed-node checks. The
 checker can be overridden for source-build validation with
 `--mfspart-refiner-checker`; installed builds resolve it automatically.
 
+The partitioning-upgrade branch also exposes the compact, exhaustive PATRON
+reference with `emuflow partition-pressure-reference`.  It consumes a frozen
+EmuIR, normalized Phase 3 clusters/constraints, TimingPathDB, BoardDB route
+constraints, and initial assignment.  The emitted source-bound model and move
+trace independently reconstruct target-specific directed-link pressure,
+predicted TDM ratio, ordered timing-path delay, capacity/topology legality, and
+the globally best improving move.  The source-built native PATRON engine
+matches that oracle move-for-move on compact graphs and switches above 256
+clusters to an indexed, criticality-ordered best-target sweep; the latter
+updates only incident nets, paths, resource loads, and capacity domains.
+`--partition-provider patron` is an explicit non-default research provider.
+Its initial result and frozen TritonPart fallback are both scored by checked
+Phase 4/5 before promotion, and large checkpoints independently rebuild the
+model, transition chain, assignment legality, and complete initial/final
+metrics.  The scalable sweep is a deterministic heuristic and is not claimed
+globally optimal.  PATRON currently accepts only the sequential boundary
+policy; selecting it with Static Exact fails closed until the refiner consumes
+the exact dependency contract.  Canonical experiment configs may set
+`partition_provider=patron`, reuse `patron_initial_assignment`, and restrict
+`phase6_providers` plus `physical_seeds` (for example Chimew/seed 1) so an A/B
+run computes only the missing branch.  A frozen assignment is rebound through
+its exact instance-to-FPGA map when a compatible source revision changed only
+cluster identifiers; every current cluster must remain wholly on one frozen
+FPGA and the rebuilt instance map must be byte-for-byte equivalent, otherwise
+the import fails closed.  Scalable native endpoint metrics are re-anchored by
+a full reconstruction after incremental search, and the Python checker
+requires exact discrete metrics plus 1e-12 relative agreement for accumulated
+slack.  The primary real-large-design Phase 7 gate has now passed on the
+canonical `koios-dla-medium__eda2023-case6` case at physical seed 1.  The
+frozen existing-flow arm and PATRON arm used the same EmuIR and 195,532-path
+timing population, Chimew Phase 6 implementation manifest, physical worker
+count (8), route channel width (300), and complete-global timing
+qualification.  Both reached
+zero unrouted nets and zero DRC violations.  Complete-global target-clock WNS
+improved from -95.310052262 ns to -82.4981025395 ns (+12.8119497225 ns;
+13.4424% negative-slack-deficit reduction), while TNS improved from
+-499,996.7265938718 ns to -324,776.89798473305 ns (+175,219.82860913873 ns;
+35.0442% deficit reduction).  The failing-path count changed from 7,965 to
+8,803, so that diagnostic is reported as a regression rather than hidden.
+Both arms retained 100% original-path coverage and the accepted result is
+sealed by an independently replayed nine-file Phase 7 evidence manifest.
+PATRON remains explicit and non-default until case7/case9 topology replication
+is complete; the primary branch acceptance requested here does not silently
+promote a one-topology result into a universal default.  The complete design,
+literature basis, and gate are documented in
+[the timing/TDM partitioning upgrade plan](docs/PARTITIONING_TIMING_TDM_UPGRADE.md).
+
 ### Automatic validation archives
 
 A successful full-flow run can be archived as part of the same command. The
@@ -3493,6 +3540,7 @@ docs/              architecture, algorithm, and benchmark plans
 
 - [Flow architecture and phase contracts](docs/FLOW_PLAN.md)
 - [Academic algorithm upgrade plan](docs/ALGORITHM_UPGRADE_PLAN.md)
+- [Timing- and TDM-aware partitioning upgrade](docs/PARTITIONING_TIMING_TDM_UPGRADE.md)
 - [Open-source components and provenance](OPEN_SOURCE_COMPONENTS.md)
 
 Machine-specific configurations, raw results, QoR tables, and experiment

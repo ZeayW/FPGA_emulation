@@ -531,6 +531,66 @@ class CrossStageCandidateTest(unittest.TestCase):
                 reports[0]["candidates"][0]["objective_key"],
                 reports[1]["candidates"][0]["objective_key"],
             )
+            seed_output = root / "seed_candidate"
+            seed_report = run_cross_stage_optimization(
+                ir_path=ir_path,
+                platform_path=platform_path,
+                database_path=database_path,
+                initial_assignment_path=initial_root / "assignment.json",
+                seed_candidate_phase3_root=initial_root,
+                output_dir=seed_output,
+                phase3_provider="greedy",
+                max_outer_iterations=0,
+                min_used_fpgas=2,
+                balance_tolerance=1.0,
+                router=str(router),
+                ratio_optimizer=str(ratio_optimizer),
+                timing_dag_optimizer=str(timing_dag_optimizer),
+                feedback_optimizer=str(feedback_optimizer),
+                simulation_frames=2,
+                max_ratio=8,
+                post_refinement_iterations=10,
+            )
+            self.assertEqual(len(seed_report["candidates"]), 2)
+            self.assertEqual(
+                seed_report["candidates"][1]["candidate_origin"], "seed"
+            )
+            self.assertEqual(
+                seed_report["candidates"][1][
+                    "equivalent_partition_iteration"
+                ],
+                0,
+            )
+            self.assertFalse(
+                seed_report["candidates"][1]["decision"]["accepted"]
+            )
+            self.assertEqual(seed_report["selected_iteration"], 0)
+            self.assertEqual(
+                validate_cross_stage_report(
+                    seed_output / "cross_stage_report.json",
+                    ir_path,
+                    database_path,
+                    platform_path,
+                )["status"],
+                "pass",
+            )
+            tampered_seed = copy.deepcopy(seed_report)
+            tampered_seed["source_sha256"][
+                "seed_candidate_assignment"
+            ] = "0" * 64
+            tampered_seed_path = (
+                seed_output / "tampered_seed_candidate_report.json"
+            )
+            write_json(tampered_seed_path, tampered_seed)
+            with self.assertRaisesRegex(
+                ValidationError, "seed candidate seal"
+            ):
+                validate_cross_stage_report(
+                    tampered_seed_path,
+                    ir_path,
+                    database_path,
+                    platform_path,
+                )
             corrupted_link_timing = copy.deepcopy(reports[0])
             corrupted_link_timing["board_link_timing"][
                 "routing_projection"
