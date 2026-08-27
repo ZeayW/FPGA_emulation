@@ -1,4 +1,5 @@
 import copy
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -233,7 +234,7 @@ class PartitionPressureTest(unittest.TestCase):
                 "ports": [],
                 "instances": [
                     {"id": item, "type": "LUT1", "resources": {"lut": 1}}
-                    for item in ("driver", "local", "remote")
+                    for item in ("driver", "local", "remote", "remote_peer")
                 ],
                 "nets": [
                     {
@@ -243,6 +244,7 @@ class PartitionPressureTest(unittest.TestCase):
                         "sinks": [
                             _endpoint("local", "I"),
                             _endpoint("remote", "I"),
+                            _endpoint("remote_peer", "I"),
                         ],
                     }
                 ],
@@ -278,6 +280,7 @@ class PartitionPressureTest(unittest.TestCase):
             cluster_by_instance["driver"]: "a",
             cluster_by_instance["local"]: "a",
             cluster_by_instance["remote"]: "c",
+            cluster_by_instance["remote_peer"]: "c",
         }
         routes = normalize_route_constraints(
             {
@@ -337,6 +340,26 @@ class PartitionPressureTest(unittest.TestCase):
         paths = {record["path"]: record for record in evaluated["paths"]}
         self.assertEqual(paths["to-local"]["transport_delay_ns"], 0.0)
         self.assertGreater(paths["to-remote"]["transport_delay_ns"], 0.0)
+        reduced_fanout_assignment = dict(assignment)
+        reduced_fanout_assignment[cluster_by_instance["remote_peer"]] = "a"
+        reduced_fanout = evaluate_partition_pressure(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            routes,
+            model,
+            reduced_fanout_assignment,
+        )
+        reduced_paths = {
+            record["path"]: record for record in reduced_fanout["paths"]
+        }
+        self.assertAlmostEqual(
+            paths["to-remote"]["transport_delay_ns"]
+            - reduced_paths["to-remote"]["transport_delay_ns"],
+            model["configuration"]["boundary_fanout_penalty_scale_ns"]
+            * (math.log2(3.0) - math.log2(2.0)),
+        )
         self.assertEqual(
             paths["to-local"]["transition_model"],
             "endpoint-exact-reverse-chain-v1",
@@ -638,7 +661,7 @@ class PartitionPressureTest(unittest.TestCase):
                 (root / "phase3/patron/candidate_assignment.json").is_file()
             )
             self.assertEqual(
-                report["provider"], "patron-endpoint-exact-native-v2"
+                report["provider"], "patron-endpoint-exact-native-v3"
             )
             baseline = promote_patron_baseline(
                 ir_path, platform_path, root / "phase3"
@@ -807,7 +830,7 @@ class PartitionPressureTest(unittest.TestCase):
             final["cluster_assignment"],
         )
         self.assertEqual(
-            trace["mode"], "endpoint-exact-critical-sweep-v2"
+            trace["mode"], "endpoint-exact-critical-sweep-v3"
         )
         self.assertGreater(len(trace["moves"]), 0)
         scalable_checked = validate_partition_pressure_scalable_trace(

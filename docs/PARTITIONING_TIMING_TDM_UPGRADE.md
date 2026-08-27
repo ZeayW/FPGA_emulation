@@ -246,13 +246,15 @@ Phase 4/5 logic into an approximate partitioner.
 
 Implemented artifacts are versioned and hash-bound:
 
-- `partition-pressure-model/v2`: TimingPathDB paths, structured launch/capture
+- `partition-pressure-model/v3`: TimingPathDB paths, structured launch/capture
   clusters when available, explicit exact/fallback transition semantics,
-  predicted route/domain
-  costs, immutable constraints, and source hashes;
-- `partition-pressure-trace/v2`: every considered/selected move, raw and
+  predicted route/domain costs, a source-derived logarithmic remote-sink
+  fanout surrogate, immutable constraints, and source hashes;
+- `partition-pressure-trace/v3`: every considered/selected move, raw and
   ranked objective deltas, feasibility certificate, best prefix, and final
   assignment hash;
+- `partition-pressure-report/v3`: the selected native provider, sealed model
+  and trace, final assignment, and independent validation summary;
 - the existing checked cross-stage report records the frozen seed candidate,
   exact Phase 4/5 score, rejection reason, and selected candidate;
 - the existing canonical QoR comparison records frozen arm identities plus

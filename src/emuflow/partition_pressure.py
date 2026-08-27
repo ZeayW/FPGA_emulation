@@ -38,12 +38,13 @@ from .routing import (
 from .sta import _normalized_slack, _validate_database_normalization
 
 
-PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v2"
-PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v2"
-PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v2"
-PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v2"
-PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v2"
+PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v3"
+PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v3"
+PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v3"
+PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v3"
+PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v3"
 GAIN_QUANTUM = 1.0e-9
+BOUNDARY_FANOUT_PENALTY_SCALE_NS = 0.25
 
 
 def _canonical_digest(value: Any) -> str:
@@ -301,6 +302,10 @@ def _reconstruct_partition_pressure_model(
         },
         "configuration": {
             "gain_quantum": GAIN_QUANTUM,
+            "boundary_fanout_penalty": "scale*log2(1+remote_sink_clusters)",
+            "boundary_fanout_penalty_scale_ns": (
+                BOUNDARY_FANOUT_PENALTY_SCALE_NS
+            ),
             "max_route_hops": route_constraints.get("max_route_hops"),
             "frame_slots": route_constraints["frame_slots"],
             "tdm_ratio_quantum": route_constraints["tdm_ratio_quantum"],
@@ -456,6 +461,23 @@ def _predicted_route_delay(
     return delay
 
 
+def _boundary_fanout_penalty(
+    model: Mapping[str, Any], remote_sink_clusters: int
+) -> float:
+    if remote_sink_clusters <= 0:
+        return 0.0
+    scale = _require_finite(
+        model["configuration"]["boundary_fanout_penalty_scale_ns"],
+        "partition pressure boundary fanout penalty scale",
+    )
+    if scale < 0.0:
+        raise ValidationError(
+            "partition pressure boundary fanout penalty scale must be "
+            "non-negative"
+        )
+    return scale * math.log2(1.0 + remote_sink_clusters)
+
+
 def _endpoint_exact_path_transport(
     path: Mapping[str, Any],
     net_by_id: Mapping[str, Mapping[str, Any]],
@@ -493,6 +515,9 @@ def _endpoint_exact_path_transport(
             )
         if source == target:
             continue
+        remote_sink_clusters = sum(
+            cluster_parts[sink] == target for sink in net["sinks"]
+        )
         route = model["shortest_routes"][source][target]
         if route is None or (
             max_hops is not None and len(route) > max_hops
@@ -508,6 +533,9 @@ def _endpoint_exact_path_transport(
             domain_ratios,
             route,
             include_tdm_wait=include_tdm_wait,
+        )
+        transport += _boundary_fanout_penalty(
+            model, remote_sink_clusters
         )
         reverse_transitions.append((source, target))
         target = source
@@ -557,7 +585,10 @@ def evaluate_partition_pressure(
 
     for net in model["nets"]:
         sources = sorted({cluster_parts[item] for item in net["drivers"]})
-        sinks = sorted({cluster_parts[item] for item in net["sinks"]})
+        sink_part_counts: Dict[str, int] = defaultdict(int)
+        for cluster in net["sinks"]:
+            sink_part_counts[cluster_parts[cluster]] += 1
+        sinks = sorted(sink_part_counts)
         for source in sources:
             for sink in sinks:
                 if sink == source:
@@ -574,6 +605,7 @@ def evaluate_partition_pressure(
                     "from": source,
                     "to": sink,
                     "arcs": route,
+                    "remote_sink_clusters": sink_part_counts[sink],
                 }
                 routes_by_net[net["net"]].append(route_record)
                 for arc in route:
@@ -612,6 +644,9 @@ def evaluate_partition_pressure(
                 domain_ratios,
                 route["arcs"],
                 include_tdm_wait=include_tdm_wait,
+            )
+            delay += _boundary_fanout_penalty(
+                model, route["remote_sink_clusters"]
             )
             transition = (route["from"], route["to"])
             if delay > maximum or (
@@ -1031,7 +1066,7 @@ def _write_patron_native_input(
     max_hops = model["configuration"]["max_route_hops"]
 
     lines = [
-        "EMUFLOW_PATRON_INPUT_V2",
+        "EMUFLOW_PATRON_INPUT_V3",
         (
             f"PARAM {len(parts)} {len(clusters)} {len(dimensions)} "
             f"{len(domains)} {len(nets)} {len(model['paths'])} "
@@ -1041,7 +1076,8 @@ def _write_patron_native_input(
             f"{constraints['min_used_fpgas']} {max_moves} "
             f"{model['normalization']['positive_slack_scale_ns']:.17g} "
             f"{model['normalization']['negative_slack_scale_ns']:.17g} "
-            f"{model['normalization']['max_clock_period_ns']:.17g}"
+            f"{model['normalization']['max_clock_period_ns']:.17g} "
+            f"{model['configuration']['boundary_fanout_penalty_scale_ns']:.17g}"
         ),
     ]
     total_cells = sum(cluster["cells"] for cluster in clusters)
@@ -1201,7 +1237,7 @@ def _parse_patron_native_output(
     str,
 ]:
     lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_PATRON_OUTPUT_V2":
+    if not lines or lines[0] != "EMUFLOW_PATRON_OUTPUT_V3":
         raise ValidationError("native PATRON output header is invalid")
     moves = []
     assignment: Dict[str, str] = {}
@@ -1458,7 +1494,7 @@ def validate_partition_pressure_native_bundle(
     ):
         raise ValidationError("native PATRON final assignment seal is invalid")
     mode = native_trace.get("mode")
-    if mode == "endpoint-exact-global-best-v2":
+    if mode == "endpoint-exact-global-best-v3":
         exact = validate_partition_pressure_native_against_exhaustive(
             ir,
             platform,
@@ -1477,7 +1513,7 @@ def validate_partition_pressure_native_bundle(
             "model_validation": model_validation,
             **exact,
         }
-    if mode != "endpoint-exact-critical-sweep-v2":
+    if mode != "endpoint-exact-critical-sweep-v3":
         raise ValidationError("native PATRON trace mode is invalid")
 
     moves = native_trace.get("moves")
@@ -1694,7 +1730,7 @@ def validate_partition_pressure_scalable_trace(
     instances.  Large production bundles use the indexed certificate checker.
     """
 
-    if native_trace.get("mode") != "endpoint-exact-critical-sweep-v2":
+    if native_trace.get("mode") != "endpoint-exact-critical-sweep-v3":
         raise ValidationError("native PATRON scalable trace mode is invalid")
     max_moves = native_trace.get("configuration", {}).get("max_moves")
     if isinstance(max_moves, bool) or not isinstance(max_moves, int) or max_moves < 0:

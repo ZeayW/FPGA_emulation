@@ -45,6 +45,12 @@ struct Net {
   std::vector<int> sinks;
 };
 
+struct Transition {
+  int source = -1;
+  int sink = -1;
+  int sink_clusters = 0;
+};
+
 struct Path {
   double period_ns = 0.0;
   double slack_ns = 0.0;
@@ -68,6 +74,7 @@ struct Model {
   double positive_scale = 1.0;
   double negative_scale = 1.0;
   double max_period = 1.0;
+  double boundary_fanout_penalty_scale_ns = 0.0;
   std::vector<std::vector<double>> hard_capacity;
   std::vector<std::vector<double>> balance_capacity;
   std::vector<Cluster> cluster;
@@ -87,7 +94,8 @@ struct ProxyNetState {
   bool feasible = true;
   double delay_ns = 0.0;
   std::pair<int, int> worst_transition = {-1, -1};
-  std::vector<std::pair<int, int>> transitions;
+  std::vector<Transition> transitions;
+  std::vector<std::pair<int, int>> sink_counts;
   std::vector<std::pair<int, int>> domain_counts;
   long long hops = 0;
   long long cuts = 0;
@@ -183,24 +191,37 @@ double predicted_route_delay(const Model& model,
   return delay;
 }
 
+double predicted_transition_delay(const Model& model,
+                                  const Route& route,
+                                  const std::vector<int>& ratios,
+                                  int sink_clusters) {
+  require(sink_clusters > 0, "transition has no remote sink clusters");
+  return predicted_route_delay(model, route, ratios)
+         + model.boundary_fanout_penalty_scale_ns
+               * std::log2(1.0 + static_cast<double>(sink_clusters));
+}
+
 Model read_model(const std::string& path) {
   std::ifstream stream(path);
   require(stream.good(), "cannot open input");
   std::string token;
   stream >> token;
-  require(token == "EMUFLOW_PATRON_INPUT_V2", "invalid input header");
+  require(token == "EMUFLOW_PATRON_INPUT_V3", "invalid input header");
   Model model;
   stream >> token;
   require(token == "PARAM", "missing PARAM");
   stream >> model.parts >> model.clusters >> model.dimensions >> model.domains
       >> model.nets >> model.paths >> model.max_hops >> model.frame_slots
       >> model.ratio_quantum >> model.min_used_parts >> model.max_moves
-      >> model.positive_scale >> model.negative_scale >> model.max_period;
+      >> model.positive_scale >> model.negative_scale >> model.max_period
+      >> model.boundary_fanout_penalty_scale_ns;
   require(stream.good() && model.parts > 0 && model.clusters > 0
               && model.dimensions > 0 && model.domains > 0
               && model.nets > 0 && model.paths > 0
               && model.frame_slots > 0 && model.ratio_quantum > 0
-              && model.min_used_parts > 0 && model.max_moves >= 0,
+              && model.min_used_parts > 0 && model.max_moves >= 0
+              && std::isfinite(model.boundary_fanout_penalty_scale_ns)
+              && model.boundary_fanout_penalty_scale_ns >= 0.0,
           "invalid PARAM");
 
   model.hard_capacity.assign(
@@ -362,18 +383,19 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
   }
 
   std::vector<int> domain_load(model.domains, 0);
-  std::vector<std::vector<std::pair<int, int>>> transitions(model.nets);
+  std::vector<std::vector<Transition>> transitions(model.nets);
   for (int net_index = 0; net_index < model.nets; ++net_index) {
     std::set<int> sources;
-    std::set<int> sinks;
+    std::map<int, int> sink_counts;
     for (int cluster : model.net[net_index].drivers) {
       sources.insert(assignment[cluster]);
     }
     for (int cluster : model.net[net_index].sinks) {
-      sinks.insert(assignment[cluster]);
+      ++sink_counts[assignment[cluster]];
     }
     for (int source : sources) {
-      for (int sink : sinks) {
+      for (const auto& sink_item : sink_counts) {
+        const int sink = sink_item.first;
         if (source == sink) {
           continue;
         }
@@ -383,7 +405,8 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
                 && static_cast<int>(route.arcs.size()) > model.max_hops)) {
           return result;
         }
-        transitions[net_index].emplace_back(source, sink);
+        transitions[net_index].push_back(
+            Transition{source, sink, sink_item.second});
         for (const Arc& arc : route.arcs) {
           ++domain_load[arc.domain];
         }
@@ -406,14 +429,17 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
   long long cut_bits = 0;
   for (int net_index = 0; net_index < model.nets; ++net_index) {
     for (const auto& transition : transitions[net_index]) {
-      const Route& route = model.route[transition.first][transition.second];
-      const double delay = predicted_route_delay(model, route, ratios);
+      const Route& route = model.route[transition.source][transition.sink];
+      const double delay = predicted_transition_delay(
+          model, route, ratios, transition.sink_clusters);
+      const std::pair<int, int> identity = {
+          transition.source, transition.sink};
       if (delay > net_delay[net_index]
           || (std::abs(delay - net_delay[net_index]) <= 1.0e-12
               && (worst_transition[net_index].first < 0
-                  || transition < worst_transition[net_index]))) {
+                  || identity < worst_transition[net_index]))) {
         net_delay[net_index] = delay;
-        worst_transition[net_index] = transition;
+        worst_transition[net_index] = identity;
       }
       total_hops += static_cast<long long>(route.arcs.size());
       ++cut_bits;
@@ -446,13 +472,18 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
         if (source == target) {
           continue;
         }
+        const int sink_clusters = static_cast<int>(std::count_if(
+            net.sinks.begin(), net.sinks.end(), [&](int sink) {
+              return assignment[sink] == target;
+            }));
         const Route& route = model.route[source][target];
         if (!route.reachable
             || (model.max_hops >= 0
                 && static_cast<int>(route.arcs.size()) > model.max_hops)) {
           return result;
         }
-        transport += predicted_route_delay(model, route, ratios);
+        transport += predicted_transition_delay(
+            model, route, ratios, sink_clusters);
         reverse_transitions.emplace_back(source, target);
         target = source;
       }
@@ -526,16 +557,17 @@ ProxyNetState build_proxy_net(const Model& model,
                               int net_index) {
   ProxyNetState state;
   std::set<int> sources;
-  std::set<int> sinks;
+  std::map<int, int> sink_counts;
   for (int cluster : model.net[net_index].drivers) {
     sources.insert(assignment[cluster]);
   }
   for (int cluster : model.net[net_index].sinks) {
-    sinks.insert(assignment[cluster]);
+    ++sink_counts[assignment[cluster]];
   }
   std::map<int, int> domain_counts;
   for (int source : sources) {
-    for (int sink : sinks) {
+    for (const auto& sink_item : sink_counts) {
+      const int sink = sink_item.first;
       if (source == sink) {
         continue;
       }
@@ -552,7 +584,8 @@ ProxyNetState build_proxy_net(const Model& model,
         ++domain_counts[arc.domain];
       }
       const std::pair<int, int> transition = {source, sink};
-      state.transitions.push_back(transition);
+      state.transitions.push_back(
+          Transition{source, sink, sink_item.second});
       if (delay > state.delay_ns
           || (std::abs(delay - state.delay_ns) <= 1.0e-12
               && (state.worst_transition.first < 0
@@ -564,6 +597,7 @@ ProxyNetState build_proxy_net(const Model& model,
       ++state.cuts;
     }
   }
+  state.sink_counts.assign(sink_counts.begin(), sink_counts.end());
   state.domain_counts.assign(domain_counts.begin(), domain_counts.end());
   return state;
 }
@@ -575,6 +609,15 @@ const ProxyNetState& selected_proxy_net(
   const auto replacement = replacements.find(net);
   return replacement == replacements.end() ? state.net[net]
                                            : replacement->second;
+}
+
+int proxy_sink_count(const ProxyNetState& state, int part) {
+  const auto item = std::lower_bound(
+      state.sink_counts.begin(), state.sink_counts.end(),
+      std::make_pair(part, std::numeric_limits<int>::min()));
+  return item != state.sink_counts.end() && item->first == part
+             ? item->second
+             : 0;
 }
 
 ProxyPathState build_proxy_path(
@@ -592,14 +635,13 @@ ProxyPathState build_proxy_path(
     std::vector<std::pair<int, int>> reverse_transitions;
     for (auto item = path.nets.rbegin(); item != path.nets.rend(); ++item) {
       const Net& net = model.net[*item];
+      const ProxyNetState& net_state = selected_proxy_net(
+          state, replacements, *item);
       require(net.drivers.size() == 1,
               "endpoint-exact scalable path has multiple drivers");
       const int source = state.assignment[net.drivers.front()];
-      bool reaches_target = false;
-      for (int sink : net.sinks) {
-        reaches_target = reaches_target || state.assignment[sink] == target;
-      }
-      require(reaches_target,
+      const int sink_clusters = proxy_sink_count(net_state, target);
+      require(sink_clusters > 0,
               "endpoint-exact scalable path cannot reach its target");
       if (source == target) {
         continue;
@@ -609,7 +651,8 @@ ProxyPathState build_proxy_path(
                   && (model.max_hops < 0
                       || static_cast<int>(route.arcs.size()) <= model.max_hops),
               "endpoint-exact scalable path chain is invalid");
-      transport += predicted_route_delay(model, route, ratios);
+      transport += predicted_transition_delay(
+          model, route, ratios, sink_clusters);
       for (const Arc& arc : route.arcs) {
         dependency_domains.insert(arc.domain);
       }
@@ -633,16 +676,19 @@ ProxyPathState build_proxy_path(
       double worst_delay = 0.0;
       std::pair<int, int> worst = {-1, -1};
       for (const auto& transition : net_state.transitions) {
-        const Route& route = model.route[transition.first][transition.second];
-        const double delay = predicted_route_delay(model, route, ratios);
+        const Route& route = model.route[transition.source][transition.sink];
+        const double delay = predicted_transition_delay(
+            model, route, ratios, transition.sink_clusters);
         for (const Arc& arc : route.arcs) {
           dependency_domains.insert(arc.domain);
         }
+        const std::pair<int, int> identity = {
+            transition.source, transition.sink};
         if (delay > worst_delay
             || (std::abs(delay - worst_delay) <= 1.0e-12
-                && (worst.first < 0 || transition < worst))) {
+                && (worst.first < 0 || identity < worst))) {
           worst_delay = delay;
-          worst = transition;
+          worst = identity;
         }
       }
       transport += worst_delay;
@@ -1049,7 +1095,7 @@ void write_output(const std::string& output_path,
                   const std::vector<int>& assignment) {
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
-  output << "EMUFLOW_PATRON_OUTPUT_V2\n";
+  output << "EMUFLOW_PATRON_OUTPUT_V3\n";
   output << "MODE " << mode << '\n';
   output << "INITIAL";
   write_vector(output, initial.objective);
@@ -1128,7 +1174,7 @@ void run_exact(const Model& model, const std::string& output_path) {
   }
 
   write_output(output_path,
-               "endpoint-exact-global-best-v2",
+               "endpoint-exact-global-best-v3",
                initial,
                current,
                moves,
@@ -1202,7 +1248,7 @@ void run_scalable(const Model& model, const std::string& output_path) {
   }
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
-               "endpoint-exact-critical-sweep-v2",
+               "endpoint-exact-critical-sweep-v3",
                initial,
                endpoint.evaluation,
                moves,
