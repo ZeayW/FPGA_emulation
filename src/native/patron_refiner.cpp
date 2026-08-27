@@ -1741,6 +1741,33 @@ void run_scalable(const Model& model, const std::string& output_path) {
               << state.path[current_paths.front()].normalized_slack
               << " nets=" << model.path[current_paths.front()].nets.size()
               << '\n';
+    const long long worst_rank = rank_float(
+        state.path[current_paths.front()].normalized_slack);
+    int tied_paths = 0;
+    std::set<int> critical_domains;
+    for (int path : current_paths) {
+      if (rank_float(state.path[path].normalized_slack) != worst_rank) {
+        break;
+      }
+      ++tied_paths;
+      critical_domains.insert(
+          state.path[path].dependency_domains.begin(),
+          state.path[path].dependency_domains.end());
+    }
+    std::cerr << "PATRON_CURRENT_FRONTIER tied_paths=" << tied_paths
+              << " domains=";
+    for (int domain : critical_domains) {
+      const int ratio = state.domain_ratio[domain];
+      const int lower_ratio = ratio <= 1
+                                  ? 1
+                                  : std::max(1, ratio - model.ratio_quantum);
+      const int lower_threshold = model.domain[domain].is_sll
+                                      ? state.domain_load[domain]
+                                      : model.domain[domain].lanes * lower_ratio;
+      std::cerr << domain << ':' << state.domain_load[domain] << ':'
+                << ratio << ':' << lower_threshold << ',';
+    }
+    std::cerr << '\n';
   }
   for (int rank = 0; rank < std::min(16, model.paths); ++rank) {
     const int path = current_paths[rank];
