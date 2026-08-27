@@ -176,15 +176,17 @@ The refiner maintains these values incrementally:
 A move updates only incident nets, affected routed domains, and paths that
 contain those nets.  Gains are stably quantized before deterministic tie
 breaking; raw values remain in the trace.  Compact graphs use global-best
-direct K-way and atomic pair selection and are reproduced move-for-move by the
-Python exhaustive oracle.  Large graphs use a timing-criticality-ordered native
+direct K-way and atomic ejection selection and are reproduced move-for-move by
+the Python exhaustive oracle.  Large graphs use a timing-criticality-ordered native
 sweep: each cluster chooses its globally best legal target under the current
 proxy, then updates only its incident indexes.  Once direct moves converge,
-PATRON v5 searches a bounded pair neighborhood inspired by block-pair flow
-refinement.  A critical cluster and a low-exposure donor in the target block
-exchange partitions atomically; the final two-block resource vector, topology,
-timing paths, and TDM domains are evaluated together, so no capacity-illegal
-intermediate assignment is created.  This avoids pretending that an
+PATRON v6 searches a bounded ejection neighborhood inspired by block-pair flow
+refinement.  A critical cluster enters a target block while a low-exposure
+donor from that block moves to either the critical cluster's source or a third
+block.  Both moves are atomic; the final resource vectors, topology, timing
+paths, and TDM domains are evaluated together, so no capacity-illegal
+intermediate assignment is created.  This bounded neighborhood is not claimed
+to be maximum flow.  It avoids pretending that an
 `O(moves * nodes * targets)` Python/global scan is a scalable production
 algorithm.  Actual Phase 4/5 scoring remains the promotion authority for both
 modes.
@@ -218,8 +220,8 @@ domain crosses a TDM-ratio threshold.  This also corrects the v1 scalable
 proxy's omission of TDM wait from its path objective.
 
 Compact mode remains step-for-step identical to the independent exhaustive
-Python oracle, including atomic exchanges.  Scalable mode is checked by a
-separate critical-pairflow
+Python oracle, including atomic ejections.  Scalable mode is checked by a
+separate critical-ejection
 replay on reduced graphs and by a near-linear certificate checker on large
 graphs.  A capacity-release fixture proves that a cluster rejected early in
 one pass is reconsidered after a later move frees capacity.
@@ -228,7 +230,7 @@ while a remote sink on the same net receives its concrete routed delay; the
 legacy endpoint-free copy of that fixture deliberately retains the old
 worst-fanout charge.
 
-The v5 success gate is stricter than the original branch gate: on the same
+The v6 success gate is stricter than the original branch gate: on the same
 canonical DLA/case6/seed-1 ancestor it must improve both complete-global Phase
 7 WNS and TNS relative to the already improved v1 values of
 `-82.4981025395 ns` and `-324,776.89798473305 ns`.  Phase 3 proxy improvements
@@ -238,11 +240,15 @@ fanout-only v3 was rejected before physical execution after its frozen Phase 3
 diagnostic preserved the original proxy WNS and worsened proxy TNS.  V4's
 second fanout-aware sweep added 256 moves but worsened the independently
 recomputed original negative-slack objective further to
-`3,855.7736748538337`; it was therefore also rejected before Phase 7.  V5
-sets the fanout surrogate scale to zero and permits only strict improvements
-under the accepted original timing/TDM objective.  Its atomic exchange is the
-smallest deterministic neighborhood that directly addresses the observed
-capacity cork without introducing an illegal intermediate assignment.
+`3,855.7736748538337`; it was therefore also rejected before Phase 7.  V5 set
+the fanout surrogate scale to zero, but four frozen critical/donor windows all
+returned 257 direct moves, zero swaps, unchanged worst-slack proxy, and only a
+small negative-slack improvement from `3,232.26875` to
+`3,230.8125185219201`.  V5 was not promoted.  V6 retains the accepted original
+timing/TDM objective and permits only strict improvements, but lets the donor
+of an atomic pair move to a third block.  This is the smallest extension that
+models a two-vertex ejection path across a three-block capacity cork without an
+illegal intermediate assignment.
 
 ## Exact Phase 4/5 promotion
 
@@ -267,14 +273,14 @@ Phase 4/5 logic into an approximate partitioner.
 
 Implemented artifacts are versioned and hash-bound:
 
-- `partition-pressure-model/v5`: TimingPathDB paths, structured launch/capture
+- `partition-pressure-model/v6`: TimingPathDB paths, structured launch/capture
   clusters when available, explicit exact/fallback transition semantics,
   predicted route/domain costs, a source-derived logarithmic remote-sink
   fanout surrogate, immutable constraints, and source hashes;
-- `partition-pressure-trace/v5`: every selected move or atomic exchange, raw and
+- `partition-pressure-trace/v6`: every selected move or atomic ejection, raw and
   ranked objective deltas, feasibility certificate, best prefix, and final
   assignment hash;
-- `partition-pressure-report/v5`: the selected native provider, sealed model
+- `partition-pressure-report/v6`: the selected native provider, sealed model
   and trace, final assignment, and independent validation summary;
 - the existing checked cross-stage report records the frozen seed candidate,
   exact Phase 4/5 score, rejection reason, and selected candidate;

@@ -652,7 +652,9 @@ class PartitionPressureTest(unittest.TestCase):
         )
         self.assertEqual(checked["status"], "pass")
 
-    def test_exact_mode_uses_an_atomic_swap_when_balance_blocks_moves(self) -> None:
+    def test_exact_mode_uses_an_atomic_ejection_when_balance_blocks_moves(
+        self,
+    ) -> None:
         constraints = normalize_partition_constraints(
             {
                 "schema": "emuflow.partition-constraints/v1",
@@ -700,9 +702,9 @@ class PartitionPressureTest(unittest.TestCase):
             executable=str(patron_refiner()),
             max_moves=4,
         )
-        self.assertEqual(trace["mode"], "endpoint-exact-global-best-v5")
+        self.assertEqual(trace["mode"], "endpoint-exact-global-best-v6")
         self.assertGreaterEqual(len(trace["moves"]), 1)
-        self.assertEqual(trace["moves"][0]["kind"], "swap")
+        self.assertEqual(trace["moves"][0]["kind"], "ejection")
         self.assertIsNotNone(trace["moves"][0]["partner"])
         checked = validate_partition_pressure_native_against_exhaustive(
             self.ir,
@@ -766,7 +768,7 @@ class PartitionPressureTest(unittest.TestCase):
                 (root / "phase3/patron/candidate_assignment.json").is_file()
             )
             self.assertEqual(
-                report["provider"], "patron-endpoint-exact-native-v5"
+                report["provider"], "patron-endpoint-exact-native-v6"
             )
             baseline = promote_patron_baseline(
                 ir_path, platform_path, root / "phase3"
@@ -935,7 +937,7 @@ class PartitionPressureTest(unittest.TestCase):
             final["cluster_assignment"],
         )
         self.assertEqual(
-            trace["mode"], "endpoint-exact-critical-pairflow-v5"
+            trace["mode"], "endpoint-exact-critical-ejection-v6"
         )
         self.assertGreater(len(trace["moves"]), 0)
         self.assertEqual(trace["configuration"]["max_scalable_sweeps"], 4)
@@ -1155,10 +1157,10 @@ class PartitionPressureTest(unittest.TestCase):
                 skipped_sweep,
             )
 
-    def test_scalable_pairflow_escapes_an_exact_balance_cork(self) -> None:
+    def test_scalable_ejection_escapes_an_exact_balance_cork(self) -> None:
         ir = _capacity_release_ir()
         value = _platform_value(
-            "pressure_pairflow_platform",
+            "pressure_ejection_platform",
             ["a", "b"],
             [_link("ab", "a", "b", lanes=8, latency=1)],
         )
@@ -1246,10 +1248,10 @@ class PartitionPressureTest(unittest.TestCase):
             max_moves=4,
         )
         self.assertEqual(
-            trace["mode"], "endpoint-exact-critical-pairflow-v5"
+            trace["mode"], "endpoint-exact-critical-ejection-v6"
         )
         self.assertGreaterEqual(len(trace["moves"]), 1)
-        self.assertEqual(trace["moves"][0]["kind"], "swap")
+        self.assertEqual(trace["moves"][0]["kind"], "ejection")
         self.assertLess(
             trace["final_metrics"]["objective_key"],
             before["metrics"]["objective_key"],
@@ -1296,6 +1298,141 @@ class PartitionPressureTest(unittest.TestCase):
                 final,
                 tampered,
             )
+
+    def test_scalable_ejection_can_release_into_a_third_block(self) -> None:
+        raw_ir = copy.deepcopy(_capacity_release_ir().value)
+        raw_ir["design"]["name"] = "pressure_third_block_ejection"
+        raw_ir["design"]["top"] = "pressure_third_block_ejection"
+        raw_ir["nets"] = raw_ir["nets"][:1]
+        resources = {
+            "u00000": {"lut": 10},
+            "u00001": {"lut": 0},
+            "u00003": {"lut": 1, "ff": 10},
+            "u00004": {"lut": 10, "ff": 10},
+        }
+        for instance in raw_ir["instances"]:
+            instance["resources"] = resources.get(
+                instance["id"], {"lut": 1}
+            )
+        ir = EmuIR(raw_ir)
+        value = _platform_value(
+            "pressure_third_block_ejection_platform",
+            ["a", "b", "c"],
+            [
+                _link("ab", "a", "b", lanes=8, latency=1),
+                _link("ac", "a", "c", lanes=8, latency=50),
+                _link("bc", "b", "c", lanes=8, latency=50),
+            ],
+        )
+        capacities = {
+            "a": {"lut": 120, "ff": 10},
+            "b": {"lut": 108, "ff": 20},
+            "c": {"lut": 120, "ff": 20},
+        }
+        for fpga in value["fpgas"]:
+            fpga["capacity"] = capacities[fpga["id"]]
+        platform = Platform.from_dict(value)
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "fixed": [{"instance": "u00001", "fpga": "b"}],
+                "min_used_fpgas": 3,
+                "balance_tolerance": 2.0,
+            },
+            ir,
+            platform,
+        )
+        clusters = build_clusters(ir, constraints)
+        by_instance = {
+            cluster["instances"][0]: cluster["id"]
+            for cluster in clusters["clusters"]
+        }
+        parts = ("a", "b", "c")
+        mapping = {
+            cluster["id"]: parts[
+                int(cluster["instances"][0][1:]) % len(parts)
+            ]
+            for cluster in clusters["clusters"]
+        }
+        initial = build_partition_assignment(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            mapping,
+            provider="fixture",
+            seed=1,
+        )
+        routes = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 64,
+                "tdm_ratio_quantum": 1,
+                "max_route_hops": 1,
+            },
+            platform,
+        )
+        timing = {
+            "schema": "emuflow.sta-path-database/v1",
+            "design": "pressure_third_block_ejection",
+            "source": {"provider": "fixture", "input": "fixture"},
+            "normalization": {
+                "positive_slack_scale_ns": 3.0,
+                "negative_slack_scale_ns": 1.0,
+                "max_clock_period_ns": 10.0,
+            },
+            "paths": [
+                {
+                    "id": "p-critical",
+                    "startpoint": _endpoint("u00000", "O"),
+                    "endpoint": _endpoint("u00001", "I"),
+                    "clock_domain": "clk",
+                    "clock_period_ns": 10.0,
+                    "slack_ns": 3.0,
+                    "fixed_delay_ns": 7.0,
+                    "path_nets": ["n00000"],
+                    "normalized_slack": 1.0,
+                }
+            ],
+        }
+        model = build_partition_pressure_model(
+            ir, platform, clusters, constraints, timing, routes
+        )
+        final, trace = run_partition_pressure_native(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            routes,
+            model,
+            initial,
+            executable=str(patron_refiner()),
+            max_moves=4,
+        )
+        self.assertEqual(
+            trace["mode"], "endpoint-exact-critical-ejection-v6"
+        )
+        self.assertGreaterEqual(len(trace["moves"]), 1)
+        first = trace["moves"][0]
+        self.assertEqual(first["kind"], "ejection")
+        self.assertEqual(first["cluster"], by_instance["u00000"])
+        self.assertEqual(first["source"], "a")
+        self.assertEqual(first["target"], "b")
+        self.assertEqual(first["partner"], by_instance["u00004"])
+        self.assertEqual(first["partner_source"], "b")
+        self.assertEqual(first["partner_target"], "c")
+        replay = validate_partition_pressure_scalable_trace(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            routes,
+            model,
+            initial,
+            final,
+            trace,
+        )
+        self.assertEqual(replay["status"], "pass")
 
 
 if __name__ == "__main__":

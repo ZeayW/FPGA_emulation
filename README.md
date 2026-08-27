@@ -1136,13 +1136,13 @@ EmuIR, normalized Phase 3 clusters/constraints, TimingPathDB, BoardDB route
 constraints, and initial assignment.  The emitted source-bound model and move
 trace independently reconstruct target-specific directed-link pressure,
 predicted TDM ratio, ordered timing-path delay, capacity/topology legality, and
-the globally best improving step.  PATRON v5 preserves structured timing-path
+the globally best improving step.  PATRON v6 preserves structured timing-path
 launch/capture clusters and reconstructs the concrete fanout branch used by
 each path by walking transported nets backwards from capture to launch.  A
 path without sufficient endpoint information is explicitly retained under a
 conservative worst-fanout fallback.  Global directed-domain load still sets
 the TDM ratio.  The v3/v4 logarithmic boundary-fanout surrogate is retained as
-rejected research evidence but has scale zero in v5: the frozen canonical
+rejected research evidence but has scale zero in v5/v6: the frozen canonical
 diagnostic showed that optimizing it could preserve proxy WNS while degrading
 the original TNS proxy, so fanout may not override the original timing/TDM
 objective.
@@ -1152,17 +1152,20 @@ criticality-ordered best-target coordinate descent.  It performs up to four
 strictly improving sweeps, allowing capacity released late in one sweep to
 make an earlier cluster movable in the next; each candidate still updates only
 incident nets, paths, resource loads, and capacity domains, plus paths indexed
-under a domain whose TDM ratio changes.  After direct moves converge, v5 adds
-a bounded deterministic block-pair refinement: up to 2,048 critical clusters
-are paired with up to 32 low-exposure donors per target partition, and an
-atomic exchange is accepted only when its final multidimensional capacities,
-fixed constraints, topology, original timing proxy, and TDM pressure are
-legal and lexicographically better.  This is a deliberately bounded
-flow-refinement analogue for the capacity "corking" that a single-vertex move
-cannot cross.  Compact mode exhaustively enumerates both direct moves and
-atomic swaps; the scaled independent replay checks the complete selected
-pair schedule, while the production checker reconstructs every transition
-and endpoint without rerunning the heuristic.
+under a domain whose TDM ratio changes.  After direct moves converge, v6 adds
+a bounded deterministic ejection-pair refinement: up to 2,048 critical
+clusters are paired with up to 32 low-exposure donors in each target
+partition.  The critical cluster moves into the donor's block while the donor
+may move either to the critical cluster's source block or to a third block.
+The two moves are committed atomically only when the final multidimensional
+capacities, fixed constraints, topology, original timing proxy, and TDM
+pressure are legal and lexicographically better.  This is a deliberately
+bounded flow-inspired neighborhood for the capacity "corking" that a
+single-vertex move or exact swap cannot cross; it is not described as a
+maximum-flow implementation.  Compact mode exhaustively enumerates both
+direct moves and all legal two-vertex ejections; the scaled independent replay
+checks the complete selected schedule, while the production checker
+reconstructs every transition and endpoint without rerunning the heuristic.
 `--partition-provider patron` is an explicit non-default research provider.
 Its initial result and frozen TritonPart fallback are both scored by checked
 Phase 4/5 before promotion, and large checkpoints independently rebuild the
@@ -1208,9 +1211,15 @@ Fanout-aware multipass v4 was rejected before Phase 7.  Its second sweep found
 but independent reevaluation with the accepted original objective held the
 worst-slack proxy at `1.1606340893904894` while worsening the negative-slack
 objective to `3,855.7736748538337`, versus the accepted v1 endpoint's
-`3,232.26875`.  PATRON v5 therefore returns to the original objective and uses
-atomic block-pair exchange to escape capacity-local minima.  It is accepted
-only if a new cached canonical Phase 7 comparison improves both
+`3,232.26875`.  PATRON v5 returned to the original objective and tried exact
+block-pair swaps.  Four frozen canonical searches (critical limits
+2,048/8,192 and donor limits 32/128) produced the same byte-identical result:
+257 direct moves, zero swaps, unchanged worst-slack proxy
+`1.1606340893904894`, and only a small negative-slack improvement to
+`3,230.8125185219201`.  It was therefore rejected before Phase 7.  PATRON v6
+generalizes the pair into an atomic ejection whose donor may use the third
+block.  It is accepted only if a new cached canonical Phase 7 comparison
+improves both
 `-82.4981025395 ns` WNS and `-324,776.89798473305 ns` TNS; proxy-only
 improvement is insufficient.
 PATRON remains explicit and non-default until

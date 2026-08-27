@@ -38,17 +38,17 @@ from .routing import (
 from .sta import _normalized_slack, _validate_database_normalization
 
 
-PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v5"
-PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v5"
-PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v5"
-PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v5"
-PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v5"
+PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v6"
+PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v6"
+PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v6"
+PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v6"
+PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v6"
 GAIN_QUANTUM = 1.0e-9
 BOUNDARY_FANOUT_PENALTY_SCALE_NS = 0.0
 MAX_SCALABLE_SWEEPS = 4
-SCALABLE_SWAP_CRITICAL_LIMIT = 2048
-SCALABLE_SWAP_DONOR_LIMIT = 32
-MAX_SCALABLE_SWAPS = 64
+SCALABLE_EJECTION_CRITICAL_LIMIT = 2048
+SCALABLE_EJECTION_DONOR_LIMIT = 32
+MAX_SCALABLE_EJECTIONS = 64
 
 
 def _canonical_digest(value: Any) -> str:
@@ -311,9 +311,11 @@ def _reconstruct_partition_pressure_model(
                 BOUNDARY_FANOUT_PENALTY_SCALE_NS
             ),
             "max_scalable_sweeps": MAX_SCALABLE_SWEEPS,
-            "scalable_swap_critical_limit": SCALABLE_SWAP_CRITICAL_LIMIT,
-            "scalable_swap_donor_limit": SCALABLE_SWAP_DONOR_LIMIT,
-            "max_scalable_swaps": MAX_SCALABLE_SWAPS,
+            "scalable_ejection_critical_limit": (
+                SCALABLE_EJECTION_CRITICAL_LIMIT
+            ),
+            "scalable_ejection_donor_limit": SCALABLE_EJECTION_DONOR_LIMIT,
+            "max_scalable_ejections": MAX_SCALABLE_EJECTIONS,
             "max_route_hops": route_constraints.get("max_route_hops"),
             "frame_slots": route_constraints["frame_slots"],
             "tdm_ratio_quantum": route_constraints["tdm_ratio_quantum"],
@@ -792,7 +794,7 @@ def refine_partition_pressure_exhaustive(
     *,
     max_moves: Optional[int] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Reference global-best direct K-way refinement for compact graphs."""
+    """Reference global-best direct/ejection refinement for compact graphs."""
 
     current = dict(initial_assignment["cluster_assignment"])
     initial = evaluate_partition_pressure(
@@ -843,46 +845,62 @@ def refine_partition_pressure_exhaustive(
                 if ranked >= incumbent_key:
                     continue
                 candidates.append(
-                    (ranked, 0, cluster, target, None, evaluation)
+                    (ranked, 0, cluster, target, None, None, evaluation)
                 )
-        movable = [cluster for cluster in sorted(current) if fixed[cluster] is None]
-        for left_index, cluster in enumerate(movable):
+        movable = [
+            cluster for cluster in sorted(current) if fixed[cluster] is None
+        ]
+        for cluster in movable:
             source = current[cluster]
-            for partner in movable[left_index + 1 :]:
-                partner_source = current[partner]
-                if source == partner_source:
+            for target in fpga_ids:
+                if target == source:
                     continue
-                trial = dict(current)
-                trial[cluster] = partner_source
-                trial[partner] = source
-                try:
-                    evaluation = evaluate_partition_pressure(
-                        ir,
-                        platform,
-                        clusters_artifact,
-                        constraints,
-                        route_constraints,
-                        model,
-                        trial,
-                    )
-                except ValidationError:
-                    continue
-                ranked = _ranked_key(evaluation)
-                if ranked >= incumbent_key:
-                    continue
-                candidates.append(
-                    (
-                        ranked,
-                        1,
-                        cluster,
-                        partner_source,
-                        partner,
-                        evaluation,
-                    )
-                )
+                for partner in movable:
+                    if partner == cluster or current[partner] != target:
+                        continue
+                    for partner_target in fpga_ids:
+                        if partner_target == target:
+                            continue
+                        trial = dict(current)
+                        trial[cluster] = target
+                        trial[partner] = partner_target
+                        try:
+                            evaluation = evaluate_partition_pressure(
+                                ir,
+                                platform,
+                                clusters_artifact,
+                                constraints,
+                                route_constraints,
+                                model,
+                                trial,
+                            )
+                        except ValidationError:
+                            continue
+                        ranked = _ranked_key(evaluation)
+                        if ranked >= incumbent_key:
+                            continue
+                        candidates.append(
+                            (
+                                ranked,
+                                1,
+                                cluster,
+                                target,
+                                partner,
+                                partner_target,
+                                evaluation,
+                            )
+                        )
         if not candidates:
             break
-        ranked, phase, cluster, target, partner, selected = min(
+        (
+            ranked,
+            phase,
+            cluster,
+            target,
+            partner,
+            partner_target,
+            selected,
+        ) = min(
             candidates,
             key=lambda item: (
                 item[0],
@@ -890,6 +908,7 @@ def refine_partition_pressure_exhaustive(
                 item[2],
                 item[3],
                 "" if item[4] is None else item[4],
+                "" if item[5] is None else item[5],
             ),
         )
         source = current[cluster]
@@ -897,7 +916,7 @@ def refine_partition_pressure_exhaustive(
         moves.append(
             {
                 "index": len(moves),
-                "kind": "move" if phase == 0 else "swap",
+                "kind": "move" if phase == 0 else "ejection",
                 "phase": phase,
                 "sweep": 0,
                 "cluster": cluster,
@@ -905,7 +924,7 @@ def refine_partition_pressure_exhaustive(
                 "target": target,
                 "partner": partner,
                 "partner_source": partner_source,
-                "partner_target": None if partner is None else source,
+                "partner_target": partner_target,
                 "before_objective_key": current_evaluation["metrics"][
                     "objective_key"
                 ],
@@ -915,7 +934,7 @@ def refine_partition_pressure_exhaustive(
         )
         current[cluster] = target
         if partner is not None:
-            current[partner] = source
+            current[partner] = partner_target
         current_evaluation = selected
 
     final_assignment = build_partition_assignment(
@@ -1127,7 +1146,7 @@ def _write_patron_native_input(
     max_hops = model["configuration"]["max_route_hops"]
 
     lines = [
-        "EMUFLOW_PATRON_INPUT_V5",
+        "EMUFLOW_PATRON_INPUT_V6",
         (
             f"PARAM {len(parts)} {len(clusters)} {len(dimensions)} "
             f"{len(domains)} {len(nets)} {len(model['paths'])} "
@@ -1140,9 +1159,9 @@ def _write_patron_native_input(
             f"{model['normalization']['max_clock_period_ns']:.17g} "
             f"{model['configuration']['boundary_fanout_penalty_scale_ns']:.17g} "
             f"{model['configuration']['max_scalable_sweeps']} "
-            f"{model['configuration']['scalable_swap_critical_limit']} "
-            f"{model['configuration']['scalable_swap_donor_limit']} "
-            f"{model['configuration']['max_scalable_swaps']}"
+            f"{model['configuration']['scalable_ejection_critical_limit']} "
+            f"{model['configuration']['scalable_ejection_donor_limit']} "
+            f"{model['configuration']['max_scalable_ejections']}"
         ),
     ]
     total_cells = sum(cluster["cells"] for cluster in clusters)
@@ -1302,7 +1321,7 @@ def _parse_patron_native_output(
     str,
 ]:
     lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_PATRON_OUTPUT_V5":
+    if not lines or lines[0] != "EMUFLOW_PATRON_OUTPUT_V6":
         raise ValidationError("native PATRON output header is invalid")
     moves = []
     assignment: Dict[str, str] = {}
@@ -1345,7 +1364,7 @@ def _parse_patron_native_output(
             moves.append(
                 {
                     "index": index,
-                    "kind": "move" if phase == 0 else "swap",
+                    "kind": "move" if phase == 0 else "ejection",
                     "phase": phase,
                     "sweep": sweep,
                     "cluster": indexes["clusters"][cluster],
@@ -1470,14 +1489,14 @@ def run_partition_pressure_native(
             "max_scalable_sweeps": model["configuration"][
                 "max_scalable_sweeps"
             ],
-            "scalable_swap_critical_limit": model["configuration"][
-                "scalable_swap_critical_limit"
+            "scalable_ejection_critical_limit": model["configuration"][
+                "scalable_ejection_critical_limit"
             ],
-            "scalable_swap_donor_limit": model["configuration"][
-                "scalable_swap_donor_limit"
+            "scalable_ejection_donor_limit": model["configuration"][
+                "scalable_ejection_donor_limit"
             ],
-            "max_scalable_swaps": model["configuration"][
-                "max_scalable_swaps"
+            "max_scalable_ejections": model["configuration"][
+                "max_scalable_ejections"
             ],
         },
         "model_sha256": _canonical_digest(model),
@@ -1612,7 +1631,7 @@ def validate_partition_pressure_native_bundle(
     ):
         raise ValidationError("native PATRON final assignment seal is invalid")
     mode = native_trace.get("mode")
-    if mode == "endpoint-exact-global-best-v5":
+    if mode == "endpoint-exact-global-best-v6":
         exact = validate_partition_pressure_native_against_exhaustive(
             ir,
             platform,
@@ -1631,7 +1650,7 @@ def validate_partition_pressure_native_bundle(
             "model_validation": model_validation,
             **exact,
         }
-    if mode != "endpoint-exact-critical-pairflow-v5":
+    if mode != "endpoint-exact-critical-ejection-v6":
         raise ValidationError("native PATRON trace mode is invalid")
 
     moves = native_trace.get("moves")
@@ -1639,14 +1658,14 @@ def validate_partition_pressure_native_bundle(
     max_sweeps = native_trace.get("configuration", {}).get(
         "max_scalable_sweeps"
     )
-    swap_critical_limit = native_trace.get("configuration", {}).get(
-        "scalable_swap_critical_limit"
+    ejection_critical_limit = native_trace.get("configuration", {}).get(
+        "scalable_ejection_critical_limit"
     )
-    swap_donor_limit = native_trace.get("configuration", {}).get(
-        "scalable_swap_donor_limit"
+    ejection_donor_limit = native_trace.get("configuration", {}).get(
+        "scalable_ejection_donor_limit"
     )
-    max_swaps = native_trace.get("configuration", {}).get(
-        "max_scalable_swaps"
+    max_ejections = native_trace.get("configuration", {}).get(
+        "max_scalable_ejections"
     )
     if (
         not isinstance(moves, list)
@@ -1659,20 +1678,21 @@ def validate_partition_pressure_native_bundle(
         or max_sweeps <= 0
         or max_sweeps
         != model["configuration"].get("max_scalable_sweeps")
-        or isinstance(swap_critical_limit, bool)
-        or not isinstance(swap_critical_limit, int)
-        or swap_critical_limit < 0
-        or swap_critical_limit
-        != model["configuration"].get("scalable_swap_critical_limit")
-        or isinstance(swap_donor_limit, bool)
-        or not isinstance(swap_donor_limit, int)
-        or swap_donor_limit < 0
-        or swap_donor_limit
-        != model["configuration"].get("scalable_swap_donor_limit")
-        or isinstance(max_swaps, bool)
-        or not isinstance(max_swaps, int)
-        or max_swaps < 0
-        or max_swaps != model["configuration"].get("max_scalable_swaps")
+        or isinstance(ejection_critical_limit, bool)
+        or not isinstance(ejection_critical_limit, int)
+        or ejection_critical_limit < 0
+        or ejection_critical_limit
+        != model["configuration"].get("scalable_ejection_critical_limit")
+        or isinstance(ejection_donor_limit, bool)
+        or not isinstance(ejection_donor_limit, int)
+        or ejection_donor_limit < 0
+        or ejection_donor_limit
+        != model["configuration"].get("scalable_ejection_donor_limit")
+        or isinstance(max_ejections, bool)
+        or not isinstance(max_ejections, int)
+        or max_ejections < 0
+        or max_ejections
+        != model["configuration"].get("max_scalable_ejections")
     ):
         raise ValidationError("native PATRON scalable trace bounds are invalid")
     cluster_ids = {
@@ -1712,8 +1732,8 @@ def validate_partition_pressure_native_bundle(
     previous_sweep = -1
     previous_sweep_index = -1
     previous_phase = 0
-    previous_swap_index = -1
-    swap_count = 0
+    previous_ejection_index = -1
+    ejection_count = 0
     previous_after = None
     maximum_chain_error = 0.0
     for index, move in enumerate(moves):
@@ -1732,7 +1752,7 @@ def validate_partition_pressure_native_bundle(
             isinstance(phase, bool)
             or not isinstance(phase, int)
             or phase not in (0, 1)
-            or kind != ("move" if phase == 0 else "swap")
+            or kind != ("move" if phase == 0 else "ejection")
             or isinstance(sweep, bool)
             or not isinstance(sweep, int)
             or cluster not in cluster_ids
@@ -1756,7 +1776,7 @@ def validate_partition_pressure_native_bundle(
             or partner_source is not None
             or partner_target is not None
         )
-        swap_invalid = phase == 1 and not common_invalid and (
+        ejection_invalid = phase == 1 and not common_invalid and (
             sweep != 0
             or partner not in cluster_ids
             or partner == cluster
@@ -1765,13 +1785,13 @@ def validate_partition_pressure_native_bundle(
             or fixed.get(partner) is not None
             or current.get(partner) != partner_source
             or target != partner_source
-            or partner_target != source
-            or sweep_index.get(cluster, swap_critical_limit)
-            >= swap_critical_limit
-            or sweep_index.get(cluster, -1) <= previous_swap_index
-            or swap_count >= max_swaps
+            or partner_target == partner_source
+            or sweep_index.get(cluster, ejection_critical_limit)
+            >= ejection_critical_limit
+            or sweep_index.get(cluster, -1) <= previous_ejection_index
+            or ejection_count >= max_ejections
         )
-        if common_invalid or direct_invalid or swap_invalid:
+        if common_invalid or direct_invalid or ejection_invalid:
             raise ValidationError(
                 f"native PATRON move {index} transition is invalid"
             )
@@ -1826,8 +1846,8 @@ def validate_partition_pressure_native_bundle(
         current[cluster] = target
         if phase == 1:
             current[partner] = partner_target
-            previous_swap_index = sweep_index[cluster]
-            swap_count += 1
+            previous_ejection_index = sweep_index[cluster]
+            ejection_count += 1
         previous_after = after
         if phase == 0:
             if sweep != previous_sweep:
@@ -1933,7 +1953,7 @@ def validate_partition_pressure_scalable_trace(
     instances.  Large production bundles use the indexed certificate checker.
     """
 
-    if native_trace.get("mode") != "endpoint-exact-critical-pairflow-v5":
+    if native_trace.get("mode") != "endpoint-exact-critical-ejection-v6":
         raise ValidationError("native PATRON scalable trace mode is invalid")
     max_moves = native_trace.get("configuration", {}).get("max_moves")
     if isinstance(max_moves, bool) or not isinstance(max_moves, int) or max_moves < 0:
@@ -1941,14 +1961,14 @@ def validate_partition_pressure_scalable_trace(
     max_sweeps = native_trace.get("configuration", {}).get(
         "max_scalable_sweeps"
     )
-    swap_critical_limit = native_trace.get("configuration", {}).get(
-        "scalable_swap_critical_limit"
+    ejection_critical_limit = native_trace.get("configuration", {}).get(
+        "scalable_ejection_critical_limit"
     )
-    swap_donor_limit = native_trace.get("configuration", {}).get(
-        "scalable_swap_donor_limit"
+    ejection_donor_limit = native_trace.get("configuration", {}).get(
+        "scalable_ejection_donor_limit"
     )
-    max_swaps = native_trace.get("configuration", {}).get(
-        "max_scalable_swaps"
+    max_ejections = native_trace.get("configuration", {}).get(
+        "max_scalable_ejections"
     )
     if (
         isinstance(max_sweeps, bool)
@@ -1956,20 +1976,21 @@ def validate_partition_pressure_scalable_trace(
         or max_sweeps <= 0
         or max_sweeps
         != model["configuration"].get("max_scalable_sweeps")
-        or isinstance(swap_critical_limit, bool)
-        or not isinstance(swap_critical_limit, int)
-        or swap_critical_limit < 0
-        or swap_critical_limit
-        != model["configuration"].get("scalable_swap_critical_limit")
-        or isinstance(swap_donor_limit, bool)
-        or not isinstance(swap_donor_limit, int)
-        or swap_donor_limit < 0
-        or swap_donor_limit
-        != model["configuration"].get("scalable_swap_donor_limit")
-        or isinstance(max_swaps, bool)
-        or not isinstance(max_swaps, int)
-        or max_swaps < 0
-        or max_swaps != model["configuration"].get("max_scalable_swaps")
+        or isinstance(ejection_critical_limit, bool)
+        or not isinstance(ejection_critical_limit, int)
+        or ejection_critical_limit < 0
+        or ejection_critical_limit
+        != model["configuration"].get("scalable_ejection_critical_limit")
+        or isinstance(ejection_donor_limit, bool)
+        or not isinstance(ejection_donor_limit, int)
+        or ejection_donor_limit < 0
+        or ejection_donor_limit
+        != model["configuration"].get("scalable_ejection_donor_limit")
+        or isinstance(max_ejections, bool)
+        or not isinstance(max_ejections, int)
+        or max_ejections < 0
+        or max_ejections
+        != model["configuration"].get("max_scalable_ejections")
     ):
         raise ValidationError("native PATRON scalable sweep limit is invalid")
     clusters = sorted(record["cluster"] for record in model["clusters"])
@@ -2104,10 +2125,10 @@ def validate_partition_pressure_scalable_trace(
     for cluster in sorted(clusters, key=lambda item: (exposure[item], item)):
         if fixed[cluster] is None:
             donors[current[cluster]].append(cluster)
-    accepted_swaps = 0
-    for cluster in order[:swap_critical_limit]:
+    accepted_ejections = 0
+    for cluster in order[:ejection_critical_limit]:
         if (
-            accepted_swaps >= max_swaps
+            accepted_ejections >= max_ejections
             or move_index >= max_moves
         ):
             break
@@ -2120,7 +2141,7 @@ def validate_partition_pressure_scalable_trace(
                 continue
             considered = 0
             for partner in donors[target]:
-                if considered >= swap_donor_limit:
+                if considered >= ejection_donor_limit:
                     break
                 if (
                     partner == cluster
@@ -2129,40 +2150,50 @@ def validate_partition_pressure_scalable_trace(
                 ):
                     continue
                 considered += 1
-                trial = dict(current)
-                trial[cluster] = target
-                trial[partner] = source
-                try:
-                    evaluation = evaluate_partition_pressure(
-                        ir,
-                        platform,
-                        clusters_artifact,
-                        constraints,
-                        route_constraints,
-                        model,
-                        trial,
-                        include_tdm_wait=True,
-                    )
-                except ValidationError:
-                    continue
-                ranked = _ranked_key(evaluation)
-                if ranked < _ranked_key(current_evaluation):
-                    candidates.append(
-                        (ranked, target, partner, evaluation)
-                    )
+                for partner_target in parts:
+                    if partner_target == target:
+                        continue
+                    trial = dict(current)
+                    trial[cluster] = target
+                    trial[partner] = partner_target
+                    try:
+                        evaluation = evaluate_partition_pressure(
+                            ir,
+                            platform,
+                            clusters_artifact,
+                            constraints,
+                            route_constraints,
+                            model,
+                            trial,
+                            include_tdm_wait=True,
+                        )
+                    except ValidationError:
+                        continue
+                    ranked = _ranked_key(evaluation)
+                    if ranked < _ranked_key(current_evaluation):
+                        candidates.append(
+                            (
+                                ranked,
+                                target,
+                                partner,
+                                partner_target,
+                                evaluation,
+                            )
+                        )
         if not candidates:
             continue
-        ranked, target, partner, selected = min(
-            candidates, key=lambda item: (item[0], item[1], item[2])
+        ranked, target, partner, partner_target, selected = min(
+            candidates,
+            key=lambda item: (item[0], item[1], item[2], item[3]),
         )
         if move_index >= len(moves):
             raise ValidationError(
-                "native PATRON scalable trace omitted a swap"
+                "native PATRON scalable trace omitted an ejection"
             )
         actual = moves[move_index]
         expected_identity = {
             "index": move_index,
-            "kind": "swap",
+            "kind": "ejection",
             "phase": 1,
             "sweep": 0,
             "cluster": cluster,
@@ -2170,17 +2201,17 @@ def validate_partition_pressure_scalable_trace(
             "target": target,
             "partner": partner,
             "partner_source": target,
-            "partner_target": source,
+            "partner_target": partner_target,
         }
         for field, expected in expected_identity.items():
             if actual.get(field) != expected:
                 raise ValidationError(
-                    f"native PATRON scalable swap {move_index} "
+                    f"native PATRON scalable ejection {move_index} "
                     f"{field} mismatch"
                 )
         if actual.get("ranked_objective_key") != list(ranked):
             raise ValidationError(
-                f"native PATRON scalable swap {move_index} rank mismatch"
+                f"native PATRON scalable ejection {move_index} rank mismatch"
             )
         for actual_key, expected_key in (
             (
@@ -2200,10 +2231,10 @@ def validate_partition_pressure_scalable_trace(
                 ),
             )
         current[cluster] = target
-        current[partner] = source
+        current[partner] = partner_target
         current_evaluation = selected
         move_index += 1
-        accepted_swaps += 1
+        accepted_ejections += 1
     if move_index != len(moves):
         raise ValidationError("native PATRON scalable trace has extra moves")
     if current != native_assignment.get("cluster_assignment"):

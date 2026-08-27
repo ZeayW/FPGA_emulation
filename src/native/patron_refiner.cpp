@@ -72,9 +72,9 @@ struct Model {
   int min_used_parts = 1;
   int max_moves = 0;
   int max_sweeps = 1;
-  int swap_critical_limit = 0;
-  int swap_donor_limit = 0;
-  int max_swaps = 0;
+  int ejection_critical_limit = 0;
+  int ejection_donor_limit = 0;
+  int max_ejections = 0;
   double positive_scale = 1.0;
   double negative_scale = 1.0;
   double max_period = 1.0;
@@ -213,7 +213,7 @@ Model read_model(const std::string& path) {
   require(stream.good(), "cannot open input");
   std::string token;
   stream >> token;
-  require(token == "EMUFLOW_PATRON_INPUT_V5", "invalid input header");
+  require(token == "EMUFLOW_PATRON_INPUT_V6", "invalid input header");
   Model model;
   stream >> token;
   require(token == "PARAM", "missing PARAM");
@@ -222,16 +222,17 @@ Model read_model(const std::string& path) {
       >> model.ratio_quantum >> model.min_used_parts >> model.max_moves
       >> model.positive_scale >> model.negative_scale >> model.max_period
       >> model.boundary_fanout_penalty_scale_ns >> model.max_sweeps
-      >> model.swap_critical_limit >> model.swap_donor_limit
-      >> model.max_swaps;
+      >> model.ejection_critical_limit >> model.ejection_donor_limit
+      >> model.max_ejections;
   require(stream.good() && model.parts > 0 && model.clusters > 0
               && model.dimensions > 0 && model.domains > 0
               && model.nets > 0 && model.paths > 0
               && model.frame_slots > 0 && model.ratio_quantum > 0
               && model.min_used_parts > 0 && model.max_moves >= 0
               && model.max_sweeps > 0
-              && model.swap_critical_limit >= 0
-              && model.swap_donor_limit >= 0 && model.max_swaps >= 0
+              && model.ejection_critical_limit >= 0
+              && model.ejection_donor_limit >= 0
+              && model.max_ejections >= 0
               && std::isfinite(model.boundary_fanout_penalty_scale_ns)
               && model.boundary_fanout_penalty_scale_ns >= 0.0,
           "invalid PARAM");
@@ -1091,20 +1092,21 @@ ProxyDelta evaluate_proxy_move(
       model, state, cluster_nets, net_paths, cluster, target);
 }
 
-ProxyDelta evaluate_proxy_swap(
+ProxyDelta evaluate_proxy_ejection(
     const Model& model,
     ProxyState& state,
     const std::vector<std::vector<int>>& cluster_nets,
     const std::vector<std::vector<int>>& net_paths,
     int cluster,
-    int partner) {
+    int partner,
+    int partner_target) {
   ProxyDelta invalid;
   if (cluster == partner) {
     return invalid;
   }
   const int source = state.assignment[cluster];
   const int partner_source = state.assignment[partner];
-  if (source == partner_source) {
+  if (source == partner_source || partner_target == partner_source) {
     return invalid;
   }
   return evaluate_proxy_changes(model,
@@ -1114,7 +1116,7 @@ ProxyDelta evaluate_proxy_swap(
                                 cluster,
                                 partner_source,
                                 partner,
-                                source);
+                                partner_target);
 }
 
 void apply_proxy_delta(const Model& model,
@@ -1210,7 +1212,7 @@ void write_output(const std::string& output_path,
                   const std::vector<int>& assignment) {
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
-  output << "EMUFLOW_PATRON_OUTPUT_V5\n";
+  output << "EMUFLOW_PATRON_OUTPUT_V6\n";
   output << "MODE " << mode << '\n';
   output << "INITIAL";
   write_vector(output, initial.objective);
@@ -1271,9 +1273,13 @@ void run_exact(const Model& model, const std::string& output_path) {
             || !less_ranked(candidate.ranked, current.ranked)) {
           continue;
         }
-        const auto identity = std::make_tuple(0, cluster, target, -1);
+        const auto identity = std::make_tuple(0, cluster, target, -1, -1);
         const auto best_identity = std::make_tuple(
-            best_phase, best_cluster, best_target, best_partner);
+            best_phase,
+            best_cluster,
+            best_target,
+            best_partner,
+            best_partner_target);
         if (!found || less_ranked(candidate.ranked, best.ranked)
             || (candidate.ranked == best.ranked
                 && identity < best_identity)) {
@@ -1293,38 +1299,52 @@ void run_exact(const Model& model, const std::string& output_path) {
         continue;
       }
       const int source = assignment[cluster];
-      for (int partner = cluster + 1; partner < model.clusters; ++partner) {
-        if (model.cluster[partner].fixed >= 0) {
+      for (int target = 0; target < model.parts; ++target) {
+        if (target == source) {
           continue;
         }
-        const int partner_source = assignment[partner];
-        if (source == partner_source) {
-          continue;
-        }
-        assignment[cluster] = partner_source;
-        assignment[partner] = source;
-        Evaluation candidate = evaluate(model, assignment);
-        assignment[cluster] = source;
-        assignment[partner] = partner_source;
-        if (!candidate.feasible
-            || !less_ranked(candidate.ranked, current.ranked)) {
-          continue;
-        }
-        const auto identity = std::make_tuple(
-            1, cluster, partner_source, partner);
-        const auto best_identity = std::make_tuple(
-            best_phase, best_cluster, best_target, best_partner);
-        if (!found || less_ranked(candidate.ranked, best.ranked)
-            || (candidate.ranked == best.ranked
-                && identity < best_identity)) {
-          found = true;
-          best_phase = 1;
-          best_cluster = cluster;
-          best_target = partner_source;
-          best_partner = partner;
-          best_partner_source = partner_source;
-          best_partner_target = source;
-          best = std::move(candidate);
+        for (int partner = 0; partner < model.clusters; ++partner) {
+          if (partner == cluster || model.cluster[partner].fixed >= 0
+              || assignment[partner] != target) {
+            continue;
+          }
+          const int partner_source = assignment[partner];
+          for (int partner_target = 0;
+               partner_target < model.parts;
+               ++partner_target) {
+            if (partner_target == partner_source) {
+              continue;
+            }
+            assignment[cluster] = target;
+            assignment[partner] = partner_target;
+            Evaluation candidate = evaluate(model, assignment);
+            assignment[cluster] = source;
+            assignment[partner] = partner_source;
+            if (!candidate.feasible
+                || !less_ranked(candidate.ranked, current.ranked)) {
+              continue;
+            }
+            const auto identity = std::make_tuple(
+                1, cluster, target, partner, partner_target);
+            const auto best_identity = std::make_tuple(
+                best_phase,
+                best_cluster,
+                best_target,
+                best_partner,
+                best_partner_target);
+            if (!found || less_ranked(candidate.ranked, best.ranked)
+                || (candidate.ranked == best.ranked
+                    && identity < best_identity)) {
+              found = true;
+              best_phase = 1;
+              best_cluster = cluster;
+              best_target = target;
+              best_partner = partner;
+              best_partner_source = partner_source;
+              best_partner_target = partner_target;
+              best = std::move(candidate);
+            }
+          }
         }
       }
     }
@@ -1352,7 +1372,7 @@ void run_exact(const Model& model, const std::string& output_path) {
   }
 
   write_output(output_path,
-               "endpoint-exact-global-best-v5",
+               "endpoint-exact-global-best-v6",
                initial,
                current,
                moves,
@@ -1451,12 +1471,12 @@ void run_scalable(const Model& model, const std::string& output_path) {
     }
   }
 
-  int accepted_swaps = 0;
+  int accepted_ejections = 0;
   const int critical_limit = std::min(
-      model.swap_critical_limit, static_cast<int>(order.size()));
+      model.ejection_critical_limit, static_cast<int>(order.size()));
   for (int order_index = 0;
        order_index < critical_limit
-           && accepted_swaps < model.max_swaps
+           && accepted_ejections < model.max_ejections
            && static_cast<int>(moves.size()) < model.max_moves;
        ++order_index) {
     const int cluster = order[order_index];
@@ -1472,7 +1492,7 @@ void run_scalable(const Model& model, const std::string& output_path) {
       }
       int considered = 0;
       for (int partner : donors[target]) {
-        if (considered >= model.swap_donor_limit) {
+        if (considered >= model.ejection_donor_limit) {
           break;
         }
         if (partner == cluster || state.assignment[partner] != target
@@ -1480,21 +1500,38 @@ void run_scalable(const Model& model, const std::string& output_path) {
           continue;
         }
         ++considered;
-        ProxyDelta candidate = evaluate_proxy_swap(
-            model, state, cluster_nets, net_paths, cluster, partner);
-        if (!candidate.feasible
-            || !less_ranked(candidate.evaluation.ranked,
-                            state.evaluation.ranked)) {
-          continue;
-        }
-        if (!found
-            || less_ranked(candidate.evaluation.ranked,
-                           best.evaluation.ranked)
-            || (candidate.evaluation.ranked == best.evaluation.ranked
-                && std::tie(candidate.target, candidate.partner)
-                       < std::tie(best.target, best.partner))) {
-          found = true;
-          best = std::move(candidate);
+        for (int partner_target = 0;
+             partner_target < model.parts;
+             ++partner_target) {
+          if (partner_target == target) {
+            continue;
+          }
+          ProxyDelta candidate = evaluate_proxy_ejection(
+              model,
+              state,
+              cluster_nets,
+              net_paths,
+              cluster,
+              partner,
+              partner_target);
+          if (!candidate.feasible
+              || !less_ranked(candidate.evaluation.ranked,
+                              state.evaluation.ranked)) {
+            continue;
+          }
+          if (!found
+              || less_ranked(candidate.evaluation.ranked,
+                             best.evaluation.ranked)
+              || (candidate.evaluation.ranked == best.evaluation.ranked
+                  && std::tie(candidate.target,
+                              candidate.partner,
+                              candidate.partner_target)
+                         < std::tie(best.target,
+                                    best.partner,
+                                    best.partner_target))) {
+            found = true;
+            best = std::move(candidate);
+          }
         }
       }
     }
@@ -1515,11 +1552,11 @@ void run_scalable(const Model& model, const std::string& output_path) {
         best.partner_target,
         before,
         state.evaluation});
-    ++accepted_swaps;
+    ++accepted_ejections;
   }
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
-               "endpoint-exact-critical-pairflow-v5",
+               "endpoint-exact-critical-ejection-v6",
                initial,
                endpoint.evaluation,
                moves,
