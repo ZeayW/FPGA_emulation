@@ -16,6 +16,45 @@ after the primary gate passes.  Every arm is a content-addressed experiment
 node, so unchanged ancestors and completed baseline nodes are reused rather
 than rerun.
 
+## Primary complete-flow acceptance result
+
+The primary gate passed with source commit
+`21757abadf8ebfe735a129927bc8dda532e097f8`.  This is the complete-global
+Phase 7C result, not per-FPGA physical timing or a Phase 3--5 proxy:
+
+| metric | frozen existing flow | PATRON | candidate - baseline | deficit reduction |
+|---|---:|---:|---:|---:|
+| target-clock WNS (ns) | -95.310052262 | -82.4981025395 | +12.8119497225 | 13.4424% |
+| target-clock TNS (ns) | -499,996.7265938718 | -324,776.89798473305 | +175,219.82860913873 | 35.0442% |
+| negative paths | 7,965 | 8,803 | +838 | regression (diagnostic) |
+| per-FPGA physical WNS (ns) | 10.8935 | 12.4171 | +1.5236 | diagnostic only |
+| per-FPGA physical TNS (ns) | 0.0 | 0.0 | 0.0 | diagnostic only |
+| unrouted nets / DRC violations | 0 / 0 | 0 / 0 | unchanged | required closure |
+
+Both arms use the same EmuIR digest
+`ba852c74929b00b1c7844827bdd55bedecc348ae1b670ee63a3d979aee8d666f`,
+Chimew Phase 6 manifest, physical seed 1, eight workers, route channel width
+300, and the same routed-staging-chain-plus-link/TDM timing qualification.
+Each independently covers all 195,532 original TimingPathDB paths exactly once
+with 100% coverage.  The partition, route, and effective schedule digests are
+different by design: those are outputs of the variable under test, not frozen
+Phase 6-provider controls.
+
+The compact acceptance certificate has SHA-256
+`6f4583a8cec071fe3d26886b3780e2e11c4918e1fee4040c1a7e5f9be36f7f52`;
+its independently replayed evidence manifest has SHA-256
+`9b485fce18b97774998dfa4509900e7215eb4464b6e08fc4b522fd5fb6af16d7`.
+The evidence bundle contains the baseline and candidate Phase 7 checkpoint
+reports, runtime QoR, physical-summary, and physical-flow reports plus their complete
+file digest table; transient server paths and physical scratch are not part of
+the claim.
+
+This satisfies the branch's primary acceptance criterion because both WNS and
+TNS improve and both physical arms close legally.  It does not claim every
+secondary metric improves: the negative-path count increases even while total
+negative slack decreases substantially.  Case7/case9 topology replication
+remains the gate before changing the repository-wide default provider.
+
 ## What the literature actually optimizes
 
 There is no single universal multi-FPGA partitioning SOTA.  Recent work leads
