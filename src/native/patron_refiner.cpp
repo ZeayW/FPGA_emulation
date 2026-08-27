@@ -1119,6 +1119,29 @@ ProxyDelta evaluate_proxy_ejection(
                                 partner_target);
 }
 
+ProxyDelta evaluate_proxy_comove(
+    const Model& model,
+    ProxyState& state,
+    const std::vector<std::vector<int>>& cluster_nets,
+    const std::vector<std::vector<int>>& net_paths,
+    int cluster,
+    int partner,
+    int target) {
+  ProxyDelta invalid;
+  if (cluster == partner || state.assignment[cluster] != state.assignment[partner]
+      || target == state.assignment[cluster]) {
+    return invalid;
+  }
+  return evaluate_proxy_changes(model,
+                                state,
+                                cluster_nets,
+                                net_paths,
+                                cluster,
+                                target,
+                                partner,
+                                target);
+}
+
 void apply_proxy_delta(const Model& model,
                        ProxyState& state,
                        const ProxyDelta& delta) {
@@ -1575,6 +1598,110 @@ void run_scalable(const Model& model, const std::string& output_path) {
             << " improving=" << improving_ejections
             << " wns_improving=" << wns_improving_ejections
             << " accepted=" << accepted_ejections << '\n';
+
+  long long evaluated_comoves = 0;
+  long long feasible_comoves = 0;
+  long long improving_comoves = 0;
+  long long wns_improving_comoves = 0;
+  int accepted_comoves = 0;
+  for (int order_index = 0;
+       order_index < critical_limit
+           && accepted_comoves < model.max_ejections
+           && static_cast<int>(moves.size()) < model.max_moves;
+       ++order_index) {
+    const int cluster = order[order_index];
+    if (model.cluster[cluster].fixed >= 0) {
+      continue;
+    }
+    const int source = state.assignment[cluster];
+    std::set<int> neighbor_set;
+    for (int net : cluster_nets[cluster]) {
+      neighbor_set.insert(model.net[net].drivers.begin(),
+                          model.net[net].drivers.end());
+      neighbor_set.insert(model.net[net].sinks.begin(),
+                          model.net[net].sinks.end());
+    }
+    std::vector<int> neighbors;
+    for (int neighbor : neighbor_set) {
+      if (neighbor != cluster && state.assignment[neighbor] == source
+          && model.cluster[neighbor].fixed < 0) {
+        neighbors.push_back(neighbor);
+      }
+    }
+    std::sort(neighbors.begin(), neighbors.end(), [&](int left, int right) {
+      return std::tie(exposure[right], left)
+             < std::tie(exposure[left], right);
+    });
+    if (static_cast<int>(neighbors.size()) > model.ejection_donor_limit) {
+      neighbors.resize(model.ejection_donor_limit);
+    }
+    bool found = false;
+    ProxyDelta best;
+    for (int target = 0; target < model.parts; ++target) {
+      if (target == source) {
+        continue;
+      }
+      for (int partner : neighbors) {
+        ProxyDelta candidate = evaluate_proxy_comove(
+            model,
+            state,
+            cluster_nets,
+            net_paths,
+            cluster,
+            partner,
+            target);
+        ++evaluated_comoves;
+        if (candidate.feasible) {
+          ++feasible_comoves;
+          if (candidate.evaluation.ranked[0]
+              < state.evaluation.ranked[0]) {
+            ++wns_improving_comoves;
+          }
+          if (less_ranked(candidate.evaluation.ranked,
+                          state.evaluation.ranked)) {
+            ++improving_comoves;
+          }
+        }
+        if (!candidate.feasible
+            || !less_ranked(candidate.evaluation.ranked,
+                            state.evaluation.ranked)) {
+          continue;
+        }
+        if (!found
+            || less_ranked(candidate.evaluation.ranked,
+                           best.evaluation.ranked)
+            || (candidate.evaluation.ranked == best.evaluation.ranked
+                && std::tie(candidate.target, candidate.partner)
+                       < std::tie(best.target, best.partner))) {
+          found = true;
+          best = std::move(candidate);
+        }
+      }
+    }
+    if (!found) {
+      continue;
+    }
+    const Evaluation before = state.evaluation;
+    apply_proxy_delta(model, state, best);
+    moves.push_back(NativeMove{
+        static_cast<int>(moves.size()),
+        2,
+        0,
+        cluster,
+        best.source,
+        best.target,
+        best.partner,
+        best.partner_source,
+        best.partner_target,
+        before,
+        state.evaluation});
+    ++accepted_comoves;
+  }
+  std::cerr << "PATRON_COMOVE_STATS evaluated=" << evaluated_comoves
+            << " feasible=" << feasible_comoves
+            << " improving=" << improving_comoves
+            << " wns_improving=" << wns_improving_comoves
+            << " accepted=" << accepted_comoves << '\n';
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
                "endpoint-exact-critical-ejection-v6",
