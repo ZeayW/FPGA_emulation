@@ -1005,21 +1005,6 @@ void diagnose_flow_corridors(
     if (!opposite_side[pair_target]) {
       continue;
     }
-    std::vector<std::vector<double>> remaining(
-        model.parts, std::vector<double>(model.dimensions, 0.0));
-    for (int dim = 0; dim < model.dimensions; ++dim) {
-      remaining[edge_left][dim] = std::max(
-          0.0,
-          std::min(model.hard_capacity[pair_target][dim],
-                   model.balance_capacity[pair_target][dim])
-              - state.resource_load[pair_target][dim]);
-      remaining[pair_target][dim] = std::max(
-          0.0,
-          std::min(model.hard_capacity[edge_left][dim],
-                   model.balance_capacity[edge_left][dim])
-              - state.resource_load[edge_left][dim]);
-    }
-
     std::set<int> boundary_set;
     for (int net = 0; net < model.nets; ++net) {
       const auto domain = std::lower_bound(
@@ -1031,16 +1016,10 @@ void diagnose_flow_corridors(
         continue;
       }
       for (int cluster : model.net[net].drivers) {
-        if (state.assignment[cluster] == edge_left
-            || state.assignment[cluster] == pair_target) {
-          boundary_set.insert(cluster);
-        }
+        boundary_set.insert(cluster);
       }
       for (int cluster : model.net[net].sinks) {
-        if (state.assignment[cluster] == edge_left
-            || state.assignment[cluster] == pair_target) {
-          boundary_set.insert(cluster);
-        }
+        boundary_set.insert(cluster);
       }
     }
     std::vector<int> boundary(boundary_set.begin(), boundary_set.end());
@@ -1052,7 +1031,6 @@ void diagnose_flow_corridors(
     std::vector<int> distance(model.clusters, -1);
     std::queue<int> work;
     int corridor_count = 0;
-    int skipped_capacity = 0;
     const auto try_add = [&](int cluster, int candidate_distance) {
       if (distance[cluster] >= 0
           || corridor_count >= kMaximumCorridorClusters
@@ -1060,19 +1038,8 @@ void diagnose_flow_corridors(
         return false;
       }
       const int source = state.assignment[cluster];
-      if (source != edge_left && source != pair_target) {
-        return false;
-      }
-      for (int dim = 0; dim < model.dimensions; ++dim) {
-        if (model.cluster[cluster].weight[dim]
-            > remaining[source][dim] + 1.0e-9) {
-          ++skipped_capacity;
-          return false;
-        }
-      }
-      for (int dim = 0; dim < model.dimensions; ++dim) {
-        remaining[source][dim] -= model.cluster[cluster].weight[dim];
-      }
+      require(source == edge_left || opposite_side[source],
+              "flow corridor cluster is outside topology cut");
       distance[cluster] = candidate_distance;
       work.push(cluster);
       ++corridor_count;
@@ -1103,7 +1070,8 @@ void diagnose_flow_corridors(
                < std::tie(exposure[left], right);
       });
       for (int neighbor : neighbors) {
-        if (state.assignment[neighbor] == state.assignment[cluster]) {
+        if (opposite_side[state.assignment[neighbor]]
+            == opposite_side[state.assignment[cluster]]) {
           try_add(neighbor, distance[cluster] + 1);
         }
       }
@@ -1182,13 +1150,44 @@ void diagnose_flow_corridors(
     int moved_to_left = 0;
     int moved_to_target = 0;
     for (int cluster : corridor) {
+      const int original = state.assignment[cluster];
       const int target = source_side[cluster_node[cluster]]
                              ? edge_left
-                             : pair_target;
+                             : (opposite_side[original]
+                                    ? original
+                                    : pair_target);
       if (target != state.assignment[cluster]) {
         candidate_assignment[cluster] = target;
         moved_to_left += target == edge_left ? 1 : 0;
         moved_to_target += target == pair_target ? 1 : 0;
+      }
+    }
+    bool capacity_compatible = true;
+    std::vector<std::vector<double>> candidate_load = state.resource_load;
+    std::vector<int> candidate_counts = state.part_counts;
+    for (int cluster : corridor) {
+      const int source = state.assignment[cluster];
+      const int target = candidate_assignment[cluster];
+      if (source == target) {
+        continue;
+      }
+      --candidate_counts[source];
+      ++candidate_counts[target];
+      for (int dim = 0; dim < model.dimensions; ++dim) {
+        candidate_load[source][dim] -= model.cluster[cluster].weight[dim];
+        candidate_load[target][dim] += model.cluster[cluster].weight[dim];
+      }
+    }
+    for (int part = 0; part < model.parts; ++part) {
+      capacity_compatible = capacity_compatible
+                            && candidate_counts[part] >= 0;
+      for (int dim = 0; dim < model.dimensions; ++dim) {
+        capacity_compatible = capacity_compatible
+                              && candidate_load[part][dim]
+                                     <= model.hard_capacity[part][dim] + 1.0e-9
+                              && candidate_load[part][dim]
+                                     <= model.balance_capacity[part][dim]
+                                            + 1.0e-9;
       }
     }
     ProxyState candidate = build_proxy_state(model, &candidate_assignment);
@@ -1197,14 +1196,15 @@ void diagnose_flow_corridors(
               << " boundary=" << boundary.size()
               << " clusters=" << corridor.size()
               << " nets=" << corridor_nets.size()
-              << " skipped_capacity=" << skipped_capacity
               << " mincut=" << cut
               << " moved_to_left=" << moved_to_left
               << " moved_to_target=" << moved_to_target
+              << " capacity_compatible=" << (capacity_compatible ? 1 : 0)
               << " domain_load=" << candidate.domain_load[cover_domain]
               << " improving="
-              << (less_ranked(candidate.evaluation.ranked,
-                              state.evaluation.ranked)
+              << (capacity_compatible
+                          && less_ranked(candidate.evaluation.ranked,
+                                         state.evaluation.ranked)
                       ? 1
                       : 0)
               << " rank=";
