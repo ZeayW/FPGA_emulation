@@ -405,7 +405,8 @@ def build_chimew_phase6_pin_plan(
         ):
             raise ValidationError("Chimew assignment electrical domain mismatch")
         member_ids = []
-        ratios = set()
+        ratios_by_direction = {"a_to_b": set(), "b_to_a": set()}
+        count_by_direction = {"a_to_b": 0, "b_to_a": 0}
         slots = set()
         member_directions = set()
         for member in group["members"]:
@@ -445,7 +446,8 @@ def build_chimew_phase6_pin_plan(
                     f"group={group['id']!r}, entry={entry_id!r}, "
                     f"ratio={ratio!r}, slot={slot!r}, prior_slots={sorted(slots)!r}"
                 )
-            ratios.add(ratio)
+            ratios_by_direction[member_direction].add(ratio)
+            count_by_direction[member_direction] += 1
             slots.add(slot)
             member_directions.add(member_direction)
             used_schedule_entries.add(entry_id)
@@ -472,8 +474,12 @@ def build_chimew_phase6_pin_plan(
                 }
             )
         if (
-            len(ratios) != 1
-            or len(member_ids) > next(iter(ratios))
+            any(
+                len(ratios_by_direction[direction]) != 1
+                or count_by_direction[direction]
+                > next(iter(ratios_by_direction[direction]))
+                for direction in member_directions
+            )
             or (
                 group_direction == "bidirectional"
                 and member_directions != {"a_to_b", "b_to_a"}
@@ -840,7 +846,8 @@ def validate_chimew_phase6_binding(
         lanes.add(lane_key)
         member_directions = set()
         slots = set()
-        ratios = set()
+        ratios_by_direction = {"a_to_b": set(), "b_to_a": set()}
+        count_by_direction = {"a_to_b": 0, "b_to_a": 0}
         for member in members:
             scheduled = schedule_by_id.get(member)
             planned = plan_by_id.get(member)
@@ -865,11 +872,16 @@ def validate_chimew_phase6_binding(
             ):
                 raise ValidationError("Chimew electrical binding conflicts with pin plan")
             member_directions.add(member_direction)
-            ratios.add(ratio)
+            ratios_by_direction[member_direction].add(ratio)
+            count_by_direction[member_direction] += 1
             slots.add(slot)
         if (
-            len(ratios) != 1
-            or len(members) > next(iter(ratios))
+            any(
+                len(ratios_by_direction[member_direction]) != 1
+                or count_by_direction[member_direction]
+                > next(iter(ratios_by_direction[member_direction]))
+                for member_direction in member_directions
+            )
             or (
                 direction == "bidirectional"
                 and member_directions != {"a_to_b", "b_to_a"}

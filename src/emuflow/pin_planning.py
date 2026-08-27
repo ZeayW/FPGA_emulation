@@ -504,7 +504,6 @@ def validate_pin_plan(
             )
     for group, entries in groups.items():
         domains = {_domain_key(entry) for entry in entries}
-        ratios = {_schedule_tdm_ratio(entry) for entry in entries}
         pins = {by_id[entry["id"]]["physical_lane"] for entry in entries}
         slots = {entry["slot"] for entry in entries}
         shared_chimew_bundle = (
@@ -518,12 +517,18 @@ def validate_pin_plan(
         )
         if (
             (len(domains) != 1 and not shared_chimew_bundle)
-            or len(ratios) != 1
             or len(pins) != 1
         ):
             raise ValidationError(f"group {group} is not homogeneous")
-        ratio = next(iter(ratios))
-        if len(entries) > ratio or len(slots) != len(entries):
+        entries_by_domain = {
+            domain: [entry for entry in entries if _domain_key(entry) == domain]
+            for domain in domains
+        }
+        for domain_entries in entries_by_domain.values():
+            ratios = {_schedule_tdm_ratio(entry) for entry in domain_entries}
+            if len(ratios) != 1 or len(domain_entries) > next(iter(ratios)):
+                raise ValidationError(f"group {group} violates TDM capacity")
+        if len(slots) != len(entries):
             raise ValidationError(f"group {group} violates TDM capacity")
     assignment = {
         entry_id: (item["group"], item["physical_lane"])

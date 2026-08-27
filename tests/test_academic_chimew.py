@@ -510,7 +510,7 @@ class AcademicChimewTest(unittest.TestCase):
                 ]
                 schedule[entry_id] = {
                     "id": entry_id,
-                    "tdm_ratio": 4,
+                    "tdm_ratio": 4 if direction == "a_to_b" else 5,
                     "slot": slot,
                 }
         first = _bundle_shared_bidirectional_groups(
@@ -631,7 +631,9 @@ class AcademicChimewTest(unittest.TestCase):
             # Phase 5 may use the same concrete shared lane in different
             # TDM slots; the materializer must preserve it as one bundle.
             reverse["lane"] = forward["lane"]
-            forward["tdm_ratio"] = 2
+            # Ratios are direction-qualified occupancy counts.  Opposite
+            # directions may differ when concrete shared slots are disjoint.
+            forward["tdm_ratio"] = 3
             reverse["tdm_ratio"] = 2
             forward["slot"] = 0
             reverse["slot"] = 1

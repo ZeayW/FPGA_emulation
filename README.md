@@ -3215,8 +3215,8 @@ materializer follows the BoardDB capacity contract: full-duplex
 `shared_bidirectional` contest links put both directions in one physical lane
 domain with direction-agnostic channels.  Before bank/channel assignment, the
 v2 materializer computes how many opposite-direction groups must share a lane
-to satisfy the BoardDB capacity.  It accepts a pair only when both groups have
-the same TDM ratio, their concrete Phase-5 slot sets are disjoint, and any
+to satisfy the BoardDB capacity.  It accepts a pair when their concrete
+Phase-5 slot sets are disjoint and any
 timing-guarded fixed lanes agree.  A deterministic maximum-cardinality check
 first proves that the requested packing is feasible; an exact min-cost
 bipartite matching then selects only the required number of pairs.  Each
@@ -3224,7 +3224,10 @@ selected pair becomes one bidirectional TDM bundle with member-specific
 directions and one `either` electrical channel/package-pin pair.  The native
 two-stage assignment, Python certificate checker, Phase-6 builder, generic pin
 plan validator, and standalone electrical-binding validator all independently
-enforce the combined slot capacity and reject a same-slot collision.  Legacy
+enforce each direction's occupancy ratio, the combined concrete-slot capacity,
+and rejection of a same-slot collision.  Opposite directions do not need equal
+ratios: the ratio materializer records direction-qualified lane occupancy,
+while slot identifiers name the shared physical resource.  Legacy
 `emuflow.chimew-bank-channel-input/v1` documents remain readable; v2 is required
 to represent a bidirectional bundle.  The flow never widens a shared contest
 link into two independent lane pools and never treats every directional group

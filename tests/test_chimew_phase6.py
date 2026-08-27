@@ -486,6 +486,8 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
         platform_document["links"][0]["capacity_sharing"] = "shared_bidirectional"
         platform = Platform.from_dict(platform_document)
         schedule = copy.deepcopy(self.schedule)
+        schedule["entries"][0]["tdm_ratio"] = 3
+        schedule["entries"][1]["tdm_ratio"] = 2
         schedule["entries"][1]["slot"] = 1
 
         assignment = copy.deepcopy(self.assignment_input)

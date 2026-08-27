@@ -913,9 +913,9 @@ def _bundle_shared_bidirectional_groups(
         )
     for lane in sorted(set(forward_by_lane) & set(reverse_by_lane)):
         lhs, rhs = forward_by_lane[lane], reverse_by_lane[lane]
-        lhs_ratio, lhs_slots = group_tdm[lhs]
-        rhs_ratio, rhs_slots = group_tdm[rhs]
-        if lhs_ratio != rhs_ratio or lhs_slots & rhs_slots:
+        _lhs_ratio, lhs_slots = group_tdm[lhs]
+        _rhs_ratio, rhs_slots = group_tdm[rhs]
+        if lhs_slots & rhs_slots:
             raise ValidationError(
                 "timing-guarded opposite directions collide on a shared lane"
             )
@@ -929,14 +929,13 @@ def _bundle_shared_bidirectional_groups(
     primary_costs: Dict[Tuple[int, int], int] = {}
     adjacency: list[list[int]] = [[] for _ in remaining_forward]
     for left, lhs in enumerate(remaining_forward):
-        lhs_ratio, lhs_slots = group_tdm[lhs]
+        _lhs_ratio, lhs_slots = group_tdm[lhs]
         lhs_fixed = fixed_lane_by_group.get(lhs)
         for right, rhs in enumerate(remaining_reverse):
-            rhs_ratio, rhs_slots = group_tdm[rhs]
+            _rhs_ratio, rhs_slots = group_tdm[rhs]
             rhs_fixed = fixed_lane_by_group.get(rhs)
             if (
-                lhs_ratio != rhs_ratio
-                or lhs_slots & rhs_slots
+                lhs_slots & rhs_slots
                 or (
                     lhs_fixed is not None
                     and rhs_fixed is not None
