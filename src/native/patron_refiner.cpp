@@ -1781,6 +1781,68 @@ void run_scalable(const Model& model, const std::string& output_path) {
               << " nets=" << model.path[path].nets.size() << '\n';
   }
 
+  const char* cover_diagnostic_value
+      = std::getenv("EMUFLOW_PATRON_COVER_DIAGNOSTIC");
+  const bool cover_diagnostic = cover_diagnostic_value != nullptr
+                                && std::string(cover_diagnostic_value) == "1";
+  if (cover_diagnostic && model.parts <= 8) {
+    std::vector<int> permutation(model.parts);
+    std::iota(permutation.begin(), permutation.end(), 0);
+    do {
+      bool identity = true;
+      for (int part = 0; part < model.parts; ++part) {
+        identity = identity && permutation[part] == part;
+      }
+      if (identity) {
+        continue;
+      }
+      std::vector<int> candidate_assignment(model.clusters);
+      bool fixed_compatible = true;
+      for (int cluster = 0; cluster < model.clusters; ++cluster) {
+        candidate_assignment[cluster] = permutation[state.assignment[cluster]];
+        if (model.cluster[cluster].fixed >= 0
+            && model.cluster[cluster].fixed != candidate_assignment[cluster]) {
+          fixed_compatible = false;
+          break;
+        }
+      }
+      if (!fixed_compatible) {
+        continue;
+      }
+      bool capacity_compatible = true;
+      for (int source = 0; source < model.parts; ++source) {
+        const int target = permutation[source];
+        for (int dim = 0; dim < model.dimensions; ++dim) {
+          if (state.resource_load[source][dim]
+                  > model.hard_capacity[target][dim] + 1.0e-9
+              || state.resource_load[source][dim]
+                     > model.balance_capacity[target][dim] + 1.0e-9) {
+            capacity_compatible = false;
+            break;
+          }
+        }
+      }
+      if (!capacity_compatible) {
+        continue;
+      }
+      ProxyState candidate = build_proxy_state(model, &candidate_assignment);
+      std::cerr << "PATRON_BLOCK_PERMUTATION map=";
+      for (int part : permutation) {
+        std::cerr << part << ',';
+      }
+      std::cerr << " improving="
+                << (less_ranked(candidate.evaluation.ranked,
+                                state.evaluation.ranked)
+                        ? 1
+                        : 0)
+                << " rank=";
+      for (long long value : candidate.evaluation.ranked) {
+        std::cerr << value << ',';
+      }
+      std::cerr << '\n';
+    } while (std::next_permutation(permutation.begin(), permutation.end()));
+  }
+
   struct CoverMove {
     int cluster = -1;
     int target = -1;
@@ -1824,10 +1886,6 @@ void run_scalable(const Model& model, const std::string& output_path) {
       cover_deficit = deficit;
     }
   }
-  const char* cover_diagnostic_value
-      = std::getenv("EMUFLOW_PATRON_COVER_DIAGNOSTIC");
-  const bool cover_diagnostic = cover_diagnostic_value != nullptr
-                                && std::string(cover_diagnostic_value) == "1";
   if (cover_diagnostic && cover_domain >= 0) {
     std::vector<CoverMove> raw_cover_moves;
     std::vector<CoverOperation> cover_operations;
