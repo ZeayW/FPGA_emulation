@@ -29,9 +29,9 @@ class StaticExactQorTest(unittest.TestCase):
             cache = Path(temporary) / "cache"
             roots = {}
             dependency_keys = {
-                "partition": "1" * 64,
-                "route": "2" * 64,
-                "tdm": "3" * 64,
+                "v2-partition": "1" * 64,
+                "v2-route": "2" * 64,
+                "v2-tdm": "3" * 64,
             }
             for name, stage, key, elapsed in (
                 ("shared", "shared", "4" * 64, 0.1),
@@ -56,9 +56,9 @@ class StaticExactQorTest(unittest.TestCase):
                 write_json(output.parent / "checkpoint.json", value)
                 (output.parent / "checkpoint.json").chmod(0o444)
             for label, stage, elapsed in (
-                ("partition", "partition", 2.0),
-                ("route", "route", 3.0),
-                ("tdm", "tdm", 1.5),
+                ("v2-partition", "partition", 2.0),
+                ("v2-route", "route", 3.0),
+                ("v2-tdm", "tdm", 1.5),
             ):
                 object_root = cache / "objects" / dependency_keys[label]
                 output = object_root / "output"
@@ -74,6 +74,7 @@ class StaticExactQorTest(unittest.TestCase):
                         "output_dir": str(output.resolve()),
                         "status": "pass",
                         "execution_elapsed_seconds": elapsed,
+                        "artifacts": {},
                     },
                 )
                 (object_root / "checkpoint.json").chmod(0o444)
@@ -85,6 +86,38 @@ class StaticExactQorTest(unittest.TestCase):
             )
             self.assertEqual(runtime["physical_wall_seconds"], 5.0)
             self.assertEqual(runtime["phase3_to_7_wall_seconds"], 12.0)
+
+            duplicate_key = "8" * 64
+            duplicate_output = cache / "objects" / duplicate_key / "output"
+            duplicate_output.mkdir(parents=True)
+            write_json(
+                duplicate_output.parent / "checkpoint.json",
+                {
+                    "schema": "emuflow.experiment-checkpoint/v2",
+                    "storage": "managed",
+                    "output_immutable": True,
+                    "execution_key": duplicate_key,
+                    "stage": "partition",
+                    "output_dir": str(duplicate_output.resolve()),
+                    "status": "pass",
+                    "execution_elapsed_seconds": 2.0,
+                    "artifacts": {},
+                },
+            )
+            (duplicate_output.parent / "checkpoint.json").chmod(0o444)
+            shared_manifest = roots["shared"].parent / "checkpoint.json"
+            shared_manifest.chmod(0o644)
+            shared_checkpoint = read_json(shared_manifest)
+            shared_checkpoint["dependency_keys"]["v1-partition"] = duplicate_key
+            write_json(shared_manifest, shared_checkpoint)
+            shared_manifest.chmod(0o444)
+            with self.assertRaisesRegex(ValidationError, "dependency is ambiguous"):
+                _execution_runtime(
+                    roots["shared"],
+                    roots["lookahead"],
+                    roots["phase6"],
+                    roots["phase7"],
+                )
 
     def _fixture(self, root: Path):
         root.mkdir(parents=True, exist_ok=True)
@@ -453,7 +486,7 @@ class StaticExactQorTest(unittest.TestCase):
                 "shared",
                 shared_output,
                 {},
-                {"timing": timing_key, "partition": partition_key},
+                {"timing": timing_key, "v2-partition": partition_key},
             )
 
             source = _common_source_record(shared_output)

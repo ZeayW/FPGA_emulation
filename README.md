@@ -503,7 +503,10 @@ artifacts, not duplicate timing/partition evidence reports.  For that layout,
 the comparator follows the immutable shared checkpoint's dependency keys back
 to the original validated timing and partition checkpoints and rechecks their
 full reports, while separately rehashing every consumer artifact against the
-shared report.  An unmanaged historical view with neither evidence reports nor
+shared report.  Dependency lookup is by the sealed checkpoint stage, not by an
+experiment-local node label such as `seq-partition` or `v2-partition`, and it
+fails closed unless exactly one dependency provides each required stage.  An
+unmanaged historical view with neither evidence reports nor
 managed dependency metadata is accepted only at the explicitly lower
 `managed-shared-v1-core-source-seal` qualification and cannot satisfy a
 canonical default-promotion claim.

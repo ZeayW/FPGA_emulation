@@ -140,22 +140,17 @@ def _execution_runtime(
         raise ValidationError("Static Exact QoR runtime checkpoint set is incomplete")
     assert shared is not None and lookahead is not None
     assert phase6 is not None and phase7 is not None
-    cache_root = shared_root.parent.parent.parent
-    dependencies = shared.get("dependency_keys")
-    if not isinstance(dependencies, dict):
-        raise ValidationError("Static Exact QoR shared dependency seal is invalid")
     records: Dict[str, float] = {}
     for label, stage in (
         ("partition", "partition"),
         ("route", "route"),
         ("tdm", "tdm"),
     ):
-        key = dependencies.get(label)
-        if not isinstance(key, str):
+        output = _managed_dependency_root(shared_root, label, stage)
+        if output is None:
             raise ValidationError(
-                f"Static Exact QoR {label} runtime dependency is missing"
+                f"Static Exact QoR {label} runtime checkpoint is missing"
             )
-        output = cache_root / "objects" / key / "output"
         value = _checkpoint(output, stage)
         if value is None:
             raise ValidationError(
@@ -410,16 +405,12 @@ def _managed_dependency_root(
     shared_checkpoint = _checkpoint(shared_root, "shared")
     if shared_checkpoint is None:
         return None
-    dependency_keys = shared_checkpoint.get("dependency_keys")
-    if not isinstance(dependency_keys, dict):
-        raise ValidationError(
-            "Static Exact QoR shared dependency seal is invalid"
-        )
-    key = dependency_keys.get(dependency)
-    if not isinstance(key, str):
-        raise ValidationError(
-            f"Static Exact QoR shared {dependency} dependency is missing"
-        )
+    key = _managed_dependency_key(
+        shared_root,
+        shared_checkpoint,
+        dependency,
+        expected_stage,
+    )
     cache_root = shared_root.parent.parent.parent
     manifest_path = cache_root / "objects" / key / "checkpoint.json"
     if (
@@ -472,6 +463,62 @@ def _managed_dependency_root(
     return output
 
 
+def _managed_dependency_key(
+    shared_root: Path,
+    shared_checkpoint: Mapping[str, Any],
+    dependency: str,
+    expected_stage: str,
+) -> str:
+    """Resolve one dependency by sealed stage, independent of DAG node labels.
+
+    Shared nodes in an A/B experiment use arm-qualified node IDs such as
+    ``seq-partition`` and ``v2-partition``.  The checkpoint stage is the stable
+    contract; the node ID is deliberately experiment-local.  Accept an exact
+    label when present, otherwise require exactly one dependency whose sealed
+    checkpoint declares the requested stage.
+    """
+
+    dependency_keys = shared_checkpoint.get("dependency_keys")
+    if not isinstance(dependency_keys, dict):
+        raise ValidationError(
+            "Static Exact QoR shared dependency seal is invalid"
+        )
+    cache_root = shared_root.parent.parent.parent
+    candidates: list[str] = []
+    exact = dependency_keys.get(dependency)
+    records = (
+        ((dependency, exact),)
+        if exact is not None
+        else dependency_keys.items()
+    )
+    for label, key in records:
+        if (
+            not isinstance(label, str)
+            or not isinstance(key, str)
+            or len(key) != 64
+            or any(character not in "0123456789abcdef" for character in key)
+        ):
+            raise ValidationError(
+                "Static Exact QoR shared dependency seal is invalid"
+            )
+        manifest_path = cache_root / "objects" / key / "checkpoint.json"
+        if manifest_path.is_symlink() or not manifest_path.is_file():
+            if exact is not None:
+                raise ValidationError(
+                    f"Static Exact QoR shared {dependency} checkpoint is missing"
+                )
+            continue
+        checkpoint = read_json(manifest_path)
+        if checkpoint.get("stage") == expected_stage:
+            candidates.append(key)
+    if len(candidates) != 1:
+        qualifier = "ambiguous" if len(candidates) > 1 else "missing"
+        raise ValidationError(
+            f"Static Exact QoR shared {dependency} dependency is {qualifier}"
+        )
+    return candidates[0]
+
+
 def _managed_dependency_artifact(
     shared_root: Path,
     dependency: str,
@@ -487,7 +534,12 @@ def _managed_dependency_artifact(
         )
     shared_checkpoint = _checkpoint(shared_root, "shared")
     assert shared_checkpoint is not None
-    key = shared_checkpoint["dependency_keys"][dependency]
+    key = _managed_dependency_key(
+        shared_root,
+        shared_checkpoint,
+        dependency,
+        expected_stage,
+    )
     cache_root = shared_root.parent.parent.parent
     checkpoint = read_json(
         cache_root / "objects" / key / "checkpoint.json"
