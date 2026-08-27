@@ -878,7 +878,8 @@ ProxyDelta evaluate_proxy_changes(
     int cluster,
     int target,
     int partner = -1,
-    int partner_target = -1) {
+    int partner_target = -1,
+    const std::vector<std::pair<int, int>>& extra_changes = {}) {
   ProxyDelta delta;
   delta.cluster = cluster;
   delta.source = state.assignment[cluster];
@@ -888,6 +889,7 @@ ProxyDelta evaluate_proxy_changes(
   }
   std::vector<std::tuple<int, int, int>> changes = {
       {cluster, delta.source, target}};
+  std::set<int> changed_clusters = {cluster};
   if (partner >= 0) {
     if (partner == cluster || partner_target < 0
         || model.cluster[partner].fixed >= 0) {
@@ -899,8 +901,25 @@ ProxyDelta evaluate_proxy_changes(
     if (delta.partner_source == delta.partner_target) {
       return delta;
     }
+    if (!changed_clusters.insert(partner).second) {
+      return delta;
+    }
     changes.emplace_back(
         partner, delta.partner_source, delta.partner_target);
+  }
+  for (const auto& extra : extra_changes) {
+    const int changed_cluster = extra.first;
+    const int changed_target = extra.second;
+    if (changed_cluster < 0 || changed_cluster >= model.clusters
+        || changed_target < 0 || changed_target >= model.parts
+        || model.cluster[changed_cluster].fixed >= 0
+        || state.assignment[changed_cluster] == changed_target
+        || !changed_clusters.insert(changed_cluster).second) {
+      return delta;
+    }
+    changes.emplace_back(changed_cluster,
+                         state.assignment[changed_cluster],
+                         changed_target);
   }
 
   auto projected_load = state.resource_load;
@@ -1702,6 +1721,126 @@ void run_scalable(const Model& model, const std::string& output_path) {
             << " improving=" << improving_comoves
             << " wns_improving=" << wns_improving_comoves
             << " accepted=" << accepted_comoves << '\n';
+
+  long long evaluated_corridors = 0;
+  long long feasible_corridors = 0;
+  long long improving_corridors = 0;
+  long long wns_improving_corridors = 0;
+  bool found_corridor = false;
+  ProxyDelta best_corridor;
+  std::vector<int> best_corridor_clusters;
+  const int corridor_critical_limit = std::min(512, critical_limit);
+  for (int order_index = 0;
+       order_index < corridor_critical_limit;
+       ++order_index) {
+    const int cluster = order[order_index];
+    if (model.cluster[cluster].fixed >= 0) {
+      continue;
+    }
+    const int source = state.assignment[cluster];
+    std::set<int> neighbor_set;
+    for (int net : cluster_nets[cluster]) {
+      neighbor_set.insert(model.net[net].drivers.begin(),
+                          model.net[net].drivers.end());
+      neighbor_set.insert(model.net[net].sinks.begin(),
+                          model.net[net].sinks.end());
+    }
+    std::vector<int> neighbors;
+    for (int neighbor : neighbor_set) {
+      if (neighbor != cluster && state.assignment[neighbor] == source
+          && model.cluster[neighbor].fixed < 0) {
+        neighbors.push_back(neighbor);
+      }
+    }
+    std::sort(neighbors.begin(), neighbors.end(), [&](int left, int right) {
+      return std::tie(exposure[right], left)
+             < std::tie(exposure[left], right);
+    });
+    if (neighbors.size() > 12) {
+      neighbors.resize(12);
+    }
+    for (int target = 0; target < model.parts; ++target) {
+      if (target == source) {
+        continue;
+      }
+      for (std::size_t first = 0; first < neighbors.size(); ++first) {
+        for (std::size_t second = first + 1;
+             second < neighbors.size();
+             ++second) {
+          for (int extra_count = 0; extra_count <= 1; ++extra_count) {
+            const std::size_t third_begin = second + 1;
+            const std::size_t third_end = extra_count == 0
+                                              ? third_begin + 1
+                                              : neighbors.size();
+            for (std::size_t third = third_begin;
+                 third < third_end;
+                 ++third) {
+              if (extra_count == 1 && third >= neighbors.size()) {
+                continue;
+              }
+              std::vector<std::pair<int, int>> extras = {
+                  {neighbors[second], target}};
+              std::vector<int> selected = {
+                  cluster, neighbors[first], neighbors[second]};
+              if (extra_count == 1) {
+                extras.emplace_back(neighbors[third], target);
+                selected.push_back(neighbors[third]);
+              }
+              ProxyDelta candidate = evaluate_proxy_changes(
+                  model,
+                  state,
+                  cluster_nets,
+                  net_paths,
+                  cluster,
+                  target,
+                  neighbors[first],
+                  target,
+                  extras);
+              ++evaluated_corridors;
+              if (!candidate.feasible) {
+                continue;
+              }
+              ++feasible_corridors;
+              if (candidate.evaluation.ranked[0]
+                  < state.evaluation.ranked[0]) {
+                ++wns_improving_corridors;
+              }
+              if (!less_ranked(candidate.evaluation.ranked,
+                               state.evaluation.ranked)) {
+                continue;
+              }
+              ++improving_corridors;
+              if (!found_corridor
+                  || less_ranked(candidate.evaluation.ranked,
+                                 best_corridor.evaluation.ranked)
+                  || (candidate.evaluation.ranked
+                          == best_corridor.evaluation.ranked
+                      && selected < best_corridor_clusters)) {
+                found_corridor = true;
+                best_corridor = std::move(candidate);
+                best_corridor_clusters = std::move(selected);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  std::cerr << "PATRON_CORRIDOR_STATS evaluated=" << evaluated_corridors
+            << " feasible=" << feasible_corridors
+            << " improving=" << improving_corridors
+            << " wns_improving=" << wns_improving_corridors;
+  if (found_corridor) {
+    std::cerr << " best_rank=";
+    for (long long value : best_corridor.evaluation.ranked) {
+      std::cerr << value << ',';
+    }
+    std::cerr << " clusters=";
+    for (int selected : best_corridor_clusters) {
+      std::cerr << selected << ',';
+    }
+  }
+  std::cerr << '\n';
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
                "endpoint-exact-critical-ejection-v6",
