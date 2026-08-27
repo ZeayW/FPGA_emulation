@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -879,7 +880,8 @@ ProxyDelta evaluate_proxy_changes(
     int target,
     int partner = -1,
     int partner_target = -1,
-    const std::vector<std::pair<int, int>>& extra_changes = {}) {
+    const std::vector<std::pair<int, int>>& extra_changes = {},
+    bool enforce_capacity = true) {
   ProxyDelta delta;
   delta.cluster = cluster;
   delta.source = state.assignment[cluster];
@@ -937,21 +939,23 @@ ProxyDelta evaluate_proxy_changes(
           += model.cluster[changed_cluster].weight[dim];
     }
   }
-  if (std::count_if(projected_counts.begin(), projected_counts.end(),
-                    [](int count) { return count > 0; })
-      < model.min_used_parts) {
-    return delta;
-  }
-  for (int part = 0; part < model.parts; ++part) {
-    if (projected_counts[part] < 0) {
+  if (enforce_capacity) {
+    if (std::count_if(projected_counts.begin(), projected_counts.end(),
+                      [](int count) { return count > 0; })
+        < model.min_used_parts) {
       return delta;
     }
-    for (int dim = 0; dim < model.dimensions; ++dim) {
-      if (projected_load[part][dim]
-              > model.hard_capacity[part][dim] + 1.0e-9
-          || projected_load[part][dim]
-                 > model.balance_capacity[part][dim] + 1.0e-9) {
+    for (int part = 0; part < model.parts; ++part) {
+      if (projected_counts[part] < 0) {
         return delta;
+      }
+      for (int dim = 0; dim < model.dimensions; ++dim) {
+        if (projected_load[part][dim]
+                > model.hard_capacity[part][dim] + 1.0e-9
+            || projected_load[part][dim]
+                   > model.balance_capacity[part][dim] + 1.0e-9) {
+          return delta;
+        }
       }
     }
   }
@@ -1783,6 +1787,11 @@ void run_scalable(const Model& model, const std::string& output_path) {
     int reduction = 0;
     long long tns_cost = 0;
   };
+  struct CoverOperation {
+    std::vector<std::pair<int, int>> changes;
+    int reduction = 0;
+    long long tns_cost = 0;
+  };
   std::set<int> frontier_domains;
   const long long frontier_rank = current_paths.empty()
                                       ? 0
@@ -1815,9 +1824,15 @@ void run_scalable(const Model& model, const std::string& output_path) {
       cover_deficit = deficit;
     }
   }
-  if (cover_domain >= 0) {
-    std::vector<CoverMove> cover_moves;
+  const char* cover_diagnostic_value
+      = std::getenv("EMUFLOW_PATRON_COVER_DIAGNOSTIC");
+  const bool cover_diagnostic = cover_diagnostic_value != nullptr
+                                && std::string(cover_diagnostic_value) == "1";
+  if (cover_diagnostic && cover_domain >= 0) {
+    std::vector<CoverMove> raw_cover_moves;
+    std::vector<CoverOperation> cover_operations;
     long long evaluated_cover_moves = 0;
+    long long feasible_direct_cover_moves = 0;
     for (int cluster = 0; cluster < model.clusters; ++cluster) {
       if (model.cluster[cluster].fixed >= 0) {
         continue;
@@ -1826,8 +1841,17 @@ void run_scalable(const Model& model, const std::string& output_path) {
         if (target == state.assignment[cluster]) {
           continue;
         }
-        ProxyDelta candidate = evaluate_proxy_move(
-            model, state, cluster_nets, net_paths, cluster, target);
+        ProxyDelta candidate = evaluate_proxy_changes(
+            model,
+            state,
+            cluster_nets,
+            net_paths,
+            cluster,
+            target,
+            -1,
+            -1,
+            {},
+            false);
         ++evaluated_cover_moves;
         if (!candidate.feasible) {
           continue;
@@ -1836,30 +1860,144 @@ void run_scalable(const Model& model, const std::string& output_path) {
         if (delta == candidate.domain_delta.end() || delta->second >= 0) {
           continue;
         }
-        cover_moves.push_back(CoverMove{
+        const CoverMove move{
             cluster,
             target,
             -delta->second,
-            candidate.evaluation.ranked[1] - state.evaluation.ranked[1]});
+            candidate.evaluation.ranked[1] - state.evaluation.ranked[1]};
+        raw_cover_moves.push_back(move);
+        ProxyDelta direct = evaluate_proxy_move(
+            model, state, cluster_nets, net_paths, cluster, target);
+        if (direct.feasible) {
+          ++feasible_direct_cover_moves;
+          cover_operations.push_back(CoverOperation{
+              {{cluster, target}},
+              move.reduction,
+              move.tns_cost});
+        }
       }
     }
+    std::map<int, int> best_raw_reduction_by_cluster;
+    for (const CoverMove& move : raw_cover_moves) {
+      best_raw_reduction_by_cluster[move.cluster] = std::max(
+          best_raw_reduction_by_cluster[move.cluster], move.reduction);
+    }
+    const int maximum_raw_reduction = std::accumulate(
+        best_raw_reduction_by_cluster.begin(),
+        best_raw_reduction_by_cluster.end(),
+        0,
+        [](int total, const std::pair<const int, int>& item) {
+          return total + item.second;
+        });
     std::cerr << "PATRON_COVER_INPUT domain=" << cover_domain
               << " load=" << state.domain_load[cover_domain]
               << " threshold=" << cover_threshold
               << " deficit=" << cover_deficit
               << " evaluated=" << evaluated_cover_moves
-              << " reducing_moves=" << cover_moves.size() << '\n';
+              << " raw_reducing_moves=" << raw_cover_moves.size()
+              << " raw_reducing_clusters="
+              << best_raw_reduction_by_cluster.size()
+              << " maximum_raw_reduction=" << maximum_raw_reduction
+              << " feasible_direct_moves=" << feasible_direct_cover_moves
+              << '\n';
+
+    std::sort(raw_cover_moves.begin(), raw_cover_moves.end(),
+              [](const CoverMove& left, const CoverMove& right) {
+      if (left.reduction != right.reduction) {
+        return left.reduction > right.reduction;
+      }
+      if (left.tns_cost != right.tns_cost) {
+        return left.tns_cost < right.tns_cost;
+      }
+      return std::tie(left.cluster, left.target)
+             < std::tie(right.cluster, right.target);
+    });
+    std::vector<std::vector<int>> cover_donors(model.parts);
+    for (int cluster : donor_order) {
+      if (model.cluster[cluster].fixed < 0) {
+        cover_donors[state.assignment[cluster]].push_back(cluster);
+      }
+    }
+    constexpr int kCoverPrimaryLimit = 512;
+    constexpr int kCoverDonorLimit = 128;
+    long long evaluated_cover_ejections = 0;
+    long long feasible_cover_ejections = 0;
+    const int primary_limit = std::min(
+        kCoverPrimaryLimit, static_cast<int>(raw_cover_moves.size()));
+    for (int move_index = 0; move_index < primary_limit; ++move_index) {
+      const CoverMove& move = raw_cover_moves[move_index];
+      const int source = state.assignment[move.cluster];
+      bool found = false;
+      CoverOperation best;
+      int considered_donors = 0;
+      for (int donor : cover_donors[move.target]) {
+        if (considered_donors >= kCoverDonorLimit) {
+          break;
+        }
+        if (donor == move.cluster) {
+          continue;
+        }
+        ++considered_donors;
+        std::vector<int> donor_targets;
+        donor_targets.push_back(source);
+        for (int target = 0; target < model.parts; ++target) {
+          if (target != source && target != move.target) {
+            donor_targets.push_back(target);
+          }
+        }
+        for (int donor_target : donor_targets) {
+          ProxyDelta candidate = evaluate_proxy_changes(
+              model,
+              state,
+              cluster_nets,
+              net_paths,
+              move.cluster,
+              move.target,
+              donor,
+              donor_target);
+          ++evaluated_cover_ejections;
+          if (!candidate.feasible) {
+            continue;
+          }
+          ++feasible_cover_ejections;
+          const auto delta = candidate.domain_delta.find(cover_domain);
+          if (delta == candidate.domain_delta.end() || delta->second >= 0) {
+            continue;
+          }
+          CoverOperation operation{
+              {{move.cluster, move.target}, {donor, donor_target}},
+              -delta->second,
+              candidate.evaluation.ranked[1]
+                  - state.evaluation.ranked[1]};
+          if (!found || operation.reduction > best.reduction
+              || (operation.reduction == best.reduction
+                  && std::tie(operation.tns_cost, operation.changes)
+                         < std::tie(best.tns_cost, best.changes))) {
+            found = true;
+            best = std::move(operation);
+          }
+        }
+      }
+      if (found) {
+        cover_operations.push_back(std::move(best));
+      }
+    }
+    std::cerr << "PATRON_COVER_EJECTION_INPUT primaries=" << primary_limit
+              << " donor_limit=" << kCoverDonorLimit
+              << " evaluated=" << evaluated_cover_ejections
+              << " feasible=" << feasible_cover_ejections
+              << " operations=" << cover_operations.size() << '\n';
 
     for (int heuristic = 0; heuristic < 3; ++heuristic) {
-      std::vector<CoverMove> ordered = cover_moves;
-      std::sort(ordered.begin(), ordered.end(), [&](const CoverMove& left,
-                                                    const CoverMove& right) {
+      std::vector<CoverOperation> ordered = cover_operations;
+      std::sort(ordered.begin(), ordered.end(), [&](const CoverOperation& left,
+                                                    const CoverOperation& right) {
         if (heuristic == 0) {
           if (left.reduction != right.reduction) {
             return left.reduction > right.reduction;
           }
-          return std::tie(left.tns_cost, left.cluster, left.target)
-                 < std::tie(right.tns_cost, right.cluster, right.target);
+          return std::tie(left.tns_cost, left.changes)
+                 < std::tie(right.tns_cost, right.changes);
         }
         if (heuristic == 1) {
           const long double left_ratio
@@ -1875,8 +2013,7 @@ void run_scalable(const Model& model, const std::string& output_path) {
           if (left.reduction != right.reduction) {
             return left.reduction > right.reduction;
           }
-          return std::tie(left.cluster, left.target)
-                 < std::tie(right.cluster, right.target);
+          return left.changes < right.changes;
         }
         if (left.tns_cost != right.tns_cost) {
           return left.tns_cost < right.tns_cost;
@@ -1884,43 +2021,67 @@ void run_scalable(const Model& model, const std::string& output_path) {
         if (left.reduction != right.reduction) {
           return left.reduction > right.reduction;
         }
-        return std::tie(left.cluster, left.target)
-               < std::tie(right.cluster, right.target);
+        return left.changes < right.changes;
       });
       auto projected_load = state.resource_load;
+      auto projected_counts = state.part_counts;
       std::set<int> selected_clusters;
       std::vector<std::pair<int, int>> selected;
       int estimated_reduction = 0;
-      for (const CoverMove& candidate : ordered) {
-        if (estimated_reduction >= cover_deficit
-            || !selected_clusters.insert(candidate.cluster).second) {
+      for (const CoverOperation& candidate : ordered) {
+        if (estimated_reduction >= cover_deficit) {
           continue;
         }
-        const int source = state.assignment[candidate.cluster];
-        bool fits = true;
-        for (int dim = 0; dim < model.dimensions; ++dim) {
-          const double projected
-              = projected_load[candidate.target][dim]
-                + model.cluster[candidate.cluster].weight[dim];
-          if (projected
-                  > model.hard_capacity[candidate.target][dim] + 1.0e-9
-              || projected
-                     > model.balance_capacity[candidate.target][dim]
-                           + 1.0e-9) {
-            fits = false;
+        bool disjoint = true;
+        for (const auto& change : candidate.changes) {
+          if (selected_clusters.count(change.first) != 0) {
+            disjoint = false;
             break;
           }
         }
-        if (!fits) {
-          selected_clusters.erase(candidate.cluster);
+        if (!disjoint) {
           continue;
         }
-        for (int dim = 0; dim < model.dimensions; ++dim) {
-          const double weight = model.cluster[candidate.cluster].weight[dim];
-          projected_load[source][dim] -= weight;
-          projected_load[candidate.target][dim] += weight;
+        auto candidate_load = projected_load;
+        auto candidate_counts = projected_counts;
+        for (const auto& change : candidate.changes) {
+          const int cluster = change.first;
+          const int source = state.assignment[cluster];
+          const int target = change.second;
+          --candidate_counts[source];
+          ++candidate_counts[target];
+          for (int dim = 0; dim < model.dimensions; ++dim) {
+            const double weight = model.cluster[cluster].weight[dim];
+            candidate_load[source][dim] -= weight;
+            candidate_load[target][dim] += weight;
+          }
         }
-        selected.emplace_back(candidate.cluster, candidate.target);
+        bool fits = true;
+        if (std::count_if(candidate_counts.begin(), candidate_counts.end(),
+                          [](int count) { return count > 0; })
+            < model.min_used_parts) {
+          fits = false;
+        }
+        for (int part = 0; fits && part < model.parts; ++part) {
+          for (int dim = 0; dim < model.dimensions; ++dim) {
+            if (candidate_load[part][dim]
+                    > model.hard_capacity[part][dim] + 1.0e-9
+                || candidate_load[part][dim]
+                       > model.balance_capacity[part][dim] + 1.0e-9) {
+              fits = false;
+              break;
+            }
+          }
+        }
+        if (!fits) {
+          continue;
+        }
+        projected_load = std::move(candidate_load);
+        projected_counts = std::move(candidate_counts);
+        for (const auto& change : candidate.changes) {
+          selected_clusters.insert(change.first);
+          selected.push_back(change);
+        }
         estimated_reduction += candidate.reduction;
       }
       std::cerr << "PATRON_COVER_SELECTION heuristic=" << heuristic
