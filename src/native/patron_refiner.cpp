@@ -1742,7 +1742,14 @@ void run_scalable(const Model& model, const std::string& output_path) {
               << " nets=" << model.path[current_paths.front()].nets.size()
               << '\n';
   }
-  const int path_limit = std::min(16, model.paths);
+  for (int rank = 0; rank < std::min(16, model.paths); ++rank) {
+    const int path = current_paths[rank];
+    std::cerr << "PATRON_CURRENT_PATH rank=" << rank
+              << " path=" << path
+              << " normalized_slack=" << state.path[path].normalized_slack
+              << " nets=" << model.path[path].nets.size() << '\n';
+  }
+  const int path_limit = 0;
   for (int path_index = 0; path_index < path_limit; ++path_index) {
     const int path = current_paths[path_index];
     std::map<int, int> touch_count;
