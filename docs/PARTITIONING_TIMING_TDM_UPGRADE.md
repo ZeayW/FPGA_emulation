@@ -71,6 +71,9 @@ signals instead of declaring one paper a universal winner.
 | HoPart, DATE 2026 ([paper](https://past.date-conference.com/proceedings-archive/2026/DATA/679.pdf)) | Hop-constrained timing-driven refinement with congestion-aware routing; optimizes routed path delay | Use path delay and congestion pressure directly, but validate predicted routing against actual Phase 4/5 results |
 | [Integrated partitioning and TDM optimization, ASP-DAC 2023](https://www.aspdac.com/aspdac2023/archive/pdf/6D-1.pdf) | Reduces maximum pair cut and then the required TDM ratio | The maximum directed link/domain load is more predictive than total cut alone |
 | [Timing-driven TDM-aware partitioning, ISPD 2020](https://ispd.cc/ispd2026/slides/2020/Timing_Driven_Partition_for_Multi_FPGA_Systems_with_TDM_Awareness.pdf) | Couples timing paths and TDM demand rather than optimizing cut size alone | Timing criticality must multiply concrete transport pressure and preserve path order |
+| [Network Flow-Based Refinement, SEA 2018](https://arxiv.org/abs/1802.03587) and [Parallel Flow-Based Hypergraph Partitioning, 2022](https://arxiv.org/abs/2201.01556) | Builds localized flow problems on block pairs; the parallel version scales the strongest iterative refinement to hypergraphs with up to a billion pins | A capacity-local minimum of single-vertex FM should be crossed by a bounded block-pair transaction, not by accepting an illegal intermediate move |
+| [Deterministic Parallel High-Quality Hypergraph Partitioning, 2025](https://arxiv.org/abs/2504.12013) | Makes Jet and flow refinement deterministic while retaining state-of-the-art quality | Reproducible VLSI refinement can use strong pair/block neighborhoods without sacrificing deterministic evidence |
+| [FPGAPart, FPGA 2025](https://vlsicad.ucsd.edu/Publications/Conferences/415/c415.pdf) | Combines FPGA pre-packing, timing-path pattern mining, and neighborhood-influence ILP cuts; reports routed Fmax and wirelength gains | Preserve FPGA grouping and final routed timing as the authority; a cut-only objective is insufficient |
 | [SHyPar](https://arxiv.org/abs/2410.10875), [K-SpecPart](https://arxiv.org/abs/2305.06167), and [MedPart](https://research.nvidia.com/publication/2024-03_medpart-multi-level-evolutionary-differentiable-hypergraph-partitioner) | Spectral/flow, preconditioned spectral, and evolutionary differentiable generic hypergraph search | They are useful portfolio generators, but do not by themselves close multi-resource, topology, TDM, or final physical timing |
 
 The cited results are motivation and comparison points.  EmuFlow does not
@@ -173,10 +176,15 @@ The refiner maintains these values incrementally:
 A move updates only incident nets, affected routed domains, and paths that
 contain those nets.  Gains are stably quantized before deterministic tie
 breaking; raw values remain in the trace.  Compact graphs use global-best
-direct K-way selection and are reproduced move-for-move by the Python
-exhaustive oracle.  Large graphs use a timing-criticality-ordered native sweep:
-each cluster chooses its globally best legal target under the current proxy,
-then updates only its incident indexes.  This avoids pretending that an
+direct K-way and atomic pair selection and are reproduced move-for-move by the
+Python exhaustive oracle.  Large graphs use a timing-criticality-ordered native
+sweep: each cluster chooses its globally best legal target under the current
+proxy, then updates only its incident indexes.  Once direct moves converge,
+PATRON v5 searches a bounded pair neighborhood inspired by block-pair flow
+refinement.  A critical cluster and a low-exposure donor in the target block
+exchange partitions atomically; the final two-block resource vector, topology,
+timing paths, and TDM domains are evaluated together, so no capacity-illegal
+intermediate assignment is created.  This avoids pretending that an
 `O(moves * nodes * targets)` Python/global scan is a scalable production
 algorithm.  Actual Phase 4/5 scoring remains the promotion authority for both
 modes.
@@ -209,8 +217,9 @@ containing an incident net and every current path whose delay changes when a
 domain crosses a TDM-ratio threshold.  This also corrects the v1 scalable
 proxy's omission of TDM wait from its path objective.
 
-Compact mode remains move-for-move identical to the independent exhaustive
-Python oracle.  Scalable mode is checked by a separate critical-multipass
+Compact mode remains step-for-step identical to the independent exhaustive
+Python oracle, including atomic exchanges.  Scalable mode is checked by a
+separate critical-pairflow
 replay on reduced graphs and by a near-linear certificate checker on large
 graphs.  A capacity-release fixture proves that a cluster rejected early in
 one pass is reconsidered after a later move frees capacity.
@@ -219,14 +228,21 @@ while a remote sink on the same net receives its concrete routed delay; the
 legacy endpoint-free copy of that fixture deliberately retains the old
 worst-fanout charge.
 
-The v4 success gate is stricter than the original branch gate: on the same
+The v5 success gate is stricter than the original branch gate: on the same
 canonical DLA/case6/seed-1 ancestor it must improve both complete-global Phase
 7 WNS and TNS relative to the already improved v1 values of
 `-82.4981025395 ns` and `-324,776.89798473305 ns`.  Phase 3 proxy improvements
 alone do not satisfy this gate.  Endpoint-exact v2 failed that gate because
 its complete-global WNS regressed despite a substantial TNS improvement;
 fanout-only v3 was rejected before physical execution after its frozen Phase 3
-diagnostic preserved the original proxy WNS and worsened proxy TNS.
+diagnostic preserved the original proxy WNS and worsened proxy TNS.  V4's
+second fanout-aware sweep added 256 moves but worsened the independently
+recomputed original negative-slack objective further to
+`3,855.7736748538337`; it was therefore also rejected before Phase 7.  V5
+sets the fanout surrogate scale to zero and permits only strict improvements
+under the accepted original timing/TDM objective.  Its atomic exchange is the
+smallest deterministic neighborhood that directly addresses the observed
+capacity cork without introducing an illegal intermediate assignment.
 
 ## Exact Phase 4/5 promotion
 
@@ -251,14 +267,14 @@ Phase 4/5 logic into an approximate partitioner.
 
 Implemented artifacts are versioned and hash-bound:
 
-- `partition-pressure-model/v4`: TimingPathDB paths, structured launch/capture
+- `partition-pressure-model/v5`: TimingPathDB paths, structured launch/capture
   clusters when available, explicit exact/fallback transition semantics,
   predicted route/domain costs, a source-derived logarithmic remote-sink
   fanout surrogate, immutable constraints, and source hashes;
-- `partition-pressure-trace/v4`: every selected move, raw and
+- `partition-pressure-trace/v5`: every selected move or atomic exchange, raw and
   ranked objective deltas, feasibility certificate, best prefix, and final
   assignment hash;
-- `partition-pressure-report/v4`: the selected native provider, sealed model
+- `partition-pressure-report/v5`: the selected native provider, sealed model
   and trace, final assignment, and independent validation summary;
 - the existing checked cross-stage report records the frozen seed candidate,
   exact Phase 4/5 score, rejection reason, and selected candidate;

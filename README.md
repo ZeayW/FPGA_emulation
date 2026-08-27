@@ -1136,24 +1136,33 @@ EmuIR, normalized Phase 3 clusters/constraints, TimingPathDB, BoardDB route
 constraints, and initial assignment.  The emitted source-bound model and move
 trace independently reconstruct target-specific directed-link pressure,
 predicted TDM ratio, ordered timing-path delay, capacity/topology legality, and
-the globally best improving move.  PATRON v4 preserves structured timing-path
+the globally best improving step.  PATRON v5 preserves structured timing-path
 launch/capture clusters and reconstructs the concrete fanout branch used by
 each path by walking transported nets backwards from capture to launch.  A
 path without sufficient endpoint information is explicitly retained under a
-conservative worst-fanout fallback.  Each logical cross-FPGA transition also
-adds a deterministic `0.25 ns * log2(1 + remote_sink_clusters)` boundary-fanout
-surrogate.  This closes the v2 model gap in which a three-sink data net and a
-387-sink reset net received the same transition delay even though the latter
-created a materially worse routed physical endpoint.  Global directed-domain
-load still sets the TDM ratio, so endpoint precision and the fanout surrogate
-do not discard shared-link contention.
+conservative worst-fanout fallback.  Global directed-domain load still sets
+the TDM ratio.  The v3/v4 logarithmic boundary-fanout surrogate is retained as
+rejected research evidence but has scale zero in v5: the frozen canonical
+diagnostic showed that optimizing it could preserve proxy WNS while degrading
+the original TNS proxy, so fanout may not override the original timing/TDM
+objective.
 The source-built native PATRON engine matches that oracle move-for-move on
 compact graphs and switches above 256 clusters to an indexed,
 criticality-ordered best-target coordinate descent.  It performs up to four
 strictly improving sweeps, allowing capacity released late in one sweep to
 make an earlier cluster movable in the next; each candidate still updates only
 incident nets, paths, resource loads, and capacity domains, plus paths indexed
-under a domain whose TDM ratio changes.
+under a domain whose TDM ratio changes.  After direct moves converge, v5 adds
+a bounded deterministic block-pair refinement: up to 2,048 critical clusters
+are paired with up to 32 low-exposure donors per target partition, and an
+atomic exchange is accepted only when its final multidimensional capacities,
+fixed constraints, topology, original timing proxy, and TDM pressure are
+legal and lexicographically better.  This is a deliberately bounded
+flow-refinement analogue for the capacity "corking" that a single-vertex move
+cannot cross.  Compact mode exhaustively enumerates both direct moves and
+atomic swaps; the scaled independent replay checks the complete selected
+pair schedule, while the production checker reconstructs every transition
+and endpoint without rerunning the heuristic.
 `--partition-provider patron` is an explicit non-default research provider.
 Its initial result and frozen TritonPart fallback are both scored by checked
 Phase 4/5 before promotion, and large checkpoints independently rebuild the
@@ -1194,9 +1203,16 @@ Phase 3 model its original-objective WNS proxy stayed at `1.1606340893904894`
 while its negative-slack objective worsened from `3,232.26875` to
 `3,574.2201128740244`; the worst reset branch lost only one of 50 remote sink
 clusters.  No expensive physical run was launched for that failed candidate.
-Fanout-aware multipass v4 is a research candidate and is accepted only if a
-new cached canonical Phase 7 comparison improves both `-82.4981025395 ns` WNS
-and `-324,776.89798473305 ns` TNS; proxy-only improvement is insufficient.
+Fanout-aware multipass v4 was rejected before Phase 7.  Its second sweep found
+256 additional strict improvements under the surrogate (1,380 total steps),
+but independent reevaluation with the accepted original objective held the
+worst-slack proxy at `1.1606340893904894` while worsening the negative-slack
+objective to `3,855.7736748538337`, versus the accepted v1 endpoint's
+`3,232.26875`.  PATRON v5 therefore returns to the original objective and uses
+atomic block-pair exchange to escape capacity-local minima.  It is accepted
+only if a new cached canonical Phase 7 comparison improves both
+`-82.4981025395 ns` WNS and `-324,776.89798473305 ns` TNS; proxy-only
+improvement is insufficient.
 PATRON remains explicit and non-default until
 case7/case9 topology replication
 is complete; the primary branch acceptance requested here does not silently

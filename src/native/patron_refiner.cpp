@@ -72,6 +72,9 @@ struct Model {
   int min_used_parts = 1;
   int max_moves = 0;
   int max_sweeps = 1;
+  int swap_critical_limit = 0;
+  int swap_donor_limit = 0;
+  int max_swaps = 0;
   double positive_scale = 1.0;
   double negative_scale = 1.0;
   double max_period = 1.0;
@@ -133,6 +136,9 @@ struct ProxyDelta {
   int cluster = -1;
   int source = -1;
   int target = -1;
+  int partner = -1;
+  int partner_source = -1;
+  int partner_target = -1;
   Evaluation evaluation;
   std::map<int, ProxyNetState> nets;
   std::map<int, int> domain_delta;
@@ -207,7 +213,7 @@ Model read_model(const std::string& path) {
   require(stream.good(), "cannot open input");
   std::string token;
   stream >> token;
-  require(token == "EMUFLOW_PATRON_INPUT_V4", "invalid input header");
+  require(token == "EMUFLOW_PATRON_INPUT_V5", "invalid input header");
   Model model;
   stream >> token;
   require(token == "PARAM", "missing PARAM");
@@ -215,13 +221,17 @@ Model read_model(const std::string& path) {
       >> model.nets >> model.paths >> model.max_hops >> model.frame_slots
       >> model.ratio_quantum >> model.min_used_parts >> model.max_moves
       >> model.positive_scale >> model.negative_scale >> model.max_period
-      >> model.boundary_fanout_penalty_scale_ns >> model.max_sweeps;
+      >> model.boundary_fanout_penalty_scale_ns >> model.max_sweeps
+      >> model.swap_critical_limit >> model.swap_donor_limit
+      >> model.max_swaps;
   require(stream.good() && model.parts > 0 && model.clusters > 0
               && model.dimensions > 0 && model.domains > 0
               && model.nets > 0 && model.paths > 0
               && model.frame_slots > 0 && model.ratio_quantum > 0
               && model.min_used_parts > 0 && model.max_moves >= 0
               && model.max_sweeps > 0
+              && model.swap_critical_limit >= 0
+              && model.swap_donor_limit >= 0 && model.max_swaps >= 0
               && std::isfinite(model.boundary_fanout_penalty_scale_ns)
               && model.boundary_fanout_penalty_scale_ns >= 0.0,
           "invalid PARAM");
@@ -859,13 +869,15 @@ void erase_one(std::multiset<int>& values, int value) {
   values.erase(found);
 }
 
-ProxyDelta evaluate_proxy_move(
+ProxyDelta evaluate_proxy_changes(
     const Model& model,
     ProxyState& state,
     const std::vector<std::vector<int>>& cluster_nets,
     const std::vector<std::vector<int>>& net_paths,
     int cluster,
-    int target) {
+    int target,
+    int partner = -1,
+    int partner_target = -1) {
   ProxyDelta delta;
   delta.cluster = cluster;
   delta.source = state.assignment[cluster];
@@ -873,27 +885,75 @@ ProxyDelta evaluate_proxy_move(
   if (target == delta.source || model.cluster[cluster].fixed >= 0) {
     return delta;
   }
-  for (int dim = 0; dim < model.dimensions; ++dim) {
-    const double projected = state.resource_load[target][dim]
-                             + model.cluster[cluster].weight[dim];
-    if (projected > model.hard_capacity[target][dim] + 1.0e-9
-        || projected > model.balance_capacity[target][dim] + 1.0e-9) {
+  std::vector<std::tuple<int, int, int>> changes = {
+      {cluster, delta.source, target}};
+  if (partner >= 0) {
+    if (partner == cluster || partner_target < 0
+        || model.cluster[partner].fixed >= 0) {
       return delta;
     }
-  }
-  const int used = std::count_if(
-      state.part_counts.begin(), state.part_counts.end(),
-      [](int count) { return count > 0; });
-  if (state.part_counts[delta.source] == 1
-      && state.part_counts[target] > 0 && used <= model.min_used_parts) {
-    return delta;
+    delta.partner = partner;
+    delta.partner_source = state.assignment[partner];
+    delta.partner_target = partner_target;
+    if (delta.partner_source == delta.partner_target) {
+      return delta;
+    }
+    changes.emplace_back(
+        partner, delta.partner_source, delta.partner_target);
   }
 
-  state.assignment[cluster] = target;
-  for (int net : cluster_nets[cluster]) {
+  auto projected_load = state.resource_load;
+  auto projected_counts = state.part_counts;
+  for (const auto& change : changes) {
+    const int changed_cluster = std::get<0>(change);
+    const int source = std::get<1>(change);
+    const int changed_target = std::get<2>(change);
+    --projected_counts[source];
+    ++projected_counts[changed_target];
+    for (int dim = 0; dim < model.dimensions; ++dim) {
+      projected_load[source][dim]
+          -= model.cluster[changed_cluster].weight[dim];
+      projected_load[changed_target][dim]
+          += model.cluster[changed_cluster].weight[dim];
+    }
+  }
+  if (std::count_if(projected_counts.begin(), projected_counts.end(),
+                    [](int count) { return count > 0; })
+      < model.min_used_parts) {
+    return delta;
+  }
+  for (int part = 0; part < model.parts; ++part) {
+    if (projected_counts[part] < 0) {
+      return delta;
+    }
+    for (int dim = 0; dim < model.dimensions; ++dim) {
+      if (projected_load[part][dim]
+              > model.hard_capacity[part][dim] + 1.0e-9
+          || projected_load[part][dim]
+                 > model.balance_capacity[part][dim] + 1.0e-9) {
+        return delta;
+      }
+    }
+  }
+
+  for (const auto& change : changes) {
+    state.assignment[std::get<0>(change)] = std::get<2>(change);
+  }
+  const auto restore_assignment = [&]() {
+    for (const auto& change : changes) {
+      state.assignment[std::get<0>(change)] = std::get<1>(change);
+    }
+  };
+  std::set<int> affected_nets;
+  for (const auto& change : changes) {
+    const int changed_cluster = std::get<0>(change);
+    affected_nets.insert(cluster_nets[changed_cluster].begin(),
+                         cluster_nets[changed_cluster].end());
+  }
+  for (int net : affected_nets) {
     ProxyNetState replacement = build_proxy_net(model, state.assignment, net);
     if (!replacement.feasible) {
-      state.assignment[cluster] = delta.source;
+      restore_assignment();
       return delta;
     }
     delta.nets.emplace(net, std::move(replacement));
@@ -942,7 +1002,7 @@ ProxyDelta evaluate_proxy_move(
         build_proxy_path(
             model, state, delta.nets, projected_ratios, path));
   }
-  state.assignment[cluster] = delta.source;
+  restore_assignment();
 
   double candidate_negative = state.total_negative;
   long long candidate_negative_paths = state.negative_paths;
@@ -1020,17 +1080,65 @@ ProxyDelta evaluate_proxy_move(
   return delta;
 }
 
+ProxyDelta evaluate_proxy_move(
+    const Model& model,
+    ProxyState& state,
+    const std::vector<std::vector<int>>& cluster_nets,
+    const std::vector<std::vector<int>>& net_paths,
+    int cluster,
+    int target) {
+  return evaluate_proxy_changes(
+      model, state, cluster_nets, net_paths, cluster, target);
+}
+
+ProxyDelta evaluate_proxy_swap(
+    const Model& model,
+    ProxyState& state,
+    const std::vector<std::vector<int>>& cluster_nets,
+    const std::vector<std::vector<int>>& net_paths,
+    int cluster,
+    int partner) {
+  ProxyDelta invalid;
+  if (cluster == partner) {
+    return invalid;
+  }
+  const int source = state.assignment[cluster];
+  const int partner_source = state.assignment[partner];
+  if (source == partner_source) {
+    return invalid;
+  }
+  return evaluate_proxy_changes(model,
+                                state,
+                                cluster_nets,
+                                net_paths,
+                                cluster,
+                                partner_source,
+                                partner,
+                                source);
+}
+
 void apply_proxy_delta(const Model& model,
                        ProxyState& state,
                        const ProxyDelta& delta) {
-  for (int dim = 0; dim < model.dimensions; ++dim) {
-    const double weight = model.cluster[delta.cluster].weight[dim];
-    state.resource_load[delta.source][dim] -= weight;
-    state.resource_load[delta.target][dim] += weight;
+  std::vector<std::tuple<int, int, int>> changes = {
+      {delta.cluster, delta.source, delta.target}};
+  if (delta.partner >= 0) {
+    changes.emplace_back(
+        delta.partner, delta.partner_source, delta.partner_target);
   }
-  --state.part_counts[delta.source];
-  ++state.part_counts[delta.target];
-  state.assignment[delta.cluster] = delta.target;
+  for (const auto& change : changes) {
+    const int cluster = std::get<0>(change);
+    const int source = std::get<1>(change);
+    const int target = std::get<2>(change);
+    for (int dim = 0; dim < model.dimensions; ++dim) {
+      const double weight = model.cluster[cluster].weight[dim];
+      state.resource_load[source][dim] -= weight;
+      state.resource_load[target][dim] += weight;
+    }
+    --state.part_counts[source];
+    ++state.part_counts[target];
+    state.assignment[cluster] = target;
+  }
   for (const auto& item : delta.nets) {
     state.hops += item.second.hops - state.net[item.first].hops;
     state.cuts += item.second.cuts - state.net[item.first].cuts;
@@ -1082,10 +1190,14 @@ void write_vector(std::ostream& stream,
 
 struct NativeMove {
   int index = 0;
+  int phase = 0;
   int sweep = 0;
   int cluster = -1;
   int source = -1;
   int target = -1;
+  int partner = -1;
+  int partner_source = -1;
+  int partner_target = -1;
   Evaluation before;
   Evaluation after;
 };
@@ -1098,15 +1210,18 @@ void write_output(const std::string& output_path,
                   const std::vector<int>& assignment) {
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
-  output << "EMUFLOW_PATRON_OUTPUT_V4\n";
+  output << "EMUFLOW_PATRON_OUTPUT_V5\n";
   output << "MODE " << mode << '\n';
   output << "INITIAL";
   write_vector(output, initial.objective);
   output << '\n';
   for (const NativeMove& move : moves) {
-    output << "MOVE " << move.index << ' ' << move.sweep << ' '
+    output << "STEP " << move.index << ' ' << move.phase << ' '
+           << move.sweep << ' '
            << move.cluster << ' '
-           << move.source << ' ' << move.target;
+           << move.source << ' ' << move.target << ' '
+           << move.partner << ' ' << move.partner_source << ' '
+           << move.partner_target;
     write_vector(output, move.before.objective);
     write_vector(output, move.after.objective);
     write_vector(output, move.after.ranked);
@@ -1133,8 +1248,12 @@ void run_exact(const Model& model, const std::string& output_path) {
   std::vector<NativeMove> moves;
   while (static_cast<int>(moves.size()) < model.max_moves) {
     bool found = false;
+    int best_phase = -1;
     int best_cluster = -1;
     int best_target = -1;
+    int best_partner = -1;
+    int best_partner_source = -1;
+    int best_partner_target = -1;
     Evaluation best;
     for (int cluster = 0; cluster < model.clusters; ++cluster) {
       if (model.cluster[cluster].fixed >= 0) {
@@ -1152,13 +1271,59 @@ void run_exact(const Model& model, const std::string& output_path) {
             || !less_ranked(candidate.ranked, current.ranked)) {
           continue;
         }
+        const auto identity = std::make_tuple(0, cluster, target, -1);
+        const auto best_identity = std::make_tuple(
+            best_phase, best_cluster, best_target, best_partner);
         if (!found || less_ranked(candidate.ranked, best.ranked)
             || (candidate.ranked == best.ranked
-                && std::tie(cluster, target)
-                       < std::tie(best_cluster, best_target))) {
+                && identity < best_identity)) {
           found = true;
+          best_phase = 0;
           best_cluster = cluster;
           best_target = target;
+          best_partner = -1;
+          best_partner_source = -1;
+          best_partner_target = -1;
+          best = std::move(candidate);
+        }
+      }
+    }
+    for (int cluster = 0; cluster < model.clusters; ++cluster) {
+      if (model.cluster[cluster].fixed >= 0) {
+        continue;
+      }
+      const int source = assignment[cluster];
+      for (int partner = cluster + 1; partner < model.clusters; ++partner) {
+        if (model.cluster[partner].fixed >= 0) {
+          continue;
+        }
+        const int partner_source = assignment[partner];
+        if (source == partner_source) {
+          continue;
+        }
+        assignment[cluster] = partner_source;
+        assignment[partner] = source;
+        Evaluation candidate = evaluate(model, assignment);
+        assignment[cluster] = source;
+        assignment[partner] = partner_source;
+        if (!candidate.feasible
+            || !less_ranked(candidate.ranked, current.ranked)) {
+          continue;
+        }
+        const auto identity = std::make_tuple(
+            1, cluster, partner_source, partner);
+        const auto best_identity = std::make_tuple(
+            best_phase, best_cluster, best_target, best_partner);
+        if (!found || less_ranked(candidate.ranked, best.ranked)
+            || (candidate.ranked == best.ranked
+                && identity < best_identity)) {
+          found = true;
+          best_phase = 1;
+          best_cluster = cluster;
+          best_target = partner_source;
+          best_partner = partner;
+          best_partner_source = partner_source;
+          best_partner_target = source;
           best = std::move(candidate);
         }
       }
@@ -1167,19 +1332,27 @@ void run_exact(const Model& model, const std::string& output_path) {
       break;
     }
     const int source = assignment[best_cluster];
-    moves.push_back(NativeMove{static_cast<int>(moves.size()),
-                               0,
-                               best_cluster,
-                               source,
-                               best_target,
-                               current,
-                               best});
+    moves.push_back(NativeMove{
+        static_cast<int>(moves.size()),
+        best_phase,
+        0,
+        best_cluster,
+        source,
+        best_target,
+        best_partner,
+        best_partner_source,
+        best_partner_target,
+        current,
+        best});
     assignment[best_cluster] = best_target;
+    if (best_partner >= 0) {
+      assignment[best_partner] = best_partner_target;
+    }
     current = best;
   }
 
   write_output(output_path,
-               "endpoint-exact-global-best-v4",
+               "endpoint-exact-global-best-v5",
                initial,
                current,
                moves,
@@ -1246,22 +1419,107 @@ void run_scalable(const Model& model, const std::string& output_path) {
       }
       const Evaluation before = state.evaluation;
       apply_proxy_delta(model, state, best);
-      moves.push_back(NativeMove{static_cast<int>(moves.size()),
-                                 sweep,
-                                 cluster,
-                                 best.source,
-                                 best.target,
-                                 before,
-                                 state.evaluation});
+      moves.push_back(NativeMove{
+          static_cast<int>(moves.size()),
+          0,
+          sweep,
+          cluster,
+          best.source,
+          best.target,
+          -1,
+          -1,
+          -1,
+          before,
+          state.evaluation});
     }
     if (static_cast<int>(moves.size()) >= model.max_moves
         || moves.size() == sweep_start) {
       break;
     }
   }
+
+  std::vector<int> donor_order(model.clusters);
+  std::iota(donor_order.begin(), donor_order.end(), 0);
+  std::sort(donor_order.begin(), donor_order.end(), [&](int left, int right) {
+    return std::tie(exposure[left], left)
+           < std::tie(exposure[right], right);
+  });
+  std::vector<std::vector<int>> donors(model.parts);
+  for (int cluster : donor_order) {
+    if (model.cluster[cluster].fixed < 0) {
+      donors[state.assignment[cluster]].push_back(cluster);
+    }
+  }
+
+  int accepted_swaps = 0;
+  const int critical_limit = std::min(
+      model.swap_critical_limit, static_cast<int>(order.size()));
+  for (int order_index = 0;
+       order_index < critical_limit
+           && accepted_swaps < model.max_swaps
+           && static_cast<int>(moves.size()) < model.max_moves;
+       ++order_index) {
+    const int cluster = order[order_index];
+    if (model.cluster[cluster].fixed >= 0) {
+      continue;
+    }
+    const int source = state.assignment[cluster];
+    bool found = false;
+    ProxyDelta best;
+    for (int target = 0; target < model.parts; ++target) {
+      if (target == source) {
+        continue;
+      }
+      int considered = 0;
+      for (int partner : donors[target]) {
+        if (considered >= model.swap_donor_limit) {
+          break;
+        }
+        if (partner == cluster || state.assignment[partner] != target
+            || model.cluster[partner].fixed >= 0) {
+          continue;
+        }
+        ++considered;
+        ProxyDelta candidate = evaluate_proxy_swap(
+            model, state, cluster_nets, net_paths, cluster, partner);
+        if (!candidate.feasible
+            || !less_ranked(candidate.evaluation.ranked,
+                            state.evaluation.ranked)) {
+          continue;
+        }
+        if (!found
+            || less_ranked(candidate.evaluation.ranked,
+                           best.evaluation.ranked)
+            || (candidate.evaluation.ranked == best.evaluation.ranked
+                && std::tie(candidate.target, candidate.partner)
+                       < std::tie(best.target, best.partner))) {
+          found = true;
+          best = std::move(candidate);
+        }
+      }
+    }
+    if (!found) {
+      continue;
+    }
+    const Evaluation before = state.evaluation;
+    apply_proxy_delta(model, state, best);
+    moves.push_back(NativeMove{
+        static_cast<int>(moves.size()),
+        1,
+        0,
+        cluster,
+        best.source,
+        best.target,
+        best.partner,
+        best.partner_source,
+        best.partner_target,
+        before,
+        state.evaluation});
+    ++accepted_swaps;
+  }
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
-               "endpoint-exact-critical-multipass-v4",
+               "endpoint-exact-critical-pairflow-v5",
                initial,
                endpoint.evaluation,
                moves,

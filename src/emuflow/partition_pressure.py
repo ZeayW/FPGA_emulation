@@ -38,14 +38,17 @@ from .routing import (
 from .sta import _normalized_slack, _validate_database_normalization
 
 
-PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v4"
-PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v4"
-PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v4"
-PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v4"
-PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v4"
+PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v5"
+PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v5"
+PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v5"
+PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v5"
+PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v5"
 GAIN_QUANTUM = 1.0e-9
-BOUNDARY_FANOUT_PENALTY_SCALE_NS = 0.25
+BOUNDARY_FANOUT_PENALTY_SCALE_NS = 0.0
 MAX_SCALABLE_SWEEPS = 4
+SCALABLE_SWAP_CRITICAL_LIMIT = 2048
+SCALABLE_SWAP_DONOR_LIMIT = 32
+MAX_SCALABLE_SWAPS = 64
 
 
 def _canonical_digest(value: Any) -> str:
@@ -308,6 +311,9 @@ def _reconstruct_partition_pressure_model(
                 BOUNDARY_FANOUT_PENALTY_SCALE_NS
             ),
             "max_scalable_sweeps": MAX_SCALABLE_SWEEPS,
+            "scalable_swap_critical_limit": SCALABLE_SWAP_CRITICAL_LIMIT,
+            "scalable_swap_donor_limit": SCALABLE_SWAP_DONOR_LIMIT,
+            "max_scalable_swaps": MAX_SCALABLE_SWAPS,
             "max_route_hops": route_constraints.get("max_route_hops"),
             "frame_slots": route_constraints["frame_slots"],
             "tdm_ratio_quantum": route_constraints["tdm_ratio_quantum"],
@@ -836,19 +842,70 @@ def refine_partition_pressure_exhaustive(
                 ranked = _ranked_key(evaluation)
                 if ranked >= incumbent_key:
                     continue
-                candidates.append((ranked, cluster, target, evaluation))
+                candidates.append(
+                    (ranked, 0, cluster, target, None, evaluation)
+                )
+        movable = [cluster for cluster in sorted(current) if fixed[cluster] is None]
+        for left_index, cluster in enumerate(movable):
+            source = current[cluster]
+            for partner in movable[left_index + 1 :]:
+                partner_source = current[partner]
+                if source == partner_source:
+                    continue
+                trial = dict(current)
+                trial[cluster] = partner_source
+                trial[partner] = source
+                try:
+                    evaluation = evaluate_partition_pressure(
+                        ir,
+                        platform,
+                        clusters_artifact,
+                        constraints,
+                        route_constraints,
+                        model,
+                        trial,
+                    )
+                except ValidationError:
+                    continue
+                ranked = _ranked_key(evaluation)
+                if ranked >= incumbent_key:
+                    continue
+                candidates.append(
+                    (
+                        ranked,
+                        1,
+                        cluster,
+                        partner_source,
+                        partner,
+                        evaluation,
+                    )
+                )
         if not candidates:
             break
-        ranked, cluster, target, selected = min(
-            candidates, key=lambda item: (item[0], item[1], item[2])
+        ranked, phase, cluster, target, partner, selected = min(
+            candidates,
+            key=lambda item: (
+                item[0],
+                item[1],
+                item[2],
+                item[3],
+                "" if item[4] is None else item[4],
+            ),
         )
         source = current[cluster]
+        partner_source = None if partner is None else current[partner]
         moves.append(
             {
                 "index": len(moves),
+                "kind": "move" if phase == 0 else "swap",
+                "phase": phase,
+                "sweep": 0,
                 "cluster": cluster,
                 "source": source,
                 "target": target,
+                "partner": partner,
+                "partner_source": partner_source,
+                "partner_target": None if partner is None else source,
                 "before_objective_key": current_evaluation["metrics"][
                     "objective_key"
                 ],
@@ -857,6 +914,8 @@ def refine_partition_pressure_exhaustive(
             }
         )
         current[cluster] = target
+        if partner is not None:
+            current[partner] = source
         current_evaluation = selected
 
     final_assignment = build_partition_assignment(
@@ -1068,7 +1127,7 @@ def _write_patron_native_input(
     max_hops = model["configuration"]["max_route_hops"]
 
     lines = [
-        "EMUFLOW_PATRON_INPUT_V4",
+        "EMUFLOW_PATRON_INPUT_V5",
         (
             f"PARAM {len(parts)} {len(clusters)} {len(dimensions)} "
             f"{len(domains)} {len(nets)} {len(model['paths'])} "
@@ -1080,7 +1139,10 @@ def _write_patron_native_input(
             f"{model['normalization']['negative_slack_scale_ns']:.17g} "
             f"{model['normalization']['max_clock_period_ns']:.17g} "
             f"{model['configuration']['boundary_fanout_penalty_scale_ns']:.17g} "
-            f"{model['configuration']['max_scalable_sweeps']}"
+            f"{model['configuration']['max_scalable_sweeps']} "
+            f"{model['configuration']['scalable_swap_critical_limit']} "
+            f"{model['configuration']['scalable_swap_donor_limit']} "
+            f"{model['configuration']['max_scalable_swaps']}"
         ),
     ]
     total_cells = sum(cluster["cells"] for cluster in clusters)
@@ -1240,7 +1302,7 @@ def _parse_patron_native_output(
     str,
 ]:
     lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_PATRON_OUTPUT_V4":
+    if not lines or lines[0] != "EMUFLOW_PATRON_OUTPUT_V5":
         raise ValidationError("native PATRON output header is invalid")
     moves = []
     assignment: Dict[str, str] = {}
@@ -1261,20 +1323,47 @@ def _parse_patron_native_output(
             initial_metrics = _metrics_from_objective(
                 [float(item) for item in fields[1:]]
             )
-        elif fields[0] == "MOVE" and len(fields) == 30:
-            index, sweep, cluster, source, target = map(int, fields[1:6])
+        elif fields[0] == "STEP" and len(fields) == 34:
+            (
+                index,
+                phase,
+                sweep,
+                cluster,
+                source,
+                target,
+                partner,
+                partner_source,
+                partner_target,
+            ) = map(int, fields[1:10])
             if index != len(moves):
                 raise ValidationError("native PATRON move indexes are invalid")
-            before = [float(item) for item in fields[6:14]]
-            after = [float(item) for item in fields[14:22]]
-            ranked = [int(item) for item in fields[22:30]]
+            if phase not in (0, 1) or (phase == 0) != (partner < 0):
+                raise ValidationError("native PATRON step phase is invalid")
+            before = [float(item) for item in fields[10:18]]
+            after = [float(item) for item in fields[18:26]]
+            ranked = [int(item) for item in fields[26:34]]
             moves.append(
                 {
                     "index": index,
+                    "kind": "move" if phase == 0 else "swap",
+                    "phase": phase,
                     "sweep": sweep,
                     "cluster": indexes["clusters"][cluster],
                     "source": indexes["parts"][source],
                     "target": indexes["parts"][target],
+                    "partner": (
+                        None if partner < 0 else indexes["clusters"][partner]
+                    ),
+                    "partner_source": (
+                        None
+                        if partner_source < 0
+                        else indexes["parts"][partner_source]
+                    ),
+                    "partner_target": (
+                        None
+                        if partner_target < 0
+                        else indexes["parts"][partner_target]
+                    ),
                     "before_objective_key": before,
                     "after_objective_key": after,
                     "ranked_objective_key": ranked,
@@ -1381,6 +1470,15 @@ def run_partition_pressure_native(
             "max_scalable_sweeps": model["configuration"][
                 "max_scalable_sweeps"
             ],
+            "scalable_swap_critical_limit": model["configuration"][
+                "scalable_swap_critical_limit"
+            ],
+            "scalable_swap_donor_limit": model["configuration"][
+                "scalable_swap_donor_limit"
+            ],
+            "max_scalable_swaps": model["configuration"][
+                "max_scalable_swaps"
+            ],
         },
         "model_sha256": _canonical_digest(model),
         "initial_assignment_sha256": _canonical_digest(initial_assignment),
@@ -1425,11 +1523,18 @@ def validate_partition_pressure_native_against_exhaustive(
     for native, expected in zip(
         native_trace["moves"], expected_trace["moves"]
     ):
-        if native.get("sweep") != 0:
-            raise ValidationError(
-                f"native PATRON move {native['index']} sweep mismatch"
-            )
-        for field in ("index", "cluster", "source", "target"):
+        for field in (
+            "index",
+            "kind",
+            "phase",
+            "sweep",
+            "cluster",
+            "source",
+            "target",
+            "partner",
+            "partner_source",
+            "partner_target",
+        ):
             if native[field] != expected[field]:
                 raise ValidationError(
                     f"native PATRON move {native['index']} {field} mismatch"
@@ -1507,7 +1612,7 @@ def validate_partition_pressure_native_bundle(
     ):
         raise ValidationError("native PATRON final assignment seal is invalid")
     mode = native_trace.get("mode")
-    if mode == "endpoint-exact-global-best-v4":
+    if mode == "endpoint-exact-global-best-v5":
         exact = validate_partition_pressure_native_against_exhaustive(
             ir,
             platform,
@@ -1526,13 +1631,22 @@ def validate_partition_pressure_native_bundle(
             "model_validation": model_validation,
             **exact,
         }
-    if mode != "endpoint-exact-critical-multipass-v4":
+    if mode != "endpoint-exact-critical-pairflow-v5":
         raise ValidationError("native PATRON trace mode is invalid")
 
     moves = native_trace.get("moves")
     max_moves = native_trace.get("configuration", {}).get("max_moves")
     max_sweeps = native_trace.get("configuration", {}).get(
         "max_scalable_sweeps"
+    )
+    swap_critical_limit = native_trace.get("configuration", {}).get(
+        "scalable_swap_critical_limit"
+    )
+    swap_donor_limit = native_trace.get("configuration", {}).get(
+        "scalable_swap_donor_limit"
+    )
+    max_swaps = native_trace.get("configuration", {}).get(
+        "max_scalable_swaps"
     )
     if (
         not isinstance(moves, list)
@@ -1545,6 +1659,20 @@ def validate_partition_pressure_native_bundle(
         or max_sweeps <= 0
         or max_sweeps
         != model["configuration"].get("max_scalable_sweeps")
+        or isinstance(swap_critical_limit, bool)
+        or not isinstance(swap_critical_limit, int)
+        or swap_critical_limit < 0
+        or swap_critical_limit
+        != model["configuration"].get("scalable_swap_critical_limit")
+        or isinstance(swap_donor_limit, bool)
+        or not isinstance(swap_donor_limit, int)
+        or swap_donor_limit < 0
+        or swap_donor_limit
+        != model["configuration"].get("scalable_swap_donor_limit")
+        or isinstance(max_swaps, bool)
+        or not isinstance(max_swaps, int)
+        or max_swaps < 0
+        or max_swaps != model["configuration"].get("max_scalable_swaps")
     ):
         raise ValidationError("native PATRON scalable trace bounds are invalid")
     cluster_ids = {
@@ -1583,19 +1711,40 @@ def validate_partition_pressure_native_bundle(
     current = dict(initial_assignment["cluster_assignment"])
     previous_sweep = -1
     previous_sweep_index = -1
+    previous_phase = 0
+    previous_swap_index = -1
+    swap_count = 0
     previous_after = None
     maximum_chain_error = 0.0
     for index, move in enumerate(moves):
         if not isinstance(move, dict) or move.get("index") != index:
             raise ValidationError("native PATRON move index is invalid")
         cluster = move.get("cluster")
+        phase = move.get("phase")
+        kind = move.get("kind")
         sweep = move.get("sweep")
         source = move.get("source")
         target = move.get("target")
-        if (
-            isinstance(sweep, bool)
+        partner = move.get("partner")
+        partner_source = move.get("partner_source")
+        partner_target = move.get("partner_target")
+        common_invalid = (
+            isinstance(phase, bool)
+            or not isinstance(phase, int)
+            or phase not in (0, 1)
+            or kind != ("move" if phase == 0 else "swap")
+            or isinstance(sweep, bool)
             or not isinstance(sweep, int)
-            or sweep < 0
+            or cluster not in cluster_ids
+            or source not in fpga_ids
+            or target not in fpga_ids
+            or source == target
+            or fixed[cluster] is not None
+            or current.get(cluster) != source
+            or phase < previous_phase
+        )
+        direct_invalid = phase == 0 and not common_invalid and (
+            sweep < 0
             or sweep >= max_sweeps
             or sweep > previous_sweep + 1
             or (previous_sweep < 0 and sweep != 0)
@@ -1603,13 +1752,26 @@ def validate_partition_pressure_native_bundle(
                 sweep == previous_sweep
                 and sweep_index.get(cluster, -1) <= previous_sweep_index
             )
-            or cluster not in cluster_ids
-            or source not in fpga_ids
-            or target not in fpga_ids
-            or source == target
-            or fixed[cluster] is not None
-            or current.get(cluster) != source
-        ):
+            or partner is not None
+            or partner_source is not None
+            or partner_target is not None
+        )
+        swap_invalid = phase == 1 and not common_invalid and (
+            sweep != 0
+            or partner not in cluster_ids
+            or partner == cluster
+            or partner_source not in fpga_ids
+            or partner_target not in fpga_ids
+            or fixed.get(partner) is not None
+            or current.get(partner) != partner_source
+            or target != partner_source
+            or partner_target != source
+            or sweep_index.get(cluster, swap_critical_limit)
+            >= swap_critical_limit
+            or sweep_index.get(cluster, -1) <= previous_swap_index
+            or swap_count >= max_swaps
+        )
+        if common_invalid or direct_invalid or swap_invalid:
             raise ValidationError(
                 f"native PATRON move {index} transition is invalid"
             )
@@ -1662,11 +1824,17 @@ def validate_partition_pressure_native_bundle(
                 ),
             )
         current[cluster] = target
+        if phase == 1:
+            current[partner] = partner_target
+            previous_swap_index = sweep_index[cluster]
+            swap_count += 1
         previous_after = after
-        if sweep != previous_sweep:
-            previous_sweep_index = -1
-        previous_sweep = sweep
-        previous_sweep_index = sweep_index[cluster]
+        if phase == 0:
+            if sweep != previous_sweep:
+                previous_sweep_index = -1
+            previous_sweep = sweep
+            previous_sweep_index = sweep_index[cluster]
+        previous_phase = phase
     if current != native_assignment["cluster_assignment"]:
         raise ValidationError("native PATRON move chain assignment mismatch")
     if maximum_chain_error > 1.0e-9:
@@ -1765,7 +1933,7 @@ def validate_partition_pressure_scalable_trace(
     instances.  Large production bundles use the indexed certificate checker.
     """
 
-    if native_trace.get("mode") != "endpoint-exact-critical-multipass-v4":
+    if native_trace.get("mode") != "endpoint-exact-critical-pairflow-v5":
         raise ValidationError("native PATRON scalable trace mode is invalid")
     max_moves = native_trace.get("configuration", {}).get("max_moves")
     if isinstance(max_moves, bool) or not isinstance(max_moves, int) or max_moves < 0:
@@ -1773,12 +1941,35 @@ def validate_partition_pressure_scalable_trace(
     max_sweeps = native_trace.get("configuration", {}).get(
         "max_scalable_sweeps"
     )
+    swap_critical_limit = native_trace.get("configuration", {}).get(
+        "scalable_swap_critical_limit"
+    )
+    swap_donor_limit = native_trace.get("configuration", {}).get(
+        "scalable_swap_donor_limit"
+    )
+    max_swaps = native_trace.get("configuration", {}).get(
+        "max_scalable_swaps"
+    )
     if (
         isinstance(max_sweeps, bool)
         or not isinstance(max_sweeps, int)
         or max_sweeps <= 0
         or max_sweeps
         != model["configuration"].get("max_scalable_sweeps")
+        or isinstance(swap_critical_limit, bool)
+        or not isinstance(swap_critical_limit, int)
+        or swap_critical_limit < 0
+        or swap_critical_limit
+        != model["configuration"].get("scalable_swap_critical_limit")
+        or isinstance(swap_donor_limit, bool)
+        or not isinstance(swap_donor_limit, int)
+        or swap_donor_limit < 0
+        or swap_donor_limit
+        != model["configuration"].get("scalable_swap_donor_limit")
+        or isinstance(max_swaps, bool)
+        or not isinstance(max_swaps, int)
+        or max_swaps < 0
+        or max_swaps != model["configuration"].get("max_scalable_swaps")
     ):
         raise ValidationError("native PATRON scalable sweep limit is invalid")
     clusters = sorted(record["cluster"] for record in model["clusters"])
@@ -1806,6 +1997,10 @@ def validate_partition_pressure_scalable_trace(
         for cluster in touched:
             exposure[cluster] += weight
     order = sorted(clusters, key=lambda cluster: (-exposure[cluster], cluster))
+    fixed = {
+        record["cluster"]: record["fixed_fpga"]
+        for record in model["clusters"]
+    }
     current = dict(initial_assignment["cluster_assignment"])
     current_evaluation = evaluate_partition_pressure(
         ir,
@@ -1862,10 +2057,15 @@ def validate_partition_pressure_scalable_trace(
             actual = moves[move_index]
             expected_identity = {
                 "index": move_index,
+                "kind": "move",
+                "phase": 0,
                 "sweep": _sweep,
                 "cluster": cluster,
                 "source": source,
                 "target": target,
+                "partner": None,
+                "partner_source": None,
+                "partner_target": None,
             }
             for field, expected in expected_identity.items():
                 if actual.get(field) != expected:
@@ -1899,6 +2099,111 @@ def validate_partition_pressure_scalable_trace(
             move_index += 1
         if move_index >= max_moves or move_index == sweep_start:
             break
+
+    donors = {part: [] for part in parts}
+    for cluster in sorted(clusters, key=lambda item: (exposure[item], item)):
+        if fixed[cluster] is None:
+            donors[current[cluster]].append(cluster)
+    accepted_swaps = 0
+    for cluster in order[:swap_critical_limit]:
+        if (
+            accepted_swaps >= max_swaps
+            or move_index >= max_moves
+        ):
+            break
+        if fixed[cluster] is not None:
+            continue
+        source = current[cluster]
+        candidates = []
+        for target in parts:
+            if target == source:
+                continue
+            considered = 0
+            for partner in donors[target]:
+                if considered >= swap_donor_limit:
+                    break
+                if (
+                    partner == cluster
+                    or current[partner] != target
+                    or fixed[partner] is not None
+                ):
+                    continue
+                considered += 1
+                trial = dict(current)
+                trial[cluster] = target
+                trial[partner] = source
+                try:
+                    evaluation = evaluate_partition_pressure(
+                        ir,
+                        platform,
+                        clusters_artifact,
+                        constraints,
+                        route_constraints,
+                        model,
+                        trial,
+                        include_tdm_wait=True,
+                    )
+                except ValidationError:
+                    continue
+                ranked = _ranked_key(evaluation)
+                if ranked < _ranked_key(current_evaluation):
+                    candidates.append(
+                        (ranked, target, partner, evaluation)
+                    )
+        if not candidates:
+            continue
+        ranked, target, partner, selected = min(
+            candidates, key=lambda item: (item[0], item[1], item[2])
+        )
+        if move_index >= len(moves):
+            raise ValidationError(
+                "native PATRON scalable trace omitted a swap"
+            )
+        actual = moves[move_index]
+        expected_identity = {
+            "index": move_index,
+            "kind": "swap",
+            "phase": 1,
+            "sweep": 0,
+            "cluster": cluster,
+            "source": source,
+            "target": target,
+            "partner": partner,
+            "partner_source": target,
+            "partner_target": source,
+        }
+        for field, expected in expected_identity.items():
+            if actual.get(field) != expected:
+                raise ValidationError(
+                    f"native PATRON scalable swap {move_index} "
+                    f"{field} mismatch"
+                )
+        if actual.get("ranked_objective_key") != list(ranked):
+            raise ValidationError(
+                f"native PATRON scalable swap {move_index} rank mismatch"
+            )
+        for actual_key, expected_key in (
+            (
+                actual["before_objective_key"],
+                current_evaluation["metrics"]["objective_key"],
+            ),
+            (
+                actual["after_objective_key"],
+                selected["metrics"]["objective_key"],
+            ),
+        ):
+            maximum_error = max(
+                maximum_error,
+                max(
+                    abs(float(left) - float(right))
+                    for left, right in zip(actual_key, expected_key)
+                ),
+            )
+        current[cluster] = target
+        current[partner] = source
+        current_evaluation = selected
+        move_index += 1
+        accepted_swaps += 1
     if move_index != len(moves):
         raise ValidationError("native PATRON scalable trace has extra moves")
     if current != native_assignment.get("cluster_assignment"):
