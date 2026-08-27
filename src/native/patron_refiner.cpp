@@ -8,6 +8,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <queue>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -144,6 +145,111 @@ struct ProxyDelta {
   std::map<int, ProxyNetState> nets;
   std::map<int, int> domain_delta;
   std::map<int, ProxyPathState> paths;
+};
+
+struct FlowEdge {
+  int target = -1;
+  int reverse = -1;
+  long long capacity = 0;
+};
+
+void require(bool condition, const std::string& message);
+
+class DinicFlow {
+ public:
+  explicit DinicFlow(int nodes) : graph_(nodes), level_(nodes), next_(nodes) {}
+
+  void add_edge(int source, int target, long long capacity) {
+    require(source >= 0 && source < static_cast<int>(graph_.size())
+                && target >= 0 && target < static_cast<int>(graph_.size())
+                && capacity >= 0,
+            "invalid flow edge");
+    const int source_reverse = static_cast<int>(graph_[target].size());
+    const int target_reverse = static_cast<int>(graph_[source].size());
+    graph_[source].push_back(FlowEdge{target, source_reverse, capacity});
+    graph_[target].push_back(FlowEdge{source, target_reverse, 0});
+  }
+
+  long long maximum_flow(int source, int sink) {
+    long long flow = 0;
+    while (build_levels(source, sink)) {
+      std::fill(next_.begin(), next_.end(), 0);
+      while (true) {
+        const long long pushed = push(
+            source, sink, std::numeric_limits<long long>::max() / 4);
+        if (pushed == 0) {
+          break;
+        }
+        flow += pushed;
+      }
+    }
+    return flow;
+  }
+
+  std::vector<bool> source_reachable(int source) const {
+    std::vector<bool> reached(graph_.size(), false);
+    std::queue<int> work;
+    reached[source] = true;
+    work.push(source);
+    while (!work.empty()) {
+      const int node = work.front();
+      work.pop();
+      for (const FlowEdge& edge : graph_[node]) {
+        if (edge.capacity > 0 && !reached[edge.target]) {
+          reached[edge.target] = true;
+          work.push(edge.target);
+        }
+      }
+    }
+    return reached;
+  }
+
+ private:
+  bool build_levels(int source, int sink) {
+    std::fill(level_.begin(), level_.end(), -1);
+    std::queue<int> work;
+    level_[source] = 0;
+    work.push(source);
+    while (!work.empty()) {
+      const int node = work.front();
+      work.pop();
+      for (const FlowEdge& edge : graph_[node]) {
+        if (edge.capacity > 0 && level_[edge.target] < 0) {
+          level_[edge.target] = level_[node] + 1;
+          work.push(edge.target);
+        }
+      }
+    }
+    return level_[sink] >= 0;
+  }
+
+  long long push(int node, int sink, long long capacity) {
+    if (node == sink) {
+      return capacity;
+    }
+    for (int& index = next_[node];
+         index < static_cast<int>(graph_[node].size());
+         ++index) {
+      FlowEdge& edge = graph_[node][index];
+      if (edge.capacity <= 0
+          || level_[edge.target] != level_[node] + 1) {
+        continue;
+      }
+      const long long pushed = push(
+          edge.target, sink, std::min(capacity, edge.capacity));
+      if (pushed == 0) {
+        continue;
+      }
+      edge.capacity -= pushed;
+      graph_[edge.target][edge.reverse].capacity += pushed;
+      return pushed;
+    }
+    return 0;
+  }
+
+  std::vector<std::vector<FlowEdge>> graph_;
+  std::vector<int> level_;
+  std::vector<int> next_;
 };
 
 void require(bool condition, const std::string& message) {
@@ -857,6 +963,256 @@ std::vector<std::vector<int>> build_net_paths(const Model& model) {
     result[net].assign(sets[net].begin(), sets[net].end());
   }
   return result;
+}
+
+void diagnose_flow_corridors(
+    const Model& model,
+    const ProxyState& state,
+    const std::vector<std::vector<int>>& cluster_nets,
+    const std::vector<double>& exposure,
+    int cover_domain) {
+  int edge_left = -1;
+  int edge_right = -1;
+  for (int source = 0; source < model.parts && edge_left < 0; ++source) {
+    for (int sink = source + 1; sink < model.parts; ++sink) {
+      if (model.route[source][sink].reachable
+          && model.route[source][sink].arcs.size() == 1
+          && model.route[source][sink].arcs.front().domain == cover_domain) {
+        edge_left = source;
+        edge_right = sink;
+        break;
+      }
+    }
+  }
+  if (edge_left < 0) {
+    std::cerr << "PATRON_FLOW_CORRIDOR status=no-edge-endpoints\n";
+    return;
+  }
+  std::vector<bool> opposite_side(model.parts, false);
+  for (int part = 0; part < model.parts; ++part) {
+    const Route& route = model.route[edge_left][part];
+    opposite_side[part] = std::any_of(
+        route.arcs.begin(), route.arcs.end(), [&](const Arc& arc) {
+          return arc.domain == cover_domain;
+        });
+  }
+  require(!opposite_side[edge_left] && opposite_side[edge_right],
+          "flow corridor topology sides are inconsistent");
+
+  constexpr int kMaximumCorridorClusters = 50000;
+  constexpr int kCorridorDistance = 2;
+  for (int pair_target = 0; pair_target < model.parts; ++pair_target) {
+    if (!opposite_side[pair_target]) {
+      continue;
+    }
+    std::vector<std::vector<double>> remaining(
+        model.parts, std::vector<double>(model.dimensions, 0.0));
+    for (int dim = 0; dim < model.dimensions; ++dim) {
+      remaining[edge_left][dim] = std::max(
+          0.0,
+          std::min(model.hard_capacity[pair_target][dim],
+                   model.balance_capacity[pair_target][dim])
+              - state.resource_load[pair_target][dim]);
+      remaining[pair_target][dim] = std::max(
+          0.0,
+          std::min(model.hard_capacity[edge_left][dim],
+                   model.balance_capacity[edge_left][dim])
+              - state.resource_load[edge_left][dim]);
+    }
+
+    std::set<int> boundary_set;
+    for (int net = 0; net < model.nets; ++net) {
+      const auto domain = std::lower_bound(
+          state.net[net].domain_counts.begin(),
+          state.net[net].domain_counts.end(),
+          std::make_pair(cover_domain, std::numeric_limits<int>::min()));
+      if (domain == state.net[net].domain_counts.end()
+          || domain->first != cover_domain) {
+        continue;
+      }
+      for (int cluster : model.net[net].drivers) {
+        if (state.assignment[cluster] == edge_left
+            || state.assignment[cluster] == pair_target) {
+          boundary_set.insert(cluster);
+        }
+      }
+      for (int cluster : model.net[net].sinks) {
+        if (state.assignment[cluster] == edge_left
+            || state.assignment[cluster] == pair_target) {
+          boundary_set.insert(cluster);
+        }
+      }
+    }
+    std::vector<int> boundary(boundary_set.begin(), boundary_set.end());
+    std::sort(boundary.begin(), boundary.end(), [&](int left, int right) {
+      return std::tie(exposure[right], left)
+             < std::tie(exposure[left], right);
+    });
+
+    std::vector<int> distance(model.clusters, -1);
+    std::queue<int> work;
+    int corridor_count = 0;
+    int skipped_capacity = 0;
+    const auto try_add = [&](int cluster, int candidate_distance) {
+      if (distance[cluster] >= 0
+          || corridor_count >= kMaximumCorridorClusters
+          || model.cluster[cluster].fixed >= 0) {
+        return false;
+      }
+      const int source = state.assignment[cluster];
+      if (source != edge_left && source != pair_target) {
+        return false;
+      }
+      for (int dim = 0; dim < model.dimensions; ++dim) {
+        if (model.cluster[cluster].weight[dim]
+            > remaining[source][dim] + 1.0e-9) {
+          ++skipped_capacity;
+          return false;
+        }
+      }
+      for (int dim = 0; dim < model.dimensions; ++dim) {
+        remaining[source][dim] -= model.cluster[cluster].weight[dim];
+      }
+      distance[cluster] = candidate_distance;
+      work.push(cluster);
+      ++corridor_count;
+      return true;
+    };
+    for (int cluster : boundary) {
+      if (corridor_count >= kMaximumCorridorClusters) {
+        break;
+      }
+      try_add(cluster, 0);
+    }
+    while (!work.empty()) {
+      const int cluster = work.front();
+      work.pop();
+      if (distance[cluster] >= kCorridorDistance) {
+        continue;
+      }
+      std::set<int> neighbor_set;
+      for (int net : cluster_nets[cluster]) {
+        neighbor_set.insert(model.net[net].drivers.begin(),
+                            model.net[net].drivers.end());
+        neighbor_set.insert(model.net[net].sinks.begin(),
+                            model.net[net].sinks.end());
+      }
+      std::vector<int> neighbors(neighbor_set.begin(), neighbor_set.end());
+      std::sort(neighbors.begin(), neighbors.end(), [&](int left, int right) {
+        return std::tie(exposure[right], left)
+               < std::tie(exposure[left], right);
+      });
+      for (int neighbor : neighbors) {
+        if (state.assignment[neighbor] == state.assignment[cluster]) {
+          try_add(neighbor, distance[cluster] + 1);
+        }
+      }
+    }
+
+    std::vector<int> corridor;
+    for (int cluster = 0; cluster < model.clusters; ++cluster) {
+      if (distance[cluster] >= 0) {
+        corridor.push_back(cluster);
+      }
+    }
+    if (corridor.empty()) {
+      std::cerr << "PATRON_FLOW_CORRIDOR pair=" << edge_left << ':'
+                << pair_target << " status=empty\n";
+      continue;
+    }
+    std::set<int> corridor_nets;
+    for (int cluster : corridor) {
+      corridor_nets.insert(cluster_nets[cluster].begin(),
+                           cluster_nets[cluster].end());
+    }
+    const int source_node = 0;
+    const int sink_node = 1;
+    std::vector<int> cluster_node(model.clusters, -1);
+    int next_node = 2;
+    for (int cluster : corridor) {
+      cluster_node[cluster] = next_node++;
+    }
+    std::map<int, std::pair<int, int>> net_nodes;
+    for (int net : corridor_nets) {
+      net_nodes[net] = {next_node, next_node + 1};
+      next_node += 2;
+    }
+    DinicFlow flow(next_node);
+    const long long infinity
+        = static_cast<long long>(corridor_nets.size()) + 1;
+    for (const auto& item : net_nodes) {
+      const int net = item.first;
+      const int in_node = item.second.first;
+      const int out_node = item.second.second;
+      flow.add_edge(in_node, out_node, 1);
+      std::set<int> pins;
+      pins.insert(model.net[net].drivers.begin(),
+                  model.net[net].drivers.end());
+      pins.insert(model.net[net].sinks.begin(), model.net[net].sinks.end());
+      bool fixed_source = false;
+      bool fixed_sink = false;
+      for (int cluster : pins) {
+        if (cluster_node[cluster] >= 0) {
+          flow.add_edge(cluster_node[cluster], in_node, infinity);
+          flow.add_edge(out_node, cluster_node[cluster], infinity);
+        } else if (opposite_side[state.assignment[cluster]]) {
+          fixed_sink = true;
+        } else {
+          fixed_source = true;
+        }
+      }
+      if (fixed_source) {
+        flow.add_edge(source_node, in_node, infinity);
+      }
+      if (fixed_sink) {
+        flow.add_edge(out_node, sink_node, infinity);
+      }
+    }
+    for (int cluster : corridor) {
+      if (state.assignment[cluster] == edge_left) {
+        flow.add_edge(source_node, cluster_node[cluster], 0);
+      } else {
+        flow.add_edge(cluster_node[cluster], sink_node, 0);
+      }
+    }
+    const long long cut = flow.maximum_flow(source_node, sink_node);
+    const std::vector<bool> source_side
+        = flow.source_reachable(source_node);
+    std::vector<int> candidate_assignment = state.assignment;
+    int moved_to_left = 0;
+    int moved_to_target = 0;
+    for (int cluster : corridor) {
+      const int target = source_side[cluster_node[cluster]]
+                             ? edge_left
+                             : pair_target;
+      if (target != state.assignment[cluster]) {
+        candidate_assignment[cluster] = target;
+        moved_to_left += target == edge_left ? 1 : 0;
+        moved_to_target += target == pair_target ? 1 : 0;
+      }
+    }
+    ProxyState candidate = build_proxy_state(model, &candidate_assignment);
+    std::cerr << "PATRON_FLOW_CORRIDOR pair=" << edge_left << ':'
+              << pair_target
+              << " boundary=" << boundary.size()
+              << " clusters=" << corridor.size()
+              << " nets=" << corridor_nets.size()
+              << " skipped_capacity=" << skipped_capacity
+              << " mincut=" << cut
+              << " moved_to_left=" << moved_to_left
+              << " moved_to_target=" << moved_to_target
+              << " domain_load=" << candidate.domain_load[cover_domain]
+              << " improving="
+              << (less_ranked(candidate.evaluation.ranked,
+                              state.evaluation.ranked)
+                      ? 1
+                      : 0)
+              << " rank=";
+    for (long long value : candidate.evaluation.ranked) {
+      std::cerr << value << ',';
+    }
+    std::cerr << '\n';
+  }
 }
 
 void erase_one(std::multiset<double>& values, double value) {
@@ -1885,6 +2241,10 @@ void run_scalable(const Model& model, const std::string& output_path) {
       cover_threshold = threshold;
       cover_deficit = deficit;
     }
+  }
+  if (cover_diagnostic && cover_domain >= 0) {
+    diagnose_flow_corridors(
+        model, state, cluster_nets, exposure, cover_domain);
   }
   if (cover_diagnostic && cover_domain >= 0) {
     std::vector<CoverMove> raw_cover_moves;
