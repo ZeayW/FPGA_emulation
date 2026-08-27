@@ -999,8 +999,33 @@ void diagnose_flow_corridors(
   require(!opposite_side[edge_left] && opposite_side[edge_right],
           "flow corridor topology sides are inconsistent");
 
-  constexpr int kMaximumCorridorClusters = 50000;
-  constexpr int kCorridorDistance = 2;
+  int maximum_corridor_clusters = 50000;
+  if (const char* value
+      = std::getenv("EMUFLOW_PATRON_FLOW_MAX_CLUSTERS")) {
+    try {
+      const long long parsed = std::stoll(value);
+      require(parsed > 0 && parsed <= model.clusters,
+              "invalid flow corridor cluster limit");
+      maximum_corridor_clusters = static_cast<int>(parsed);
+    } catch (const std::invalid_argument&) {
+      throw std::runtime_error("invalid flow corridor cluster limit");
+    } catch (const std::out_of_range&) {
+      throw std::runtime_error("invalid flow corridor cluster limit");
+    }
+  }
+  int corridor_distance = 2;
+  if (const char* value = std::getenv("EMUFLOW_PATRON_FLOW_DISTANCE")) {
+    try {
+      const long long parsed = std::stoll(value);
+      require(parsed >= 0 && parsed <= model.clusters,
+              "invalid flow corridor distance");
+      corridor_distance = static_cast<int>(parsed);
+    } catch (const std::invalid_argument&) {
+      throw std::runtime_error("invalid flow corridor distance");
+    } catch (const std::out_of_range&) {
+      throw std::runtime_error("invalid flow corridor distance");
+    }
+  }
   for (int pair_target = 0; pair_target < model.parts; ++pair_target) {
     if (!opposite_side[pair_target]) {
       continue;
@@ -1033,7 +1058,7 @@ void diagnose_flow_corridors(
     int corridor_count = 0;
     const auto try_add = [&](int cluster, int candidate_distance) {
       if (distance[cluster] >= 0
-          || corridor_count >= kMaximumCorridorClusters
+          || corridor_count >= maximum_corridor_clusters
           || model.cluster[cluster].fixed >= 0) {
         return false;
       }
@@ -1046,7 +1071,7 @@ void diagnose_flow_corridors(
       return true;
     };
     for (int cluster : boundary) {
-      if (corridor_count >= kMaximumCorridorClusters) {
+      if (corridor_count >= maximum_corridor_clusters) {
         break;
       }
       try_add(cluster, 0);
@@ -1054,7 +1079,7 @@ void diagnose_flow_corridors(
     while (!work.empty()) {
       const int cluster = work.front();
       work.pop();
-      if (distance[cluster] >= kCorridorDistance) {
+      if (distance[cluster] >= corridor_distance) {
         continue;
       }
       std::set<int> neighbor_set;
@@ -1195,6 +1220,8 @@ void diagnose_flow_corridors(
               << pair_target
               << " boundary=" << boundary.size()
               << " clusters=" << corridor.size()
+              << " cluster_limit=" << maximum_corridor_clusters
+              << " distance_limit=" << corridor_distance
               << " nets=" << corridor_nets.size()
               << " mincut=" << cut
               << " moved_to_left=" << moved_to_left
