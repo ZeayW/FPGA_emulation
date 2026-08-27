@@ -1472,6 +1472,10 @@ void run_scalable(const Model& model, const std::string& output_path) {
   }
 
   int accepted_ejections = 0;
+  long long evaluated_ejections = 0;
+  long long feasible_ejections = 0;
+  long long improving_ejections = 0;
+  long long wns_improving_ejections = 0;
   const int critical_limit = std::min(
       model.ejection_critical_limit, static_cast<int>(order.size()));
   for (int order_index = 0;
@@ -1514,6 +1518,18 @@ void run_scalable(const Model& model, const std::string& output_path) {
               cluster,
               partner,
               partner_target);
+          ++evaluated_ejections;
+          if (candidate.feasible) {
+            ++feasible_ejections;
+            if (candidate.evaluation.ranked[0]
+                < state.evaluation.ranked[0]) {
+              ++wns_improving_ejections;
+            }
+            if (less_ranked(candidate.evaluation.ranked,
+                            state.evaluation.ranked)) {
+              ++improving_ejections;
+            }
+          }
           if (!candidate.feasible
               || !less_ranked(candidate.evaluation.ranked,
                               state.evaluation.ranked)) {
@@ -1554,6 +1570,11 @@ void run_scalable(const Model& model, const std::string& output_path) {
         state.evaluation});
     ++accepted_ejections;
   }
+  std::cerr << "PATRON_EJECTION_STATS evaluated=" << evaluated_ejections
+            << " feasible=" << feasible_ejections
+            << " improving=" << improving_ejections
+            << " wns_improving=" << wns_improving_ejections
+            << " accepted=" << accepted_ejections << '\n';
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
                "endpoint-exact-critical-ejection-v6",
