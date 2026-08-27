@@ -13,7 +13,7 @@ import math
 import subprocess
 from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .errors import EmuFlowError, ValidationError
 from .mfspart import MFSPART_HIERARCHY_SCHEMA, _splitmix64
@@ -237,6 +237,15 @@ def _adjacency(problem: Mapping[str, Any]):
             adjacency[net["source"]].append((sink, net["weight"]))
             adjacency[sink].append((net["source"], net["weight"]))
     return adjacency
+
+
+def _sequential_float_sum(values: Iterable[float]) -> float:
+    """Match the native protocol's ordered IEEE-754 accumulation."""
+
+    total = 0.0
+    for value in values:
+        total += value
+    return total
 
 
 def _propagate(problem: Mapping[str, Any], adjacency, assigned: Sequence[int]):
@@ -489,7 +498,9 @@ def _expected_exhaustive(problem: Mapping[str, Any]) -> Tuple[List[List[int]], L
     else:
         normalized = []
         for node in range(len(graph["nodes"])):
-            degree = sum(weight for _, weight in adjacency[node])
+            degree = _sequential_float_sum(
+                weight for _, weight in adjacency[node]
+            )
             normalized.append(degree / graph["nodes"][node]["weights"][0])
         node = max(range(len(graph["nodes"])), key=lambda item: (normalized[item], -item))
         feasible = [part for part in range(len(problem["parts"])) if _fits(problem, loads, node, part)]
@@ -507,8 +518,14 @@ def _expected_exhaustive(problem: Mapping[str, Any]) -> Tuple[List[List[int]], L
         for node in range(len(assigned)):
             if assigned[node] >= 0 or not candidates[node] or phase_two[node]:
                 continue
-            total = sum(weight for _, weight in adjacency[node])
-            connected = sum(weight for neighbor, weight in adjacency[node] if assigned[neighbor] >= 0)
+            total = _sequential_float_sum(
+                weight for _, weight in adjacency[node]
+            )
+            connected = _sequential_float_sum(
+                weight
+                for neighbor, weight in adjacency[node]
+                if assigned[neighbor] >= 0
+            )
             selectable.append((connected / total if total else 0.0, -node, node))
         if not selectable:
             break
@@ -529,7 +546,7 @@ def _expected_exhaustive(problem: Mapping[str, Any]) -> Tuple[List[List[int]], L
         weights = [math.exp((value - maximum) / problem["temperature"]) for _, value in choices]
         unit = ((_splitmix64(problem["seed"] ^ _splitmix64(event + 1)) >> 11) * (1.0 / 9007199254740992.0))
         event += 1
-        draw = unit * sum(weights)
+        draw = unit * _sequential_float_sum(weights)
         selected_part, selected_score = choices[-1]
         for (part, value), weight in zip(choices, weights):
             draw -= weight
@@ -587,7 +604,9 @@ def _expected(problem: Mapping[str, Any]) -> Tuple[List[List[int]], List[Dict[st
     else:
         normalized = []
         for node in range(len(graph["nodes"])):
-            degree = sum(weight for _, weight in adjacency[node])
+            degree = _sequential_float_sum(
+                weight for _, weight in adjacency[node]
+            )
             normalized.append(degree / graph["nodes"][node]["weights"][0])
         node = max(
             range(len(graph["nodes"])),
@@ -633,8 +652,10 @@ def _expected(problem: Mapping[str, Any]) -> Tuple[List[List[int]], List[Dict[st
         priority_versions[node] += 1
         if assigned[node] >= 0 or phase_two[node] or not candidates[node]:
             return
-        total = sum(weight for _, weight in adjacency[node])
-        connected = sum(
+        total = _sequential_float_sum(
+            weight for _, weight in adjacency[node]
+        )
+        connected = _sequential_float_sum(
             weight
             for neighbor, weight in adjacency[node]
             if assigned[neighbor] >= 0
@@ -687,7 +708,7 @@ def _expected(problem: Mapping[str, Any]) -> Tuple[List[List[int]], List[Dict[st
             * (1.0 / 9007199254740992.0)
         )
         event += 1
-        draw = unit * sum(weights)
+        draw = unit * _sequential_float_sum(weights)
         selected_part, selected_score = choices[-1]
         for (part, value), weight in zip(choices, weights):
             draw -= weight
