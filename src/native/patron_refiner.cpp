@@ -1239,6 +1239,165 @@ void diagnose_flow_corridors(
       std::cerr << value << ',';
     }
     std::cerr << '\n';
+
+    if (!capacity_compatible) {
+      struct SpillOption {
+        int cluster = -1;
+        int target = -1;
+        double cost_per_relief = 0.0;
+        double exposure = 0.0;
+        double relief = 0.0;
+      };
+      std::vector<int> incoming;
+      for (int cluster : corridor) {
+        if (state.assignment[cluster] == edge_left
+            && candidate_assignment[cluster] == pair_target) {
+          incoming.push_back(cluster);
+        }
+      }
+      std::vector<std::vector<int>> net_part_pins(
+          model.nets, std::vector<int>(model.parts, 0));
+      for (int net = 0; net < model.nets; ++net) {
+        for (int cluster : model.net[net].drivers) {
+          ++net_part_pins[net][candidate_assignment[cluster]];
+        }
+        for (int cluster : model.net[net].sinks) {
+          ++net_part_pins[net][candidate_assignment[cluster]];
+        }
+      }
+      std::vector<double> excess(model.dimensions, 0.0);
+      for (int dim = 0; dim < model.dimensions; ++dim) {
+        const double limit = std::min(
+            model.hard_capacity[pair_target][dim],
+            model.balance_capacity[pair_target][dim]);
+        excess[dim] = std::max(
+            0.0, candidate_load[pair_target][dim] - limit);
+      }
+      std::vector<SpillOption> options;
+      for (int cluster : incoming) {
+        int old_affinity = 0;
+        for (int net : cluster_nets[cluster]) {
+          old_affinity += net_part_pins[net][pair_target] > 1 ? 1 : 0;
+        }
+        for (int target = 0; target < model.parts; ++target) {
+          if (!opposite_side[target] || target == pair_target) {
+            continue;
+          }
+          double relief = 0.0;
+          for (int dim = 0; dim < model.dimensions; ++dim) {
+            const double limit = std::min(
+                model.hard_capacity[pair_target][dim],
+                model.balance_capacity[pair_target][dim]);
+            if (excess[dim] > 1.0e-9 && limit > 0.0) {
+              relief += std::min(model.cluster[cluster].weight[dim],
+                                 excess[dim])
+                        / limit;
+            }
+          }
+          if (relief <= 0.0) {
+            continue;
+          }
+          int new_affinity = 0;
+          for (int net : cluster_nets[cluster]) {
+            new_affinity += net_part_pins[net][target] > 0 ? 1 : 0;
+          }
+          const double timing_weight = 1.0 + std::log1p(exposure[cluster]);
+          const double spill_cost
+              = static_cast<double>(old_affinity - new_affinity)
+                * timing_weight;
+          options.push_back(SpillOption{
+              cluster,
+              target,
+              spill_cost / relief,
+              exposure[cluster],
+              relief});
+        }
+      }
+      std::sort(options.begin(), options.end(), [](const SpillOption& left,
+                                                   const SpillOption& right) {
+        return std::tie(left.cost_per_relief,
+                        left.exposure,
+                        left.cluster,
+                        left.target)
+               < std::tie(right.cost_per_relief,
+                          right.exposure,
+                          right.cluster,
+                          right.target);
+      });
+      int spills = 0;
+      for (const SpillOption& option : options) {
+        bool target_overloaded = false;
+        bool contributes = false;
+        for (int dim = 0; dim < model.dimensions; ++dim) {
+          const double source_limit = std::min(
+              model.hard_capacity[pair_target][dim],
+              model.balance_capacity[pair_target][dim]);
+          const double target_limit = std::min(
+              model.hard_capacity[option.target][dim],
+              model.balance_capacity[option.target][dim]);
+          target_overloaded = target_overloaded
+                              || candidate_load[pair_target][dim]
+                                     > source_limit + 1.0e-9;
+          contributes = contributes
+                        || (candidate_load[pair_target][dim]
+                                    > source_limit + 1.0e-9
+                            && model.cluster[option.cluster].weight[dim]
+                                   > 0.0);
+          if (candidate_load[option.target][dim]
+                  + model.cluster[option.cluster].weight[dim]
+              > target_limit + 1.0e-9) {
+            contributes = false;
+            break;
+          }
+        }
+        if (!target_overloaded) {
+          break;
+        }
+        if (!contributes
+            || candidate_assignment[option.cluster] != pair_target) {
+          continue;
+        }
+        candidate_assignment[option.cluster] = option.target;
+        for (int dim = 0; dim < model.dimensions; ++dim) {
+          const double weight = model.cluster[option.cluster].weight[dim];
+          candidate_load[pair_target][dim] -= weight;
+          candidate_load[option.target][dim] += weight;
+        }
+        ++spills;
+      }
+      bool legalized_capacity = true;
+      for (int part = 0; part < model.parts; ++part) {
+        for (int dim = 0; dim < model.dimensions; ++dim) {
+          legalized_capacity = legalized_capacity
+                               && candidate_load[part][dim]
+                                      <= model.hard_capacity[part][dim]
+                                             + 1.0e-9
+                               && candidate_load[part][dim]
+                                      <= model.balance_capacity[part][dim]
+                                             + 1.0e-9;
+        }
+      }
+      std::cerr << "PATRON_FLOW_LEGALIZATION pair=" << edge_left << ':'
+                << pair_target
+                << " incoming=" << incoming.size()
+                << " options=" << options.size()
+                << " spills=" << spills
+                << " capacity_compatible=" << (legalized_capacity ? 1 : 0);
+      if (legalized_capacity) {
+        ProxyState legalized = build_proxy_state(model, &candidate_assignment);
+        std::cerr << " domain_load=" << legalized.domain_load[cover_domain]
+                  << " improving="
+                  << (less_ranked(legalized.evaluation.ranked,
+                                  state.evaluation.ranked)
+                          ? 1
+                          : 0)
+                  << " rank=";
+        for (long long value : legalized.evaluation.ranked) {
+          std::cerr << value << ',';
+        }
+      }
+      std::cerr << '\n';
+    }
   }
 }
 
