@@ -464,14 +464,15 @@ and TimingPathDB, forks at Phase 3, and terminates in a dedicated cross-policy
 certificate.  The comparison uses one explicit Phase 3 seed for every arm;
 it never lets each policy search a multi-seed portfolio and then compares
 unrelated winners.  Physical seed remains a separate paired axis.  For the
-canonical case6 exercise, seed 2 is the characterized controlled seed that
-releases a non-vacuous generalized boundary:
+canonical case6 exercise, seed 4 is the sealed controlled seed used by the
+completed three-arm comparison; it releases a non-vacuous generalized
+boundary while every arm still receives exactly one partition attempt:
 
 ```bash
 emuflow benchmark-static-exact-ab-compile \
   --config "$CANONICAL_CASE_CONFIG" --repository-root "$SOURCE" \
   --legacy-max-depth 2 --generalized-max-depth 8 \
-  --partition-seed 2 \
+  --partition-seed 4 \
   --minimum-combinational-cut-nets 1 \
   --out "$EXPERIMENT/static-exact-ab-spec.json"
 ```
@@ -507,6 +508,29 @@ field remain readable but cannot supply runtime evidence. The checker refuses
 default promotion if the generalized arm is vacuous or its target-clock WNS/TNS
 result is not improved. A vacuous legacy arm remains an honest compatibility
 negative control and is never presented as exercised Static Exact evidence.
+
+The completed controlled DLA + EDA 2023 case6 experiment gives the following
+single-physical-seed result. These are whole-original-design target-clock
+metrics after complete open Phase 7/7C, not per-FPGA timing summaries:
+
+| cut policy | real combinational cuts | maximum dependency depth | global WNS (ns) | global TNS (ns) | failing paths | completion slot |
+|---|---:|---:|---:|---:|---:|---:|
+| sequential-only | 0 | 0 | -84.5812926868 | -277276.1497366623 | 7360 | 8 |
+| legacy Static Exact v1 | 0 | 0 | -87.4214476040 | -488195.76014116284 | 8162 | 6 |
+| generalized Static Exact v2 | 102 | 3 | -187.85581036 | -548934.0510065886 | 9310 | 15 |
+
+All three arms routed with zero DRC violations, zero unrouted nets, and zero
+per-FPGA physical TNS. Generalized v2 nevertheless increased the WNS deficit
+by 122.10% and the TNS deficit by 97.97% relative to sequential-only, while
+adding 2,717 scheduled bit-hops and 7,383 transport cells. The result proves
+that generalized dependency handling, shadow transport, macro-cycle
+equivalence, and routed segment deadlines work on real depth-three cuts; it
+also proves that this candidate selection is not a timing-QoR improvement on
+the canonical case. The promotion gate is therefore false and
+`sequential-only` remains the production default. Generalized v2 stays an
+explicit research mode until a later cost model passes the same no-regression
+gate; the flow does not silently substitute v2 merely because it exercised
+more cuts.
 The managed shared-Phase-1--5 view intentionally contains only consumer
 artifacts, not duplicate timing/partition evidence reports.  For that layout,
 the comparator follows the immutable shared checkpoint's dependency keys back

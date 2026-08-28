@@ -210,6 +210,16 @@ combinational cut and improves the paired target-clock result over
 sequential-only.  A single physical seed is the routine gate; more seeds are
 an explicit robustness study.
 
+The current canonical DLA + EDA 2023 case6 run exercised 102 generalized cuts
+at maximum dependency depth three. It completed Phase 7/7C with zero DRC
+violations, zero unrouted nets, and zero per-FPGA physical TNS, but its global
+target-clock WNS/TNS were -187.85581036 ns / -548934.0510065886 ns versus
+-84.5812926868 ns / -277276.1497366623 ns for sequential-only. Completion
+moved from slot 8 to slot 15. This is a valid negative algorithm result, not a
+validation failure: generalized semantics and physical deadlines were
+exercised, while final system-level QoR regressed. Consequently the promotion
+gate remains false and sequential-only remains the default.
+
 ## Commands
 
 ```bash

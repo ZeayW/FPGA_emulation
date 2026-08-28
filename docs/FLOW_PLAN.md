@@ -38,15 +38,19 @@ complete one-step state/input enumeration, while larger models are honestly
 qualified as multi-seed trace validation rather than proof. Phase 7C now binds
 physical logic-segment evidence to the semantic contract and independently
 checks source-ready and final-capture deadlines. A real routed DLA complete-
-flow acceptance now exercises five naturally selected combinational cuts,
-covers all 157,811 semantic segments with endpoint-exact routed evidence, and
-independently reconstructs whole-design target-clock and virtual-runtime
-WNS/TNS over all 195,532 original timing paths. The target-clock result is
-reported but is not closed; this acceptance proves complete accounting and
-causal correctness rather than timing QoR improvement. The production default
-remains sequential-only until generalized v2 passes the canonical real-RTL
-Phase 1--7 QoR promotion gate; both exact policies retain the explicit
-single-clock and fail-closed semantic scope.
+flow acceptance first exercised five naturally selected combinational cuts,
+covered all 157,811 semantic segments with endpoint-exact routed evidence, and
+independently reconstructed whole-design target-clock and virtual-runtime
+WNS/TNS over all 195,532 original timing paths. The later controlled three-arm
+DLA + EDA 2023 case6 experiment exercised 102 generalized cuts at dependency
+depth three and completed all physical/equivalence/deadline gates, but
+regressed global target-clock WNS/TNS from -84.5812926868 ns /
+-277276.1497366623 ns in sequential-only mode to -187.85581036 ns /
+-548934.0510065886 ns. This proves complete accounting and causal correctness,
+not timing-QoR improvement. The production default therefore remains
+sequential-only; generalized v2 stays opt-in until a later cost model passes
+the canonical no-regression promotion gate. Both exact policies retain the
+explicit single-clock and fail-closed semantic scope.
 Canonical Experiment v2 exact-mode evidence additionally requires at least one
 independently reconstructed selected combinational cut. A legal zero-cut run
 remains useful as a compatibility smoke but cannot satisfy this acceptance
