@@ -1712,10 +1712,13 @@ void diagnose_flow_corridors(
           bool direction_selected = false;
           bool push_to_sink = true;
           bool saw_feasible = false;
+          bool piercing_attempted = false;
           int feasible_cuts = 0;
           std::vector<int> first_feasible_assignment;
           std::vector<int> best_parametric_assignment;
           std::vector<long long> best_parametric_key;
+          std::vector<int> best_piercing_assignment;
+          std::vector<long long> best_piercing_rank;
           for (int iteration = 0; iteration < 96; ++iteration) {
             const std::vector<bool> parametric_source_side
                 = parametric_flow.source_reachable(parametric_source_node);
@@ -1831,6 +1834,173 @@ void diagnose_flow_corridors(
                            || (!push_to_sink && source_excess > 0.0))) {
               break;
             }
+            if (!parametric_capacity
+                && !piercing_attempted
+                && push_to_sink
+                && source_excess > 0.0
+                && source_excess <= 0.05
+                && sink_excess <= 1.0e-12) {
+              piercing_attempted = true;
+              std::vector<bool> pierced(model.clusters, false);
+              constexpr int kPiercingBatch = 1;
+              for (int piercing_iteration = 0;
+                   piercing_iteration < static_cast<int>(
+                       parametric_variables.size());
+                   ++piercing_iteration) {
+                const std::vector<bool> piercing_source_side
+                    = parametric_flow.source_reachable(
+                        parametric_source_node);
+                std::vector<int> candidates;
+                std::vector<int> fallback;
+                for (int cluster : parametric_variables) {
+                  if (pierced[cluster]
+                      || !piercing_source_side[
+                          parametric_cluster_node[cluster]]) {
+                    continue;
+                  }
+                  bool boundary_cluster = false;
+                  for (int net : cluster_nets[cluster]) {
+                    if (parametric_nets.find(net) == parametric_nets.end()) {
+                      continue;
+                    }
+                    std::set<int> pins;
+                    pins.insert(model.net[net].drivers.begin(),
+                                model.net[net].drivers.end());
+                    pins.insert(model.net[net].sinks.begin(),
+                                model.net[net].sinks.end());
+                    for (int pin : pins) {
+                      if ((parametric_cluster_node[pin] >= 0
+                           && !piercing_source_side[
+                               parametric_cluster_node[pin]])
+                          || (parametric_cluster_node[pin] < 0
+                              && parametric_base[pin] == right_sink)) {
+                        boundary_cluster = true;
+                        break;
+                      }
+                    }
+                    if (boundary_cluster) {
+                      break;
+                    }
+                  }
+                  fallback.push_back(cluster);
+                  if (boundary_cluster) {
+                    candidates.push_back(cluster);
+                  }
+                }
+                if (candidates.empty()) {
+                  candidates = fallback;
+                }
+                if (candidates.empty()) {
+                  break;
+                }
+                const auto relief_score = [&](int cluster) {
+                  double score = 0.0;
+                  for (int dim = 0; dim < model.dimensions; ++dim) {
+                    const double limit = std::min(
+                        model.hard_capacity[right_source][dim],
+                        model.balance_capacity[right_source][dim]);
+                    if (limit > 0.0
+                        && parametric_load[right_source][dim]
+                               > limit + 1.0e-9) {
+                      score += model.cluster[cluster].weight[dim] / limit;
+                    }
+                  }
+                  return score / (1.0 + std::log1p(exposure[cluster]));
+                };
+                std::sort(candidates.begin(), candidates.end(),
+                          [&](int left, int right) {
+                            const double left_score = relief_score(left);
+                            const double right_score = relief_score(right);
+                            if (left_score != right_score) {
+                              return left_score > right_score;
+                            }
+                            if (exposure[left] != exposure[right]) {
+                              return exposure[left] < exposure[right];
+                            }
+                            return left < right;
+                          });
+                const int batch = std::min(
+                    kPiercingBatch, static_cast<int>(candidates.size()));
+                for (int index = 0; index < batch; ++index) {
+                  const int cluster = candidates[index];
+                  pierced[cluster] = true;
+                  parametric_flow.add_edge(
+                      parametric_cluster_node[cluster],
+                      parametric_sink_node,
+                      kParametricInfinity);
+                }
+                cumulative_flow += parametric_flow.maximum_flow(
+                    parametric_source_node, parametric_sink_node);
+                const std::vector<bool> updated_source_side
+                    = parametric_flow.source_reachable(
+                        parametric_source_node);
+                std::vector<int> piercing_assignment = parametric_base;
+                std::vector<std::vector<double>> piercing_load
+                    = parametric_base_load;
+                for (int cluster : parametric_variables) {
+                  const int target
+                      = updated_source_side[
+                            parametric_cluster_node[cluster]]
+                            ? right_source
+                            : right_sink;
+                  piercing_assignment[cluster] = target;
+                  for (int dim = 0; dim < model.dimensions; ++dim) {
+                    piercing_load[target][dim]
+                        += model.cluster[cluster].weight[dim];
+                  }
+                }
+                bool piercing_capacity = true;
+                double piercing_source_excess = 0.0;
+                double piercing_sink_excess = 0.0;
+                for (int part = 0; part < model.parts; ++part) {
+                  for (int dim = 0; dim < model.dimensions; ++dim) {
+                    const double limit = std::min(
+                        model.hard_capacity[part][dim],
+                        model.balance_capacity[part][dim]);
+                    const double excess_value = std::max(
+                        0.0, piercing_load[part][dim] - limit);
+                    piercing_capacity = piercing_capacity
+                                        && excess_value <= 1.0e-9;
+                    if (limit > 0.0 && part == right_source) {
+                      piercing_source_excess = std::max(
+                          piercing_source_excess, excess_value / limit);
+                    }
+                    if (limit > 0.0 && part == right_sink) {
+                      piercing_sink_excess = std::max(
+                          piercing_sink_excess, excess_value / limit);
+                    }
+                  }
+                }
+                if (piercing_iteration % 32 == 0
+                    || piercing_capacity
+                    || piercing_sink_excess > 0.0) {
+                  std::cerr << "PATRON_FLOW_PIERCING pair="
+                            << edge_left << ':' << pair_target
+                            << " iteration=" << piercing_iteration
+                            << " forced="
+                            << std::count(pierced.begin(), pierced.end(), true)
+                            << " capacity_compatible="
+                            << (piercing_capacity ? 1 : 0)
+                            << " source_excess=" << piercing_source_excess
+                            << " sink_excess=" << piercing_sink_excess
+                            << '\n';
+                }
+                if (piercing_capacity) {
+                  ProxyState candidate
+                      = build_proxy_state(model, &piercing_assignment);
+                  if (best_piercing_assignment.empty()
+                      || less_ranked(candidate.evaluation.ranked,
+                                     best_piercing_rank)) {
+                    best_piercing_assignment = piercing_assignment;
+                    best_piercing_rank = candidate.evaluation.ranked;
+                  }
+                  break;
+                } else if (piercing_sink_excess > 0.0) {
+                  break;
+                }
+              }
+              break;
+            }
             long long step = lambda_increment;
             const double maximum_excess = std::max(
                 source_excess, sink_excess);
@@ -1893,6 +2063,7 @@ void diagnose_flow_corridors(
           if (best_parametric_assignment != first_feasible_assignment) {
             report_parametric("best-domain", best_parametric_assignment);
           }
+          report_parametric("flowcutter-piercing", best_piercing_assignment);
         }
       }
     }
