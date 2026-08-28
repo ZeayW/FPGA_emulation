@@ -341,13 +341,20 @@ def validate_partition_checkpoint(
             "partition MFSPart post-refinement evidence disagrees with assignment"
         )
     if post_refinement:
+        if not isinstance(post_metadata, dict):
+            raise ValidationError(
+                "partition MFSPart post-refinement metadata is invalid"
+            )
         post_root = root / "mfspart-post-refinement"
         post_report = read_json(
             _require(post_root, "post_refinement.json")
         )
+        post_schema = post_report.get("schema")
         if (
-            post_report.get("schema")
-            != "emuflow.mfspart-post-refinement/v1"
+            post_schema not in {
+                "emuflow.mfspart-post-refinement/v1",
+                "emuflow.mfspart-post-refinement/v2",
+            }
             or post_report.get("status") != "pass"
             or post_report.get("direction_source")
             != "EmuIR net drivers/sinks"
@@ -357,6 +364,23 @@ def validate_partition_checkpoint(
             != report.get("mfspart_post_refinement_bottleneck_beta")
         ):
             raise ValidationError("partition MFSPart post-refinement report is invalid")
+        if post_schema == "emuflow.mfspart-post-refinement/v2":
+            expected_guard = (
+                "non-combinational-net-worst-sink-distance-non-regression-v1"
+                if report.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
+                != CUT_MODE_SEQUENTIAL_ONLY
+                else "not-requested"
+            )
+            if (
+                post_report.get("topology_guard") != expected_guard
+                or not isinstance(post_report.get("guarded_nets"), int)
+                or isinstance(post_report.get("guarded_nets"), bool)
+                or post_report.get("guarded_nets") < 0
+                or post_metadata.get("topology_guard") != expected_guard
+            ):
+                raise ValidationError(
+                    "partition MFSPart topology-guard evidence is invalid"
+                )
         refinement = post_report.get("refinement")
         if not isinstance(refinement, dict):
             raise ValidationError(
@@ -382,6 +406,22 @@ def validate_partition_checkpoint(
         certificate = validate_mfspart_native_certificate(
             native_paths["input_sha256"], native_paths["output_sha256"]
         )
+        if post_schema == "emuflow.mfspart-post-refinement/v2":
+            input_evidence = certificate["input_evidence"]
+            if (
+                post_report.get("guarded_nets")
+                != input_evidence["guarded_nets"]
+                or post_report.get("combinational_candidate_nets")
+                != input_evidence["zero_bottleneck_nets"]
+                or post_metadata.get("guarded_nets")
+                != input_evidence["guarded_nets"]
+                or post_metadata.get("combinational_candidate_nets")
+                != input_evidence["zero_bottleneck_nets"]
+            ):
+                raise ValidationError(
+                    "partition MFSPart topology-guard counts disagree with "
+                    "the independently checked native input"
+                )
         parsed = certificate["parsed"]
         for label in ("moves", "assignment", "metrics"):
             if refinement.get(label) != parsed[label]:

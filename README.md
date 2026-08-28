@@ -535,19 +535,32 @@ more cuts.
 The current follow-up cost model keeps TritonPart as the partition provider
 and applies one optional, direction-aware MFSPart FM post-refinement to its
 sealed assignment. It reconstructs driver/sink identity from EmuIR (never from
-TritonPart's undirected hypergraph), combines aggregate cut/connectivity/hop
-gain with a weighted worst-sink-hop term, and defaults that bottleneck weight
-to `256` for canonical Static Exact experiments. The checkpoint identity seals
-the weight and the complete native certificate; reuse re-executes the
-independent C++ global-best/best-prefix checker without writable scratch.
+TritonPart's undirected hypergraph) and combines aggregate
+cut/connectivity/hop gain with a class-weighted worst-sink-hop term. In Static
+Exact mode, every initially transported non-combinational net receives an
+immutable worst-sink-distance non-regression guard. Combinational candidates
+remain movable and pay their ordinary timing-weighted cut/connectivity/hop
+cost, but are not rejected merely because they were local in the TritonPart
+assignment. The guard is checked by both the native optimizer and the
+independent certificate checker. Sequential-only mode retains the legacy
+objective. The checkpoint identity seals the weight, guard evidence, and the
+complete native certificate; reuse re-executes the independent C++
+global-best/best-prefix checker without writable scratch.
 Use `--mfspart-post-refinement`,
 `--mfspart-post-refinement-early-stop`, and
 `--mfspart-post-refinement-bottleneck-beta` on the reusable Phase 3 stage for
 controlled studies. A frozen 367,129-cluster diagnostic passed the native
 checker and kept the previously identified worst-path driver on its nearer
 FPGA at weights 192 and 256 while still reducing aggregate cut and weighted
-hop cost. The required complete Phase 7 WNS/TNS comparison is still running;
-this diagnostic is algorithm-calibration evidence, not a promotion result.
+hop cost. A controlled 62-move prefix then completed full Phase 7/7C with
+global WNS/TNS of -84.913220755 ns / -159994.95141046078 ns and 4,218 failing
+paths, versus -84.5812926868 ns / -277276.1497366623 ns and 7,360 paths for
+sequential-only. Thus the prefix preserved a 42.30% TNS-deficit reduction
+while reducing the earlier full-prefix WNS regression from 1.054 ns to 0.332
+ns. This is useful cost-model evidence, but it is not a default-promotion
+result because the prefix was selected diagnostically rather than by the
+sealed automatic Phase 3 policy. The guarded class-weighted policy is the
+automatic successor under validation.
 
 The managed shared-Phase-1--5 view intentionally contains only consumer
 artifacts, not duplicate timing/partition evidence reports.  For that layout,

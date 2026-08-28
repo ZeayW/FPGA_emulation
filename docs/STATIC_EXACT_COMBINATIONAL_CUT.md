@@ -220,6 +220,21 @@ validation failure: generalized semantics and physical deadlines were
 exercised, while final system-level QoR regressed. Consequently the promotion
 gate remains false and sequential-only remains the default.
 
+The automatic Phase 3 follow-up uses directional MFSPart FM after the sealed
+TritonPart assignment. Its Static Exact objective treats existing
+non-combinational transport and newly available combinational boundaries as
+different classes: an immutable per-net guard forbids increasing the initial
+worst-sink board distance of the former, while the latter pay the ordinary
+timing-weighted cut/connectivity/hop objective without inheriting an
+impossible zero-distance guard. Both the optimizer and the independent native
+checker reconstruct and enforce this rule. Legacy V1/V2 native refiner inputs
+remain readable with their original unguarded bottleneck semantics. A
+diagnostic 62-move prefix completed full Phase 7/7C at -84.913220755 ns WNS
+and -159994.95141046078 ns TNS, preserving most of the TNS benefit while
+cutting the earlier WNS regression to 0.332 ns. Because that prefix was chosen
+diagnostically, it calibrates the automatic objective but does not itself pass
+the promotion gate.
+
 ## Commands
 
 ```bash

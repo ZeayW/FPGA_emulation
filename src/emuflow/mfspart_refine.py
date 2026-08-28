@@ -16,9 +16,9 @@ from .mfspart_initial import MFSPART_INITIAL_SCHEMA, _partition_metrics
 from .native_tools import resolve_native_executable
 
 
-MFSPART_REFINER_INPUT_SCHEMA = "emuflow.mfspart-refiner-input/v2"
+MFSPART_REFINER_INPUT_SCHEMA = "emuflow.mfspart-refiner-input/v3"
 MFSPART_REFINEMENT_SCHEMA = "emuflow.mfspart-refinement/v1"
-MFSPART_REFINER_PROVIDER = "mfspart-topology-bottleneck-direct-kway-fm-v2"
+MFSPART_REFINER_PROVIDER = "mfspart-guarded-topology-bottleneck-direct-kway-fm-v3"
 _GAIN_RANK_SCALE = 1_000_000_000.0
 _DEFAULT_PYTHON_REPLAY_MAX_NODES = 2_000
 DEFAULT_BOTTLENECK_BETA = 256.0
@@ -108,10 +108,69 @@ def _normalise_refinement(
     for node in nodes:
         if len(node["weights"]) != len(dimensions):
             raise ValidationError("MFSPart FM node weight dimension mismatch")
+    normalised_nets = []
+    for net in nets:
+        weight = net.get("weight")
+        bottleneck_weight = net.get("bottleneck_weight", weight)
+        maximum_distance = net.get("max_distance_limit", -1)
+        if (
+            not isinstance(weight, (int, float))
+            or isinstance(weight, bool)
+            or not math.isfinite(weight)
+            or weight <= 0.0
+            or not isinstance(bottleneck_weight, (int, float))
+            or isinstance(bottleneck_weight, bool)
+            or not math.isfinite(bottleneck_weight)
+            or bottleneck_weight < 0.0
+            or not isinstance(maximum_distance, int)
+            or isinstance(maximum_distance, bool)
+            or maximum_distance < -1
+        ):
+            raise ValidationError("invalid MFSPart FM net objective metadata")
+        normalised_nets.append(
+            {
+                **dict(net),
+                "weight": float(weight),
+                "bottleneck_weight": float(bottleneck_weight),
+                "max_distance_limit": maximum_distance,
+            }
+        )
+    for net in normalised_nets:
+        source = net.get("source")
+        sinks = net.get("sinks")
+        if (
+            not isinstance(source, int)
+            or isinstance(source, bool)
+            or source < 0
+            or source >= len(nodes)
+            or not isinstance(sinks, list)
+            or not sinks
+            or any(
+                not isinstance(sink, int)
+                or isinstance(sink, bool)
+                or sink < 0
+                or sink >= len(nodes)
+                or sink == source
+                for sink in sinks
+            )
+            or len(set(sinks)) != len(sinks)
+        ):
+            raise ValidationError("invalid MFSPart FM net endpoints")
+        initial_maximum = max(
+            distance_matrix[assigned[source]][assigned[sink]]
+            for sink in sinks
+        )
+        if (
+            net["max_distance_limit"] >= 0
+            and initial_maximum > net["max_distance_limit"]
+        ):
+            raise ValidationError(
+                "MFSPart FM topology guard excludes its initial assignment"
+            )
     return {
         "schema": MFSPART_REFINER_INPUT_SCHEMA,
         "provider": MFSPART_REFINER_PROVIDER,
-        "graph": graph,
+        "graph": {**dict(graph), "nets": normalised_nets},
         "dimensions": list(dimensions),
         "parts": list(parts),
         "distances": distance_matrix,
@@ -130,7 +189,7 @@ def _normalise_refinement(
 def _write_native_input(path: Path, problem: Mapping[str, Any]) -> None:
     graph = problem["graph"]
     lines = [
-        "EMUFLOW_MFSPART_REFINER_INPUT_V2",
+        "EMUFLOW_MFSPART_REFINER_INPUT_V3",
         "PARAM "
         + " ".join(
             str(value)
@@ -171,6 +230,8 @@ def _write_native_input(path: Path, problem: Mapping[str, Any]) -> None:
                 for value in (
                     index,
                     format(net["weight"], ".17g"),
+                    format(net["bottleneck_weight"], ".17g"),
+                    net["max_distance_limit"],
                     net["source"],
                     len(net["sinks"]),
                     *net["sinks"],
@@ -291,9 +352,12 @@ def validate_mfspart_native_certificate(
 ) -> Dict[str, Any]:
     """Independently replay a native FM certificate without scratch writes."""
 
-    with input_path.open(encoding="utf-8") as stream:
-        header = [stream.readline().rstrip("\n") for _ in range(2)]
-    if header[0] != "EMUFLOW_MFSPART_REFINER_INPUT_V2":
+    input_lines = input_path.read_text(encoding="utf-8").splitlines()
+    header = input_lines[:2]
+    if header[0] not in {
+        "EMUFLOW_MFSPART_REFINER_INPUT_V2",
+        "EMUFLOW_MFSPART_REFINER_INPUT_V3",
+    }:
         raise ValidationError("invalid MFSPart native certificate input")
     fields = header[1].split()
     try:
@@ -306,6 +370,26 @@ def validate_mfspart_native_certificate(
         ) from error
     if node_count <= 0:
         raise ValidationError("invalid MFSPart native certificate node count")
+    guarded_nets = 0
+    zero_bottleneck_nets = 0
+    if header[0] == "EMUFLOW_MFSPART_REFINER_INPUT_V3":
+        for line in input_lines[2:]:
+            record = line.split()
+            if not record or record[0] != "NET":
+                continue
+            try:
+                if len(record) < 8:
+                    raise ValidationError(
+                        "invalid MFSPart native certificate NET record"
+                    )
+                bottleneck_weight = float(record[3])
+                maximum_distance = int(record[4])
+            except ValueError as error:
+                raise ValidationError(
+                    "malformed MFSPart native certificate NET record"
+                ) from error
+            guarded_nets += maximum_distance >= 0
+            zero_bottleneck_nets += bottleneck_weight == 0.0
     parsed = _parse_output(output_path, node_count)
     command = resolve_native_executable(
         "emuflow_mfspart_refiner_checker", checker
@@ -335,7 +419,15 @@ def validate_mfspart_native_certificate(
         bool(move.get("kept")) for move in parsed["moves"]
     ):
         raise ValidationError("MFSPart checker kept-prefix mismatch")
-    return {"parsed": parsed, "checker_metrics": checker_metrics}
+    return {
+        "parsed": parsed,
+        "checker_metrics": checker_metrics,
+        "input_evidence": {
+            "native_header": header[0],
+            "guarded_nets": guarded_nets,
+            "zero_bottleneck_nets": zero_bottleneck_nets,
+        },
+    }
 
 
 def _adjacency_and_incidence(problem: Mapping[str, Any]):
@@ -389,7 +481,12 @@ def _compatibility(problem, adjacency, incidence, assignment, node: int, candida
             ]
             for sink in net["sinks"]
         )
-        bottleneck_hops += net["weight"] * maximum_distance
+        if (
+            net["max_distance_limit"] >= 0
+            and maximum_distance > net["max_distance_limit"]
+        ):
+            return -math.inf
+        bottleneck_hops += net["bottleneck_weight"] * maximum_distance
     return (
         hop_score
         - problem["gamma"] * connectivity
@@ -431,12 +528,18 @@ def _compatibility_indexed(
             spanned_parts -= int(net_part_counts[net_index][source_part] == 1)
         connectivity += net["weight"] * spanned_parts
         driver_part = candidate if net["source"] == node else assignment[net["source"]]
-        bottleneck_hops += net["weight"] * max(
+        maximum_distance = max(
             problem["distances"][driver_part][
                 candidate if sink == node else assignment[sink]
             ]
             for sink in net["sinks"]
         )
+        if (
+            net["max_distance_limit"] >= 0
+            and maximum_distance > net["max_distance_limit"]
+        ):
+            return -math.inf
+        bottleneck_hops += net["bottleneck_weight"] * maximum_distance
     return (
         hop_score
         - problem["gamma"] * connectivity
@@ -484,7 +587,12 @@ def _replay_exhaustive(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]]
             for target in range(len(problem["parts"])):
                 if target == source or problem["distances"][source][target] > problem["move_distance"] or not _fits(problem, loads, node, target):
                     continue
-                gain = _compatibility(problem, adjacency, incidence, assignment, node, target) - source_score
+                target_score = _compatibility(
+                    problem, adjacency, incidence, assignment, node, target
+                )
+                if not math.isfinite(target_score):
+                    continue
+                gain = target_score - source_score
                 choices.append((gain, -node, -target, node, source, target))
         if not choices:
             break
@@ -642,7 +750,12 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
                     maximum_distance,
                     problem["distances"][driver_part][candidate],
                 )
-            score += net["weight"] * maximum_distance
+            if (
+                net["max_distance_limit"] >= 0
+                and maximum_distance > net["max_distance_limit"]
+            ):
+                return math.inf
+            score += net["bottleneck_weight"] * maximum_distance
         return score
     # For a node/candidate pair, the connectivity delta is the weight of its
     # incident nets that do not yet contain candidate, minus the weight of
@@ -770,11 +883,16 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
                 - incident_present_weights[node][target]
                 - source_singleton_weight
             )
+            target_bottleneck_score = bottleneck_score(node, target)
+            if not math.isfinite(target_bottleneck_score):
+                cached_gains[node][target] = None
+                cached_gain_ranks[node][target] = None
+                continue
             target_score = (
                 pair_scores[node][target]
                 - problem["gamma"]
                 * (source_connectivity + connectivity_delta)
-                - problem["bottleneck_beta"] * bottleneck_score(node, target)
+                - problem["bottleneck_beta"] * target_bottleneck_score
             )
             gain = target_score - source_score
             gain_rank = _gain_rank(gain)
@@ -1171,7 +1289,7 @@ def refine_mfspart_level(
     artifact = {
         "schema": MFSPART_REFINEMENT_SCHEMA,
         "provider": MFSPART_REFINER_PROVIDER,
-        "claim_scope": "paper-level direct k-way FM Eqs. 9--10 with EmuFlow weighted worst-sink-hop extension",
+        "claim_scope": "paper-level direct k-way FM Eqs. 9--10 with EmuFlow class-weighted worst-sink-hop and immutable per-net topology guards",
         "moves": parsed["moves"],
         "assignment": parsed["assignment"],
         "metrics": parsed["metrics"],

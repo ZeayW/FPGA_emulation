@@ -143,6 +143,7 @@ class MFSPartRefinementTest(unittest.TestCase):
                 bottleneck_beta=0.0,
                 executable=str(self.executable),
                 checker=str(self.checker),
+                python_replay_max_nodes=0,
             )
             with_bottleneck = refine_mfspart_level(
                 graph,
@@ -162,7 +163,93 @@ class MFSPartRefinementTest(unittest.TestCase):
         self.assertEqual(with_bottleneck["assignment"][0], 1)
         self.assertEqual(with_bottleneck["metrics"]["best_prefix"], 0.0)
 
-    def test_native_v1_input_remains_readable_as_zero_bottleneck_weight(self) -> None:
+    def test_immutable_net_guard_rejects_a_locally_profitable_regression(self) -> None:
+        graph = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [1]},
+                {"fixed_part": 2, "weights": [1]},
+                {"fixed_part": 2, "weights": [1]},
+                {"fixed_part": 2, "weights": [1]},
+                {"fixed_part": 0, "weights": [1]},
+            ],
+            "nets": [
+                {
+                    "weight": 1.0,
+                    "bottleneck_weight": 0.0,
+                    "max_distance_limit": 1,
+                    "source": 0,
+                    "sinks": [1, 2, 3, 4],
+                }
+            ],
+        }
+        parts, distances, capacities = _line_problem()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_level(
+                graph,
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [1, 2, 2, 2, 0],
+                Path(temporary_directory),
+                hmax=2,
+                early_stop=1,
+                bottleneck_beta=0.0,
+                executable=str(self.executable),
+                checker=str(self.checker),
+            )
+        self.assertEqual(artifact["assignment"][0], 1)
+        self.assertEqual(artifact["metrics"]["best_prefix"], 0.0)
+        self.assertEqual(
+            artifact["metrics"]["final_topology_guard_violations"], 0.0
+        )
+
+    def test_class_weighted_guard_allows_a_valuable_combinational_cut(self) -> None:
+        graph = {
+            "nodes": [
+                {"fixed_part": 0, "weights": [1]},
+                {"fixed_part": -1, "weights": [1]},
+                {"fixed_part": 2, "weights": [1]},
+            ],
+            "nets": [
+                {
+                    "weight": 10.0,
+                    "bottleneck_weight": 10.0,
+                    "max_distance_limit": 2,
+                    "source": 0,
+                    "sinks": [1],
+                },
+                {
+                    "weight": 1.0,
+                    "bottleneck_weight": 0.0,
+                    "max_distance_limit": -1,
+                    "source": 1,
+                    "sinks": [2],
+                },
+            ],
+        }
+        parts, distances, capacities = _line_problem()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_level(
+                graph,
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0, 2, 2],
+                Path(temporary_directory),
+                hmax=2,
+                early_stop=1,
+                executable=str(self.executable),
+                checker=str(self.checker),
+            )
+        self.assertEqual(artifact["assignment"], [0, 0, 2])
+        self.assertGreater(artifact["metrics"]["best_cumulative_gain"], 0.0)
+        self.assertEqual(
+            artifact["metrics"]["final_topology_guard_violations"], 0.0
+        )
+
+    def test_native_v1_v2_inputs_keep_legacy_bottleneck_semantics(self) -> None:
         parts, distances, capacities = _line_problem()
         problem = _normalise_refinement(
             self._violating_graph(),
@@ -179,39 +266,55 @@ class MFSPartRefinementTest(unittest.TestCase):
             mu=0.1,
             bottleneck_beta=0.0,
         )
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            input_path = root / "legacy.in"
-            output_path = root / "legacy.out"
-            check_path = root / "legacy.check"
-            _write_native_input(input_path, problem)
-            lines = input_path.read_text(encoding="utf-8").splitlines()
-            lines[0] = "EMUFLOW_MFSPART_REFINER_INPUT_V1"
-            parameter = lines[1].split()
-            self.assertEqual(parameter.pop(), "0")
-            lines[1] = " ".join(parameter)
-            input_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            optimizer = subprocess.run(
-                [str(self.executable), str(input_path), str(output_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                check=False,
-            )
-            checker = subprocess.run(
-                [
-                    str(self.checker),
-                    str(input_path),
-                    str(output_path),
-                    str(check_path),
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                check=False,
-            )
-        self.assertEqual(optimizer.returncode, 0, optimizer.stdout)
-        self.assertEqual(checker.returncode, 0, checker.stdout)
+        for version in (1, 2):
+            with self.subTest(version=version):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    input_path = root / "legacy.in"
+                    output_path = root / "legacy.out"
+                    check_path = root / "legacy.check"
+                    _write_native_input(input_path, problem)
+                    lines = input_path.read_text(encoding="utf-8").splitlines()
+                    lines[0] = f"EMUFLOW_MFSPART_REFINER_INPUT_V{version}"
+                    if version == 1:
+                        parameter = lines[1].split()
+                        self.assertEqual(parameter.pop(), "0")
+                        lines[1] = " ".join(parameter)
+                    legacy_lines = []
+                    for line in lines:
+                        fields = line.split()
+                        if fields and fields[0] == "NET":
+                            # V1/V2 store neither the class-weighted
+                            # bottleneck term nor the immutable per-net
+                            # topology guard.  The reader must recover the
+                            # original weight/-1 defaults.
+                            fields = [*fields[:3], *fields[5:]]
+                            line = " ".join(fields)
+                        legacy_lines.append(line)
+                    input_path.write_text(
+                        "\n".join(legacy_lines) + "\n", encoding="utf-8"
+                    )
+                    optimizer = subprocess.run(
+                        [str(self.executable), str(input_path), str(output_path)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        check=False,
+                    )
+                    checker = subprocess.run(
+                        [
+                            str(self.checker),
+                            str(input_path),
+                            str(output_path),
+                            str(check_path),
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        check=False,
+                    )
+                self.assertEqual(optimizer.returncode, 0, optimizer.stdout)
+                self.assertEqual(checker.returncode, 0, checker.stdout)
 
     def test_best_prefix_rolls_back_negative_moves(self) -> None:
         graph = {
@@ -398,8 +501,19 @@ class MFSPartRefinementTest(unittest.TestCase):
                 for weight in [1, 2, 1, 3, 1, 2]
             ],
             "nets": [
-                {"weight": 2.0, "source": 0, "sinks": [1, 2]},
-                {"weight": 1.0, "source": 2, "sinks": [3]},
+                {
+                    "weight": 2.0,
+                    "bottleneck_weight": 0.0,
+                    "max_distance_limit": 1,
+                    "source": 0,
+                    "sinks": [1, 2],
+                },
+                {
+                    "weight": 1.0,
+                    "max_distance_limit": 0,
+                    "source": 2,
+                    "sinks": [3],
+                },
                 {"weight": 3.0, "source": 4, "sinks": [1, 5]},
             ],
         }
@@ -473,6 +587,14 @@ class MFSPartRefinementTest(unittest.TestCase):
             )
             self.assertEqual(
                 certificate["parsed"]["assignment"], artifact["assignment"]
+            )
+            self.assertEqual(
+                certificate["input_evidence"],
+                {
+                    "native_header": "EMUFLOW_MFSPART_REFINER_INPUT_V3",
+                    "guarded_nets": 0,
+                    "zero_bottleneck_nets": 0,
+                },
             )
             output = root / "mfspart_refiner.out"
             lines = output.read_text(encoding="utf-8").splitlines()

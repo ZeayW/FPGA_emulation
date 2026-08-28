@@ -18,6 +18,7 @@ from .mfspart_refine import (
     refine_mfspart_level,
 )
 from .partition import (
+    CUT_MODE_STATIC_EXACT,
     build_partition_assignment,
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
@@ -29,9 +30,9 @@ from .resources import RESOURCE_FIELDS
 
 MFSPART_PHASE3_PROVIDER = "mfspart-serial-paper-reproduction-v1"
 MFSPART_POST_REFINEMENT_PROVIDER = (
-    "tritonpart-directional-mfspart-post-refinement-v1"
+    "tritonpart-guarded-directional-mfspart-post-refinement-v2"
 )
-MFSPART_POST_REFINEMENT_SCHEMA = "emuflow.mfspart-post-refinement/v1"
+MFSPART_POST_REFINEMENT_SCHEMA = "emuflow.mfspart-post-refinement/v2"
 
 
 def _platform_problem(
@@ -242,6 +243,8 @@ def _partition_graph(
                 nets.append(
                     {
                         "id": f"{net['id']}#d{driver_index}",
+                        "logical_net": net["id"],
+                        "cut_class": net["cut_class"],
                         "source": driver,
                         "sinks": remote_sinks,
                         "weight": float(net_weights.get(net["id"], 1.0)),
@@ -289,6 +292,45 @@ def refine_mfspart_partition(
         nodes, platform, dimensions, constraints
     )
     node_index = {node["id"]: index for index, node in enumerate(nodes)}
+    part_index = {part: index for index, part in enumerate(parts)}
+    initial = [
+        part_index[assignment["cluster_assignment"][node["id"]]]
+        for node in nodes
+    ]
+    static_exact = (
+        clusters_artifact.get("policy", {}).get("cut_mode")
+        == CUT_MODE_STATIC_EXACT
+    )
+    graph_nets = []
+    for net in nets:
+        source = node_index[net["source"]]
+        sinks = [node_index[sink] for sink in net["sinks"]]
+        # A combinational boundary is the new degree of freedom.  Charge its
+        # ordinary timing-weighted cut/connectivity cost, but do not let the
+        # worst-sink guard make every initially local candidate impossible.
+        # Conversely, pre-existing architectural transport may improve but
+        # may never acquire a longer board path than in the sealed TritonPart
+        # assignment.  This makes the new cut useful rather than arbitrary.
+        combinational = static_exact and net["cut_class"] == "combinational"
+        initial_maximum_distance = max(
+            distances[parts[initial[source]]][parts[initial[sink]]]
+            for sink in sinks
+        )
+        graph_nets.append(
+            {
+                "weight": net["weight"],
+                "bottleneck_weight": 0.0 if combinational else net["weight"],
+                "max_distance_limit": (
+                    initial_maximum_distance
+                    if static_exact
+                    and not combinational
+                    and initial_maximum_distance > 0
+                    else -1
+                ),
+                "source": source,
+                "sinks": sinks,
+            }
+        )
     graph = {
         "nodes": [
             {
@@ -299,20 +341,8 @@ def refine_mfspart_partition(
             }
             for node in nodes
         ],
-        "nets": [
-            {
-                "weight": net["weight"],
-                "source": node_index[net["source"]],
-                "sinks": [node_index[sink] for sink in net["sinks"]],
-            }
-            for net in nets
-        ],
+        "nets": graph_nets,
     }
-    part_index = {part: index for index, part in enumerate(parts)}
-    initial = [
-        part_index[assignment["cluster_assignment"][node["id"]]]
-        for node in nodes
-    ]
     refinement = refine_mfspart_level(
         graph,
         dimensions,
@@ -360,6 +390,17 @@ def refine_mfspart_partition(
             "best_cumulative_gain"
         ],
         "direction_source": "EmuIR net drivers/sinks",
+        "topology_guard": (
+            "non-combinational-net-worst-sink-distance-non-regression-v1"
+            if static_exact
+            else "not-requested"
+        ),
+        "guarded_nets": sum(
+            net["max_distance_limit"] >= 0 for net in graph_nets
+        ),
+        "combinational_candidate_nets": sum(
+            net["cut_class"] == "combinational" for net in nets
+        ),
     }
     refined = build_partition_assignment(
         ir,
@@ -384,6 +425,17 @@ def refine_mfspart_partition(
         "hmax": hmax,
         "early_stop": early_stop,
         "bottleneck_beta": bottleneck_beta,
+        "topology_guard": (
+            "non-combinational-net-worst-sink-distance-non-regression-v1"
+            if static_exact
+            else "not-requested"
+        ),
+        "guarded_nets": sum(
+            net["max_distance_limit"] >= 0 for net in graph_nets
+        ),
+        "combinational_candidate_nets": sum(
+            net["cut_class"] == "combinational" for net in nets
+        ),
         "effective_balance_tolerance_by_dimension": effective_balance,
         "refinement": refinement,
     }

@@ -42,6 +42,8 @@ struct Node {
 
 struct Net {
   double weight = 0.0;
+  double bottleneck_weight = 0.0;
+  int max_distance_limit = -1;
   int source = -1;
   std::vector<int> sinks;
 };
@@ -86,6 +88,7 @@ struct Metrics {
   long long violating_pairs = 0;
   long long capacity_violations = 0;
   long long fixed_violations = 0;
+  long long topology_guard_violations = 0;
 };
 
 template <typename Values>
@@ -99,7 +102,9 @@ Input read_input(const std::string& path) {
   if (!stream) throw std::runtime_error("cannot open checker input");
   std::string magic;
   std::getline(stream, magic);
-  const bool input_v2 = magic == "EMUFLOW_MFSPART_REFINER_INPUT_V2";
+  const bool input_v3 = magic == "EMUFLOW_MFSPART_REFINER_INPUT_V3";
+  const bool input_v2 =
+      input_v3 || magic == "EMUFLOW_MFSPART_REFINER_INPUT_V2";
   if (!input_v2 && magic != "EMUFLOW_MFSPART_REFINER_INPUT_V1") {
     throw std::runtime_error("unsupported checker input header");
   }
@@ -179,9 +184,18 @@ Input read_input(const std::string& path) {
     } else if (kind == "NET") {
       int index = -1, sink_count = -1;
       Net net;
-      stream >> index >> net.weight >> net.source >> sink_count;
+      stream >> index >> net.weight;
+      if (input_v3) {
+        stream >> net.bottleneck_weight >> net.max_distance_limit;
+      } else {
+        net.bottleneck_weight = net.weight;
+      }
+      stream >> net.source >> sink_count;
       if (!saw_param || index < 0 || index >= net_count || saw_net[index] ||
-          !std::isfinite(net.weight) || net.weight <= 0.0 || net.source < 0 ||
+          !std::isfinite(net.weight) || net.weight <= 0.0 ||
+          !std::isfinite(net.bottleneck_weight) ||
+          net.bottleneck_weight < 0.0 || net.max_distance_limit < -1 ||
+          net.source < 0 ||
           net.source >= node_count || sink_count <= 0) {
         throw std::runtime_error("invalid NET");
       }
@@ -324,6 +338,7 @@ Metrics metrics(const Input& input, const std::vector<int>& assignment) {
   double total_pair_weight = 0.0;
   for (const Net& net : input.nets) {
     std::set<int> remote_parts;
+    int maximum_distance = 0;
     for (int sink : net.sinks) {
       const int source_part = assignment[net.source];
       const int sink_part = assignment[sink];
@@ -334,7 +349,12 @@ Metrics metrics(const Input& input, const std::vector<int>& assignment) {
       }
       result.violating_pairs += distance > input.hmax;
       result.weighted_hops += net.weight * distance;
+      maximum_distance = std::max(maximum_distance, distance);
       total_pair_weight += net.weight;
+    }
+    if (net.max_distance_limit >= 0 &&
+        maximum_distance > net.max_distance_limit) {
+      ++result.topology_guard_violations;
     }
     result.connectivity += net.weight * remote_parts.size();
   }
@@ -515,6 +535,8 @@ void require_partition_metrics(const Output& output, const std::string& prefix,
                  expected.capacity_violations);
   require_metric(output, prefix + "_fixed_violations",
                  expected.fixed_violations);
+  require_metric(output, prefix + "_topology_guard_violations",
+                 expected.topology_guard_violations);
 }
 
 void check(const Input& input, const Output& output,
@@ -522,7 +544,8 @@ void check(const Input& input, const Output& output,
   std::vector<int> assignment = input.assignment;
   auto current_loads = loads(input, assignment);
   const Metrics initial_metrics = metrics(input, assignment);
-  if (initial_metrics.capacity_violations || initial_metrics.fixed_violations) {
+  if (initial_metrics.capacity_violations || initial_metrics.fixed_violations ||
+      initial_metrics.topology_guard_violations) {
     throw std::runtime_error("checker initial assignment is illegal");
   }
   const auto pair_adjacency = adjacency(input);
@@ -630,7 +653,11 @@ void check(const Input& input, const Output& output,
         maximum_distance = std::max(
             maximum_distance, input.distances[driver_part][candidate]);
       }
-      bottleneck_hops += net.weight * maximum_distance;
+      if (net.max_distance_limit >= 0 &&
+          maximum_distance > net.max_distance_limit) {
+        return -std::numeric_limits<double>::infinity();
+      }
+      bottleneck_hops += net.bottleneck_weight * maximum_distance;
     }
     return hop - input.gamma * connectivity - input.lambda * violation -
            input.bottleneck_beta * bottleneck_hops;
@@ -652,8 +679,12 @@ void check(const Input& input, const Output& output,
           input.distances[source][target] > input.move_distance) {
         continue;
       }
-      const double gain = compatibility(node, target) - source_score;
+      const double target_score = compatibility(node, target);
       ++objective_recomputations;
+      if (!std::isfinite(target_score)) {
+        continue;
+      }
+      const double gain = target_score - source_score;
       result[target] = {gain_rank(gain), node, target, gain};
     }
     return result;

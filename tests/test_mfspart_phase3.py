@@ -11,12 +11,20 @@ from unittest.mock import patch
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
 from emuflow.io import read_json
 from emuflow.mfspart_provider import _partition_graph, refine_mfspart_partition
-from emuflow.partition import build_clusters, load_partition_constraints
+from emuflow.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+from emuflow.partition import (
+    CUT_MODE_STATIC_EXACT,
+    build_clusters,
+    build_partition_assignment,
+    load_partition_constraints,
+    normalize_partition_constraints,
+)
 from emuflow.phase3 import run_phase3
 from emuflow.platform import Platform
 from emuflow.routing import load_route_constraints
 from emuflow.yosys import import_yosys_json
 from tests.native_build import tlr_router
+from tests.test_combinational_cut import _chain_ir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -261,6 +269,78 @@ class MFSPartPhase3Test(unittest.TestCase):
             }
             self.assertIn(graph_net["source"], driver_clusters)
             self.assertTrue(set(graph_net["sinks"]).issubset(sink_clusters))
+            self.assertEqual(graph_net["logical_net"], net_id)
+            self.assertEqual(graph_net["cut_class"], net["cut_class"])
+
+    def test_exact_guard_replaces_a_register_cut_with_a_valuable_comb_cut(self) -> None:
+        ir = _chain_ir()
+        platform = Platform.load(PLATFORM)
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_tolerance": 1.0,
+                "fixed": [
+                    {"instance": "q0", "fpga": "fpga0"},
+                    {"instance": "q1", "fpga": "fpga1"},
+                ],
+            },
+            ir,
+            platform,
+        )
+        clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=8,
+            comb_segment_budget_slots=1,
+            frame_slots=32,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        )
+        cluster_for = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        initial_targets = {
+            "q0": "fpga0",
+            "l0": "fpga1",
+            "l1": "fpga1",
+            "l2": "fpga1",
+            "q1": "fpga1",
+        }
+        initial = build_partition_assignment(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            {
+                cluster_for[instance]: target
+                for instance, target in initial_targets.items()
+            },
+            provider="test",
+            seed=0,
+        )
+        self.assertEqual(initial["metrics"]["combinational_cut_nets"], 0)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            refined, report = refine_mfspart_partition(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                load_route_constraints(None, platform, frame_slots=32),
+                initial,
+                Path(temporary_directory),
+                net_weights={"q": 10.0},
+                early_stop=3,
+                refiner=self.executables["refiner"],
+                refiner_checker=self.executables["refiner_checker"],
+            )
+        self.assertEqual(report["topology_guard"], (
+            "non-combinational-net-worst-sink-distance-non-regression-v1"
+        ))
+        self.assertGreater(report["guarded_nets"], 0)
+        self.assertGreater(refined["metrics"]["combinational_cut_nets"], 0)
+        self.assertEqual(refined["instance_assignment"]["l0"], "fpga0")
 
     def test_counter_runs_affected_multi_fpga_flow_with_mfspart(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
