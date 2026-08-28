@@ -307,7 +307,9 @@ class PartitionPressureTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "coverage"):
                 _parse_patron_native_output(path, indexes)
 
-    def test_v7_flow_batch_matches_independent_small_oracle(self) -> None:
+    def test_v8_flow_batch_and_frontier_closure_match_small_oracle(
+        self,
+    ) -> None:
         instance_count = 40
         block_size = 10
         cut_count = 8
@@ -438,7 +440,7 @@ class PartitionPressureTest(unittest.TestCase):
             for index in range(cut_count)
         ]
 
-        best_rank = None
+        flow_only_best_rank = None
         for targets in itertools.product(("c", "d"), repeat=cut_count):
             trial = dict(initial["cluster_assignment"])
             trial.update(dict(zip(movable, targets)))
@@ -462,8 +464,17 @@ class PartitionPressureTest(unittest.TestCase):
                 else round(float(value))
                 for index, value in enumerate(objective)
             )
-            best_rank = rank if best_rank is None else min(best_rank, rank)
-        self.assertIsNotNone(best_rank)
+            flow_only_best_rank = (
+                rank
+                if flow_only_best_rank is None
+                else min(flow_only_best_rank, rank)
+            )
+        self.assertIsNotNone(flow_only_best_rank)
+
+        # Every timing path can be made local in this compact fixture.  Since
+        # transport delay is non-negative, the following rank is also a
+        # constructive lower bound on all eight objective components.
+        global_best_rank = (-1000000000, 0, 0, 1, 0, 0, 0, 0)
 
         results = []
         for _repeat in range(2):
@@ -482,12 +493,23 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(len(trace["batches"]), 1)
             self.assertEqual(
                 tuple(trace["batches"][0]["ranked_objective_key"]),
-                best_rank,
+                global_best_rank,
             )
-            self.assertEqual(
-                {change["cluster"] for change in trace["batches"][0]["changes"]},
-                set(movable),
+            self.assertLess(
+                global_best_rank,
+                flow_only_best_rank,
             )
+            for index in range(cut_count):
+                launch = by_instance[
+                    f"u{block_size + index:03d}"
+                ]
+                capture = by_instance[
+                    f"u{2 * block_size + index:03d}"
+                ]
+                self.assertEqual(
+                    final["cluster_assignment"][launch],
+                    final["cluster_assignment"][capture],
+                )
             validation = validate_partition_pressure_native_bundle(
                 ir,
                 platform,
@@ -1270,7 +1292,7 @@ class PartitionPressureTest(unittest.TestCase):
             flow_refinement=True,
         )
         self.assertEqual(
-            flow_trace["mode"], "endpoint-exact-critical-flow-v7"
+            flow_trace["mode"], "endpoint-exact-critical-flow-v8"
         )
         self.assertTrue(
             flow_trace["configuration"]["flow_refinement"]["enabled"]

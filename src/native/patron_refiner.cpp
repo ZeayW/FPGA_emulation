@@ -83,6 +83,9 @@ struct Model {
   int flow_piercing_strategy = 0;
   int flow_max_legal_candidates = 0;
   int flow_max_polish_moves = 0;
+  int flow_max_frontier_paths = 0;
+  int flow_max_tail_moves = 0;
+  int flow_version = 0;
   double positive_scale = 1.0;
   double negative_scale = 1.0;
   double max_period = 1.0;
@@ -326,7 +329,9 @@ Model read_model(const std::string& path) {
   require(stream.good(), "cannot open input");
   std::string token;
   stream >> token;
-  const bool flow_input = token == "EMUFLOW_PATRON_INPUT_V7";
+  const bool flow_v7 = token == "EMUFLOW_PATRON_INPUT_V7";
+  const bool flow_v8 = token == "EMUFLOW_PATRON_INPUT_V8";
+  const bool flow_input = flow_v7 || flow_v8;
   require(token == "EMUFLOW_PATRON_INPUT_V6" || flow_input,
           "invalid input header");
   Model model;
@@ -360,6 +365,10 @@ Model read_model(const std::string& path) {
         >> model.flow_corridor_distance >> model.flow_piercing_strategy
         >> model.flow_max_legal_candidates
         >> model.flow_max_polish_moves;
+    if (flow_v8) {
+      stream >> model.flow_max_frontier_paths
+          >> model.flow_max_tail_moves;
+    }
     require(stream.good() && enabled == 1
                 && model.flow_max_clusters > 0
                 && model.flow_max_clusters <= model.clusters
@@ -368,9 +377,13 @@ Model read_model(const std::string& path) {
                 && model.flow_piercing_strategy >= 0
                 && model.flow_piercing_strategy <= 3
                 && model.flow_max_legal_candidates > 0
-                && model.flow_max_polish_moves >= 0,
+                && model.flow_max_polish_moves >= 0
+                && (!flow_v8
+                    || (model.flow_max_frontier_paths > 0
+                        && model.flow_max_tail_moves >= 0)),
             "invalid FLOW");
     model.flow_refinement = true;
+    model.flow_version = flow_v8 ? 8 : 7;
   }
 
   model.hard_capacity.assign(
@@ -2744,11 +2757,14 @@ void write_output(const std::string& output_path,
                   const std::vector<NativeMove>& moves,
                   const std::vector<int>& assignment,
                   const std::vector<NativeBatch>& batches = {},
-                  bool flow_output = false) {
+                  int flow_output_version = 0) {
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
-  output << (flow_output ? "EMUFLOW_PATRON_OUTPUT_V7\n"
-                         : "EMUFLOW_PATRON_OUTPUT_V6\n");
+  output << (flow_output_version == 8
+                 ? "EMUFLOW_PATRON_OUTPUT_V8\n"
+                 : (flow_output_version == 7
+                        ? "EMUFLOW_PATRON_OUTPUT_V7\n"
+                        : "EMUFLOW_PATRON_OUTPUT_V6\n"));
   output << "MODE " << mode << '\n';
   output << "INITIAL";
   write_vector(output, initial.objective);
@@ -3398,6 +3414,94 @@ void run_scalable(const Model& model, const std::string& output_path) {
     if (flow_apply) {
       if (!flow_assignment.empty()) {
         ProxyState refined = build_proxy_state(model, &flow_assignment);
+        long long evaluated_tail_moves = 0;
+        long long feasible_tail_moves = 0;
+        int accepted_tail_moves = 0;
+        for (int iteration = 0;
+             model.flow_version >= 8
+                 && iteration < model.flow_max_tail_moves;
+             ++iteration) {
+          require(!refined.slack_order.empty(),
+                  "flow tail repair has no timing paths");
+          const long long worst_rank = rank_float(
+              *refined.slack_order.begin());
+          std::set<int> candidate_clusters;
+          int frontier_paths = 0;
+          for (int path = 0;
+               path < model.paths
+                   && frontier_paths < model.flow_max_frontier_paths;
+               ++path) {
+            if (rank_float(refined.path[path].normalized_slack)
+                != worst_rank) {
+              continue;
+            }
+            ++frontier_paths;
+            if (model.path[path].start_cluster >= 0) {
+              candidate_clusters.insert(model.path[path].start_cluster);
+            }
+            if (model.path[path].end_cluster >= 0) {
+              candidate_clusters.insert(model.path[path].end_cluster);
+            }
+            for (int net : model.path[path].nets) {
+              candidate_clusters.insert(model.net[net].drivers.begin(),
+                                        model.net[net].drivers.end());
+              candidate_clusters.insert(model.net[net].sinks.begin(),
+                                        model.net[net].sinks.end());
+            }
+          }
+          bool found = false;
+          ProxyDelta best;
+          for (int cluster : candidate_clusters) {
+            if (model.cluster[cluster].fixed >= 0) {
+              continue;
+            }
+            for (int target = 0; target < model.parts; ++target) {
+              if (target == refined.assignment[cluster]) {
+                continue;
+              }
+              ProxyDelta candidate = evaluate_proxy_move(
+                  model,
+                  refined,
+                  cluster_nets,
+                  net_paths,
+                  cluster,
+                  target);
+              ++evaluated_tail_moves;
+              if (!candidate.feasible) {
+                continue;
+              }
+              ++feasible_tail_moves;
+              if (!less_ranked(candidate.evaluation.ranked,
+                               refined.evaluation.ranked)) {
+                continue;
+              }
+              if (!found
+                  || less_ranked(candidate.evaluation.ranked,
+                                 best.evaluation.ranked)
+                  || (candidate.evaluation.ranked
+                          == best.evaluation.ranked
+                      && std::tie(candidate.cluster, candidate.target)
+                             < std::tie(best.cluster, best.target))) {
+                found = true;
+                best = std::move(candidate);
+              }
+            }
+          }
+          if (!found) {
+            break;
+          }
+          apply_proxy_delta(model, refined, best);
+          ++accepted_tail_moves;
+        }
+        std::cerr << "PATRON_FLOW_TAIL_REPAIR evaluated="
+                  << evaluated_tail_moves
+                  << " feasible=" << feasible_tail_moves
+                  << " accepted=" << accepted_tail_moves
+                  << " rank=";
+        for (long long value : refined.evaluation.ranked) {
+          std::cerr << value << ',';
+        }
+        std::cerr << '\n';
         require(refined.evaluation.ranked.size() >= 2
                     && state.evaluation.ranked.size() >= 2
                     && refined.evaluation.ranked[0]
@@ -3945,15 +4049,17 @@ void run_scalable(const Model& model, const std::string& output_path) {
   std::cerr << '\n';
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
-               model.flow_refinement
-                   ? "endpoint-exact-critical-flow-v7"
-                   : "endpoint-exact-critical-ejection-v6",
+               model.flow_version == 8
+                   ? "endpoint-exact-critical-flow-v8"
+                   : (model.flow_version == 7
+                          ? "endpoint-exact-critical-flow-v7"
+                          : "endpoint-exact-critical-ejection-v6"),
                initial,
                endpoint.evaluation,
                moves,
                state.assignment,
                batches,
-               model.flow_refinement);
+               model.flow_version);
 }
 
 void run(const Model& model, const std::string& output_path) {
