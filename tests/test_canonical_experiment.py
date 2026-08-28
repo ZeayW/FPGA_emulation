@@ -723,6 +723,64 @@ class CanonicalExperimentTest(unittest.TestCase):
                     config_path, REPOSITORY, root / "spec.json"
                 )
 
+    def test_precomputed_tritonpart_solution_is_sealed_for_single_arm(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            solution = root / "candidate.part.3"
+            solution.write_text("0\n1\n0\n", encoding="utf-8")
+            config = json.loads(config_path.read_text())
+            config["partition_seed_attempts"] = 1
+            config["tritonpart_solution"] = str(solution)
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            partition = next(
+                item
+                for item in json.loads(output.read_text())["nodes"]
+                if item["id"] == "partition"
+            )
+            digest = hashlib.sha256(solution.read_bytes()).hexdigest()
+            self.assertEqual(partition["inputs"]["tritonpart_solution"], digest)
+            self.assertEqual(
+                partition["configuration"]["tritonpart_solution_sha256"],
+                digest,
+            )
+            for command in (partition["command"], partition["validator"]):
+                self.assertEqual(
+                    command[command.index("--tritonpart-solution") + 1],
+                    str(solution.resolve()),
+                )
+
+            config["partition_seed_attempts"] = 2
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "requires partition_seed_attempts=1"
+            ):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "invalid.json"
+                )
+
+    def test_static_exact_ab_rejects_one_solution_for_different_clusterings(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            solution = root / "candidate.part.3"
+            solution.write_text("0\n", encoding="utf-8")
+            config = json.loads(config_path.read_text())
+            config["tritonpart_solution"] = str(solution)
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "policy-specific partition searches"
+            ):
+                compile_static_exact_ab_experiment_spec(
+                    config_path, REPOSITORY, root / "ab.json"
+                )
+
     def test_partition_balance_repair_must_be_boolean(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

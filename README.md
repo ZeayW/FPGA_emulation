@@ -1520,7 +1520,9 @@ the Phase 3 configuration, and invalidates only Phase 3 and descendants when
 it changes. It is suitable for forcing a previously characterized legal
 candidate across an FPGA boundary; it is not post-processing and must remain
 part of the replayable experiment specification.
-The lower-level managed `experiment-stage partition-run` command also accepts
+The canonical single-arm config and lower-level managed
+`experiment-stage partition-run` command also accept
+`"tritonpart_solution": "/absolute/path/candidate.part.N"` and
 `--tritonpart-solution PATH` for importing an externally computed `.part`
 candidate without rerunning the partition search.  The producer copies the
 solution through TritonPart's normal import path and records its SHA-256 in the
@@ -1529,6 +1531,10 @@ rehashes the external source before authorizing reuse.  This is intended for
 controlled partition-policy experiments whose upstream frontend and timing
 checkpoints are already frozen.  It does not make an unsealed manual result a
 canonical benchmark, and it is rejected for non-TritonPart providers.
+Because the sequential, legacy-v1, and generalized-v2 policies have different
+cluster orders, the three-arm Static Exact A/B compiler deliberately rejects a
+single shared precomputed solution; imported solutions belong in a separately
+sealed single-arm candidate DAG.
 They also bind `partition_seed_attempts` and the explicit
 `partition_repair_balance` policy into both the Phase 3 producer and independent
 validator identities. A multi-seed TritonPart sweep therefore searches for an

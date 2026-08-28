@@ -388,6 +388,12 @@ def compile_canonical_experiment_spec(
         if partition_constraints_value is not None
         else None
     )
+    tritonpart_solution_value = config.get("tritonpart_solution")
+    tritonpart_solution = (
+        _file(tritonpart_solution_value, "tritonpart_solution")
+        if tritonpart_solution_value is not None
+        else None
+    )
     timing_model = _file(config.get("timing_model"), "timing_model")
     architecture_timing = _file(
         config.get("architecture_timing_db"), "architecture_timing_db"
@@ -508,6 +514,11 @@ def compile_canonical_experiment_spec(
         config.get("partition_seed_attempts", 1),
         "partition_seed_attempts",
     )
+    if tritonpart_solution is not None and partition_seed_attempts != 1:
+        raise ValidationError(
+            "canonical experiment tritonpart_solution requires "
+            "partition_seed_attempts=1"
+        )
     partition_repair_balance = config.get(
         "partition_repair_balance", False
     )
@@ -574,6 +585,8 @@ def compile_canonical_experiment_spec(
     }
     if partition_constraints is not None:
         base_inputs["partition_constraints"] = _sha256(partition_constraints)
+    if tritonpart_solution is not None:
+        base_inputs["tritonpart_solution"] = _sha256(tritonpart_solution)
     base_bindings = {
         "rtl": str(rtl),
         "platform": str(platform),
@@ -590,6 +603,8 @@ def compile_canonical_experiment_spec(
     }
     if partition_constraints is not None:
         base_bindings["partition_constraints"] = str(partition_constraints)
+    if tritonpart_solution is not None:
+        base_bindings["tritonpart_solution"] = str(tritonpart_solution)
     closures = {stage: _closure(repository_root, stage) for stage in _COMPONENTS}
 
     nodes: list[Dict[str, Any]] = []
@@ -710,6 +725,13 @@ def compile_canonical_experiment_spec(
     if partition_constraints is not None:
         partition_command.extend(("--constraints", str(partition_constraints)))
         partition_validator.extend(("--constraints", str(partition_constraints)))
+    if tritonpart_solution is not None:
+        partition_command.extend(
+            ("--tritonpart-solution", str(tritonpart_solution))
+        )
+        partition_validator.extend(
+            ("--tritonpart-solution", str(tritonpart_solution))
+        )
     if partition_repair_balance:
         partition_command.insert(-2, "--repair-balance")
     partition_validator.append(
@@ -721,8 +743,8 @@ def compile_canonical_experiment_spec(
         "partition", "partition", ["frontend", "timing"], partition_command,
         partition_validator,
         [_artifact("clusters.json", "consumer-checkpoint"), _artifact("constraints.normalized.json", "consumer-checkpoint"), _artifact("assignment.json", "consumer-checkpoint"), _artifact("phase3_report.json", "consumer-checkpoint"), _artifact("experiment-partition-report.json", "evidence-critical")],
-        inputs=("platform", "route_constraints", *( ("partition_constraints",) if partition_constraints is not None else () ), "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
-        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "partition_constraints_sha256": base_inputs.get("partition_constraints"), "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots, "static_exact_candidate_policy": static_exact_candidate_policy, "minimum_combinational_cut_nets": minimum_combinational_cut_nets},
+        inputs=("platform", "route_constraints", *( ("partition_constraints",) if partition_constraints is not None else () ), *( ("tritonpart_solution",) if tritonpart_solution is not None else () ), "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
+        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "partition_constraints_sha256": base_inputs.get("partition_constraints"), "tritonpart_solution_sha256": base_inputs.get("tritonpart_solution"), "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots, "static_exact_candidate_policy": static_exact_candidate_policy, "minimum_combinational_cut_nets": minimum_combinational_cut_nets},
         peak_gib=24, retained_gib=6,
     )
     cut_command = [
@@ -1041,6 +1063,11 @@ def compile_static_exact_ab_experiment_spec(
     config = read_json(config_path)
     if config.get("schema") != CANONICAL_EXPERIMENT_CONFIG_SCHEMA:
         raise ValidationError("canonical experiment config schema is invalid")
+    if config.get("tritonpart_solution") is not None:
+        raise ValidationError(
+            "Static Exact A/B requires policy-specific partition searches; "
+            "use a single-arm canonical experiment for a precomputed solution"
+        )
     for name, value in (
         ("legacy_max_depth", legacy_max_depth),
         ("generalized_max_depth", generalized_max_depth),
