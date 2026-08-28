@@ -40,6 +40,7 @@ from .sta import _normalized_slack, _validate_database_normalization
 
 PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v6"
 PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v6"
+PARTITION_PRESSURE_FLOW_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v7"
 PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v6"
 PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v6"
 PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v6"
@@ -1316,14 +1317,20 @@ def _parse_patron_native_output(
 ) -> Tuple[
     Dict[str, str],
     List[Dict[str, Any]],
+    List[Dict[str, Any]],
     Dict[str, Any],
     Dict[str, Any],
     str,
 ]:
     lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_PATRON_OUTPUT_V6":
+    if not lines or lines[0] not in (
+        "EMUFLOW_PATRON_OUTPUT_V6",
+        "EMUFLOW_PATRON_OUTPUT_V7",
+    ):
         raise ValidationError("native PATRON output header is invalid")
+    output_version = lines[0]
     moves = []
+    batches = []
     assignment: Dict[str, str] = {}
     final_metrics = None
     initial_metrics = None
@@ -1388,6 +1395,44 @@ def _parse_patron_native_output(
                     "ranked_objective_key": ranked,
                 }
             )
+        elif fields[0] == "BATCH" and len(fields) == 27:
+            if output_version != "EMUFLOW_PATRON_OUTPUT_V7":
+                raise ValidationError("native PATRON v6 returned a BATCH")
+            index, change_count = map(int, fields[1:3])
+            if index != len(batches) or change_count <= 0:
+                raise ValidationError("native PATRON batch header is invalid")
+            batches.append(
+                {
+                    "index": index,
+                    "changes": [],
+                    "expected_changes": change_count,
+                    "before_objective_key": [
+                        float(item) for item in fields[3:11]
+                    ],
+                    "after_objective_key": [
+                        float(item) for item in fields[11:19]
+                    ],
+                    "ranked_objective_key": [
+                        int(item) for item in fields[19:27]
+                    ],
+                }
+            )
+        elif fields[0] == "CHANGE" and len(fields) == 5:
+            if output_version != "EMUFLOW_PATRON_OUTPUT_V7":
+                raise ValidationError("native PATRON v6 returned a CHANGE")
+            batch, cluster, source, target = map(int, fields[1:])
+            if batch < 0 or batch >= len(batches):
+                raise ValidationError("native PATRON batch change is orphaned")
+            record = batches[batch]
+            if len(record["changes"]) >= record["expected_changes"]:
+                raise ValidationError("native PATRON batch has extra changes")
+            record["changes"].append(
+                {
+                    "cluster": indexes["clusters"][cluster],
+                    "source": indexes["parts"][source],
+                    "target": indexes["parts"][target],
+                }
+            )
         elif fields[0] == "FINAL" and len(fields) == 9:
             if final_metrics is not None:
                 raise ValidationError("native PATRON returned duplicate FINAL")
@@ -1408,9 +1453,17 @@ def _parse_patron_native_output(
             )
     if set(assignment) != set(indexes["clusters"]):
         raise ValidationError("native PATRON assignment coverage is invalid")
+    for batch in batches:
+        expected_changes = batch.pop("expected_changes")
+        if len(batch["changes"]) != expected_changes:
+            raise ValidationError(
+                "native PATRON batch change coverage is invalid"
+            )
+    if output_version == "EMUFLOW_PATRON_OUTPUT_V7" and not batches:
+        raise ValidationError("native PATRON v7 has no batch")
     if final_metrics is None or initial_metrics is None or mode is None:
         raise ValidationError("native PATRON output metadata is incomplete")
-    return assignment, moves, initial_metrics, final_metrics, mode
+    return assignment, moves, batches, initial_metrics, final_metrics, mode
 
 
 def run_partition_pressure_native(
@@ -1458,6 +1511,7 @@ def run_partition_pressure_native(
         (
             cluster_assignment,
             moves,
+            batches,
             initial_metrics,
             final_metrics,
             mode,
@@ -1479,7 +1533,11 @@ def run_partition_pressure_native(
     )
     validate_partition_artifacts(ir, platform, clusters_artifact, final)
     return final, {
-        "schema": PARTITION_PRESSURE_TRACE_SCHEMA,
+        "schema": (
+            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA
+            if batches
+            else PARTITION_PRESSURE_TRACE_SCHEMA
+        ),
         "design": model["design"],
         "platform": model["platform"],
         "provider": PARTITION_PRESSURE_NATIVE_PROVIDER,
@@ -1503,6 +1561,7 @@ def run_partition_pressure_native(
         "initial_assignment_sha256": _canonical_digest(initial_assignment),
         "initial_metrics": initial_metrics,
         "moves": moves,
+        "batches": batches,
         "final_metrics": final_metrics,
         "final_cluster_assignment_sha256": _canonical_digest(
             cluster_assignment
@@ -1612,8 +1671,13 @@ def validate_partition_pressure_native_bundle(
         route_constraints,
         model,
     )
+    trace_schema = native_trace.get("schema")
     if (
-        native_trace.get("schema") != PARTITION_PRESSURE_TRACE_SCHEMA
+        trace_schema
+        not in (
+            PARTITION_PRESSURE_TRACE_SCHEMA,
+            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
+        )
         or native_trace.get("provider") != PARTITION_PRESSURE_NATIVE_PROVIDER
         or native_trace.get("model_sha256") != _canonical_digest(model)
         or native_trace.get("initial_assignment_sha256")
@@ -1632,6 +1696,8 @@ def validate_partition_pressure_native_bundle(
         raise ValidationError("native PATRON final assignment seal is invalid")
     mode = native_trace.get("mode")
     if mode == "endpoint-exact-global-best-v6":
+        if trace_schema != PARTITION_PRESSURE_TRACE_SCHEMA:
+            raise ValidationError("native PATRON exact trace schema is invalid")
         exact = validate_partition_pressure_native_against_exhaustive(
             ir,
             platform,
@@ -1650,10 +1716,14 @@ def validate_partition_pressure_native_bundle(
             "model_validation": model_validation,
             **exact,
         }
-    if mode != "endpoint-exact-critical-ejection-v6":
+    if mode not in (
+        "endpoint-exact-critical-ejection-v6",
+        "endpoint-exact-critical-flow-v7",
+    ):
         raise ValidationError("native PATRON trace mode is invalid")
 
     moves = native_trace.get("moves")
+    batches = native_trace.get("batches", [])
     max_moves = native_trace.get("configuration", {}).get("max_moves")
     max_sweeps = native_trace.get("configuration", {}).get(
         "max_scalable_sweeps"
@@ -1669,6 +1739,21 @@ def validate_partition_pressure_native_bundle(
     )
     if (
         not isinstance(moves, list)
+        or not isinstance(batches, list)
+        or (
+            mode == "endpoint-exact-critical-flow-v7"
+            and (
+                trace_schema != PARTITION_PRESSURE_FLOW_TRACE_SCHEMA
+                or not batches
+            )
+        )
+        or (
+            mode == "endpoint-exact-critical-ejection-v6"
+            and (
+                trace_schema != PARTITION_PRESSURE_TRACE_SCHEMA
+                or batches
+            )
+        )
         or isinstance(max_moves, bool)
         or not isinstance(max_moves, int)
         or max_moves < 0
@@ -1855,6 +1940,127 @@ def validate_partition_pressure_native_bundle(
             previous_sweep = sweep
             previous_sweep_index = sweep_index[cluster]
         previous_phase = phase
+    for batch_index, batch in enumerate(batches):
+        if (
+            not isinstance(batch, dict)
+            or batch.get("index") != batch_index
+            or not isinstance(batch.get("changes"), list)
+            or not batch["changes"]
+        ):
+            raise ValidationError("native PATRON batch record is invalid")
+        before_evaluation = evaluate_partition_pressure(
+            ir,
+            platform,
+            clusters_artifact,
+            constraints,
+            route_constraints,
+            model,
+            current,
+            include_tdm_wait=True,
+        )
+        before_expected = before_evaluation["metrics"]["objective_key"]
+        trial = dict(current)
+        changed = set()
+        previous_cluster = None
+        for change in batch["changes"]:
+            if not isinstance(change, dict):
+                raise ValidationError("native PATRON batch change is invalid")
+            cluster = change.get("cluster")
+            source = change.get("source")
+            target = change.get("target")
+            if (
+                cluster not in cluster_ids
+                or source not in fpga_ids
+                or target not in fpga_ids
+                or source == target
+                or fixed.get(cluster) is not None
+                or current.get(cluster) != source
+                or cluster in changed
+                or (
+                    previous_cluster is not None
+                    and cluster <= previous_cluster
+                )
+            ):
+                raise ValidationError(
+                    "native PATRON batch transition is invalid"
+                )
+            changed.add(cluster)
+            previous_cluster = cluster
+            trial[cluster] = target
+        after_evaluation = evaluate_partition_pressure(
+            ir,
+            platform,
+            clusters_artifact,
+            constraints,
+            route_constraints,
+            model,
+            trial,
+            include_tdm_wait=True,
+        )
+        after_expected = after_evaluation["metrics"]["objective_key"]
+        before = batch.get("before_objective_key")
+        after = batch.get("after_objective_key")
+        ranked = batch.get("ranked_objective_key")
+        if (
+            not isinstance(before, list)
+            or not isinstance(after, list)
+            or not isinstance(ranked, list)
+            or len(before) != 8
+            or len(after) != 8
+            or len(ranked) != 8
+            or not all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+                for value in before + after
+            )
+            or not all(
+                isinstance(value, int) and not isinstance(value, bool)
+                for value in ranked
+            )
+        ):
+            raise ValidationError("native PATRON batch objective is invalid")
+        for label, actual, expected in (
+            ("before", before, before_expected),
+            ("after", after, after_expected),
+        ):
+            for objective_index, (left, right) in enumerate(
+                zip(actual, expected)
+            ):
+                matches = (
+                    math.isclose(
+                        float(left),
+                        float(right),
+                        rel_tol=1.0e-12,
+                        abs_tol=1.0e-9,
+                    )
+                    if objective_index < 2
+                    else float(left) == float(right)
+                )
+                if not matches:
+                    raise ValidationError(
+                        f"native PATRON batch {label} objective mismatch"
+                    )
+        expected_rank = list(_ranked_key(after_evaluation))
+        before_rank = _ranked_key(before_evaluation)
+        if (
+            ranked != expected_rank
+            or ranked[0] >= before_rank[0]
+            or ranked[1] >= before_rank[1]
+        ):
+            raise ValidationError(
+                "native PATRON batch is not dual-objective improving"
+            )
+        if previous_after is not None:
+            maximum_chain_error = max(
+                maximum_chain_error,
+                max(
+                    abs(float(left) - float(right))
+                    for left, right in zip(before, previous_after)
+                ),
+            )
+        previous_after = after
+        current = trial
     if current != native_assignment["cluster_assignment"]:
         raise ValidationError("native PATRON move chain assignment mismatch")
     if maximum_chain_error > 1.0e-9:
@@ -1928,6 +2134,7 @@ def validate_partition_pressure_native_bundle(
         "qualification": "linear-transition-and-endpoint-reconstruction",
         "model_validation": model_validation,
         "moves": len(moves),
+        "batches": len(batches),
         "maximum_objective_chain_error": maximum_chain_error,
         "maximum_endpoint_objective_error": maximum_endpoint_error,
         "maximum_endpoint_relative_objective_error": (

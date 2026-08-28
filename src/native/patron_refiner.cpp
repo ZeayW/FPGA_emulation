@@ -977,13 +977,15 @@ void apply_proxy_delta(const Model& model,
                        ProxyState& state,
                        const ProxyDelta& delta);
 
-void diagnose_flow_corridors(
+std::vector<int> diagnose_flow_corridors(
     const Model& model,
     const ProxyState& state,
     const std::vector<std::vector<int>>& cluster_nets,
     const std::vector<std::vector<int>>& net_paths,
     const std::vector<double>& exposure,
     int cover_domain) {
+  std::vector<int> selected_assignment;
+  std::vector<long long> selected_rank;
   int edge_left = -1;
   int edge_right = -1;
   for (int source = 0; source < model.parts && edge_left < 0; ++source) {
@@ -999,7 +1001,7 @@ void diagnose_flow_corridors(
   }
   if (edge_left < 0) {
     std::cerr << "PATRON_FLOW_CORRIDOR status=no-edge-endpoints\n";
-    return;
+    return {};
   }
   std::vector<bool> opposite_side(model.parts, false);
   for (int part = 0; part < model.parts; ++part) {
@@ -2275,11 +2277,24 @@ void diagnose_flow_corridors(
               std::cerr << value << ',';
             }
             std::cerr << '\n';
+            if (polished.evaluation.ranked.size() >= 2
+                && state.evaluation.ranked.size() >= 2
+                && polished.evaluation.ranked[0]
+                       < state.evaluation.ranked[0]
+                && polished.evaluation.ranked[1]
+                       < state.evaluation.ranked[1]
+                && (selected_assignment.empty()
+                    || less_ranked(polished.evaluation.ranked,
+                                   selected_rank))) {
+              selected_assignment = polished.assignment;
+              selected_rank = polished.evaluation.ranked;
+            }
           }
         }
       }
     }
   }
+  return selected_assignment;
 }
 
 void erase_one(std::multiset<double>& values, double value) {
@@ -2673,15 +2688,23 @@ struct NativeMove {
   Evaluation after;
 };
 
+struct NativeBatch {
+  std::vector<std::tuple<int, int, int>> changes;
+  Evaluation before;
+  Evaluation after;
+};
+
 void write_output(const std::string& output_path,
                   const std::string& mode,
                   const Evaluation& initial,
                   const Evaluation& final,
                   const std::vector<NativeMove>& moves,
-                  const std::vector<int>& assignment) {
+                  const std::vector<int>& assignment,
+                  const std::vector<NativeBatch>& batches = {}) {
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
-  output << "EMUFLOW_PATRON_OUTPUT_V6\n";
+  output << (batches.empty() ? "EMUFLOW_PATRON_OUTPUT_V6\n"
+                             : "EMUFLOW_PATRON_OUTPUT_V7\n");
   output << "MODE " << mode << '\n';
   output << "INITIAL";
   write_vector(output, initial.objective);
@@ -2697,6 +2720,20 @@ void write_output(const std::string& output_path,
     write_vector(output, move.after.objective);
     write_vector(output, move.after.ranked);
     output << '\n';
+  }
+  for (int batch = 0; batch < static_cast<int>(batches.size()); ++batch) {
+    const NativeBatch& record = batches[batch];
+    output << "BATCH " << batch << ' ' << record.changes.size();
+    write_vector(output, record.before.objective);
+    write_vector(output, record.after.objective);
+    write_vector(output, record.after.ranked);
+    output << '\n';
+    for (const auto& change : record.changes) {
+      output << "CHANGE " << batch << ' '
+             << std::get<0>(change) << ' '
+             << std::get<1>(change) << ' '
+             << std::get<2>(change) << '\n';
+    }
   }
   output << "FINAL";
   write_vector(output, final.objective);
@@ -2878,6 +2915,7 @@ void run_scalable(const Model& model, const std::string& output_path) {
   });
 
   std::vector<NativeMove> moves;
+  std::vector<NativeBatch> batches;
   for (int sweep = 0; sweep < model.max_sweeps; ++sweep) {
     const std::size_t sweep_start = moves.size();
     for (int cluster : order) {
@@ -3208,6 +3246,10 @@ void run_scalable(const Model& model, const std::string& output_path) {
       = std::getenv("EMUFLOW_PATRON_COVER_DIAGNOSTIC");
   const bool cover_diagnostic = cover_diagnostic_value != nullptr
                                 && std::string(cover_diagnostic_value) == "1";
+  const char* flow_apply_value
+      = std::getenv("EMUFLOW_PATRON_FLOW_APPLY");
+  const bool flow_apply = flow_apply_value != nullptr
+                          && std::string(flow_apply_value) == "1";
   if (cover_diagnostic && model.parts <= 8) {
     std::vector<int> permutation(model.parts);
     std::iota(permutation.begin(), permutation.end(), 0);
@@ -3309,11 +3351,36 @@ void run_scalable(const Model& model, const std::string& output_path) {
       cover_deficit = deficit;
     }
   }
-  if (cover_diagnostic && cover_domain >= 0) {
-    diagnose_flow_corridors(
+  if ((cover_diagnostic || flow_apply) && cover_domain >= 0) {
+    std::vector<int> flow_assignment = diagnose_flow_corridors(
         model, state, cluster_nets, net_paths, exposure, cover_domain);
+    if (flow_apply) {
+      require(!flow_assignment.empty(),
+              "flow refinement found no dual-improving legal assignment");
+      ProxyState refined = build_proxy_state(model, &flow_assignment);
+      require(refined.evaluation.ranked.size() >= 2
+                  && state.evaluation.ranked.size() >= 2
+                  && refined.evaluation.ranked[0]
+                         < state.evaluation.ranked[0]
+                  && refined.evaluation.ranked[1]
+                         < state.evaluation.ranked[1],
+              "flow refinement did not improve WNS and TNS");
+      NativeBatch batch;
+      batch.before = state.evaluation;
+      batch.after = refined.evaluation;
+      for (int cluster = 0; cluster < model.clusters; ++cluster) {
+        if (state.assignment[cluster] != refined.assignment[cluster]) {
+          batch.changes.emplace_back(cluster,
+                                     state.assignment[cluster],
+                                     refined.assignment[cluster]);
+        }
+      }
+      require(!batch.changes.empty(), "flow refinement batch is empty");
+      batches.push_back(std::move(batch));
+      state = std::move(refined);
+    }
   }
-  if (cover_diagnostic && cover_domain >= 0) {
+  if (cover_diagnostic && !flow_apply && cover_domain >= 0) {
     std::vector<CoverMove> raw_cover_moves;
     std::vector<CoverOperation> cover_operations;
     long long evaluated_cover_moves = 0;
@@ -3837,11 +3904,13 @@ void run_scalable(const Model& model, const std::string& output_path) {
   std::cerr << '\n';
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
-               "endpoint-exact-critical-ejection-v6",
+               batches.empty() ? "endpoint-exact-critical-ejection-v6"
+                               : "endpoint-exact-critical-flow-v7",
                initial,
                endpoint.evaluation,
                moves,
-               state.assignment);
+               state.assignment,
+               batches);
 }
 
 void run(const Model& model, const std::string& output_path) {
