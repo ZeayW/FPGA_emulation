@@ -1719,6 +1719,8 @@ void diagnose_flow_corridors(
           std::vector<long long> best_parametric_key;
           std::vector<int> best_piercing_assignment;
           std::vector<long long> best_piercing_rank;
+          std::vector<int> best_dual_piercing_assignment;
+          std::vector<long long> best_dual_piercing_rank;
           for (int iteration = 0; iteration < 96; ++iteration) {
             const std::vector<bool> parametric_source_side
                 = parametric_flow.source_reachable(parametric_source_node);
@@ -1856,6 +1858,28 @@ void diagnose_flow_corridors(
                   = parametric_load;
               double current_source_excess = source_excess;
               double current_sink_excess = sink_excess;
+              double current_source_pressure = 0.0;
+              double current_sink_pressure = 0.0;
+              int feasible_piercing_cuts = 0;
+              for (int dim = 0; dim < model.dimensions; ++dim) {
+                const double source_limit = std::min(
+                    model.hard_capacity[right_source][dim],
+                    model.balance_capacity[right_source][dim]);
+                const double sink_limit = std::min(
+                    model.hard_capacity[right_sink][dim],
+                    model.balance_capacity[right_sink][dim]);
+                if (source_limit > 0.0) {
+                  current_source_pressure = std::max(
+                      current_source_pressure,
+                      current_piercing_load[right_source][dim]
+                          / source_limit);
+                }
+                if (sink_limit > 0.0) {
+                  current_sink_pressure = std::max(
+                      current_sink_pressure,
+                      current_piercing_load[right_sink][dim] / sink_limit);
+                }
+              }
               for (int piercing_iteration = 0;
                    piercing_iteration < static_cast<int>(
                        parametric_variables.size());
@@ -1864,7 +1888,10 @@ void diagnose_flow_corridors(
                     = parametric_flow.source_reachable(
                         parametric_source_node);
                 const bool grow_sink
-                    = current_source_excess >= current_sink_excess;
+                    = current_source_excess > current_sink_excess
+                      || (current_source_excess == current_sink_excess
+                          && current_source_pressure
+                                 >= current_sink_pressure);
                 std::vector<int> candidates;
                 std::vector<int> fallback;
                 for (int cluster : parametric_variables) {
@@ -2009,6 +2036,8 @@ void diagnose_flow_corridors(
                 bool piercing_capacity = true;
                 double piercing_source_excess = 0.0;
                 double piercing_sink_excess = 0.0;
+                double piercing_source_pressure = 0.0;
+                double piercing_sink_pressure = 0.0;
                 for (int part = 0; part < model.parts; ++part) {
                   for (int dim = 0; dim < model.dimensions; ++dim) {
                     const double limit = std::min(
@@ -2019,10 +2048,16 @@ void diagnose_flow_corridors(
                     piercing_capacity = piercing_capacity
                                         && excess_value <= 1.0e-9;
                     if (limit > 0.0 && part == right_source) {
+                      piercing_source_pressure = std::max(
+                          piercing_source_pressure,
+                          piercing_load[part][dim] / limit);
                       piercing_source_excess = std::max(
                           piercing_source_excess, excess_value / limit);
                     }
                     if (limit > 0.0 && part == right_sink) {
+                      piercing_sink_pressure = std::max(
+                          piercing_sink_pressure,
+                          piercing_load[part][dim] / limit);
                       piercing_sink_excess = std::max(
                           piercing_sink_excess, excess_value / limit);
                     }
@@ -2046,17 +2081,44 @@ void diagnose_flow_corridors(
                 if (piercing_capacity) {
                   ProxyState candidate
                       = build_proxy_state(model, &piercing_assignment);
+                  std::cerr << "PATRON_FLOW_PIERCING_FEASIBLE pair="
+                            << edge_left << ':' << pair_target
+                            << " index=" << feasible_piercing_cuts
+                            << " forced="
+                            << std::count(pierced.begin(), pierced.end(), true)
+                            << " rank=";
+                  for (long long value : candidate.evaluation.ranked) {
+                    std::cerr << value << ',';
+                  }
+                  std::cerr << '\n';
                   if (best_piercing_assignment.empty()
                       || less_ranked(candidate.evaluation.ranked,
                                      best_piercing_rank)) {
                     best_piercing_assignment = piercing_assignment;
                     best_piercing_rank = candidate.evaluation.ranked;
                   }
-                  break;
+                  if (candidate.evaluation.ranked.size() >= 2
+                      && state.evaluation.ranked.size() >= 2
+                      && candidate.evaluation.ranked[0]
+                             < state.evaluation.ranked[0]
+                      && candidate.evaluation.ranked[1]
+                             < state.evaluation.ranked[1]
+                      && (best_dual_piercing_assignment.empty()
+                          || less_ranked(candidate.evaluation.ranked,
+                                         best_dual_piercing_rank))) {
+                    best_dual_piercing_assignment = piercing_assignment;
+                    best_dual_piercing_rank = candidate.evaluation.ranked;
+                  }
+                  ++feasible_piercing_cuts;
+                  if (feasible_piercing_cuts >= 8) {
+                    break;
+                  }
                 }
                 current_piercing_load = std::move(piercing_load);
                 current_source_excess = piercing_source_excess;
                 current_sink_excess = piercing_sink_excess;
+                current_source_pressure = piercing_source_pressure;
+                current_sink_pressure = piercing_sink_pressure;
               }
               break;
             }
@@ -2123,6 +2185,8 @@ void diagnose_flow_corridors(
             report_parametric("best-domain", best_parametric_assignment);
           }
           report_parametric("flowcutter-piercing", best_piercing_assignment);
+          report_parametric("flowcutter-dual-improving",
+                            best_dual_piercing_assignment);
         }
       }
     }
