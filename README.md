@@ -531,6 +531,24 @@ the canonical case. The promotion gate is therefore false and
 explicit research mode until a later cost model passes the same no-regression
 gate; the flow does not silently substitute v2 merely because it exercised
 more cuts.
+
+The current follow-up cost model keeps TritonPart as the partition provider
+and applies one optional, direction-aware MFSPart FM post-refinement to its
+sealed assignment. It reconstructs driver/sink identity from EmuIR (never from
+TritonPart's undirected hypergraph), combines aggregate cut/connectivity/hop
+gain with a weighted worst-sink-hop term, and defaults that bottleneck weight
+to `256` for canonical Static Exact experiments. The checkpoint identity seals
+the weight and the complete native certificate; reuse re-executes the
+independent C++ global-best/best-prefix checker without writable scratch.
+Use `--mfspart-post-refinement`,
+`--mfspart-post-refinement-early-stop`, and
+`--mfspart-post-refinement-bottleneck-beta` on the reusable Phase 3 stage for
+controlled studies. A frozen 367,129-cluster diagnostic passed the native
+checker and kept the previously identified worst-path driver on its nearer
+FPGA at weights 192 and 256 while still reducing aggregate cut and weighted
+hop cost. The required complete Phase 7 WNS/TNS comparison is still running;
+this diagnostic is algorithm-calibration evidence, not a promotion result.
+
 The managed shared-Phase-1--5 view intentionally contains only consumer
 artifacts, not duplicate timing/partition evidence reports.  For that layout,
 the comparator follows the immutable shared checkpoint's dependency keys back

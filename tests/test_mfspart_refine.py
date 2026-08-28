@@ -12,8 +12,10 @@ from emuflow.mfspart_refine import (
     _normalise_refinement,
     _replay,
     _replay_exhaustive,
+    _write_native_input,
     refine_mfspart_hierarchy,
     refine_mfspart_level,
+    validate_mfspart_native_certificate,
     validate_mfspart_refinement,
 )
 
@@ -112,6 +114,104 @@ class MFSPartRefinementTest(unittest.TestCase):
         self.assertEqual(artifact["assignment"], [0, 0])
         self.assertGreater(artifact["metrics"]["best_cumulative_gain"], 0)
         self.assertEqual(artifact["metrics"]["final_violating_pairs"], 0.0)
+
+    def test_worst_sink_hop_blocks_high_fanout_driver_move_to_edge(self) -> None:
+        graph = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [1]},
+                {"fixed_part": 2, "weights": [1]},
+                {"fixed_part": 2, "weights": [1]},
+                {"fixed_part": 2, "weights": [1]},
+                {"fixed_part": 0, "weights": [1]},
+                {"fixed_part": 1, "weights": [1]},
+            ],
+            "nets": [{"weight": 1.0, "source": 0, "sinks": [1, 2, 3, 4, 5]}],
+        }
+        parts, distances, capacities = _line_problem()
+        initial = [1, 2, 2, 2, 0, 1]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            without_bottleneck = refine_mfspart_level(
+                graph,
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                initial,
+                Path(temporary_directory) / "pair-only",
+                hmax=2,
+                early_stop=1,
+                bottleneck_beta=0.0,
+                executable=str(self.executable),
+                checker=str(self.checker),
+            )
+            with_bottleneck = refine_mfspart_level(
+                graph,
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                initial,
+                Path(temporary_directory) / "worst-sink",
+                hmax=2,
+                early_stop=1,
+                bottleneck_beta=2.0,
+                executable=str(self.executable),
+                checker=str(self.checker),
+            )
+        self.assertEqual(without_bottleneck["assignment"][0], 2)
+        self.assertEqual(with_bottleneck["assignment"][0], 1)
+        self.assertEqual(with_bottleneck["metrics"]["best_prefix"], 0.0)
+
+    def test_native_v1_input_remains_readable_as_zero_bottleneck_weight(self) -> None:
+        parts, distances, capacities = _line_problem()
+        problem = _normalise_refinement(
+            self._violating_graph(),
+            ["cells"],
+            parts,
+            distances,
+            capacities,
+            [0, 2],
+            hmax=1,
+            move_distance=2,
+            early_stop=1,
+            gamma=15.0,
+            violation_lambda=10_000.0,
+            mu=0.1,
+            bottleneck_beta=0.0,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            input_path = root / "legacy.in"
+            output_path = root / "legacy.out"
+            check_path = root / "legacy.check"
+            _write_native_input(input_path, problem)
+            lines = input_path.read_text(encoding="utf-8").splitlines()
+            lines[0] = "EMUFLOW_MFSPART_REFINER_INPUT_V1"
+            parameter = lines[1].split()
+            self.assertEqual(parameter.pop(), "0")
+            lines[1] = " ".join(parameter)
+            input_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            optimizer = subprocess.run(
+                [str(self.executable), str(input_path), str(output_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            checker = subprocess.run(
+                [
+                    str(self.checker),
+                    str(input_path),
+                    str(output_path),
+                    str(check_path),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(optimizer.returncode, 0, optimizer.stdout)
+        self.assertEqual(checker.returncode, 0, checker.stdout)
 
     def test_best_prefix_rolls_back_negative_moves(self) -> None:
         graph = {
@@ -347,6 +447,51 @@ class MFSPartRefinementTest(unittest.TestCase):
         )
         self.assertEqual(artifact["assignment"], [0, 0])
         self.assertIn("checker_output_sha256", artifact["artifacts"])
+
+    def test_read_only_native_certificate_replay_rejects_tampering(self) -> None:
+        parts, distances, capacities = _line_problem()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = refine_mfspart_level(
+                self._violating_graph(),
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0, 2],
+                root,
+                hmax=1,
+                early_stop=2,
+                executable=str(self.executable),
+                checker=str(self.checker),
+                python_replay_max_nodes=0,
+            )
+            certificate = validate_mfspart_native_certificate(
+                root / "mfspart_refiner.in",
+                root / "mfspart_refiner.out",
+                checker=str(self.checker),
+            )
+            self.assertEqual(
+                certificate["parsed"]["assignment"], artifact["assignment"]
+            )
+            output = root / "mfspart_refiner.out"
+            lines = output.read_text(encoding="utf-8").splitlines()
+            move = next(
+                index for index, line in enumerate(lines)
+                if line.startswith("MOVE ")
+            )
+            fields = lines[move].split()
+            fields[2] = "0"
+            lines[move] = " ".join(fields)
+            output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "checker rejected refinement"
+            ):
+                validate_mfspart_native_certificate(
+                    root / "mfspart_refiner.in",
+                    output,
+                    checker=str(self.checker),
+                )
 
     def test_native_certificate_rejects_non_global_move(self) -> None:
         parts, distances, capacities = _line_problem()

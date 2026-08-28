@@ -9,7 +9,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.io import read_json
+from emuflow.mfspart_provider import _partition_graph, refine_mfspart_partition
+from emuflow.partition import build_clusters, load_partition_constraints
 from emuflow.phase3 import run_phase3
+from emuflow.platform import Platform
+from emuflow.routing import load_route_constraints
 from emuflow.yosys import import_yosys_json
 from tests.native_build import tlr_router
 
@@ -178,6 +183,84 @@ class MFSPartPhase3Test(unittest.TestCase):
         self.assertGreater(
             assignment["provider_metadata"]["min_used_legalization_moves"], 0
         )
+
+    def test_directional_post_refinement_preserves_tritonpart_contract(self) -> None:
+        ir = import_yosys_json(
+            ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
+        )
+        platform = Platform.load(PLATFORM)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "counter.emuir.json"
+            ir_path.write_text(json.dumps(ir.to_dict()), encoding="utf-8")
+            run_phase3(
+                ir_path,
+                PLATFORM,
+                root / "phase3",
+                seed=19,
+                provider="greedy",
+            )
+            clusters = read_json(root / "phase3/clusters.json")
+            initial = read_json(root / "phase3/assignment.json")
+            constraints = load_partition_constraints(None, ir, platform)
+            refined, report = refine_mfspart_partition(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                load_route_constraints(None, platform),
+                initial,
+                root / "post-refinement",
+                early_stop=4,
+                refiner=self.executables["refiner"],
+                refiner_checker=self.executables["refiner_checker"],
+            )
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["direction_source"], "EmuIR net drivers/sinks")
+        self.assertEqual(refined["provider"], initial["provider"])
+        self.assertEqual(
+            refined["provider_metadata"][
+                "directional_mfspart_post_refinement"
+            ]["initial_assignment_provider"],
+            initial["provider"],
+        )
+        self.assertEqual(
+            set(refined["cluster_assignment"]),
+            set(initial["cluster_assignment"]),
+        )
+
+    def test_directional_graph_uses_emuir_driver_identity(self) -> None:
+        ir = import_yosys_json(
+            ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
+        )
+        platform = Platform.load(PLATFORM)
+        constraints = load_partition_constraints(None, ir, platform)
+        clusters = build_clusters(ir, constraints)
+        _nodes, graph_nets, _dimensions = _partition_graph(
+            ir, clusters, platform, {}
+        )
+        cluster_by_instance = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        ir_nets = {net["id"]: net for net in ir.value["nets"]}
+        self.assertTrue(graph_nets)
+        for graph_net in graph_nets:
+            net_id = graph_net["id"].rsplit("#d", 1)[0]
+            net = ir_nets[net_id]
+            driver_clusters = {
+                cluster_by_instance[endpoint["instance"]]
+                for endpoint in net["drivers"]
+                if endpoint["instance"] is not None
+            }
+            sink_clusters = {
+                cluster_by_instance[endpoint["instance"]]
+                for endpoint in net["sinks"]
+                if endpoint["instance"] is not None
+            }
+            self.assertIn(graph_net["source"], driver_clusters)
+            self.assertTrue(set(graph_net["sinks"]).issubset(sink_clusters))
 
     def test_counter_runs_affected_multi_fpga_flow_with_mfspart(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

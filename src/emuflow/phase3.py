@@ -15,7 +15,8 @@ from .partition import (
 from .partition_hops import refine_partition_hops
 from .platform import Platform
 from .repart import run_repart
-from .mfspart_provider import run_mfspart
+from .mfspart_provider import refine_mfspart_partition, run_mfspart
+from .mfspart_refine import DEFAULT_BOTTLENECK_BETA
 from .tritonpart import load_partition_net_weights, run_tritonpart
 from .routing import load_route_constraints
 from .combinational_cut import STATIC_EXACT_CANDIDATE_FRONTIER_V1
@@ -52,6 +53,9 @@ def run_phase3(
     mfspart_refiner: Optional[str] = None,
     mfspart_refiner_checker: Optional[str] = None,
     mfspart_legalizer: Optional[str] = None,
+    mfspart_post_refinement: bool = False,
+    mfspart_post_refinement_early_stop: int = 1000,
+    mfspart_post_refinement_bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = 1,
     comb_segment_budget_slots: int = 1,
@@ -144,6 +148,26 @@ def run_phase3(
             "expected 'repart-replication', 'repart', 'tritonpart', "
             "'mfspart', or 'greedy'"
         )
+    mfspart_post_refinement_report = None
+    if mfspart_post_refinement:
+        if provider != "tritonpart":
+            raise ValueError(
+                "MFSPart post-refinement requires provider='tritonpart'"
+            )
+        assignment, mfspart_post_refinement_report = refine_mfspart_partition(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            route_constraints,
+            assignment,
+            output_dir / "mfspart-post-refinement",
+            net_weights=load_partition_net_weights(net_weights_path),
+            early_stop=mfspart_post_refinement_early_stop,
+            bottleneck_beta=mfspart_post_refinement_bottleneck_beta,
+            refiner=mfspart_refiner,
+            refiner_checker=mfspart_refiner_checker,
+        )
     assignment, hop_refinement = refine_partition_hops(
         ir,
         platform,
@@ -171,6 +195,7 @@ def run_phase3(
         "seed": assignment["seed"],
         "validation": validation,
         "hop_refinement": hop_refinement,
+        "mfspart_post_refinement": mfspart_post_refinement_report,
         "partitions": [
             {
                 key: value
@@ -197,6 +222,10 @@ def run_phase3(
         )
     if provider == "tritonpart":
         report["artifacts"]["tritonpart"] = "tritonpart/tritonpart_input.json"
+        if mfspart_post_refinement_report is not None:
+            report["artifacts"]["mfspart_post_refinement"] = (
+                "mfspart-post-refinement/post_refinement.json"
+            )
     elif provider in {"repart", "repart-replication"}:
         report["artifacts"]["repart"] = "repart/repart_input.json"
         if provider == "repart-replication":

@@ -618,6 +618,22 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     partition_run.add_argument("--hop-refiner")
+    partition_run.add_argument(
+        "--mfspart-post-refinement",
+        action="store_true",
+        help=(
+            "directionally post-refine a TritonPart assignment with the "
+            "source-bound MFSPart FM refiner"
+        ),
+    )
+    partition_run.add_argument(
+        "--mfspart-post-refinement-early-stop", type=int, default=1000
+    )
+    partition_run.add_argument(
+        "--mfspart-post-refinement-bottleneck-beta",
+        type=float,
+        default=256.0,
+    )
     partition_run.add_argument("--timeout-seconds", type=int, default=3600)
     partition_run.add_argument("--seed-attempts", type=int, default=1)
     partition_run.add_argument(
@@ -663,6 +679,17 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--constraints", type=Path)
     partition_validate.add_argument("--route-constraints", type=Path)
     partition_validate.add_argument("--tritonpart-solution", type=Path)
+    partition_validate.add_argument(
+        "--mfspart-post-refinement",
+        action=_BooleanOptionalAction,
+        default=None,
+    )
+    partition_validate.add_argument(
+        "--mfspart-post-refinement-early-stop", type=int
+    )
+    partition_validate.add_argument(
+        "--mfspart-post-refinement-bottleneck-beta", type=float
+    )
     partition_validate.add_argument("--provider")
     partition_validate.add_argument("--seed", type=int)
     partition_validate.add_argument("--seed-attempts", type=int)
@@ -2625,6 +2652,15 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--mfspart-refiner")
     phase3.add_argument("--mfspart-refiner-checker")
     phase3.add_argument("--mfspart-legalizer")
+    phase3.add_argument("--mfspart-post-refinement", action="store_true")
+    phase3.add_argument(
+        "--mfspart-post-refinement-early-stop", type=int, default=1000
+    )
+    phase3.add_argument(
+        "--mfspart-post-refinement-bottleneck-beta",
+        type=float,
+        default=256.0,
+    )
 
     sta_parser = subparsers.add_parser(
         "sta", help="STA path extraction artifact operations"
@@ -3497,6 +3533,13 @@ def _dispatch(args: argparse.Namespace) -> int:
                 openroad=args.openroad,
                 tritonpart_solution=args.tritonpart_solution,
                 hop_refiner=args.hop_refiner,
+                mfspart_post_refinement=args.mfspart_post_refinement,
+                mfspart_post_refinement_early_stop=(
+                    args.mfspart_post_refinement_early_stop
+                ),
+                mfspart_post_refinement_bottleneck_beta=(
+                    args.mfspart_post_refinement_bottleneck_beta
+                ),
                 timeout_seconds=args.timeout_seconds,
                 seed_attempts=args.seed_attempts,
                 repair_balance=args.repair_balance,
@@ -3527,6 +3570,15 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_seed=args.seed,
                 expected_seed_attempts=args.seed_attempts,
                 expected_repair_balance=args.repair_balance,
+                expected_mfspart_post_refinement=(
+                    args.mfspart_post_refinement
+                ),
+                expected_mfspart_post_refinement_early_stop=(
+                    args.mfspart_post_refinement_early_stop
+                ),
+                expected_mfspart_post_refinement_bottleneck_beta=(
+                    args.mfspart_post_refinement_bottleneck_beta
+                ),
                 expected_cut_mode=args.cut_mode,
                 expected_max_cross_fpga_dependency_depth=(
                     args.max_cross_fpga_dependency_depth
@@ -4908,6 +4960,13 @@ def _dispatch(args: argparse.Namespace) -> int:
             mfspart_refiner=args.mfspart_refiner,
             mfspart_refiner_checker=args.mfspart_refiner_checker,
             mfspart_legalizer=args.mfspart_legalizer,
+            mfspart_post_refinement=args.mfspart_post_refinement,
+            mfspart_post_refinement_early_stop=(
+                args.mfspart_post_refinement_early_stop
+            ),
+            mfspart_post_refinement_bottleneck_beta=(
+                args.mfspart_post_refinement_bottleneck_beta
+            ),
             cut_mode=args.cut_mode,
             max_cross_fpga_dependency_depth=(
                 args.max_cross_fpga_dependency_depth

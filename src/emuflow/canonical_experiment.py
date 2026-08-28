@@ -30,6 +30,7 @@ from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_POLICIES,
 )
 from .platform import Platform
+from .mfspart_refine import DEFAULT_BOTTLENECK_BETA
 from .routing import load_route_constraints
 from .tdm import TDM_STATIC_EXACT_PROVIDER
 from .tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
@@ -221,9 +222,15 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/partition.py",
         "src/emuflow/combinational_cut.py",
         "src/emuflow/partition_hops.py",
+        "src/emuflow/mfspart.py",
+        "src/emuflow/mfspart_initial.py",
+        "src/emuflow/mfspart_refine.py",
+        "src/emuflow/mfspart_provider.py",
         "src/emuflow/tritonpart.py",
         "src/emuflow/routing.py",
         "src/native/hop_partition_refiner.cpp",
+        "src/native/mfspart_refiner.cpp",
+        "src/native/mfspart_refiner_checker.cpp",
     ),
     "cut-timing": (
         "src/emuflow/experiment_upstream.py::run_cut_timing_checkpoint,validate_cut_timing_checkpoint",
@@ -526,6 +533,36 @@ def compile_canonical_experiment_spec(
         raise ValidationError(
             "canonical experiment partition_repair_balance must be boolean"
         )
+    mfspart_post_refinement = config.get(
+        "mfspart_post_refinement", cut_mode == CUT_MODE_STATIC_EXACT
+    )
+    if not isinstance(mfspart_post_refinement, bool):
+        raise ValidationError(
+            "canonical experiment mfspart_post_refinement must be boolean"
+        )
+    mfspart_post_refinement_early_stop = _positive_integer(
+        config.get("mfspart_post_refinement_early_stop", 1000),
+        "mfspart_post_refinement_early_stop",
+    )
+    mfspart_post_refinement_bottleneck_beta = config.get(
+        "mfspart_post_refinement_bottleneck_beta",
+        DEFAULT_BOTTLENECK_BETA,
+    )
+    if (
+        isinstance(mfspart_post_refinement_bottleneck_beta, bool)
+        or not isinstance(
+            mfspart_post_refinement_bottleneck_beta, (int, float)
+        )
+        or not math.isfinite(mfspart_post_refinement_bottleneck_beta)
+        or mfspart_post_refinement_bottleneck_beta < 0
+    ):
+        raise ValidationError(
+            "canonical experiment mfspart_post_refinement_bottleneck_beta "
+            "must be a finite non-negative number"
+        )
+    mfspart_post_refinement_bottleneck_beta = float(
+        mfspart_post_refinement_bottleneck_beta
+    )
     max_cross_fpga_dependency_depth = _positive_integer(
         config.get("max_cross_fpga_dependency_depth", 1),
         "max_cross_fpga_dependency_depth",
@@ -722,6 +759,25 @@ def compile_canonical_experiment_spec(
         "--minimum-combinational-cut-nets",
         str(minimum_combinational_cut_nets),
     ]
+    if mfspart_post_refinement:
+        partition_command.insert(-2, "--mfspart-post-refinement")
+        partition_command[-2:-2] = [
+            "--mfspart-post-refinement-early-stop",
+            str(mfspart_post_refinement_early_stop),
+            "--mfspart-post-refinement-bottleneck-beta",
+            format(mfspart_post_refinement_bottleneck_beta, ".17g"),
+        ]
+        partition_validator.extend(
+            (
+                "--mfspart-post-refinement",
+                "--mfspart-post-refinement-early-stop",
+                str(mfspart_post_refinement_early_stop),
+                "--mfspart-post-refinement-bottleneck-beta",
+                format(mfspart_post_refinement_bottleneck_beta, ".17g"),
+            )
+        )
+    else:
+        partition_validator.append("--no-mfspart-post-refinement")
     if partition_constraints is not None:
         partition_command.extend(("--constraints", str(partition_constraints)))
         partition_validator.extend(("--constraints", str(partition_constraints)))
@@ -742,9 +798,9 @@ def compile_canonical_experiment_spec(
     node(
         "partition", "partition", ["frontend", "timing"], partition_command,
         partition_validator,
-        [_artifact("clusters.json", "consumer-checkpoint"), _artifact("constraints.normalized.json", "consumer-checkpoint"), _artifact("assignment.json", "consumer-checkpoint"), _artifact("phase3_report.json", "consumer-checkpoint"), _artifact("experiment-partition-report.json", "evidence-critical")],
+        [_artifact("clusters.json", "consumer-checkpoint"), _artifact("constraints.normalized.json", "consumer-checkpoint"), _artifact("assignment.json", "consumer-checkpoint"), _artifact("phase3_report.json", "consumer-checkpoint"), *([_artifact("mfspart-post-refinement", "consumer-checkpoint")] if mfspart_post_refinement else []), _artifact("experiment-partition-report.json", "evidence-critical")],
         inputs=("platform", "route_constraints", *( ("partition_constraints",) if partition_constraints is not None else () ), *( ("tritonpart_solution",) if tritonpart_solution is not None else () ), "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
-        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "partition_constraints_sha256": base_inputs.get("partition_constraints"), "tritonpart_solution_sha256": base_inputs.get("tritonpart_solution"), "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots, "static_exact_candidate_policy": static_exact_candidate_policy, "minimum_combinational_cut_nets": minimum_combinational_cut_nets},
+        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "mfspart_post_refinement": mfspart_post_refinement, "mfspart_post_refinement_early_stop": mfspart_post_refinement_early_stop, "mfspart_post_refinement_bottleneck_beta": mfspart_post_refinement_bottleneck_beta, "route_constraints": contract["route_constraints"], "partition_constraints_sha256": base_inputs.get("partition_constraints"), "tritonpart_solution_sha256": base_inputs.get("tritonpart_solution"), "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots, "static_exact_candidate_policy": static_exact_candidate_policy, "minimum_combinational_cut_nets": minimum_combinational_cut_nets},
         peak_gib=24, retained_gib=6,
     )
     cut_command = [

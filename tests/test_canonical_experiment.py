@@ -479,6 +479,29 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertNotIn("phase6-chimew", nodes)
             self.assertNotIn("qor-comparison", nodes)
             partition = nodes["partition"]
+            self.assertTrue(
+                partition["configuration"]["mfspart_post_refinement"]
+            )
+            self.assertEqual(
+                partition["configuration"][
+                    "mfspart_post_refinement_bottleneck_beta"
+                ],
+                256.0,
+            )
+            self.assertIn("--mfspart-post-refinement", partition["command"])
+            self.assertEqual(
+                partition["command"][
+                    partition["command"].index(
+                        "--mfspart-post-refinement-bottleneck-beta"
+                    )
+                    + 1
+                ],
+                "256",
+            )
+            self.assertIn(
+                "mfspart-post-refinement",
+                {artifact["path"] for artifact in partition["artifacts"]},
+            )
             self.assertEqual(
                 partition["configuration"]["cut_mode"],
                 "static-exact-combinational",

@@ -12,10 +12,15 @@ from .ir import EmuIR
 from .mfspart import build_mfspart_hierarchy
 from .mfspart_initial import build_mfspart_initial_partition
 from .mfspart_legalize import legalize_mfspart_min_used
-from .mfspart_refine import refine_mfspart_hierarchy
+from .mfspart_refine import (
+    DEFAULT_BOTTLENECK_BETA,
+    refine_mfspart_hierarchy,
+    refine_mfspart_level,
+)
 from .partition import (
     build_partition_assignment,
     transported_cut_classes_for_clusters,
+    validate_cluster_assignment_balance,
 )
 from .partition_hops import _shortest_hop_distances
 from .platform import Platform
@@ -23,6 +28,10 @@ from .resources import RESOURCE_FIELDS
 
 
 MFSPART_PHASE3_PROVIDER = "mfspart-serial-paper-reproduction-v1"
+MFSPART_POST_REFINEMENT_PROVIDER = (
+    "tritonpart-directional-mfspart-post-refinement-v1"
+)
+MFSPART_POST_REFINEMENT_SCHEMA = "emuflow.mfspart-post-refinement/v1"
 
 
 def _platform_problem(
@@ -243,6 +252,144 @@ def _partition_graph(
             "MFSPart partition graph has no transported driver-sink edges"
         )
     return nodes, nets, dimensions
+
+
+def refine_mfspart_partition(
+    ir: EmuIR,
+    platform: Platform,
+    clusters_artifact: Mapping[str, Any],
+    constraints: Mapping[str, Any],
+    route_constraints: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    output_dir: Path,
+    *,
+    net_weights: Optional[Mapping[str, float]] = None,
+    early_stop: int = 1000,
+    bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
+    refiner: Optional[str] = None,
+    refiner_checker: Optional[str] = None,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Directionally refine a sealed TritonPart assignment in one FM level.
+
+    This is deliberately a post-refinement, not another partition provider.
+    It preserves the TritonPart assignment as the starting point and derives
+    driver/sink identity directly from EmuIR rather than from TritonPart's
+    intentionally undirected hypergraph export.
+    """
+
+    if early_stop <= 0:
+        raise ValidationError("MFSPart post-refinement early-stop must be positive")
+    nodes, nets, dimensions = _partition_graph(
+        ir, clusters_artifact, platform, net_weights or {}
+    )
+    parts, distances, _degrees, hmax = _platform_problem(
+        platform, route_constraints
+    )
+    capacities, effective_balance = _balanced_capacities(
+        nodes, platform, dimensions, constraints
+    )
+    node_index = {node["id"]: index for index, node in enumerate(nodes)}
+    graph = {
+        "nodes": [
+            {
+                "fixed_part": node["fixed_part"],
+                "weights": [
+                    node["weights"][dimension] for dimension in dimensions
+                ],
+            }
+            for node in nodes
+        ],
+        "nets": [
+            {
+                "weight": net["weight"],
+                "source": node_index[net["source"]],
+                "sinks": [node_index[sink] for sink in net["sinks"]],
+            }
+            for net in nets
+        ],
+    }
+    part_index = {part: index for index, part in enumerate(parts)}
+    initial = [
+        part_index[assignment["cluster_assignment"][node["id"]]]
+        for node in nodes
+    ]
+    refinement = refine_mfspart_level(
+        graph,
+        dimensions,
+        parts,
+        distances,
+        capacities,
+        initial,
+        output_dir,
+        hmax=hmax,
+        early_stop=early_stop,
+        bottleneck_beta=bottleneck_beta,
+        executable=refiner,
+        checker=refiner_checker,
+    )
+    refined_cluster_assignment = {
+        node["id"]: parts[refinement["assignment"][index]]
+        for index, node in enumerate(nodes)
+    }
+    clusters = sorted(
+        clusters_artifact["clusters"], key=lambda item: item["id"]
+    )
+    validate_cluster_assignment_balance(
+        platform,
+        clusters,
+        refined_cluster_assignment,
+        constraints["balance_tolerance"],
+        constraints.get("balance_tolerance_by_dimension", {}),
+    )
+    used = len(set(refined_cluster_assignment.values()))
+    if used < constraints["min_used_fpgas"]:
+        raise ValidationError(
+            "MFSPart post-refinement emptied a required FPGA: "
+            f"used={used}, required={constraints['min_used_fpgas']}"
+        )
+    metadata = dict(assignment.get("provider_metadata", {}))
+    metadata["directional_mfspart_post_refinement"] = {
+        "algorithm": MFSPART_POST_REFINEMENT_PROVIDER,
+        "initial_assignment_provider": assignment["provider"],
+        "early_stop": early_stop,
+        "bottleneck_beta": bottleneck_beta,
+        "hmax": hmax,
+        "moves": len(refinement["moves"]),
+        "best_prefix": int(refinement["metrics"]["best_prefix"]),
+        "best_cumulative_gain": refinement["metrics"][
+            "best_cumulative_gain"
+        ],
+        "direction_source": "EmuIR net drivers/sinks",
+    }
+    refined = build_partition_assignment(
+        ir,
+        platform,
+        clusters_artifact,
+        constraints,
+        refined_cluster_assignment,
+        provider=assignment["provider"],
+        seed=assignment["seed"],
+        provider_metadata=metadata,
+    )
+    report = {
+        "schema": MFSPART_POST_REFINEMENT_SCHEMA,
+        "status": "pass",
+        "provider": MFSPART_POST_REFINEMENT_PROVIDER,
+        "initial_assignment_provider": assignment["provider"],
+        "direction_source": "EmuIR net drivers/sinks",
+        "nodes": len(nodes),
+        "nets": len(nets),
+        "parts": parts,
+        "dimensions": dimensions,
+        "hmax": hmax,
+        "early_stop": early_stop,
+        "bottleneck_beta": bottleneck_beta,
+        "effective_balance_tolerance_by_dimension": effective_balance,
+        "refinement": refinement,
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    write_json(output_dir / "post_refinement.json", report)
+    return refined, report
 
 
 def run_mfspart(

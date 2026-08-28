@@ -22,6 +22,10 @@ from .io import read_json, write_json
 from .partition_hops import validate_assignment_hop_constraints
 from .partition import CUT_MODE_SEQUENTIAL_ONLY
 from .combinational_cut import STATIC_EXACT_CANDIDATE_FRONTIER_V1
+from .mfspart_refine import (
+    DEFAULT_BOTTLENECK_BETA,
+    validate_mfspart_native_certificate,
+)
 from .phase3 import run_phase3, validate_phase3
 
 
@@ -40,6 +44,9 @@ def run_partition_checkpoint(
     openroad: Optional[str] = None,
     tritonpart_solution: Optional[Path] = None,
     hop_refiner: Optional[str] = None,
+    mfspart_post_refinement: bool = False,
+    mfspart_post_refinement_early_stop: int = 1000,
+    mfspart_post_refinement_bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
     timeout_seconds: int = 3600,
     seed_attempts: int = 1,
     repair_balance: bool = False,
@@ -70,6 +77,10 @@ def run_partition_checkpoint(
         raise ValidationError(
             "a precomputed TritonPart solution requires provider=tritonpart"
         )
+    if mfspart_post_refinement and provider != "tritonpart":
+        raise ValidationError(
+            "MFSPart post-refinement requires provider=tritonpart"
+        )
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     validate_timing_checkpoint(frontend_root, timing_root)
     weights_path = _require(timing_root, "partition-net-weights.json")
@@ -93,6 +104,13 @@ def run_partition_checkpoint(
         net_weights_path=weights_path,
         route_constraints_path=route_constraints_path,
         hop_refiner=hop_refiner,
+        mfspart_post_refinement=mfspart_post_refinement,
+        mfspart_post_refinement_early_stop=(
+            mfspart_post_refinement_early_stop
+        ),
+        mfspart_post_refinement_bottleneck_beta=(
+            mfspart_post_refinement_bottleneck_beta
+        ),
         cut_mode=cut_mode,
         max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
         comb_segment_budget_slots=comb_segment_budget_slots,
@@ -105,6 +123,13 @@ def run_partition_checkpoint(
         "seed": seed,
         "seed_attempts": seed_attempts,
         "repair_balance": repair_balance,
+        "mfspart_post_refinement": mfspart_post_refinement,
+        "mfspart_post_refinement_early_stop": (
+            mfspart_post_refinement_early_stop
+        ),
+        "mfspart_post_refinement_bottleneck_beta": (
+            mfspart_post_refinement_bottleneck_beta
+        ),
         "cut_mode": cut_mode,
         "max_cross_fpga_dependency_depth": (
             max_cross_fpga_dependency_depth
@@ -152,6 +177,13 @@ def run_partition_checkpoint(
         expected_seed=seed,
         expected_seed_attempts=seed_attempts,
         expected_repair_balance=repair_balance,
+        expected_mfspart_post_refinement=mfspart_post_refinement,
+        expected_mfspart_post_refinement_early_stop=(
+            mfspart_post_refinement_early_stop
+        ),
+        expected_mfspart_post_refinement_bottleneck_beta=(
+            mfspart_post_refinement_bottleneck_beta
+        ),
         expected_cut_mode=cut_mode,
         expected_max_cross_fpga_dependency_depth=(
             max_cross_fpga_dependency_depth
@@ -180,6 +212,9 @@ def validate_partition_checkpoint(
     expected_seed: int | None = None,
     expected_seed_attempts: int | None = None,
     expected_repair_balance: bool | None = None,
+    expected_mfspart_post_refinement: bool | None = None,
+    expected_mfspart_post_refinement_early_stop: int | None = None,
+    expected_mfspart_post_refinement_bottleneck_beta: float | None = None,
     expected_cut_mode: str | None = None,
     expected_max_cross_fpga_dependency_depth: int | None = None,
     expected_comb_segment_budget_slots: int | None = None,
@@ -208,6 +243,31 @@ def validate_partition_checkpoint(
         and report.get("repair_balance") is not expected_repair_balance
     ):
         raise ValidationError("partition balance-repair contract disagrees")
+    if (
+        expected_mfspart_post_refinement is not None
+        and report.get("mfspart_post_refinement", False)
+        is not expected_mfspart_post_refinement
+    ):
+        raise ValidationError("partition MFSPart post-refinement contract disagrees")
+    if (
+        expected_mfspart_post_refinement_early_stop is not None
+        and report.get("mfspart_post_refinement_early_stop", 1000)
+        != expected_mfspart_post_refinement_early_stop
+    ):
+        raise ValidationError(
+            "partition MFSPart post-refinement early-stop contract disagrees"
+        )
+    if (
+        expected_mfspart_post_refinement_bottleneck_beta is not None
+        and report.get(
+            "mfspart_post_refinement_bottleneck_beta",
+            DEFAULT_BOTTLENECK_BETA,
+        ) != expected_mfspart_post_refinement_bottleneck_beta
+    ):
+        raise ValidationError(
+            "partition MFSPart post-refinement bottleneck-beta contract "
+            "disagrees"
+        )
     legacy_cut_defaults = {
         "cut_mode": CUT_MODE_SEQUENTIAL_ONLY,
         "max_cross_fpga_dependency_depth": 1,
@@ -270,6 +330,87 @@ def validate_partition_checkpoint(
         if report.get(label) != _sha256(path):
             raise ValidationError(f"partition checkpoint {label} seal is broken")
     assignment = read_json(seals["assignment_sha256"])
+    post_refinement = report.get("mfspart_post_refinement", False)
+    if not isinstance(post_refinement, bool):
+        raise ValidationError("partition MFSPart post-refinement flag is invalid")
+    post_metadata = assignment.get("provider_metadata", {}).get(
+        "directional_mfspart_post_refinement"
+    )
+    if post_refinement != (post_metadata is not None):
+        raise ValidationError(
+            "partition MFSPart post-refinement evidence disagrees with assignment"
+        )
+    if post_refinement:
+        post_root = root / "mfspart-post-refinement"
+        post_report = read_json(
+            _require(post_root, "post_refinement.json")
+        )
+        if (
+            post_report.get("schema")
+            != "emuflow.mfspart-post-refinement/v1"
+            or post_report.get("status") != "pass"
+            or post_report.get("direction_source")
+            != "EmuIR net drivers/sinks"
+            or post_report.get("early_stop")
+            != report.get("mfspart_post_refinement_early_stop")
+            or post_report.get("bottleneck_beta")
+            != report.get("mfspart_post_refinement_bottleneck_beta")
+        ):
+            raise ValidationError("partition MFSPart post-refinement report is invalid")
+        refinement = post_report.get("refinement")
+        if not isinstance(refinement, dict):
+            raise ValidationError(
+                "partition MFSPart post-refinement certificate is missing"
+            )
+        artifacts = refinement.get("artifacts")
+        if not isinstance(artifacts, dict):
+            raise ValidationError(
+                "partition MFSPart post-refinement artifact seals are missing"
+            )
+        native_paths = {
+            "input_sha256": _require(post_root, "mfspart_refiner.in"),
+            "output_sha256": _require(post_root, "mfspart_refiner.out"),
+            "checker_output_sha256": _require(
+                post_root, "mfspart_refiner.check"
+            ),
+        }
+        for label, path in native_paths.items():
+            if artifacts.get(label) != _sha256(path):
+                raise ValidationError(
+                    f"partition MFSPart post-refinement {label} seal is broken"
+                )
+        certificate = validate_mfspart_native_certificate(
+            native_paths["input_sha256"], native_paths["output_sha256"]
+        )
+        parsed = certificate["parsed"]
+        for label in ("moves", "assignment", "metrics"):
+            if refinement.get(label) != parsed[label]:
+                raise ValidationError(
+                    "partition MFSPart post-refinement JSON differs from "
+                    "the independently checked native certificate"
+                )
+        clusters = sorted(
+            read_json(_require(root, "clusters.json"))["clusters"],
+            key=lambda item: item["id"],
+        )
+        parts = post_report.get("parts")
+        if not isinstance(parts, list) or any(
+            not isinstance(part, str) for part in parts
+        ):
+            raise ValidationError("partition MFSPart FPGA order is invalid")
+        try:
+            expected_cluster_assignment = {
+                cluster["id"]: parts[parsed["assignment"][index]]
+                for index, cluster in enumerate(clusters)
+            }
+        except (IndexError, KeyError, TypeError) as error:
+            raise ValidationError(
+                "partition MFSPart kept-prefix assignment is invalid"
+            ) from error
+        if assignment.get("cluster_assignment") != expected_cluster_assignment:
+            raise ValidationError(
+                "partition assignment differs from MFSPart kept prefix"
+            )
     if report["provider"] == "tritonpart":
         metadata = assignment.get("provider_metadata", {})
         attempts = metadata.get("seed_attempts", [])

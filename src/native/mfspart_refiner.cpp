@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Independent paper-level reproduction of MFSPart direct k-way FM refinement
-// (TCAD 2026, Eqs. 9--10).  No source from the unlicensed companion
-// repository is copied or linked.
+// (TCAD 2026, Eqs. 9--10), extended with a weighted worst-sink-hop term so
+// aggregate fanout gains cannot silently lengthen a net's critical board path.
+// No source from the unlicensed companion repository is copied or linked.
 
 #include <algorithm>
 #include <cmath>
@@ -40,6 +41,7 @@ struct Input {
   double gamma = 0.0;
   double lambda = 0.0;
   double mu = 0.0;
+  double bottleneck_beta = 0.0;
   std::vector<std::vector<int>> distances;
   std::vector<std::vector<long long>> capacities;
   std::vector<Node> nodes;
@@ -96,7 +98,8 @@ Input read_input(const std::string& path) {
   }
   std::string magic;
   std::getline(stream, magic);
-  if (magic != "EMUFLOW_MFSPART_REFINER_INPUT_V1") {
+  const bool input_v2 = magic == "EMUFLOW_MFSPART_REFINER_INPUT_V2";
+  if (!input_v2 && magic != "EMUFLOW_MFSPART_REFINER_INPUT_V1") {
     throw std::runtime_error("unsupported input header");
   }
   Input input;
@@ -117,11 +120,16 @@ Input read_input(const std::string& path) {
       stream >> input.parts >> node_count >> input.dimensions >> net_count >>
           input.hmax >> input.move_distance >> input.early_stop >> input.gamma >>
           input.lambda >> input.mu;
+      if (input_v2) {
+        stream >> input.bottleneck_beta;
+      }
       if (input.parts <= 0 || node_count <= 0 || input.dimensions <= 0 ||
           net_count < 0 || input.hmax < 1 || input.move_distance < 1 ||
           input.early_stop < 1 || !std::isfinite(input.gamma) ||
           !std::isfinite(input.lambda) || !std::isfinite(input.mu) ||
-          input.gamma < 0.0 || input.lambda < 0.0 || input.mu < 0.0) {
+          !std::isfinite(input.bottleneck_beta) || input.gamma < 0.0 ||
+          input.lambda < 0.0 || input.mu < 0.0 ||
+          input.bottleneck_beta < 0.0) {
         throw std::runtime_error("invalid PARAM record");
       }
       input.distances.assign(input.parts,
@@ -312,6 +320,10 @@ double compatibility(
     const std::vector<std::vector<int>>& incidence,
     const std::vector<std::vector<int>>& net_part_counts,
     const std::vector<int>& net_unique_parts,
+    const std::vector<std::vector<int>>& net_sink_part_counts,
+    const std::vector<std::vector<int>>& net_sink_top1,
+    const std::vector<std::vector<int>>& net_sink_top2,
+    const std::vector<std::vector<int>>& net_sink_top1_counts,
     const std::vector<int>& assignment, int node, int candidate_part) {
   double local_hop_score = 0.0;
   double violation_penalty = 0.0;
@@ -330,6 +342,7 @@ double compatibility(
     }
   }
   double connectivity = 0.0;
+  double bottleneck_hops = 0.0;
   for (const int net_index : incidence[node]) {
     const Net& net = input.nets[net_index];
     int spanned_parts = net_unique_parts[net_index];
@@ -343,9 +356,27 @@ double compatibility(
       }
     }
     connectivity += net.weight * static_cast<double>(spanned_parts);
+    int maximum_distance = 0;
+    if (net.source == node) {
+      maximum_distance = net_sink_top1[net_index][candidate_part];
+    } else {
+      const int driver_part = assignment[net.source];
+      const int source_part = assignment[node];
+      maximum_distance = net_sink_top1[net_index][driver_part];
+      if (candidate_part != source_part &&
+          net_sink_part_counts[net_index][source_part] == 1 &&
+          input.distances[driver_part][source_part] == maximum_distance &&
+          net_sink_top1_counts[net_index][driver_part] == 1) {
+        maximum_distance = net_sink_top2[net_index][driver_part];
+      }
+      maximum_distance = std::max(
+          maximum_distance, input.distances[driver_part][candidate_part]);
+    }
+    bottleneck_hops += net.weight * static_cast<double>(maximum_distance);
   }
   return local_hop_score - input.gamma * connectivity -
-         input.lambda * violation_penalty;
+         input.lambda * violation_penalty -
+         input.bottleneck_beta * bottleneck_hops;
 }
 
 Metrics compute_metrics(const Input& input,
@@ -428,16 +459,54 @@ void run(const Input& input, const std::string& output_path) {
   std::vector<std::vector<int>> net_part_counts(
       input.nets.size(), std::vector<int>(input.parts, 0));
   std::vector<int> net_unique_parts(input.nets.size(), 0);
+  std::vector<std::vector<int>> net_sink_part_counts(
+      input.nets.size(), std::vector<int>(input.parts, 0));
+  std::vector<std::vector<int>> net_sink_top1(
+      input.nets.size(), std::vector<int>(input.parts, 0));
+  std::vector<std::vector<int>> net_sink_top2(
+      input.nets.size(), std::vector<int>(input.parts, 0));
+  std::vector<std::vector<int>> net_sink_top1_counts(
+      input.nets.size(), std::vector<int>(input.parts, 0));
   for (int net_index = 0; net_index < static_cast<int>(input.nets.size());
        ++net_index) {
     const Net& net = input.nets[net_index];
     ++net_part_counts[net_index][assignment[net.source]];
     for (const int sink : net.sinks) {
       ++net_part_counts[net_index][assignment[sink]];
+      ++net_sink_part_counts[net_index][assignment[sink]];
     }
     net_unique_parts[net_index] = static_cast<int>(std::count_if(
         net_part_counts[net_index].begin(), net_part_counts[net_index].end(),
         [](int count) { return count > 0; }));
+  }
+  auto rebuild_sink_distance_summary = [&](int net_index) {
+    for (int driver_part = 0; driver_part < input.parts; ++driver_part) {
+      int first = 0;
+      int second = 0;
+      int first_count = 0;
+      for (int sink_part = 0; sink_part < input.parts; ++sink_part) {
+        if (net_sink_part_counts[net_index][sink_part] == 0) {
+          continue;
+        }
+        const int distance = input.distances[driver_part][sink_part];
+        if (distance > first) {
+          second = first;
+          first = distance;
+          first_count = 1;
+        } else if (distance == first) {
+          ++first_count;
+        } else if (distance > second) {
+          second = distance;
+        }
+      }
+      net_sink_top1[net_index][driver_part] = first;
+      net_sink_top2[net_index][driver_part] = second;
+      net_sink_top1_counts[net_index][driver_part] = first_count;
+    }
+  };
+  for (int net_index = 0; net_index < static_cast<int>(input.nets.size());
+       ++net_index) {
+    rebuild_sink_distance_summary(net_index);
   }
   std::vector<bool> locked(input.nodes.size(), false);
   std::vector<int> versions(input.nodes.size(), 0);
@@ -524,7 +593,9 @@ void run(const Input& input, const std::string& output_path) {
     const int source = assignment[node];
     const double source_score =
         compatibility(input, neighbor_part_weights, incidence, net_part_counts,
-                      net_unique_parts, assignment, node, source);
+                      net_unique_parts, net_sink_part_counts, net_sink_top1,
+                      net_sink_top2, net_sink_top1_counts, assignment, node,
+                      source);
     ++compatibility_evaluations;
     for (int target = 0; target < input.parts; ++target) {
       if (target == source ||
@@ -534,7 +605,9 @@ void run(const Input& input, const std::string& output_path) {
       }
       const double gain =
           compatibility(input, neighbor_part_weights, incidence, net_part_counts,
-                        net_unique_parts, assignment, node, target) -
+                        net_unique_parts, net_sink_part_counts, net_sink_top1,
+                        net_sink_top2, net_sink_top1_counts, assignment, node,
+                        target) -
           source_score;
       ++compatibility_evaluations;
       const long long rank = gain_rank(gain);
@@ -613,6 +686,7 @@ void run(const Input& input, const std::string& output_path) {
       neighbor_part_weights[neighbor][best_target] += weight;
     }
     for (const int net_index : incidence[best_node]) {
+      const Net& net = input.nets[net_index];
       --net_part_counts[net_index][source];
       if (net_part_counts[net_index][source] == 0) {
         --net_unique_parts[net_index];
@@ -621,6 +695,11 @@ void run(const Input& input, const std::string& output_path) {
         ++net_unique_parts[net_index];
       }
       ++net_part_counts[net_index][best_target];
+      if (net.source != best_node) {
+        --net_sink_part_counts[net_index][source];
+        ++net_sink_part_counts[net_index][best_target];
+        rebuild_sink_distance_summary(net_index);
+      }
     }
     locked[best_node] = true;
     ++versions[best_node];
