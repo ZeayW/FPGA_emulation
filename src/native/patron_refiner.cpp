@@ -1598,6 +1598,290 @@ void diagnose_flow_corridors(
               };
         run_region_legalization("affinity-first", true);
         run_region_legalization("balance-first", false);
+
+        std::vector<int> right_parts;
+        for (int part = 0; part < model.parts; ++part) {
+          if (opposite_side[part]) {
+            right_parts.push_back(part);
+          }
+        }
+        if (right_parts.size() == 2) {
+          const int right_source = edge_right;
+          const int right_sink = right_parts.front() == right_source
+                                     ? right_parts.back()
+                                     : right_parts.front();
+          std::vector<int> parametric_base = raw_candidate_assignment;
+          std::vector<std::vector<double>> parametric_base_load
+              = raw_candidate_load;
+          std::vector<int> parametric_variables;
+          for (int cluster : corridor) {
+            if (state.assignment[cluster] == edge_left
+                && raw_candidate_assignment[cluster] == pair_target) {
+              for (int dim = 0; dim < model.dimensions; ++dim) {
+                parametric_base_load[pair_target][dim]
+                    -= model.cluster[cluster].weight[dim];
+              }
+              parametric_base[cluster] = -1;
+              parametric_variables.push_back(cluster);
+            }
+          }
+          std::set<int> parametric_nets;
+          for (int cluster : parametric_variables) {
+            parametric_nets.insert(cluster_nets[cluster].begin(),
+                                   cluster_nets[cluster].end());
+          }
+          const int parametric_source_node = 0;
+          const int parametric_sink_node = 1;
+          std::vector<int> parametric_cluster_node(model.clusters, -1);
+          int parametric_next_node = 2;
+          for (int cluster : parametric_variables) {
+            parametric_cluster_node[cluster] = parametric_next_node++;
+          }
+          std::map<int, std::pair<int, int>> parametric_net_nodes;
+          for (int net : parametric_nets) {
+            parametric_net_nodes[net]
+                = {parametric_next_node, parametric_next_node + 1};
+            parametric_next_node += 2;
+          }
+          DinicFlow parametric_flow(parametric_next_node);
+          constexpr long long kParametricNetCapacity = 1000000;
+          constexpr long long kParametricInfinity
+              = std::numeric_limits<long long>::max() / 16;
+          for (const auto& item : parametric_net_nodes) {
+            const int net = item.first;
+            const int in_node = item.second.first;
+            const int out_node = item.second.second;
+            parametric_flow.add_edge(
+                in_node, out_node, kParametricNetCapacity);
+            std::set<int> pins;
+            pins.insert(model.net[net].drivers.begin(),
+                        model.net[net].drivers.end());
+            pins.insert(model.net[net].sinks.begin(),
+                        model.net[net].sinks.end());
+            bool anchored_source = false;
+            bool anchored_sink = false;
+            for (int cluster : pins) {
+              if (parametric_cluster_node[cluster] >= 0) {
+                parametric_flow.add_edge(
+                    parametric_cluster_node[cluster],
+                    in_node,
+                    kParametricInfinity);
+                parametric_flow.add_edge(
+                    out_node,
+                    parametric_cluster_node[cluster],
+                    kParametricInfinity);
+              } else if (parametric_base[cluster] == right_source) {
+                anchored_source = true;
+              } else if (parametric_base[cluster] == right_sink) {
+                anchored_sink = true;
+              }
+            }
+            if (anchored_source) {
+              parametric_flow.add_edge(parametric_source_node,
+                                       in_node,
+                                       kParametricInfinity);
+            }
+            if (anchored_sink) {
+              parametric_flow.add_edge(out_node,
+                                       parametric_sink_node,
+                                       kParametricInfinity);
+            }
+          }
+          std::vector<double> variable_totals(model.dimensions, 0.0);
+          for (int cluster : parametric_variables) {
+            for (int dim = 0; dim < model.dimensions; ++dim) {
+              variable_totals[dim] += model.cluster[cluster].weight[dim];
+            }
+          }
+          std::vector<long long> balance_weight(model.clusters, 1);
+          for (int cluster : parametric_variables) {
+            long long weight = 1;
+            for (int dim = 0; dim < model.dimensions; ++dim) {
+              if (variable_totals[dim] > 0.0) {
+                weight += static_cast<long long>(std::llround(
+                    1000000.0 * model.cluster[cluster].weight[dim]
+                    / variable_totals[dim]));
+              }
+            }
+            balance_weight[cluster] = std::max(1LL, weight);
+          }
+          long long cumulative_flow = parametric_flow.maximum_flow(
+              parametric_source_node, parametric_sink_node);
+          long long lambda = 0;
+          long long lambda_increment = 1;
+          bool direction_selected = false;
+          bool push_to_sink = true;
+          bool saw_feasible = false;
+          int feasible_cuts = 0;
+          std::vector<int> first_feasible_assignment;
+          std::vector<int> best_parametric_assignment;
+          std::vector<long long> best_parametric_key;
+          for (int iteration = 0; iteration < 32; ++iteration) {
+            const std::vector<bool> parametric_source_side
+                = parametric_flow.source_reachable(parametric_source_node);
+            std::vector<int> parametric_assignment = parametric_base;
+            std::vector<std::vector<double>> parametric_load
+                = parametric_base_load;
+            for (int cluster : parametric_variables) {
+              const int target
+                  = parametric_source_side[parametric_cluster_node[cluster]]
+                        ? right_source
+                        : right_sink;
+              parametric_assignment[cluster] = target;
+              for (int dim = 0; dim < model.dimensions; ++dim) {
+                parametric_load[target][dim]
+                    += model.cluster[cluster].weight[dim];
+              }
+            }
+            bool parametric_capacity = true;
+            double source_excess = 0.0;
+            double sink_excess = 0.0;
+            for (int part = 0; part < model.parts; ++part) {
+              for (int dim = 0; dim < model.dimensions; ++dim) {
+                const double limit = std::min(
+                    model.hard_capacity[part][dim],
+                    model.balance_capacity[part][dim]);
+                const double excess_value = std::max(
+                    0.0, parametric_load[part][dim] - limit);
+                parametric_capacity = parametric_capacity
+                                      && excess_value <= 1.0e-9;
+                if (limit > 0.0 && part == right_source) {
+                  source_excess = std::max(
+                      source_excess, excess_value / limit);
+                }
+                if (limit > 0.0 && part == right_sink) {
+                  sink_excess = std::max(
+                      sink_excess, excess_value / limit);
+                }
+              }
+            }
+            if (!direction_selected) {
+              push_to_sink = source_excess >= sink_excess;
+              direction_selected = true;
+            }
+            std::vector<int> parametric_domain_load = state.domain_load;
+            long long parametric_hops = state.hops;
+            long long parametric_cuts = state.cuts;
+            bool parametric_routes = true;
+            for (int net : corridor_nets) {
+              ProxyNetState replacement = build_proxy_net(
+                  model, parametric_assignment, net);
+              if (!replacement.feasible) {
+                parametric_routes = false;
+                break;
+              }
+              for (const auto& domain : state.net[net].domain_counts) {
+                parametric_domain_load[domain.first] -= domain.second;
+              }
+              for (const auto& domain : replacement.domain_counts) {
+                parametric_domain_load[domain.first] += domain.second;
+              }
+              parametric_hops += replacement.hops - state.net[net].hops;
+              parametric_cuts += replacement.cuts - state.net[net].cuts;
+            }
+            int parametric_max_ratio = 1;
+            int parametric_max_load = 0;
+            for (int domain = 0; domain < model.domains; ++domain) {
+              parametric_max_ratio = std::max(
+                  parametric_max_ratio,
+                  tdm_ratio(model,
+                            parametric_domain_load[domain],
+                            model.domain[domain]));
+              parametric_max_load = std::max(
+                  parametric_max_load, parametric_domain_load[domain]);
+            }
+            std::cerr << "PATRON_FLOW_PARAMETRIC pair=" << edge_left << ':'
+                      << pair_target
+                      << " iteration=" << iteration
+                      << " lambda=" << lambda
+                      << " direction=" << (push_to_sink ? "sink" : "source")
+                      << " flow=" << cumulative_flow
+                      << " capacity_compatible="
+                      << (parametric_capacity ? 1 : 0)
+                      << " source_excess=" << source_excess
+                      << " sink_excess=" << sink_excess
+                      << " max_ratio=" << parametric_max_ratio
+                      << " max_load=" << parametric_max_load
+                      << " cover_load="
+                      << parametric_domain_load[cover_domain]
+                      << " hops=" << parametric_hops
+                      << " cuts=" << parametric_cuts << '\n';
+            if (parametric_capacity && parametric_routes) {
+              const std::vector<long long> key = {
+                  parametric_max_ratio,
+                  parametric_domain_load[cover_domain],
+                  parametric_max_load,
+                  parametric_hops,
+                  parametric_cuts};
+              if (!saw_feasible) {
+                first_feasible_assignment = parametric_assignment;
+              }
+              if (best_parametric_assignment.empty()
+                  || key < best_parametric_key) {
+                best_parametric_key = key;
+                best_parametric_assignment = parametric_assignment;
+              }
+              saw_feasible = true;
+              ++feasible_cuts;
+              if (feasible_cuts >= 4) {
+                break;
+              }
+            } else if (saw_feasible
+                       && ((push_to_sink && sink_excess > 0.0)
+                           || (!push_to_sink && source_excess > 0.0))) {
+              break;
+            }
+            const long long next_lambda = lambda + lambda_increment;
+            const long long delta_lambda = next_lambda - lambda;
+            for (int cluster : parametric_variables) {
+              const long long unary
+                  = delta_lambda * balance_weight[cluster];
+              if (push_to_sink) {
+                parametric_flow.add_edge(
+                    parametric_cluster_node[cluster],
+                    parametric_sink_node,
+                    unary);
+              } else {
+                parametric_flow.add_edge(
+                    parametric_source_node,
+                    parametric_cluster_node[cluster],
+                    unary);
+              }
+            }
+            lambda = next_lambda;
+            lambda_increment = std::min(
+                lambda_increment * 2, 1LL << 24);
+            cumulative_flow += parametric_flow.maximum_flow(
+                parametric_source_node, parametric_sink_node);
+          }
+          const auto report_parametric
+              = [&](const std::string& label,
+                    const std::vector<int>& assignment) {
+                  if (assignment.empty()) {
+                    return;
+                  }
+                  ProxyState legalized = build_proxy_state(model, &assignment);
+                  std::cerr << "PATRON_FLOW_PARAMETRIC_RESULT pair="
+                            << edge_left << ':' << pair_target
+                            << " label=" << label
+                            << " domain_load="
+                            << legalized.domain_load[cover_domain]
+                            << " improving="
+                            << (less_ranked(legalized.evaluation.ranked,
+                                            state.evaluation.ranked)
+                                    ? 1
+                                    : 0)
+                            << " rank=";
+                  for (long long value : legalized.evaluation.ranked) {
+                    std::cerr << value << ',';
+                  }
+                  std::cerr << '\n';
+                };
+          report_parametric("first-feasible", first_feasible_assignment);
+          if (best_parametric_assignment != first_feasible_assignment) {
+            report_parametric("best-domain", best_parametric_assignment);
+          }
+        }
       }
     }
   }
