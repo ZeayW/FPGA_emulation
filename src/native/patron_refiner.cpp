@@ -965,10 +965,23 @@ std::vector<std::vector<int>> build_net_paths(const Model& model) {
   return result;
 }
 
+ProxyDelta evaluate_proxy_move(
+    const Model& model,
+    ProxyState& state,
+    const std::vector<std::vector<int>>& cluster_nets,
+    const std::vector<std::vector<int>>& net_paths,
+    int cluster,
+    int target);
+
+void apply_proxy_delta(const Model& model,
+                       ProxyState& state,
+                       const ProxyDelta& delta);
+
 void diagnose_flow_corridors(
     const Model& model,
     const ProxyState& state,
     const std::vector<std::vector<int>>& cluster_nets,
+    const std::vector<std::vector<int>>& net_paths,
     const std::vector<double>& exposure,
     int cover_domain) {
   int edge_left = -1;
@@ -2187,6 +2200,82 @@ void diagnose_flow_corridors(
           report_parametric("flowcutter-piercing", best_piercing_assignment);
           report_parametric("flowcutter-dual-improving",
                             best_dual_piercing_assignment);
+          if (!best_piercing_assignment.empty()) {
+            ProxyState polished
+                = build_proxy_state(model, &best_piercing_assignment);
+            std::vector<int> polish_order = parametric_variables;
+            std::sort(polish_order.begin(), polish_order.end(),
+                      [&](int left, int right) {
+                        return std::tie(exposure[right], left)
+                               < std::tie(exposure[left], right);
+                      });
+            int accepted_polish_moves = 0;
+            constexpr int kMaximumPolishMoves = 512;
+            for (int sweep = 0;
+                 sweep < 2
+                 && accepted_polish_moves < kMaximumPolishMoves;
+                 ++sweep) {
+              const int sweep_start = accepted_polish_moves;
+              for (int cluster : polish_order) {
+                if (accepted_polish_moves >= kMaximumPolishMoves) {
+                  break;
+                }
+                bool found = false;
+                ProxyDelta best;
+                for (int target = 0; target < model.parts; ++target) {
+                  ProxyDelta candidate = evaluate_proxy_move(
+                      model,
+                      polished,
+                      cluster_nets,
+                      net_paths,
+                      cluster,
+                      target);
+                  if (!candidate.feasible
+                      || candidate.evaluation.ranked.size() < 2
+                      || polished.evaluation.ranked.size() < 2
+                      || candidate.evaluation.ranked[0]
+                             > polished.evaluation.ranked[0]
+                      || candidate.evaluation.ranked[1]
+                             >= polished.evaluation.ranked[1]) {
+                    continue;
+                  }
+                  if (!found
+                      || less_ranked(candidate.evaluation.ranked,
+                                     best.evaluation.ranked)
+                      || (candidate.evaluation.ranked
+                              == best.evaluation.ranked
+                          && candidate.target < best.target)) {
+                    found = true;
+                    best = std::move(candidate);
+                  }
+                }
+                if (found) {
+                  apply_proxy_delta(model, polished, best);
+                  ++accepted_polish_moves;
+                }
+              }
+              if (accepted_polish_moves == sweep_start) {
+                break;
+              }
+            }
+            std::cerr << "PATRON_FLOW_POLISH pair=" << edge_left << ':'
+                      << pair_target
+                      << " accepted=" << accepted_polish_moves
+                      << " dual_improving="
+                      << (polished.evaluation.ranked.size() >= 2
+                              && state.evaluation.ranked.size() >= 2
+                              && polished.evaluation.ranked[0]
+                                     < state.evaluation.ranked[0]
+                              && polished.evaluation.ranked[1]
+                                     < state.evaluation.ranked[1]
+                              ? 1
+                              : 0)
+                      << " rank=";
+            for (long long value : polished.evaluation.ranked) {
+              std::cerr << value << ',';
+            }
+            std::cerr << '\n';
+          }
         }
       }
     }
@@ -3222,7 +3311,7 @@ void run_scalable(const Model& model, const std::string& output_path) {
   }
   if (cover_diagnostic && cover_domain >= 0) {
     diagnose_flow_corridors(
-        model, state, cluster_nets, exposure, cover_domain);
+        model, state, cluster_nets, net_paths, exposure, cover_domain);
   }
   if (cover_diagnostic && cover_domain >= 0) {
     std::vector<CoverMove> raw_cover_moves;
