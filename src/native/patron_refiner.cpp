@@ -1716,7 +1716,7 @@ void diagnose_flow_corridors(
           std::vector<int> first_feasible_assignment;
           std::vector<int> best_parametric_assignment;
           std::vector<long long> best_parametric_key;
-          for (int iteration = 0; iteration < 32; ++iteration) {
+          for (int iteration = 0; iteration < 96; ++iteration) {
             const std::vector<bool> parametric_source_side
                 = parametric_flow.source_reachable(parametric_source_node);
             std::vector<int> parametric_assignment = parametric_base;
@@ -1831,7 +1831,15 @@ void diagnose_flow_corridors(
                            || (!push_to_sink && source_excess > 0.0))) {
               break;
             }
-            const long long next_lambda = lambda + lambda_increment;
+            long long step = lambda_increment;
+            const double maximum_excess = std::max(
+                source_excess, sink_excess);
+            if (maximum_excess < 0.01) {
+              step = std::min(step, 1LL);
+            } else if (maximum_excess < 0.05) {
+              step = std::min(step, 4LL);
+            }
+            const long long next_lambda = lambda + step;
             const long long delta_lambda = next_lambda - lambda;
             for (int cluster : parametric_variables) {
               const long long unary
@@ -1849,8 +1857,12 @@ void diagnose_flow_corridors(
               }
             }
             lambda = next_lambda;
-            lambda_increment = std::min(
-                lambda_increment * 2, 1LL << 24);
+            if (step == lambda_increment) {
+              lambda_increment = std::min(
+                  lambda_increment * 2, 1LL << 24);
+            } else {
+              lambda_increment = step;
+            }
             cumulative_flow += parametric_flow.maximum_flow(
                 parametric_source_node, parametric_sink_node);
           }
