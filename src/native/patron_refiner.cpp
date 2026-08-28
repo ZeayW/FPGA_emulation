@@ -1841,6 +1841,15 @@ void diagnose_flow_corridors(
                 && source_excess <= 0.05
                 && sink_excess <= 1.0e-12) {
               piercing_attempted = true;
+              int piercing_strategy = 0;
+              if (const char* value
+                  = std::getenv("EMUFLOW_PATRON_PIERCING_STRATEGY")) {
+                const std::string strategy(value);
+                require(strategy == "0" || strategy == "1"
+                            || strategy == "2" || strategy == "3",
+                        "invalid flow piercing strategy");
+                piercing_strategy = strategy.front() - '0';
+              }
               std::vector<bool> pierced(model.clusters, false);
               constexpr int kPiercingBatch = 1;
               for (int piercing_iteration = 0;
@@ -1911,6 +1920,17 @@ void diagnose_flow_corridors(
                           [&](int left, int right) {
                             const double left_score = relief_score(left);
                             const double right_score = relief_score(right);
+                            if (piercing_strategy == 1
+                                && left_score != right_score) {
+                              return left_score < right_score;
+                            }
+                            if (piercing_strategy == 2
+                                && exposure[left] != exposure[right]) {
+                              return exposure[left] < exposure[right];
+                            }
+                            if (piercing_strategy == 3) {
+                              return left < right;
+                            }
                             if (left_score != right_score) {
                               return left_score > right_score;
                             }
@@ -1928,6 +1948,16 @@ void diagnose_flow_corridors(
                       parametric_cluster_node[cluster],
                       parametric_sink_node,
                       kParametricInfinity);
+                  if (piercing_iteration < 16) {
+                    std::cerr << "PATRON_FLOW_PIERCING_CHOICE pair="
+                              << edge_left << ':' << pair_target
+                              << " strategy=" << piercing_strategy
+                              << " iteration=" << piercing_iteration
+                              << " cluster=" << cluster
+                              << " relief=" << relief_score(cluster)
+                              << " exposure=" << exposure[cluster]
+                              << '\n';
+                  }
                 }
                 cumulative_flow += parametric_flow.maximum_flow(
                     parametric_source_node, parametric_sink_node);
