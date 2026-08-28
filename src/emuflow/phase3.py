@@ -128,8 +128,15 @@ def run_phase3(
     timing_database_path: Optional[Path] = None,
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
+    patron_flow_refinement: bool = False,
     patron_initial_assignment_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    if not isinstance(patron_flow_refinement, bool):
+        raise ValidationError("PATRON flow refinement flag is invalid")
+    if patron_flow_refinement and provider != "patron":
+        raise ValidationError(
+            "PATRON flow refinement requires provider='patron'"
+        )
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
     constraints = load_partition_constraints(
@@ -278,6 +285,7 @@ def run_phase3(
             initial,
             executable=patron_refiner,
             max_moves=patron_max_moves,
+            flow_refinement=patron_flow_refinement,
         )
         write_json(output_dir / "patron" / "pressure_model.json", model)
         write_json(

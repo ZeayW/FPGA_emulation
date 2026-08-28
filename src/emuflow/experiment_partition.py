@@ -58,6 +58,7 @@ def run_partition_checkpoint(
     minimum_combinational_cut_nets: int = 0,
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
+    patron_flow_refinement: bool = False,
     patron_initial_assignment_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     if (
@@ -112,6 +113,7 @@ def run_partition_checkpoint(
         ),
         patron_refiner=patron_refiner,
         patron_max_moves=patron_max_moves,
+        patron_flow_refinement=patron_flow_refinement,
         patron_initial_assignment_path=patron_initial_assignment_path,
     )
     report = {
@@ -152,6 +154,7 @@ def run_partition_checkpoint(
             if patron_initial_assignment_path is not None
             else None
         ),
+        "patron_flow_refinement": patron_flow_refinement,
         "phase3": phase3,
     }
     if provider == "patron":
@@ -183,6 +186,7 @@ def run_partition_checkpoint(
             minimum_combinational_cut_nets
         ),
         patron_initial_assignment_path=patron_initial_assignment_path,
+        expected_patron_flow_refinement=patron_flow_refinement,
     )
     return report
 
@@ -204,6 +208,7 @@ def validate_partition_checkpoint(
     expected_comb_segment_budget_slots: int | None = None,
     expected_minimum_combinational_cut_nets: int | None = None,
     patron_initial_assignment_path: Path | None = None,
+    expected_patron_flow_refinement: bool | None = None,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     weights = _require(timing_root, "partition-net-weights.json")
@@ -271,6 +276,25 @@ def validate_partition_checkpoint(
     if report.get("patron_initial_assignment_sha256") != expected_patron_initial:
         raise ValidationError(
             "partition PATRON initial-assignment seal is broken"
+        )
+    actual_patron_flow_refinement = report.get(
+        "patron_flow_refinement", False
+    )
+    if not isinstance(actual_patron_flow_refinement, bool):
+        raise ValidationError(
+            "partition PATRON flow-refinement contract is invalid"
+        )
+    if (
+        expected_patron_flow_refinement is not None
+        and actual_patron_flow_refinement
+        is not expected_patron_flow_refinement
+    ):
+        raise ValidationError(
+            "partition PATRON flow-refinement contract disagrees"
+        )
+    if actual_patron_flow_refinement and report.get("provider") != "patron":
+        raise ValidationError(
+            "partition flow refinement requires the PATRON provider"
         )
     seals = {
         "emuir_sha256": ir_path,

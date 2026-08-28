@@ -1222,6 +1222,23 @@ block.  It is accepted only if a new cached canonical Phase 7 comparison
 improves both
 `-82.4981025395 ns` WNS and `-324,776.89798473305 ns` TNS; proxy-only
 improvement is insufficient.
+The experimental v7 candidate is enabled explicitly with
+`--patron-flow-refinement`.  It adds a sealed `FLOW` record to the native
+input rather than consulting process environment variables.  The fixed
+configuration identifies bidirectional FlowCutter-style piercing, a
+four-hop hypergraph corridor, eight legal cut candidates, and at most 512
+timing-polish moves.  A selected multi-cluster reassignment is emitted as one
+atomic batch.  The independent Python checker rebuilds the complete before
+and after objectives and assignment legality; compact regression graphs also
+enumerate the complete relevant target space and require deterministic
+agreement with its best rank.  If no legal dual-improving cut exists, v7
+retains the v6 assignment and emits a valid zero-batch certificate.  The
+frozen large-design proxy currently improves from `1.1606340893904894` to
+`0.93029154656116964` on worst normalized slack and from
+`3230.8125185217859` to `2961.3962653127187` on total negative normalized
+slack.  These are admission-gate proxies only; v7 is not accepted or promoted
+until the cached canonical seed-1 Phase 7 run improves both complete-global
+WNS and TNS.
 PATRON remains explicit and non-default until
 case7/case9 topology replication
 is complete; the primary branch acceptance requested here does not silently

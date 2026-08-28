@@ -602,6 +602,9 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--hop-refiner")
     partition_run.add_argument("--patron-refiner")
     partition_run.add_argument("--patron-max-moves", type=int)
+    partition_run.add_argument(
+        "--patron-flow-refinement", action="store_true"
+    )
     partition_run.add_argument("--patron-initial-assignment", type=Path)
     partition_run.add_argument("--mfspart-coarsener")
     partition_run.add_argument("--mfspart-initializer")
@@ -646,6 +649,11 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--route-constraints", type=Path)
     partition_validate.add_argument("--provider")
     partition_validate.add_argument("--patron-initial-assignment", type=Path)
+    partition_validate.add_argument(
+        "--patron-flow-refinement",
+        action=_BooleanOptionalAction,
+        default=None,
+    )
     partition_validate.add_argument("--seed", type=int)
     partition_validate.add_argument("--seed-attempts", type=int)
     partition_validate.add_argument(
@@ -1658,6 +1666,9 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--patron-refiner")
     multi_fpga_compile.add_argument("--patron-max-moves", type=int)
     multi_fpga_compile.add_argument(
+        "--patron-flow-refinement", action="store_true"
+    )
+    multi_fpga_compile.add_argument(
         "--partition-timeout-seconds", type=int, default=3600
     )
     multi_fpga_compile.add_argument(
@@ -2543,6 +2554,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase3.add_argument("--patron-refiner")
     phase3.add_argument("--patron-max-moves", type=int)
+    phase3.add_argument("--patron-flow-refinement", action="store_true")
     phase3.add_argument("--patron-initial-assignment", type=Path)
 
     sta_parser = subparsers.add_parser(
@@ -2970,6 +2982,9 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument("--repart")
     cross_stage_optimize.add_argument("--patron-refiner")
     cross_stage_optimize.add_argument("--patron-max-moves", type=int)
+    cross_stage_optimize.add_argument(
+        "--patron-flow-refinement", action="store_true"
+    )
     cross_stage_optimize.add_argument(
         "--partition-timeout-seconds", type=int, default=3600
     )
@@ -3466,6 +3481,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ),
                 patron_refiner=args.patron_refiner,
                 patron_max_moves=args.patron_max_moves,
+                patron_flow_refinement=args.patron_flow_refinement,
                 patron_initial_assignment_path=(
                     args.patron_initial_assignment
                 ),
@@ -3494,6 +3510,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ),
                 patron_initial_assignment_path=(
                     args.patron_initial_assignment
+                ),
+                expected_patron_flow_refinement=(
+                    args.patron_flow_refinement
                 ),
             )
         elif args.experiment_stage_command == "cut-timing-run":
@@ -4650,6 +4669,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             repart=args.repart,
             patron_refiner=args.patron_refiner,
             patron_max_moves=args.patron_max_moves,
+            patron_flow_refinement=args.patron_flow_refinement,
             partition_timeout_seconds=args.partition_timeout_seconds,
             partition_seed_attempts=args.partition_seed_attempts,
             partition_num_initial_solutions=(
@@ -4839,6 +4859,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             timing_database_path=args.timing_database,
             patron_refiner=args.patron_refiner,
             patron_max_moves=args.patron_max_moves,
+            patron_flow_refinement=args.patron_flow_refinement,
             patron_initial_assignment_path=(
                 args.patron_initial_assignment
             ),
@@ -5045,6 +5066,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 repart=args.repart,
                 patron_refiner=args.patron_refiner,
                 patron_max_moves=args.patron_max_moves,
+                patron_flow_refinement=args.patron_flow_refinement,
                 partition_timeout_seconds=(
                     args.partition_timeout_seconds
                 ),

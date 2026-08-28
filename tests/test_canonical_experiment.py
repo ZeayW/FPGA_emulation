@@ -348,6 +348,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             initial = root / "baseline-assignment.json"
             initial.write_text('{"frozen":"fixture"}\n', encoding="utf-8")
             config["partition_provider"] = "patron"
+            config["patron_flow_refinement"] = True
             config["patron_initial_assignment"] = str(initial)
             config["tools"]["patron_refiner"] = sys.executable
             config["phase6_providers"] = ["chimew"]
@@ -361,7 +362,14 @@ class CanonicalExperimentTest(unittest.TestCase):
             nodes = {node["id"]: node for node in spec["nodes"]}
             partition = nodes["partition"]
             self.assertEqual(partition["configuration"]["provider"], "patron")
+            self.assertTrue(
+                partition["configuration"]["patron_flow_refinement"]
+            )
             self.assertIn("--patron-refiner", partition["command"])
+            self.assertIn("--patron-flow-refinement", partition["command"])
+            self.assertIn(
+                "--patron-flow-refinement", partition["validator"]
+            )
             self.assertIn(
                 "--patron-initial-assignment", partition["command"]
             )

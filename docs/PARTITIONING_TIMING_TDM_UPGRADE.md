@@ -191,6 +191,22 @@ to be maximum flow.  It avoids pretending that an
 algorithm.  Actual Phase 4/5 scoring remains the promotion authority for both
 modes.
 
+PATRON v7 adds an opt-in block-pair hypergraph-flow refinement after the v6
+direct/ejection pass.  `--patron-flow-refinement` writes a versioned `FLOW`
+record into the native input; corridor distance, maximum corridor population,
+piercing order, legal-candidate count, and polish bound are therefore part of
+the task identity instead of ambient process state.  Bidirectional piercing
+enumerates capacity-feasible cuts and a bounded incremental polish pass may
+accept only moves that preserve the worst-slack rank while strictly reducing
+the TNS rank.  The final multi-cluster change is committed atomically only when
+both primary timing ranks strictly improve.  A Python certificate checker
+reconstructs every source/target change, capacity and fixed-node legality, and
+the complete before/after endpoint objective.  A compact four-block fixture
+also enumerates the complete relevant target space independently and requires
+the native batch rank and repeated-run output to match.  This remains a
+candidate algorithm until complete-global Phase 7 WNS and TNS both beat the
+frozen v6 result.
+
 ### 3. Endpoint-exact PATRON v2
 
 The accepted v1 result above is the frozen comparison point for the next

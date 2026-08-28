@@ -77,6 +77,12 @@ struct Model {
   int ejection_critical_limit = 0;
   int ejection_donor_limit = 0;
   int max_ejections = 0;
+  bool flow_refinement = false;
+  int flow_max_clusters = 0;
+  int flow_corridor_distance = 0;
+  int flow_piercing_strategy = 0;
+  int flow_max_legal_candidates = 0;
+  int flow_max_polish_moves = 0;
   double positive_scale = 1.0;
   double negative_scale = 1.0;
   double max_period = 1.0;
@@ -320,7 +326,9 @@ Model read_model(const std::string& path) {
   require(stream.good(), "cannot open input");
   std::string token;
   stream >> token;
-  require(token == "EMUFLOW_PATRON_INPUT_V6", "invalid input header");
+  const bool flow_input = token == "EMUFLOW_PATRON_INPUT_V7";
+  require(token == "EMUFLOW_PATRON_INPUT_V6" || flow_input,
+          "invalid input header");
   Model model;
   stream >> token;
   require(token == "PARAM", "missing PARAM");
@@ -343,6 +351,27 @@ Model read_model(const std::string& path) {
               && std::isfinite(model.boundary_fanout_penalty_scale_ns)
               && model.boundary_fanout_penalty_scale_ns >= 0.0,
           "invalid PARAM");
+
+  if (flow_input) {
+    stream >> token;
+    require(token == "FLOW", "missing FLOW");
+    int enabled = -1;
+    stream >> enabled >> model.flow_max_clusters
+        >> model.flow_corridor_distance >> model.flow_piercing_strategy
+        >> model.flow_max_legal_candidates
+        >> model.flow_max_polish_moves;
+    require(stream.good() && enabled == 1
+                && model.flow_max_clusters > 0
+                && model.flow_max_clusters <= model.clusters
+                && model.flow_corridor_distance >= 0
+                && model.flow_corridor_distance <= model.clusters
+                && model.flow_piercing_strategy >= 0
+                && model.flow_piercing_strategy <= 3
+                && model.flow_max_legal_candidates > 0
+                && model.flow_max_polish_moves >= 0,
+            "invalid FLOW");
+    model.flow_refinement = true;
+  }
 
   model.hard_capacity.assign(
       model.parts, std::vector<double>(model.dimensions, 0.0));
@@ -989,7 +1018,10 @@ std::vector<int> diagnose_flow_corridors(
   int edge_left = -1;
   int edge_right = -1;
   for (int source = 0; source < model.parts && edge_left < 0; ++source) {
-    for (int sink = source + 1; sink < model.parts; ++sink) {
+    for (int sink = 0; sink < model.parts; ++sink) {
+      if (sink == source) {
+        continue;
+      }
       if (model.route[source][sink].reachable
           && model.route[source][sink].arcs.size() == 1
           && model.route[source][sink].arcs.front().domain == cover_domain) {
@@ -1013,34 +1045,47 @@ std::vector<int> diagnose_flow_corridors(
   }
   require(!opposite_side[edge_left] && opposite_side[edge_right],
           "flow corridor topology sides are inconsistent");
+  const auto consider_dual_improving
+      = [&](const std::vector<int>& assignment, bool capacity_compatible) {
+          if (!capacity_compatible) {
+            return;
+          }
+          std::vector<int> counts(model.parts, 0);
+          for (int part : assignment) {
+            require(part >= 0 && part < model.parts,
+                    "flow candidate part is invalid");
+            ++counts[part];
+          }
+          if (std::count_if(counts.begin(), counts.end(),
+                            [](int count) { return count > 0; })
+              < model.min_used_parts) {
+            return;
+          }
+          ProxyState candidate = build_proxy_state(model, &assignment);
+          if (candidate.evaluation.ranked.size() >= 2
+              && state.evaluation.ranked.size() >= 2
+              && candidate.evaluation.ranked[0]
+                     < state.evaluation.ranked[0]
+              && candidate.evaluation.ranked[1]
+                     < state.evaluation.ranked[1]
+              && (selected_assignment.empty()
+                  || less_ranked(candidate.evaluation.ranked,
+                                 selected_rank))) {
+            selected_assignment = candidate.assignment;
+            selected_rank = candidate.evaluation.ranked;
+          }
+        };
 
-  int maximum_corridor_clusters = 50000;
-  if (const char* value
-      = std::getenv("EMUFLOW_PATRON_FLOW_MAX_CLUSTERS")) {
-    try {
-      const long long parsed = std::stoll(value);
-      require(parsed > 0 && parsed <= model.clusters,
-              "invalid flow corridor cluster limit");
-      maximum_corridor_clusters = static_cast<int>(parsed);
-    } catch (const std::invalid_argument&) {
-      throw std::runtime_error("invalid flow corridor cluster limit");
-    } catch (const std::out_of_range&) {
-      throw std::runtime_error("invalid flow corridor cluster limit");
-    }
-  }
-  int corridor_distance = 2;
-  if (const char* value = std::getenv("EMUFLOW_PATRON_FLOW_DISTANCE")) {
-    try {
-      const long long parsed = std::stoll(value);
-      require(parsed >= 0 && parsed <= model.clusters,
-              "invalid flow corridor distance");
-      corridor_distance = static_cast<int>(parsed);
-    } catch (const std::invalid_argument&) {
-      throw std::runtime_error("invalid flow corridor distance");
-    } catch (const std::out_of_range&) {
-      throw std::runtime_error("invalid flow corridor distance");
-    }
-  }
+  const int maximum_corridor_clusters
+      = model.flow_refinement
+            ? model.flow_max_clusters
+            : std::min(50000, model.clusters);
+  const int corridor_distance
+      = model.flow_refinement ? model.flow_corridor_distance : 2;
+  const int maximum_legal_candidates
+      = model.flow_refinement ? model.flow_max_legal_candidates : 8;
+  const int maximum_polish_moves
+      = model.flow_refinement ? model.flow_max_polish_moves : 512;
   for (int pair_target = 0; pair_target < model.parts; ++pair_target) {
     if (!opposite_side[pair_target]) {
       continue;
@@ -1077,9 +1122,6 @@ std::vector<int> diagnose_flow_corridors(
           || model.cluster[cluster].fixed >= 0) {
         return false;
       }
-      const int source = state.assignment[cluster];
-      require(source == edge_left || opposite_side[source],
-              "flow corridor cluster is outside topology cut");
       distance[cluster] = candidate_distance;
       work.push(cluster);
       ++corridor_count;
@@ -1192,7 +1234,9 @@ std::vector<int> diagnose_flow_corridors(
     for (int cluster : corridor) {
       const int original = state.assignment[cluster];
       const int target = source_side[cluster_node[cluster]]
-                             ? edge_left
+                             ? (!opposite_side[original]
+                                    ? original
+                                    : edge_left)
                              : (opposite_side[original]
                                     ? original
                                     : pair_target);
@@ -1256,6 +1300,7 @@ std::vector<int> diagnose_flow_corridors(
       std::cerr << value << ',';
     }
     std::cerr << '\n';
+    consider_dual_improving(candidate_assignment, capacity_compatible);
 
     if (!capacity_compatible) {
       struct SpillOption {
@@ -1267,7 +1312,7 @@ std::vector<int> diagnose_flow_corridors(
       };
       std::vector<int> incoming;
       for (int cluster : corridor) {
-        if (state.assignment[cluster] == edge_left
+        if (!opposite_side[state.assignment[cluster]]
             && candidate_assignment[cluster] == pair_target) {
           incoming.push_back(cluster);
         }
@@ -1412,6 +1457,7 @@ std::vector<int> diagnose_flow_corridors(
         for (long long value : legalized.evaluation.ranked) {
           std::cerr << value << ',';
         }
+        consider_dual_improving(candidate_assignment, true);
       }
       std::cerr << '\n';
 
@@ -1424,7 +1470,7 @@ std::vector<int> diagnose_flow_corridors(
                     = raw_candidate_load;
                 std::vector<int> unassigned;
                 for (int cluster : corridor) {
-                  if (state.assignment[cluster] == edge_left
+                  if (!opposite_side[state.assignment[cluster]]
                       && raw_candidate_assignment[cluster] == pair_target) {
                     for (int dim = 0; dim < model.dimensions; ++dim) {
                       region_load[pair_target][dim]
@@ -1608,6 +1654,7 @@ std::vector<int> diagnose_flow_corridors(
                   for (long long value : legalized.evaluation.ranked) {
                     std::cerr << value << ',';
                   }
+                  consider_dual_improving(region_assignment, true);
                 }
                 std::cerr << '\n';
               };
@@ -1630,7 +1677,7 @@ std::vector<int> diagnose_flow_corridors(
               = raw_candidate_load;
           std::vector<int> parametric_variables;
           for (int cluster : corridor) {
-            if (state.assignment[cluster] == edge_left
+            if (!opposite_side[state.assignment[cluster]]
                 && raw_candidate_assignment[cluster] == pair_target) {
               for (int dim = 0; dim < model.dimensions; ++dim) {
                 parametric_base_load[pair_target][dim]
@@ -1858,15 +1905,10 @@ std::vector<int> diagnose_flow_corridors(
                 && source_excess <= 0.05
                 && sink_excess <= 1.0e-12) {
               piercing_attempted = true;
-              int piercing_strategy = 0;
-              if (const char* value
-                  = std::getenv("EMUFLOW_PATRON_PIERCING_STRATEGY")) {
-                const std::string strategy(value);
-                require(strategy == "0" || strategy == "1"
-                            || strategy == "2" || strategy == "3",
-                        "invalid flow piercing strategy");
-                piercing_strategy = strategy.front() - '0';
-              }
+              const int piercing_strategy
+                  = model.flow_refinement
+                        ? model.flow_piercing_strategy
+                        : 0;
               std::vector<bool> pierced(model.clusters, false);
               constexpr int kPiercingBatch = 1;
               std::vector<std::vector<double>> current_piercing_load
@@ -2125,7 +2167,8 @@ std::vector<int> diagnose_flow_corridors(
                     best_dual_piercing_rank = candidate.evaluation.ranked;
                   }
                   ++feasible_piercing_cuts;
-                  if (feasible_piercing_cuts >= 8) {
+                  if (feasible_piercing_cuts
+                      >= maximum_legal_candidates) {
                     break;
                   }
                 }
@@ -2212,14 +2255,14 @@ std::vector<int> diagnose_flow_corridors(
                                < std::tie(exposure[left], right);
                       });
             int accepted_polish_moves = 0;
-            constexpr int kMaximumPolishMoves = 512;
             for (int sweep = 0;
                  sweep < 2
-                 && accepted_polish_moves < kMaximumPolishMoves;
+                 && accepted_polish_moves < maximum_polish_moves;
                  ++sweep) {
               const int sweep_start = accepted_polish_moves;
               for (int cluster : polish_order) {
-                if (accepted_polish_moves >= kMaximumPolishMoves) {
+                if (accepted_polish_moves
+                    >= maximum_polish_moves) {
                   break;
                 }
                 bool found = false;
@@ -2700,11 +2743,12 @@ void write_output(const std::string& output_path,
                   const Evaluation& final,
                   const std::vector<NativeMove>& moves,
                   const std::vector<int>& assignment,
-                  const std::vector<NativeBatch>& batches = {}) {
+                  const std::vector<NativeBatch>& batches = {},
+                  bool flow_output = false) {
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
-  output << (batches.empty() ? "EMUFLOW_PATRON_OUTPUT_V6\n"
-                             : "EMUFLOW_PATRON_OUTPUT_V7\n");
+  output << (flow_output ? "EMUFLOW_PATRON_OUTPUT_V7\n"
+                         : "EMUFLOW_PATRON_OUTPUT_V6\n");
   output << "MODE " << mode << '\n';
   output << "INITIAL";
   write_vector(output, initial.objective);
@@ -3246,10 +3290,7 @@ void run_scalable(const Model& model, const std::string& output_path) {
       = std::getenv("EMUFLOW_PATRON_COVER_DIAGNOSTIC");
   const bool cover_diagnostic = cover_diagnostic_value != nullptr
                                 && std::string(cover_diagnostic_value) == "1";
-  const char* flow_apply_value
-      = std::getenv("EMUFLOW_PATRON_FLOW_APPLY");
-  const bool flow_apply = flow_apply_value != nullptr
-                          && std::string(flow_apply_value) == "1";
+  const bool flow_apply = model.flow_refinement;
   if (cover_diagnostic && model.parts <= 8) {
     std::vector<int> permutation(model.parts);
     std::iota(permutation.begin(), permutation.end(), 0);
@@ -3355,29 +3396,29 @@ void run_scalable(const Model& model, const std::string& output_path) {
     std::vector<int> flow_assignment = diagnose_flow_corridors(
         model, state, cluster_nets, net_paths, exposure, cover_domain);
     if (flow_apply) {
-      require(!flow_assignment.empty(),
-              "flow refinement found no dual-improving legal assignment");
-      ProxyState refined = build_proxy_state(model, &flow_assignment);
-      require(refined.evaluation.ranked.size() >= 2
-                  && state.evaluation.ranked.size() >= 2
-                  && refined.evaluation.ranked[0]
-                         < state.evaluation.ranked[0]
-                  && refined.evaluation.ranked[1]
-                         < state.evaluation.ranked[1],
-              "flow refinement did not improve WNS and TNS");
-      NativeBatch batch;
-      batch.before = state.evaluation;
-      batch.after = refined.evaluation;
-      for (int cluster = 0; cluster < model.clusters; ++cluster) {
-        if (state.assignment[cluster] != refined.assignment[cluster]) {
-          batch.changes.emplace_back(cluster,
-                                     state.assignment[cluster],
-                                     refined.assignment[cluster]);
+      if (!flow_assignment.empty()) {
+        ProxyState refined = build_proxy_state(model, &flow_assignment);
+        require(refined.evaluation.ranked.size() >= 2
+                    && state.evaluation.ranked.size() >= 2
+                    && refined.evaluation.ranked[0]
+                           < state.evaluation.ranked[0]
+                    && refined.evaluation.ranked[1]
+                           < state.evaluation.ranked[1],
+                "flow refinement did not improve WNS and TNS");
+        NativeBatch batch;
+        batch.before = state.evaluation;
+        batch.after = refined.evaluation;
+        for (int cluster = 0; cluster < model.clusters; ++cluster) {
+          if (state.assignment[cluster] != refined.assignment[cluster]) {
+            batch.changes.emplace_back(cluster,
+                                       state.assignment[cluster],
+                                       refined.assignment[cluster]);
+          }
         }
+        require(!batch.changes.empty(), "flow refinement batch is empty");
+        batches.push_back(std::move(batch));
+        state = std::move(refined);
       }
-      require(!batch.changes.empty(), "flow refinement batch is empty");
-      batches.push_back(std::move(batch));
-      state = std::move(refined);
     }
   }
   if (cover_diagnostic && !flow_apply && cover_domain >= 0) {
@@ -3904,17 +3945,19 @@ void run_scalable(const Model& model, const std::string& output_path) {
   std::cerr << '\n';
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
-               batches.empty() ? "endpoint-exact-critical-ejection-v6"
-                               : "endpoint-exact-critical-flow-v7",
+               model.flow_refinement
+                   ? "endpoint-exact-critical-flow-v7"
+                   : "endpoint-exact-critical-ejection-v6",
                initial,
                endpoint.evaluation,
                moves,
                state.assignment,
-               batches);
+               batches,
+               model.flow_refinement);
 }
 
 void run(const Model& model, const std::string& output_path) {
-  if (model.clusters <= 256) {
+  if (model.clusters <= 256 && !model.flow_refinement) {
     run_exact(model, output_path);
   } else {
     run_scalable(model, output_path);

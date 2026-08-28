@@ -1,8 +1,10 @@
 import copy
+import itertools
 import math
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
@@ -12,6 +14,7 @@ from emuflow.partition import (
     normalize_partition_constraints,
 )
 from emuflow.partition_pressure import (
+    _parse_patron_native_output,
     build_partition_pressure_model,
     evaluate_partition_pressure,
     refine_partition_pressure_exhaustive,
@@ -261,6 +264,245 @@ class PartitionPressureTest(unittest.TestCase):
                 self.route_constraints,
                 broken,
             )
+
+    def test_v7_native_batch_parser_rejects_tamper(self) -> None:
+        before = "2 4 1 2 3 4 5 6"
+        after = "1 3 1 2 3 4 5 6"
+        ranked = "1000000000 3000000000 1 2 3 4 5 6"
+        lines = [
+            "EMUFLOW_PATRON_OUTPUT_V7",
+            "MODE endpoint-exact-critical-flow-v7",
+            f"INITIAL {before}",
+            f"BATCH 0 1 {before} {after} {ranked}",
+            "CHANGE 0 0 0 1",
+            f"FINAL {after}",
+            "ASSIGN 0 1",
+            "ASSIGN 1 0",
+            "END",
+        ]
+        indexes = {"clusters": ["c0", "c1"], "parts": ["a", "b"]}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "patron.out"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            assignment, _moves, batches, *_rest = (
+                _parse_patron_native_output(path, indexes)
+            )
+            self.assertEqual(assignment, {"c0": "b", "c1": "a"})
+            self.assertEqual(
+                batches[0]["changes"],
+                [{"cluster": "c0", "source": "a", "target": "b"}],
+            )
+
+            changed = list(lines)
+            changed[4] = "CHANGE 0 2 0 1"
+            path.write_text("\n".join(changed) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "out of range"):
+                _parse_patron_native_output(path, indexes)
+
+            truncated = list(lines)
+            truncated[3] = f"BATCH 0 2 {before} {after} {ranked}"
+            path.write_text(
+                "\n".join(truncated) + "\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValidationError, "coverage"):
+                _parse_patron_native_output(path, indexes)
+
+    def test_v7_flow_batch_matches_independent_small_oracle(self) -> None:
+        instance_count = 40
+        block_size = 10
+        cut_count = 8
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "pressure_flow_oracle",
+                    "top": "pressure_flow_oracle",
+                    "source_format": "fixture",
+                },
+                "ports": [],
+                "instances": [
+                    {
+                        "id": f"u{index:03d}",
+                        "type": "LUT1",
+                        "resources": {"lut": 1},
+                    }
+                    for index in range(instance_count)
+                ],
+                "nets": [
+                    {
+                        "id": f"n{index:03d}",
+                        "cut_class": "register_output",
+                        "drivers": [
+                            _endpoint(
+                                f"u{block_size + index:03d}", "O"
+                            )
+                        ],
+                        "sinks": [
+                            _endpoint(
+                                f"u{2 * block_size + index:03d}", "I"
+                            )
+                        ],
+                    }
+                    for index in range(cut_count)
+                ],
+                "clocks": [],
+                "warnings": [],
+            }
+        )
+        value = _platform_value(
+            "pressure_flow_oracle_platform",
+            ["a", "b", "c", "d"],
+            [
+                _link("ab", "a", "b", lanes=2, latency=1),
+                _link("bc", "b", "c", lanes=2, latency=1),
+                _link("cd", "c", "d", lanes=2, latency=1),
+            ],
+        )
+        for fpga in value["fpgas"]:
+            fpga["capacity"] = {"lut": 1000, "ff": 1000}
+        platform = Platform.from_dict(value)
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "min_used_fpgas": 4,
+                "balance_tolerance": 0.5,
+            },
+            ir,
+            platform,
+        )
+        clusters = build_clusters(ir, constraints)
+        by_instance = {
+            cluster["instances"][0]: cluster["id"]
+            for cluster in clusters["clusters"]
+        }
+        parts = ["a", "b", "c", "d"]
+        initial = build_partition_assignment(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            {
+                by_instance[f"u{index:03d}"]: parts[index // block_size]
+                for index in range(instance_count)
+            },
+            provider="fixture",
+            seed=1,
+        )
+        route_constraints = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 64,
+                "tdm_ratio_quantum": 1,
+                "max_route_hops": 3,
+            },
+            platform,
+        )
+        timing = {
+            "schema": "emuflow.sta-path-database/v1",
+            "design": "pressure_flow_oracle",
+            "source": {"provider": "fixture", "input": "fixture"},
+            "normalization": {
+                "positive_slack_scale_ns": 3.0,
+                "negative_slack_scale_ns": 1.0,
+                "max_clock_period_ns": 10.0,
+            },
+            "paths": [
+                {
+                    "id": f"p{index:03d}",
+                    "startpoint": _endpoint(
+                        f"u{block_size + index:03d}", "O"
+                    ),
+                    "endpoint": _endpoint(
+                        f"u{2 * block_size + index:03d}", "I"
+                    ),
+                    "clock_domain": "clk",
+                    "clock_period_ns": 10.0,
+                    "slack_ns": 3.0,
+                    "fixed_delay_ns": 7.0,
+                    "path_nets": [f"n{index:03d}"],
+                    "normalized_slack": 1.0,
+                }
+                for index in range(cut_count)
+            ],
+        }
+        model = build_partition_pressure_model(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            timing,
+            route_constraints,
+        )
+        movable = [
+            by_instance[f"u{block_size + index:03d}"]
+            for index in range(cut_count)
+        ]
+
+        best_rank = None
+        for targets in itertools.product(("c", "d"), repeat=cut_count):
+            trial = dict(initial["cluster_assignment"])
+            trial.update(dict(zip(movable, targets)))
+            try:
+                evaluation = evaluate_partition_pressure(
+                    ir,
+                    platform,
+                    clusters,
+                    constraints,
+                    route_constraints,
+                    model,
+                    trial,
+                    include_tdm_wait=True,
+                )
+            except ValidationError:
+                continue
+            objective = evaluation["metrics"]["objective_key"]
+            rank = tuple(
+                round(float(value) / 1.0e-9)
+                if index < 2
+                else round(float(value))
+                for index, value in enumerate(objective)
+            )
+            best_rank = rank if best_rank is None else min(best_rank, rank)
+        self.assertIsNotNone(best_rank)
+
+        results = []
+        for _repeat in range(2):
+            final, trace = run_partition_pressure_native(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                route_constraints,
+                model,
+                initial,
+                executable=str(patron_refiner()),
+                max_moves=0,
+                flow_refinement=True,
+            )
+            self.assertEqual(len(trace["batches"]), 1)
+            self.assertEqual(
+                tuple(trace["batches"][0]["ranked_objective_key"]),
+                best_rank,
+            )
+            self.assertEqual(
+                {change["cluster"] for change in trace["batches"][0]["changes"]},
+                set(movable),
+            )
+            validation = validate_partition_pressure_native_bundle(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                timing,
+                route_constraints,
+                model,
+                initial,
+                final,
+                trace,
+            )
+            self.assertEqual(validation["status"], "pass")
+            results.append((final, trace))
+        self.assertEqual(results[0], results[1])
 
     def test_endpoint_exact_fanout_does_not_charge_an_unrelated_sink(self) -> None:
         ir = EmuIR(
@@ -916,17 +1158,24 @@ class PartitionPressureTest(unittest.TestCase):
             model,
             initial["cluster_assignment"],
         )
-        final, trace = run_partition_pressure_native(
-            ir,
-            platform,
-            clusters,
-            constraints,
-            route_constraints,
-            model,
-            initial,
-            executable=str(patron_refiner()),
-            max_moves=64,
-        )
+        with patch.dict(
+            "os.environ",
+            {
+                "EMUFLOW_PATRON_FLOW_APPLY": "1",
+                "EMUFLOW_PATRON_FLOW_DISTANCE": "999999",
+            },
+        ):
+            final, trace = run_partition_pressure_native(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                route_constraints,
+                model,
+                initial,
+                executable=str(patron_refiner()),
+                max_moves=64,
+            )
         after = evaluate_partition_pressure(
             ir,
             platform,
@@ -1007,6 +1256,55 @@ class PartitionPressureTest(unittest.TestCase):
             after["metrics"]["objective_key"],
             before["metrics"]["objective_key"],
         )
+
+        flow_final, flow_trace = run_partition_pressure_native(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            route_constraints,
+            model,
+            initial,
+            executable=str(patron_refiner()),
+            max_moves=0,
+            flow_refinement=True,
+        )
+        self.assertEqual(
+            flow_trace["mode"], "endpoint-exact-critical-flow-v7"
+        )
+        self.assertTrue(
+            flow_trace["configuration"]["flow_refinement"]["enabled"]
+        )
+        flow_bundle = validate_partition_pressure_native_bundle(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            timing,
+            route_constraints,
+            model,
+            initial,
+            flow_final,
+            flow_trace,
+        )
+        self.assertEqual(flow_bundle["status"], "pass")
+        flow_config_tampered = copy.deepcopy(flow_trace)
+        flow_config_tampered["configuration"]["flow_refinement"][
+            "corridor_distance"
+        ] += 1
+        with self.assertRaisesRegex(ValidationError, "trace bounds"):
+            validate_partition_pressure_native_bundle(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                timing,
+                route_constraints,
+                model,
+                initial,
+                flow_final,
+                flow_config_tampered,
+            )
 
     def test_scalable_multipass_revisits_capacity_blocked_cluster(self) -> None:
         ir = _capacity_release_ir()

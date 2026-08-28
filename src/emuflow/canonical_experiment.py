@@ -398,6 +398,16 @@ def compile_canonical_experiment_spec(
             "canonical experiment partition_provider must be "
             "'tritonpart' or 'patron'"
         )
+    patron_flow_refinement = config.get("patron_flow_refinement", False)
+    if not isinstance(patron_flow_refinement, bool):
+        raise ValidationError(
+            "canonical patron_flow_refinement must be a boolean"
+        )
+    if patron_flow_refinement and partition_provider != "patron":
+        raise ValidationError(
+            "canonical patron_flow_refinement requires partition_provider "
+            "'patron'"
+        )
     required_tools = {
         "emuflow",
         "yosys",
@@ -773,12 +783,16 @@ def compile_canonical_experiment_spec(
             "--patron-initial-assignment",
             str(patron_initial_assignment),
         ]
+        if patron_flow_refinement:
+            partition_command.insert(-2, "--patron-flow-refinement")
         partition_validator.extend(
             [
                 "--patron-initial-assignment",
                 str(patron_initial_assignment),
             ]
         )
+        if patron_flow_refinement:
+            partition_validator.append("--patron-flow-refinement")
         partition_inputs.extend(
             ["tool.patron_refiner", "patron_initial_assignment"]
         )
@@ -807,6 +821,7 @@ def compile_canonical_experiment_spec(
         ),
         configuration={
             "provider": partition_provider,
+            "patron_flow_refinement": patron_flow_refinement,
             "seed": partition_seed,
             "seed_attempts": partition_seed_attempts,
             "repair_balance": partition_repair_balance,

@@ -11,6 +11,7 @@ import hashlib
 import heapq
 import json
 import math
+import os
 import subprocess
 import tempfile
 from collections import defaultdict
@@ -41,9 +42,18 @@ from .sta import _normalized_slack, _validate_database_normalization
 PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v6"
 PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v6"
 PARTITION_PRESSURE_FLOW_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v7"
+
+PATRON_FLOW_REFINEMENT_ALGORITHM = "flowcutter-bidirectional-piercing-v1"
+PATRON_FLOW_CORRIDOR_DISTANCE = 4
+PATRON_FLOW_PIERCING_STRATEGY = 0
+PATRON_FLOW_MAX_LEGAL_CANDIDATES = 8
+PATRON_FLOW_MAX_POLISH_MOVES = 512
 PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v6"
 PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v6"
 PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v6"
+PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER = (
+    "patron-endpoint-exact-flow-native-v7"
+)
 GAIN_QUANTUM = 1.0e-9
 BOUNDARY_FANOUT_PENALTY_SCALE_NS = 0.0
 MAX_SCALABLE_SWEEPS = 4
@@ -57,6 +67,28 @@ def _canonical_digest(value: Any) -> str:
         value, sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _flow_refinement_configuration(
+    enabled: bool, cluster_count: int
+) -> Dict[str, Any]:
+    return {
+        "enabled": enabled,
+        "algorithm": PATRON_FLOW_REFINEMENT_ALGORITHM,
+        "maximum_corridor_clusters": cluster_count if enabled else 0,
+        "corridor_distance": (
+            PATRON_FLOW_CORRIDOR_DISTANCE if enabled else 0
+        ),
+        "piercing_strategy": (
+            PATRON_FLOW_PIERCING_STRATEGY if enabled else 0
+        ),
+        "maximum_legal_candidates": (
+            PATRON_FLOW_MAX_LEGAL_CANDIDATES if enabled else 0
+        ),
+        "maximum_polish_moves": (
+            PATRON_FLOW_MAX_POLISH_MOVES if enabled else 0
+        ),
+    }
 
 
 def _require_finite(value: Any, context: str) -> float:
@@ -1117,6 +1149,7 @@ def _write_patron_native_input(
     model: Mapping[str, Any],
     initial_assignment: Mapping[str, Any],
     max_moves: int,
+    flow_refinement: bool,
 ) -> Dict[str, Any]:
     parts = sorted(record["fpga"] for record in model["fpgas"])
     part_index = {part: index for index, part in enumerate(parts)}
@@ -1147,7 +1180,11 @@ def _write_patron_native_input(
     max_hops = model["configuration"]["max_route_hops"]
 
     lines = [
-        "EMUFLOW_PATRON_INPUT_V6",
+        (
+            "EMUFLOW_PATRON_INPUT_V7"
+            if flow_refinement
+            else "EMUFLOW_PATRON_INPUT_V6"
+        ),
         (
             f"PARAM {len(parts)} {len(clusters)} {len(dimensions)} "
             f"{len(domains)} {len(nets)} {len(model['paths'])} "
@@ -1165,6 +1202,14 @@ def _write_patron_native_input(
             f"{model['configuration']['max_scalable_ejections']}"
         ),
     ]
+    if flow_refinement:
+        lines.append(
+            "FLOW "
+            f"1 {len(clusters)} {PATRON_FLOW_CORRIDOR_DISTANCE} "
+            f"{PATRON_FLOW_PIERCING_STRATEGY} "
+            f"{PATRON_FLOW_MAX_LEGAL_CANDIDATES} "
+            f"{PATRON_FLOW_MAX_POLISH_MOVES}"
+        )
     total_cells = sum(cluster["cells"] for cluster in clusters)
     for part in parts:
         hard = []
@@ -1329,6 +1374,13 @@ def _parse_patron_native_output(
     ):
         raise ValidationError("native PATRON output header is invalid")
     output_version = lines[0]
+    def indexed(label: str, values: List[str], index: int) -> str:
+        if index < 0 or index >= len(values):
+            raise ValidationError(
+                f"native PATRON {label} index is out of range"
+            )
+        return values[index]
+
     moves = []
     batches = []
     assignment: Dict[str, str] = {}
@@ -1374,21 +1426,35 @@ def _parse_patron_native_output(
                     "kind": "move" if phase == 0 else "ejection",
                     "phase": phase,
                     "sweep": sweep,
-                    "cluster": indexes["clusters"][cluster],
-                    "source": indexes["parts"][source],
-                    "target": indexes["parts"][target],
+                    "cluster": indexed(
+                        "cluster", indexes["clusters"], cluster
+                    ),
+                    "source": indexed("part", indexes["parts"], source),
+                    "target": indexed("part", indexes["parts"], target),
                     "partner": (
-                        None if partner < 0 else indexes["clusters"][partner]
+                        None
+                        if partner < 0
+                        else indexed(
+                            "partner cluster", indexes["clusters"], partner
+                        )
                     ),
                     "partner_source": (
                         None
                         if partner_source < 0
-                        else indexes["parts"][partner_source]
+                        else indexed(
+                            "partner part",
+                            indexes["parts"],
+                            partner_source,
+                        )
                     ),
                     "partner_target": (
                         None
                         if partner_target < 0
-                        else indexes["parts"][partner_target]
+                        else indexed(
+                            "partner part",
+                            indexes["parts"],
+                            partner_target,
+                        )
                     ),
                     "before_objective_key": before,
                     "after_objective_key": after,
@@ -1428,9 +1494,11 @@ def _parse_patron_native_output(
                 raise ValidationError("native PATRON batch has extra changes")
             record["changes"].append(
                 {
-                    "cluster": indexes["clusters"][cluster],
-                    "source": indexes["parts"][source],
-                    "target": indexes["parts"][target],
+                    "cluster": indexed(
+                        "cluster", indexes["clusters"], cluster
+                    ),
+                    "source": indexed("part", indexes["parts"], source),
+                    "target": indexed("part", indexes["parts"], target),
                 }
             )
         elif fields[0] == "FINAL" and len(fields) == 9:
@@ -1441,10 +1509,10 @@ def _parse_patron_native_output(
             )
         elif fields[0] == "ASSIGN" and len(fields) == 3:
             cluster, part = map(int, fields[1:])
-            cluster_id = indexes["clusters"][cluster]
+            cluster_id = indexed("cluster", indexes["clusters"], cluster)
             if cluster_id in assignment:
                 raise ValidationError("native PATRON returned duplicate ASSIGN")
-            assignment[cluster_id] = indexes["parts"][part]
+            assignment[cluster_id] = indexed("part", indexes["parts"], part)
         elif fields == ["END"]:
             continue
         else:
@@ -1459,8 +1527,6 @@ def _parse_patron_native_output(
             raise ValidationError(
                 "native PATRON batch change coverage is invalid"
             )
-    if output_version == "EMUFLOW_PATRON_OUTPUT_V7" and not batches:
-        raise ValidationError("native PATRON v7 has no batch")
     if final_metrics is None or initial_metrics is None or mode is None:
         raise ValidationError("native PATRON output metadata is incomplete")
     return assignment, moves, batches, initial_metrics, final_metrics, mode
@@ -1477,10 +1543,13 @@ def run_partition_pressure_native(
     *,
     executable: Optional[str] = None,
     max_moves: Optional[int] = None,
+    flow_refinement: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     limit = len(model["clusters"]) if max_moves is None else max_moves
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
         raise ValidationError("native PATRON max_moves is invalid")
+    if not isinstance(flow_refinement, bool):
+        raise ValidationError("native PATRON flow_refinement is invalid")
     resolved = resolve_native_executable("emuflow_patron_refiner", executable)
     with tempfile.TemporaryDirectory(prefix="emuflow-patron-") as temporary:
         root = Path(temporary)
@@ -1495,12 +1564,18 @@ def run_partition_pressure_native(
             model,
             initial_assignment,
             limit,
+            flow_refinement,
         )
+        environment = dict(os.environ)
+        for name in tuple(environment):
+            if name.startswith("EMUFLOW_PATRON_"):
+                del environment[name]
         completed = subprocess.run(
             [resolved, str(native_input), str(native_output)],
             capture_output=True,
             text=True,
             check=False,
+            env=environment,
         )
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()
@@ -1524,7 +1599,11 @@ def run_partition_pressure_native(
         clusters_artifact,
         constraints,
         cluster_assignment,
-        provider=PARTITION_PRESSURE_NATIVE_PROVIDER,
+        provider=(
+            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER
+            if flow_refinement
+            else PARTITION_PRESSURE_NATIVE_PROVIDER
+        ),
         seed=initial_assignment.get("seed", 0),
         provider_metadata={
             "initial_provider": initial_assignment.get("provider"),
@@ -1535,12 +1614,16 @@ def run_partition_pressure_native(
     return final, {
         "schema": (
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA
-            if batches
+            if flow_refinement
             else PARTITION_PRESSURE_TRACE_SCHEMA
         ),
         "design": model["design"],
         "platform": model["platform"],
-        "provider": PARTITION_PRESSURE_NATIVE_PROVIDER,
+        "provider": (
+            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER
+            if flow_refinement
+            else PARTITION_PRESSURE_NATIVE_PROVIDER
+        ),
         "mode": mode,
         "configuration": {
             "max_moves": limit,
@@ -1556,6 +1639,9 @@ def run_partition_pressure_native(
             "max_scalable_ejections": model["configuration"][
                 "max_scalable_ejections"
             ],
+            "flow_refinement": _flow_refinement_configuration(
+                flow_refinement, len(model["clusters"])
+            ),
         },
         "model_sha256": _canonical_digest(model),
         "initial_assignment_sha256": _canonical_digest(initial_assignment),
@@ -1678,7 +1764,11 @@ def validate_partition_pressure_native_bundle(
             PARTITION_PRESSURE_TRACE_SCHEMA,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
         )
-        or native_trace.get("provider") != PARTITION_PRESSURE_NATIVE_PROVIDER
+        or native_trace.get("provider")
+        not in (
+            PARTITION_PRESSURE_NATIVE_PROVIDER,
+            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
+        )
         or native_trace.get("model_sha256") != _canonical_digest(model)
         or native_trace.get("initial_assignment_sha256")
         != _canonical_digest(initial_assignment)
@@ -1696,7 +1786,11 @@ def validate_partition_pressure_native_bundle(
         raise ValidationError("native PATRON final assignment seal is invalid")
     mode = native_trace.get("mode")
     if mode == "endpoint-exact-global-best-v6":
-        if trace_schema != PARTITION_PRESSURE_TRACE_SCHEMA:
+        if (
+            trace_schema != PARTITION_PRESSURE_TRACE_SCHEMA
+            or native_trace.get("provider")
+            != PARTITION_PRESSURE_NATIVE_PROVIDER
+        ):
             raise ValidationError("native PATRON exact trace schema is invalid")
         exact = validate_partition_pressure_native_against_exhaustive(
             ir,
@@ -1721,6 +1815,13 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-flow-v7",
     ):
         raise ValidationError("native PATRON trace mode is invalid")
+    expected_provider = (
+        PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER
+        if mode == "endpoint-exact-critical-flow-v7"
+        else PARTITION_PRESSURE_NATIVE_PROVIDER
+    )
+    if native_trace.get("provider") != expected_provider:
+        raise ValidationError("native PATRON trace provider is invalid")
 
     moves = native_trace.get("moves")
     batches = native_trace.get("batches", [])
@@ -1737,6 +1838,16 @@ def validate_partition_pressure_native_bundle(
     max_ejections = native_trace.get("configuration", {}).get(
         "max_scalable_ejections"
     )
+    flow_configuration = native_trace.get("configuration", {}).get(
+        "flow_refinement"
+    )
+    flow_enabled = mode == "endpoint-exact-critical-flow-v7"
+    expected_flow_configuration = _flow_refinement_configuration(
+        flow_enabled, len(model["clusters"])
+    )
+    if flow_configuration is None and not flow_enabled:
+        # V6 artifacts predate the explicit disabled-flow certificate.
+        flow_configuration = expected_flow_configuration
     if (
         not isinstance(moves, list)
         or not isinstance(batches, list)
@@ -1744,7 +1855,6 @@ def validate_partition_pressure_native_bundle(
             mode == "endpoint-exact-critical-flow-v7"
             and (
                 trace_schema != PARTITION_PRESSURE_FLOW_TRACE_SCHEMA
-                or not batches
             )
         )
         or (
@@ -1778,6 +1888,7 @@ def validate_partition_pressure_native_bundle(
         or max_ejections < 0
         or max_ejections
         != model["configuration"].get("max_scalable_ejections")
+        or flow_configuration != expected_flow_configuration
     ):
         raise ValidationError("native PATRON scalable trace bounds are invalid")
     cluster_ids = {
