@@ -8,7 +8,10 @@ from pathlib import Path
 from unittest import mock
 
 from emuflow.errors import ValidationError
-from emuflow.experiment_partition import validate_partition_checkpoint
+from emuflow.experiment_partition import (
+    run_partition_checkpoint,
+    validate_partition_checkpoint,
+)
 from emuflow.experiment_upstream import (
     EXPERIMENT_PARTITION_SCHEMA,
     EXPERIMENT_TDM_SCHEMA,
@@ -23,6 +26,21 @@ def _sha256(path: Path) -> str:
 
 
 class ExperimentUpstreamTest(unittest.TestCase):
+    def test_partition_run_rejects_solution_for_non_tritonpart_provider(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            ValidationError, "requires provider=tritonpart"
+        ):
+            run_partition_checkpoint(
+                Path("unused-frontend"),
+                Path("unused-timing"),
+                Path("unused-platform"),
+                Path("unused-output"),
+                provider="greedy",
+                tritonpart_solution=Path("candidate.part.3"),
+            )
+
     @mock.patch("emuflow.experiment_upstream.validate_cut_timing_checkpoint")
     @mock.patch("emuflow.experiment_upstream._sha256", return_value="0" * 64)
     @mock.patch("emuflow.experiment_upstream.project_sta_path_database")
@@ -305,6 +323,43 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 validate_partition_checkpoint(
                     frontend, timing, platform, partition,
                     constraints_path=constraints,
+                )
+
+    @mock.patch("emuflow.experiment_partition.validate_phase3")
+    def test_partition_validator_seals_precomputed_tritonpart_solution(
+        self, validate_phase3
+    ) -> None:
+        validate_phase3.return_value = {"status": "pass"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frontend, timing, platform, partition = self._partition_fixture(root)
+            solution = root / "candidate.part.3"
+            solution.write_text("0\n1\n2\n", encoding="utf-8")
+            report_path = partition / "experiment-partition-report.json"
+            report = json.loads(report_path.read_text())
+            report["tritonpart_solution_sha256"] = _sha256(solution)
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            self.assertEqual(
+                validate_partition_checkpoint(
+                    frontend,
+                    timing,
+                    platform,
+                    partition,
+                    tritonpart_solution=solution,
+                )["status"],
+                "pass",
+            )
+            solution.write_text("0\n0\n0\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "TritonPart solution seal"
+            ):
+                validate_partition_checkpoint(
+                    frontend,
+                    timing,
+                    platform,
+                    partition,
+                    tritonpart_solution=solution,
                 )
 
     @mock.patch("emuflow.experiment_partition.validate_phase3")

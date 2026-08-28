@@ -1520,6 +1520,15 @@ the Phase 3 configuration, and invalidates only Phase 3 and descendants when
 it changes. It is suitable for forcing a previously characterized legal
 candidate across an FPGA boundary; it is not post-processing and must remain
 part of the replayable experiment specification.
+The lower-level managed `experiment-stage partition-run` command also accepts
+`--tritonpart-solution PATH` for importing an externally computed `.part`
+candidate without rerunning the partition search.  The producer copies the
+solution through TritonPart's normal import path and records its SHA-256 in the
+Phase 3 checkpoint; `partition-validate` must receive the same option and
+rehashes the external source before authorizing reuse.  This is intended for
+controlled partition-policy experiments whose upstream frontend and timing
+checkpoints are already frozen.  It does not make an unsealed manual result a
+canonical benchmark, and it is rejected for non-TritonPart providers.
 They also bind `partition_seed_attempts` and the explicit
 `partition_repair_balance` policy into both the Phase 3 producer and independent
 validator identities. A multi-seed TritonPart sweep therefore searches for an

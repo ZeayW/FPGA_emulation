@@ -609,6 +609,14 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--min-used-fpgas", type=int)
     partition_run.add_argument("--balance-tolerance", type=float)
     partition_run.add_argument("--openroad")
+    partition_run.add_argument(
+        "--tritonpart-solution",
+        type=Path,
+        help=(
+            "import a precomputed TritonPart .part solution and seal its "
+            "content in the reusable Phase 3 checkpoint"
+        ),
+    )
     partition_run.add_argument("--hop-refiner")
     partition_run.add_argument("--timeout-seconds", type=int, default=3600)
     partition_run.add_argument("--seed-attempts", type=int, default=1)
@@ -654,6 +662,7 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--platform", type=Path, required=True)
     partition_validate.add_argument("--constraints", type=Path)
     partition_validate.add_argument("--route-constraints", type=Path)
+    partition_validate.add_argument("--tritonpart-solution", type=Path)
     partition_validate.add_argument("--provider")
     partition_validate.add_argument("--seed", type=int)
     partition_validate.add_argument("--seed-attempts", type=int)
@@ -3486,6 +3495,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 min_used_fpgas=args.min_used_fpgas,
                 balance_tolerance=args.balance_tolerance,
                 openroad=args.openroad,
+                tritonpart_solution=args.tritonpart_solution,
                 hop_refiner=args.hop_refiner,
                 timeout_seconds=args.timeout_seconds,
                 seed_attempts=args.seed_attempts,
@@ -3512,6 +3522,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.root,
                 constraints_path=args.constraints,
                 route_constraints_path=args.route_constraints,
+                tritonpart_solution=args.tritonpart_solution,
                 expected_provider=args.provider,
                 expected_seed=args.seed,
                 expected_seed_attempts=args.seed_attempts,

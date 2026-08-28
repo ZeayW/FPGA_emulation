@@ -38,6 +38,7 @@ def run_partition_checkpoint(
     min_used_fpgas: Optional[int] = None,
     balance_tolerance: Optional[float] = None,
     openroad: Optional[str] = None,
+    tritonpart_solution: Optional[Path] = None,
     hop_refiner: Optional[str] = None,
     timeout_seconds: int = 3600,
     seed_attempts: int = 1,
@@ -65,6 +66,10 @@ def run_partition_checkpoint(
         raise ValidationError(
             "minimum combinational cut nets requires static exact cut mode"
         )
+    if tritonpart_solution is not None and provider != "tritonpart":
+        raise ValidationError(
+            "a precomputed TritonPart solution requires provider=tritonpart"
+        )
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     validate_timing_checkpoint(frontend_root, timing_root)
     weights_path = _require(timing_root, "partition-net-weights.json")
@@ -79,6 +84,7 @@ def run_partition_checkpoint(
         balance_tolerance=balance_tolerance,
         provider=provider,
         openroad=openroad,
+        tritonpart_solution=tritonpart_solution,
         tritonpart_timeout_seconds=timeout_seconds,
         tritonpart_seed_attempts=seed_attempts,
         tritonpart_repair_balance=repair_balance,
@@ -116,6 +122,11 @@ def run_partition_checkpoint(
         "assignment_sha256": _sha256(output_dir / "assignment.json"),
         "clusters_sha256": _sha256(output_dir / "clusters.json"),
         "phase3_report_sha256": _sha256(output_dir / "phase3_report.json"),
+        "tritonpart_solution_sha256": (
+            _sha256(tritonpart_solution.resolve())
+            if tritonpart_solution is not None
+            else None
+        ),
         "route_constraints_sha256": (
             _sha256(route_constraints_path.resolve())
             if route_constraints_path is not None
@@ -136,6 +147,7 @@ def run_partition_checkpoint(
         output_dir,
         constraints_path=constraints_path,
         route_constraints_path=route_constraints_path,
+        tritonpart_solution=tritonpart_solution,
         expected_provider=provider,
         expected_seed=seed,
         expected_seed_attempts=seed_attempts,
@@ -163,6 +175,7 @@ def validate_partition_checkpoint(
     *,
     constraints_path: Path | None = None,
     route_constraints_path: Path | None = None,
+    tritonpart_solution: Path | None = None,
     expected_provider: str | None = None,
     expected_seed: int | None = None,
     expected_seed_attempts: int | None = None,
@@ -236,6 +249,15 @@ def validate_partition_checkpoint(
     )
     if report.get("constraints_sha256") != expected_constraints_sha256:
         raise ValidationError("partition constraints seal is broken")
+    expected_tritonpart_solution_sha256 = (
+        _sha256(tritonpart_solution.resolve())
+        if tritonpart_solution is not None
+        else None
+    )
+    if report.get("tritonpart_solution_sha256") != (
+        expected_tritonpart_solution_sha256
+    ):
+        raise ValidationError("partition TritonPart solution seal is broken")
     seals = {
         "emuir_sha256": ir_path,
         "platform_sha256": platform_path.resolve(),
