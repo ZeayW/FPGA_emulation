@@ -59,6 +59,9 @@ struct Path {
   int start_cluster = -1;
   int end_cluster = -1;
   std::vector<int> nets;
+  int feedback_source = -1;
+  int feedback_sink = -1;
+  double feedback_residual_ns = 0.0;
 };
 
 struct Model {
@@ -336,7 +339,9 @@ Model read_model(const std::string& path) {
   const bool flow_v8 = token == "EMUFLOW_PATRON_INPUT_V8";
   const bool flow_v9 = token == "EMUFLOW_PATRON_INPUT_V9";
   const bool flow_v10 = token == "EMUFLOW_PATRON_INPUT_V10";
-  const bool flow_input = flow_v7 || flow_v8 || flow_v9 || flow_v10;
+  const bool flow_v11 = token == "EMUFLOW_PATRON_INPUT_V11";
+  const bool flow_input = flow_v7 || flow_v8 || flow_v9 || flow_v10
+                          || flow_v11;
   require(token == "EMUFLOW_PATRON_INPUT_V6" || flow_input,
           "invalid input header");
   Model model;
@@ -370,11 +375,11 @@ Model read_model(const std::string& path) {
         >> model.flow_corridor_distance >> model.flow_piercing_strategy
         >> model.flow_max_legal_candidates
         >> model.flow_max_polish_moves;
-    if (flow_v8 || flow_v9 || flow_v10) {
+    if (flow_v8 || flow_v9 || flow_v10 || flow_v11) {
       stream >> model.flow_max_frontier_paths
           >> model.flow_max_tail_moves;
     }
-    if (flow_v10) {
+    if (flow_v10 || flow_v11) {
       stream >> model.physical_hop_guard_scale_ns;
     }
     require(stream.good() && enabled == 1
@@ -386,7 +391,7 @@ Model read_model(const std::string& path) {
                 && model.flow_piercing_strategy <= 3
                 && model.flow_max_legal_candidates > 0
                 && model.flow_max_polish_moves >= 0
-                && (!(flow_v8 || flow_v9 || flow_v10)
+                && (!(flow_v8 || flow_v9 || flow_v10 || flow_v11)
                     || (model.flow_max_frontier_paths > 0
                         && model.flow_max_tail_moves >= 0)),
             "invalid FLOW");
@@ -394,7 +399,10 @@ Model read_model(const std::string& path) {
                 && model.physical_hop_guard_scale_ns >= 0.0,
             "invalid physical hop guard");
     model.flow_refinement = true;
-    model.flow_version = flow_v10 ? 10 : (flow_v9 ? 9 : (flow_v8 ? 8 : 7));
+    model.flow_version = flow_v11
+                             ? 11
+                             : (flow_v10 ? 10
+                                         : (flow_v9 ? 9 : (flow_v8 ? 8 : 7)));
   }
 
   model.hard_capacity.assign(
@@ -516,6 +524,28 @@ Model read_model(const std::string& path) {
       stream >> net;
       require(net >= 0 && net < model.nets, "invalid PATH net");
       model.path[path_index].nets.push_back(net);
+    }
+    if (flow_v11) {
+      stream >> model.path[path_index].feedback_source
+          >> model.path[path_index].feedback_sink
+          >> model.path[path_index].feedback_residual_ns;
+      const bool no_feedback =
+          model.path[path_index].feedback_source == -1
+          && model.path[path_index].feedback_sink == -1;
+      const bool valid_feedback =
+          model.path[path_index].feedback_source >= 0
+          && model.path[path_index].feedback_source < model.parts
+          && model.path[path_index].feedback_sink >= 0
+          && model.path[path_index].feedback_sink < model.parts
+          && model.path[path_index].feedback_source
+                 != model.path[path_index].feedback_sink;
+      require(stream.good() && (no_feedback || valid_feedback)
+                  && std::isfinite(
+                      model.path[path_index].feedback_residual_ns)
+                  && model.path[path_index].feedback_residual_ns >= 0.0
+                  && (!no_feedback
+                      || model.path[path_index].feedback_residual_ns == 0.0),
+              "invalid PATH physical feedback");
     }
   }
   stream >> token;
@@ -691,6 +721,11 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
         ++total_snaking;
       }
       seen.insert(part);
+    }
+    if (sequence.size() > 1
+        && sequence.front() == path.feedback_source
+        && sequence.back() == path.feedback_sink) {
+      transport += path.feedback_residual_ns;
     }
     const double predicted = path.slack_ns - transport;
     const double normalized = normalized_slack(
@@ -882,6 +917,11 @@ ProxyPathState build_proxy_path(
       ++snaking;
     }
     seen.insert(part);
+  }
+  if (sequence.size() > 1
+      && sequence.front() == path.feedback_source
+      && sequence.back() == path.feedback_sink) {
+    transport += path.feedback_residual_ns;
   }
   const double predicted = path.slack_ns - transport;
   const double slack = normalized_slack(model, path.period_ns, predicted);
@@ -2780,7 +2820,9 @@ void write_output(const std::string& output_path,
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
   const char* header = "EMUFLOW_PATRON_OUTPUT_V6\n";
-  if (flow_output_version == 10) {
+  if (flow_output_version == 11) {
+    header = "EMUFLOW_PATRON_OUTPUT_V11\n";
+  } else if (flow_output_version == 10) {
     header = "EMUFLOW_PATRON_OUTPUT_V10\n";
   } else if (flow_output_version == 9) {
     header = "EMUFLOW_PATRON_OUTPUT_V9\n";
@@ -4095,7 +4137,9 @@ void run_scalable(const Model& model, const std::string& output_path) {
   std::cerr << '\n';
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   std::string mode = "endpoint-exact-critical-ejection-v6";
-  if (model.flow_version == 10) {
+  if (model.flow_version == 11) {
+    mode = "endpoint-exact-critical-flow-v11";
+  } else if (model.flow_version == 10) {
     mode = "endpoint-exact-critical-flow-v10";
   } else if (model.flow_version == 9) {
     mode = "endpoint-exact-critical-flow-v9";

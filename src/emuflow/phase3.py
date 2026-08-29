@@ -20,6 +20,10 @@ from .partition_pressure import (
     run_partition_pressure_native,
     validate_partition_pressure_native_bundle,
 )
+from .partition_physical_feedback import (
+    build_partition_physical_feedback,
+    validate_partition_physical_feedback,
+)
 from .platform import Platform
 from .repart import run_repart
 from .mfspart_provider import run_mfspart
@@ -130,12 +134,31 @@ def run_phase3(
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
     patron_initial_assignment_path: Optional[Path] = None,
+    patron_physical_system_timing_path: Optional[Path] = None,
+    patron_physical_feedback_scale: float = 0.0,
 ) -> Dict[str, Any]:
     if not isinstance(patron_flow_refinement, bool):
         raise ValidationError("PATRON flow refinement flag is invalid")
     if patron_flow_refinement and provider != "patron":
         raise ValidationError(
             "PATRON flow refinement requires provider='patron'"
+        )
+    if patron_physical_system_timing_path is not None and (
+        provider != "patron"
+        or not patron_flow_refinement
+        or patron_initial_assignment_path is None
+        or patron_physical_feedback_scale <= 0.0
+    ):
+        raise ValidationError(
+            "PATRON physical feedback requires provider='patron', flow "
+            "refinement, a frozen initial assignment, and a positive scale"
+        )
+    if (
+        patron_physical_system_timing_path is None
+        and patron_physical_feedback_scale != 0.0
+    ):
+        raise ValidationError(
+            "PATRON physical feedback scale has no system timing source"
         )
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
@@ -255,6 +278,7 @@ def run_phase3(
                 constraints,
                 read_json(patron_initial_assignment_path),
             )
+        patron_feedback_source_assignment = initial
         initial, patron_initial_hop = refine_partition_hops(
             ir,
             platform,
@@ -275,6 +299,25 @@ def run_phase3(
             timing_database,
             route_constraints,
         )
+        patron_physical_feedback = None
+        patron_physical_feedback_validation = None
+        if patron_physical_system_timing_path is not None:
+            patron_physical_system_timing = read_json(
+                patron_physical_system_timing_path
+            )
+            patron_physical_feedback = build_partition_physical_feedback(
+                model,
+                patron_feedback_source_assignment,
+                patron_physical_system_timing,
+            )
+            patron_physical_feedback_validation = (
+                validate_partition_physical_feedback(
+                    model,
+                    patron_feedback_source_assignment,
+                    patron_physical_system_timing,
+                    patron_physical_feedback,
+                )
+            )
         assignment, patron_trace = run_partition_pressure_native(
             ir,
             platform,
@@ -286,6 +329,8 @@ def run_phase3(
             executable=patron_refiner,
             max_moves=patron_max_moves,
             flow_refinement=patron_flow_refinement,
+            physical_feedback=patron_physical_feedback,
+            physical_feedback_scale=patron_physical_feedback_scale,
         )
         write_json(output_dir / "patron" / "pressure_model.json", model)
         write_json(
@@ -302,6 +347,17 @@ def run_phase3(
             output_dir / "patron" / "initial_hop_refinement.json",
             patron_initial_hop,
         )
+        if patron_physical_feedback is not None:
+            write_json(
+                output_dir / "patron" / "physical_feedback.json",
+                patron_physical_feedback,
+            )
+            write_json(
+                output_dir
+                / "patron"
+                / "physical_feedback_source_assignment.json",
+                patron_feedback_source_assignment,
+            )
         patron_validation = validate_partition_pressure_native_bundle(
             ir,
             platform,
@@ -313,7 +369,13 @@ def run_phase3(
             initial,
             assignment,
             patron_trace,
+            patron_physical_feedback,
+            patron_physical_feedback_scale,
         )
+        if patron_physical_feedback_validation is not None:
+            patron_validation["physical_feedback"] = (
+                patron_physical_feedback_validation
+            )
     else:
         raise ValueError(
             f"unknown Phase 3 provider {provider!r}; "
@@ -393,6 +455,13 @@ def run_phase3(
                 ),
             }
         )
+        if patron_physical_system_timing_path is not None:
+            report["artifacts"]["patron_physical_feedback"] = (
+                "patron/physical_feedback.json"
+            )
+            report["artifacts"][
+                "patron_physical_feedback_source_assignment"
+            ] = "patron/physical_feedback_source_assignment.json"
         if patron_initial_assignment_path is None:
             report["artifacts"]["tritonpart"] = (
                 "patron/tritonpart/tritonpart_input.json"

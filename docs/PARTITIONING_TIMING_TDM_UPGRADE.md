@@ -207,6 +207,26 @@ the native batch rank and repeated-run output to match.  This remains a
 candidate algorithm until complete-global Phase 7 WNS and TNS both beat the
 frozen v6 result.
 
+V11 adds an iterative, path-specific correction rather than a uniform
+pre-route guard.  A prior independently validated Phase 7
+`system-timing/v2` artifact is joined to the complete pressure path population
+and its observed assignment.  Each exact cross-FPGA path contributes
+
+```text
+max(0,
+    physical_logic - (period - prepartition_slack)
+  + physical_interface - preplacement_fixed)
+```
+
+only when the current candidate uses the same source/sink FPGA pair.  The
+artifact and its scale are part of the algorithm identity and canonical DAG
+input set.  This is measured iterative feedback, not fabricated placement and
+not a claim that an old physical route remains valid after repartitioning.
+Moving either endpoint disables the old pair-specific residual, and the next
+physical iteration may generate a new artifact.  The formal promotion gate is
+unchanged: the candidate must beat the accepted complete-global Phase 7 WNS
+and TNS on a frozen canonical comparison.
+
 ### 3. Endpoint-exact PATRON v2
 
 The accepted v1 result above is the frozen comparison point for the next
@@ -333,6 +353,12 @@ Implemented artifacts are versioned and hash-bound:
   assignment hash;
 - `partition-pressure-report/v6`: the selected native provider, sealed model
   and trace, final assignment, and independent validation summary;
+- `partition-physical-feedback/v1`: positive path-specific physical residuals,
+  exact observed endpoint pairs, complete source hashes, and independent
+  reconstruction metrics for an iterative v11 run;
+- `partition-pressure-trace/v11`: the v11 feedback artifact hash and scale,
+  exact endpoint-matching contract, raw/ranked objective chain, batches, and
+  final assignment hash;
 - the existing checked cross-stage report records the frozen seed candidate,
   exact Phase 4/5 score, rejection reason, and selected candidate;
 - the existing canonical QoR comparison records frozen arm identities plus

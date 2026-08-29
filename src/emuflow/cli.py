@@ -606,6 +606,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--patron-flow-refinement", action="store_true"
     )
     partition_run.add_argument("--patron-initial-assignment", type=Path)
+    partition_run.add_argument(
+        "--patron-physical-system-timing", type=Path
+    )
+    partition_run.add_argument(
+        "--patron-physical-feedback-scale", type=float, default=0.0
+    )
     partition_run.add_argument("--mfspart-coarsener")
     partition_run.add_argument("--mfspart-initializer")
     partition_run.add_argument("--mfspart-refiner")
@@ -649,6 +655,12 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--route-constraints", type=Path)
     partition_validate.add_argument("--provider")
     partition_validate.add_argument("--patron-initial-assignment", type=Path)
+    partition_validate.add_argument(
+        "--patron-physical-system-timing", type=Path
+    )
+    partition_validate.add_argument(
+        "--patron-physical-feedback-scale", type=float
+    )
     partition_validate.add_argument(
         "--patron-flow-refinement",
         action=_BooleanOptionalAction,
@@ -2556,6 +2568,10 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--patron-max-moves", type=int)
     phase3.add_argument("--patron-flow-refinement", action="store_true")
     phase3.add_argument("--patron-initial-assignment", type=Path)
+    phase3.add_argument("--patron-physical-system-timing", type=Path)
+    phase3.add_argument(
+        "--patron-physical-feedback-scale", type=float, default=0.0
+    )
 
     sta_parser = subparsers.add_parser(
         "sta", help="STA path extraction artifact operations"
@@ -3485,6 +3501,12 @@ def _dispatch(args: argparse.Namespace) -> int:
                 patron_initial_assignment_path=(
                     args.patron_initial_assignment
                 ),
+                patron_physical_system_timing_path=(
+                    args.patron_physical_system_timing
+                ),
+                patron_physical_feedback_scale=(
+                    args.patron_physical_feedback_scale
+                ),
             )
         elif args.experiment_stage_command == "partition-validate":
             report = validate_partition_checkpoint(
@@ -3513,6 +3535,12 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ),
                 expected_patron_flow_refinement=(
                     args.patron_flow_refinement
+                ),
+                patron_physical_system_timing_path=(
+                    args.patron_physical_system_timing
+                ),
+                expected_patron_physical_feedback_scale=(
+                    args.patron_physical_feedback_scale
                 ),
             )
         elif args.experiment_stage_command == "cut-timing-run":
@@ -4862,6 +4890,12 @@ def _dispatch(args: argparse.Namespace) -> int:
             patron_flow_refinement=args.patron_flow_refinement,
             patron_initial_assignment_path=(
                 args.patron_initial_assignment
+            ),
+            patron_physical_system_timing_path=(
+                args.patron_physical_system_timing
+            ),
+            patron_physical_feedback_scale=(
+                args.patron_physical_feedback_scale
             ),
         )
         _print_json(report)

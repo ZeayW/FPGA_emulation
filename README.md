@@ -1274,9 +1274,35 @@ branch.  It is deliberately a pre-route risk term, not fabricated placement
 or a replacement for Phase 7.  Python and native implementations charge it
 once per route arc; its value, algorithm identity, input/output version,
 provider, and trace schema are independently validated while V7--V9 retain
-their original zero-guard contracts.  The guard remains experimental until a
-frozen candidate and canonical complete-global Phase 7 prove that both WNS
-and TNS beat V1.
+their original zero-guard contracts.  Frozen large-design screens at
+2.5/5/7.5/10 ns per hop all produced the exact V9 assignment and move trace.
+V10 is therefore rejected without spending another Phase 7 run: a uniform hop
+term cannot distinguish the path-specific physical residuals that caused the
+V9 WNS miss.
+
+V11 instead consumes an explicitly versioned
+`emuflow.partition-physical-feedback/v1` artifact reconstructed from a prior
+complete-global Phase 7 `system-timing/v2` result.  For each cross-FPGA
+TimingPathDB member it records only the positive residual between measured
+logic/interface delay and the pre-placement model.  The residual is charged
+only while the candidate path's current launch and capture FPGA exactly match
+the observed endpoint pair; moving either endpoint makes that record
+inapplicable rather than transferring a stale physical cost to a different
+route.  The pressure model, observed assignment, complete system-timing path
+population, periods, endpoint chain, and source hashes are independently
+reconstructed and sealed.  Compact tests compare the native C++ objective
+against an independent Python full recomputation; scalable validation checks
+complete initial/final objectives and every emitted transition without running
+a second large optimizer.
+
+Canonical iterative configs opt in with
+`patron_physical_system_timing` and a positive
+`patron_physical_feedback_scale` together with `partition_provider=patron` and
+`patron_flow_refinement=true`.  The prior timing artifact becomes a normal
+content-addressed partition input, so changing it invalidates only Phase 3 and
+its descendants.  A frozen formal Phase 7 comparison is still pending; V11 is
+not accepted and no WNS/TNS improvement is claimed until both complete-global
+metrics beat V1.
 PATRON remains explicit and non-default until
 case7/case9 topology replication
 is complete; the primary branch acceptance requested here does not silently

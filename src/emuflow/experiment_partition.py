@@ -22,6 +22,9 @@ from .io import read_json, write_json
 from .partition import CUT_MODE_SEQUENTIAL_ONLY
 from .partition_hops import validate_assignment_hop_constraints
 from .partition_pressure import validate_partition_pressure_native_bundle
+from .partition_physical_feedback import (
+    validate_partition_physical_feedback,
+)
 from .phase3 import run_phase3, validate_phase3
 from .ir import EmuIR
 from .platform import Platform
@@ -60,6 +63,8 @@ def run_partition_checkpoint(
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
     patron_initial_assignment_path: Optional[Path] = None,
+    patron_physical_system_timing_path: Optional[Path] = None,
+    patron_physical_feedback_scale: float = 0.0,
 ) -> Dict[str, Any]:
     if (
         isinstance(minimum_combinational_cut_nets, bool)
@@ -115,6 +120,10 @@ def run_partition_checkpoint(
         patron_max_moves=patron_max_moves,
         patron_flow_refinement=patron_flow_refinement,
         patron_initial_assignment_path=patron_initial_assignment_path,
+        patron_physical_system_timing_path=(
+            patron_physical_system_timing_path
+        ),
+        patron_physical_feedback_scale=patron_physical_feedback_scale,
     )
     report = {
         "schema": EXPERIMENT_PARTITION_SCHEMA,
@@ -155,6 +164,14 @@ def run_partition_checkpoint(
             else None
         ),
         "patron_flow_refinement": patron_flow_refinement,
+        "patron_physical_system_timing_sha256": (
+            _sha256(patron_physical_system_timing_path.resolve())
+            if patron_physical_system_timing_path is not None
+            else None
+        ),
+        "patron_physical_feedback_scale": (
+            patron_physical_feedback_scale
+        ),
         "phase3": phase3,
     }
     if provider == "patron":
@@ -163,6 +180,20 @@ def run_partition_checkpoint(
             "trace": _sha256(output_dir / "patron/refinement_trace.json"),
             "initial_assignment": _sha256(
                 output_dir / "patron/initial_assignment.json"
+            ),
+            **(
+                {
+                    "physical_feedback": _sha256(
+                        output_dir / "patron/physical_feedback.json"
+                    ),
+                    "physical_feedback_source_assignment": _sha256(
+                        output_dir
+                        / "patron"
+                        / "physical_feedback_source_assignment.json"
+                    ),
+                }
+                if patron_physical_system_timing_path is not None
+                else {}
             ),
         }
     write_json(output_dir / "experiment-partition-report.json", report)
@@ -187,6 +218,12 @@ def run_partition_checkpoint(
         ),
         patron_initial_assignment_path=patron_initial_assignment_path,
         expected_patron_flow_refinement=patron_flow_refinement,
+        patron_physical_system_timing_path=(
+            patron_physical_system_timing_path
+        ),
+        expected_patron_physical_feedback_scale=(
+            patron_physical_feedback_scale
+        ),
     )
     return report
 
@@ -209,6 +246,8 @@ def validate_partition_checkpoint(
     expected_minimum_combinational_cut_nets: int | None = None,
     patron_initial_assignment_path: Path | None = None,
     expected_patron_flow_refinement: bool | None = None,
+    patron_physical_system_timing_path: Path | None = None,
+    expected_patron_physical_feedback_scale: float | None = None,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     weights = _require(timing_root, "partition-net-weights.json")
@@ -295,6 +334,28 @@ def validate_partition_checkpoint(
     if actual_patron_flow_refinement and report.get("provider") != "patron":
         raise ValidationError(
             "partition flow refinement requires the PATRON provider"
+        )
+    expected_physical_timing_sha256 = (
+        _sha256(patron_physical_system_timing_path.resolve())
+        if patron_physical_system_timing_path is not None
+        else None
+    )
+    if report.get("patron_physical_system_timing_sha256") != (
+        expected_physical_timing_sha256
+    ):
+        raise ValidationError(
+            "partition PATRON physical system-timing seal is broken"
+        )
+    actual_feedback_scale = report.get(
+        "patron_physical_feedback_scale", 0.0
+    )
+    if (
+        expected_patron_physical_feedback_scale is not None
+        and actual_feedback_scale
+        != expected_patron_physical_feedback_scale
+    ):
+        raise ValidationError(
+            "partition PATRON physical feedback scale disagrees"
         )
     seals = {
         "emuir_sha256": ir_path,
@@ -403,6 +464,18 @@ def validate_partition_checkpoint(
                 root, "patron/initial_assignment.json"
             ),
         }
+        if patron_physical_system_timing_path is not None:
+            patron_paths.update(
+                {
+                    "physical_feedback": _require(
+                        root, "patron/physical_feedback.json"
+                    ),
+                    "physical_feedback_source_assignment": _require(
+                        root,
+                        "patron/physical_feedback_source_assignment.json",
+                    ),
+                }
+            )
         expected_artifact_hashes = report.get("patron_artifact_sha256")
         if (
             not isinstance(expected_artifact_hashes, dict)
@@ -417,6 +490,24 @@ def validate_partition_checkpoint(
             )
         ir = EmuIR.load(ir_path)
         platform = Platform.load(platform_path)
+        model = read_json(patron_paths["model"])
+        initial_assignment = read_json(patron_paths["initial_assignment"])
+        physical_feedback = None
+        physical_feedback_validation = None
+        if patron_physical_system_timing_path is not None:
+            physical_feedback = read_json(patron_paths["physical_feedback"])
+            physical_feedback_validation = (
+                validate_partition_physical_feedback(
+                    model,
+                    read_json(
+                        patron_paths[
+                            "physical_feedback_source_assignment"
+                        ]
+                    ),
+                    read_json(patron_physical_system_timing_path),
+                    physical_feedback,
+                )
+            )
         algorithm_validation = validate_partition_pressure_native_bundle(
             ir,
             platform,
@@ -424,11 +515,17 @@ def validate_partition_checkpoint(
             read_json(_require(root, "constraints.normalized.json")),
             read_json(_require(timing_root, "path-database.json")),
             load_route_constraints(route_constraints_path, platform),
-            read_json(patron_paths["model"]),
-            read_json(patron_paths["initial_assignment"]),
+            model,
+            initial_assignment,
             assignment,
             read_json(patron_paths["trace"]),
+            physical_feedback,
+            actual_feedback_scale,
         )
+        if physical_feedback_validation is not None:
+            algorithm_validation["physical_feedback"] = (
+                physical_feedback_validation
+            )
         if report.get("phase3", {}).get("algorithm_validation") != (
             algorithm_validation
         ):

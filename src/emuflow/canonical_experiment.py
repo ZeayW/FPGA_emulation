@@ -224,6 +224,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/phase3.py",
         "src/emuflow/partition.py",
         "src/emuflow/partition_hops.py",
+        "src/emuflow/partition_physical_feedback.py",
         "src/emuflow/partition_pressure.py",
         "src/emuflow/routing.py",
         "src/native/hop_partition_refiner.cpp",
@@ -408,6 +409,22 @@ def compile_canonical_experiment_spec(
             "canonical patron_flow_refinement requires partition_provider "
             "'patron'"
         )
+    patron_physical_feedback_scale = config.get(
+        "patron_physical_feedback_scale", 0.0
+    )
+    if (
+        isinstance(patron_physical_feedback_scale, bool)
+        or not isinstance(patron_physical_feedback_scale, (int, float))
+        or not math.isfinite(float(patron_physical_feedback_scale))
+        or float(patron_physical_feedback_scale) < 0.0
+    ):
+        raise ValidationError(
+            "canonical patron physical feedback scale must be finite and "
+            "non-negative"
+        )
+    patron_physical_feedback_scale = float(
+        patron_physical_feedback_scale
+    )
     required_tools = {
         "emuflow",
         "yosys",
@@ -588,10 +605,33 @@ def compile_canonical_experiment_spec(
             "constraints"
         )
     patron_initial_assignment = None
+    patron_physical_system_timing = None
     if partition_provider == "patron":
         patron_initial_assignment = _file(
             config.get("patron_initial_assignment"),
             "patron_initial_assignment",
+        )
+    physical_system_timing_value = config.get(
+        "patron_physical_system_timing"
+    )
+    if physical_system_timing_value is not None:
+        if (
+            partition_provider != "patron"
+            or not patron_flow_refinement
+            or patron_physical_feedback_scale <= 0.0
+        ):
+            raise ValidationError(
+                "canonical patron physical system timing requires PATRON "
+                "flow refinement and a positive feedback scale"
+            )
+        patron_physical_system_timing = _file(
+            physical_system_timing_value,
+            "patron_physical_system_timing",
+        )
+    elif patron_physical_feedback_scale != 0.0:
+        raise ValidationError(
+            "canonical patron physical feedback scale requires a physical "
+            "system-timing artifact"
         )
     executable = str(tools["emuflow"])
     base_inputs = {
@@ -614,6 +654,15 @@ def compile_canonical_experiment_spec(
                 )
             }
             if patron_initial_assignment is not None
+            else {}
+        ),
+        **(
+            {
+                "patron_physical_system_timing": _sha256(
+                    patron_physical_system_timing
+                )
+            }
+            if patron_physical_system_timing is not None
             else {}
         ),
     }
@@ -639,6 +688,15 @@ def compile_canonical_experiment_spec(
                 )
             }
             if patron_initial_assignment is not None
+            else {}
+        ),
+        **(
+            {
+                "patron_physical_system_timing": str(
+                    patron_physical_system_timing
+                )
+            }
+            if patron_physical_system_timing is not None
             else {}
         ),
     }
@@ -792,6 +850,13 @@ def compile_canonical_experiment_spec(
         ]
         if patron_flow_refinement:
             partition_command.insert(-2, "--patron-flow-refinement")
+        if patron_physical_system_timing is not None:
+            partition_command[-2:-2] = [
+                "--patron-physical-system-timing",
+                str(patron_physical_system_timing),
+                "--patron-physical-feedback-scale",
+                f"{patron_physical_feedback_scale:.17g}",
+            ]
         partition_validator.extend(
             [
                 "--patron-initial-assignment",
@@ -800,9 +865,20 @@ def compile_canonical_experiment_spec(
         )
         if patron_flow_refinement:
             partition_validator.append("--patron-flow-refinement")
+        if patron_physical_system_timing is not None:
+            partition_validator.extend(
+                [
+                    "--patron-physical-system-timing",
+                    str(patron_physical_system_timing),
+                    "--patron-physical-feedback-scale",
+                    f"{patron_physical_feedback_scale:.17g}",
+                ]
+            )
         partition_inputs.extend(
             ["tool.patron_refiner", "patron_initial_assignment"]
         )
+        if patron_physical_system_timing is not None:
+            partition_inputs.append("patron_physical_system_timing")
         partition_artifacts.append(
             _artifact("patron", "evidence-critical")
         )
@@ -829,6 +905,12 @@ def compile_canonical_experiment_spec(
         configuration={
             "provider": partition_provider,
             "patron_flow_refinement": patron_flow_refinement,
+            "patron_physical_system_timing_sha256": base_inputs.get(
+                "patron_physical_system_timing"
+            ),
+            "patron_physical_feedback_scale": (
+                patron_physical_feedback_scale
+            ),
             "seed": partition_seed,
             "seed_attempts": partition_seed_attempts,
             "repair_balance": partition_repair_balance,

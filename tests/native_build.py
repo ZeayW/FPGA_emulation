@@ -166,6 +166,32 @@ def patron_refiner() -> Path:
 
 
 @lru_cache(maxsize=1)
+def hop_partition_refiner() -> Path:
+    compiler = (
+        shutil.which("c++")
+        or shutil.which("g++")
+        or shutil.which("clang++")
+    )
+    if compiler is None:
+        raise RuntimeError(
+            "a C++17 compiler is required for partition-hop tests"
+        )
+    executable = Path(_BUILD_ROOT.name) / "emuflow_hop_partition_refiner"
+    subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            "-O2",
+            str(ROOT / "src/native/hop_partition_refiner.cpp"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    return executable
+
+
+@lru_cache(maxsize=1)
 def eda2025_topology_optimizer() -> Path:
     compiler = (
         shutil.which("c++")
