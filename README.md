@@ -2376,6 +2376,13 @@ every physical node's configuration and storage estimate; it does not alter
 the physical algorithm or QoR contract. Do not use it to bypass preflight for
 an unprofiled workload.
 
+The partition node similarly defaults to a conservative 24 GiB peak. A
+canonical config may set a positive `partition_peak_gib` after an independently
+validated run of the same design, platform, provider, and partition options has
+measured a smaller footprint. The value is sealed into the partition node's
+configuration and storage estimate, so changing it creates a distinct DAG
+identity while leaving the partition algorithm and QoR contract unchanged.
+
 Endpoint-complete physical timing retains the complete pre-partition
 `path-database.json` as its single original-member namespace. Canonical v3+
 checkpoints project it into Phase 4/5, use it for same-FPGA local paths, and use

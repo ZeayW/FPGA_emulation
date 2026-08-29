@@ -445,6 +445,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 compile_canonical_experiment_spec(
                     config_path, REPOSITORY, root / "invalid-spec.json"
                 )
+
             comparison = nodes["qor-comparison"]
             self.assertEqual(
                 comparison["dependencies"],
@@ -467,6 +468,34 @@ class CanonicalExperimentTest(unittest.TestCase):
                     }
                 ],
             )
+
+    def test_partition_storage_peak_override_is_sealed_and_positive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config["partition_peak_gib"] = 8
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            nodes = {
+                item["id"]: item
+                for item in validate_experiment_spec(json.loads(output.read_text()))[
+                    "nodes"
+                ]
+            }
+            partition = nodes["partition"]
+            self.assertEqual(partition["configuration"]["partition_peak_gib"], 8)
+            self.assertEqual(
+                partition["storage_estimate"]["peak_bytes"], 8 * 1024**3
+            )
+
+            config["partition_peak_gib"] = 0
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "partition_peak_gib"):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "invalid-partition-spec.json"
+                )
 
     def test_external_tool_bytes_are_part_of_execution_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

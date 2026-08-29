@@ -489,6 +489,9 @@ def compile_canonical_experiment_spec(
     physical_peak_gib = _positive_integer(
         config.get("physical_peak_gib", 48), "physical_peak_gib"
     )
+    partition_peak_gib = _positive_integer(
+        config.get("partition_peak_gib", 24), "partition_peak_gib"
+    )
     route_candidate_workers = _positive_integer(
         config.get("route_candidate_workers", workers),
         "route_candidate_workers",
@@ -838,8 +841,9 @@ def compile_canonical_experiment_spec(
             ),
             "comb_segment_budget_slots": comb_segment_budget_slots,
             "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
+            "partition_peak_gib": partition_peak_gib,
         },
-        peak_gib=24, retained_gib=6,
+        peak_gib=partition_peak_gib, retained_gib=6,
     )
     cut_command = [
         executable, "experiment-stage", "cut-timing-run", "--frontend", "{dependency:frontend}",
