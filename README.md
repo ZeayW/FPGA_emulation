@@ -1176,7 +1176,10 @@ policy; selecting it with Static Exact fails closed until the refiner consumes
 the exact dependency contract.  Canonical experiment configs may set
 `partition_provider=patron`, reuse `patron_initial_assignment`, and restrict
 `phase6_providers` plus `physical_seeds` (for example Chimew/seed 1) so an A/B
-run computes only the missing branch.  A frozen assignment is rebound through
+run computes only the missing branch.  Such a restricted run terminates at
+its independently validated Phase 7 checkpoint; the canonical QoR comparison
+node is emitted only for a complete baseline/placement-aware/Chimew provider
+matrix.  A frozen assignment is rebound through
 its exact instance-to-FPGA map when a compatible source revision changed only
 cluster identifiers; every current cluster must remain wholly on one frozen
 FPGA and the rebuilt instance map must be byte-for-byte equivalent, otherwise
@@ -1300,9 +1303,16 @@ Canonical iterative configs opt in with
 `patron_physical_feedback_scale` together with `partition_provider=patron` and
 `patron_flow_refinement=true`.  The prior timing artifact becomes a normal
 content-addressed partition input, so changing it invalidates only Phase 3 and
-its descendants.  A frozen formal Phase 7 comparison is still pending; V11 is
-not accepted and no WNS/TNS improvement is claimed until both complete-global
-metrics beat V1.
+its descendants.  The frozen canonical DLA/EDA2023-case6 seed-1 Phase 1--7
+gate used the same EmuIR hash, 195,532-path timing population, Chimew Phase 6,
+eight physical workers, route channel width 300, and complete-global timing
+qualification as accepted V1.  V11 reached `-82.496046406 ns` WNS and
+`-104,893.24759878777 ns` TNS, versus V1's `-82.4981025395 ns` and
+`-324,776.89798473305 ns`: WNS improved by `0.0020561335 ns` and TNS deficit
+fell by `67.7030%`.  Negative-slack paths fell from 8,803 to 2,641; both arms
+had zero unrouted nets and zero DRC violations.  V11 therefore passes the
+declared two-metric promotion gate, while the very small WNS margin is reported
+explicitly rather than presented as a broad topology-independent result.
 PATRON remains explicit and non-default until
 case7/case9 topology replication
 is complete; the primary branch acceptance requested here does not silently

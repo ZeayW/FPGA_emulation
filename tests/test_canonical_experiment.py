@@ -362,7 +362,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             config["physical_seeds"] = [1]
             config_path.write_text(json.dumps(config), encoding="utf-8")
             output = root / "patron-spec.json"
-            compile_canonical_experiment_spec(
+            report = compile_canonical_experiment_spec(
                 config_path, REPOSITORY, output
             )
             spec = validate_experiment_spec(json.loads(output.read_text()))
@@ -423,11 +423,9 @@ class CanonicalExperimentTest(unittest.TestCase):
                 {(item["provider"], item["physical_seed"]) for item in terminals},
                 {("chimew", 1)},
             )
-            comparison = nodes["qor-comparison"]
-            self.assertEqual(
-                comparison["dependencies"],
-                ["shared-phase1-5", "phase7-chimew-seed1"],
-            )
+            self.assertNotIn("qor-comparison", nodes)
+            self.assertEqual(report["physical_terminal_nodes"], 1)
+            self.assertEqual(report["terminal_nodes"], 1)
 
             config["cut_mode"] = "static-exact-combinational"
             config_path.write_text(json.dumps(config), encoding="utf-8")

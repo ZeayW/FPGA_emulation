@@ -1132,6 +1132,27 @@ def compile_canonical_experiment_spec(
             "cut_mode": cut_mode,
             "output": str(output_path.resolve()),
         }
+    if set(phase7_providers) != {"baseline", "placement-aware", "chimew"}:
+        # Restricted provider sets are the supported incremental path for
+        # computing only missing physical arms.  The canonical QoR comparison
+        # deliberately accepts only a complete, paired provider matrix, so do
+        # not emit a comparison node that is guaranteed to fail its contract.
+        spec = {
+            "schema": EXPERIMENT_SPEC_V2_SCHEMA,
+            "experiment_id": case_id,
+            "source_commit": source_commit,
+            "nodes": nodes,
+        }
+        validated = validate_experiment_spec(spec)
+        write_json(output_path, spec)
+        return {
+            "status": "pass",
+            "experiment_id": case_id,
+            "nodes": len(validated["nodes"]),
+            "physical_terminal_nodes": len(phase7_ids),
+            "terminal_nodes": len(phase7_ids),
+            "output": str(output_path.resolve()),
+        }
     comparison_command = [
         executable,
         "experiment-stage",

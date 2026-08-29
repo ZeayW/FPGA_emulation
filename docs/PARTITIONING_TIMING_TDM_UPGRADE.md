@@ -225,7 +225,12 @@ not a claim that an old physical route remains valid after repartitioning.
 Moving either endpoint disables the old pair-specific residual, and the next
 physical iteration may generate a new artifact.  The formal promotion gate is
 unchanged: the candidate must beat the accepted complete-global Phase 7 WNS
-and TNS on a frozen canonical comparison.
+and TNS on a frozen canonical comparison.  On the canonical DLA/EDA2023-case6
+seed-1 gate, V11 improved complete-global WNS from `-82.4981025395 ns` to
+`-82.496046406 ns` and TNS from `-324,776.89798473305 ns` to
+`-104,893.24759878777 ns`; negative-slack paths fell from 8,803 to 2,641, with
+zero unrouted nets and zero DRC violations.  This passes the two-metric gate,
+but the `0.0020561335 ns` WNS margin remains explicitly qualified as narrow.
 
 ### 3. Endpoint-exact PATRON v2
 
