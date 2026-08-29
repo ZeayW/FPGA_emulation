@@ -497,6 +497,51 @@ class CanonicalExperimentTest(unittest.TestCase):
                     config_path, REPOSITORY, root / "invalid-partition-spec.json"
                 )
 
+    def test_phase6_candidate_storage_peak_override_is_sealed_and_positive(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config["phase6_candidate_peak_gib"] = 4
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            nodes = {
+                item["id"]: item
+                for item in validate_experiment_spec(json.loads(output.read_text()))[
+                    "nodes"
+                ]
+            }
+            for provider in ("placement-aware", "chimew"):
+                node = nodes[f"phase6-{provider}"]
+                self.assertEqual(
+                    node["configuration"]["phase6_candidate_peak_gib"], 4
+                )
+                self.assertEqual(
+                    node["storage_estimate"]["peak_bytes"], 4 * 1024**3
+                )
+            self.assertNotIn(
+                "phase6_candidate_peak_gib",
+                nodes["phase6-baseline"]["configuration"],
+            )
+            self.assertEqual(
+                nodes["phase6-baseline"]["storage_estimate"]["peak_bytes"],
+                12 * 1024**3,
+            )
+
+            config["phase6_candidate_peak_gib"] = 0
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "phase6_candidate_peak_gib"
+            ):
+                compile_canonical_experiment_spec(
+                    config_path,
+                    REPOSITORY,
+                    root / "invalid-phase6-candidate-spec.json",
+                )
+
     def test_external_tool_bytes_are_part_of_execution_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

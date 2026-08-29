@@ -2383,6 +2383,14 @@ measured a smaller footprint. The value is sealed into the partition node's
 configuration and storage estimate, so changing it creates a distinct DAG
 identity while leaving the partition algorithm and QoR contract unchanged.
 
+Non-baseline Phase 6 candidate nodes default to a conservative 12 GiB peak. A
+canonical config may set a positive `phase6_candidate_peak_gib` only after an
+independently validated run of the same design, platform, provider, and Phase 6
+options has measured a smaller footprint. The value is sealed into each
+placement-aware or Chimew candidate node. It deliberately does not alter the
+baseline Phase 6 node, so a measured candidate override cannot invalidate a
+previously validated baseline or the physical-lookahead node that consumes it.
+
 Endpoint-complete physical timing retains the complete pre-partition
 `path-database.json` as its single original-member namespace. Canonical v3+
 checkpoints project it into Phase 4/5, use it for same-FPGA local paths, and use

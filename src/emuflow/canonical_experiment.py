@@ -492,6 +492,10 @@ def compile_canonical_experiment_spec(
     partition_peak_gib = _positive_integer(
         config.get("partition_peak_gib", 24), "partition_peak_gib"
     )
+    phase6_candidate_peak_gib = _positive_integer(
+        config.get("phase6_candidate_peak_gib", 12),
+        "phase6_candidate_peak_gib",
+    )
     route_candidate_workers = _positive_integer(
         config.get("route_candidate_workers", workers),
         "route_candidate_workers",
@@ -982,7 +986,15 @@ def compile_canonical_experiment_spec(
             phase6_command,
             [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider],
             [_artifact("split", "consumer-checkpoint"), _artifact("schedule.json", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical"), *extra_artifacts],
-            inputs=tuple(phase6_inputs), configuration={"provider": provider, "equivalence_cycles": 16}, peak_gib=12, retained_gib=4, provider=provider,
+            inputs=tuple(phase6_inputs),
+            configuration={
+                "provider": provider,
+                "equivalence_cycles": 16,
+                "phase6_candidate_peak_gib": phase6_candidate_peak_gib,
+            },
+            peak_gib=phase6_candidate_peak_gib,
+            retained_gib=4,
+            provider=provider,
         )
     phase7_providers = (
         ("baseline",)
