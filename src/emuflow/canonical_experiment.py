@@ -490,6 +490,12 @@ def compile_canonical_experiment_spec(
     physical_peak_gib = _positive_integer(
         config.get("physical_peak_gib", 48), "physical_peak_gib"
     )
+    partition_peak_gib = _positive_integer(
+        config.get("partition_peak_gib", 24), "partition_peak_gib"
+    )
+    partition_retained_gib = _positive_integer(
+        config.get("partition_retained_gib", 6), "partition_retained_gib"
+    )
     route_candidate_workers = _positive_integer(
         config.get("route_candidate_workers", workers),
         "route_candidate_workers",
@@ -823,8 +829,8 @@ def compile_canonical_experiment_spec(
         partition_validator,
         [_artifact("clusters.json", "consumer-checkpoint"), _artifact("constraints.normalized.json", "consumer-checkpoint"), _artifact("assignment.json", "consumer-checkpoint"), _artifact("phase3_report.json", "consumer-checkpoint"), *([_artifact("mfspart-post-refinement", "consumer-checkpoint")] if mfspart_post_refinement else []), _artifact("experiment-partition-report.json", "evidence-critical")],
         inputs=("platform", "route_constraints", *( ("partition_constraints",) if partition_constraints is not None else () ), *( ("tritonpart_solution",) if tritonpart_solution is not None else () ), "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
-        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "mfspart_post_refinement": mfspart_post_refinement, "mfspart_post_refinement_early_stop": mfspart_post_refinement_early_stop, "mfspart_post_refinement_bottleneck_beta": mfspart_post_refinement_bottleneck_beta, "mfspart_post_refinement_timing_path_beta": mfspart_post_refinement_timing_path_beta, "route_constraints": contract["route_constraints"], "partition_constraints_sha256": base_inputs.get("partition_constraints"), "tritonpart_solution_sha256": base_inputs.get("tritonpart_solution"), "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots, "static_exact_candidate_policy": static_exact_candidate_policy, "minimum_combinational_cut_nets": minimum_combinational_cut_nets},
-        peak_gib=24, retained_gib=6,
+        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "mfspart_post_refinement": mfspart_post_refinement, "mfspart_post_refinement_early_stop": mfspart_post_refinement_early_stop, "mfspart_post_refinement_bottleneck_beta": mfspart_post_refinement_bottleneck_beta, "mfspart_post_refinement_timing_path_beta": mfspart_post_refinement_timing_path_beta, "route_constraints": contract["route_constraints"], "partition_constraints_sha256": base_inputs.get("partition_constraints"), "tritonpart_solution_sha256": base_inputs.get("tritonpart_solution"), "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots, "static_exact_candidate_policy": static_exact_candidate_policy, "minimum_combinational_cut_nets": minimum_combinational_cut_nets, "partition_peak_gib": partition_peak_gib, "partition_retained_gib": partition_retained_gib},
+        peak_gib=partition_peak_gib, retained_gib=partition_retained_gib,
     )
     cut_command = [
         executable, "experiment-stage", "cut-timing-run", "--frontend", "{dependency:frontend}",
