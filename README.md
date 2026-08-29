@@ -1259,9 +1259,24 @@ design V9 accepted 154 repair moves and improved worst normalized slack to
 `-0.83226518752689782` and total negative normalized slack to
 `-2914.1576328328747`.  The 256-, 4096-, and 16384-path windows produced
 byte-identical assignments and traces, establishing that the 256-path bound
-reached the same fixed point.  Canonical seed-1 Phase 7 validation for V9 is
-still pending; V9 remains unaccepted until both complete-global WNS and TNS
-beat the accepted v1 result.
+reached the same fixed point.  Canonical seed-1 Phase 7 for V9 reached
+`-83.891239479 ns` WNS and `-108,268.13829710225 ns` TNS with 2,544 negative
+paths, zero unrouted nets, and zero DRC violations.  Relative to accepted V1,
+TNS improved by 66.66% and the negative-path count fell by 71.10%, but WNS
+regressed by `1.3931369395 ns`; V9 is therefore rejected rather than promoted.
+
+V10 addresses the measured proxy-to-physical residual instead of widening the
+already converged frontier.  The rejected V9 worst physical path used two
+routed BoardDB hops and exposed `11.448265 ns` of local/interface delay that
+the Phase 3 transport proxy did not represent.  V10 adds a sealed
+`5 ns * routed_hops` physical-interface risk guard to every concrete path
+branch.  It is deliberately a pre-route risk term, not fabricated placement
+or a replacement for Phase 7.  Python and native implementations charge it
+once per route arc; its value, algorithm identity, input/output version,
+provider, and trace schema are independently validated while V7--V9 retain
+their original zero-guard contracts.  The guard remains experimental until a
+frozen candidate and canonical complete-global Phase 7 prove that both WNS
+and TNS beat V1.
 PATRON remains explicit and non-default until
 case7/case9 topology replication
 is complete; the primary branch acceptance requested here does not silently

@@ -283,8 +283,23 @@ run accepted 154 repair moves and reached `-0.83226518752689782` worst
 normalized slack and `-2914.1576328328747` total negative normalized slack.
 The 256-, 4096-, and 16384-path windows produced byte-identical native output,
 so 256 is the smallest tested bound that reaches this fixed point.  The
-canonical v9 Phase 7 gate remains pending and is unchanged: both
-complete-global WNS and TNS must beat v1.
+canonical V9 seed-1 result was `-83.891239479 ns` WNS,
+`-108,268.13829710225 ns` TNS, and 2,544 negative paths with zero unrouted
+nets and zero DRC violations.  It substantially improved TNS and path count,
+but its WNS was `1.3931369395 ns` worse than V1, so it failed the unchanged
+two-metric gate.
+
+V9's worst complete-global path crossed two BoardDB hops.  Phase 7 attributed
+`13.891239479 ns` to routed physical stages while the Phase 3 proxy had only
+`2.442974 ns` of corresponding fixed delay, leaving an `11.448265 ns`
+pre-route residual.  V10 therefore adds a deterministic physical-interface
+risk guard of `5 ns` per routed arc to concrete endpoint-exact transport.
+This follows the hop-constrained timing lesson from HoPart while preserving
+EmuFlow's independently routed Phase 4/5 and complete-global Phase 7 as the
+authorities.  The term is sealed in the V10 native input and trace, reproduced
+by an independent Python objective, and absent from legacy V7--V9 contracts.
+It is an experimental calibration hypothesis, not a physical-timing claim;
+only a canonical result that improves both V1 WNS and TNS can promote it.
 
 ## Exact Phase 4/5 promotion
 

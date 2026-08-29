@@ -90,6 +90,7 @@ struct Model {
   double negative_scale = 1.0;
   double max_period = 1.0;
   double boundary_fanout_penalty_scale_ns = 0.0;
+  double physical_hop_guard_scale_ns = 0.0;
   std::vector<std::vector<double>> hard_capacity;
   std::vector<std::vector<double>> balance_capacity;
   std::vector<Cluster> cluster;
@@ -310,7 +311,8 @@ double predicted_route_delay(const Model& model,
   for (const Arc& arc : route.arcs) {
     delay += arc.delay_ns
              + std::max(0, ratios[arc.domain] - 1)
-                   * model.domain[arc.domain].cycle_ns;
+                   * model.domain[arc.domain].cycle_ns
+             + model.physical_hop_guard_scale_ns;
   }
   return delay;
 }
@@ -333,7 +335,8 @@ Model read_model(const std::string& path) {
   const bool flow_v7 = token == "EMUFLOW_PATRON_INPUT_V7";
   const bool flow_v8 = token == "EMUFLOW_PATRON_INPUT_V8";
   const bool flow_v9 = token == "EMUFLOW_PATRON_INPUT_V9";
-  const bool flow_input = flow_v7 || flow_v8 || flow_v9;
+  const bool flow_v10 = token == "EMUFLOW_PATRON_INPUT_V10";
+  const bool flow_input = flow_v7 || flow_v8 || flow_v9 || flow_v10;
   require(token == "EMUFLOW_PATRON_INPUT_V6" || flow_input,
           "invalid input header");
   Model model;
@@ -367,9 +370,12 @@ Model read_model(const std::string& path) {
         >> model.flow_corridor_distance >> model.flow_piercing_strategy
         >> model.flow_max_legal_candidates
         >> model.flow_max_polish_moves;
-    if (flow_v8 || flow_v9) {
+    if (flow_v8 || flow_v9 || flow_v10) {
       stream >> model.flow_max_frontier_paths
           >> model.flow_max_tail_moves;
+    }
+    if (flow_v10) {
+      stream >> model.physical_hop_guard_scale_ns;
     }
     require(stream.good() && enabled == 1
                 && model.flow_max_clusters > 0
@@ -380,12 +386,15 @@ Model read_model(const std::string& path) {
                 && model.flow_piercing_strategy <= 3
                 && model.flow_max_legal_candidates > 0
                 && model.flow_max_polish_moves >= 0
-                && (!(flow_v8 || flow_v9)
+                && (!(flow_v8 || flow_v9 || flow_v10)
                     || (model.flow_max_frontier_paths > 0
                         && model.flow_max_tail_moves >= 0)),
             "invalid FLOW");
+    require(std::isfinite(model.physical_hop_guard_scale_ns)
+                && model.physical_hop_guard_scale_ns >= 0.0,
+            "invalid physical hop guard");
     model.flow_refinement = true;
-    model.flow_version = flow_v9 ? 9 : (flow_v8 ? 8 : 7);
+    model.flow_version = flow_v10 ? 10 : (flow_v9 ? 9 : (flow_v8 ? 8 : 7));
   }
 
   model.hard_capacity.assign(
@@ -2770,13 +2779,17 @@ void write_output(const std::string& output_path,
                   int flow_output_version = 0) {
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
-  output << (flow_output_version == 9
-                 ? "EMUFLOW_PATRON_OUTPUT_V9\n"
-                 : (flow_output_version == 8
-                        ? "EMUFLOW_PATRON_OUTPUT_V8\n"
-                 : (flow_output_version == 7
-                        ? "EMUFLOW_PATRON_OUTPUT_V7\n"
-                        : "EMUFLOW_PATRON_OUTPUT_V6\n")));
+  const char* header = "EMUFLOW_PATRON_OUTPUT_V6\n";
+  if (flow_output_version == 10) {
+    header = "EMUFLOW_PATRON_OUTPUT_V10\n";
+  } else if (flow_output_version == 9) {
+    header = "EMUFLOW_PATRON_OUTPUT_V9\n";
+  } else if (flow_output_version == 8) {
+    header = "EMUFLOW_PATRON_OUTPUT_V8\n";
+  } else if (flow_output_version == 7) {
+    header = "EMUFLOW_PATRON_OUTPUT_V7\n";
+  }
+  output << header;
   output << "MODE " << mode << '\n';
   output << "INITIAL";
   write_vector(output, initial.objective);
@@ -4081,14 +4094,18 @@ void run_scalable(const Model& model, const std::string& output_path) {
   }
   std::cerr << '\n';
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
+  std::string mode = "endpoint-exact-critical-ejection-v6";
+  if (model.flow_version == 10) {
+    mode = "endpoint-exact-critical-flow-v10";
+  } else if (model.flow_version == 9) {
+    mode = "endpoint-exact-critical-flow-v9";
+  } else if (model.flow_version == 8) {
+    mode = "endpoint-exact-critical-flow-v8";
+  } else if (model.flow_version == 7) {
+    mode = "endpoint-exact-critical-flow-v7";
+  }
   write_output(output_path,
-               model.flow_version == 9
-                   ? "endpoint-exact-critical-flow-v9"
-                   : (model.flow_version == 8
-                          ? "endpoint-exact-critical-flow-v8"
-                          : (model.flow_version == 7
-                          ? "endpoint-exact-critical-flow-v7"
-                          : "endpoint-exact-critical-ejection-v6")),
+               mode,
                initial,
                endpoint.evaluation,
                moves,

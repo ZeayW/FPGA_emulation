@@ -47,7 +47,10 @@ PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V7 = (
 PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V8 = (
     "emuflow.partition-pressure-trace/v8"
 )
-PARTITION_PRESSURE_FLOW_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v9"
+PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9 = (
+    "emuflow.partition-pressure-trace/v9"
+)
+PARTITION_PRESSURE_FLOW_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v10"
 
 PATRON_FLOW_REFINEMENT_ALGORITHM_V1 = (
     "flowcutter-bidirectional-piercing-v1"
@@ -56,6 +59,9 @@ PATRON_FLOW_REFINEMENT_ALGORITHM_V2 = (
     "flowcutter-bidirectional-piercing-frontier-closure-v2"
 )
 PATRON_FLOW_REFINEMENT_ALGORITHM = (
+    "flowcutter-bidirectional-piercing-physical-hop-guard-v4"
+)
+PATRON_FLOW_REFINEMENT_ALGORITHM_V3 = (
     "flowcutter-bidirectional-piercing-ranked-frontier-closure-v3"
 )
 PATRON_FLOW_CORRIDOR_DISTANCE = 4
@@ -65,6 +71,7 @@ PATRON_FLOW_MAX_POLISH_MOVES = 512
 PATRON_FLOW_MAX_FRONTIER_PATHS = 256
 PATRON_FLOW_MAX_TAIL_MOVES_V2 = 16
 PATRON_FLOW_MAX_TAIL_MOVES = 256
+PATRON_FLOW_PHYSICAL_HOP_GUARD_SCALE_NS = 5.0
 PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v6"
 PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v6"
 PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v6"
@@ -74,8 +81,11 @@ PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V7 = (
 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V8 = (
     "patron-endpoint-exact-flow-native-v8"
 )
-PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER = (
+PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9 = (
     "patron-endpoint-exact-flow-native-v9"
+)
+PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER = (
+    "patron-endpoint-exact-flow-native-v10"
 )
 GAIN_QUANTUM = 1.0e-9
 BOUNDARY_FANOUT_PENALTY_SCALE_NS = 0.0
@@ -93,19 +103,23 @@ def _canonical_digest(value: Any) -> str:
 
 
 def _flow_refinement_configuration(
-    enabled: bool, cluster_count: int, *, version: int = 3
+    enabled: bool, cluster_count: int, *, version: int = 4
 ) -> Dict[str, Any]:
-    if version not in (1, 2, 3):
+    if version not in (1, 2, 3, 4):
         raise ValidationError("native PATRON flow version is invalid")
     result = {
         "enabled": enabled,
         "algorithm": (
             PATRON_FLOW_REFINEMENT_ALGORITHM
-            if version == 3
+            if version == 4
             else (
-                PATRON_FLOW_REFINEMENT_ALGORITHM_V2
-                if version == 2
-                else PATRON_FLOW_REFINEMENT_ALGORITHM_V1
+                PATRON_FLOW_REFINEMENT_ALGORITHM_V3
+                if version == 3
+                else (
+                    PATRON_FLOW_REFINEMENT_ALGORITHM_V2
+                    if version == 2
+                    else PATRON_FLOW_REFINEMENT_ALGORITHM_V1
+                )
             )
         ),
         "maximum_corridor_clusters": cluster_count if enabled else 0,
@@ -131,7 +145,7 @@ def _flow_refinement_configuration(
                 "maximum_tail_moves": (
                     (
                         PATRON_FLOW_MAX_TAIL_MOVES
-                        if version == 3
+                        if version >= 3
                         else PATRON_FLOW_MAX_TAIL_MOVES_V2
                     )
                     if enabled
@@ -139,8 +153,19 @@ def _flow_refinement_configuration(
                 ),
             }
         )
-    if version == 3:
+    if version >= 3:
         result["frontier_selection"] = "ranked-worst-path-window-v1"
+    if version == 4:
+        result.update(
+            {
+                "physical_hop_guard": "scale_ns*route_hops",
+                "physical_hop_guard_scale_ns": (
+                    PATRON_FLOW_PHYSICAL_HOP_GUARD_SCALE_NS
+                    if enabled
+                    else 0.0
+                ),
+            }
+        )
     return result
 
 
@@ -535,6 +560,7 @@ def _predicted_route_delay(
     route: Iterable[Mapping[str, Any]],
     *,
     include_tdm_wait: bool,
+    physical_hop_guard_scale_ns: float = 0.0,
 ) -> float:
     link_by_id = {link.id: link for link in platform.links}
     delay = 0.0
@@ -554,6 +580,7 @@ def _predicted_route_delay(
                 * 1000.0
                 / link.fabric_clock_mhz
             )
+        delay += physical_hop_guard_scale_ns
     return delay
 
 
@@ -585,6 +612,7 @@ def _endpoint_exact_path_transport(
     domain_ratios: Mapping[str, int],
     *,
     include_tdm_wait: bool,
+    physical_hop_guard_scale_ns: float = 0.0,
 ) -> Tuple[float, List[str], int]:
     """Recover the concrete fanout branch used by one timing path."""
 
@@ -629,6 +657,7 @@ def _endpoint_exact_path_transport(
             domain_ratios,
             route,
             include_tdm_wait=include_tdm_wait,
+            physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
         )
         transport += _boundary_fanout_penalty(
             model, remote_sink_clusters
@@ -658,6 +687,7 @@ def evaluate_partition_pressure(
     cluster_assignment: Mapping[str, str],
     *,
     include_tdm_wait: bool = True,
+    physical_hop_guard_scale_ns: float = 0.0,
 ) -> Dict[str, Any]:
     """Fully recompute the PATRON objective for one compact assignment."""
 
@@ -671,6 +701,14 @@ def evaluate_partition_pressure(
         seed=0,
     )
     validate_partition_artifacts(ir, platform, clusters_artifact, assignment)
+    physical_hop_guard_scale_ns = _require_finite(
+        physical_hop_guard_scale_ns,
+        "partition pressure physical hop guard scale",
+    )
+    if physical_hop_guard_scale_ns < 0.0:
+        raise ValidationError(
+            "partition pressure physical hop guard scale must be non-negative"
+        )
     cluster_parts = dict(cluster_assignment)
     domain_by_arc = _capacity_key_by_arc(model)
     capacity_by_key = {record["key"]: record for record in model["capacities"]}
@@ -740,6 +778,7 @@ def evaluate_partition_pressure(
                 domain_ratios,
                 route["arcs"],
                 include_tdm_wait=include_tdm_wait,
+                physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
             )
             delay += _boundary_fanout_penalty(
                 model, route["remote_sink_clusters"]
@@ -775,6 +814,9 @@ def evaluate_partition_pressure(
                     domain_by_arc,
                     domain_ratios,
                     include_tdm_wait=include_tdm_wait,
+                    physical_hop_guard_scale_ns=(
+                        physical_hop_guard_scale_ns
+                    ),
                 )
             )
         else:
@@ -1234,7 +1276,7 @@ def _write_patron_native_input(
 
     lines = [
         (
-            "EMUFLOW_PATRON_INPUT_V9"
+            "EMUFLOW_PATRON_INPUT_V10"
             if flow_refinement
             else "EMUFLOW_PATRON_INPUT_V6"
         ),
@@ -1263,7 +1305,8 @@ def _write_patron_native_input(
             f"{PATRON_FLOW_MAX_LEGAL_CANDIDATES} "
             f"{PATRON_FLOW_MAX_POLISH_MOVES} "
             f"{PATRON_FLOW_MAX_FRONTIER_PATHS} "
-            f"{PATRON_FLOW_MAX_TAIL_MOVES}"
+            f"{PATRON_FLOW_MAX_TAIL_MOVES} "
+            f"{PATRON_FLOW_PHYSICAL_HOP_GUARD_SCALE_NS:.17g}"
         )
     total_cells = sum(cluster["cells"] for cluster in clusters)
     for part in parts:
@@ -1428,6 +1471,7 @@ def _parse_patron_native_output(
         "EMUFLOW_PATRON_OUTPUT_V7",
         "EMUFLOW_PATRON_OUTPUT_V8",
         "EMUFLOW_PATRON_OUTPUT_V9",
+        "EMUFLOW_PATRON_OUTPUT_V10",
     ):
         raise ValidationError("native PATRON output header is invalid")
     output_version = lines[0]
@@ -1523,6 +1567,7 @@ def _parse_patron_native_output(
                 "EMUFLOW_PATRON_OUTPUT_V7",
                 "EMUFLOW_PATRON_OUTPUT_V8",
                 "EMUFLOW_PATRON_OUTPUT_V9",
+                "EMUFLOW_PATRON_OUTPUT_V10",
             ):
                 raise ValidationError("native PATRON v6 returned a BATCH")
             index, change_count = map(int, fields[1:3])
@@ -1549,6 +1594,7 @@ def _parse_patron_native_output(
                 "EMUFLOW_PATRON_OUTPUT_V7",
                 "EMUFLOW_PATRON_OUTPUT_V8",
                 "EMUFLOW_PATRON_OUTPUT_V9",
+                "EMUFLOW_PATRON_OUTPUT_V10",
             ):
                 raise ValidationError("native PATRON v6 returned a CHANGE")
             batch, cluster, source, target = map(int, fields[1:])
@@ -1707,7 +1753,7 @@ def run_partition_pressure_native(
             "flow_refinement": _flow_refinement_configuration(
                 flow_refinement,
                 len(model["clusters"]),
-                version=3 if flow_refinement else 1,
+                version=4 if flow_refinement else 1,
             ),
         },
         "model_sha256": _canonical_digest(model),
@@ -1830,6 +1876,7 @@ def validate_partition_pressure_native_bundle(
         not in (
             PARTITION_PRESSURE_TRACE_SCHEMA,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
+            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V8,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V7,
         )
@@ -1837,6 +1884,7 @@ def validate_partition_pressure_native_bundle(
         not in (
             PARTITION_PRESSURE_NATIVE_PROVIDER,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
+            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V8,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V7,
         )
@@ -1886,6 +1934,7 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-flow-v7",
         "endpoint-exact-critical-flow-v8",
         "endpoint-exact-critical-flow-v9",
+        "endpoint-exact-critical-flow-v10",
     ):
         raise ValidationError("native PATRON trace mode is invalid")
     expected_provider = (
@@ -1897,6 +1946,9 @@ def validate_partition_pressure_native_bundle(
                 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V8
             ),
             "endpoint-exact-critical-flow-v9": (
+                PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9
+            ),
+            "endpoint-exact-critical-flow-v10": (
                 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER
             ),
         }[mode]
@@ -1904,6 +1956,7 @@ def validate_partition_pressure_native_bundle(
             "endpoint-exact-critical-flow-v7",
             "endpoint-exact-critical-flow-v8",
             "endpoint-exact-critical-flow-v9",
+            "endpoint-exact-critical-flow-v10",
         )
         else PARTITION_PRESSURE_NATIVE_PROVIDER
     )
@@ -1932,11 +1985,13 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-flow-v7",
         "endpoint-exact-critical-flow-v8",
         "endpoint-exact-critical-flow-v9",
+        "endpoint-exact-critical-flow-v10",
     )
     flow_version = {
         "endpoint-exact-critical-flow-v7": 1,
         "endpoint-exact-critical-flow-v8": 2,
         "endpoint-exact-critical-flow-v9": 3,
+        "endpoint-exact-critical-flow-v10": 4,
     }.get(mode, 1)
     expected_flow_configuration = _flow_refinement_configuration(
         flow_enabled, len(model["clusters"]), version=flow_version
@@ -1953,6 +2008,7 @@ def validate_partition_pressure_native_bundle(
                 "endpoint-exact-critical-flow-v7",
                 "endpoint-exact-critical-flow-v8",
                 "endpoint-exact-critical-flow-v9",
+                "endpoint-exact-critical-flow-v10",
             )
             and (
                 trace_schema
@@ -1960,7 +2016,8 @@ def validate_partition_pressure_native_bundle(
                     {
                         1: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V7,
                         2: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V8,
-                        3: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
+                        3: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9,
+                        4: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
                     }[flow_version]
                 )
             )
@@ -1999,6 +2056,9 @@ def validate_partition_pressure_native_bundle(
         or flow_configuration != expected_flow_configuration
     ):
         raise ValidationError("native PATRON scalable trace bounds are invalid")
+    physical_hop_guard_scale_ns = float(
+        expected_flow_configuration.get("physical_hop_guard_scale_ns", 0.0)
+    )
     cluster_ids = {
         record["cluster"] for record in model["clusters"]
     }
@@ -2176,6 +2236,7 @@ def validate_partition_pressure_native_bundle(
             model,
             current,
             include_tdm_wait=True,
+            physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
         )
         before_expected = before_evaluation["metrics"]["objective_key"]
         trial = dict(current)
@@ -2215,6 +2276,7 @@ def validate_partition_pressure_native_bundle(
             model,
             trial,
             include_tdm_wait=True,
+            physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
         )
         after_expected = after_evaluation["metrics"]["objective_key"]
         before = batch.get("before_objective_key")
@@ -2294,6 +2356,7 @@ def validate_partition_pressure_native_bundle(
         model,
         initial_assignment["cluster_assignment"],
         include_tdm_wait=True,
+        physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
     )
     final_evaluation = evaluate_partition_pressure(
         ir,
@@ -2304,6 +2367,7 @@ def validate_partition_pressure_native_bundle(
         model,
         native_assignment["cluster_assignment"],
         include_tdm_wait=True,
+        physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
     )
     maximum_endpoint_error = 0.0
     maximum_endpoint_relative_error = 0.0

@@ -1,6 +1,7 @@
 import copy
 import itertools
 import math
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,8 +15,10 @@ from emuflow.partition import (
     normalize_partition_constraints,
 )
 from emuflow.partition_pressure import (
+    _canonical_digest,
     _flow_refinement_configuration,
     _parse_patron_native_output,
+    _write_patron_native_input,
     build_partition_pressure_model,
     evaluate_partition_pressure,
     refine_partition_pressure_exhaustive,
@@ -266,9 +269,12 @@ class PartitionPressureTest(unittest.TestCase):
                 broken,
             )
 
-    def test_ranked_frontier_configuration_preserves_v8_contract(self) -> None:
+    def test_physical_hop_guard_configuration_preserves_legacy_contracts(
+        self,
+    ) -> None:
         legacy = _flow_refinement_configuration(True, 512, version=2)
         ranked = _flow_refinement_configuration(True, 512, version=3)
+        guarded = _flow_refinement_configuration(True, 512, version=4)
         self.assertEqual(legacy["maximum_tail_moves"], 16)
         self.assertNotIn("frontier_selection", legacy)
         self.assertEqual(ranked["maximum_tail_moves"], 256)
@@ -276,6 +282,53 @@ class PartitionPressureTest(unittest.TestCase):
             ranked["frontier_selection"],
             "ranked-worst-path-window-v1",
         )
+        self.assertNotIn("physical_hop_guard", ranked)
+        self.assertEqual(
+            guarded["physical_hop_guard"], "scale_ns*route_hops"
+        )
+        self.assertEqual(guarded["physical_hop_guard_scale_ns"], 5.0)
+
+    def test_physical_hop_guard_is_charged_once_per_route_arc(self) -> None:
+        baseline = evaluate_partition_pressure(
+            self.ir,
+            self.platform,
+            self.clusters,
+            self.constraints,
+            self.route_constraints,
+            self.model,
+            self.initial["cluster_assignment"],
+        )
+        guarded = evaluate_partition_pressure(
+            self.ir,
+            self.platform,
+            self.clusters,
+            self.constraints,
+            self.route_constraints,
+            self.model,
+            self.initial["cluster_assignment"],
+            physical_hop_guard_scale_ns=5.0,
+        )
+        baseline_paths = {
+            record["path"]: record for record in baseline["paths"]
+        }
+        for record in guarded["paths"]:
+            self.assertAlmostEqual(
+                record["transport_delay_ns"]
+                - baseline_paths[record["path"]]["transport_delay_ns"],
+                5.0,
+                places=12,
+            )
+        with self.assertRaisesRegex(ValidationError, "non-negative"):
+            evaluate_partition_pressure(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                self.route_constraints,
+                self.model,
+                self.initial["cluster_assignment"],
+                physical_hop_guard_scale_ns=-0.5,
+            )
 
     def test_v7_native_batch_parser_rejects_tamper(self) -> None:
         before = "2 4 1 2 3 4 5 6"
@@ -319,7 +372,115 @@ class PartitionPressureTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "coverage"):
                 _parse_patron_native_output(path, indexes)
 
-    def test_v9_flow_batch_and_ranked_frontier_closure_match_small_oracle(
+    def test_v9_native_input_and_bundle_remain_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            native_input = Path(temporary) / "patron-v9.in"
+            native_output = Path(temporary) / "patron-v9.out"
+            indexes = _write_patron_native_input(
+                native_input,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                self.route_constraints,
+                self.model,
+                self.initial,
+                0,
+                True,
+            )
+            lines = native_input.read_text(encoding="utf-8").splitlines()
+            lines[0] = "EMUFLOW_PATRON_INPUT_V9"
+            flow_fields = lines[2].split()
+            self.assertEqual(flow_fields[0], "FLOW")
+            self.assertEqual(len(flow_fields), 10)
+            lines[2] = " ".join(flow_fields[:-1])
+            for index, line in enumerate(lines):
+                fields = line.split()
+                if fields and fields[0] == "CLUSTER":
+                    fields[3] = fields[2]
+                    lines[index] = " ".join(fields)
+            native_input.write_text(
+                "\n".join(lines) + "\n", encoding="utf-8"
+            )
+            completed = subprocess.run(
+                [
+                    str(patron_refiner()),
+                    str(native_input),
+                    str(native_output),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                native_output.read_text(encoding="utf-8").splitlines()[0],
+                "EMUFLOW_PATRON_OUTPUT_V9",
+            )
+            (
+                cluster_assignment,
+                moves,
+                batches,
+                initial_metrics,
+                final_metrics,
+                mode,
+            ) = _parse_patron_native_output(native_output, indexes)
+        self.assertEqual(mode, "endpoint-exact-critical-flow-v9")
+        final = build_partition_assignment(
+            self.ir,
+            self.platform,
+            self.clusters,
+            self.constraints,
+            cluster_assignment,
+            provider="patron-endpoint-exact-flow-native-v9",
+            seed=self.initial["seed"],
+        )
+        trace = {
+            "schema": "emuflow.partition-pressure-trace/v9",
+            "design": self.model["design"],
+            "platform": self.model["platform"],
+            "provider": "patron-endpoint-exact-flow-native-v9",
+            "mode": mode,
+            "configuration": {
+                "max_moves": 0,
+                "max_scalable_sweeps": self.model["configuration"][
+                    "max_scalable_sweeps"
+                ],
+                "scalable_ejection_critical_limit": self.model[
+                    "configuration"
+                ]["scalable_ejection_critical_limit"],
+                "scalable_ejection_donor_limit": self.model["configuration"]
+                ["scalable_ejection_donor_limit"],
+                "max_scalable_ejections": self.model["configuration"]
+                ["max_scalable_ejections"],
+                "flow_refinement": _flow_refinement_configuration(
+                    True, len(self.model["clusters"]), version=3
+                ),
+            },
+            "model_sha256": _canonical_digest(self.model),
+            "initial_assignment_sha256": _canonical_digest(self.initial),
+            "initial_metrics": initial_metrics,
+            "moves": moves,
+            "batches": batches,
+            "final_metrics": final_metrics,
+            "final_cluster_assignment_sha256": _canonical_digest(
+                cluster_assignment
+            ),
+        }
+        checked = validate_partition_pressure_native_bundle(
+            self.ir,
+            self.platform,
+            self.clusters,
+            self.constraints,
+            self.timing,
+            self.route_constraints,
+            self.model,
+            self.initial,
+            final,
+            trace,
+        )
+        self.assertEqual(checked["status"], "pass")
+
+    def test_v10_flow_batch_and_physical_hop_guard_match_small_oracle(
         self,
     ) -> None:
         instance_count = 40
@@ -1304,7 +1465,7 @@ class PartitionPressureTest(unittest.TestCase):
             flow_refinement=True,
         )
         self.assertEqual(
-            flow_trace["mode"], "endpoint-exact-critical-flow-v9"
+            flow_trace["mode"], "endpoint-exact-critical-flow-v10"
         )
         self.assertEqual(
             flow_trace["configuration"]["flow_refinement"][
@@ -1314,6 +1475,12 @@ class PartitionPressureTest(unittest.TestCase):
         )
         self.assertTrue(
             flow_trace["configuration"]["flow_refinement"]["enabled"]
+        )
+        self.assertEqual(
+            flow_trace["configuration"]["flow_refinement"][
+                "physical_hop_guard_scale_ns"
+            ],
+            5.0,
         )
         flow_bundle = validate_partition_pressure_native_bundle(
             ir,
@@ -1344,6 +1511,23 @@ class PartitionPressureTest(unittest.TestCase):
                 initial,
                 flow_final,
                 flow_config_tampered,
+            )
+        guard_tampered = copy.deepcopy(flow_trace)
+        guard_tampered["configuration"]["flow_refinement"][
+            "physical_hop_guard_scale_ns"
+        ] = 0.0
+        with self.assertRaisesRegex(ValidationError, "trace bounds"):
+            validate_partition_pressure_native_bundle(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                timing,
+                route_constraints,
+                model,
+                initial,
+                flow_final,
+                guard_tampered,
             )
 
     def test_scalable_multipass_revisits_capacity_blocked_cluster(self) -> None:
