@@ -709,7 +709,7 @@ void check(const Input& input, const Output& output,
               break;
             }
           }
-          for (const auto [part, other] :
+          for (const auto& [part, other] :
                {std::pair<int, int>{first, second},
                 std::pair<int, int>{second, first}}) {
             if (part >= 0 &&
