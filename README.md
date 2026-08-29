@@ -1222,7 +1222,7 @@ block.  It is accepted only if a new cached canonical Phase 7 comparison
 improves both
 `-82.4981025395 ns` WNS and `-324,776.89798473305 ns` TNS; proxy-only
 improvement is insufficient.
-The experimental v7 candidate is enabled explicitly with
+The experimental flow-refinement family is enabled explicitly with
 `--patron-flow-refinement`.  It adds a sealed `FLOW` record to the native
 input rather than consulting process environment variables.  The fixed
 configuration identifies bidirectional FlowCutter-style piercing, a
@@ -1231,14 +1231,37 @@ timing-polish moves.  A selected multi-cluster reassignment is emitted as one
 atomic batch.  The independent Python checker rebuilds the complete before
 and after objectives and assignment legality; compact regression graphs also
 enumerate the complete relevant target space and require deterministic
-agreement with its best rank.  If no legal dual-improving cut exists, v7
+agreement with its best rank.  If no legal dual-improving cut exists, the flow
+provider
 retains the v6 assignment and emits a valid zero-batch certificate.  The
-frozen large-design proxy currently improves from `1.1606340893904894` to
+frozen large-design v7 proxy improves from `1.1606340893904894` to
 `0.93029154656116964` on worst normalized slack and from
 `3230.8125185217859` to `2961.3962653127187` on total negative normalized
-slack.  These are admission-gate proxies only; v7 is not accepted or promoted
-until the cached canonical seed-1 Phase 7 run improves both complete-global
-WNS and TNS.
+slack.  Its canonical seed-1 Phase 7 reached `-88.0781786658 ns` WNS and
+`-111,714.59245574732 ns` TNS.  V8 added an endpoint-exact worst-frontier tail
+repair and improved those physical results to `-86.8172150516 ns` WNS and
+`-110,390.50669188293 ns` TNS, with zero unrouted nets and zero DRC
+violations.  Both substantially improved TNS but failed the accepted v1 WNS
+gate of `-82.4981025395 ns`, so neither was promoted.
+
+V9 addresses the diagnosed early-stop condition rather than merely increasing
+an iteration limit.  V8 stopped as soon as the exact worst proxy rank was
+locally immovable, even when another near-critical path could still improve
+global TNS without degrading WNS.  V9 first preserves the cheap exact-worst
+search; only when that frontier stalls does it deterministically expand to the
+256 worst ranked paths through an incrementally maintained deterministic
+ranking index.  Every accepted move must still improve the complete
+lexicographic timing/TDM objective, and the bounded closure permits at most
+256 moves.  The input, output, trace schema, provider, algorithm identifier,
+frontier selection, and bounds are versioned independently, while V7/V8
+artifacts retain their original validation contracts.  On the frozen large
+design V9 accepted 154 repair moves and improved worst normalized slack to
+`-0.83226518752689782` and total negative normalized slack to
+`-2914.1576328328747`.  The 256-, 4096-, and 16384-path windows produced
+byte-identical assignments and traces, establishing that the 256-path bound
+reached the same fixed point.  Canonical seed-1 Phase 7 validation for V9 is
+still pending; V9 remains unaccepted until both complete-global WNS and TNS
+beat the accepted v1 result.
 PATRON remains explicit and non-default until
 case7/case9 topology replication
 is complete; the primary branch acceptance requested here does not silently

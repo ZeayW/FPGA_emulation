@@ -14,6 +14,7 @@ from emuflow.partition import (
     normalize_partition_constraints,
 )
 from emuflow.partition_pressure import (
+    _flow_refinement_configuration,
     _parse_patron_native_output,
     build_partition_pressure_model,
     evaluate_partition_pressure,
@@ -265,6 +266,17 @@ class PartitionPressureTest(unittest.TestCase):
                 broken,
             )
 
+    def test_ranked_frontier_configuration_preserves_v8_contract(self) -> None:
+        legacy = _flow_refinement_configuration(True, 512, version=2)
+        ranked = _flow_refinement_configuration(True, 512, version=3)
+        self.assertEqual(legacy["maximum_tail_moves"], 16)
+        self.assertNotIn("frontier_selection", legacy)
+        self.assertEqual(ranked["maximum_tail_moves"], 256)
+        self.assertEqual(
+            ranked["frontier_selection"],
+            "ranked-worst-path-window-v1",
+        )
+
     def test_v7_native_batch_parser_rejects_tamper(self) -> None:
         before = "2 4 1 2 3 4 5 6"
         after = "1 3 1 2 3 4 5 6"
@@ -307,7 +319,7 @@ class PartitionPressureTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "coverage"):
                 _parse_patron_native_output(path, indexes)
 
-    def test_v8_flow_batch_and_frontier_closure_match_small_oracle(
+    def test_v9_flow_batch_and_ranked_frontier_closure_match_small_oracle(
         self,
     ) -> None:
         instance_count = 40
@@ -1292,7 +1304,13 @@ class PartitionPressureTest(unittest.TestCase):
             flow_refinement=True,
         )
         self.assertEqual(
-            flow_trace["mode"], "endpoint-exact-critical-flow-v8"
+            flow_trace["mode"], "endpoint-exact-critical-flow-v9"
+        )
+        self.assertEqual(
+            flow_trace["configuration"]["flow_refinement"][
+                "frontier_selection"
+            ],
+            "ranked-worst-path-window-v1",
         )
         self.assertTrue(
             flow_trace["configuration"]["flow_refinement"]["enabled"]

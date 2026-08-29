@@ -134,6 +134,7 @@ struct ProxyState {
   std::vector<ProxyPathState> path;
   std::vector<std::set<int>> domain_paths;
   std::multiset<double> slack_order;
+  std::set<std::pair<long long, int>> ranked_path_order;
   double total_negative = 0.0;
   long long negative_paths = 0;
   long long snaking = 0;
@@ -331,7 +332,8 @@ Model read_model(const std::string& path) {
   stream >> token;
   const bool flow_v7 = token == "EMUFLOW_PATRON_INPUT_V7";
   const bool flow_v8 = token == "EMUFLOW_PATRON_INPUT_V8";
-  const bool flow_input = flow_v7 || flow_v8;
+  const bool flow_v9 = token == "EMUFLOW_PATRON_INPUT_V9";
+  const bool flow_input = flow_v7 || flow_v8 || flow_v9;
   require(token == "EMUFLOW_PATRON_INPUT_V6" || flow_input,
           "invalid input header");
   Model model;
@@ -365,7 +367,7 @@ Model read_model(const std::string& path) {
         >> model.flow_corridor_distance >> model.flow_piercing_strategy
         >> model.flow_max_legal_candidates
         >> model.flow_max_polish_moves;
-    if (flow_v8) {
+    if (flow_v8 || flow_v9) {
       stream >> model.flow_max_frontier_paths
           >> model.flow_max_tail_moves;
     }
@@ -378,12 +380,12 @@ Model read_model(const std::string& path) {
                 && model.flow_piercing_strategy <= 3
                 && model.flow_max_legal_candidates > 0
                 && model.flow_max_polish_moves >= 0
-                && (!flow_v8
+                && (!(flow_v8 || flow_v9)
                     || (model.flow_max_frontier_paths > 0
                         && model.flow_max_tail_moves >= 0)),
             "invalid FLOW");
     model.flow_refinement = true;
-    model.flow_version = flow_v8 ? 8 : 7;
+    model.flow_version = flow_v9 ? 9 : (flow_v8 ? 8 : 7);
   }
 
   model.hard_capacity.assign(
@@ -966,11 +968,14 @@ ProxyState build_proxy_state(
       state.domain_paths[domain].insert(path);
     }
     state.slack_order.insert(state.path[path].normalized_slack);
+    state.ranked_path_order.emplace(
+        rank_float(state.path[path].normalized_slack), path);
     state.total_negative += std::min(0.0, state.path[path].normalized_slack);
     state.negative_paths += state.path[path].negative ? 1 : 0;
     state.snaking += state.path[path].snaking;
   }
-  require(!state.slack_order.empty() && !state.ratio_order.empty(),
+  require(!state.slack_order.empty() && !state.ranked_path_order.empty()
+              && !state.ratio_order.empty(),
           "scalable state is empty");
   state.evaluation = proxy_evaluation(state);
   return state;
@@ -2700,6 +2705,9 @@ void apply_proxy_delta(const Model& model,
       const std::size_t erased = state.domain_paths[domain].erase(item.first);
       require(erased == 1, "missing scalable domain/path dependency");
     }
+    const std::size_t ranked_erased = state.ranked_path_order.erase(
+        {rank_float(old.normalized_slack), item.first});
+    require(ranked_erased == 1, "missing scalable ranked path");
     erase_one(state.slack_order, old.normalized_slack);
     state.total_negative += std::min(0.0, item.second.normalized_slack)
                             - std::min(0.0, old.normalized_slack);
@@ -2711,6 +2719,8 @@ void apply_proxy_delta(const Model& model,
       state.domain_paths[domain].insert(item.first);
     }
     state.slack_order.insert(old.normalized_slack);
+    state.ranked_path_order.emplace(
+        rank_float(old.normalized_slack), item.first);
   }
   state.evaluation = proxy_evaluation(state);
   require(state.evaluation.ranked == delta.evaluation.ranked,
@@ -2760,11 +2770,13 @@ void write_output(const std::string& output_path,
                   int flow_output_version = 0) {
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
-  output << (flow_output_version == 8
-                 ? "EMUFLOW_PATRON_OUTPUT_V8\n"
+  output << (flow_output_version == 9
+                 ? "EMUFLOW_PATRON_OUTPUT_V9\n"
+                 : (flow_output_version == 8
+                        ? "EMUFLOW_PATRON_OUTPUT_V8\n"
                  : (flow_output_version == 7
                         ? "EMUFLOW_PATRON_OUTPUT_V7\n"
-                        : "EMUFLOW_PATRON_OUTPUT_V6\n"));
+                        : "EMUFLOW_PATRON_OUTPUT_V6\n")));
   output << "MODE " << mode << '\n';
   output << "INITIAL";
   write_vector(output, initial.objective);
@@ -3423,19 +3435,8 @@ void run_scalable(const Model& model, const std::string& output_path) {
              ++iteration) {
           require(!refined.slack_order.empty(),
                   "flow tail repair has no timing paths");
-          const long long worst_rank = rank_float(
-              *refined.slack_order.begin());
           std::set<int> candidate_clusters;
-          int frontier_paths = 0;
-          for (int path = 0;
-               path < model.paths
-                   && frontier_paths < model.flow_max_frontier_paths;
-               ++path) {
-            if (rank_float(refined.path[path].normalized_slack)
-                != worst_rank) {
-              continue;
-            }
-            ++frontier_paths;
+          const auto add_path_candidates = [&](int path) {
             if (model.path[path].start_cluster >= 0) {
               candidate_clusters.insert(model.path[path].start_cluster);
             }
@@ -3448,44 +3449,76 @@ void run_scalable(const Model& model, const std::string& output_path) {
               candidate_clusters.insert(model.net[net].sinks.begin(),
                                         model.net[net].sinks.end());
             }
+          };
+          const long long worst_rank = refined.ranked_path_order.begin()->first;
+          int exact_frontier_paths = 0;
+          for (const auto& ranked_path : refined.ranked_path_order) {
+            if (ranked_path.first != worst_rank
+                || exact_frontier_paths
+                       >= model.flow_max_frontier_paths) {
+              break;
+            }
+            ++exact_frontier_paths;
+            add_path_candidates(ranked_path.second);
           }
           bool found = false;
           ProxyDelta best;
-          for (int cluster : candidate_clusters) {
-            if (model.cluster[cluster].fixed >= 0) {
-              continue;
+          const auto evaluate_candidates = [&]() {
+            for (int cluster : candidate_clusters) {
+              if (model.cluster[cluster].fixed >= 0) {
+                continue;
+              }
+              for (int target = 0; target < model.parts; ++target) {
+                if (target == refined.assignment[cluster]) {
+                  continue;
+                }
+                ProxyDelta candidate = evaluate_proxy_move(
+                    model,
+                    refined,
+                    cluster_nets,
+                    net_paths,
+                    cluster,
+                    target);
+                ++evaluated_tail_moves;
+                if (!candidate.feasible) {
+                  continue;
+                }
+                ++feasible_tail_moves;
+                if (!less_ranked(candidate.evaluation.ranked,
+                                 refined.evaluation.ranked)) {
+                  continue;
+                }
+                if (!found
+                    || less_ranked(candidate.evaluation.ranked,
+                                   best.evaluation.ranked)
+                    || (candidate.evaluation.ranked
+                            == best.evaluation.ranked
+                        && std::tie(candidate.cluster, candidate.target)
+                               < std::tie(best.cluster, best.target))) {
+                  found = true;
+                  best = std::move(candidate);
+                }
+              }
             }
-            for (int target = 0; target < model.parts; ++target) {
-              if (target == refined.assignment[cluster]) {
-                continue;
+          };
+          evaluate_candidates();
+          if (!found && model.flow_version >= 9) {
+            // A locally immovable exact-worst path must not terminate timing
+            // closure while another near-critical path can still improve the
+            // global TNS without degrading WNS.  Expand deterministically to
+            // the ranked path window only after the exact frontier stalls.
+            candidate_clusters.clear();
+            const int frontier_paths = std::min(
+                model.flow_max_frontier_paths, model.paths);
+            int ranked_count = 0;
+            for (const auto& ranked_path : refined.ranked_path_order) {
+              if (ranked_count >= frontier_paths) {
+                break;
               }
-              ProxyDelta candidate = evaluate_proxy_move(
-                  model,
-                  refined,
-                  cluster_nets,
-                  net_paths,
-                  cluster,
-                  target);
-              ++evaluated_tail_moves;
-              if (!candidate.feasible) {
-                continue;
-              }
-              ++feasible_tail_moves;
-              if (!less_ranked(candidate.evaluation.ranked,
-                               refined.evaluation.ranked)) {
-                continue;
-              }
-              if (!found
-                  || less_ranked(candidate.evaluation.ranked,
-                                 best.evaluation.ranked)
-                  || (candidate.evaluation.ranked
-                          == best.evaluation.ranked
-                      && std::tie(candidate.cluster, candidate.target)
-                             < std::tie(best.cluster, best.target))) {
-                found = true;
-                best = std::move(candidate);
-              }
+              add_path_candidates(ranked_path.second);
+              ++ranked_count;
             }
+            evaluate_candidates();
           }
           if (!found) {
             break;
@@ -4049,11 +4082,13 @@ void run_scalable(const Model& model, const std::string& output_path) {
   std::cerr << '\n';
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   write_output(output_path,
-               model.flow_version == 8
-                   ? "endpoint-exact-critical-flow-v8"
-                   : (model.flow_version == 7
+               model.flow_version == 9
+                   ? "endpoint-exact-critical-flow-v9"
+                   : (model.flow_version == 8
+                          ? "endpoint-exact-critical-flow-v8"
+                          : (model.flow_version == 7
                           ? "endpoint-exact-critical-flow-v7"
-                          : "endpoint-exact-critical-ejection-v6"),
+                          : "endpoint-exact-critical-ejection-v6")),
                initial,
                endpoint.evaluation,
                moves,

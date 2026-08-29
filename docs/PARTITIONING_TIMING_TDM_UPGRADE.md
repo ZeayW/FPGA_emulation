@@ -266,6 +266,26 @@ of an atomic pair move to a third block.  This is the smallest extension that
 models a two-vertex ejection path across a three-block capacity cork without an
 illegal intermediate assignment.
 
+V7 introduced the sealed FlowCutter-style corridor batch; V8 added a bounded
+endpoint-exact repair of the current worst proxy rank.  Their canonical
+seed-1 Phase 7 results (`-88.0781786658 ns`/`-111,714.59245574732 ns` for v7
+and `-86.8172150516 ns`/`-110,390.50669188293 ns` for v8) improved TNS but did
+not beat the accepted v1 WNS.  The v8 diagnosis exposed a local-search control
+error: one immovable exact-worst rank terminated repair even though lower
+ranks still contained legal moves that improved TNS without changing WNS.
+V9 therefore keeps the exact-worst search as its fast path and expands to a
+incrementally maintained deterministic 256-path critical window only after
+that path stalls.
+It accepts at most 256 moves, and each move must strictly improve the same
+complete lexicographic objective.  This is ranked-frontier closure, not a
+claim of globally optimal multilevel partitioning.  The frozen large-design
+run accepted 154 repair moves and reached `-0.83226518752689782` worst
+normalized slack and `-2914.1576328328747` total negative normalized slack.
+The 256-, 4096-, and 16384-path windows produced byte-identical native output,
+so 256 is the smallest tested bound that reaches this fixed point.  The
+canonical v9 Phase 7 gate remains pending and is unchanged: both
+complete-global WNS and TNS must beat v1.
+
 ## Exact Phase 4/5 promotion
 
 The predictor is only a search heuristic.  Each surviving portfolio/refinement

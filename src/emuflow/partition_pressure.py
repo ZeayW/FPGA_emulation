@@ -44,28 +44,38 @@ PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v6"
 PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V7 = (
     "emuflow.partition-pressure-trace/v7"
 )
-PARTITION_PRESSURE_FLOW_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v8"
+PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V8 = (
+    "emuflow.partition-pressure-trace/v8"
+)
+PARTITION_PRESSURE_FLOW_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v9"
 
 PATRON_FLOW_REFINEMENT_ALGORITHM_V1 = (
     "flowcutter-bidirectional-piercing-v1"
 )
-PATRON_FLOW_REFINEMENT_ALGORITHM = (
+PATRON_FLOW_REFINEMENT_ALGORITHM_V2 = (
     "flowcutter-bidirectional-piercing-frontier-closure-v2"
+)
+PATRON_FLOW_REFINEMENT_ALGORITHM = (
+    "flowcutter-bidirectional-piercing-ranked-frontier-closure-v3"
 )
 PATRON_FLOW_CORRIDOR_DISTANCE = 4
 PATRON_FLOW_PIERCING_STRATEGY = 0
 PATRON_FLOW_MAX_LEGAL_CANDIDATES = 8
 PATRON_FLOW_MAX_POLISH_MOVES = 512
 PATRON_FLOW_MAX_FRONTIER_PATHS = 256
-PATRON_FLOW_MAX_TAIL_MOVES = 16
+PATRON_FLOW_MAX_TAIL_MOVES_V2 = 16
+PATRON_FLOW_MAX_TAIL_MOVES = 256
 PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v6"
 PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v6"
 PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v6"
 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V7 = (
     "patron-endpoint-exact-flow-native-v7"
 )
-PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER = (
+PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V8 = (
     "patron-endpoint-exact-flow-native-v8"
+)
+PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER = (
+    "patron-endpoint-exact-flow-native-v9"
 )
 GAIN_QUANTUM = 1.0e-9
 BOUNDARY_FANOUT_PENALTY_SCALE_NS = 0.0
@@ -83,16 +93,20 @@ def _canonical_digest(value: Any) -> str:
 
 
 def _flow_refinement_configuration(
-    enabled: bool, cluster_count: int, *, version: int = 2
+    enabled: bool, cluster_count: int, *, version: int = 3
 ) -> Dict[str, Any]:
-    if version not in (1, 2):
+    if version not in (1, 2, 3):
         raise ValidationError("native PATRON flow version is invalid")
     result = {
         "enabled": enabled,
         "algorithm": (
             PATRON_FLOW_REFINEMENT_ALGORITHM
-            if version == 2
-            else PATRON_FLOW_REFINEMENT_ALGORITHM_V1
+            if version == 3
+            else (
+                PATRON_FLOW_REFINEMENT_ALGORITHM_V2
+                if version == 2
+                else PATRON_FLOW_REFINEMENT_ALGORITHM_V1
+            )
         ),
         "maximum_corridor_clusters": cluster_count if enabled else 0,
         "corridor_distance": (
@@ -108,17 +122,25 @@ def _flow_refinement_configuration(
             PATRON_FLOW_MAX_POLISH_MOVES if enabled else 0
         ),
     }
-    if version == 2:
+    if version >= 2:
         result.update(
             {
                 "maximum_frontier_paths": (
                     PATRON_FLOW_MAX_FRONTIER_PATHS if enabled else 0
                 ),
                 "maximum_tail_moves": (
-                    PATRON_FLOW_MAX_TAIL_MOVES if enabled else 0
+                    (
+                        PATRON_FLOW_MAX_TAIL_MOVES
+                        if version == 3
+                        else PATRON_FLOW_MAX_TAIL_MOVES_V2
+                    )
+                    if enabled
+                    else 0
                 ),
             }
         )
+    if version == 3:
+        result["frontier_selection"] = "ranked-worst-path-window-v1"
     return result
 
 
@@ -1212,7 +1234,7 @@ def _write_patron_native_input(
 
     lines = [
         (
-            "EMUFLOW_PATRON_INPUT_V8"
+            "EMUFLOW_PATRON_INPUT_V9"
             if flow_refinement
             else "EMUFLOW_PATRON_INPUT_V6"
         ),
@@ -1405,6 +1427,7 @@ def _parse_patron_native_output(
         "EMUFLOW_PATRON_OUTPUT_V6",
         "EMUFLOW_PATRON_OUTPUT_V7",
         "EMUFLOW_PATRON_OUTPUT_V8",
+        "EMUFLOW_PATRON_OUTPUT_V9",
     ):
         raise ValidationError("native PATRON output header is invalid")
     output_version = lines[0]
@@ -1499,6 +1522,7 @@ def _parse_patron_native_output(
             if output_version not in (
                 "EMUFLOW_PATRON_OUTPUT_V7",
                 "EMUFLOW_PATRON_OUTPUT_V8",
+                "EMUFLOW_PATRON_OUTPUT_V9",
             ):
                 raise ValidationError("native PATRON v6 returned a BATCH")
             index, change_count = map(int, fields[1:3])
@@ -1524,6 +1548,7 @@ def _parse_patron_native_output(
             if output_version not in (
                 "EMUFLOW_PATRON_OUTPUT_V7",
                 "EMUFLOW_PATRON_OUTPUT_V8",
+                "EMUFLOW_PATRON_OUTPUT_V9",
             ):
                 raise ValidationError("native PATRON v6 returned a CHANGE")
             batch, cluster, source, target = map(int, fields[1:])
@@ -1682,7 +1707,7 @@ def run_partition_pressure_native(
             "flow_refinement": _flow_refinement_configuration(
                 flow_refinement,
                 len(model["clusters"]),
-                version=2 if flow_refinement else 1,
+                version=3 if flow_refinement else 1,
             ),
         },
         "model_sha256": _canonical_digest(model),
@@ -1805,12 +1830,14 @@ def validate_partition_pressure_native_bundle(
         not in (
             PARTITION_PRESSURE_TRACE_SCHEMA,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
+            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V8,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V7,
         )
         or native_trace.get("provider")
         not in (
             PARTITION_PRESSURE_NATIVE_PROVIDER,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
+            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V8,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V7,
         )
         or native_trace.get("model_sha256") != _canonical_digest(model)
@@ -1858,17 +1885,25 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-ejection-v6",
         "endpoint-exact-critical-flow-v7",
         "endpoint-exact-critical-flow-v8",
+        "endpoint-exact-critical-flow-v9",
     ):
         raise ValidationError("native PATRON trace mode is invalid")
     expected_provider = (
-        (
-            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER
-            if mode == "endpoint-exact-critical-flow-v8"
-            else PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V7
-        )
+        {
+            "endpoint-exact-critical-flow-v7": (
+                PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V7
+            ),
+            "endpoint-exact-critical-flow-v8": (
+                PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V8
+            ),
+            "endpoint-exact-critical-flow-v9": (
+                PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER
+            ),
+        }[mode]
         if mode in (
             "endpoint-exact-critical-flow-v7",
             "endpoint-exact-critical-flow-v8",
+            "endpoint-exact-critical-flow-v9",
         )
         else PARTITION_PRESSURE_NATIVE_PROVIDER
     )
@@ -1896,8 +1931,13 @@ def validate_partition_pressure_native_bundle(
     flow_enabled = mode in (
         "endpoint-exact-critical-flow-v7",
         "endpoint-exact-critical-flow-v8",
+        "endpoint-exact-critical-flow-v9",
     )
-    flow_version = 2 if mode == "endpoint-exact-critical-flow-v8" else 1
+    flow_version = {
+        "endpoint-exact-critical-flow-v7": 1,
+        "endpoint-exact-critical-flow-v8": 2,
+        "endpoint-exact-critical-flow-v9": 3,
+    }.get(mode, 1)
     expected_flow_configuration = _flow_refinement_configuration(
         flow_enabled, len(model["clusters"]), version=flow_version
     )
@@ -1912,13 +1952,16 @@ def validate_partition_pressure_native_bundle(
             in (
                 "endpoint-exact-critical-flow-v7",
                 "endpoint-exact-critical-flow-v8",
+                "endpoint-exact-critical-flow-v9",
             )
             and (
                 trace_schema
                 != (
-                    PARTITION_PRESSURE_FLOW_TRACE_SCHEMA
-                    if flow_version == 2
-                    else PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V7
+                    {
+                        1: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V7,
+                        2: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V8,
+                        3: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
+                    }[flow_version]
                 )
             )
         )
