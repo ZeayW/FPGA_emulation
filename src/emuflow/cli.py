@@ -634,6 +634,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=256.0,
     )
+    partition_run.add_argument(
+        "--mfspart-post-refinement-timing-path-beta",
+        type=float,
+        default=1.0,
+    )
     partition_run.add_argument("--timeout-seconds", type=int, default=3600)
     partition_run.add_argument("--seed-attempts", type=int, default=1)
     partition_run.add_argument(
@@ -689,6 +694,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     partition_validate.add_argument(
         "--mfspart-post-refinement-bottleneck-beta", type=float
+    )
+    partition_validate.add_argument(
+        "--mfspart-post-refinement-timing-path-beta", type=float
     )
     partition_validate.add_argument("--provider")
     partition_validate.add_argument("--seed", type=int)
@@ -1803,6 +1811,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     )
     multi_fpga_compile.add_argument(
+        "--mfspart-post-refinement-timing-path-beta",
+        type=float,
+        default=1.0,
+        help=(
+            "weight of each distinct pre-partition timing path crossed by "
+            "Static Exact Phase 3; identical cluster paths are aggregated"
+        ),
+    )
+    multi_fpga_compile.add_argument(
         "--timing-driven",
         action=_BooleanOptionalAction,
         default=True,
@@ -2660,6 +2677,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mfspart-post-refinement-bottleneck-beta",
         type=float,
         default=256.0,
+    )
+    phase3.add_argument("--timing-path-database", type=Path)
+    phase3.add_argument(
+        "--mfspart-post-refinement-timing-path-beta",
+        type=float,
+        default=1.0,
     )
 
     sta_parser = subparsers.add_parser(
@@ -3540,6 +3563,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 mfspart_post_refinement_bottleneck_beta=(
                     args.mfspart_post_refinement_bottleneck_beta
                 ),
+                mfspart_post_refinement_timing_path_beta=(
+                    args.mfspart_post_refinement_timing_path_beta
+                ),
                 timeout_seconds=args.timeout_seconds,
                 seed_attempts=args.seed_attempts,
                 repair_balance=args.repair_balance,
@@ -3578,6 +3604,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ),
                 expected_mfspart_post_refinement_bottleneck_beta=(
                     args.mfspart_post_refinement_bottleneck_beta
+                ),
+                expected_mfspart_post_refinement_timing_path_beta=(
+                    args.mfspart_post_refinement_timing_path_beta
                 ),
                 expected_cut_mode=args.cut_mode,
                 expected_max_cross_fpga_dependency_depth=(
@@ -4796,6 +4825,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             static_exact_candidate_policy=(
                 args.static_exact_candidate_policy
             ),
+            mfspart_post_refinement_timing_path_beta=(
+                args.mfspart_post_refinement_timing_path_beta
+            ),
             timing_driven=args.timing_driven,
             timing_backend=args.timing_backend,
             clock_periods=(
@@ -4966,6 +4998,10 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             mfspart_post_refinement_bottleneck_beta=(
                 args.mfspart_post_refinement_bottleneck_beta
+            ),
+            timing_path_database_path=args.timing_path_database,
+            mfspart_post_refinement_timing_path_beta=(
+                args.mfspart_post_refinement_timing_path_beta
             ),
             cut_mode=args.cut_mode,
             max_cross_fpga_dependency_depth=(

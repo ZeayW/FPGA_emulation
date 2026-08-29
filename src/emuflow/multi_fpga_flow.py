@@ -985,6 +985,7 @@ def run_multi_fpga_flow(
     max_cross_fpga_dependency_depth: int = 1,
     comb_segment_budget_slots: int = 1,
     static_exact_candidate_policy: str = "potential-frontier-depth-v1",
+    mfspart_post_refinement_timing_path_beta: float = 1.0,
     timing_driven: bool = True,
     timing_backend: str = "opensta",
     clock_periods: Optional[Dict[str, float]] = None,
@@ -1460,6 +1461,15 @@ def run_multi_fpga_flow(
         max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
         comb_segment_budget_slots=comb_segment_budget_slots,
         static_exact_candidate_policy=static_exact_candidate_policy,
+        mfspart_post_refinement=(
+            exact_cut_mode and partition_provider == "tritonpart"
+        ),
+        timing_path_database_path=(
+            path_database_path if exact_cut_mode else None
+        ),
+        mfspart_post_refinement_timing_path_beta=(
+            mfspart_post_refinement_timing_path_beta
+        ),
     )
     assignment_path = phase3_root / "assignment.json"
 

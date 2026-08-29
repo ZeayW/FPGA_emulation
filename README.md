@@ -562,6 +562,32 @@ result because the prefix was selected diagnostically rather than by the
 sealed automatic Phase 3 policy. The guarded class-weighted policy is the
 automatic successor under validation.
 
+The next cost-model revision adds a path-level objective to that guarded FM
+step. Net weights alone add the cost of every crossed net and therefore do not
+model the Boolean question that determines whole-path timing: whether an
+original timing path crosses *any* FPGA boundary. In refiner input v4, each
+original TimingPathDB path is mapped to the ordered net-driver clusters plus
+its structured launch/capture clusters; paths with the same cluster set are
+aggregated by count. The FM gain charges each distinct path once while it is
+split and removes that charge only when all of its clusters become local. It
+deliberately does not add every sink of every high-fanout net, which would turn
+an ordered timing path into unrelated fanout branches and inflate the
+objective. `--mfspart-post-refinement-timing-path-beta` controls this term
+(default `1.0`). Direct Static Exact flows using TritonPart enable the guarded
+post-refinement and bind it to the generated TimingPathDB; non-Static-Exact
+flows retain the prior behavior.
+
+The native optimizer and its independent checker maintain per-path part
+counts and verify every selected move, raw gain, stable rank, capacity/fixed
+constraints, global-best choice, best prefix, and final assignment. The
+checkpoint validator separately rematerializes the compressed objective from
+the sealed EmuIR, clusters, and original TimingPathDB and compares the exact
+PATH-record digest, group count, and pin count. Small exhaustive and full
+repository tests pass. Real-DLA beta screening and complete Phase 7 global
+WNS/TNS comparison remain pending; consequently this revision is not yet
+default-promotion evidence and does not supersede the sequential-only
+production default described above.
+
 The managed shared-Phase-1--5 view intentionally contains only consumer
 artifacts, not duplicate timing/partition evidence reports.  For that layout,
 the comparator follows the immutable shared checkpoint's dependency keys back

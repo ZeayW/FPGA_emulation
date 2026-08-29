@@ -16,7 +16,8 @@ from .partition_hops import refine_partition_hops
 from .platform import Platform
 from .repart import run_repart
 from .mfspart_provider import refine_mfspart_partition, run_mfspart
-from .mfspart_refine import DEFAULT_BOTTLENECK_BETA
+from .mfspart_refine import DEFAULT_BOTTLENECK_BETA, DEFAULT_TIMING_PATH_BETA
+from .sta import validate_sta_path_database
 from .tritonpart import load_partition_net_weights, run_tritonpart
 from .routing import load_route_constraints
 from .combinational_cut import STATIC_EXACT_CANDIDATE_FRONTIER_V1
@@ -56,6 +57,8 @@ def run_phase3(
     mfspart_post_refinement: bool = False,
     mfspart_post_refinement_early_stop: int = 1000,
     mfspart_post_refinement_bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
+    timing_path_database_path: Optional[Path] = None,
+    mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = 1,
     comb_segment_budget_slots: int = 1,
@@ -154,6 +157,8 @@ def run_phase3(
             raise ValueError(
                 "MFSPart post-refinement requires provider='tritonpart'"
             )
+        if timing_path_database_path is not None:
+            validate_sta_path_database(timing_path_database_path, ir_path)
         assignment, mfspart_post_refinement_report = refine_mfspart_partition(
             ir,
             platform,
@@ -165,6 +170,8 @@ def run_phase3(
             net_weights=load_partition_net_weights(net_weights_path),
             early_stop=mfspart_post_refinement_early_stop,
             bottleneck_beta=mfspart_post_refinement_bottleneck_beta,
+            timing_path_database_path=timing_path_database_path,
+            timing_path_beta=mfspart_post_refinement_timing_path_beta,
             refiner=mfspart_refiner,
             refiner_checker=mfspart_refiner_checker,
         )

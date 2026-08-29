@@ -316,6 +316,132 @@ class MFSPartRefinementTest(unittest.TestCase):
                 self.assertEqual(optimizer.returncode, 0, optimizer.stdout)
                 self.assertEqual(checker.returncode, 0, checker.stdout)
 
+    def test_timing_path_or_objective_localizes_each_path_once(self) -> None:
+        parts, distances, capacities = _line_problem(part_count=2)
+        graph = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [1]} for _ in range(3)
+            ],
+            "nets": [],
+        }
+        paths = [
+            {"weight": 1.0, "pins": [0, 1, 2]},
+            {"weight": 2.0, "pins": [0, 2]},
+        ]
+        problem = _normalise_refinement(
+            graph,
+            ["cells"],
+            parts,
+            distances,
+            capacities,
+            [0, 0, 1],
+            hmax=1,
+            move_distance=1,
+            early_stop=2,
+            gamma=0.0,
+            violation_lambda=0.0,
+            mu=0.0,
+            bottleneck_beta=0.0,
+            timing_paths=paths,
+            timing_path_beta=10.0,
+        )
+        exhaustive = _replay_exhaustive(problem)
+        incremental = _replay(problem)
+        self.assertEqual(exhaustive[:2], incremental[:2])
+        self.assertEqual(
+            exhaustive[2],
+            {
+                key: value
+                for key, value in incremental[2].items()
+                if key != "oracle_candidate_recomputations"
+            },
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = refine_mfspart_level(
+                graph,
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0, 0, 1],
+                root,
+                hmax=1,
+                early_stop=2,
+                gamma=0.0,
+                violation_lambda=0.0,
+                bottleneck_beta=0.0,
+                timing_paths=paths,
+                timing_path_beta=10.0,
+                executable=str(self.executable),
+                checker=str(self.checker),
+                python_replay_max_nodes=0,
+            )
+            self.assertEqual(
+                (root / "mfspart_refiner.in")
+                .read_text(encoding="utf-8")
+                .splitlines()[0],
+                "EMUFLOW_MFSPART_REFINER_INPUT_V4",
+            )
+            certificate = validate_mfspart_native_certificate(
+                root / "mfspart_refiner.in",
+                root / "mfspart_refiner.out",
+                checker=str(self.checker),
+            )
+            self.assertEqual(certificate["input_evidence"]["timing_paths"], 2)
+            self.assertEqual(
+                certificate["input_evidence"]["timing_path_pins"], 5
+            )
+            self.assertEqual(
+                len(
+                    certificate["input_evidence"][
+                        "timing_path_objective_sha256"
+                    ]
+                ),
+                64,
+            )
+        self.assertEqual(artifact["assignment"], [0, 0, 0])
+        self.assertEqual(
+            artifact["metrics"]["initial_weighted_crossed_timing_paths"],
+            3.0,
+        )
+        self.assertEqual(
+            artifact["metrics"]["final_weighted_crossed_timing_paths"],
+            0.0,
+        )
+        self.assertEqual(artifact["moves"][0]["gain"], 30.0)
+
+    def test_timing_path_objective_does_not_double_charge_an_existing_cut(self) -> None:
+        parts, distances, capacities = _line_problem(part_count=3)
+        graph = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [1]} for _ in range(3)
+            ],
+            "nets": [],
+        }
+        problem = _normalise_refinement(
+            graph,
+            ["cells"],
+            parts,
+            distances,
+            capacities,
+            [0, 1, 1],
+            hmax=2,
+            move_distance=2,
+            early_stop=1,
+            gamma=0.0,
+            violation_lambda=0.0,
+            mu=0.0,
+            bottleneck_beta=0.0,
+            timing_paths=[{"weight": 1.0, "pins": [0, 1, 2]}],
+            timing_path_beta=10.0,
+        )
+        # Moving node 1 to a third FPGA leaves the already-crossed path crossed;
+        # moving singleton node 0 to FPGA 1 localizes it and earns exactly once.
+        moves, _, _ = _replay_exhaustive(problem)
+        self.assertEqual((moves[0]["node"], moves[0]["target"]), (0, 1))
+        self.assertEqual(moves[0]["gain"], 10.0)
+
     def test_best_prefix_rolls_back_negative_moves(self) -> None:
         graph = {
             "nodes": [

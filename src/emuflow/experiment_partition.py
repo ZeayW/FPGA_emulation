@@ -7,6 +7,7 @@ change must not invalidate those unrelated implementation closures.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -19,14 +20,116 @@ from .experiment_upstream import (
     validate_timing_checkpoint,
 )
 from .io import read_json, write_json
+from .ir import EmuIR
 from .partition_hops import validate_assignment_hop_constraints
 from .partition import CUT_MODE_SEQUENTIAL_ONLY
 from .combinational_cut import STATIC_EXACT_CANDIDATE_FRONTIER_V1
 from .mfspart_refine import (
     DEFAULT_BOTTLENECK_BETA,
+    DEFAULT_TIMING_PATH_BETA,
     validate_mfspart_native_certificate,
 )
 from .phase3 import run_phase3, validate_phase3
+from .sta import STA_PATH_DATABASE_SCHEMA
+
+
+def _rebuild_timing_path_objective(
+    ir_path: Path,
+    clusters_path: Path,
+    database_path: Path,
+) -> Dict[str, Any]:
+    """Independently bind native PATH records to TimingDB semantics."""
+
+    ir = EmuIR.load(ir_path)
+    clusters = read_json(clusters_path)
+    database = read_json(database_path)
+    if (
+        database.get("schema") != STA_PATH_DATABASE_SCHEMA
+        or database.get("design") != ir.value["design"]["name"]
+        or not isinstance(database.get("paths"), list)
+    ):
+        raise ValidationError("invalid partition timing-path database")
+    ordered_clusters = sorted(clusters["clusters"], key=lambda item: item["id"])
+    node_index = {
+        cluster["id"]: index for index, cluster in enumerate(ordered_clusters)
+    }
+    cluster_by_instance = {
+        instance: cluster["id"]
+        for cluster in ordered_clusters
+        for instance in cluster["instances"]
+    }
+    net_driver_clusters: Dict[str, tuple[int, ...]] = {}
+    net_sink_clusters: Dict[str, tuple[int, ...]] = {}
+    for net in ir.value["nets"]:
+        net_driver_clusters[net["id"]] = tuple(
+            sorted(
+                {
+                    node_index[cluster_by_instance[endpoint["instance"]]]
+                    for endpoint in net["drivers"]
+                    if endpoint["instance"] in cluster_by_instance
+                }
+            )
+        )
+        net_sink_clusters[net["id"]] = tuple(
+            sorted(
+                {
+                    node_index[cluster_by_instance[endpoint["instance"]]]
+                    for endpoint in net["sinks"]
+                    if endpoint["instance"] in cluster_by_instance
+                }
+            )
+        )
+    grouped: Dict[tuple[int, ...], float] = {}
+    eligible_paths = 0
+    unmaterialized_paths = 0
+    for path in database["paths"]:
+        try:
+            pins = {
+                pin
+                for net_id in path["path_nets"]
+                for pin in net_driver_clusters[net_id]
+            }
+            for endpoint_name in ("startpoint", "endpoint"):
+                endpoint = path.get(endpoint_name)
+                if (
+                    endpoint is not None
+                    and endpoint["instance"] in cluster_by_instance
+                ):
+                    pins.add(
+                        node_index[cluster_by_instance[endpoint["instance"]]]
+                    )
+            if "endpoint" not in path:
+                pins.update(net_sink_clusters[path["path_nets"][-1]])
+        except (KeyError, IndexError, TypeError) as error:
+            raise ValidationError(
+                "malformed partition timing-path database record"
+            ) from error
+        if len(pins) < 2:
+            unmaterialized_paths += 1
+            continue
+        eligible_paths += 1
+        key = tuple(sorted(pins))
+        grouped[key] = grouped.get(key, 0.0) + 1.0
+    digest = hashlib.sha256()
+    compressed_pins = 0
+    for index, (pins, weight) in enumerate(sorted(grouped.items())):
+        compressed_pins += len(pins)
+        record = "PATH " + " ".join(
+            str(value)
+            for value in (index, format(weight, ".17g"), len(pins), *pins)
+        )
+        digest.update((record + "\n").encode("utf-8"))
+    return {
+        "schema": "emuflow.mfspart-timing-path-objective/v1",
+        "database_sha256": _sha256(database_path),
+        "database_paths": len(database["paths"]),
+        "eligible_paths": eligible_paths,
+        "unmaterialized_paths": unmaterialized_paths,
+        "compressed_groups": len(grouped),
+        "compressed_pins": compressed_pins,
+        "objective_sha256": digest.hexdigest(),
+        "weighting": "uniform-path-count-with-identical-pin-set-aggregation",
+    }
 
 
 def run_partition_checkpoint(
@@ -47,6 +150,7 @@ def run_partition_checkpoint(
     mfspart_post_refinement: bool = False,
     mfspart_post_refinement_early_stop: int = 1000,
     mfspart_post_refinement_bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
+    mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     timeout_seconds: int = 3600,
     seed_attempts: int = 1,
     repair_balance: bool = False,
@@ -84,6 +188,7 @@ def run_partition_checkpoint(
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     validate_timing_checkpoint(frontend_root, timing_root)
     weights_path = _require(timing_root, "partition-net-weights.json")
+    timing_path_database = _require(timing_root, "path-database.json")
     output_dir = _prepare_empty_output(output_dir, "partition checkpoint")
     phase3 = run_phase3(
         ir_path,
@@ -111,6 +216,10 @@ def run_partition_checkpoint(
         mfspart_post_refinement_bottleneck_beta=(
             mfspart_post_refinement_bottleneck_beta
         ),
+        timing_path_database_path=timing_path_database,
+        mfspart_post_refinement_timing_path_beta=(
+            mfspart_post_refinement_timing_path_beta
+        ),
         cut_mode=cut_mode,
         max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
         comb_segment_budget_slots=comb_segment_budget_slots,
@@ -130,6 +239,9 @@ def run_partition_checkpoint(
         "mfspart_post_refinement_bottleneck_beta": (
             mfspart_post_refinement_bottleneck_beta
         ),
+        "mfspart_post_refinement_timing_path_beta": (
+            mfspart_post_refinement_timing_path_beta
+        ),
         "cut_mode": cut_mode,
         "max_cross_fpga_dependency_depth": (
             max_cross_fpga_dependency_depth
@@ -144,6 +256,7 @@ def run_partition_checkpoint(
         "emuir_sha256": _sha256(ir_path),
         "platform_sha256": _sha256(platform_path.resolve()),
         "weights_sha256": _sha256(weights_path),
+        "timing_path_database_sha256": _sha256(timing_path_database),
         "assignment_sha256": _sha256(output_dir / "assignment.json"),
         "clusters_sha256": _sha256(output_dir / "clusters.json"),
         "phase3_report_sha256": _sha256(output_dir / "phase3_report.json"),
@@ -184,6 +297,9 @@ def run_partition_checkpoint(
         expected_mfspart_post_refinement_bottleneck_beta=(
             mfspart_post_refinement_bottleneck_beta
         ),
+        expected_mfspart_post_refinement_timing_path_beta=(
+            mfspart_post_refinement_timing_path_beta
+        ),
         expected_cut_mode=cut_mode,
         expected_max_cross_fpga_dependency_depth=(
             max_cross_fpga_dependency_depth
@@ -215,6 +331,7 @@ def validate_partition_checkpoint(
     expected_mfspart_post_refinement: bool | None = None,
     expected_mfspart_post_refinement_early_stop: int | None = None,
     expected_mfspart_post_refinement_bottleneck_beta: float | None = None,
+    expected_mfspart_post_refinement_timing_path_beta: float | None = None,
     expected_cut_mode: str | None = None,
     expected_max_cross_fpga_dependency_depth: int | None = None,
     expected_comb_segment_budget_slots: int | None = None,
@@ -223,6 +340,7 @@ def validate_partition_checkpoint(
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     weights = _require(timing_root, "partition-net-weights.json")
+    timing_path_database = timing_root / "path-database.json"
     report = read_json(_require(root, "experiment-partition-report.json"))
     if (
         report.get("schema") != EXPERIMENT_PARTITION_SCHEMA
@@ -256,6 +374,16 @@ def validate_partition_checkpoint(
     ):
         raise ValidationError(
             "partition MFSPart post-refinement early-stop contract disagrees"
+        )
+    if (
+        expected_mfspart_post_refinement_timing_path_beta is not None
+        and report.get(
+            "mfspart_post_refinement_timing_path_beta",
+            DEFAULT_TIMING_PATH_BETA,
+        ) != expected_mfspart_post_refinement_timing_path_beta
+    ):
+        raise ValidationError(
+            "partition MFSPart timing-path-beta contract disagrees"
         )
     if (
         expected_mfspart_post_refinement_bottleneck_beta is not None
@@ -329,6 +457,14 @@ def validate_partition_checkpoint(
     for label, path in seals.items():
         if report.get(label) != _sha256(path):
             raise ValidationError(f"partition checkpoint {label} seal is broken")
+    if "timing_path_database_sha256" in report:
+        timing_path_database = _require(timing_root, "path-database.json")
+        if report.get("timing_path_database_sha256") != _sha256(
+            timing_path_database
+        ):
+            raise ValidationError(
+                "partition checkpoint timing-path database seal is broken"
+            )
     assignment = read_json(seals["assignment_sha256"])
     post_refinement = report.get("mfspart_post_refinement", False)
     if not isinstance(post_refinement, bool):
@@ -354,6 +490,7 @@ def validate_partition_checkpoint(
             post_schema not in {
                 "emuflow.mfspart-post-refinement/v1",
                 "emuflow.mfspart-post-refinement/v2",
+                "emuflow.mfspart-post-refinement/v3",
             }
             or post_report.get("status") != "pass"
             or post_report.get("direction_source")
@@ -362,9 +499,14 @@ def validate_partition_checkpoint(
             != report.get("mfspart_post_refinement_early_stop")
             or post_report.get("bottleneck_beta")
             != report.get("mfspart_post_refinement_bottleneck_beta")
+            or post_report.get("timing_path_beta", 0.0)
+            != report.get("mfspart_post_refinement_timing_path_beta", 0.0)
         ):
             raise ValidationError("partition MFSPart post-refinement report is invalid")
-        if post_schema == "emuflow.mfspart-post-refinement/v2":
+        if post_schema in {
+            "emuflow.mfspart-post-refinement/v2",
+            "emuflow.mfspart-post-refinement/v3",
+        }:
             expected_guard = (
                 "non-combinational-net-worst-sink-distance-non-regression-v1"
                 if report.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
@@ -406,7 +548,10 @@ def validate_partition_checkpoint(
         certificate = validate_mfspart_native_certificate(
             native_paths["input_sha256"], native_paths["output_sha256"]
         )
-        if post_schema == "emuflow.mfspart-post-refinement/v2":
+        if post_schema in {
+            "emuflow.mfspart-post-refinement/v2",
+            "emuflow.mfspart-post-refinement/v3",
+        }:
             input_evidence = certificate["input_evidence"]
             if (
                 post_report.get("guarded_nets")
@@ -421,6 +566,33 @@ def validate_partition_checkpoint(
                 raise ValidationError(
                     "partition MFSPart topology-guard counts disagree with "
                     "the independently checked native input"
+                )
+        if post_schema == "emuflow.mfspart-post-refinement/v3":
+            input_evidence = certificate["input_evidence"]
+            objective = post_report.get("timing_path_objective")
+            reconstructed_objective = _rebuild_timing_path_objective(
+                ir_path,
+                seals["clusters_sha256"],
+                timing_path_database,
+            )
+            if (
+                not isinstance(objective, dict)
+                or "timing_path_database_sha256" not in report
+                or objective
+                != {
+                    **reconstructed_objective,
+                    "status": "enabled",
+                    "beta": post_report.get("timing_path_beta"),
+                }
+                or input_evidence["timing_paths"]
+                != reconstructed_objective["compressed_groups"]
+                or input_evidence["timing_path_pins"]
+                != reconstructed_objective["compressed_pins"]
+                or input_evidence["timing_path_objective_sha256"]
+                != reconstructed_objective["objective_sha256"]
+            ):
+                raise ValidationError(
+                    "partition MFSPart timing-path objective evidence is invalid"
                 )
         parsed = certificate["parsed"]
         for label in ("moves", "assignment", "metrics"):

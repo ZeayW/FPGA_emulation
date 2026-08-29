@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import math
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .errors import ValidationError
-from .io import write_json
+from .io import read_json, write_json
 from .ir import EmuIR
 from .mfspart import build_mfspart_hierarchy
 from .mfspart_initial import build_mfspart_initial_partition
 from .mfspart_legalize import legalize_mfspart_min_used
 from .mfspart_refine import (
     DEFAULT_BOTTLENECK_BETA,
+    DEFAULT_TIMING_PATH_BETA,
     refine_mfspart_hierarchy,
     refine_mfspart_level,
 )
+from .sta import STA_PATH_DATABASE_SCHEMA
 from .partition import (
     CUT_MODE_STATIC_EXACT,
     build_partition_assignment,
@@ -30,9 +33,110 @@ from .resources import RESOURCE_FIELDS
 
 MFSPART_PHASE3_PROVIDER = "mfspart-serial-paper-reproduction-v1"
 MFSPART_POST_REFINEMENT_PROVIDER = (
-    "tritonpart-guarded-directional-mfspart-post-refinement-v2"
+    "tritonpart-timing-path-guarded-directional-mfspart-post-refinement-v3"
 )
-MFSPART_POST_REFINEMENT_SCHEMA = "emuflow.mfspart-post-refinement/v2"
+MFSPART_POST_REFINEMENT_SCHEMA = "emuflow.mfspart-post-refinement/v3"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _timing_path_objective_sha256(
+    timing_paths: list[dict[str, Any]],
+) -> str:
+    digest = hashlib.sha256()
+    for index, timing_path in enumerate(timing_paths):
+        record = "PATH " + " ".join(
+            str(value)
+            for value in (
+                index,
+                format(timing_path["weight"], ".17g"),
+                len(timing_path["pins"]),
+                *timing_path["pins"],
+            )
+        )
+        digest.update((record + "\n").encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _timing_path_groups(
+    ir: EmuIR,
+    clusters_artifact: Mapping[str, Any],
+    node_index: Mapping[str, int],
+    database_path: Path,
+) -> tuple[list[dict[str, Any]], Dict[str, Any]]:
+    database = read_json(database_path)
+    if (
+        database.get("schema") != STA_PATH_DATABASE_SCHEMA
+        or database.get("design") != ir.value["design"]["name"]
+        or not isinstance(database.get("paths"), list)
+    ):
+        raise ValidationError("invalid MFSPart timing-path database")
+    cluster_by_instance = {
+        instance: cluster["id"]
+        for cluster in clusters_artifact["clusters"]
+        for instance in cluster["instances"]
+    }
+    net_driver_clusters: Dict[str, tuple[int, ...]] = {}
+    net_sink_clusters: Dict[str, tuple[int, ...]] = {}
+    for net in ir.value["nets"]:
+        driver_ids = {
+            cluster_by_instance[endpoint["instance"]]
+            for endpoint in net["drivers"]
+            if endpoint["instance"] in cluster_by_instance
+        }
+        sink_ids = {
+            cluster_by_instance[endpoint["instance"]]
+            for endpoint in net["sinks"]
+            if endpoint["instance"] in cluster_by_instance
+        }
+        net_driver_clusters[net["id"]] = tuple(
+            sorted(node_index[cluster_id] for cluster_id in driver_ids)
+        )
+        net_sink_clusters[net["id"]] = tuple(
+            sorted(node_index[cluster_id] for cluster_id in sink_ids)
+        )
+    grouped: Dict[tuple[int, ...], float] = {}
+    eligible_paths = 0
+    unmaterialized_paths = 0
+    for timing_path in database["paths"]:
+        pins = {
+            pin
+            for net in timing_path["path_nets"]
+            for pin in net_driver_clusters[net]
+        }
+        for endpoint_name in ("startpoint", "endpoint"):
+            endpoint = timing_path.get(endpoint_name)
+            if endpoint is not None and endpoint["instance"] in cluster_by_instance:
+                pins.add(node_index[cluster_by_instance[endpoint["instance"]]])
+        if "endpoint" not in timing_path:
+            pins.update(net_sink_clusters[timing_path["path_nets"][-1]])
+        if len(pins) < 2:
+            unmaterialized_paths += 1
+            continue
+        eligible_paths += 1
+        key = tuple(sorted(pins))
+        grouped[key] = grouped.get(key, 0.0) + 1.0
+    timing_paths = [
+        {"weight": weight, "pins": list(pins)}
+        for pins, weight in sorted(grouped.items())
+    ]
+    return timing_paths, {
+        "schema": "emuflow.mfspart-timing-path-objective/v1",
+        "database_sha256": _sha256(database_path),
+        "database_paths": len(database["paths"]),
+        "eligible_paths": eligible_paths,
+        "unmaterialized_paths": unmaterialized_paths,
+        "compressed_groups": len(timing_paths),
+        "compressed_pins": sum(len(path["pins"]) for path in timing_paths),
+        "objective_sha256": _timing_path_objective_sha256(timing_paths),
+        "weighting": "uniform-path-count-with-identical-pin-set-aggregation",
+    }
 
 
 def _platform_problem(
@@ -269,6 +373,8 @@ def refine_mfspart_partition(
     net_weights: Optional[Mapping[str, float]] = None,
     early_stop: int = 1000,
     bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
+    timing_path_database_path: Optional[Path] = None,
+    timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     refiner: Optional[str] = None,
     refiner_checker: Optional[str] = None,
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
@@ -301,6 +407,27 @@ def refine_mfspart_partition(
         clusters_artifact.get("policy", {}).get("cut_mode")
         == CUT_MODE_STATIC_EXACT
     )
+    timing_paths: list[dict[str, Any]] = []
+    timing_path_objective: Dict[str, Any] = {
+        "schema": "emuflow.mfspart-timing-path-objective/v1",
+        "status": "disabled",
+        "reason": (
+            "non-static-exact-cut-mode"
+            if not static_exact
+            else "no-timing-path-database"
+        ),
+    }
+    effective_timing_path_beta = 0.0
+    if static_exact and timing_path_database_path is not None:
+        timing_paths, timing_path_objective = _timing_path_groups(
+            ir,
+            clusters_artifact,
+            node_index,
+            timing_path_database_path,
+        )
+        timing_path_objective["status"] = "enabled"
+        timing_path_objective["beta"] = timing_path_beta
+        effective_timing_path_beta = timing_path_beta
     graph_nets = []
     for net in nets:
         source = node_index[net["source"]]
@@ -354,6 +481,8 @@ def refine_mfspart_partition(
         hmax=hmax,
         early_stop=early_stop,
         bottleneck_beta=bottleneck_beta,
+        timing_paths=timing_paths,
+        timing_path_beta=effective_timing_path_beta,
         executable=refiner,
         checker=refiner_checker,
     )
@@ -383,6 +512,8 @@ def refine_mfspart_partition(
         "initial_assignment_provider": assignment["provider"],
         "early_stop": early_stop,
         "bottleneck_beta": bottleneck_beta,
+        "timing_path_beta": effective_timing_path_beta,
+        "timing_path_objective": timing_path_objective,
         "hmax": hmax,
         "moves": len(refinement["moves"]),
         "best_prefix": int(refinement["metrics"]["best_prefix"]),
@@ -425,6 +556,8 @@ def refine_mfspart_partition(
         "hmax": hmax,
         "early_stop": early_stop,
         "bottleneck_beta": bottleneck_beta,
+        "timing_path_beta": effective_timing_path_beta,
+        "timing_path_objective": timing_path_objective,
         "topology_guard": (
             "non-combinational-net-worst-sink-distance-non-regression-v1"
             if static_exact

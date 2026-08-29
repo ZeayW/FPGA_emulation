@@ -9,8 +9,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
-from emuflow.io import read_json
-from emuflow.mfspart_provider import _partition_graph, refine_mfspart_partition
+from emuflow.experiment_partition import _rebuild_timing_path_objective
+from emuflow.io import read_json, write_json
+from emuflow.mfspart_provider import (
+    _partition_graph,
+    _timing_path_groups,
+    refine_mfspart_partition,
+)
 from emuflow.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
 from emuflow.partition import (
     CUT_MODE_STATIC_EXACT,
@@ -341,6 +346,72 @@ class MFSPartPhase3Test(unittest.TestCase):
         self.assertGreater(report["guarded_nets"], 0)
         self.assertGreater(refined["metrics"]["combinational_cut_nets"], 0)
         self.assertEqual(refined["instance_assignment"]["l0"], "fpga0")
+
+    def test_timing_path_groups_follow_ordered_drivers_not_fanout_branches(self) -> None:
+        ir = _chain_ir()
+        platform = Platform.load(PLATFORM)
+        constraints = load_partition_constraints(None, ir, platform)
+        clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=3,
+            comb_segment_budget_slots=3,
+            frame_slots=32,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        )
+        node_index = {
+            cluster["id"]: index
+            for index, cluster in enumerate(
+                sorted(clusters["clusters"], key=lambda item: item["id"])
+            )
+        }
+        path = {
+            "id": "p0",
+            "clock_domain": "clk",
+            "clock_period_ns": 10.0,
+            "slack_ns": 0.0,
+            "fixed_delay_ns": 0.0,
+            "path_nets": ["q", "n0", "n1", "d"],
+            "normalized_slack": 0.0,
+            "startpoint": {
+                "object": "q0/Q",
+                "instance": "q0",
+                "port": "Q",
+                "bit": 0,
+            },
+            "endpoint": {
+                "object": "q1/D",
+                "instance": "q1",
+                "port": "D",
+                "bit": 0,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database = Path(temporary_directory) / "paths.json"
+            write_json(
+                database,
+                {
+                    "schema": "emuflow.sta-path-database/v1",
+                    "design": ir.value["design"]["name"],
+                    "paths": [path, {**path, "id": "p1"}],
+                },
+            )
+            groups, evidence = _timing_path_groups(
+                ir, clusters, node_index, database
+            )
+            ir_path = Path(temporary_directory) / "design.emuir.json"
+            clusters_path = Path(temporary_directory) / "clusters.json"
+            write_json(ir_path, ir.value)
+            write_json(clusters_path, clusters)
+            independently_rebuilt = _rebuild_timing_path_objective(
+                ir_path, clusters_path, database
+            )
+        self.assertEqual(evidence["eligible_paths"], 2)
+        self.assertEqual(evidence["compressed_groups"], 1)
+        self.assertEqual(groups[0]["weight"], 2.0)
+        self.assertEqual(len(groups[0]["pins"]), 5)
+        self.assertEqual(independently_rebuilt, evidence)
 
     def test_counter_runs_affected_multi_fpga_flow_with_mfspart(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
