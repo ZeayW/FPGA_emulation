@@ -14,6 +14,7 @@ from emuflow.cli import main
 from emuflow.combinational_cut import (
     GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     _build_combinational_cut_candidate_index,
     build_static_exact_semantic_contract,
     characterize_combinational_cuts,
@@ -656,6 +657,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             max_cross_fpga_dependency_depth=dependency_depth,
             comb_segment_budget_slots=1,
             frame_slots=frame_slots,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         )
         cluster_for = {
             instance: cluster["id"]
@@ -954,6 +956,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             max_dependency_depth=2,
             comb_segment_budget_slots=1,
             frame_slots=16,
+            candidate_selection_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         )
         captures = {
             (item["cut_net"], item["fpga"], item["endpoint"])
@@ -1047,6 +1050,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 self.constraints,
                 cut_mode=CUT_MODE_STATIC_EXACT,
                 max_cross_fpga_dependency_depth=3,
+                static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
             )
 
     def test_v2_releases_deep_potential_candidate_with_actual_depth_one(self):
@@ -1063,6 +1067,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=1,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         )
         generalized = build_clusters(
             self.ir,
@@ -1304,6 +1309,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             max_cross_fpga_dependency_depth=2,
             comb_segment_budget_slots=1,
             frame_slots=16,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         )
         cluster_for = {
             instance: cluster["id"]
@@ -1398,6 +1404,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             max_cross_fpga_dependency_depth=1,
             comb_segment_budget_slots=1,
             frame_slots=16,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         )
         cluster_for = {
             instance: cluster["id"]
@@ -1685,6 +1692,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                         "static-exact-combinational",
                         "--max-cross-fpga-dependency-depth",
                         "1",
+                        "--static-exact-candidate-policy",
+                        "potential-frontier-depth-v1",
                         "--out",
                         str(output),
                     ]
@@ -1890,6 +1899,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             max_dependency_depth=1,
             comb_segment_budget_slots=1,
             frame_slots=16,
+            candidate_selection_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         )
         launch = next(
             item

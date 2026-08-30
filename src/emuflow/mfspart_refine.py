@@ -22,7 +22,10 @@ MFSPART_REFINER_PROVIDER = "mfspart-timing-path-guarded-direct-kway-fm-v4"
 _GAIN_RANK_SCALE = 1_000_000_000.0
 _DEFAULT_PYTHON_REPLAY_MAX_NODES = 2_000
 DEFAULT_BOTTLENECK_BETA = 256.0
-DEFAULT_TIMING_PATH_BETA = 1.0
+# The canonical physical comparison found no incremental Phase-7 QoR benefit
+# from the path-set term. Keep it available for explicit research studies, but
+# do not perturb the guarded objective by default.
+DEFAULT_TIMING_PATH_BETA = 0.0
 
 
 def _gain_rank(value: float) -> int:

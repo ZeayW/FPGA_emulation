@@ -22,8 +22,12 @@ from .experiment_upstream import (
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition_hops import validate_assignment_hop_constraints
-from .partition import CUT_MODE_SEQUENTIAL_ONLY
-from .combinational_cut import STATIC_EXACT_CANDIDATE_FRONTIER_V1
+from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
+from .combinational_cut import (
+    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+)
 from .mfspart_refine import (
     DEFAULT_BOTTLENECK_BETA,
     DEFAULT_TIMING_PATH_BETA,
@@ -147,7 +151,7 @@ def run_partition_checkpoint(
     openroad: Optional[str] = None,
     tritonpart_solution: Optional[Path] = None,
     hop_refiner: Optional[str] = None,
-    mfspart_post_refinement: bool = False,
+    mfspart_post_refinement: Optional[bool] = None,
     mfspart_post_refinement_early_stop: int = 1000,
     mfspart_post_refinement_bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
     mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
@@ -157,11 +161,17 @@ def run_partition_checkpoint(
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
-    max_cross_fpga_dependency_depth: int = 1,
+    max_cross_fpga_dependency_depth: int = (
+        STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
+    ),
     comb_segment_budget_slots: int = 1,
     minimum_combinational_cut_nets: int = 0,
-    static_exact_candidate_policy: str = STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
 ) -> Dict[str, Any]:
+    if mfspart_post_refinement is None:
+        mfspart_post_refinement = (
+            cut_mode == CUT_MODE_STATIC_EXACT and provider == "tritonpart"
+        )
     if (
         isinstance(minimum_combinational_cut_nets, bool)
         or not isinstance(minimum_combinational_cut_nets, int)

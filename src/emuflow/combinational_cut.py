@@ -36,6 +36,8 @@ STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS = {
 }
 STATIC_EXACT_CANDIDATE_FRONTIER_V1 = "potential-frontier-depth-v1"
 STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2 = "assignment-derived-acyclic-v2"
+STATIC_EXACT_DEFAULT_CANDIDATE_POLICY = STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH = 8
 STATIC_EXACT_CANDIDATE_POLICIES = {
     STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
@@ -616,7 +618,7 @@ def build_static_exact_semantic_contract(
     max_dependency_depth: int,
     comb_segment_budget_slots: int,
     frame_slots: int,
-    candidate_selection_policy: str = STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    candidate_selection_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
 ) -> Dict[str, Any]:
     """Build the provisional Phase-3 exact-cut semantic contract.
 

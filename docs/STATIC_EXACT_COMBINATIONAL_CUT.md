@@ -160,6 +160,36 @@ feasibility, and physical segment deadlines.
    ordinary timing-DAG/ratio optimizers remain fail-closed until they consume
    the same dependency contract.
 
+## Canonical search-space audit
+
+The generalized policy was audited on one immutable canonical DLA + EDA 2023
+case6 frontend. Sequential-only, legacy v1, and guarded generalized v2 used the
+same EmuIR bytes and the same physical seed; no arm was reconstructed from a
+different synthesis result. The original design has 379,357 instances and
+73,767 combinational nets. The resulting Phase 3 search spaces are:
+
+| policy | clusters | released combinational candidates | largest cluster | clusters above 100 instances | selected real combinational cuts |
+|---|---:|---:|---:|---:|---:|
+| sequential-only | 246,387 | 0 | 724 | 197 | 0 |
+| legacy potential-frontier v1 | 304,300 | 16,251 | 154 | 84 | 0 |
+| assignment-derived v2 with guarded refinement | 367,129 | 49,695 | 52 | 0 | 2 |
+
+V2 therefore adds 33,444 structurally legal candidate boundaries over v1 and
+removes the large atomic-cluster tail: sequential-only has 72 clusters above
+500 instances, whereas v2 has none above 100. The current canonical result is
+not candidate-starved. Its two selected cuts are the optimizer's cost-aware
+choice from the larger legal space, and both survive the complete exact
+scheduler, shadow-transport, equivalence, and routed segment-deadline gates.
+Forcing a larger cut count would optimize an activity metric rather than final
+timing QoR and is not part of the default policy.
+
+The accepted v2 assignment reaches actual dependency depth two, so the
+configured depth-eight safety cap is not active on this case. Likewise, the
+dedicated Phase 5 scheduler already accepts arbitrary acyclic depth subject to
+the fixed frame, routed latency, lane capacity, relay readiness, and capture
+deadline. These measurements do not justify weakening either fail-closed gate
+or replacing the fixed-frame feasibility proof with an assumed benefit.
+
 ### Cross-policy Phase 7 promotion certificate
 
 Sequential-only, legacy Static Exact v1, and generalized Static Exact v2 do

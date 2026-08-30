@@ -7,6 +7,7 @@ from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import (
     CUT_MODE_SEQUENTIAL_ONLY,
+    CUT_MODE_STATIC_EXACT,
     assign_clusters,
     build_clusters,
     load_partition_constraints,
@@ -20,7 +21,10 @@ from .mfspart_refine import DEFAULT_BOTTLENECK_BETA, DEFAULT_TIMING_PATH_BETA
 from .sta import validate_sta_path_database
 from .tritonpart import load_partition_net_weights, run_tritonpart
 from .routing import load_route_constraints
-from .combinational_cut import STATIC_EXACT_CANDIDATE_FRONTIER_V1
+from .combinational_cut import (
+    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+)
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
@@ -54,16 +58,22 @@ def run_phase3(
     mfspart_refiner: Optional[str] = None,
     mfspart_refiner_checker: Optional[str] = None,
     mfspart_legalizer: Optional[str] = None,
-    mfspart_post_refinement: bool = False,
+    mfspart_post_refinement: Optional[bool] = None,
     mfspart_post_refinement_early_stop: int = 1000,
     mfspart_post_refinement_bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
     timing_path_database_path: Optional[Path] = None,
     mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
-    max_cross_fpga_dependency_depth: int = 1,
+    max_cross_fpga_dependency_depth: int = (
+        STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
+    ),
     comb_segment_budget_slots: int = 1,
-    static_exact_candidate_policy: str = STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
 ) -> Dict[str, Any]:
+    if mfspart_post_refinement is None:
+        mfspart_post_refinement = (
+            cut_mode == CUT_MODE_STATIC_EXACT and provider == "tritonpart"
+        )
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
     constraints = load_partition_constraints(

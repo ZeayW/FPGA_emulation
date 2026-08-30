@@ -116,9 +116,12 @@ from .static_exact_qor import (
     run_static_exact_qor_comparison,
     validate_static_exact_qor_comparison,
 )
+from .mfspart_refine import DEFAULT_TIMING_PATH_BETA
 from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
     characterize_combinational_cuts,
     validate_combinational_cut_characterization,
 )
@@ -620,7 +623,8 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--hop-refiner")
     partition_run.add_argument(
         "--mfspart-post-refinement",
-        action="store_true",
+        action=_BooleanOptionalAction,
+        default=None,
         help=(
             "directionally post-refine a TritonPart assignment with the "
             "source-bound MFSPart FM refiner"
@@ -637,7 +641,7 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument(
         "--mfspart-post-refinement-timing-path-beta",
         type=float,
-        default=1.0,
+        default=DEFAULT_TIMING_PATH_BETA,
     )
     partition_run.add_argument("--timeout-seconds", type=int, default=3600)
     partition_run.add_argument("--seed-attempts", type=int, default=1)
@@ -657,7 +661,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default="sequential-only",
     )
     partition_run.add_argument(
-        "--max-cross-fpga-dependency-depth", type=int, default=1
+        "--max-cross-fpga-dependency-depth",
+        type=int,
+        default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
     )
     partition_run.add_argument(
         "--comb-segment-budget-slots", type=int, default=1
@@ -668,7 +674,7 @@ def _build_parser() -> argparse.ArgumentParser:
             STATIC_EXACT_CANDIDATE_FRONTIER_V1,
             STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         ),
-        default=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+        default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     )
     partition_run.add_argument(
         "--minimum-combinational-cut-nets", type=int, default=0
@@ -1797,7 +1803,7 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--max-cross-fpga-dependency-depth",
         type=int,
-        default=1,
+        default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
     )
     multi_fpga_compile.add_argument(
         "--comb-segment-budget-slots", type=int, default=1
@@ -1808,12 +1814,12 @@ def _build_parser() -> argparse.ArgumentParser:
             STATIC_EXACT_CANDIDATE_FRONTIER_V1,
             STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         ),
-        default=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+        default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     )
     multi_fpga_compile.add_argument(
         "--mfspart-post-refinement-timing-path-beta",
         type=float,
-        default=1.0,
+        default=DEFAULT_TIMING_PATH_BETA,
         help=(
             "weight of each distinct pre-partition timing path crossed by "
             "Static Exact Phase 3; identical cluster paths are aggregated"
@@ -2559,7 +2565,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--max-cross-fpga-dependency-depth",
         type=int,
-        default=1,
+        default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
         help="static exact mode dependency-depth limit",
     )
     phase3.add_argument(
@@ -2574,7 +2580,7 @@ def _build_parser() -> argparse.ArgumentParser:
             STATIC_EXACT_CANDIDATE_FRONTIER_V1,
             STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         ),
-        default=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+        default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     )
     phase3.add_argument("--min-used-fpgas", type=int)
     phase3.add_argument("--balance-tolerance", type=float)
@@ -2669,7 +2675,11 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--mfspart-refiner")
     phase3.add_argument("--mfspart-refiner-checker")
     phase3.add_argument("--mfspart-legalizer")
-    phase3.add_argument("--mfspart-post-refinement", action="store_true")
+    phase3.add_argument(
+        "--mfspart-post-refinement",
+        action=_BooleanOptionalAction,
+        default=None,
+    )
     phase3.add_argument(
         "--mfspart-post-refinement-early-stop", type=int, default=1000
     )
@@ -2682,7 +2692,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--mfspart-post-refinement-timing-path-beta",
         type=float,
-        default=1.0,
+        default=DEFAULT_TIMING_PATH_BETA,
     )
 
     sta_parser = subparsers.add_parser(

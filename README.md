@@ -426,8 +426,11 @@ The checked-in `static_exact_acceptance` RTL and
 functional/physical fixture for that gate; they are not a QoR benchmark and
 must not be mixed into benchmark-comparison tables.
 
-Generalized Static Exact v2 is available through
-`--static-exact-candidate-policy assignment-derived-acyclic-v2`.  Unlike the
+The production-wide cut mode remains the conservative `sequential-only`
+default. When a user explicitly selects `--cut-mode
+static-exact-combinational`, every producer entry point now defaults to
+generalized v2 (`assignment-derived-acyclic-v2`), a dependency-depth safety
+cap of eight, guarded TritonPart post-refinement, and path beta zero. Unlike the
 legacy `potential-frontier-depth-v1` policy, v2 does not confuse a net's depth
 in the graph of *possible* boundaries with its depth after the partitioner has
 selected actual transported boundaries.  It releases every structurally legal
@@ -442,7 +445,10 @@ the exact Phase 5 list scheduler then bind the concrete routes, link latency,
 lane capacity, relay readiness, and capture deadline; Phase 6/7 retain the same
 macro-cycle-equivalence and routed physical-segment gates.
 
-The legacy policy remains readable for controlled A/B comparison. In that
+The legacy policy remains readable for controlled A/B comparison, but it is
+never inferred from omitted arguments. A legacy rerun must explicitly select
+`--static-exact-candidate-policy potential-frontier-depth-v1`, a depth of one
+or two, and any other noncurrent objective parameters. In that
 three-arm comparison, the positive `--minimum-combinational-cut-nets` exercise
 gate applies to generalized v2 only. Legacy v1 runs the complete Phase 1--7
 chain with a zero minimum: if its potential-frontier filter selects no real
@@ -526,11 +532,11 @@ adding 2,717 scheduled bit-hops and 7,383 transport cells. The result proves
 that generalized dependency handling, shadow transport, macro-cycle
 equivalence, and routed segment deadlines work on real depth-three cuts; it
 also proves that this candidate selection is not a timing-QoR improvement on
-the canonical case. The promotion gate is therefore false and
-`sequential-only` remains the production default. Generalized v2 stays an
-explicit research mode until a later cost model passes the same no-regression
-gate; the flow does not silently substitute v2 merely because it exercised
-more cuts.
+the canonical case. That unguarded generalized configuration was therefore
+not promoted, and `sequential-only` remains the production-wide cut-mode
+default. The later guarded cost model described below passes the same physical
+comparison and is now the default configuration only after Static Exact mode
+has been selected.
 
 The current follow-up cost model keeps TritonPart as the partition provider
 and applies one optional, direction-aware MFSPart FM post-refinement to its
@@ -573,7 +579,8 @@ split and removes that charge only when all of its clusters become local. It
 deliberately does not add every sink of every high-fanout net, which would turn
 an ordered timing path into unrelated fanout branches and inflate the
 objective. `--mfspart-post-refinement-timing-path-beta` controls this term
-(default `1.0`). Direct Static Exact flows using TritonPart enable the guarded
+(default `0.0`; nonzero values are explicit research options). Direct Static
+Exact flows using TritonPart enable the guarded
 post-refinement and bind it to the generated TimingPathDB; non-Static-Exact
 flows retain the prior behavior.
 
@@ -600,8 +607,22 @@ the register-only control on this canonical run. Relative to register-only WNS
 improves WNS by 0.6910355338 ns, reduces the TNS deficit by
 87,936.73147088484 ns (31.71%), and removes 2,291 negative paths. This evidence
 supports the guarded cost model, not the additional path-level beta term; a
-default-policy change still requires the checked-in cross-policy comparison
-gate and its sealed promotion certificate.
+nonzero path beta therefore remains optional. The same-input,
+same-partition-seed, same-physical-seed result promotes this guarded
+generalized configuration inside explicitly selected Static Exact mode. It
+does not change the production-wide `sequential-only` cut-mode default.
+
+An audit of the identical sealed EmuIR explains why the accepted guarded run
+uses only two real combinational cuts. The 379,357-instance design contains
+73,767 combinational nets. Sequential-only forms 246,387 clusters with a
+724-instance maximum; legacy v1 releases 16,251 combinational candidates and
+forms 304,300 clusters with a 154-instance maximum; generalized v2 releases
+49,695 candidates and forms 367,129 clusters with a 52-instance maximum. V2
+therefore removes candidate-space and large-atomic-cluster bias. Selecting two
+cuts from that enlarged space is the guarded objective's QoR decision, not a
+remaining eligibility shortage; the flow never forces additional cuts merely
+to increase an activity count. The full distribution and interpretation are
+documented in `docs/STATIC_EXACT_COMBINATIONAL_CUT.md`.
 
 The managed shared-Phase-1--5 view intentionally contains only consumer
 artifacts, not duplicate timing/partition evidence reports.  For that layout,

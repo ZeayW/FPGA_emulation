@@ -28,9 +28,14 @@ from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_CANDIDATE_POLICIES,
+    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
 from .platform import Platform
-from .mfspart_refine import DEFAULT_BOTTLENECK_BETA, DEFAULT_TIMING_PATH_BETA
+from .mfspart_refine import (
+    DEFAULT_BOTTLENECK_BETA,
+    DEFAULT_TIMING_PATH_BETA,
+)
 from .routing import load_route_constraints
 from .tdm import TDM_STATIC_EXACT_PROVIDER
 from .tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
@@ -569,6 +574,13 @@ def compile_canonical_experiment_spec(
     mfspart_post_refinement_bottleneck_beta = float(
         mfspart_post_refinement_bottleneck_beta
     )
+    max_cross_fpga_dependency_depth = _positive_integer(
+        config.get(
+            "max_cross_fpga_dependency_depth",
+            STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+        ),
+        "max_cross_fpga_dependency_depth",
+    )
     mfspart_post_refinement_timing_path_beta = config.get(
         "mfspart_post_refinement_timing_path_beta",
         DEFAULT_TIMING_PATH_BETA,
@@ -588,17 +600,13 @@ def compile_canonical_experiment_spec(
     mfspart_post_refinement_timing_path_beta = float(
         mfspart_post_refinement_timing_path_beta
     )
-    max_cross_fpga_dependency_depth = _positive_integer(
-        config.get("max_cross_fpga_dependency_depth", 1),
-        "max_cross_fpga_dependency_depth",
-    )
     comb_segment_budget_slots = _positive_integer(
         config.get("comb_segment_budget_slots", 1),
         "comb_segment_budget_slots",
     )
     static_exact_candidate_policy = config.get(
         "static_exact_candidate_policy",
-        STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+        STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     )
     if static_exact_candidate_policy not in STATIC_EXACT_CANDIDATE_POLICIES:
         raise ValidationError(

@@ -40,6 +40,11 @@ from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
 from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
+from .combinational_cut import (
+    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+)
+from .mfspart_refine import DEFAULT_TIMING_PATH_BETA
 from .platform import Platform
 from .runtime import validate_virtual_runtime
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
@@ -982,10 +987,12 @@ def run_multi_fpga_flow(
     partition_repair_min_used_fpgas: bool = False,
     partition_repair_balance: bool = False,
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
-    max_cross_fpga_dependency_depth: int = 1,
+    max_cross_fpga_dependency_depth: int = (
+        STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
+    ),
     comb_segment_budget_slots: int = 1,
-    static_exact_candidate_policy: str = "potential-frontier-depth-v1",
-    mfspart_post_refinement_timing_path_beta: float = 1.0,
+    static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     timing_driven: bool = True,
     timing_backend: str = "opensta",
     clock_periods: Optional[Dict[str, float]] = None,

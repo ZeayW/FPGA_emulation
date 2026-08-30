@@ -16,6 +16,8 @@ from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_CANDIDATE_POLICIES,
+    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
     _build_combinational_cut_candidate_index,
 )
 
@@ -319,10 +321,12 @@ def build_clusters(
     ir: EmuIR,
     constraints: Mapping[str, Any],
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
-    max_cross_fpga_dependency_depth: int = 1,
+    max_cross_fpga_dependency_depth: int = (
+        STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
+    ),
     comb_segment_budget_slots: int = 1,
     frame_slots: int = 2,
-    static_exact_candidate_policy: str = STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
 ) -> Dict[str, Any]:
     if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
         raise ValidationError(
