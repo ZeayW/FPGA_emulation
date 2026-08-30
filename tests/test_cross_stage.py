@@ -347,6 +347,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                 platform_path,
                 initial_root,
                 provider="greedy",
+                cut_mode="sequential-only",
                 min_used_fpgas=2,
                 balance_tolerance=1.0,
             )

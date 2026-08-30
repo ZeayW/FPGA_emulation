@@ -148,7 +148,7 @@ def run_partition_checkpoint(
     platform_path: Path,
     output_dir: Path,
     *,
-    provider: str = "tritonpart",
+    provider: str = "patron",
     seed: int = 0,
     constraints_path: Optional[Path] = None,
     route_constraints_path: Optional[Path] = None,
@@ -171,7 +171,7 @@ def run_partition_checkpoint(
     repair_balance: bool = False,
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
-    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
+    cut_mode: str = CUT_MODE_STATIC_EXACT,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
@@ -204,9 +204,13 @@ def run_partition_checkpoint(
         raise ValidationError(
             "minimum combinational cut nets requires static exact cut mode"
         )
-    if tritonpart_solution is not None and provider != "tritonpart":
+    if tritonpart_solution is not None and provider not in {
+        "tritonpart",
+        "patron",
+    }:
         raise ValidationError(
-            "a precomputed TritonPart solution requires provider=tritonpart"
+            "a precomputed TritonPart solution requires provider=tritonpart "
+            "or provider=patron"
         )
     if mfspart_post_refinement and provider != "tritonpart":
         raise ValidationError(

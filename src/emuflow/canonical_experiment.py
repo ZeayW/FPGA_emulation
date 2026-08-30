@@ -428,7 +428,7 @@ def compile_canonical_experiment_spec(
     tools_raw = config.get("tools")
     if not isinstance(tools_raw, dict):
         raise ValidationError("canonical experiment tools must be an object")
-    partition_provider = config.get("partition_provider", "tritonpart")
+    partition_provider = config.get("partition_provider", "patron")
     if partition_provider not in {"tritonpart", "patron"}:
         raise ValidationError(
             "canonical experiment partition_provider must be "
@@ -466,6 +466,7 @@ def compile_canonical_experiment_spec(
         "opensta",
         "openroad",
         "hop_refiner",
+        "patron_refiner",
         "router",
         "ratio_optimizer",
         "timing_dag_optimizer",
@@ -481,8 +482,6 @@ def compile_canonical_experiment_spec(
         "route_checker",
         "openparf_python",
     }
-    if partition_provider == "patron":
-        required_tools.add("patron_refiner")
     if set(tools_raw) != required_tools:
         raise ValidationError(
             "canonical experiment tools must exactly cover " + ", ".join(sorted(required_tools))
@@ -519,7 +518,7 @@ def compile_canonical_experiment_spec(
         )
     ):
         raise ValidationError("canonical experiment clocks/periods are invalid")
-    cut_mode = config.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
+    cut_mode = config.get("cut_mode", CUT_MODE_STATIC_EXACT)
     if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
         raise ValidationError("canonical experiment cut_mode is invalid")
     if cut_mode == CUT_MODE_STATIC_EXACT and len(clocks) != 1:
@@ -610,11 +609,20 @@ def compile_canonical_experiment_spec(
             "canonical experiment partition_repair_balance must be boolean"
         )
     mfspart_post_refinement = config.get(
-        "mfspart_post_refinement", cut_mode == CUT_MODE_STATIC_EXACT
+        "mfspart_post_refinement",
+        (
+            cut_mode == CUT_MODE_STATIC_EXACT
+            and partition_provider == "tritonpart"
+        ),
     )
     if not isinstance(mfspart_post_refinement, bool):
         raise ValidationError(
             "canonical experiment mfspart_post_refinement must be boolean"
+        )
+    if mfspart_post_refinement and partition_provider != "tritonpart":
+        raise ValidationError(
+            "canonical MFSPart post-refinement requires partition_provider "
+            "'tritonpart'"
         )
     mfspart_post_refinement_early_stop = _positive_integer(
         config.get("mfspart_post_refinement_early_stop", 1000),
@@ -703,16 +711,14 @@ def compile_canonical_experiment_spec(
             "canonical legacy static exact policy requires "
             "max_cross_fpga_dependency_depth to be 1 or 2"
         )
-    if cut_mode == CUT_MODE_STATIC_EXACT and partition_provider == "patron":
-        raise ValidationError(
-            "canonical PATRON does not yet consume static exact dependency "
-            "constraints"
-        )
     patron_initial_assignment = None
     patron_physical_system_timing = None
-    if partition_provider == "patron":
+    if (
+        partition_provider == "patron"
+        and config.get("patron_initial_assignment") is not None
+    ):
         patron_initial_assignment = _file(
-            config.get("patron_initial_assignment"),
+            config["patron_initial_assignment"],
             "patron_initial_assignment",
         )
     physical_system_timing_value = config.get(
@@ -991,9 +997,12 @@ def compile_canonical_experiment_spec(
         partition_command[-2:-2] = [
             "--patron-refiner",
             str(tools["patron_refiner"]),
-            "--patron-initial-assignment",
-            str(patron_initial_assignment),
         ]
+        if patron_initial_assignment is not None:
+            partition_command[-2:-2] = [
+                "--patron-initial-assignment",
+                str(patron_initial_assignment),
+            ]
         if patron_flow_refinement:
             partition_command.insert(-2, "--patron-flow-refinement")
         if patron_physical_system_timing is not None:
@@ -1003,12 +1012,13 @@ def compile_canonical_experiment_spec(
                 "--patron-physical-feedback-scale",
                 f"{patron_physical_feedback_scale:.17g}",
             ]
-        partition_validator.extend(
-            [
+        if patron_initial_assignment is not None:
+            partition_validator.extend(
+                [
                 "--patron-initial-assignment",
                 str(patron_initial_assignment),
-            ]
-        )
+                ]
+            )
         if patron_flow_refinement:
             partition_validator.append("--patron-flow-refinement")
         if patron_physical_system_timing is not None:
@@ -1020,9 +1030,9 @@ def compile_canonical_experiment_spec(
                     f"{patron_physical_feedback_scale:.17g}",
                 ]
             )
-        partition_inputs.extend(
-            ["tool.patron_refiner", "patron_initial_assignment"]
-        )
+        partition_inputs.append("tool.patron_refiner")
+        if patron_initial_assignment is not None:
+            partition_inputs.append("patron_initial_assignment")
         if patron_physical_system_timing is not None:
             partition_inputs.append("patron_physical_system_timing")
         partition_artifacts.append(

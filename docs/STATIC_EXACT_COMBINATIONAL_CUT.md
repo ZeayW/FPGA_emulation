@@ -247,8 +247,11 @@ target-clock WNS/TNS were -187.85581036 ns / -548934.0510065886 ns versus
 -84.5812926868 ns / -277276.1497366623 ns for sequential-only. Completion
 moved from slot 8 to slot 15. This is a valid negative algorithm result, not a
 validation failure: generalized semantics and physical deadlines were
-exercised, while final system-level QoR regressed. Consequently the promotion
-gate remains false and sequential-only remains the default.
+exercised, while final system-level QoR regressed. Consequently that unguarded
+configuration was rejected. The later guarded generalized policy improved the
+paired register-only control and is now the default together with PATRON;
+sequential-only remains an explicit comparison arm. This historical negative
+result is not evidence for or against the newer combined default.
 
 The automatic Phase 3 follow-up uses directional MFSPart FM after the sealed
 TritonPart assignment. Its Static Exact objective treats existing
@@ -280,10 +283,7 @@ emuflow combinational-cut validate \
 emuflow phase3 \
   --ir build/phase1/design.emuir.json \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
-  --provider greedy \
-  --cut-mode static-exact-combinational \
-  --static-exact-candidate-policy assignment-derived-acyclic-v2 \
-  --max-cross-fpga-dependency-depth 8 \
+  --provider patron \
   --comb-segment-budget-slots 1 \
   --out build/phase3-exact
 

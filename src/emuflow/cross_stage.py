@@ -22,6 +22,7 @@ from .frame_search import (
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import (
+    CUT_MODE_SEQUENTIAL_ONLY,
     PARTITION_ASSIGNMENT_SCHEMA,
     build_clusters,
     load_partition_constraints,
@@ -1357,6 +1358,7 @@ def run_cross_stage_optimization(
                     min_used_fpgas=min_used_fpgas,
                     balance_tolerance=balance_tolerance,
                     provider=phase3_provider,
+                    cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
                     openroad=openroad,
                     net_weights_path=feedback_path,
                     tritonpart_timeout_seconds=(

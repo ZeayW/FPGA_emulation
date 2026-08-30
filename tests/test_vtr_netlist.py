@@ -277,6 +277,7 @@ class VtrNetlistTest(unittest.TestCase):
                 clocks=["clk"],
                 partition_constraints=constraints,
                 partition_provider="greedy",
+                cut_mode="sequential-only",
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
                 architecture_timing_db=timing_db,

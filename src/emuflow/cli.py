@@ -613,7 +613,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "mfspart",
             "patron",
         ),
-        default="tritonpart",
+        default="patron",
     )
     partition_run.add_argument("--seed", type=int, default=0)
     partition_run.add_argument("--constraints", type=Path)
@@ -684,7 +684,7 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument(
         "--cut-mode",
         choices=("sequential-only", "static-exact-combinational"),
-        default="sequential-only",
+        default="static-exact-combinational",
     )
     partition_run.add_argument(
         "--max-cross-fpga-dependency-depth",
@@ -1800,7 +1800,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "patron",
             "greedy",
         ),
-        default="tritonpart",
+        default="patron",
     )
     multi_fpga_compile.add_argument("--seed", type=int, default=0)
     multi_fpga_compile.add_argument("--min-used-fpgas", type=int)
@@ -1844,10 +1844,10 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--cut-mode",
         choices=("sequential-only", "static-exact-combinational"),
-        default="sequential-only",
+        default="static-exact-combinational",
         help=(
-            "partition boundary semantics; static exact combinational cuts "
-            "are opt-in and require the dependency-qualified Phase 4--7 path"
+            "partition boundary semantics; defaults to dependency-qualified "
+            "generalized Static Exact through Phase 4--7"
         ),
     )
     multi_fpga_compile.add_argument(
@@ -2595,8 +2595,8 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3 = subparsers.add_parser(
         "phase3",
         help=(
-            "run multi-FPGA partitioning with sequential-only clustering "
-            "or an explicit provisional exact-cut policy"
+            "run multi-FPGA partitioning with the default generalized "
+            "Static Exact v2 + PATRON policy or an explicit comparison policy"
         ),
     )
     phase3.add_argument("--ir", type=Path, required=True)
@@ -2615,10 +2615,9 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--cut-mode",
         choices=("sequential-only", "static-exact-combinational"),
-        default="sequential-only",
+        default="static-exact-combinational",
         help=(
-            "opt-in Phase 3 cut legality; the default preserves sequential "
-            "boundaries only"
+            "Phase 3 cut legality; defaults to generalized Static Exact v2"
         ),
     )
     phase3.add_argument(
@@ -2631,7 +2630,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--comb-segment-budget-slots",
         type=int,
         default=1,
-        help="provisional per-FPGA combinational segment slot budget",
+        help="per-FPGA combinational segment slot budget",
     )
     phase3.add_argument(
         "--static-exact-candidate-policy",
@@ -2653,8 +2652,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "patron",
             "greedy",
         ),
-        default="tritonpart",
-        help="partition provider (default: tritonpart)",
+        default="patron",
+        help="partition provider (default: patron)",
     )
     phase3.add_argument(
         "--openroad",

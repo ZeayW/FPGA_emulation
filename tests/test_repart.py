@@ -164,6 +164,7 @@ class RePartTest(unittest.TestCase):
                 output_dir=output / "phase3",
                 balance_tolerance=1.0,
                 provider="repart",
+                cut_mode="sequential-only",
                 repart_solution=solution,
             )
             self.assertEqual(report["status"], "pass")
@@ -210,6 +211,7 @@ class RePartTest(unittest.TestCase):
                     output_dir=output / "phase3",
                     balance_tolerance=1.0,
                     provider="repart",
+                    cut_mode="sequential-only",
                     repart_solution=solution,
                 )
 
@@ -248,6 +250,7 @@ class RePartTest(unittest.TestCase):
                 output_dir=output / "phase3",
                 balance_tolerance=1.0,
                 provider="repart-replication",
+                cut_mode="sequential-only",
                 repart_solution=solution,
             )
             self.assertEqual(report["status"], "pass")
@@ -356,6 +359,7 @@ class RePartTest(unittest.TestCase):
                     output_dir=output / "phase3",
                     balance_tolerance=1.0,
                     provider="repart-replication",
+                    cut_mode="sequential-only",
                     repart_solution=solution,
                 )
 

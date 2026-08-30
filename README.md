@@ -426,11 +426,13 @@ The checked-in `static_exact_acceptance` RTL and
 functional/physical fixture for that gate; they are not a QoR benchmark and
 must not be mixed into benchmark-comparison tables.
 
-The production-wide cut mode remains the conservative `sequential-only`
-default. When a user explicitly selects `--cut-mode
-static-exact-combinational`, every producer entry point now defaults to
-generalized v2 (`assignment-derived-acyclic-v2`), a dependency-depth safety
-cap of eight, guarded TritonPart post-refinement, and path beta zero. Unlike the
+The production-wide default is generalized Static Exact v2
+(`assignment-derived-acyclic-v2`) with PATRON, a dependency-depth safety cap of
+eight, and path beta zero. PATRON's endpoint-exact objective derives its
+transported classes from this cluster policy, so combinational candidates are
+modeled rather than discarded as non-sequential traffic. The physical-feedback
+PATRON refinement remains opt-in because it requires a prior physical timing
+artifact. Unlike the
 legacy `potential-frontier-depth-v1` policy, v2 does not confuse a net's depth
 in the graph of *possible* boundaries with its depth after the partitioner has
 selected actual transported boundaries.  It releases every structurally legal
@@ -533,13 +535,13 @@ that generalized dependency handling, shadow transport, macro-cycle
 equivalence, and routed segment deadlines work on real depth-three cuts; it
 also proves that this candidate selection is not a timing-QoR improvement on
 the canonical case. That unguarded generalized configuration was therefore
-not promoted, and `sequential-only` remains the production-wide cut-mode
-default. The later guarded cost model described below passes the same physical
-comparison and is now the default configuration only after Static Exact mode
-has been selected.
+not promoted. The later guarded model described below passed the physical
+comparison and is the generalized policy now selected by default. The current
+PATRON combination is a distinct implementation choice; this historical table
+must not be read as a new PATRON-plus-Static-Exact QoR claim.
 
-The current follow-up cost model keeps TritonPart as the partition provider
-and applies one optional, direction-aware MFSPart FM post-refinement to its
+The earlier guarded follow-up cost model kept TritonPart as the partition
+provider and applied one optional, direction-aware MFSPart FM post-refinement to its
 sealed assignment. It reconstructs driver/sink identity from EmuIR (never from
 TritonPart's undirected hypergraph) and combines aggregate
 cut/connectivity/hop gain with a class-weighted worst-sink-hop term. In Static
@@ -609,8 +611,8 @@ improves WNS by 0.6910355338 ns, reduces the TNS deficit by
 supports the guarded cost model, not the additional path-level beta term; a
 nonzero path beta therefore remains optional. The same-input,
 same-partition-seed, same-physical-seed result promotes this guarded
-generalized configuration inside explicitly selected Static Exact mode. It
-does not change the production-wide `sequential-only` cut-mode default.
+generalized configuration. It is now the default cut policy; explicit
+`--cut-mode sequential-only` remains the register-boundary comparison arm.
 
 An audit of the identical sealed EmuIR explains why the accepted guarded run
 uses only two real combinational cuts. The 379,357-instance design contains
@@ -676,11 +678,11 @@ the minimum-cut gate prevents a vacuous exact-mode result.
 The shared slot-edge convention, semantic contract, fail-closed policy, and
 Phase 3--7 acceptance sequence are specified in
 [Static exact combinational-cut mode](docs/STATIC_EXACT_COMBINATIONAL_CUT.md).
-The production default remains sequential-only even though those gates now
-pass for both the capacity-limited fixture and the large DLA acceptance.
-Static exact V1 is intentionally opt-in because it supports only the declared
-single-clock, synchronous-reset, deterministic-schedule envelope; one
-successful acceptance design does not broaden that semantic scope.
+The production default is generalized Static Exact v2 plus PATRON. Static
+Exact remains fail-closed outside its declared single-clock, synchronous-reset,
+deterministic-schedule envelope; selecting it by default does not broaden that
+semantic scope. Legacy Static Exact v1 and sequential-only remain explicit
+comparison policies.
 Static-exact physical evidence preserves each reached state-capture input pin
 and bit through lowering; a VTR query rejects an endpoint that is absent from
 the emitted primitive contract before physical routing begins.
@@ -1300,7 +1302,10 @@ emuflow multi-fpga compile examples/rtl/counter.v \
 
 The command writes a hash-bound `multi-fpga-flow-report.json` only after
 partition, route, schedule, split, and cycle-equivalence checks pass. The
-default partition provider is the source-built OpenROAD/TritonPart engine.
+default partition configuration is source-built endpoint-exact PATRON with
+generalized Static Exact v2. PATRON creates a TritonPart initial assignment
+when no frozen initial assignment is supplied, then refines and independently
+validates the complete result.
 The default `--mapping-profile vtr-hard-blocks` retains public VTR RAM/DSP
 resources. `--mapping-profile generic-soft` is available for architecture-
 neutral LUT6/FF experiments, but may expand memory-heavy designs substantially.
@@ -1380,14 +1385,19 @@ maximum-flow implementation.  Compact mode exhaustively enumerates both
 direct moves and all legal two-vertex ejections; the scaled independent replay
 checks the complete selected schedule, while the production checker
 reconstructs every transition and endpoint without rerunning the heuristic.
-`--partition-provider patron` is an explicit non-default research provider.
-Its initial result and frozen TritonPart fallback are both scored by checked
-Phase 4/5 before promotion, and large checkpoints independently rebuild the
-model, transition chain, assignment legality, and complete initial/final
-metrics.  The scalable sweep is a deterministic heuristic and is not claimed
-globally optimal.  PATRON currently accepts only the sequential boundary
-policy; selecting it with Static Exact fails closed until the refiner consumes
-the exact dependency contract.  Canonical experiment configs may set
+The default Phase 3 combination is now `--partition-provider patron` with the
+generalized Static Exact v2 boundary policy.  PATRON derives the transported
+net classes from the sealed cluster policy, so real combinational cut nets are
+included in its endpoint-exact timing-path and routing-pressure objective
+instead of being filtered as sequential-only traffic.  The common Phase 3
+assignment builder reconstructs the Static Exact dependency contract after
+refinement, and independent validation rechecks that contract, the complete
+transition chain, assignment legality, and initial/final metrics.  The
+scalable sweep remains a deterministic heuristic and is not claimed globally
+optimal.  The former TritonPart/sequential baseline remains available only by
+explicitly selecting `--partition-provider tritonpart --cut-mode
+sequential-only`; it is not an implicit fallback for omitted options.
+Canonical experiment configs may set
 `partition_provider=patron`, reuse `patron_initial_assignment`, and restrict
 `phase6_providers` plus `physical_seeds` (for example Chimew/seed 1) so an A/B
 run computes only the missing branch.  Such a restricted run terminates at
@@ -1527,11 +1537,12 @@ fell by `67.7030%`.  Negative-slack paths fell from 8,803 to 2,641; both arms
 had zero unrouted nets and zero DRC violations.  V11 therefore passes the
 declared two-metric promotion gate, while the very small WNS margin is reported
 explicitly rather than presented as a broad topology-independent result.
-PATRON remains explicit and non-default until
-case7/case9 topology replication
-is complete; the primary branch acceptance requested here does not silently
-promote a one-topology result into a universal default.  The complete design,
-literature basis, and gate are documented in
+The V11 physical-feedback refinement remains opt-in because it consumes a
+prior physical timing artifact and therefore cannot be the clean first-run
+default.  A default clean run uses the source-built endpoint-exact PATRON v6;
+case7/case9 topology replication remains additional QoR evidence rather than a
+prerequisite for selecting the already validated algorithmic default.  The
+complete design, literature basis, and gate are documented in
 [the timing/TDM partitioning upgrade plan](docs/PARTITIONING_TIMING_TDM_UPGRADE.md).
 
 ### Automatic validation archives

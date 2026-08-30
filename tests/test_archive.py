@@ -29,6 +29,7 @@ def _run_small_flow(output: Path) -> None:
         top="counter",
         clocks=["clk"],
         partition_provider="greedy",
+        cut_mode="sequential-only",
         timing_driven=False,
         clock_periods={"clk": 10.0},
         opensta=str(FAKE_OPENSTA),

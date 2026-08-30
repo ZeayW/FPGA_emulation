@@ -10,9 +10,13 @@ from unittest.mock import patch
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.partition import (
+    CUT_MODE_STATIC_EXACT,
     build_clusters,
     build_partition_assignment,
     normalize_partition_constraints,
+)
+from emuflow.combinational_cut import (
+    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
 )
 from emuflow.partition_pressure import (
     _canonical_digest,
@@ -1193,6 +1197,7 @@ class PartitionPressureTest(unittest.TestCase):
                 min_used_fpgas=2,
                 balance_tolerance=1.0,
                 provider="patron",
+                cut_mode="sequential-only",
                 tritonpart_solution=solution_path,
                 route_constraints_path=route_path,
                 timing_database_path=timing_path,
@@ -1227,6 +1232,7 @@ class PartitionPressureTest(unittest.TestCase):
                 min_used_fpgas=2,
                 balance_tolerance=1.0,
                 provider="patron",
+                cut_mode="sequential-only",
                 route_constraints_path=route_path,
                 timing_database_path=timing_path,
                 patron_refiner=str(patron_refiner()),
@@ -1253,6 +1259,7 @@ class PartitionPressureTest(unittest.TestCase):
                 min_used_fpgas=2,
                 balance_tolerance=1.0,
                 provider="patron",
+                cut_mode="sequential-only",
                 route_constraints_path=route_path,
                 timing_database_path=timing_path,
                 patron_refiner=str(patron_refiner()),
@@ -1269,6 +1276,118 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(
                 set(rebased_initial["cluster_assignment"]),
                 set(self.initial["cluster_assignment"]),
+            )
+
+    def test_phase3_patron_consumes_generalized_static_exact_contract(
+        self,
+    ) -> None:
+        ir = _ir()
+        ir.value["nets"][0]["cut_class"] = "combinational"
+        ir.value["clocks"] = [
+            {
+                "id": "clk",
+                "name": "clk",
+                "source_port": "clk",
+                "period_ns": None,
+            }
+        ]
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "min_used_fpgas": 2,
+                "balance_tolerance": 1.0,
+                "fixed": [
+                    {"instance": "u0", "fpga": "a"},
+                    {"instance": "u1", "fpga": "b"},
+                ],
+            },
+            ir,
+            self.platform,
+        )
+        clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=8,
+            comb_segment_budget_slots=1,
+            frame_slots=8,
+            static_exact_candidate_policy=(
+                STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+            ),
+        )
+        cluster_for = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        initial = build_partition_assignment(
+            ir,
+            self.platform,
+            clusters,
+            constraints,
+            {
+                cluster_for["u0"]: "a",
+                cluster_for["u1"]: "b",
+                cluster_for["u2"]: "a",
+                cluster_for["u3"]: "b",
+            },
+            provider="fixture-static-exact-v2",
+            seed=7,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            platform_path = root / "platform.json"
+            constraints_path = root / "constraints.json"
+            timing_path = root / "timing.json"
+            route_path = root / "routes.json"
+            initial_path = root / "initial.json"
+            write_json(ir_path, ir.value)
+            write_json(platform_path, self.platform.to_dict())
+            write_json(constraints_path, constraints)
+            write_json(timing_path, self.timing)
+            write_json(
+                route_path,
+                {
+                    "schema": "emuflow.system-route-constraints/v1",
+                    "frame_slots": 8,
+                    "tdm_ratio_quantum": 1,
+                },
+            )
+            write_json(initial_path, initial)
+            report = run_phase3(
+                ir_path,
+                platform_path,
+                root / "phase3",
+                constraints_path=constraints_path,
+                provider="patron",
+                route_constraints_path=route_path,
+                timing_database_path=timing_path,
+                patron_refiner=str(patron_refiner()),
+                patron_initial_assignment_path=initial_path,
+                cut_mode=CUT_MODE_STATIC_EXACT,
+                max_cross_fpga_dependency_depth=8,
+                comb_segment_budget_slots=1,
+                static_exact_candidate_policy=(
+                    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+                ),
+            )
+            assignment = read_json(root / "phase3/assignment.json")
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(
+                report["cut_mode"], "static-exact-combinational"
+            )
+            self.assertEqual(
+                assignment["metrics"]["combinational_cut_nets"], 1
+            )
+            self.assertEqual(
+                assignment["metrics"][
+                    "maximum_combinational_dependency_depth"
+                ],
+                1,
+            )
+            self.assertEqual(
+                report["algorithm_validation"]["status"], "pass"
             )
 
     def test_scalable_native_sweep_improves_a_sparse_chain(self) -> None:

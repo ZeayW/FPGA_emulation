@@ -123,6 +123,7 @@ class Phase3Test(unittest.TestCase):
                 output_dir=output / "phase3",
                 seed=11,
                 provider="greedy",
+                cut_mode="sequential-only",
             )
             self.assertEqual(report["status"], "pass")
             self.assertEqual(report["validation"]["instances"], 8)

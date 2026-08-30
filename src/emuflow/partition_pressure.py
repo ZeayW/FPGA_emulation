@@ -22,8 +22,8 @@ from .errors import ValidationError
 from .ir import EmuIR
 from .io import read_json, write_json
 from .partition import (
-    TRANSPORTED_CUT_CLASSES,
     build_partition_assignment,
+    transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
     validate_partition_artifacts,
 )
@@ -250,9 +250,12 @@ def _net_records(
     ir: EmuIR, clusters_artifact: Mapping[str, Any]
 ) -> List[Dict[str, Any]]:
     cluster_by_instance = _instance_to_cluster(clusters_artifact)
+    transported_cut_classes = transported_cut_classes_for_clusters(
+        clusters_artifact
+    )
     records = []
     for net in ir.value["nets"]:
-        if net["cut_class"] not in TRANSPORTED_CUT_CLASSES:
+        if net["cut_class"] not in transported_cut_classes:
             continue
         drivers = sorted(
             {

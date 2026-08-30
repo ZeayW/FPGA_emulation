@@ -59,6 +59,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     top="static_exact_chain",
                     clocks=["clk"],
                     partition_provider="greedy",
+                    cut_mode="sequential-only",
                     timing_driven=False,
                     clock_periods={"clk": 10.0},
                     opensta=str(FAKE_OPENSTA),
@@ -153,6 +154,39 @@ class MultiFpgaFlowTest(unittest.TestCase):
         )
         self.assertEqual(validate.minimum_combinational_cut_nets, 1)
         self.assertTrue(validate.require_physical)
+        phase3 = _build_parser().parse_args(
+            [
+                "phase3",
+                "--ir",
+                "design.emuir.json",
+                "--platform",
+                "platform.json",
+                "--out",
+                "phase3",
+            ]
+        )
+        self.assertEqual(phase3.provider, "patron")
+        self.assertEqual(
+            phase3.cut_mode, "static-exact-combinational"
+        )
+        checkpoint = _build_parser().parse_args(
+            [
+                "experiment-stage",
+                "partition-run",
+                "--frontend",
+                "frontend",
+                "--timing",
+                "timing",
+                "--platform",
+                "platform.json",
+                "--out",
+                "partition",
+            ]
+        )
+        self.assertEqual(checkpoint.provider, "patron")
+        self.assertEqual(
+            checkpoint.cut_mode, "static-exact-combinational"
+        )
 
     def test_cli_exact_mode_does_not_inherit_slot_refinement_default(self):
         base = [
@@ -195,7 +229,14 @@ class MultiFpgaFlowTest(unittest.TestCase):
             run.reset_mock()
             self.assertEqual(_dispatch(safe), 0)
             self.assertEqual(
-                run.call_args.kwargs["slot_refinement_iterations"], 200
+                run.call_args.kwargs["slot_refinement_iterations"], 0
+            )
+            self.assertEqual(
+                run.call_args.kwargs["partition_provider"], "patron"
+            )
+            self.assertEqual(
+                run.call_args.kwargs["cut_mode"],
+                "static-exact-combinational",
             )
             self.assertEqual(
                 run.call_args.kwargs["static_exact_candidate_policy"],
@@ -340,6 +381,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     top="counter",
                     clocks=["clk"],
                     partition_provider="greedy",
+                    cut_mode="sequential-only",
                     timing_driven=False,
                     clock_periods={"clk": 10.0},
                     opensta=str(fake_sta),
@@ -366,6 +408,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 top="counter",
                 clocks=["clk"],
                 partition_provider="greedy",
+                cut_mode="sequential-only",
                 timing_driven=False,
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
@@ -452,6 +495,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 top="counter",
                 clocks=["clk"],
                 partition_provider="greedy",
+                cut_mode="sequential-only",
                 timing_driven=False,
                 router=str(tlr_router()),
                 route_provider=GLOBAL_CANDIDATE_PROVIDER,
@@ -489,6 +533,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 top="counter",
                 clocks=["clk"],
                 partition_provider="greedy",
+                cut_mode="sequential-only",
                 timing_driven=False,
                 board_link_timing_db=link_timing_path,
                 clock_periods={"clk": 10.0},
@@ -569,6 +614,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 top="counter",
                 clocks=["clk"],
                 partition_provider="greedy",
+                cut_mode="sequential-only",
                 timing_driven=False,
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
@@ -646,6 +692,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 top="counter",
                 clocks=["clk"],
                 partition_provider="greedy",
+                cut_mode="sequential-only",
                 timing_driven=True,
                 board_link_timing_db=link_timing_path,
                 clock_periods={"clk": 10.0},
@@ -820,6 +867,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 top="counter",
                 clocks=["clk"],
                 partition_provider="greedy",
+                cut_mode="sequential-only",
                 timing_driven=True,
                 board_link_timing_db=link_timing_path,
                 clock_periods={"clk": 10.0},
@@ -935,6 +983,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     top="counter",
                     clocks=["clk"],
                     partition_provider="greedy",
+                    cut_mode="sequential-only",
                     timing_driven=False,
                     clock_periods={"clk": 10.0},
                     opensta=str(FAKE_OPENSTA),

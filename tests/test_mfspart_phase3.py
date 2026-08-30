@@ -92,6 +92,7 @@ class MFSPartPhase3Test(unittest.TestCase):
                 root / "phase3",
                 seed=23,
                 provider="mfspart",
+                cut_mode="sequential-only",
                 mfspart_coarsener=self.executables["coarsener"],
                 mfspart_initializer=self.executables["initializer"],
                 mfspart_refiner=self.executables["refiner"],
@@ -181,6 +182,7 @@ class MFSPartPhase3Test(unittest.TestCase):
                 PLATFORM,
                 root / "phase3",
                 provider="mfspart",
+                cut_mode="sequential-only",
                 min_used_fpgas=2,
                 balance_tolerance=10.0,
                 mfspart_coarsener=self.executables["coarsener"],
@@ -212,6 +214,7 @@ class MFSPartPhase3Test(unittest.TestCase):
                 root / "phase3",
                 seed=19,
                 provider="greedy",
+                cut_mode="sequential-only",
             )
             clusters = read_json(root / "phase3/clusters.json")
             initial = read_json(root / "phase3/assignment.json")
@@ -427,6 +430,7 @@ class MFSPartPhase3Test(unittest.TestCase):
                     top="counter",
                     clocks=["clk"],
                     partition_provider="mfspart",
+                    cut_mode="sequential-only",
                     timing_driven=False,
                     clock_periods={"clk": 10.0},
                     opensta=str(FAKE_OPENSTA),

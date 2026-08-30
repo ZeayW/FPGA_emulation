@@ -458,6 +458,7 @@ class ContestChimewCrossFlowTest(unittest.TestCase):
                 platform_path,
                 phase3_root,
                 provider="greedy",
+                cut_mode="sequential-only",
                 min_used_fpgas=2,
                 balance_tolerance=1.0,
             )

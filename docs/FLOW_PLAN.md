@@ -266,25 +266,28 @@ Acceptance:
 
 - every primitive belongs to exactly one partition;
 - all group and fixed constraints hold;
-- no forbidden combinational cut exists;
+- every selected combinational cut satisfies the sealed Static Exact
+  dependency and segment-deadline contract;
 - every FPGA satisfies its effective resource capacities;
 - every routed cut endpoint satisfies `max_route_hops` before Phase 4;
 - cut and timing metrics are reproducible for a fixed seed.
 
-OpenROAD/TritonPart is the default Phase 3 provider. EmuFlow exports each
-legality-preserving atomic cluster as a hypergraph vertex weighted by cell
-count and active FPGA resources, exports register-output nets as weighted
-hyperedges, maps fixed constraints, executes TritonPart's multilevel
-partitioner, and imports the solution into the common assignment schema. The
-dependency-free greedy provider remains available explicitly as a fallback
-and A/B baseline.
+Generalized Static Exact v2 plus endpoint-exact PATRON is the default Phase 3
+configuration. EmuFlow exports each legality-preserving cluster as a
+multi-resource hypergraph vertex, obtains a TritonPart initial assignment, and
+then lets PATRON refine it using timing endpoints, BoardDB topology, routing
+pressure, and the transported classes declared by the Static Exact policy.
+The common assignment builder and independent checker reconstruct the selected
+dependency DAG after refinement. TritonPart-only, sequential-only, and greedy
+providers remain explicit A/B policies.
 
-The production cycle-correct runtime contract currently transports
-register-input and register-output boundaries only. Nets outside those classes
-are unioned into semantic atomic clusters, so an RTL design may contain a
-cluster larger than the requested per-partition balance target. Phase 3 records
-both requested and effective balance and never presents an automatically
-relaxed result as a strictly balanced one. Multilevel partitioning cannot
+The production cycle-correct runtime contract transports register boundaries
+and dependency-qualified generalized Static Exact combinational boundaries.
+Nets outside those classes are unioned into semantic atomic clusters, so an RTL
+design may contain a cluster larger than the requested per-partition balance
+target. Phase 3 records both requested and effective balance and never
+presents an automatically relaxed result as a strictly balanced one.
+Multilevel partitioning cannot
 recover freedom that semantic clustering removed.
 
 The first milestone for that extension is the EmuIR-semantic-bound

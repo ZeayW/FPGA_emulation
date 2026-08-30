@@ -348,6 +348,7 @@ class TritonPartTest(unittest.TestCase):
                     output_dir=output / "phase3",
                     seed=19,
                     provider="tritonpart",
+                    cut_mode="sequential-only",
                     openroad="/fake/openroad",
                     tritonpart_seed_attempts=2,
                 )
@@ -465,6 +466,7 @@ class TritonPartTest(unittest.TestCase):
                     output_dir=output / "phase3",
                     seed=7,
                     provider="tritonpart",
+                    cut_mode="sequential-only",
                     openroad="/fake/openroad",
                     net_weights_path=weights_path,
                 )
@@ -539,6 +541,7 @@ class TritonPartTest(unittest.TestCase):
                     output_dir=output / "phase3",
                     seed=41,
                     provider="tritonpart",
+                    cut_mode="sequential-only",
                     openroad="/fake/openroad",
                     tritonpart_seed_attempts=2,
                     tritonpart_repair_balance=True,
@@ -588,6 +591,7 @@ class TritonPartTest(unittest.TestCase):
                     output_dir=output / "phase3",
                     seed=31,
                     provider="tritonpart",
+                    cut_mode="sequential-only",
                     openroad="/fake/openroad",
                     tritonpart_repair_balance=True,
                 )

@@ -113,7 +113,7 @@ def run_phase3(
     seed: int = 0,
     min_used_fpgas: Optional[int] = None,
     balance_tolerance: Optional[float] = None,
-    provider: str = "tritonpart",
+    provider: str = "patron",
     openroad: Optional[str] = None,
     tritonpart_solution: Optional[Path] = None,
     net_weights_path: Optional[Path] = None,
@@ -138,7 +138,7 @@ def run_phase3(
     mfspart_post_refinement_bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
     timing_path_database_path: Optional[Path] = None,
     mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
-    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
+    cut_mode: str = CUT_MODE_STATIC_EXACT,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
@@ -191,10 +191,6 @@ def run_phase3(
     route_constraints = load_route_constraints(
         route_constraints_path, platform
     )
-    if provider == "patron" and cut_mode != CUT_MODE_SEQUENTIAL_ONLY:
-        raise ValidationError(
-            "PATRON does not yet consume static exact dependency constraints"
-        )
     clusters = build_clusters(
         ir,
         constraints,

@@ -974,7 +974,7 @@ def run_multi_fpga_flow(
     yosys: Optional[str] = None,
     mapping_profile: str = "vtr-hard-blocks",
     partition_constraints: Optional[Path] = None,
-    partition_provider: str = "tritonpart",
+    partition_provider: str = "patron",
     seed: int = 0,
     min_used_fpgas: Optional[int] = None,
     balance_tolerance: Optional[float] = None,
@@ -989,7 +989,7 @@ def run_multi_fpga_flow(
     partition_num_best_initial_solutions: int = 10,
     partition_repair_min_used_fpgas: bool = False,
     partition_repair_balance: bool = False,
-    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
+    cut_mode: str = CUT_MODE_STATIC_EXACT,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
@@ -1142,7 +1142,11 @@ def run_multi_fpga_flow(
             "--partition-provider patron requires the internally generated "
             "complete TimingPathDB"
         )
-    if partition_provider == "patron" and cross_stage_iterations < 1:
+    if (
+        partition_provider == "patron"
+        and not exact_cut_mode
+        and cross_stage_iterations < 1
+    ):
         raise EmuFlowError(
             "--partition-provider patron requires --cross-stage-iterations "
             "of at least 1 so the frozen TritonPart fallback and PATRON "

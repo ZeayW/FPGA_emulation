@@ -48,6 +48,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             "opensta",
             "openroad",
             "hop_refiner",
+            "patron_refiner",
             "router",
             "ratio_optimizer",
             "timing_dag_optimizer",
@@ -158,8 +159,13 @@ class CanonicalExperimentTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / "spec.json"
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config["partition_provider"] = "tritonpart"
+            config["cut_mode"] = "sequential-only"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
             report = compile_canonical_experiment_spec(
-                self._config(root), REPOSITORY, output
+                config_path, REPOSITORY, output
             )
             self.assertEqual(report["nodes"], 15)
             self.assertEqual(report["physical_terminal_nodes"], 3)
@@ -341,6 +347,46 @@ class CanonicalExperimentTest(unittest.TestCase):
                 )
             )
 
+    def test_compiler_defaults_to_generalized_static_exact_patron(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "spec.json"
+            report = compile_canonical_experiment_spec(
+                self._config(root), REPOSITORY, output
+            )
+            nodes = {
+                node["id"]: node
+                for node in validate_experiment_spec(
+                    json.loads(output.read_text())
+                )["nodes"]
+            }
+            partition = nodes["partition"]
+            self.assertEqual(report["cut_mode"], "static-exact-combinational")
+            self.assertEqual(
+                partition["configuration"]["provider"], "patron"
+            )
+            self.assertEqual(
+                partition["configuration"]["cut_mode"],
+                "static-exact-combinational",
+            )
+            self.assertEqual(
+                partition["configuration"]["static_exact_candidate_policy"],
+                "assignment-derived-acyclic-v2",
+            )
+            self.assertEqual(
+                partition["configuration"][
+                    "max_cross_fpga_dependency_depth"
+                ],
+                8,
+            )
+            self.assertFalse(
+                partition["configuration"]["mfspart_post_refinement"]
+            )
+            self.assertIn("--patron-refiner", partition["command"])
+            self.assertNotIn(
+                "--patron-initial-assignment", partition["command"]
+            )
+
     def test_compiler_can_reuse_a_frozen_baseline_for_patron(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -354,6 +400,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 encoding="utf-8",
             )
             config["partition_provider"] = "patron"
+            config["cut_mode"] = "sequential-only"
             config["patron_flow_refinement"] = True
             config["patron_initial_assignment"] = str(initial)
             config["patron_physical_system_timing"] = str(physical_timing)
@@ -430,18 +477,28 @@ class CanonicalExperimentTest(unittest.TestCase):
 
             config["cut_mode"] = "static-exact-combinational"
             config_path.write_text(json.dumps(config), encoding="utf-8")
-            with self.assertRaisesRegex(
-                ValidationError, "PATRON.*static exact dependency"
-            ):
-                compile_canonical_experiment_spec(
-                    config_path, REPOSITORY, root / "invalid-patron-exact.json"
-                )
+            exact_output = root / "patron-exact.json"
+            compile_canonical_experiment_spec(
+                config_path, REPOSITORY, exact_output
+            )
+            exact_nodes = {
+                node["id"]: node
+                for node in validate_experiment_spec(
+                    json.loads(exact_output.read_text())
+                )["nodes"]
+            }
+            self.assertEqual(
+                exact_nodes["partition"]["configuration"]["cut_mode"],
+                "static-exact-combinational",
+            )
 
     def test_physical_storage_peak_override_is_sealed_and_positive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_path = self._config(root)
             config = json.loads(config_path.read_text())
+            config["partition_provider"] = "tritonpart"
+            config["cut_mode"] = "sequential-only"
             config["physical_peak_gib"] = 12
             config_path.write_text(json.dumps(config), encoding="utf-8")
             output = root / "spec.json"
@@ -541,6 +598,8 @@ class CanonicalExperimentTest(unittest.TestCase):
             root = Path(temporary)
             config_path = self._config(root)
             config = json.loads(config_path.read_text())
+            config["partition_provider"] = "tritonpart"
+            config["cut_mode"] = "sequential-only"
             config["phase6_candidate_peak_gib"] = 4
             config_path.write_text(json.dumps(config), encoding="utf-8")
             output = root / "spec.json"
@@ -608,6 +667,8 @@ class CanonicalExperimentTest(unittest.TestCase):
             root = Path(temporary)
             config_path = self._config(root)
             config = json.loads(config_path.read_text())
+            config["partition_provider"] = "tritonpart"
+            config["cut_mode"] = "sequential-only"
             config["route_candidate_workers"] = 3
             config_path.write_text(json.dumps(config), encoding="utf-8")
             output = root / "spec.json"
@@ -636,6 +697,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             config.update(
                 {
                     "cut_mode": "static-exact-combinational",
+                    "partition_provider": "tritonpart",
                     "max_cross_fpga_dependency_depth": 2,
                     "comb_segment_budget_slots": 2,
                     "route_candidate_workers": 7,
@@ -822,6 +884,8 @@ class CanonicalExperimentTest(unittest.TestCase):
             root = Path(temporary)
             config_path = self._config(root)
             config = json.loads(config_path.read_text())
+            config["partition_provider"] = "tritonpart"
+            config["cut_mode"] = "sequential-only"
             config["physical_seeds"] = [1, 2, 3]
             config_path.write_text(json.dumps(config), encoding="utf-8")
             output = root / "spec.json"

@@ -86,6 +86,7 @@ class AcademicChimewTest(unittest.TestCase):
             PLATFORM,
             phase3,
             provider="greedy",
+            cut_mode="sequential-only",
         )
         run_phase4(
             phase3 / "assignment.json",

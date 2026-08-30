@@ -142,10 +142,13 @@ PATRON means **Path-Aware Topology and Routing-pressure Optimized Network
 partitioning**.  It is an EmuFlow algorithm inspired by the papers above, not
 a claimed reproduction of any one of them.
 
-The current provider consumes the sequential boundary policy only.  Static
-Exact changes the legal move space by adding an explicit cross-FPGA dependency
-contract; PATRON fails closed for that combination until the objective and
-independent checker both consume the same contract.
+The current default combines PATRON with generalized Static Exact v2.  PATRON
+derives transported net classes from the sealed cluster policy, which includes
+real combinational cut nets in the endpoint-exact path and routing-pressure
+model.  After refinement the common assignment builder reconstructs the
+Static Exact dependency contract, and the independent checker revalidates that
+contract together with the native transition trace and complete metrics.  The
+legacy sequential policy remains an explicit comparison mode.
 
 For each valid assignment, a deterministic direct K-way pass evaluates a move
 of cluster `v` from partition `a` to `b` with a lexicographic objective:
