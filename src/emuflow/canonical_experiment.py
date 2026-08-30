@@ -439,6 +439,33 @@ def compile_canonical_experiment_spec(
         raise ValidationError(
             "canonical patron_flow_refinement must be a boolean"
         )
+    patron_algorithm_version = config.get("patron_algorithm_version")
+    patron_algorithm_version_explicit = patron_algorithm_version is not None
+    if patron_algorithm_version is None:
+        patron_algorithm_version = (
+            11
+            if config.get("patron_physical_system_timing") is not None
+            else (10 if patron_flow_refinement else 6)
+        )
+    if (
+        isinstance(patron_algorithm_version, bool)
+        or not isinstance(patron_algorithm_version, int)
+        or patron_algorithm_version not in {6, 9, 10, 11}
+    ):
+        raise ValidationError(
+            "canonical patron_algorithm_version must be 6, 9, 10, or 11"
+        )
+    patron_flow_refinement = patron_algorithm_version != 6
+    if (
+        patron_algorithm_version_explicit
+        and "patron_flow_refinement" in config
+        and config["patron_flow_refinement"]
+        is not patron_flow_refinement
+    ):
+        raise ValidationError(
+            "canonical patron flow-refinement flag disagrees with its "
+            "algorithm version"
+        )
     if patron_flow_refinement and partition_provider != "patron":
         raise ValidationError(
             "canonical patron_flow_refinement requires partition_provider "
@@ -727,12 +754,12 @@ def compile_canonical_experiment_spec(
     if physical_system_timing_value is not None:
         if (
             partition_provider != "patron"
-            or not patron_flow_refinement
+            or patron_algorithm_version != 11
             or patron_physical_feedback_scale <= 0.0
         ):
             raise ValidationError(
                 "canonical patron physical system timing requires PATRON "
-                "flow refinement and a positive feedback scale"
+                "algorithm v11 and a positive feedback scale"
             )
         patron_physical_system_timing = _file(
             physical_system_timing_value,
@@ -742,6 +769,10 @@ def compile_canonical_experiment_spec(
         raise ValidationError(
             "canonical patron physical feedback scale requires a physical "
             "system-timing artifact"
+        )
+    elif patron_algorithm_version == 11:
+        raise ValidationError(
+            "canonical PATRON v11 requires physical system timing"
         )
     executable = str(tools["emuflow"])
     base_inputs = {
@@ -1005,6 +1036,10 @@ def compile_canonical_experiment_spec(
             ]
         if patron_flow_refinement:
             partition_command.insert(-2, "--patron-flow-refinement")
+        partition_command[-2:-2] = [
+            "--patron-algorithm-version",
+            str(patron_algorithm_version),
+        ]
         if patron_physical_system_timing is not None:
             partition_command[-2:-2] = [
                 "--patron-physical-system-timing",
@@ -1021,6 +1056,12 @@ def compile_canonical_experiment_spec(
             )
         if patron_flow_refinement:
             partition_validator.append("--patron-flow-refinement")
+        partition_validator.extend(
+            [
+                "--patron-algorithm-version",
+                str(patron_algorithm_version),
+            ]
+        )
         if patron_physical_system_timing is not None:
             partition_validator.extend(
                 [
@@ -1061,6 +1102,7 @@ def compile_canonical_experiment_spec(
         configuration={
             "provider": partition_provider,
             "patron_flow_refinement": patron_flow_refinement,
+            "patron_algorithm_version": patron_algorithm_version,
             "patron_physical_system_timing_sha256": base_inputs.get(
                 "patron_physical_system_timing"
             ),

@@ -366,6 +366,9 @@ class CanonicalExperimentTest(unittest.TestCase):
                 partition["configuration"]["provider"], "patron"
             )
             self.assertEqual(
+                partition["configuration"]["patron_algorithm_version"], 6
+            )
+            self.assertEqual(
                 partition["configuration"]["cut_mode"],
                 "static-exact-combinational",
             )
@@ -420,6 +423,9 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertTrue(
                 partition["configuration"]["patron_flow_refinement"]
             )
+            self.assertEqual(
+                partition["configuration"]["patron_algorithm_version"], 11
+            )
             self.assertIn("--patron-refiner", partition["command"])
             self.assertIn("--patron-flow-refinement", partition["command"])
             self.assertIn(
@@ -468,13 +474,42 @@ class CanonicalExperimentTest(unittest.TestCase):
                 item for item in spec["nodes"] if item["stage"] == "phase7"
             ]
             self.assertEqual(
-                {(item["provider"], item["physical_seed"]) for item in terminals},
+                {
+                    (item["provider"], item["physical_seed"])
+                    for item in terminals
+                },
                 {("chimew", 1)},
             )
             self.assertNotIn("qor-comparison", nodes)
             self.assertEqual(report["physical_terminal_nodes"], 1)
             self.assertEqual(report["terminal_nodes"], 1)
 
+    def test_compiler_selects_exact_patron_v9(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config["patron_algorithm_version"] = 9
+            config["patron_flow_refinement"] = True
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "patron-v9-spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            spec = validate_experiment_spec(json.loads(output.read_text()))
+            partition = {node["id"]: node for node in spec["nodes"]}[
+                "partition"
+            ]
+            self.assertEqual(
+                partition["configuration"]["patron_algorithm_version"], 9
+            )
+            self.assertEqual(
+                partition["command"][
+                    partition["command"].index(
+                        "--patron-algorithm-version"
+                    )
+                    + 1
+                ],
+                "9",
+            )
             config["cut_mode"] = "static-exact-combinational"
             config_path.write_text(json.dumps(config), encoding="utf-8")
             exact_output = root / "patron-exact.json"

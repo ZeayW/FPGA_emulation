@@ -148,26 +148,44 @@ def run_phase3(
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
+    patron_algorithm_version: int = 6,
     patron_initial_assignment_path: Optional[Path] = None,
     patron_physical_system_timing_path: Optional[Path] = None,
     patron_physical_feedback_scale: float = 0.0,
 ) -> Dict[str, Any]:
     if not isinstance(patron_flow_refinement, bool):
         raise ValidationError("PATRON flow refinement flag is invalid")
+    if (
+        isinstance(patron_algorithm_version, bool)
+        or not isinstance(patron_algorithm_version, int)
+        or patron_algorithm_version not in {6, 9, 10, 11}
+    ):
+        raise ValidationError("PATRON algorithm version is invalid")
+    if patron_physical_system_timing_path is not None:
+        if patron_algorithm_version == 6 and patron_flow_refinement:
+            patron_algorithm_version = 11
+    elif patron_algorithm_version == 6 and patron_flow_refinement:
+        patron_algorithm_version = 10
+    patron_flow_refinement = patron_algorithm_version != 6
     if patron_flow_refinement and provider != "patron":
         raise ValidationError(
             "PATRON flow refinement requires provider='patron'"
         )
     if patron_physical_system_timing_path is not None and (
         provider != "patron"
-        or not patron_flow_refinement
+        or patron_algorithm_version != 11
         or patron_initial_assignment_path is None
         or patron_physical_feedback_scale <= 0.0
     ):
         raise ValidationError(
-            "PATRON physical feedback requires provider='patron', flow "
-            "refinement, a frozen initial assignment, and a positive scale"
+            "PATRON physical feedback requires provider='patron', algorithm "
+            "v11, a frozen initial assignment, and a positive scale"
         )
+    if (
+        patron_algorithm_version == 11
+        and patron_physical_system_timing_path is None
+    ):
+        raise ValidationError("PATRON v11 requires physical system timing")
     if (
         patron_physical_system_timing_path is None
         and patron_physical_feedback_scale != 0.0
@@ -345,6 +363,7 @@ def run_phase3(
             executable=patron_refiner,
             max_moves=patron_max_moves,
             flow_refinement=patron_flow_refinement,
+            algorithm_version=patron_algorithm_version,
             physical_feedback=patron_physical_feedback,
             physical_feedback_scale=patron_physical_feedback_scale,
         )
@@ -487,6 +506,7 @@ def run_phase3(
     elif provider == "mfspart":
         report["artifacts"]["mfspart"] = "mfspart/hierarchy.json"
     elif provider == "patron":
+        report["patron_algorithm_version"] = patron_algorithm_version
         report["algorithm_validation"] = patron_validation
         report["artifacts"].update(
             {

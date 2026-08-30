@@ -389,14 +389,12 @@ class PartitionPressureTest(unittest.TestCase):
                 self.model,
                 self.initial,
                 0,
-                True,
+                9,
             )
             lines = native_input.read_text(encoding="utf-8").splitlines()
-            lines[0] = "EMUFLOW_PATRON_INPUT_V9"
             flow_fields = lines[2].split()
             self.assertEqual(flow_fields[0], "FLOW")
-            self.assertEqual(len(flow_fields), 10)
-            lines[2] = " ".join(flow_fields[:-1])
+            self.assertEqual(len(flow_fields), 9)
             for index, line in enumerate(lines):
                 fields = line.split()
                 if fields and fields[0] == "CLUSTER":
@@ -1614,6 +1612,39 @@ class PartitionPressureTest(unittest.TestCase):
             flow_trace,
         )
         self.assertEqual(flow_bundle["status"], "pass")
+        v9_final, v9_trace = run_partition_pressure_native(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            route_constraints,
+            model,
+            initial,
+            executable=str(patron_refiner()),
+            max_moves=0,
+            algorithm_version=9,
+        )
+        self.assertEqual(v9_trace["mode"], "endpoint-exact-critical-flow-v9")
+        self.assertEqual(v9_trace["configuration"]["algorithm_version"], 9)
+        self.assertNotIn(
+            "physical_hop_guard",
+            v9_trace["configuration"]["flow_refinement"],
+        )
+        self.assertEqual(
+            validate_partition_pressure_native_bundle(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                timing,
+                route_constraints,
+                model,
+                initial,
+                v9_final,
+                v9_trace,
+            )["status"],
+            "pass",
+        )
         flow_config_tampered = copy.deepcopy(flow_trace)
         flow_config_tampered["configuration"]["flow_refinement"][
             "corridor_distance"

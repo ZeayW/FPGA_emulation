@@ -1397,6 +1397,17 @@ scalable sweep remains a deterministic heuristic and is not claimed globally
 optimal.  The former TritonPart/sequential baseline remains available only by
 explicitly selecting `--partition-provider tritonpart --cut-mode
 sequential-only`; it is not an implicit fallback for omitted options.
+The cold-start producer records an explicit algorithm version.  Version 6 is
+selected by the current omitted-option default, while the previously measured
+ranked-frontier version 9 is reproducible with
+`--patron-algorithm-version 9`.  Version 11 must name both a frozen initial
+assignment and a matching prior complete-global `system-timing/v2` artifact;
+it is never inferred from cache presence.  The older
+`--patron-flow-refinement` spelling remains an explicit version-10 producer
+alias when no physical-feedback input is present.  A four-arm complete-flow
+gate for Static Exact v2 plus v6, v9, v6-to-v11, and v9-to-v11 is pending;
+until it completes, v6 is a code default rather than a claimed Phase 7 QoR
+promotion.
 Canonical experiment configs may set
 `partition_provider=patron`, reuse `patron_initial_assignment`, and restrict
 `phase6_providers` plus `physical_seeds` (for example Chimew/seed 1) so an A/B
@@ -1539,9 +1550,10 @@ declared two-metric promotion gate, while the very small WNS margin is reported
 explicitly rather than presented as a broad topology-independent result.
 The V11 physical-feedback refinement remains opt-in because it consumes a
 prior physical timing artifact and therefore cannot be the clean first-run
-default.  A default clean run uses the source-built endpoint-exact PATRON v6;
-case7/case9 topology replication remains additional QoR evidence rather than a
-prerequisite for selecting the already validated algorithmic default.  The
+default.  A clean run may explicitly select endpoint-exact PATRON v6 or the
+ranked-frontier v9 profile; the resulting complete-global Phase 7 timing is a
+valid sealed input to a matching v11 iteration.  Case7/case9 topology
+replication remains additional QoR evidence after the primary case6 gate.  The
 complete design, literature basis, and gate are documented in
 [the timing/TDM partitioning upgrade plan](docs/PARTITIONING_TIMING_TDM_UPGRADE.md).
 

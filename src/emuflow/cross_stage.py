@@ -996,6 +996,7 @@ def run_cross_stage_optimization(
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
+    patron_algorithm_version: int = 6,
     partition_timeout_seconds: int = 3600,
     partition_seed_attempts: int = 1,
     partition_num_initial_solutions: int = 50,
@@ -1390,6 +1391,7 @@ def run_cross_stage_optimization(
                     patron_refiner=patron_refiner,
                     patron_max_moves=patron_max_moves,
                     patron_flow_refinement=patron_flow_refinement,
+                    patron_algorithm_version=patron_algorithm_version,
                 )
                 candidate = _run_candidate_flow(
                     root=output_dir,
@@ -1544,6 +1546,7 @@ def run_cross_stage_optimization(
             ),
             "partition_repair_balance": partition_repair_balance,
             "patron_max_moves": patron_max_moves,
+            "patron_algorithm_version": patron_algorithm_version,
             "seed_candidate": seed_candidate_phase3_root is not None,
             "frame_slots": frame_slots,
             "optimize_frame_slots": optimize_frame_slots,

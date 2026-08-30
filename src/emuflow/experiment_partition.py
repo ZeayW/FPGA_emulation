@@ -180,11 +180,18 @@ def run_partition_checkpoint(
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
+    patron_algorithm_version: int = 6,
     patron_initial_assignment_path: Optional[Path] = None,
     patron_physical_system_timing_path: Optional[Path] = None,
     patron_physical_feedback_scale: float = 0.0,
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
 ) -> Dict[str, Any]:
+    if patron_physical_system_timing_path is not None:
+        if patron_algorithm_version == 6 and patron_flow_refinement:
+            patron_algorithm_version = 11
+    elif patron_algorithm_version == 6 and patron_flow_refinement:
+        patron_algorithm_version = 10
+    patron_flow_refinement = patron_algorithm_version != 6
     if mfspart_post_refinement is None:
         mfspart_post_refinement = (
             cut_mode == CUT_MODE_STATIC_EXACT and provider == "tritonpart"
@@ -268,6 +275,7 @@ def run_partition_checkpoint(
         patron_refiner=patron_refiner,
         patron_max_moves=patron_max_moves,
         patron_flow_refinement=patron_flow_refinement,
+        patron_algorithm_version=patron_algorithm_version,
         patron_initial_assignment_path=patron_initial_assignment_path,
         patron_physical_system_timing_path=(
             patron_physical_system_timing_path
@@ -330,6 +338,7 @@ def run_partition_checkpoint(
             else None
         ),
         "patron_flow_refinement": patron_flow_refinement,
+        "patron_algorithm_version": patron_algorithm_version,
         "patron_physical_system_timing_sha256": (
             _sha256(patron_physical_system_timing_path.resolve())
             if patron_physical_system_timing_path is not None
@@ -395,6 +404,7 @@ def run_partition_checkpoint(
         ),
         patron_initial_assignment_path=patron_initial_assignment_path,
         expected_patron_flow_refinement=patron_flow_refinement,
+        expected_patron_algorithm_version=patron_algorithm_version,
         patron_physical_system_timing_path=(
             patron_physical_system_timing_path
         ),
@@ -431,6 +441,7 @@ def validate_partition_checkpoint(
     expected_minimum_combinational_cut_nets: int | None = None,
     patron_initial_assignment_path: Path | None = None,
     expected_patron_flow_refinement: bool | None = None,
+    expected_patron_algorithm_version: int | None = None,
     patron_physical_system_timing_path: Path | None = None,
     expected_patron_physical_feedback_scale: float | None = None,
     expected_static_exact_candidate_policy: str | None = None,
@@ -561,6 +572,27 @@ def validate_partition_checkpoint(
     if actual_patron_flow_refinement and report.get("provider") != "patron":
         raise ValidationError(
             "partition flow refinement requires the PATRON provider"
+        )
+    actual_patron_algorithm_version = report.get(
+        "patron_algorithm_version", 10 if actual_patron_flow_refinement else 6
+    )
+    if (
+        isinstance(actual_patron_algorithm_version, bool)
+        or not isinstance(actual_patron_algorithm_version, int)
+        or actual_patron_algorithm_version not in {6, 9, 10, 11}
+        or actual_patron_flow_refinement
+        is not (actual_patron_algorithm_version != 6)
+    ):
+        raise ValidationError(
+            "partition PATRON algorithm-version contract is invalid"
+        )
+    if (
+        expected_patron_algorithm_version is not None
+        and actual_patron_algorithm_version
+        != expected_patron_algorithm_version
+    ):
+        raise ValidationError(
+            "partition PATRON algorithm-version contract disagrees"
         )
     expected_physical_timing_sha256 = (
         _sha256(patron_physical_system_timing_path.resolve())
@@ -907,6 +939,13 @@ def validate_partition_checkpoint(
         platform = Platform.load(platform_path)
         model = read_json(patron_paths["model"])
         initial_assignment = read_json(patron_paths["initial_assignment"])
+        patron_trace = read_json(patron_paths["trace"])
+        if patron_trace.get("configuration", {}).get(
+            "algorithm_version", actual_patron_algorithm_version
+        ) != actual_patron_algorithm_version:
+            raise ValidationError(
+                "partition PATRON algorithm version disagrees with its trace"
+            )
         physical_feedback = None
         physical_feedback_validation = None
         if patron_physical_system_timing_path is not None:
@@ -933,7 +972,7 @@ def validate_partition_checkpoint(
             model,
             initial_assignment,
             assignment,
-            read_json(patron_paths["trace"]),
+            patron_trace,
             physical_feedback,
             actual_feedback_scale,
         )
@@ -946,6 +985,12 @@ def validate_partition_checkpoint(
         ):
             raise ValidationError(
                 "partition PATRON algorithm validation mismatch"
+            )
+        if report.get("phase3", {}).get(
+            "patron_algorithm_version", actual_patron_algorithm_version
+        ) != actual_patron_algorithm_version:
+            raise ValidationError(
+                "partition PATRON algorithm version disagrees with Phase 3"
             )
     hop_audit = (
         validate_assignment_hop_constraints(

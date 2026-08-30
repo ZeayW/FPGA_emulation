@@ -983,6 +983,7 @@ def run_multi_fpga_flow(
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
+    patron_algorithm_version: int = 6,
     partition_timeout_seconds: int = 3600,
     partition_seed_attempts: int = 1,
     partition_num_initial_solutions: int = 50,
@@ -1491,6 +1492,7 @@ def run_multi_fpga_flow(
         patron_refiner=patron_refiner,
         patron_max_moves=patron_max_moves,
         patron_flow_refinement=patron_flow_refinement,
+        patron_algorithm_version=patron_algorithm_version,
         static_exact_candidate_policy=static_exact_candidate_policy,
         mfspart_post_refinement=(
             exact_cut_mode and partition_provider == "tritonpart"
@@ -1595,6 +1597,7 @@ def run_multi_fpga_flow(
             patron_refiner=patron_refiner,
             patron_max_moves=patron_max_moves,
             patron_flow_refinement=patron_flow_refinement,
+            patron_algorithm_version=patron_algorithm_version,
             partition_timeout_seconds=partition_timeout_seconds,
             partition_seed_attempts=partition_seed_attempts,
             partition_num_initial_solutions=partition_num_initial_solutions,

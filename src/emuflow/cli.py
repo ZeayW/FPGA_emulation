@@ -635,6 +635,12 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument(
         "--patron-flow-refinement", action="store_true"
     )
+    partition_run.add_argument(
+        "--patron-algorithm-version",
+        type=int,
+        choices=(6, 9, 10, 11),
+        default=6,
+    )
     partition_run.add_argument("--patron-initial-assignment", type=Path)
     partition_run.add_argument(
         "--patron-physical-system-timing", type=Path
@@ -742,6 +748,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--patron-flow-refinement",
         action=_BooleanOptionalAction,
         default=None,
+    )
+    partition_validate.add_argument(
+        "--patron-algorithm-version",
+        type=int,
+        choices=(6, 9, 10, 11),
     )
     partition_validate.add_argument("--seed", type=int)
     partition_validate.add_argument("--seed-attempts", type=int)
@@ -1813,6 +1824,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--patron-flow-refinement", action="store_true"
     )
     multi_fpga_compile.add_argument(
+        "--patron-algorithm-version",
+        type=int,
+        choices=(6, 9, 10, 11),
+        default=6,
+    )
+    multi_fpga_compile.add_argument(
         "--partition-timeout-seconds", type=int, default=3600
     )
     multi_fpga_compile.add_argument(
@@ -2748,6 +2765,12 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--patron-refiner")
     phase3.add_argument("--patron-max-moves", type=int)
     phase3.add_argument("--patron-flow-refinement", action="store_true")
+    phase3.add_argument(
+        "--patron-algorithm-version",
+        type=int,
+        choices=(6, 9, 10, 11),
+        default=6,
+    )
     phase3.add_argument("--patron-initial-assignment", type=Path)
     phase3.add_argument("--patron-physical-system-timing", type=Path)
     phase3.add_argument(
@@ -3200,6 +3223,12 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument("--patron-max-moves", type=int)
     cross_stage_optimize.add_argument(
         "--patron-flow-refinement", action="store_true"
+    )
+    cross_stage_optimize.add_argument(
+        "--patron-algorithm-version",
+        type=int,
+        choices=(6, 9, 10, 11),
+        default=6,
     )
     cross_stage_optimize.add_argument(
         "--partition-timeout-seconds", type=int, default=3600
@@ -3712,6 +3741,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 patron_refiner=args.patron_refiner,
                 patron_max_moves=args.patron_max_moves,
                 patron_flow_refinement=args.patron_flow_refinement,
+                patron_algorithm_version=args.patron_algorithm_version,
                 patron_initial_assignment_path=(
                     args.patron_initial_assignment
                 ),
@@ -3765,6 +3795,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ),
                 expected_patron_flow_refinement=(
                     args.patron_flow_refinement
+                ),
+                expected_patron_algorithm_version=(
+                    args.patron_algorithm_version
                 ),
                 patron_physical_system_timing_path=(
                     args.patron_physical_system_timing
@@ -4966,6 +4999,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             patron_refiner=args.patron_refiner,
             patron_max_moves=args.patron_max_moves,
             patron_flow_refinement=args.patron_flow_refinement,
+            patron_algorithm_version=args.patron_algorithm_version,
             partition_timeout_seconds=args.partition_timeout_seconds,
             partition_seed_attempts=args.partition_seed_attempts,
             partition_num_initial_solutions=(
@@ -5173,6 +5207,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             patron_refiner=args.patron_refiner,
             patron_max_moves=args.patron_max_moves,
             patron_flow_refinement=args.patron_flow_refinement,
+            patron_algorithm_version=args.patron_algorithm_version,
             patron_initial_assignment_path=(
                 args.patron_initial_assignment
             ),
@@ -5389,6 +5424,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 patron_refiner=args.patron_refiner,
                 patron_max_moves=args.patron_max_moves,
                 patron_flow_refinement=args.patron_flow_refinement,
+                patron_algorithm_version=args.patron_algorithm_version,
                 partition_timeout_seconds=(
                     args.partition_timeout_seconds
                 ),
