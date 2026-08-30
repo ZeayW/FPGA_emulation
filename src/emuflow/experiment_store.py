@@ -737,9 +737,12 @@ def _make_writable(root: Path) -> None:
             # the retirement candidate and must ever be mutated here.
             if path.is_symlink():
                 continue
-            path.chmod(0o755 if path.is_dir() else 0o644)
-    elif root.exists():
-        root.chmod(0o644)
+            # Removing a regular file only requires write permission on its
+            # parent directory.  Do not chmod files: cache/evidence
+            # materialization may intentionally hard-link an immutable file
+            # into another tree, and chmod would mutate every surviving link.
+            if path.is_dir():
+                path.chmod(0o755)
 
 
 def apply_experiment_gc(plan_path: Path, expected_sha256: str) -> dict[str, Any]:

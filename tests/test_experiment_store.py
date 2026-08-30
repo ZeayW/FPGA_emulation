@@ -214,6 +214,41 @@ class ExperimentStoreTest(unittest.TestCase):
             self.assertFalse(failure.exists())
             self.assertTrue(protected.exists())
 
+    def test_gc_does_not_make_surviving_hardlinked_artifact_writable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "cache"
+            spec_path = root / "spec.json"
+            write_json(spec_path, _spec())
+            initial_plan_path = root / "initial-plan.json"
+            initial_plan = plan_experiment(spec_path, cache, initial_plan_path)
+            run_experiment_node(initial_plan_path, "phase1", root / "attempt")
+            protected = cache / "objects" / initial_plan["nodes"][0]["execution_key"]
+            protected_artifact = protected / "output/phase1.json"
+            self.assertEqual(protected_artifact.stat().st_mode & 0o222, 0)
+
+            unreferenced_key = "b" * 64
+            unreferenced = cache / "objects" / unreferenced_key
+            unreferenced.mkdir(parents=True)
+            os.link(protected_artifact, unreferenced / "duplicate.json")
+
+            final_plan_path = root / "final-plan.json"
+            plan_experiment(spec_path, cache, final_plan_path)
+            gc_path = root / "gc.json"
+            gc = plan_experiment_gc(
+                cache, [final_plan_path], gc_path, minimum_age_seconds=0
+            )
+            self.assertIn(
+                f"objects/{unreferenced_key}",
+                {item["path"] for item in gc["candidates"]},
+            )
+            approved = hashlib.sha256(gc_path.read_bytes()).hexdigest()
+            apply_experiment_gc(gc_path, approved)
+
+            self.assertFalse(unreferenced.exists())
+            self.assertTrue(protected_artifact.is_file())
+            self.assertEqual(protected_artifact.stat().st_mode & 0o222, 0)
+
     def test_gc_preserves_cache_local_output_aliases_from_imported_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

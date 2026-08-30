@@ -583,10 +583,25 @@ constraints, global-best choice, best prefix, and final assignment. The
 checkpoint validator separately rematerializes the compressed objective from
 the sealed EmuIR, clusters, and original TimingPathDB and compares the exact
 PATH-record digest, group count, and pin count. Small exhaustive and full
-repository tests pass. Real-DLA beta screening and complete Phase 7 global
-WNS/TNS comparison remain pending; consequently this revision is not yet
-default-promotion evidence and does not supersede the sequential-only
-production default described above.
+repository tests pass. Canonical DLA + EDA 2023 case6 screening is now complete
+at partition seed 4 and physical seed 1 with eight physical workers. Both the
+path-objective-disabled control and the `beta=1.0` candidate selected two real
+combinational cuts with maximum dependency depth two, routed with zero DRC
+violations and zero unrouted nets, and covered the same 195,532 original timing
+paths. Their complete Phase 7/7C global result was identical: WNS
+-83.890257153 ns, TNS -189,339.41826577744 ns, and 5,069 negative paths. The
+path-level term changed the partition assignment but not the routed Phase 4/5
+schedule, Phase 6 split, or final timing QoR on this case, so it provides no
+incremental promotion evidence and remains a research option.
+
+The guarded automatic generalized policy itself is nevertheless better than
+the register-only control on this canonical run. Relative to register-only WNS
+-84.5812926868 ns, TNS -277,276.1497366623 ns, and 7,360 negative paths, it
+improves WNS by 0.6910355338 ns, reduces the TNS deficit by
+87,936.73147088484 ns (31.71%), and removes 2,291 negative paths. This evidence
+supports the guarded cost model, not the additional path-level beta term; a
+default-policy change still requires the checked-in cross-policy comparison
+gate and its sealed promotion certificate.
 
 The managed shared-Phase-1--5 view intentionally contains only consumer
 artifacts, not duplicate timing/partition evidence reports.  For that layout,
@@ -1824,7 +1839,10 @@ including both each logical execution key and any cache-local immutable
 payload-object alias recorded by an imported or re-keyed checkpoint's
 `output_dir`, records every candidate's current content digest, and performs no mutation;
 `gc-apply` requires the exact plan-file SHA-256 and aborts if an object changed
-or became referenced. Legacy `runs` first receive a read-only migration plan:
+or became referenced. Removal makes only candidate directories writable; it
+never changes a regular file's mode, so deleting one hard-linked pathname
+cannot make a surviving immutable checkpoint or evidence artifact writable.
+Legacy `runs` first receive a read-only migration plan:
 
 ```bash
 emuflow experiment-cache migration-plan --root /research/d4/gds/ziyiwang21/emuflow/runs \
