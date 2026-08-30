@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import math
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
@@ -22,7 +24,18 @@ from .experiment_identity import (
 )
 from .io import read_json, write_json
 from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
+from .combinational_cut import (
+    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    STATIC_EXACT_CANDIDATE_POLICIES,
+    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+)
 from .platform import Platform
+from .mfspart_refine import (
+    DEFAULT_BOTTLENECK_BETA,
+    DEFAULT_TIMING_PATH_BETA,
+)
 from .routing import load_route_constraints
 from .tdm import TDM_STATIC_EXACT_PROVIDER
 from .tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
@@ -214,9 +227,15 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/partition.py",
         "src/emuflow/combinational_cut.py",
         "src/emuflow/partition_hops.py",
+        "src/emuflow/mfspart.py",
+        "src/emuflow/mfspart_initial.py",
+        "src/emuflow/mfspart_refine.py",
+        "src/emuflow/mfspart_provider.py",
         "src/emuflow/tritonpart.py",
         "src/emuflow/routing.py",
         "src/native/hop_partition_refiner.cpp",
+        "src/native/mfspart_refiner.cpp",
+        "src/native/mfspart_refiner_checker.cpp",
     ),
     "partition-patron": (
         "src/emuflow/experiment_upstream.py::validate_timing_checkpoint",
@@ -338,6 +357,16 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/system_timing.py",
         "src/emuflow/static_exact_timing.py",
     ),
+    "static-exact-qor-compare": (
+        "src/emuflow/static_exact_qor.py",
+        "src/emuflow/canonical_qor.py",
+        "src/emuflow/experiment_stages.py",
+        "src/emuflow/multi_fpga_physical_flow.py",
+        "src/emuflow/runtime.py",
+        "src/emuflow/system_timing.py",
+        "src/emuflow/static_exact_timing.py",
+        "src/emuflow/combinational_cut.py",
+    ),
 }
 
 
@@ -381,6 +410,12 @@ def compile_canonical_experiment_spec(
     partition_constraints = (
         _file(partition_constraints_value, "partition_constraints")
         if partition_constraints_value is not None
+        else None
+    )
+    tritonpart_solution_value = config.get("tritonpart_solution")
+    tritonpart_solution = (
+        _file(tritonpart_solution_value, "tritonpart_solution")
+        if tritonpart_solution_value is not None
         else None
     )
     timing_model = _file(config.get("timing_model"), "timing_model")
@@ -509,6 +544,9 @@ def compile_canonical_experiment_spec(
     partition_peak_gib = _positive_integer(
         config.get("partition_peak_gib", 24), "partition_peak_gib"
     )
+    partition_retained_gib = _positive_integer(
+        config.get("partition_retained_gib", 6), "partition_retained_gib"
+    )
     phase6_candidate_peak_gib = _positive_integer(
         config.get("phase6_candidate_peak_gib", 12),
         "phase6_candidate_peak_gib",
@@ -559,6 +597,11 @@ def compile_canonical_experiment_spec(
         config.get("partition_seed_attempts", 1),
         "partition_seed_attempts",
     )
+    if tritonpart_solution is not None and partition_seed_attempts != 1:
+        raise ValidationError(
+            "canonical experiment tritonpart_solution requires "
+            "partition_seed_attempts=1"
+        )
     partition_repair_balance = config.get(
         "partition_repair_balance", False
     )
@@ -566,14 +609,74 @@ def compile_canonical_experiment_spec(
         raise ValidationError(
             "canonical experiment partition_repair_balance must be boolean"
         )
+    mfspart_post_refinement = config.get(
+        "mfspart_post_refinement", cut_mode == CUT_MODE_STATIC_EXACT
+    )
+    if not isinstance(mfspart_post_refinement, bool):
+        raise ValidationError(
+            "canonical experiment mfspart_post_refinement must be boolean"
+        )
+    mfspart_post_refinement_early_stop = _positive_integer(
+        config.get("mfspart_post_refinement_early_stop", 1000),
+        "mfspart_post_refinement_early_stop",
+    )
+    mfspart_post_refinement_bottleneck_beta = config.get(
+        "mfspart_post_refinement_bottleneck_beta",
+        DEFAULT_BOTTLENECK_BETA,
+    )
+    if (
+        isinstance(mfspart_post_refinement_bottleneck_beta, bool)
+        or not isinstance(
+            mfspart_post_refinement_bottleneck_beta, (int, float)
+        )
+        or not math.isfinite(mfspart_post_refinement_bottleneck_beta)
+        or mfspart_post_refinement_bottleneck_beta < 0
+    ):
+        raise ValidationError(
+            "canonical experiment mfspart_post_refinement_bottleneck_beta "
+            "must be a finite non-negative number"
+        )
+    mfspart_post_refinement_bottleneck_beta = float(
+        mfspart_post_refinement_bottleneck_beta
+    )
     max_cross_fpga_dependency_depth = _positive_integer(
-        config.get("max_cross_fpga_dependency_depth", 1),
+        config.get(
+            "max_cross_fpga_dependency_depth",
+            STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+        ),
         "max_cross_fpga_dependency_depth",
+    )
+    mfspart_post_refinement_timing_path_beta = config.get(
+        "mfspart_post_refinement_timing_path_beta",
+        DEFAULT_TIMING_PATH_BETA,
+    )
+    if (
+        isinstance(mfspart_post_refinement_timing_path_beta, bool)
+        or not isinstance(
+            mfspart_post_refinement_timing_path_beta, (int, float)
+        )
+        or not math.isfinite(mfspart_post_refinement_timing_path_beta)
+        or mfspart_post_refinement_timing_path_beta < 0
+    ):
+        raise ValidationError(
+            "canonical experiment mfspart_post_refinement_timing_path_beta "
+            "must be a finite non-negative number"
+        )
+    mfspart_post_refinement_timing_path_beta = float(
+        mfspart_post_refinement_timing_path_beta
     )
     comb_segment_budget_slots = _positive_integer(
         config.get("comb_segment_budget_slots", 1),
         "comb_segment_budget_slots",
     )
+    static_exact_candidate_policy = config.get(
+        "static_exact_candidate_policy",
+        STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    )
+    if static_exact_candidate_policy not in STATIC_EXACT_CANDIDATE_POLICIES:
+        raise ValidationError(
+            "canonical experiment static_exact_candidate_policy is invalid"
+        )
     minimum_combinational_cut_nets = config.get(
         "minimum_combinational_cut_nets",
         0,
@@ -593,10 +696,11 @@ def compile_canonical_experiment_spec(
         )
     if (
         cut_mode == CUT_MODE_STATIC_EXACT
+        and static_exact_candidate_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1
         and max_cross_fpga_dependency_depth not in {1, 2}
     ):
         raise ValidationError(
-            "canonical static exact cut currently requires "
+            "canonical legacy static exact policy requires "
             "max_cross_fpga_dependency_depth to be 1 or 2"
         )
     if cut_mode == CUT_MODE_STATIC_EXACT and partition_provider == "patron":
@@ -668,6 +772,8 @@ def compile_canonical_experiment_spec(
     }
     if partition_constraints is not None:
         base_inputs["partition_constraints"] = _sha256(partition_constraints)
+    if tritonpart_solution is not None:
+        base_inputs["tritonpart_solution"] = _sha256(tritonpart_solution)
     base_bindings = {
         "rtl": str(rtl),
         "platform": str(platform),
@@ -702,6 +808,8 @@ def compile_canonical_experiment_spec(
     }
     if partition_constraints is not None:
         base_bindings["partition_constraints"] = str(partition_constraints)
+    if tritonpart_solution is not None:
+        base_bindings["tritonpart_solution"] = str(tritonpart_solution)
     closures = {stage: _closure(repository_root, stage) for stage in _COMPONENTS}
 
     nodes: list[Dict[str, Any]] = []
@@ -799,6 +907,7 @@ def compile_canonical_experiment_spec(
         "--max-cross-fpga-dependency-depth",
         str(max_cross_fpga_dependency_depth),
         "--comb-segment-budget-slots", str(comb_segment_budget_slots),
+        "--static-exact-candidate-policy", static_exact_candidate_policy,
         "--minimum-combinational-cut-nets",
         str(minimum_combinational_cut_nets),
         "--route-constraints", str(route_constraints), "--openroad", str(tools["openroad"]), "--hop-refiner", str(tools["hop_refiner"]),
@@ -814,12 +923,43 @@ def compile_canonical_experiment_spec(
         "--max-cross-fpga-dependency-depth",
         str(max_cross_fpga_dependency_depth),
         "--comb-segment-budget-slots", str(comb_segment_budget_slots),
+        "--static-exact-candidate-policy", static_exact_candidate_policy,
         "--minimum-combinational-cut-nets",
         str(minimum_combinational_cut_nets),
     ]
+    if mfspart_post_refinement:
+        partition_command.insert(-2, "--mfspart-post-refinement")
+        partition_command[-2:-2] = [
+            "--mfspart-post-refinement-early-stop",
+            str(mfspart_post_refinement_early_stop),
+            "--mfspart-post-refinement-bottleneck-beta",
+            format(mfspart_post_refinement_bottleneck_beta, ".17g"),
+            "--mfspart-post-refinement-timing-path-beta",
+            format(mfspart_post_refinement_timing_path_beta, ".17g"),
+        ]
+        partition_validator.extend(
+            (
+                "--mfspart-post-refinement",
+                "--mfspart-post-refinement-early-stop",
+                str(mfspart_post_refinement_early_stop),
+                "--mfspart-post-refinement-bottleneck-beta",
+                format(mfspart_post_refinement_bottleneck_beta, ".17g"),
+                "--mfspart-post-refinement-timing-path-beta",
+                format(mfspart_post_refinement_timing_path_beta, ".17g"),
+            )
+        )
+    else:
+        partition_validator.append("--no-mfspart-post-refinement")
     if partition_constraints is not None:
         partition_command.extend(("--constraints", str(partition_constraints)))
         partition_validator.extend(("--constraints", str(partition_constraints)))
+    if tritonpart_solution is not None:
+        partition_command.extend(
+            ("--tritonpart-solution", str(tritonpart_solution))
+        )
+        partition_validator.extend(
+            ("--tritonpart-solution", str(tritonpart_solution))
+        )
     if partition_repair_balance:
         partition_command.insert(-2, "--repair-balance")
     partition_validator.append(
@@ -841,6 +981,12 @@ def compile_canonical_experiment_spec(
         _artifact("phase3_report.json", "consumer-checkpoint"),
         _artifact("experiment-partition-report.json", "evidence-critical"),
     ]
+    if tritonpart_solution is not None:
+        partition_inputs.append("tritonpart_solution")
+    if mfspart_post_refinement:
+        partition_artifacts.append(
+            _artifact("mfspart-post-refinement", "consumer-checkpoint")
+        )
     if partition_provider == "patron":
         partition_command[-2:-2] = [
             "--patron-refiner",
@@ -914,9 +1060,22 @@ def compile_canonical_experiment_spec(
             "seed": partition_seed,
             "seed_attempts": partition_seed_attempts,
             "repair_balance": partition_repair_balance,
+            "mfspart_post_refinement": mfspart_post_refinement,
+            "mfspart_post_refinement_early_stop": (
+                mfspart_post_refinement_early_stop
+            ),
+            "mfspart_post_refinement_bottleneck_beta": (
+                mfspart_post_refinement_bottleneck_beta
+            ),
+            "mfspart_post_refinement_timing_path_beta": (
+                mfspart_post_refinement_timing_path_beta
+            ),
             "route_constraints": contract["route_constraints"],
             "partition_constraints_sha256": base_inputs.get(
                 "partition_constraints"
+            ),
+            "tritonpart_solution_sha256": base_inputs.get(
+                "tritonpart_solution"
             ),
             "timeout_seconds": 3600,
             "num_initial_solutions": 50,
@@ -926,10 +1085,12 @@ def compile_canonical_experiment_spec(
                 max_cross_fpga_dependency_depth
             ),
             "comb_segment_budget_slots": comb_segment_budget_slots,
+            "static_exact_candidate_policy": static_exact_candidate_policy,
             "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
             "partition_peak_gib": partition_peak_gib,
+            "partition_retained_gib": partition_retained_gib,
         },
-        peak_gib=partition_peak_gib, retained_gib=6,
+        peak_gib=partition_peak_gib, retained_gib=partition_retained_gib,
     )
     cut_command = [
         executable, "experiment-stage", "cut-timing-run", "--frontend", "{dependency:frontend}",
@@ -1130,6 +1291,10 @@ def compile_canonical_experiment_spec(
             "physical_terminal_nodes": len(physical_seeds),
             "terminal_nodes": len(physical_seeds),
             "cut_mode": cut_mode,
+            "static_exact_candidate_policy": static_exact_candidate_policy,
+            "max_cross_fpga_dependency_depth": (
+                max_cross_fpga_dependency_depth
+            ),
             "output": str(output_path.resolve()),
         }
     if set(phase7_providers) != {"baseline", "placement-aware", "chimew"}:
@@ -1213,5 +1378,309 @@ def compile_canonical_experiment_spec(
         "nodes": len(validated["nodes"]),
         "physical_terminal_nodes": len(phase7_providers) * len(physical_seeds),
         "terminal_nodes": 1,
+        "output": str(output_path.resolve()),
+    }
+
+
+def _static_exact_prefixed_node(
+    raw: Mapping[str, Any], prefix: str
+) -> Dict[str, Any]:
+    """Namespace one canonical arm while retaining common frontend/timing."""
+
+    common = {"frontend", "timing"}
+
+    def mapped(node_id: str) -> str:
+        return node_id if node_id in common else f"{prefix}-{node_id}"
+
+    def rewrite(value: Any) -> Any:
+        if isinstance(value, str):
+            for dependency in raw.get("dependencies", []):
+                value = value.replace(
+                    f"{{dependency:{dependency}}}",
+                    f"{{dependency:{mapped(dependency)}}}",
+                )
+            return value
+        if isinstance(value, list):
+            return [rewrite(item) for item in value]
+        if isinstance(value, dict):
+            return {key: rewrite(item) for key, item in value.items()}
+        return value
+
+    result = rewrite(copy.deepcopy(dict(raw)))
+    result["id"] = mapped(raw["id"])
+    result["dependencies"] = [
+        mapped(dependency) for dependency in raw.get("dependencies", [])
+    ]
+    return result
+
+
+def compile_static_exact_ab_experiment_spec(
+    config_path: Path,
+    repository_root: Path,
+    output_path: Path,
+    *,
+    legacy_max_depth: int = 2,
+    generalized_max_depth: int = 8,
+    minimum_combinational_cut_nets: int = 1,
+    partition_seed: int | None = None,
+) -> Dict[str, Any]:
+    """Compile one cache DAG with three Phase 3--7 cut-policy branches.
+
+    The canonical frontend and complete TimingPathDB are emitted once.  Each
+    policy then owns its assignment, routing, schedule, lookahead, split, and
+    physical terminal.  The final node independently rebuilds the complete
+    Phase 7 comparison rather than comparing Phase 3 or Phase 6 proxies.
+    """
+
+    output_path = validate_experiment_write_path(output_path)
+    repository_root = _directory(str(repository_root), "repository_root")
+    config = read_json(config_path)
+    if config.get("schema") != CANONICAL_EXPERIMENT_CONFIG_SCHEMA:
+        raise ValidationError("canonical experiment config schema is invalid")
+    if config.get("tritonpart_solution") is not None:
+        raise ValidationError(
+            "Static Exact A/B requires policy-specific partition searches; "
+            "use a single-arm canonical experiment for a precomputed solution"
+        )
+    for name, value in (
+        ("legacy_max_depth", legacy_max_depth),
+        ("generalized_max_depth", generalized_max_depth),
+        ("minimum_combinational_cut_nets", minimum_combinational_cut_nets),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValidationError(f"Static Exact A/B {name} must be positive")
+    if legacy_max_depth not in {1, 2}:
+        raise ValidationError("Static Exact legacy A/B depth must be 1 or 2")
+    controlled_partition_seed = (
+        config.get("partition_seed", 0)
+        if partition_seed is None
+        else partition_seed
+    )
+    if (
+        isinstance(controlled_partition_seed, bool)
+        or not isinstance(controlled_partition_seed, int)
+        or controlled_partition_seed < 0
+    ):
+        raise ValidationError("Static Exact A/B partition seed is invalid")
+    physical_seeds = config.get("physical_seeds", [1])
+    if (
+        not isinstance(physical_seeds, list)
+        or not physical_seeds
+        or any(
+            isinstance(seed, bool) or not isinstance(seed, int) or seed < 1
+            for seed in physical_seeds
+        )
+        or physical_seeds != sorted(set(physical_seeds))
+    ):
+        raise ValidationError("Static Exact A/B physical seeds are invalid")
+    arm_configs = {
+        "seq": {
+            "label": "sequential-only",
+            "cut_mode": CUT_MODE_SEQUENTIAL_ONLY,
+            "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            "max_cross_fpga_dependency_depth": 1,
+            "minimum_combinational_cut_nets": 0,
+        },
+        "v1": {
+            "label": "legacy-static-exact-v1",
+            "cut_mode": CUT_MODE_STATIC_EXACT,
+            "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            "max_cross_fpga_dependency_depth": legacy_max_depth,
+            # Legacy v1 is a compatibility/negative-control arm. Its
+            # potential-frontier filter can legitimately release no selected
+            # combinational boundary, so only generalized v2 owns the positive
+            # exercise contract below.
+            "minimum_combinational_cut_nets": 0,
+        },
+        "v2": {
+            "label": "generalized-static-exact-v2",
+            "cut_mode": CUT_MODE_STATIC_EXACT,
+            "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+            "max_cross_fpga_dependency_depth": generalized_max_depth,
+            "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
+        },
+    }
+    compiled: Dict[str, Dict[str, Any]] = {}
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        dir=output_path.parent, prefix=".static-exact-ab-compile-"
+    ) as temporary:
+        temporary_root = Path(temporary)
+        for prefix, arm in arm_configs.items():
+            arm_config = dict(config)
+            arm_config.update(
+                {
+                    key: value
+                    for key, value in arm.items()
+                    if key != "label"
+                }
+            )
+            # A policy comparison must not let each arm search a different
+            # random-seed portfolio and then compare unrelated winners.  One
+            # explicit partition seed is shared by all arms; physical-tool
+            # seeds remain a separate paired axis below.
+            arm_config["partition_seed"] = controlled_partition_seed
+            arm_config["partition_seed_attempts"] = 1
+            arm_config_path = temporary_root / f"{prefix}-config.json"
+            arm_spec_path = temporary_root / f"{prefix}-spec.json"
+            write_json(arm_config_path, arm_config)
+            compile_canonical_experiment_spec(
+                arm_config_path, repository_root, arm_spec_path
+            )
+            compiled[prefix] = read_json(arm_spec_path)
+
+    common_ids = {"frontend", "timing"}
+    sequential_keep = {
+        *common_ids,
+        "partition",
+        "cut-timing",
+        "route",
+        "tdm",
+        "shared-phase1-5",
+        "phase6-baseline",
+        "physical-lookahead",
+        *{
+            f"phase7-baseline-seed{seed}" for seed in physical_seeds
+        },
+    }
+    reference_common = [
+        node
+        for node in compiled["seq"]["nodes"]
+        if node["id"] in common_ids
+    ]
+    for prefix in ("v1", "v2"):
+        candidate_common = [
+            node
+            for node in compiled[prefix]["nodes"]
+            if node["id"] in common_ids
+        ]
+        if candidate_common != reference_common:
+            raise ValidationError(
+                "Static Exact A/B frontend/timing branches are not identical"
+            )
+    nodes = copy.deepcopy(reference_common)
+    for prefix in ("seq", "v1", "v2"):
+        arm_nodes = compiled[prefix]["nodes"]
+        for raw in arm_nodes:
+            if raw["id"] in common_ids:
+                continue
+            if prefix == "seq" and raw["id"] not in sequential_keep:
+                continue
+            nodes.append(_static_exact_prefixed_node(raw, prefix))
+
+    executable = str(_file(config["tools"]["emuflow"], "tool emuflow"))
+    platform = _file(config.get("platform"), "platform")
+    dependencies: list[str] = []
+    command = [
+        executable,
+        "experiment-stage",
+        "static-exact-qor-compare-run",
+        "--platform",
+        str(platform),
+        "--reuse-validated-phase6-equivalence",
+    ]
+    validator = [
+        executable,
+        "experiment-stage",
+        "static-exact-qor-compare-validate",
+        "{artifact_root}",
+        "--platform",
+        str(platform),
+        "--reuse-validated-phase6-equivalence",
+    ]
+    for prefix, arm in arm_configs.items():
+        shared_id = f"{prefix}-shared-phase1-5"
+        lookahead_id = f"{prefix}-physical-lookahead"
+        phase6_id = f"{prefix}-phase6-baseline"
+        for seed in physical_seeds:
+            phase7_id = f"{prefix}-phase7-baseline-seed{seed}"
+            for dependency in (
+                shared_id,
+                lookahead_id,
+                phase6_id,
+                phase7_id,
+            ):
+                if dependency not in dependencies:
+                    dependencies.append(dependency)
+            arguments = [
+                "--arm",
+                arm["label"],
+                str(seed),
+                f"{{dependency:{shared_id}}}",
+                f"{{dependency:{lookahead_id}}}",
+                f"{{dependency:{phase6_id}}}",
+                f"{{dependency:{phase7_id}}}",
+            ]
+            command.extend(arguments)
+            validator.extend(arguments)
+    command.extend(("--out", "{output_dir}"))
+    input_hashes = {
+        "platform": _sha256(platform),
+        "tool.emuflow": _sha256(Path(executable)),
+    }
+    bindings = {"platform": str(platform), "tool.emuflow": executable}
+    closure = _closure(repository_root, "static-exact-qor-compare")
+    nodes.append(
+        {
+            "id": "static-exact-qor-comparison",
+            "stage": "static-exact-qor-compare",
+            "dependencies": dependencies,
+            "inputs": input_hashes,
+            "configuration": {
+                "labels": [
+                    arm_configs[prefix]["label"]
+                    for prefix in ("seq", "v1", "v2")
+                ],
+                "physical_seeds": physical_seeds,
+                "legacy_max_depth": legacy_max_depth,
+                "generalized_max_depth": generalized_max_depth,
+                "legacy_minimum_combinational_cut_nets": 0,
+                "generalized_minimum_combinational_cut_nets": (
+                    minimum_combinational_cut_nets
+                ),
+                "partition_seed": controlled_partition_seed,
+                "partition_seed_attempts": 1,
+                "primary_metrics": [
+                    "global_target_clock_wns_ns",
+                    "global_target_clock_tns_ns",
+                ],
+            },
+            "implementation": closure,
+            "execution_bindings": bindings,
+            "command": command,
+            "command_identity": _identity_argv(command, bindings),
+            "validator_implementation": closure,
+            "validator": validator,
+            "validator_identity": _identity_argv(validator, bindings),
+            "environment": {
+                "EMUFLOW_EXPERIMENT_POLICY": "static-exact-ab-v1"
+            },
+            "storage_estimate": {
+                "peak_bytes": 2 * 1024**3,
+                "retained_bytes": 1024**3,
+            },
+            "artifacts": [
+                _artifact(
+                    "static-exact-qor-comparison.json", "evidence-critical"
+                )
+            ],
+        }
+    )
+    case_id = config.get("case_id")
+    spec = {
+        "schema": EXPERIMENT_SPEC_V2_SCHEMA,
+        "experiment_id": f"{case_id}-static-exact-ab",
+        "source_commit": config.get("source_commit"),
+        "nodes": nodes,
+    }
+    validated = validate_experiment_spec(spec)
+    write_json(output_path, spec)
+    return {
+        "status": "pass",
+        "experiment_id": spec["experiment_id"],
+        "nodes": len(validated["nodes"]),
+        "physical_terminal_nodes": 3 * len(physical_seeds),
+        "terminal_nodes": 1,
+        "physical_seeds": physical_seeds,
         "output": str(output_path.resolve()),
     }

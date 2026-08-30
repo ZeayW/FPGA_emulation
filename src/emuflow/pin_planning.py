@@ -460,6 +460,13 @@ def validate_pin_plan(
     groups: Dict[int, list[Mapping[str, Any]]] = defaultdict(list)
     collisions = set()
     group_by_domain_pin: Dict[Tuple[str, str, str, int], int] = {}
+
+    def physical_domain(entry: Mapping[str, Any]) -> Tuple[str, str, str]:
+        link = link_by_id[entry["link"]]
+        if link.capacity_sharing == "shared_bidirectional":
+            return (entry["link"], "shared_bidirectional", "shared_bidirectional")
+        return _domain_key(entry)
+
     for entry in schedule["entries"]:
         item = by_id[entry["id"]]
         group = item.get("group")
@@ -483,13 +490,13 @@ def validate_pin_plan(
                 f"pin assignment for {entry['id']!r} changed logical lane"
             )
         groups[group].append(entry)
-        collision = (*_domain_key(entry), pin, entry["slot"])
+        collision = (*physical_domain(entry), pin, entry["slot"])
         if collision in collisions:
             raise ValidationError(
                 f"physical lane/slot collision at {collision}"
             )
         collisions.add(collision)
-        domain_pin = (*_domain_key(entry), pin)
+        domain_pin = (*physical_domain(entry), pin)
         owner = group_by_domain_pin.setdefault(domain_pin, group)
         if owner != group:
             raise ValidationError(
@@ -497,13 +504,31 @@ def validate_pin_plan(
             )
     for group, entries in groups.items():
         domains = {_domain_key(entry) for entry in entries}
-        ratios = {_schedule_tdm_ratio(entry) for entry in entries}
         pins = {by_id[entry["id"]]["physical_lane"] for entry in entries}
         slots = {entry["slot"] for entry in entries}
-        if len(domains) != 1 or len(ratios) != 1 or len(pins) != 1:
+        shared_chimew_bundle = (
+            plan.get("provider") == CHIMEW_PIN_PLAN_PROVIDER
+            and len(domains) == 2
+            and len({entry["link"] for entry in entries}) == 1
+            and len({physical_domain(entry) for entry in entries}) == 1
+            and link_by_id[entries[0]["link"]].direction == "full_duplex"
+            and link_by_id[entries[0]["link"]].capacity_sharing
+            == "shared_bidirectional"
+        )
+        if (
+            (len(domains) != 1 and not shared_chimew_bundle)
+            or len(pins) != 1
+        ):
             raise ValidationError(f"group {group} is not homogeneous")
-        ratio = next(iter(ratios))
-        if len(entries) > ratio or len(slots) != len(entries):
+        entries_by_domain = {
+            domain: [entry for entry in entries if _domain_key(entry) == domain]
+            for domain in domains
+        }
+        for domain_entries in entries_by_domain.values():
+            ratios = {_schedule_tdm_ratio(entry) for entry in domain_entries}
+            if len(ratios) != 1 or len(domain_entries) > next(iter(ratios)):
+                raise ValidationError(f"group {group} violates TDM capacity")
+        if len(slots) != len(entries):
             raise ValidationError(f"group {group} violates TDM capacity")
     assignment = {
         entry_id: (item["group"], item["physical_lane"])

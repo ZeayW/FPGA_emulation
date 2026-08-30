@@ -768,6 +768,13 @@ class ExperimentDagTest(unittest.TestCase):
             self.assertEqual(output.stat().st_mode & 0o222, 0)
             self.assertEqual((output / "phase1.json").stat().st_mode & 0o222, 0)
             self.assertTrue(report["checkpoint"]["output_immutable"])
+            self.assertGreaterEqual(
+                report["checkpoint"]["execution_elapsed_seconds"], 0.0
+            )
+            self.assertEqual(
+                report["checkpoint"]["execution_elapsed_seconds"],
+                report["elapsed_seconds"],
+            )
 
     def test_explicit_validation_still_rehashes_managed_content(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

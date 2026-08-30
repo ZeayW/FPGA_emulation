@@ -185,7 +185,9 @@ def _release_legacy_farm_launch_locks(
         stream.close()
 
 
-def _retirement_artifact_digest(path: Path) -> tuple[str, str, int]:
+def _retirement_artifact_digest(
+    path: Path, *, ignored_paths: frozenset[str] = frozenset()
+) -> tuple[str, str, int]:
     """Seal a legacy tree without following generated internal symlinks."""
 
     if path.is_symlink():
@@ -199,6 +201,8 @@ def _retirement_artifact_digest(path: Path) -> tuple[str, str, int]:
         for name in sorted(directory_names):
             child = current_path / name
             relative = child.relative_to(path).as_posix()
+            if relative in ignored_paths:
+                continue
             if child.is_symlink():
                 records.append(
                     {
@@ -210,11 +214,17 @@ def _retirement_artifact_digest(path: Path) -> tuple[str, str, int]:
             else:
                 records.append({"path": relative, "kind": "directory"})
         directory_names[:] = [
-            name for name in directory_names if not (current_path / name).is_symlink()
+            name
+            for name in directory_names
+            if (current_path / name).relative_to(path).as_posix()
+            not in ignored_paths
+            and not (current_path / name).is_symlink()
         ]
         for name in sorted(file_names):
             child = current_path / name
             relative = child.relative_to(path).as_posix()
+            if relative in ignored_paths:
+                continue
             if child.is_symlink():
                 records.append(
                     {
@@ -721,9 +731,18 @@ def _make_writable(root: Path) -> None:
     if root.is_dir():
         root.chmod(0o755)
         for path in root.rglob("*"):
-            path.chmod(0o755 if path.is_dir() else 0o644)
-    elif root.exists():
-        root.chmod(0o644)
+            # chmod follows symlinks on the supported Python/HPC platforms.
+            # A retired build tree may legitimately contain either a live or
+            # dangling generated-library symlink; neither target belongs to
+            # the retirement candidate and must ever be mutated here.
+            if path.is_symlink():
+                continue
+            # Removing a regular file only requires write permission on its
+            # parent directory.  Do not chmod files: cache/evidence
+            # materialization may intentionally hard-link an immutable file
+            # into another tree, and chmod would mutate every surviving link.
+            if path.is_dir():
+                path.chmod(0o755)
 
 
 def apply_experiment_gc(plan_path: Path, expected_sha256: str) -> dict[str, Any]:
@@ -1183,3 +1202,97 @@ def apply_legacy_run_retirement(
         return receipt
     finally:
         _release_legacy_farm_launch_locks(farm_locks)
+
+
+def resume_legacy_run_retirement(
+    receipt_root: Path,
+    expected_receipt_sha256: str,
+) -> dict[str, Any]:
+    """Resume only the removal half of an atomically quarantined retirement.
+
+    The original names are already unavailable at this point.  Resume first
+    revalidates every remaining quarantined tree against the copied, sealed
+    plan and the current receipt before deleting another byte.
+    """
+
+    receipt_root = receipt_root.expanduser().resolve()
+    receipt_path = receipt_root / "retirement-receipt.json"
+    plan_path = receipt_root / "retirement-plan.json"
+    if (
+        len(expected_receipt_sha256) != 64
+        or not receipt_path.is_file()
+        or _sha256(receipt_path) != expected_receipt_sha256
+    ):
+        raise ValidationError("legacy retirement resume receipt seal is broken")
+    receipt = read_json(receipt_path)
+    if (
+        receipt.get("schema") != EXPERIMENT_RETIREMENT_RECEIPT_SCHEMA
+        or receipt.get("status") != "in-progress"
+    ):
+        raise ValidationError("legacy retirement receipt is not resumable")
+    if not plan_path.is_file() or _sha256(plan_path) != receipt.get("plan_sha256"):
+        raise ValidationError("legacy retirement copied plan seal is broken")
+    plan = read_json(plan_path)
+    if (
+        plan.get("schema") != EXPERIMENT_RETIREMENT_PLAN_SCHEMA
+        or plan.get("status") != "planned"
+    ):
+        raise ValidationError("legacy retirement copied plan is invalid")
+    root = Path(plan["root"]).resolve()
+    candidates = {candidate["name"]: candidate for candidate in plan["candidates"]}
+    removed_names = {candidate["name"] for candidate in receipt.get("removed", [])}
+    pending: list[tuple[dict[str, Any], dict[str, Any], Path]] = []
+
+    # Validate the complete remaining set before removing the first tree.
+    for record in receipt.get("quarantine", []):
+        name = record.get("name")
+        candidate = candidates.get(name)
+        if candidate is None or not isinstance(name, str) or Path(name).name != name:
+            raise ValidationError("legacy retirement resume candidate is invalid")
+        expected_path = root / (
+            f".emuflow-retiring-{name}-{receipt['plan_sha256'][:12]}"
+        )
+        path = Path(record.get("path", ""))
+        if path != expected_path or path.is_symlink():
+            raise ValidationError("legacy retirement quarantine path changed")
+        if os.path.lexists(root / name):
+            raise ValidationError("legacy retirement original name reappeared")
+        if record.get("status") == "removed":
+            if os.path.lexists(path) or name not in removed_names:
+                raise ValidationError("legacy retirement removed state changed")
+            continue
+        if record.get("status") != "moved" or not path.is_dir():
+            raise ValidationError("legacy retirement quarantine state changed")
+        ignored = frozenset()
+        marker = path / FARM_RETIREMENT_MARKER
+        if marker.is_file():
+            marker_record = read_json(marker)
+            if (
+                marker_record.get("schema") != FARM_RETIREMENT_MARKER_SCHEMA
+                or marker_record.get("status") != "retirement-pending"
+                or marker_record.get("plan_sha256") != receipt["plan_sha256"]
+            ):
+                raise ValidationError("legacy retirement pending marker changed")
+            ignored = frozenset({FARM_RETIREMENT_MARKER})
+        kind, digest, size = _retirement_artifact_digest(
+            path, ignored_paths=ignored
+        )
+        if (kind, digest, size) != (
+            candidate.get("kind"),
+            candidate.get("sha256"),
+            candidate.get("bytes"),
+        ):
+            raise ValidationError("legacy retirement quarantine content changed")
+        pending.append((candidate, record, path))
+
+    for candidate, record, path in pending:
+        _make_writable(path)
+        shutil.rmtree(path)
+        receipt["removed"].append(candidate)
+        receipt["removed_bytes"] += candidate["bytes"]
+        record["status"] = "removed"
+        write_json(receipt_path, receipt)
+    receipt["status"] = "pass"
+    receipt["finished_at"] = datetime.now(timezone.utc).isoformat()
+    write_json(receipt_path, receipt)
+    return receipt

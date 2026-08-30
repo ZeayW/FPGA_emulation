@@ -7,6 +7,7 @@ from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import (
     CUT_MODE_SEQUENTIAL_ONLY,
+    CUT_MODE_STATIC_EXACT,
     assign_clusters,
     build_clusters,
     build_partition_assignment,
@@ -26,9 +27,15 @@ from .partition_physical_feedback import (
 )
 from .platform import Platform
 from .repart import run_repart
-from .mfspart_provider import run_mfspart
+from .mfspart_provider import refine_mfspart_partition, run_mfspart
+from .mfspart_refine import DEFAULT_BOTTLENECK_BETA, DEFAULT_TIMING_PATH_BETA
+from .sta import validate_sta_path_database
 from .tritonpart import load_partition_net_weights, run_tritonpart
 from .routing import load_route_constraints
+from .combinational_cut import (
+    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+)
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
@@ -126,9 +133,17 @@ def run_phase3(
     mfspart_refiner: Optional[str] = None,
     mfspart_refiner_checker: Optional[str] = None,
     mfspart_legalizer: Optional[str] = None,
+    mfspart_post_refinement: Optional[bool] = None,
+    mfspart_post_refinement_early_stop: int = 1000,
+    mfspart_post_refinement_bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
+    timing_path_database_path: Optional[Path] = None,
+    mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
-    max_cross_fpga_dependency_depth: int = 1,
+    max_cross_fpga_dependency_depth: int = (
+        STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
+    ),
     comb_segment_budget_slots: int = 1,
+    static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     timing_database_path: Optional[Path] = None,
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
@@ -160,6 +175,10 @@ def run_phase3(
         raise ValidationError(
             "PATRON physical feedback scale has no system timing source"
         )
+    if mfspart_post_refinement is None:
+        mfspart_post_refinement = (
+            cut_mode == CUT_MODE_STATIC_EXACT and provider == "tritonpart"
+        )
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
     constraints = load_partition_constraints(
@@ -185,6 +204,7 @@ def run_phase3(
         ),
         comb_segment_budget_slots=comb_segment_budget_slots,
         frame_slots=route_constraints["frame_slots"],
+        static_exact_candidate_policy=static_exact_candidate_policy,
     )
     patron_validation = None
     if provider == "greedy":
@@ -382,6 +402,30 @@ def run_phase3(
             "expected 'repart-replication', 'repart', 'tritonpart', "
             "'mfspart', 'patron', or 'greedy'"
         )
+    mfspart_post_refinement_report = None
+    if mfspart_post_refinement:
+        if provider != "tritonpart":
+            raise ValueError(
+                "MFSPart post-refinement requires provider='tritonpart'"
+            )
+        if timing_path_database_path is not None:
+            validate_sta_path_database(timing_path_database_path, ir_path)
+        assignment, mfspart_post_refinement_report = refine_mfspart_partition(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            route_constraints,
+            assignment,
+            output_dir / "mfspart-post-refinement",
+            net_weights=load_partition_net_weights(net_weights_path),
+            early_stop=mfspart_post_refinement_early_stop,
+            bottleneck_beta=mfspart_post_refinement_bottleneck_beta,
+            timing_path_database_path=timing_path_database_path,
+            timing_path_beta=mfspart_post_refinement_timing_path_beta,
+            refiner=mfspart_refiner,
+            refiner_checker=mfspart_refiner_checker,
+        )
     assignment, hop_refinement = refine_partition_hops(
         ir,
         platform,
@@ -409,6 +453,7 @@ def run_phase3(
         "seed": assignment["seed"],
         "validation": validation,
         "hop_refinement": hop_refinement,
+        "mfspart_post_refinement": mfspart_post_refinement_report,
         "partitions": [
             {
                 key: value
@@ -426,12 +471,19 @@ def run_phase3(
     }
     if cut_mode != CUT_MODE_SEQUENTIAL_ONLY:
         report["cut_mode"] = cut_mode
+        report["static_exact_candidate_policy"] = (
+            static_exact_candidate_policy
+        )
         report["qualification"] = "partition-legality-only-provisional"
         report["artifacts"]["semantic_contract"] = (
             "assignment.json#/semantic_contract"
         )
     if provider == "tritonpart":
         report["artifacts"]["tritonpart"] = "tritonpart/tritonpart_input.json"
+        if mfspart_post_refinement_report is not None:
+            report["artifacts"]["mfspart_post_refinement"] = (
+                "mfspart-post-refinement/post_refinement.json"
+            )
     elif provider in {"repart", "repart-replication"}:
         report["artifacts"]["repart"] = "repart/repart_input.json"
         if provider == "repart-replication":

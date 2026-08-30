@@ -23,6 +23,28 @@ These requirements apply to all work in this repository.
   advanced the branch, rebase safely and repeat the verification; never force
   push over unrelated work.
 
+## Versioned defaults must not preserve implicit legacy behavior
+
+- When a validated algorithm or policy becomes the default, make that default
+  uniform at every user-facing CLI, Python API, and experiment-config entry
+  point. Do not add hidden inference such as "an omitted policy plus an old
+  depth value means legacy mode" merely to keep parameter-omitting historical
+  calls behaving as before. Such inference is ambiguous, undocumented state
+  and creates permanent compatibility debt.
+- Historical experiment interpretation belongs to the immutable artifact:
+  schema version, sealed configuration, policy/provider identifier, hashes,
+  and validator. Preserve the ability to read and independently validate old
+  artifacts when their schema remains supported; do not preserve their old
+  invocation defaults in current producer APIs.
+- A legacy algorithm remains available only through an explicit, versioned
+  provider/policy and every legacy rerun must name it plus all noncurrent
+  parameters explicitly. Tests that exercise legacy semantics must do the
+  same. Missing parameters always mean the current documented defaults.
+- Prefer one clear breaking default transition with an explicit legacy option
+  over conditional fallback logic. If an external compatibility promise truly
+  requires an old invocation contract, expose a separately named versioned
+  command/config schema rather than making the current command guess intent.
+
 ## Universal experiment lifecycle and checkpoint reuse
 
 These rules apply to every present and future EmuFlow experiment: correctness

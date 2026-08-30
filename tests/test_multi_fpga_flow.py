@@ -85,6 +85,9 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 cut_mode="static-exact-combinational",
                 max_cross_fpga_dependency_depth=1,
                 comb_segment_budget_slots=1,
+                static_exact_candidate_policy=(
+                    "potential-frontier-depth-v1"
+                ),
             )
             self.assertEqual(report["status"], "pass")
             self.assertEqual(
@@ -176,10 +179,30 @@ class MultiFpgaFlowTest(unittest.TestCase):
             self.assertEqual(
                 run.call_args.kwargs["slot_refinement_iterations"], 0
             )
+            self.assertEqual(
+                run.call_args.kwargs["static_exact_candidate_policy"],
+                "assignment-derived-acyclic-v2",
+            )
+            self.assertEqual(
+                run.call_args.kwargs["max_cross_fpga_dependency_depth"], 8
+            )
+            self.assertEqual(
+                run.call_args.kwargs[
+                    "mfspart_post_refinement_timing_path_beta"
+                ],
+                0.0,
+            )
             run.reset_mock()
             self.assertEqual(_dispatch(safe), 0)
             self.assertEqual(
                 run.call_args.kwargs["slot_refinement_iterations"], 200
+            )
+            self.assertEqual(
+                run.call_args.kwargs["static_exact_candidate_policy"],
+                "assignment-derived-acyclic-v2",
+            )
+            self.assertEqual(
+                run.call_args.kwargs["max_cross_fpga_dependency_depth"], 8
             )
 
         explicit = parser.parse_args(

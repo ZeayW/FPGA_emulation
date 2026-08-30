@@ -2,8 +2,9 @@
 
 ## Status and claim boundary
 
-The production flow remains `sequential-only`. The opt-in depth-1/depth-2 path now
-passes Phase 3 partition legality, Phase 4 native-route contract propagation,
+The production flow remains `sequential-only` pending real QoR promotion. The
+legacy opt-in depth-1/depth-2 path and generalized v2 path now pass Phase 3
+partition legality, Phase 4 native-route contract propagation,
 and Phase 5 dependency/capture scheduling. Safe-mode Phase 3 transports
 register outputs, transport-safe register inputs, and replicated primary
 inputs; other combinational connectivity remains atomic. The checked-in
@@ -13,9 +14,12 @@ cut dependencies, and atomic-component reductions. It does **not** change a
 partition, create a transport schedule, establish macro-cycle equivalence, or
 claim physical timing closure.
 
-The opt-in Phase 3 mode `static-exact-combinational` implements the first
-legality gate for dependency depth 1 or 2 and emits an independently reconstructed
-semantic contract. Phase 4 binds that contract through native routing. Phase 5
+The opt-in Phase 3 mode `static-exact-combinational` has two explicit candidate
+policies. `potential-frontier-depth-v1` preserves the historical depth-1/2
+behavior. `assignment-derived-acyclic-v2` releases every structurally legal
+candidate, reconstructs dependency depth from the selected assignment, accepts
+any positive safety cap, and emits the v2 semantic contract. Phase 4 binds that
+contract through native routing. Phase 5
 uses it to prove when downstream combinational values become available and
 when terminal captures are ready. Phase 6 now materializes contract-bound,
 preserved TX/RX boundaries and shadow-only consumer nets, then evaluates TX
@@ -62,9 +66,10 @@ through routes, schedule, Phase 6 split, and Phase 7C:
 
 ```json
 {
-  "schema": "emuflow.static-exact-combinational-cut/v1",
+  "schema": "emuflow.static-exact-combinational-cut/v2",
   "mode": "static-exact-combinational",
-  "max_cross_fpga_dependency_depth": 1,
+  "candidate_selection_policy": "assignment-derived-acyclic-v2",
+  "max_cross_fpga_dependency_depth": 8,
   "comb_segment_budget_slots": 1,
   "slot_edge_convention": {
     "id": "fabric-rising-edge-current-slot/v1"
@@ -106,6 +111,14 @@ The first version is intentionally fail-closed:
   suppresses the local launch branch;
 - the dependency-depth limit is reconstructed from EmuIR after each candidate
   assignment, independent of the partition provider.
+- v2 never filters a candidate using its depth in the graph of all *possible*
+  cuts. A deep potential candidate can be the only selected boundary in its
+  cone and therefore have actual depth one;
+- v2 independently computes an uncongested BoardDB minimum-latency lower bound
+  over the selected dependency DAG. An assignment that cannot reach every
+  terminal capture before commit even under this optimistic bound is rejected
+  in Phase 3. Concrete routing, contention, lane capacity, and physical delay
+  remain stricter downstream gates.
 
 The characterization report is an upper bound because it ignores capacity,
 user group/fixed constraints, BoardDB hop limits, link capacity, schedule
@@ -116,11 +129,11 @@ feasibility, and physical segment deadlines.
 1. **Characterization (implemented, no behavior change).** Read-only SCC,
    eligibility, dependency-depth, and theoretical atomic-component report;
    independent exact replay; tamper tests.
-2. **Phase 3 depth 1/2 (implemented, opt-in).** Explicit cut policy, assignment
+2. **Phase 3 legacy depth 1/2 plus generalized v2 (implemented, opt-in).** Explicit cut policy, assignment
    semantic contract, provider-independent cluster/legality reconstruction,
    and balance fixture. Its strongest qualification is
    `partition-legality-only-provisional`.
-3. **Phase 4/5 depth 1/2 (implemented, opt-in).** Exact contract propagation,
+3. **Phase 4/5 arbitrary budgeted DAG depth (implemented, opt-in).** Exact contract propagation,
    canonical contract digest binding, deterministic
    dependency-aware list scheduling, source-ready/capture certificate, fixed
    frame fail-closed diagnostics, and tamper tests.
@@ -140,9 +153,117 @@ feasibility, and physical segment deadlines.
    and replays all 195,532 original timing paths. Its negative 10 ns
    target-clock WNS/TNS is reported honestly; the gate proves complete timing
    evidence and positive causal segment deadlines, not target-clock closure.
-6. **Optimizer integration.** Path-local readiness precedes any timing-DAG or
-   ratio-provider promotion; V1 depth 2 continues to use the dedicated exact
-   scheduler.
+6. **Optimizer integration.** TritonPart screens every candidate assignment
+   against the reconstructed contract and the BoardDB lower bound before seed
+   selection. The dedicated exact scheduler is a generic topological,
+   capacity-aware list scheduler; it is no longer limited to depth two. The
+   ordinary timing-DAG/ratio optimizers remain fail-closed until they consume
+   the same dependency contract.
+
+## Canonical search-space audit
+
+The generalized policy was audited on one immutable canonical DLA + EDA 2023
+case6 frontend. Sequential-only, legacy v1, and guarded generalized v2 used the
+same EmuIR bytes and the same physical seed; no arm was reconstructed from a
+different synthesis result. The original design has 379,357 instances and
+73,767 combinational nets. The resulting Phase 3 search spaces are:
+
+| policy | clusters | released combinational candidates | largest cluster | clusters above 100 instances | selected real combinational cuts |
+|---|---:|---:|---:|---:|---:|
+| sequential-only | 246,387 | 0 | 724 | 197 | 0 |
+| legacy potential-frontier v1 | 304,300 | 16,251 | 154 | 84 | 0 |
+| assignment-derived v2 with guarded refinement | 367,129 | 49,695 | 52 | 0 | 2 |
+
+V2 therefore adds 33,444 structurally legal candidate boundaries over v1 and
+removes the large atomic-cluster tail: sequential-only has 72 clusters above
+500 instances, whereas v2 has none above 100. The current canonical result is
+not candidate-starved. Its two selected cuts are the optimizer's cost-aware
+choice from the larger legal space, and both survive the complete exact
+scheduler, shadow-transport, equivalence, and routed segment-deadline gates.
+Forcing a larger cut count would optimize an activity metric rather than final
+timing QoR and is not part of the default policy.
+
+The accepted v2 assignment reaches actual dependency depth two, so the
+configured depth-eight safety cap is not active on this case. Likewise, the
+dedicated Phase 5 scheduler already accepts arbitrary acyclic depth subject to
+the fixed frame, routed latency, lane capacity, relay readiness, and capture
+deadline. These measurements do not justify weakening either fail-closed gate
+or replacing the fixed-frame feasibility proof with an assumed benefit.
+
+### Cross-policy Phase 7 promotion certificate
+
+Sequential-only, legacy Static Exact v1, and generalized Static Exact v2 do
+not share Phase 3--5 artifacts.  They must therefore be three branches from
+the same content-addressed frontend/timing inputs, not three Phase 6 providers
+under one shared assignment.  Compile that complete DAG with:
+
+```bash
+emuflow benchmark-static-exact-ab-compile \
+  --config "$CANONICAL_CASE_CONFIG" --repository-root "$SOURCE" \
+  --legacy-max-depth 2 --generalized-max-depth 8 \
+  --minimum-combinational-cut-nets 1 \
+  --out "$EXPERIMENT/static-exact-ab-spec.json"
+```
+
+The compiler retains one frontend and one complete TimingPathDB node, forks
+the partition/route/TDM/lookahead/split/physical nodes by cut policy, and adds
+the comparison as the sole terminal.  Its final producer/validator command is:
+
+```bash
+emuflow experiment-stage static-exact-qor-compare-run \
+  --platform "$PLATFORM" \
+  --arm sequential-only 1 "$SEQ_SHARED" "$SEQ_LOOKAHEAD" "$SEQ_PHASE6" "$SEQ_PHASE7" \
+  --arm legacy-static-exact-v1 1 "$V1_SHARED" "$V1_LOOKAHEAD" "$V1_PHASE6" "$V1_PHASE7" \
+  --arm generalized-static-exact-v2 1 "$V2_SHARED" "$V2_LOOKAHEAD" "$V2_PHASE6" "$V2_PHASE7" \
+  --out "$EVIDENCE/static-exact-qor"
+
+emuflow experiment-stage static-exact-qor-compare-validate \
+  "$EVIDENCE/static-exact-qor" --platform "$PLATFORM" \
+  --arm sequential-only 1 "$SEQ_SHARED" "$SEQ_LOOKAHEAD" "$SEQ_PHASE6" "$SEQ_PHASE7" \
+  --arm legacy-static-exact-v1 1 "$V1_SHARED" "$V1_LOOKAHEAD" "$V1_PHASE6" "$V1_PHASE7" \
+  --arm generalized-static-exact-v2 1 "$V2_SHARED" "$V2_LOOKAHEAD" "$V2_PHASE6" "$V2_PHASE7"
+```
+
+The checker independently replays each complete terminal chain, binds the
+three arms to identical source/timing/platform inputs and physical settings,
+and compares whole-original-design target-clock and virtual-runtime WNS/TNS.
+It also records exact-cut count/depth, virtual frequency, transport and total
+physical cells, cut nets, scheduled bit-hops, frame size, and completion slot.
+New managed checkpoints seal each node's measured wall time.  The comparison
+therefore also reports partition, routing, TDM, Phase 6, physical-lookahead,
+and Phase 7 wall times plus paired physical and Phase 3--7 totals.  These
+measurements come from immutable checkpoint manifests, not mutable farm task
+state; a historical imported checkpoint without runtime metadata remains
+valid but is not runtime-qualified.
+The generated promotion gate is false unless v2 exercises at least one real
+combinational cut and improves the paired target-clock result over
+sequential-only.  A single physical seed is the routine gate; more seeds are
+an explicit robustness study.
+
+The current canonical DLA + EDA 2023 case6 run exercised 102 generalized cuts
+at maximum dependency depth three. It completed Phase 7/7C with zero DRC
+violations, zero unrouted nets, and zero per-FPGA physical TNS, but its global
+target-clock WNS/TNS were -187.85581036 ns / -548934.0510065886 ns versus
+-84.5812926868 ns / -277276.1497366623 ns for sequential-only. Completion
+moved from slot 8 to slot 15. This is a valid negative algorithm result, not a
+validation failure: generalized semantics and physical deadlines were
+exercised, while final system-level QoR regressed. Consequently the promotion
+gate remains false and sequential-only remains the default.
+
+The automatic Phase 3 follow-up uses directional MFSPart FM after the sealed
+TritonPart assignment. Its Static Exact objective treats existing
+non-combinational transport and newly available combinational boundaries as
+different classes: an immutable per-net guard forbids increasing the initial
+worst-sink board distance of the former, while the latter pay the ordinary
+timing-weighted cut/connectivity/hop objective without inheriting an
+impossible zero-distance guard. Both the optimizer and the independent native
+checker reconstruct and enforce this rule. Legacy V1/V2 native refiner inputs
+remain readable with their original unguarded bottleneck semantics. A
+diagnostic 62-move prefix completed full Phase 7/7C at -84.913220755 ns WNS
+and -159994.95141046078 ns TNS, preserving most of the TNS benefit while
+cutting the earlier WNS regression to 0.332 ns. Because that prefix was chosen
+diagnostically, it calibrates the automatic objective but does not itself pass
+the promotion gate.
 
 ## Commands
 
@@ -161,7 +282,8 @@ emuflow phase3 \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --provider greedy \
   --cut-mode static-exact-combinational \
-  --max-cross-fpga-dependency-depth 1 \
+  --static-exact-candidate-policy assignment-derived-acyclic-v2 \
+  --max-cross-fpga-dependency-depth 8 \
   --comb-segment-budget-slots 1 \
   --out build/phase3-exact
 
@@ -192,7 +314,8 @@ emuflow multi-fpga compile design.v \
   --top top --clock clk --clock-period clk=10 \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --cut-mode static-exact-combinational \
-  --max-cross-fpga-dependency-depth 1 \
+  --static-exact-candidate-policy assignment-derived-acyclic-v2 \
+  --max-cross-fpga-dependency-depth 8 \
   --comb-segment-budget-slots 1 \
   --frame-slots 32 --physical --out build/exact-flow
 
@@ -214,7 +337,8 @@ Experiment v2 compiler by adding these fields to the case config:
 ```json
 {
   "cut_mode": "static-exact-combinational",
-  "max_cross_fpga_dependency_depth": 1,
+  "static_exact_candidate_policy": "assignment-derived-acyclic-v2",
+  "max_cross_fpga_dependency_depth": 8,
   "comb_segment_budget_slots": 1,
   "minimum_combinational_cut_nets": 1
 }
@@ -236,6 +360,15 @@ the report records whether a combinational cut was actually exercised. A
 positive threshold is an explicit exercise contract, used by the small
 capacity-limited acceptance fixture; a zero-cut large run is compatible
 evidence, not an exercised exact-cut result.
+
+The canonical three-policy QoR experiment makes this distinction explicit.
+Its sequential arm requires zero combinational cuts, its legacy v1 arm uses a
+zero minimum and becomes a `vacuous-negative-control` when the historical
+potential-frontier filter releases no selected boundary, and its generalized
+v2 arm alone inherits the requested positive exercise threshold. All three
+arms still complete Phase 1--7 so compatibility, runtime, resources, and final
+whole-design WNS/TNS remain comparable. Only an exercised generalized-v2 arm
+can satisfy the default-promotion gate.
 
 `examples/rtl/static_exact_acceptance.v` is the small real-RTL acceptance
 source. Its 33-input next-state parity needs at least seven 6-input LUTs, while

@@ -11,9 +11,10 @@ hardware BSP.
 from __future__ import annotations
 
 import hashlib
+import heapq
 import math
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -631,12 +632,10 @@ def _static_guardable_entries(
 ) -> Tuple[set[str], list[Dict[str, Any]]]:
     """Return timing-guard entries that can retain a concrete static lane.
 
-    Phase 5 may legally time-multiplex the same *shared_bidirectional*
-    BoardDB lane in opposite directions.  Chimew's electrical model, however,
-    describes static channels: materializing both directions as independently
-    fixed groups would duplicate one concrete lane.  Keep their timing weight
-    and grouping guard, but do not turn that impossible dynamic allocation into
-    a false static pin constraint.
+    Bidirectional TDM bundles represent opposite directions sharing one
+    concrete lane, so every protected entry can retain its Phase-5 lane.  The
+    returned legacy relaxation list is intentionally empty; keeping the field
+    preserves report compatibility while making any future relaxation visible.
     """
 
     entries = schedule.get("entries")
@@ -660,7 +659,6 @@ def _static_guardable_entries(
             "academic Chimew timing guard references an unknown schedule entry"
         )
 
-    by_shared_lane: Dict[Tuple[str, int], list[Mapping[str, Any]]] = defaultdict(list)
     for entry_id in protected_entries:
         entry = entries_by_id[entry_id]
         link_id = entry.get("link")
@@ -673,40 +671,352 @@ def _static_guardable_entries(
             or lane < 0
         ):
             raise ValidationError("academic Chimew timing guard lane is malformed")
-        if link_by_id[link_id].capacity_sharing == "shared_bidirectional":
-            by_shared_lane[(link_id, lane)].append(entry)
+    return set(protected_entries), []
 
-    relaxed_entries: set[str] = set()
-    relaxed_lanes: list[Dict[str, Any]] = []
-    for (link_id, lane), lane_entries in sorted(by_shared_lane.items()):
-        directions = {
-            (entry.get("from"), entry.get("to")) for entry in lane_entries
-        }
-        if len(directions) < 2:
-            continue
-        if any(
-            not isinstance(source, str) or not isinstance(sink, str)
-            for source, sink in directions
+
+def _group_ratio_slots(
+    key: Tuple[str, str, int],
+    members: list[Dict[str, Any]],
+    schedule_by_id: Mapping[str, Mapping[str, Any]],
+) -> Tuple[int, set[int]]:
+    ratios: set[int] = set()
+    slots: set[int] = set()
+    for member in members:
+        entry = schedule_by_id.get(member["id"])
+        if entry is None:
+            raise ValidationError("academic Chimew group references an unknown entry")
+        ratio = entry.get("tdm_ratio")
+        slot = entry.get("slot")
+        if (
+            isinstance(ratio, bool)
+            or not isinstance(ratio, int)
+            or ratio <= 0
+            or isinstance(slot, bool)
+            or not isinstance(slot, int)
+            or slot < 0
         ):
-            raise ValidationError("academic Chimew timing guard direction is malformed")
-        entry_ids = sorted(entry["id"] for entry in lane_entries)
-        relaxed_entries.update(entry_ids)
-        relaxed_lanes.append(
-            {
-                "link": link_id,
-                "physical_lane": lane,
-                "directions": [
-                    {"from": source, "to": sink}
-                    for source, sink in sorted(directions)
-                ],
-                "schedule_entries": entry_ids,
-                "reason": (
-                    "opposite directions share a time-multiplexed BoardDB lane; "
-                    "static Chimew channels cannot duplicate a concrete shared lane"
-                ),
-            }
+            raise ValidationError("academic Chimew group has invalid TDM coordinates")
+        ratios.add(ratio)
+        if slot in slots:
+            raise ValidationError("academic Chimew group has a TDM slot collision")
+        slots.add(slot)
+    if len(ratios) != 1 or len(members) > next(iter(ratios)):
+        raise ValidationError("academic Chimew group violates TDM capacity")
+    return next(iter(ratios)), slots
+
+
+def _group_endpoint_y(
+    members: list[Dict[str, Any]], direction: str
+) -> Tuple[float, float]:
+    endpoint_a = []
+    endpoint_b = []
+    for member in members:
+        fanout_y = float(member["fanout"]["y"])
+        fanin_y = sum(float(point["y"]) for point in member["fanins"]) / len(
+            member["fanins"]
         )
-    return protected_entries - relaxed_entries, relaxed_lanes
+        if direction == "a_to_b":
+            endpoint_a.append(fanout_y)
+            endpoint_b.append(fanin_y)
+        else:
+            endpoint_a.append(fanin_y)
+            endpoint_b.append(fanout_y)
+    return sum(endpoint_a) / len(endpoint_a), sum(endpoint_b) / len(endpoint_b)
+
+
+def _maximum_bipartite_matching(
+    adjacency: list[list[int]], right_count: int
+) -> Tuple[list[int], list[int]]:
+    """Deterministic Hopcroft--Karp certificate for bundle feasibility."""
+
+    left_match = [-1] * len(adjacency)
+    right_match = [-1] * right_count
+    distance = [0] * len(adjacency)
+    infinity = len(adjacency) + right_count + 1
+
+    def bfs() -> bool:
+        queue: deque[int] = deque()
+        found = False
+        for left in range(len(adjacency)):
+            if left_match[left] < 0:
+                distance[left] = 0
+                queue.append(left)
+            else:
+                distance[left] = infinity
+        while queue:
+            left = queue.popleft()
+            for right in adjacency[left]:
+                mate = right_match[right]
+                if mate < 0:
+                    found = True
+                elif distance[mate] == infinity:
+                    distance[mate] = distance[left] + 1
+                    queue.append(mate)
+        return found
+
+    def dfs(left: int) -> bool:
+        for right in adjacency[left]:
+            mate = right_match[right]
+            if mate < 0 or (
+                distance[mate] == distance[left] + 1 and dfs(mate)
+            ):
+                left_match[left] = right
+                right_match[right] = left
+                return True
+        distance[left] = infinity
+        return False
+
+    while bfs():
+        for left in range(len(adjacency)):
+            if left_match[left] < 0:
+                dfs(left)
+    return left_match, right_match
+
+
+def _minimum_cost_pairs(
+    adjacency: list[list[Tuple[int, int]]], right_count: int, target: int
+) -> list[Tuple[int, int]]:
+    """Return an exact deterministic min-cost cardinality matching."""
+
+    if target == 0:
+        return []
+    left_count = len(adjacency)
+    source = 0
+    first_left = 1
+    first_right = first_left + left_count
+    sink = first_right + right_count
+    graph: list[list[list[int]]] = [[] for _ in range(sink + 1)]
+    pair_edges: Dict[Tuple[int, int], list[int]] = {}
+
+    def add_edge(start: int, end: int, capacity: int, cost: int) -> list[int]:
+        forward = [end, len(graph[end]), capacity, cost]
+        reverse = [start, len(graph[start]), 0, -cost]
+        graph[start].append(forward)
+        graph[end].append(reverse)
+        return forward
+
+    for left in range(left_count):
+        add_edge(source, first_left + left, 1, 0)
+    edge_count = sum(len(row) for row in adjacency)
+    lexicographic_scale = target * max(1, edge_count) + 1
+    rank = 0
+    for left, row in enumerate(adjacency):
+        for right, primary_cost in row:
+            pair_edges[(left, right)] = add_edge(
+                first_left + left,
+                first_right + right,
+                1,
+                primary_cost * lexicographic_scale + rank,
+            )
+            rank += 1
+    for right in range(right_count):
+        add_edge(first_right + right, sink, 1, 0)
+
+    potential = [0] * len(graph)
+    infinity = 1 << 120
+    flow = 0
+    while flow < target:
+        distance = [infinity] * len(graph)
+        previous: list[Optional[Tuple[int, int]]] = [None] * len(graph)
+        distance[source] = 0
+        queue = [(0, source)]
+        while queue:
+            current, node = heapq.heappop(queue)
+            if current != distance[node]:
+                continue
+            for edge_index, edge in enumerate(graph[node]):
+                end, _reverse, capacity, cost = edge
+                if capacity <= 0:
+                    continue
+                candidate = current + cost + potential[node] - potential[end]
+                if candidate < distance[end]:
+                    distance[end] = candidate
+                    previous[end] = (node, edge_index)
+                    heapq.heappush(queue, (candidate, end))
+        if distance[sink] == infinity:
+            raise ValidationError(
+                "shared-bidirectional Chimew bundling is unexpectedly infeasible"
+            )
+        for node, value in enumerate(distance):
+            if value != infinity:
+                potential[node] += value
+        node = sink
+        while node != source:
+            predecessor = previous[node]
+            if predecessor is None:
+                raise ValidationError("shared-bidirectional matching is incomplete")
+            start, edge_index = predecessor
+            edge = graph[start][edge_index]
+            edge[2] -= 1
+            graph[node][edge[1]][2] += 1
+            node = start
+        flow += 1
+    return sorted(pair for pair, edge in pair_edges.items() if edge[2] == 0)
+
+
+def _bundle_shared_bidirectional_groups(
+    *,
+    link_id: str,
+    lane_count: int,
+    grouped: Mapping[Tuple[str, str, int], list[Dict[str, Any]]],
+    fixed_lane_by_group: Mapping[Tuple[str, str, int], int],
+    schedule_by_id: Mapping[str, Mapping[str, Any]],
+) -> Tuple[
+    Dict[Tuple[str, str, int], list[Dict[str, Any]]],
+    Dict[Tuple[str, str, int], int],
+    Dict[Tuple[str, str, int], list[Tuple[str, str, int]]],
+    Dict[str, int],
+]:
+    """Pack opposite directions onto one shared lane when TDM slots permit.
+
+    This is a strict static representation of Phase 5's dynamic
+    ``shared_bidirectional`` capacity contract: only disjoint slot sets may be
+    combined, and the exact minimum number of pairs required by lane capacity
+    is selected with a certified maximum-cardinality feasibility check followed
+    by deterministic min-cost matching.
+    """
+
+    forward = sorted(
+        key for key in grouped if key[0] == link_id and key[1] == "a_to_b"
+    )
+    reverse = sorted(
+        key for key in grouped if key[0] == link_id and key[1] == "b_to_a"
+    )
+    all_keys = forward + reverse
+    required_pairs = max(0, len(all_keys) - lane_count)
+    group_tdm = {
+        key: _group_ratio_slots(key, grouped[key], schedule_by_id)
+        for key in all_keys
+    }
+    endpoint_y = {
+        key: _group_endpoint_y(grouped[key], key[1]) for key in all_keys
+    }
+
+    forced_pairs: list[Tuple[Tuple[str, str, int], Tuple[str, str, int]]] = []
+    forward_by_lane = {
+        fixed_lane_by_group[key]: key
+        for key in forward
+        if key in fixed_lane_by_group
+    }
+    reverse_by_lane = {
+        fixed_lane_by_group[key]: key
+        for key in reverse
+        if key in fixed_lane_by_group
+    }
+    if len(forward_by_lane) != sum(
+        key in fixed_lane_by_group for key in forward
+    ) or len(reverse_by_lane) != sum(
+        key in fixed_lane_by_group for key in reverse
+    ):
+        raise ValidationError(
+            "timing guard assigns two same-direction groups to one shared lane"
+        )
+    for lane in sorted(set(forward_by_lane) & set(reverse_by_lane)):
+        lhs, rhs = forward_by_lane[lane], reverse_by_lane[lane]
+        _lhs_ratio, lhs_slots = group_tdm[lhs]
+        _rhs_ratio, rhs_slots = group_tdm[rhs]
+        if lhs_slots & rhs_slots:
+            raise ValidationError(
+                "timing-guarded opposite directions collide on a shared lane"
+            )
+        forced_pairs.append((lhs, rhs))
+
+    forced_forward = {lhs for lhs, _rhs in forced_pairs}
+    forced_reverse = {rhs for _lhs, rhs in forced_pairs}
+    remaining_forward = [key for key in forward if key not in forced_forward]
+    remaining_reverse = [key for key in reverse if key not in forced_reverse]
+
+    primary_costs: Dict[Tuple[int, int], int] = {}
+    adjacency: list[list[int]] = [[] for _ in remaining_forward]
+    for left, lhs in enumerate(remaining_forward):
+        _lhs_ratio, lhs_slots = group_tdm[lhs]
+        lhs_fixed = fixed_lane_by_group.get(lhs)
+        for right, rhs in enumerate(remaining_reverse):
+            _rhs_ratio, rhs_slots = group_tdm[rhs]
+            rhs_fixed = fixed_lane_by_group.get(rhs)
+            if (
+                lhs_slots & rhs_slots
+                or (
+                    lhs_fixed is not None
+                    and rhs_fixed is not None
+                    and lhs_fixed != rhs_fixed
+                )
+            ):
+                continue
+            adjacency[left].append(right)
+            primary_costs[(left, right)] = int(
+                math.floor(
+                    (
+                        abs(endpoint_y[lhs][0] - endpoint_y[rhs][0])
+                        + abs(endpoint_y[lhs][1] - endpoint_y[rhs][1])
+                    )
+                    * 1000.0
+                    + 0.5
+                )
+            )
+
+    maximum_left, _maximum_right = _maximum_bipartite_matching(
+        adjacency, len(remaining_reverse)
+    )
+    maximum_additional = sum(right >= 0 for right in maximum_left)
+    additional_target = max(0, required_pairs - len(forced_pairs))
+    if maximum_additional < additional_target:
+        raise ValidationError(
+            "shared-bidirectional Chimew groups cannot fit the physical lane "
+            f"budget: groups={len(all_keys)}, lanes={lane_count}, "
+            f"required_pairs={required_pairs}, "
+            f"maximum_compatible_pairs={len(forced_pairs) + maximum_additional}"
+        )
+    weighted_adjacency = [
+        [(right, primary_costs[(left, right)]) for right in row]
+        for left, row in enumerate(adjacency)
+    ]
+    selected = _minimum_cost_pairs(
+        weighted_adjacency, len(remaining_reverse), additional_target
+    )
+    pairs = forced_pairs + [
+        (remaining_forward[left], remaining_reverse[right])
+        for left, right in selected
+    ]
+    pairs.sort()
+    paired_keys = {key for pair in pairs for key in pair}
+
+    materialized: Dict[Tuple[str, str, int], list[Dict[str, Any]]] = {}
+    materialized_fixed: Dict[Tuple[str, str, int], int] = {}
+    sources: Dict[Tuple[str, str, int], list[Tuple[str, str, int]]] = {}
+    for key in sorted(set(all_keys) - paired_keys):
+        members = [{**member, "direction": key[1]} for member in grouped[key]]
+        materialized[key] = members
+        sources[key] = [key]
+        if key in fixed_lane_by_group:
+            materialized_fixed[key] = fixed_lane_by_group[key]
+    for bundle_id, (lhs, rhs) in enumerate(pairs):
+        key = (link_id, "bidirectional", bundle_id)
+        materialized[key] = sorted(
+            [
+                *({**member, "direction": lhs[1]} for member in grouped[lhs]),
+                *({**member, "direction": rhs[1]} for member in grouped[rhs]),
+            ],
+            key=lambda member: member["id"],
+        )
+        sources[key] = [lhs, rhs]
+        fixed = {
+            fixed_lane_by_group[source]
+            for source in (lhs, rhs)
+            if source in fixed_lane_by_group
+        }
+        if len(fixed) > 1:
+            raise ValidationError(
+                "shared-bidirectional bundle has conflicting fixed lanes"
+            )
+        if fixed:
+            materialized_fixed[key] = next(iter(fixed))
+    return materialized, materialized_fixed, sources, {
+        "required_pairs": required_pairs,
+        "maximum_compatible_pairs": len(forced_pairs) + maximum_additional,
+        "selected_pairs": len(pairs),
+        "forced_pairs": len(forced_pairs),
+    }
 
 
 def materialize_academic_chimew_inputs(
@@ -1016,6 +1326,47 @@ def materialize_academic_chimew_inputs(
                 )
             fixed_lane_by_group[key] = next(iter(guarded))[3]
 
+    materialized_grouped: Dict[
+        Tuple[str, str, int], list[Dict[str, Any]]
+    ] = {}
+    materialized_fixed_lanes: Dict[Tuple[str, str, int], int] = {}
+    source_groups_by_materialized: Dict[
+        Tuple[str, str, int], list[Tuple[str, str, int]]
+    ] = {}
+    shared_bundle_metrics = {
+        "required_pairs": 0,
+        "maximum_compatible_pairs": 0,
+        "selected_pairs": 0,
+        "forced_pairs": 0,
+    }
+    for link_id in sorted({key[0] for key in grouped}):
+        link = link_by_id[link_id]
+        if link.capacity_sharing == "shared_bidirectional":
+            bundled, bundled_fixed, bundled_sources, bundle_metrics = (
+                _bundle_shared_bidirectional_groups(
+                    link_id=link_id,
+                    lane_count=link.transport_bits_per_cycle_per_direction,
+                    grouped=grouped,
+                    fixed_lane_by_group=fixed_lane_by_group,
+                    schedule_by_id=schedule_by_id,
+                )
+            )
+            materialized_grouped.update(bundled)
+            materialized_fixed_lanes.update(bundled_fixed)
+            source_groups_by_materialized.update(bundled_sources)
+            for field, value in bundle_metrics.items():
+                shared_bundle_metrics[field] += value
+        else:
+            for key in sorted(key for key in grouped if key[0] == link_id):
+                materialized_grouped[key] = [
+                    {**member, "direction": key[1]} for member in grouped[key]
+                ]
+                source_groups_by_materialized[key] = [key]
+                if key in fixed_lane_by_group:
+                    materialized_fixed_lanes[key] = fixed_lane_by_group[key]
+    grouped = materialized_grouped
+    fixed_lane_by_group = materialized_fixed_lanes
+
     domains = []
     bank_pairs = []
     channels = []
@@ -1053,10 +1404,10 @@ def materialize_academic_chimew_inputs(
             ]
         elif link.capacity_sharing == "shared_bidirectional":
             # Contest BoardDBs model one lane pool shared by both directions.
-            # Put all directional groups in one optimizer domain and expose
-            # each synthetic electrical channel as direction-agnostic.  The
-            # one-to-one assignment then prevents opposite directions from
-            # silently consuming the same concrete lane.
+            # Opposite-direction Chimew groups with disjoint Phase-5 slots
+            # have already been packed into one bidirectional TDM bundle.
+            # Every remaining group/bundle therefore consumes exactly one
+            # static direction-agnostic electrical channel.
             domain_partitions = [
                 (
                     "shared_bidirectional",
@@ -1111,17 +1462,17 @@ def materialize_academic_chimew_inputs(
                 guarded_points = None
                 if guarded_domain:
                     guarded_members = grouped[domain_groups[0]]
-                    guarded_direction = domain_groups[0][1]
-                    source_y = sum(
-                        member["fanout"]["y"] for member in guarded_members
-                    ) / len(guarded_members)
-                    sink_y = sum(
-                        member["fanins"][0]["y"] for member in guarded_members
-                    ) / len(guarded_members)
+                    endpoint_points = [
+                        _group_endpoint_y(
+                            [member], member["direction"]
+                        )
+                        for member in guarded_members
+                    ]
                     guarded_points = (
-                        (source_y, sink_y)
-                        if guarded_direction == "a_to_b"
-                        else (sink_y, source_y)
+                        sum(point[0] for point in endpoint_points)
+                        / len(endpoint_points),
+                        sum(point[1] for point in endpoint_points)
+                        / len(endpoint_points),
                     )
                 for group_key in domain_groups:
                     assignment_domain_by_group[group_key] = domain_id
@@ -1244,6 +1595,16 @@ def materialize_academic_chimew_inputs(
             "kind": "tdm_group",
             "direction": direction,
             "members": members,
+            "source_directional_groups": [
+                {
+                    "link": source[0],
+                    "direction": source[1],
+                    "group": source[2],
+                }
+                for source in source_groups_by_materialized[
+                    (link_id, direction, group_id)
+                ]
+            ],
         }
         for (link_id, direction, group_id), members in sorted(grouped.items())
     ]
@@ -1286,6 +1647,16 @@ def materialize_academic_chimew_inputs(
             "fanins": len(schedule["entries"]),
             "bank_pairs": len(bank_pairs),
             "channels": len(channels),
+            "bidirectional_bundles": shared_bundle_metrics["selected_pairs"],
+            "shared_bidirectional_required_pairs": shared_bundle_metrics[
+                "required_pairs"
+            ],
+            "shared_bidirectional_maximum_compatible_pairs": (
+                shared_bundle_metrics["maximum_compatible_pairs"]
+            ),
+            "shared_bidirectional_forced_pairs": shared_bundle_metrics[
+                "forced_pairs"
+            ],
         },
     }
     electrical_map = {
@@ -1401,6 +1772,13 @@ def materialize_academic_chimew_inputs(
             "unmapped_helper_atoms": total_unmapped_helper_atoms,
             "predicted_sll_crossings": total_crossings,
             "groups": len(group_records),
+            "bidirectional_bundles": shared_bundle_metrics["selected_pairs"],
+            "shared_bidirectional_required_pairs": shared_bundle_metrics[
+                "required_pairs"
+            ],
+            "shared_bidirectional_maximum_compatible_pairs": (
+                shared_bundle_metrics["maximum_compatible_pairs"]
+            ),
             "virtual_package_pins": len(package_records),
             "timing_guard_lane_bundles": len(timing_guard_lane_bundles),
             "timing_guard_relaxed_shared_bidirectional_lanes": len(

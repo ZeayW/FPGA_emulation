@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Independent scalable certificate checker for MFSPart direct k-way FM.
+// Independent scalable certificate checker for the topology-bottleneck
+// MFSPart direct k-way FM extension.
 // The optimizer uses versioned candidate heaps and capacity-threshold
 // invalidation.  This checker deliberately uses a dynamic multidimensional
 // range-maximum tree: capacity changes alter query bounds and never scan all
@@ -41,8 +42,15 @@ struct Node {
 
 struct Net {
   double weight = 0.0;
+  double bottleneck_weight = 0.0;
+  int max_distance_limit = -1;
   int source = -1;
   std::vector<int> sinks;
+};
+
+struct TimingPath {
+  double weight = 0.0;
+  std::vector<int> pins;
 };
 
 struct Input {
@@ -54,10 +62,13 @@ struct Input {
   double gamma = 0.0;
   double lambda = 0.0;
   double mu = 0.0;
+  double bottleneck_beta = 0.0;
+  double timing_path_beta = 0.0;
   std::vector<std::vector<int>> distances;
   std::vector<std::vector<long long>> capacities;
   std::vector<Node> nodes;
   std::vector<Net> nets;
+  std::vector<TimingPath> timing_paths;
   std::vector<int> assignment;
 };
 
@@ -84,6 +95,9 @@ struct Metrics {
   long long violating_pairs = 0;
   long long capacity_violations = 0;
   long long fixed_violations = 0;
+  long long topology_guard_violations = 0;
+  long long crossed_timing_paths = 0;
+  double weighted_crossed_timing_paths = 0.0;
 };
 
 template <typename Values>
@@ -97,16 +111,22 @@ Input read_input(const std::string& path) {
   if (!stream) throw std::runtime_error("cannot open checker input");
   std::string magic;
   std::getline(stream, magic);
-  if (magic != "EMUFLOW_MFSPART_REFINER_INPUT_V1") {
+  const bool input_v4 = magic == "EMUFLOW_MFSPART_REFINER_INPUT_V4";
+  const bool input_v3 =
+      input_v4 || magic == "EMUFLOW_MFSPART_REFINER_INPUT_V3";
+  const bool input_v2 =
+      input_v3 || magic == "EMUFLOW_MFSPART_REFINER_INPUT_V2";
+  if (!input_v2 && magic != "EMUFLOW_MFSPART_REFINER_INPUT_V1") {
     throw std::runtime_error("unsupported checker input header");
   }
   Input input;
   int node_count = -1;
   int net_count = -1;
+  int timing_path_count = 0;
   bool saw_param = false;
   std::vector<std::vector<bool>> saw_distance;
   std::vector<std::vector<bool>> saw_capacity;
-  std::vector<bool> saw_node, saw_net, saw_assignment;
+  std::vector<bool> saw_node, saw_net, saw_timing_path, saw_assignment;
   std::string kind;
   while (stream >> kind) {
     if (kind == "PARAM") {
@@ -114,11 +134,17 @@ Input read_input(const std::string& path) {
       stream >> input.parts >> node_count >> input.dimensions >> net_count >>
           input.hmax >> input.move_distance >> input.early_stop >> input.gamma >>
           input.lambda >> input.mu;
+      if (input_v2) stream >> input.bottleneck_beta;
+      if (input_v4) stream >> timing_path_count >> input.timing_path_beta;
       if (input.parts <= 0 || node_count <= 0 || input.dimensions <= 0 ||
           net_count < 0 || input.hmax < 1 || input.move_distance < 1 ||
           input.early_stop < 1 || !std::isfinite(input.gamma) ||
           !std::isfinite(input.lambda) || !std::isfinite(input.mu) ||
-          input.gamma < 0.0 || input.lambda < 0.0 || input.mu < 0.0) {
+          !std::isfinite(input.bottleneck_beta) || input.gamma < 0.0 ||
+          input.lambda < 0.0 || input.mu < 0.0 ||
+          input.bottleneck_beta < 0.0 || timing_path_count < 0 ||
+          !std::isfinite(input.timing_path_beta) ||
+          input.timing_path_beta < 0.0) {
         throw std::runtime_error("invalid PARAM");
       }
       input.distances.assign(input.parts, std::vector<int>(input.parts, -1));
@@ -126,12 +152,14 @@ Input read_input(const std::string& path) {
           input.parts, std::vector<long long>(input.dimensions, 0));
       input.nodes.assign(node_count, Node{});
       input.nets.assign(net_count, Net{});
+      input.timing_paths.assign(timing_path_count, TimingPath{});
       input.assignment.assign(node_count, -1);
       saw_distance.assign(input.parts, std::vector<bool>(input.parts, false));
       saw_capacity.assign(input.parts,
                           std::vector<bool>(input.dimensions, false));
       saw_node.assign(node_count, false);
       saw_net.assign(net_count, false);
+      saw_timing_path.assign(timing_path_count, false);
       saw_assignment.assign(node_count, false);
       saw_param = true;
     } else if (kind == "DIST") {
@@ -173,9 +201,18 @@ Input read_input(const std::string& path) {
     } else if (kind == "NET") {
       int index = -1, sink_count = -1;
       Net net;
-      stream >> index >> net.weight >> net.source >> sink_count;
+      stream >> index >> net.weight;
+      if (input_v3) {
+        stream >> net.bottleneck_weight >> net.max_distance_limit;
+      } else {
+        net.bottleneck_weight = net.weight;
+      }
+      stream >> net.source >> sink_count;
       if (!saw_param || index < 0 || index >= net_count || saw_net[index] ||
-          !std::isfinite(net.weight) || net.weight <= 0.0 || net.source < 0 ||
+          !std::isfinite(net.weight) || net.weight <= 0.0 ||
+          !std::isfinite(net.bottleneck_weight) ||
+          net.bottleneck_weight < 0.0 || net.max_distance_limit < -1 ||
+          net.source < 0 ||
           net.source >= node_count || sink_count <= 0) {
         throw std::runtime_error("invalid NET");
       }
@@ -199,12 +236,34 @@ Input read_input(const std::string& path) {
       }
       input.assignment[node] = part;
       saw_assignment[node] = true;
+    } else if (kind == "PATH") {
+      int index = -1, pin_count = -1;
+      TimingPath timing_path;
+      stream >> index >> timing_path.weight >> pin_count;
+      if (!saw_param || !input_v4 || index < 0 ||
+          index >= timing_path_count || saw_timing_path[index] ||
+          !std::isfinite(timing_path.weight) || timing_path.weight <= 0.0 ||
+          pin_count < 2) {
+        throw std::runtime_error("invalid PATH");
+      }
+      std::set<int> unique;
+      timing_path.pins.resize(pin_count);
+      for (int& pin : timing_path.pins) {
+        stream >> pin;
+        if (pin < 0 || pin >= node_count || !unique.insert(pin).second) {
+          throw std::runtime_error("invalid PATH pin");
+        }
+      }
+      std::sort(timing_path.pins.begin(), timing_path.pins.end());
+      input.timing_paths[index] = std::move(timing_path);
+      saw_timing_path[index] = true;
     } else {
       throw std::runtime_error("unknown checker input record");
     }
     if (!stream) throw std::runtime_error("malformed checker input");
   }
   if (!saw_param || any_missing(saw_node) || any_missing(saw_net) ||
+      any_missing(saw_timing_path) ||
       any_missing(saw_assignment)) {
     throw std::runtime_error("incomplete checker input");
   }
@@ -318,6 +377,7 @@ Metrics metrics(const Input& input, const std::vector<int>& assignment) {
   double total_pair_weight = 0.0;
   for (const Net& net : input.nets) {
     std::set<int> remote_parts;
+    int maximum_distance = 0;
     for (int sink : net.sinks) {
       const int source_part = assignment[net.source];
       const int sink_part = assignment[sink];
@@ -328,7 +388,12 @@ Metrics metrics(const Input& input, const std::vector<int>& assignment) {
       }
       result.violating_pairs += distance > input.hmax;
       result.weighted_hops += net.weight * distance;
+      maximum_distance = std::max(maximum_distance, distance);
       total_pair_weight += net.weight;
+    }
+    if (net.max_distance_limit >= 0 &&
+        maximum_distance > net.max_distance_limit) {
+      ++result.topology_guard_violations;
     }
     result.connectivity += net.weight * remote_parts.size();
   }
@@ -345,6 +410,16 @@ Metrics metrics(const Input& input, const std::vector<int>& assignment) {
   for (int node = 0; node < static_cast<int>(input.nodes.size()); ++node) {
     result.fixed_violations += input.nodes[node].fixed_part >= 0 &&
                                assignment[node] != input.nodes[node].fixed_part;
+  }
+  for (const TimingPath& timing_path : input.timing_paths) {
+    const int first_part = assignment[timing_path.pins.front()];
+    const bool crossed = std::any_of(
+        timing_path.pins.begin() + 1, timing_path.pins.end(),
+        [&](int pin) { return assignment[pin] != first_part; });
+    if (crossed) {
+      ++result.crossed_timing_paths;
+      result.weighted_crossed_timing_paths += timing_path.weight;
+    }
   }
   return result;
 }
@@ -509,6 +584,12 @@ void require_partition_metrics(const Output& output, const std::string& prefix,
                  expected.capacity_violations);
   require_metric(output, prefix + "_fixed_violations",
                  expected.fixed_violations);
+  require_metric(output, prefix + "_topology_guard_violations",
+                 expected.topology_guard_violations);
+  require_metric(output, prefix + "_crossed_timing_paths",
+                 expected.crossed_timing_paths);
+  require_metric(output, prefix + "_weighted_crossed_timing_paths",
+                 expected.weighted_crossed_timing_paths);
 }
 
 void check(const Input& input, const Output& output,
@@ -516,7 +597,8 @@ void check(const Input& input, const Output& output,
   std::vector<int> assignment = input.assignment;
   auto current_loads = loads(input, assignment);
   const Metrics initial_metrics = metrics(input, assignment);
-  if (initial_metrics.capacity_violations || initial_metrics.fixed_violations) {
+  if (initial_metrics.capacity_violations || initial_metrics.fixed_violations ||
+      initial_metrics.topology_guard_violations) {
     throw std::runtime_error("checker initial assignment is illegal");
   }
   const auto pair_adjacency = adjacency(input);
@@ -531,6 +613,14 @@ void check(const Input& input, const Output& output,
   std::vector<std::vector<int>> net_part_counts(
       input.nets.size(), std::vector<int>(input.parts, 0));
   std::vector<int> net_unique_parts(input.nets.size(), 0);
+  std::vector<std::vector<int>> net_sink_part_counts(
+      input.nets.size(), std::vector<int>(input.parts, 0));
+  std::vector<std::vector<int>> net_sink_top1(
+      input.nets.size(), std::vector<int>(input.parts, 0));
+  std::vector<std::vector<int>> net_sink_top2(
+      input.nets.size(), std::vector<int>(input.parts, 0));
+  std::vector<std::vector<int>> net_sink_top1_counts(
+      input.nets.size(), std::vector<int>(input.parts, 0));
   std::vector<std::vector<int>> net_pins(input.nets.size());
   for (int net_index = 0; net_index < static_cast<int>(input.nets.size());
        ++net_index) {
@@ -540,10 +630,100 @@ void check(const Input& input, const Output& output,
     for (int sink : net.sinks) {
       net_pins[net_index].push_back(sink);
       ++net_part_counts[net_index][assignment[sink]];
+      ++net_sink_part_counts[net_index][assignment[sink]];
     }
     net_unique_parts[net_index] = std::count_if(
         net_part_counts[net_index].begin(), net_part_counts[net_index].end(),
         [](int count) { return count > 0; });
+  }
+  auto rebuild_sink_distance_summary = [&](int net_index) {
+    for (int driver_part = 0; driver_part < input.parts; ++driver_part) {
+      int first = 0;
+      int second = 0;
+      int first_count = 0;
+      for (int sink_part = 0; sink_part < input.parts; ++sink_part) {
+        if (net_sink_part_counts[net_index][sink_part] == 0) continue;
+        const int distance = input.distances[driver_part][sink_part];
+        if (distance > first) {
+          second = first;
+          first = distance;
+          first_count = 1;
+        } else if (distance == first) {
+          ++first_count;
+        } else if (distance > second) {
+          second = distance;
+        }
+      }
+      net_sink_top1[net_index][driver_part] = first;
+      net_sink_top2[net_index][driver_part] = second;
+      net_sink_top1_counts[net_index][driver_part] = first_count;
+    }
+  };
+  for (int net_index = 0; net_index < static_cast<int>(input.nets.size());
+       ++net_index) {
+    rebuild_sink_distance_summary(net_index);
+  }
+  std::vector<std::vector<int>> timing_path_incidence(input.nodes.size());
+  std::vector<std::vector<int>> timing_path_part_counts(
+      input.timing_paths.size(), std::vector<int>(input.parts, 0));
+  std::vector<std::vector<int>> timing_path_part_xor(
+      input.timing_paths.size(), std::vector<int>(input.parts, 0));
+  std::vector<int> timing_path_unique_parts(input.timing_paths.size(), 0);
+  std::vector<double> timing_path_local_penalty(input.nodes.size(), 0.0);
+  std::vector<std::vector<double>> timing_path_rescue(
+      input.nodes.size(), std::vector<double>(input.parts, 0.0));
+  for (int path_index = 0;
+       path_index < static_cast<int>(input.timing_paths.size()); ++path_index) {
+    for (const int pin : input.timing_paths[path_index].pins) {
+      timing_path_incidence[pin].push_back(path_index);
+      const int part = assignment[pin];
+      ++timing_path_part_counts[path_index][part];
+      timing_path_part_xor[path_index][part] ^= pin;
+    }
+    timing_path_unique_parts[path_index] = std::count_if(
+        timing_path_part_counts[path_index].begin(),
+        timing_path_part_counts[path_index].end(),
+        [](int count) { return count > 0; });
+  }
+  auto update_timing_path_contribution =
+      [&](int path_index, double sign, std::vector<int>* affected) {
+        if (input.timing_path_beta == 0.0) return;
+        const TimingPath& timing_path = input.timing_paths[path_index];
+        const double weighted =
+            sign * input.timing_path_beta * timing_path.weight;
+        const int unique = timing_path_unique_parts[path_index];
+        if (unique == 1) {
+          for (const int pin : timing_path.pins) {
+            timing_path_local_penalty[pin] += weighted;
+            if (affected != nullptr) affected->push_back(pin);
+          }
+        } else if (unique == 2) {
+          int first = -1;
+          int second = -1;
+          for (int part = 0; part < input.parts; ++part) {
+            if (timing_path_part_counts[path_index][part] == 0) continue;
+            if (first < 0) {
+              first = part;
+            } else {
+              second = part;
+              break;
+            }
+          }
+          for (const auto& [part, other] :
+               {std::pair<int, int>{first, second},
+                std::pair<int, int>{second, first}}) {
+            if (part >= 0 &&
+                timing_path_part_counts[path_index][part] == 1) {
+              const int singleton = timing_path_part_xor[path_index][part];
+              timing_path_rescue[singleton][other] += weighted;
+              if (affected != nullptr) affected->push_back(singleton);
+            }
+          }
+        }
+      };
+  for (int path_index = 0;
+       path_index < static_cast<int>(input.timing_paths.size()); ++path_index) {
+    update_timing_path_contribution(path_index, 1.0, nullptr);
   }
   std::vector<bool> locked(input.nodes.size(), false);
   long long objective_recomputations = 0;
@@ -563,6 +743,7 @@ void check(const Input& input, const Output& output,
       }
     }
     double connectivity = 0.0;
+    double bottleneck_hops = 0.0;
     const int source = assignment[node];
     for (int net_index : node_incidence[node]) {
       int spanned = net_unique_parts[net_index];
@@ -571,8 +752,35 @@ void check(const Input& input, const Output& output,
         spanned -= net_part_counts[net_index][source] == 1;
       }
       connectivity += input.nets[net_index].weight * spanned;
+      const Net& net = input.nets[net_index];
+      int maximum_distance = 0;
+      if (net.source == node) {
+        maximum_distance = net_sink_top1[net_index][candidate];
+      } else {
+        const int driver_part = assignment[net.source];
+        maximum_distance = net_sink_top1[net_index][driver_part];
+        if (candidate != source &&
+            net_sink_part_counts[net_index][source] == 1 &&
+            input.distances[driver_part][source] == maximum_distance &&
+            net_sink_top1_counts[net_index][driver_part] == 1) {
+          maximum_distance = net_sink_top2[net_index][driver_part];
+        }
+        maximum_distance = std::max(
+            maximum_distance, input.distances[driver_part][candidate]);
+      }
+      if (net.max_distance_limit >= 0 &&
+          maximum_distance > net.max_distance_limit) {
+        return -std::numeric_limits<double>::infinity();
+      }
+      bottleneck_hops += net.bottleneck_weight * maximum_distance;
     }
-    return hop - input.gamma * connectivity - input.lambda * violation;
+    const double timing_path_delta =
+        candidate == source
+            ? 0.0
+            : -timing_path_local_penalty[node] +
+                  timing_path_rescue[node][candidate];
+    return hop - input.gamma * connectivity - input.lambda * violation -
+           input.bottleneck_beta * bottleneck_hops + timing_path_delta;
   };
 
   std::vector<int> points(input.nodes.size());
@@ -591,8 +799,12 @@ void check(const Input& input, const Output& output,
           input.distances[source][target] > input.move_distance) {
         continue;
       }
-      const double gain = compatibility(node, target) - source_score;
+      const double target_score = compatibility(node, target);
       ++objective_recomputations;
+      if (!std::isfinite(target_score)) {
+        continue;
+      }
+      const double gain = target_score - source_score;
       result[target] = {gain_rank(gain), node, target, gain};
     }
     return result;
@@ -656,16 +868,39 @@ void check(const Input& input, const Output& output,
         throw std::runtime_error("refiner move exceeds capacity");
       }
     }
+    std::vector<int> timing_path_affected;
+    for (const int path_index : timing_path_incidence[node]) {
+      update_timing_path_contribution(path_index, -1.0,
+                                      &timing_path_affected);
+    }
     assignment[node] = target;
     for (const auto& [neighbor, weight] : pair_adjacency[node]) {
       neighbor_part_weights[neighbor][source] -= weight;
       neighbor_part_weights[neighbor][target] += weight;
     }
     for (int net_index : node_incidence[node]) {
+      const Net& net = input.nets[net_index];
       --net_part_counts[net_index][source];
       if (net_part_counts[net_index][source] == 0) --net_unique_parts[net_index];
       if (net_part_counts[net_index][target] == 0) ++net_unique_parts[net_index];
       ++net_part_counts[net_index][target];
+      if (net.source != node) {
+        --net_sink_part_counts[net_index][source];
+        ++net_sink_part_counts[net_index][target];
+        rebuild_sink_distance_summary(net_index);
+      }
+    }
+    for (const int path_index : timing_path_incidence[node]) {
+      auto& counts = timing_path_part_counts[path_index];
+      auto& xors = timing_path_part_xor[path_index];
+      --counts[source];
+      xors[source] ^= node;
+      if (counts[source] == 0) --timing_path_unique_parts[path_index];
+      if (counts[target] == 0) ++timing_path_unique_parts[path_index];
+      ++counts[target];
+      xors[target] ^= node;
+      update_timing_path_contribution(path_index, 1.0,
+                                      &timing_path_affected);
     }
     locked[node] = true;
     tree.set_point(node, candidates_for(node));
@@ -684,6 +919,7 @@ void check(const Input& input, const Output& output,
     for (int net_index : node_incidence[node]) {
       for (int pin : net_pins[net_index]) mark(pin);
     }
+    for (int pin : timing_path_affected) mark(pin);
     std::sort(affected.begin(), affected.end());
     for (int candidate : affected) {
       tree.set_point(candidate, candidates_for(candidate));

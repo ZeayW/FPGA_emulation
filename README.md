@@ -426,6 +426,220 @@ The checked-in `static_exact_acceptance` RTL and
 functional/physical fixture for that gate; they are not a QoR benchmark and
 must not be mixed into benchmark-comparison tables.
 
+The production-wide cut mode remains the conservative `sequential-only`
+default. When a user explicitly selects `--cut-mode
+static-exact-combinational`, every producer entry point now defaults to
+generalized v2 (`assignment-derived-acyclic-v2`), a dependency-depth safety
+cap of eight, guarded TritonPart post-refinement, and path beta zero. Unlike the
+legacy `potential-frontier-depth-v1` policy, v2 does not confuse a net's depth
+in the graph of *possible* boundaries with its depth after the partitioner has
+selected actual transported boundaries.  It releases every structurally legal
+candidate, rebuilds the selected dependency DAG from the final assignment,
+and supports any positive configured depth.  Phase 3 rejects an assignment if
+that selected DAG is cyclic, exceeds the configured safety cap, has no board
+path, or cannot meet the virtual-frame commit even under an uncongested
+minimum-latency lower bound.  TritonPart seed selection includes this
+certificate and uses timing-weighted cut cost, lower-bound capture slack,
+selected depth, and cut count as deterministic ranking evidence.  Phase 4 and
+the exact Phase 5 list scheduler then bind the concrete routes, link latency,
+lane capacity, relay readiness, and capture deadline; Phase 6/7 retain the same
+macro-cycle-equivalence and routed physical-segment gates.
+
+The legacy policy remains readable for controlled A/B comparison, but it is
+never inferred from omitted arguments. A legacy rerun must explicitly select
+`--static-exact-candidate-policy potential-frontier-depth-v1`, a depth of one
+or two, and any other noncurrent objective parameters. In that
+three-arm comparison, the positive `--minimum-combinational-cut-nets` exercise
+gate applies to generalized v2 only. Legacy v1 runs the complete Phase 1--7
+chain with a zero minimum: if its potential-frontier filter selects no real
+combinational boundary, the final certificate labels it a
+`vacuous-negative-control` rather than failing the experiment or claiming that
+Static Exact was exercised. The sequential arm must still contain zero
+combinational cuts, while generalized v2 must satisfy the requested positive
+minimum. Promotion of v2 to the production default additionally requires a
+canonical real-RTL, contest-BoardDB Phase 1--7 comparison against
+`sequential-only` and legacy v1,
+with one physical seed by default and final whole-design target-clock WNS/TNS,
+virtual frequency, resource, runtime, and exact-cut evidence.  Small exhaustive
+tests establish semantics but are not QoR evidence.
+
+The three policies have different assignments, routes, and schedules, so the
+ordinary Phase 6 provider comparator is intentionally not used for this gate.
+Compile one content-addressed DAG that shares only the byte-identical frontend
+and TimingPathDB, forks at Phase 3, and terminates in a dedicated cross-policy
+certificate.  The comparison uses one explicit Phase 3 seed for every arm;
+it never lets each policy search a multi-seed portfolio and then compares
+unrelated winners.  Physical seed remains a separate paired axis.  For the
+canonical case6 exercise, seed 4 is the sealed controlled seed used by the
+completed three-arm comparison; it releases a non-vacuous generalized
+boundary while every arm still receives exactly one partition attempt:
+
+```bash
+emuflow benchmark-static-exact-ab-compile \
+  --config "$CANONICAL_CASE_CONFIG" --repository-root "$SOURCE" \
+  --legacy-max-depth 2 --generalized-max-depth 8 \
+  --partition-seed 4 \
+  --minimum-combinational-cut-nets 1 \
+  --out "$EXPERIMENT/static-exact-ab-spec.json"
+```
+
+The final DAG node is equivalent to this explicit checkpoint command:
+
+```bash
+emuflow experiment-stage static-exact-qor-compare-run \
+  --platform "$PLATFORM" \
+  --arm sequential-only 1 "$SEQ_SHARED" "$SEQ_LOOKAHEAD" "$SEQ_PHASE6" "$SEQ_PHASE7" \
+  --arm legacy-static-exact-v1 1 "$V1_SHARED" "$V1_LOOKAHEAD" "$V1_PHASE6" "$V1_PHASE7" \
+  --arm generalized-static-exact-v2 1 "$V2_SHARED" "$V2_LOOKAHEAD" "$V2_PHASE6" "$V2_PHASE7" \
+  --out "$EVIDENCE/static-exact-qor"
+```
+
+The compiler removes the unrelated placement-aware/Chimew Phase 6 arms from
+the sequential branch, so only three physical terminals are run per requested
+seed.  The independent replay requires byte-identical EmuIR, complete TimingPathDB,
+partition weights, BoardDB, constraints, timing model, and physical channel
+width across all arms.  It also replays each partition report and requires
+`seed_attempts == 1`, requested seed equal to selected seed, and the same
+selected partition seed across all arms.  A comparison with different selected
+partition seeds fails closed and cannot provide promotion evidence.  It
+permits only the intended Phase 3--6 differences,
+revalidates each complete Phase 7 chain, reports whole-design target/runtime
+WNS and TNS, per-FPGA diagnostics, virtual frequency, transport/physical cell
+counts, cut count, scheduled bit-hops, frame size, completion slot, and sealed
+wall-clock times for Phase 3--7 and the physical lookahead/Phase 7 pair.  Node
+wall time is stored in the immutable checkpoint manifest rather than mutable
+farm state, so the final bundle can replay the runtime comparison without the
+original attempt directories.  Historical imported checkpoints without this
+field remain readable but cannot supply runtime evidence. The checker refuses
+default promotion if the generalized arm is vacuous or its target-clock WNS/TNS
+result is not improved. A vacuous legacy arm remains an honest compatibility
+negative control and is never presented as exercised Static Exact evidence.
+
+The completed controlled DLA + EDA 2023 case6 experiment gives the following
+single-physical-seed result. These are whole-original-design target-clock
+metrics after complete open Phase 7/7C, not per-FPGA timing summaries:
+
+| cut policy | real combinational cuts | maximum dependency depth | global WNS (ns) | global TNS (ns) | failing paths | completion slot |
+|---|---:|---:|---:|---:|---:|---:|
+| sequential-only | 0 | 0 | -84.5812926868 | -277276.1497366623 | 7360 | 8 |
+| legacy Static Exact v1 | 0 | 0 | -87.4214476040 | -488195.76014116284 | 8162 | 6 |
+| generalized Static Exact v2 | 102 | 3 | -187.85581036 | -548934.0510065886 | 9310 | 15 |
+
+All three arms routed with zero DRC violations, zero unrouted nets, and zero
+per-FPGA physical TNS. Generalized v2 nevertheless increased the WNS deficit
+by 122.10% and the TNS deficit by 97.97% relative to sequential-only, while
+adding 2,717 scheduled bit-hops and 7,383 transport cells. The result proves
+that generalized dependency handling, shadow transport, macro-cycle
+equivalence, and routed segment deadlines work on real depth-three cuts; it
+also proves that this candidate selection is not a timing-QoR improvement on
+the canonical case. That unguarded generalized configuration was therefore
+not promoted, and `sequential-only` remains the production-wide cut-mode
+default. The later guarded cost model described below passes the same physical
+comparison and is now the default configuration only after Static Exact mode
+has been selected.
+
+The current follow-up cost model keeps TritonPart as the partition provider
+and applies one optional, direction-aware MFSPart FM post-refinement to its
+sealed assignment. It reconstructs driver/sink identity from EmuIR (never from
+TritonPart's undirected hypergraph) and combines aggregate
+cut/connectivity/hop gain with a class-weighted worst-sink-hop term. In Static
+Exact mode, every initially transported non-combinational net receives an
+immutable worst-sink-distance non-regression guard. Combinational candidates
+remain movable and pay their ordinary timing-weighted cut/connectivity/hop
+cost, but are not rejected merely because they were local in the TritonPart
+assignment. The guard is checked by both the native optimizer and the
+independent certificate checker. Sequential-only mode retains the legacy
+objective. The checkpoint identity seals the weight, guard evidence, and the
+complete native certificate; reuse re-executes the independent C++
+global-best/best-prefix checker without writable scratch.
+Use `--mfspart-post-refinement`,
+`--mfspart-post-refinement-early-stop`, and
+`--mfspart-post-refinement-bottleneck-beta` on the reusable Phase 3 stage for
+controlled studies. A frozen 367,129-cluster diagnostic passed the native
+checker and kept the previously identified worst-path driver on its nearer
+FPGA at weights 192 and 256 while still reducing aggregate cut and weighted
+hop cost. A controlled 62-move prefix then completed full Phase 7/7C with
+global WNS/TNS of -84.913220755 ns / -159994.95141046078 ns and 4,218 failing
+paths, versus -84.5812926868 ns / -277276.1497366623 ns and 7,360 paths for
+sequential-only. Thus the prefix preserved a 42.30% TNS-deficit reduction
+while reducing the earlier full-prefix WNS regression from 1.054 ns to 0.332
+ns. This is useful cost-model evidence, but it is not a default-promotion
+result because the prefix was selected diagnostically rather than by the
+sealed automatic Phase 3 policy. The guarded class-weighted policy is the
+automatic successor under validation.
+
+The next cost-model revision adds a path-level objective to that guarded FM
+step. Net weights alone add the cost of every crossed net and therefore do not
+model the Boolean question that determines whole-path timing: whether an
+original timing path crosses *any* FPGA boundary. In refiner input v4, each
+original TimingPathDB path is mapped to the ordered net-driver clusters plus
+its structured launch/capture clusters; paths with the same cluster set are
+aggregated by count. The FM gain charges each distinct path once while it is
+split and removes that charge only when all of its clusters become local. It
+deliberately does not add every sink of every high-fanout net, which would turn
+an ordered timing path into unrelated fanout branches and inflate the
+objective. `--mfspart-post-refinement-timing-path-beta` controls this term
+(default `0.0`; nonzero values are explicit research options). Direct Static
+Exact flows using TritonPart enable the guarded
+post-refinement and bind it to the generated TimingPathDB; non-Static-Exact
+flows retain the prior behavior.
+
+The native optimizer and its independent checker maintain per-path part
+counts and verify every selected move, raw gain, stable rank, capacity/fixed
+constraints, global-best choice, best prefix, and final assignment. The
+checkpoint validator separately rematerializes the compressed objective from
+the sealed EmuIR, clusters, and original TimingPathDB and compares the exact
+PATH-record digest, group count, and pin count. Small exhaustive and full
+repository tests pass. Canonical DLA + EDA 2023 case6 screening is now complete
+at partition seed 4 and physical seed 1 with eight physical workers. Both the
+path-objective-disabled control and the `beta=1.0` candidate selected two real
+combinational cuts with maximum dependency depth two, routed with zero DRC
+violations and zero unrouted nets, and covered the same 195,532 original timing
+paths. Their complete Phase 7/7C global result was identical: WNS
+-83.890257153 ns, TNS -189,339.41826577744 ns, and 5,069 negative paths. The
+path-level term changed the partition assignment but not the routed Phase 4/5
+schedule, Phase 6 split, or final timing QoR on this case, so it provides no
+incremental promotion evidence and remains a research option.
+
+The guarded automatic generalized policy itself is nevertheless better than
+the register-only control on this canonical run. Relative to register-only WNS
+-84.5812926868 ns, TNS -277,276.1497366623 ns, and 7,360 negative paths, it
+improves WNS by 0.6910355338 ns, reduces the TNS deficit by
+87,936.73147088484 ns (31.71%), and removes 2,291 negative paths. This evidence
+supports the guarded cost model, not the additional path-level beta term; a
+nonzero path beta therefore remains optional. The same-input,
+same-partition-seed, same-physical-seed result promotes this guarded
+generalized configuration inside explicitly selected Static Exact mode. It
+does not change the production-wide `sequential-only` cut-mode default.
+
+An audit of the identical sealed EmuIR explains why the accepted guarded run
+uses only two real combinational cuts. The 379,357-instance design contains
+73,767 combinational nets. Sequential-only forms 246,387 clusters with a
+724-instance maximum; legacy v1 releases 16,251 combinational candidates and
+forms 304,300 clusters with a 154-instance maximum; generalized v2 releases
+49,695 candidates and forms 367,129 clusters with a 52-instance maximum. V2
+therefore removes candidate-space and large-atomic-cluster bias. Selecting two
+cuts from that enlarged space is the guarded objective's QoR decision, not a
+remaining eligibility shortage; the flow never forces additional cuts merely
+to increase an activity count. The full distribution and interpretation are
+documented in `docs/STATIC_EXACT_COMBINATIONAL_CUT.md`.
+
+The managed shared-Phase-1--5 view intentionally contains only consumer
+artifacts, not duplicate timing/partition evidence reports.  For that layout,
+the comparator follows the immutable shared checkpoint's dependency keys back
+to the original validated timing and partition checkpoints and rechecks their
+full reports, while separately rehashing every consumer artifact against the
+shared report.  Dependency lookup is by the sealed checkpoint stage, not by an
+experiment-local node label such as `seq-partition` or `v2-partition`, and it
+fails closed unless exactly one dependency provides each required stage.  An
+unmanaged historical view with neither evidence reports nor
+managed dependency metadata is accepted only at the explicitly lower
+`managed-shared-v1-core-source-seal` qualification and cannot satisfy a
+canonical default-promotion claim.
+`--reuse-validated-phase6-equivalence` is
+allowed only for immutable managed checkpoints carrying an independent
+validation certificate; standalone roots receive full replay.
+
 ```bash
 emuflow phase6 \
   --ir build/phase1/design.emuir.json \
@@ -1627,6 +1841,21 @@ the Phase 3 configuration, and invalidates only Phase 3 and descendants when
 it changes. It is suitable for forcing a previously characterized legal
 candidate across an FPGA boundary; it is not post-processing and must remain
 part of the replayable experiment specification.
+The canonical single-arm config and lower-level managed
+`experiment-stage partition-run` command also accept
+`"tritonpart_solution": "/absolute/path/candidate.part.N"` and
+`--tritonpart-solution PATH` for importing an externally computed `.part`
+candidate without rerunning the partition search.  The producer copies the
+solution through TritonPart's normal import path and records its SHA-256 in the
+Phase 3 checkpoint; `partition-validate` must receive the same option and
+rehashes the external source before authorizing reuse.  This is intended for
+controlled partition-policy experiments whose upstream frontend and timing
+checkpoints are already frozen.  It does not make an unsealed manual result a
+canonical benchmark, and it is rejected for non-TritonPart providers.
+Because the sequential, legacy-v1, and generalized-v2 policies have different
+cluster orders, the three-arm Static Exact A/B compiler deliberately rejects a
+single shared precomputed solution; imported solutions belong in a separately
+sealed single-arm candidate DAG.
 They also bind `partition_seed_attempts` and the explicit
 `partition_repair_balance` policy into both the Phase 3 producer and independent
 validator identities. A multi-seed TritonPart sweep therefore searches for an
@@ -1859,7 +2088,10 @@ including both each logical execution key and any cache-local immutable
 payload-object alias recorded by an imported or re-keyed checkpoint's
 `output_dir`, records every candidate's current content digest, and performs no mutation;
 `gc-apply` requires the exact plan-file SHA-256 and aborts if an object changed
-or became referenced. Legacy `runs` first receive a read-only migration plan:
+or became referenced. Removal makes only candidate directories writable; it
+never changes a regular file's mode, so deleting one hard-linked pathname
+cannot make a surviving immutable checkpoint or evidence artifact writable.
+Legacy `runs` first receive a read-only migration plan:
 
 ```bash
 emuflow experiment-cache migration-plan --root /research/d4/gds/ziyiwang21/emuflow/runs \
@@ -1872,6 +2104,10 @@ emuflow experiment-cache retirement-apply \
   --plan /research/d4/gds/ziyiwang21/experiments/retirement.json \
   --expected-plan-sha256 "$RETIREMENT_PLAN_SHA256" \
   --receipt-root /research/d4/gds/ziyiwang21/experiments/retirement-receipt
+# Only after an interrupted apply left a sealed in-progress receipt:
+emuflow experiment-cache retirement-resume \
+  --receipt-root /research/d4/gds/ziyiwang21/experiments/retirement-receipt \
+  --expected-receipt-sha256 "$CURRENT_RETIREMENT_RECEIPT_SHA256"
 emuflow experiment-cache gc-plan --cache /research/d4/gds/ziyiwang21/emuflow/checkpoints \
   --root-plan experiment.plan.json --out /research/d4/gds/ziyiwang21/experiments/gc.json
 emuflow experiment-cache gc-apply --plan /research/d4/gds/ziyiwang21/experiments/gc.json \
@@ -1882,11 +2118,15 @@ The migration plan reports logical and allocated size separately, plus
 `exclusive_reclaimable_bytes` after accounting for hard links outside each
 tree; deleting a second pathname to shared blocks must not be advertised as
 newly freed capacity.  Its totals also distinguish bytes reclaimable by
-retirement. Generated symlinks inside an explicitly selected legacy tree are
+retiring one entry from bytes freed only when the complete inventoried root is
+retired. Generated symlinks inside an explicitly selected legacy tree are
 sealed by their link text and are never followed; top-level symlink candidates
 remain refused, and changing an internal link target invalidates the plan.
-retiring one entry from bytes freed only when the complete inventoried root is
-retired.
+Live and dangling internal symlinks are unlinked without chmod'ing either link
+target. If recursive removal is interrupted after the atomic quarantine rename,
+`retirement-resume` revalidates the copied plan, exact current receipt, original
+name absence, quarantine name, retirement marker, and remaining content before
+removing another byte.
 
 Retirement is only for an explicitly selected noncanonical legacy tree.  It
 content-seals the complete tree, revalidates all candidates before deleting the
@@ -2427,12 +2667,14 @@ every physical node's configuration and storage estimate; it does not alter
 the physical algorithm or QoR contract. Do not use it to bypass preflight for
 an unprofiled workload.
 
-The partition node similarly defaults to a conservative 24 GiB peak. A
-canonical config may set a positive `partition_peak_gib` after an independently
-validated run of the same design, platform, provider, and partition options has
-measured a smaller footprint. The value is sealed into the partition node's
-configuration and storage estimate, so changing it creates a distinct DAG
-identity while leaving the partition algorithm and QoR contract unchanged.
+Partition nodes default to conservative 24 GiB peak and 6 GiB retained
+estimates. A canonical config may set positive `partition_peak_gib` and
+`partition_retained_gib` values only after an independently validated run of
+the same design, platform, provider, and partition options has measured a
+smaller footprint. Both values are sealed into the partition node's
+configuration, content identity, and storage estimate. They are scheduling
+metadata rather than partition-QoR controls and must not be lowered merely to
+bypass quota preflight.
 
 Non-baseline Phase 6 candidate nodes default to a conservative 12 GiB peak. A
 canonical config may set a positive `phase6_candidate_peak_gib` only after an
@@ -3350,9 +3592,26 @@ Four Chimew kernels now sit beside that production baseline and are composed
 by the default open academic physical path described above.  Its electrical
 materializer follows the BoardDB capacity contract: full-duplex
 `per_direction` links use two direction-qualified assignment domains, while
-`shared_bidirectional` contest links put both directional groups in one
-exclusive lane domain with direction-agnostic channels.  It never widens a
-shared contest link into two independent lane pools merely to run Chimew. The first
+`shared_bidirectional` contest links put both directions in one physical lane
+domain with direction-agnostic channels.  Before bank/channel assignment, the
+v2 materializer computes how many opposite-direction groups must share a lane
+to satisfy the BoardDB capacity.  It accepts a pair when their concrete
+Phase-5 slot sets are disjoint and any
+timing-guarded fixed lanes agree.  A deterministic maximum-cardinality check
+first proves that the requested packing is feasible; an exact min-cost
+bipartite matching then selects only the required number of pairs.  Each
+selected pair becomes one bidirectional TDM bundle with member-specific
+directions and one `either` electrical channel/package-pin pair.  The native
+two-stage assignment, Python certificate checker, Phase-6 builder, generic pin
+plan validator, and standalone electrical-binding validator all independently
+enforce each direction's occupancy ratio, the combined concrete-slot capacity,
+and rejection of a same-slot collision.  Opposite directions do not need equal
+ratios: the ratio materializer records direction-qualified lane occupancy,
+while slot identifiers name the shared physical resource.  Legacy
+`emuflow.chimew-bank-channel-input/v1` documents remain readable; v2 is required
+to represent a bidirectional bundle.  The flow never widens a shared contest
+link into two independent lane pools and never treats every directional group
+as an exclusive static lane merely to run Chimew. The first
 reproduces FPGA 2026 Algorithm 1 from explicit,
 source-qualified physical SLL-crossing encodings. The second only swaps
 equal-encoding signals using physical-site source-y coordinates, preserving

@@ -20,7 +20,8 @@ from .errors import EmuFlowError, ValidationError
 from .native_tools import resolve_native_executable
 
 
-CHIMEW_BANK_CHANNEL_INPUT_SCHEMA = "emuflow.chimew-bank-channel-input/v1"
+CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1 = "emuflow.chimew-bank-channel-input/v1"
+CHIMEW_BANK_CHANNEL_INPUT_SCHEMA = "emuflow.chimew-bank-channel-input/v2"
 CHIMEW_BANK_CHANNEL_INPUT_PROVIDER = "source-qualified-physical-bank-channel-v1"
 CHIMEW_BANK_CHANNEL_REPORT_SCHEMA = "emuflow.chimew-bank-channel-report/v1"
 CHIMEW_BANK_CHANNEL_PROVIDER = "chimew-section3.4-two-stage-assignment-v1"
@@ -68,7 +69,11 @@ def _point(value: Any, label: str) -> Tuple[float, float]:
 def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str, Any]:
     """Validate source-qualified physical groups, banks, channels, and sites."""
 
-    if document.get("schema") != CHIMEW_BANK_CHANNEL_INPUT_SCHEMA:
+    schema = document.get("schema")
+    if schema not in {
+        CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1,
+        CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
+    }:
         raise ValidationError("Chimew bank/channel input schema is invalid")
     if document.get("provider") != CHIMEW_BANK_CHANNEL_INPUT_PROVIDER:
         raise ValidationError("Chimew bank/channel input is not source-qualified")
@@ -194,8 +199,15 @@ def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str,
             raise ValidationError(f"invalid or duplicate Chimew group {group_id!r}")
         if kind not in ("tdm_group", "common_signal"):
             raise ValidationError(f"invalid Chimew group kind for {group_id!r}")
-        if direction not in ("a_to_b", "b_to_a"):
+        allowed_directions = (
+            {"a_to_b", "b_to_a"}
+            if schema == CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1
+            else {"a_to_b", "b_to_a", "bidirectional"}
+        )
+        if direction not in allowed_directions:
             raise ValidationError(f"invalid Chimew direction for {group_id!r}")
+        if kind == "common_signal" and direction == "bidirectional":
+            raise ValidationError("a Chimew common signal cannot be bidirectional")
         raw_members = raw.get("members")
         if not isinstance(raw_members, list) or not raw_members:
             raise ValidationError(f"Chimew group {group_id!r} has no signals")
@@ -222,9 +234,17 @@ def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str,
                 _point(point, f"{group_id}.{member_id}.fanins[{fanin_index}]")
                 for fanin_index, point in enumerate(raw_fanins)
             ]
+            member_direction = raw_member.get("direction", direction)
+            if member_direction not in ("a_to_b", "b_to_a") or (
+                direction != "bidirectional" and member_direction != direction
+            ):
+                raise ValidationError(
+                    f"invalid Chimew member direction for {member_id!r}"
+                )
             members.append(
                 {
                     "id": member_id,
+                    "direction": 0 if member_direction == "a_to_b" else 1,
                     "timing_weight": timing_weight,
                     "fanout": _point(raw_member.get("fanout"), f"{group_id}.{member_id}.fanout"),
                     "fanins": fanins,
@@ -232,12 +252,22 @@ def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str,
             )
             signal_count += 1
             fanin_count += len(fanins)
+        if direction == "bidirectional" and {
+            member["direction"] for member in members
+        } != {0, 1}:
+            raise ValidationError(
+                "a bidirectional Chimew bundle must contain both directions"
+            )
         groups.append(
             {
                 "id": group_id,
                 "domain": domain_by_id[domain_id],
                 "kind": 0 if kind == "tdm_group" else 1,
-                "direction": 0 if direction == "a_to_b" else 1,
+                "direction": (
+                    0
+                    if direction == "a_to_b"
+                    else 1 if direction == "b_to_a" else 2
+                ),
                 "members": members,
             }
         )
@@ -263,6 +293,15 @@ def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str,
         metrics.get(field) != value for field, value in expected_metrics.items()
     ):
         raise ValidationError("Chimew bank/channel input metrics do not agree")
+    expected_metrics["bidirectional_bundles"] = sum(
+        group["direction"] == 2 for group in groups
+    )
+    declared_bidirectional = metrics.get("bidirectional_bundles")
+    if declared_bidirectional is not None and (
+        isinstance(declared_bidirectional, bool)
+        or declared_bidirectional != expected_metrics["bidirectional_bundles"]
+    ):
+        raise ValidationError("Chimew bidirectional-bundle metrics do not agree")
     return {
         "design": design,
         "platform": platform,
@@ -280,9 +319,13 @@ def _distance(lhs: Tuple[float, float], rhs: Tuple[float, float]) -> float:
 
 
 def _raw_cost(group: Mapping[str, Any], endpoint_a: Tuple[float, float], endpoint_b: Tuple[float, float]) -> float:
-    output, input_point = (endpoint_a, endpoint_b) if group["direction"] == 0 else (endpoint_b, endpoint_a)
     result = 0.0
     for member in group["members"]:
+        output, input_point = (
+            (endpoint_a, endpoint_b)
+            if member.get("direction", group["direction"]) == 0
+            else (endpoint_b, endpoint_a)
+        )
         result += member.get("timing_weight", 1.0) * (
             _distance(member["fanout"], output)
             + sum(
@@ -303,7 +346,7 @@ def _candidate_cost(group: Mapping[str, Any], endpoint_a: Tuple[float, float], e
 
 def _serialize(problem: Mapping[str, Any], path: Path) -> None:
     lines = [
-        "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V1",
+        "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V2",
         f"PARAM {problem['cost_scale']}",
     ]
     for bank_index, bank in enumerate(problem["banks"]):
@@ -325,7 +368,7 @@ def _serialize(problem: Mapping[str, Any], path: Path) -> None:
             fanout = member["fanout"]
             fanins = " ".join(f"{point[0]:.17g} {point[1]:.17g}" for point in member["fanins"])
             lines.append(
-                f"MEMBER {group_index} {member_index} {member['timing_weight']:.17g} {fanout[0]:.17g} {fanout[1]:.17g} {len(member['fanins'])} {fanins}"
+                f"MEMBER {group_index} {member_index} {member['direction']} {member['timing_weight']:.17g} {fanout[0]:.17g} {fanout[1]:.17g} {len(member['fanins'])} {fanins}"
             )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -440,6 +483,7 @@ def _group_cost_signature(group: Mapping[str, Any]) -> Tuple[Any, ...]:
         members.append(
             (
                 member.get("timing_weight", 1.0),
+                member.get("direction", group["direction"]),
                 member["fanout"],
                 tuple(sorted(member["fanins"])),
             )
@@ -474,7 +518,7 @@ def _verify_stage2_certificate(
     if len(potentials) != sink + 1 or set(assignments) != set(range(left_count)):
         raise EmuFlowError("Chimew assignment certificate dimensions are invalid")
 
-    direction_counts = [0, 0]
+    direction_counts = [0, 0, 0]
     common_count = 0
     for group_index in groups:
         group = all_groups[group_index]
@@ -510,6 +554,8 @@ def _verify_stage2_certificate(
             return group["kind"] == 0 and group["direction"] == first
         if right < direction_counts[first] + direction_counts[second]:
             return group["kind"] == 0 and group["direction"] == second
+        if right < sum(direction_counts):
+            return group["kind"] == 0 and group["direction"] == 2
         return group["kind"] == 1
 
     used = [0] * right_count

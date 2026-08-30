@@ -16,11 +16,16 @@ from .mfspart_initial import MFSPART_INITIAL_SCHEMA, _partition_metrics
 from .native_tools import resolve_native_executable
 
 
-MFSPART_REFINER_INPUT_SCHEMA = "emuflow.mfspart-refiner-input/v1"
+MFSPART_REFINER_INPUT_SCHEMA = "emuflow.mfspart-refiner-input/v4"
 MFSPART_REFINEMENT_SCHEMA = "emuflow.mfspart-refinement/v1"
-MFSPART_REFINER_PROVIDER = "mfspart-paper-direct-kway-fm-v1"
+MFSPART_REFINER_PROVIDER = "mfspart-timing-path-guarded-direct-kway-fm-v4"
 _GAIN_RANK_SCALE = 1_000_000_000.0
 _DEFAULT_PYTHON_REPLAY_MAX_NODES = 2_000
+DEFAULT_BOTTLENECK_BETA = 256.0
+# The canonical physical comparison found no incremental Phase-7 QoR benefit
+# from the path-set term. Keep it available for explicit research studies, but
+# do not perturb the guarded objective by default.
+DEFAULT_TIMING_PATH_BETA = 0.0
 
 
 def _gain_rank(value: float) -> int:
@@ -50,6 +55,9 @@ def _normalise_refinement(
     gamma: float,
     violation_lambda: float,
     mu: float,
+    bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
+    timing_paths: Sequence[Mapping[str, Any]] = (),
+    timing_path_beta: float = 0.0,
 ) -> Dict[str, Any]:
     if not parts or len(set(parts)) != len(parts):
         raise ValidationError("MFSPart refiner FPGA ids must be unique")
@@ -61,7 +69,13 @@ def _normalise_refinement(
         not isinstance(value, (int, float))
         or not math.isfinite(value)
         or value < 0
-        for value in (gamma, violation_lambda, mu)
+        for value in (
+            gamma,
+            violation_lambda,
+            mu,
+            bottleneck_beta,
+            timing_path_beta,
+        )
     ):
         raise ValidationError("invalid MFSPart FM score parameter")
     nodes = graph.get("nodes")
@@ -106,10 +120,95 @@ def _normalise_refinement(
     for node in nodes:
         if len(node["weights"]) != len(dimensions):
             raise ValidationError("MFSPart FM node weight dimension mismatch")
+    normalised_nets = []
+    for net in nets:
+        weight = net.get("weight")
+        bottleneck_weight = net.get("bottleneck_weight", weight)
+        maximum_distance = net.get("max_distance_limit", -1)
+        if (
+            not isinstance(weight, (int, float))
+            or isinstance(weight, bool)
+            or not math.isfinite(weight)
+            or weight <= 0.0
+            or not isinstance(bottleneck_weight, (int, float))
+            or isinstance(bottleneck_weight, bool)
+            or not math.isfinite(bottleneck_weight)
+            or bottleneck_weight < 0.0
+            or not isinstance(maximum_distance, int)
+            or isinstance(maximum_distance, bool)
+            or maximum_distance < -1
+        ):
+            raise ValidationError("invalid MFSPart FM net objective metadata")
+        normalised_nets.append(
+            {
+                **dict(net),
+                "weight": float(weight),
+                "bottleneck_weight": float(bottleneck_weight),
+                "max_distance_limit": maximum_distance,
+            }
+        )
+    for net in normalised_nets:
+        source = net.get("source")
+        sinks = net.get("sinks")
+        if (
+            not isinstance(source, int)
+            or isinstance(source, bool)
+            or source < 0
+            or source >= len(nodes)
+            or not isinstance(sinks, list)
+            or not sinks
+            or any(
+                not isinstance(sink, int)
+                or isinstance(sink, bool)
+                or sink < 0
+                or sink >= len(nodes)
+                or sink == source
+                for sink in sinks
+            )
+            or len(set(sinks)) != len(sinks)
+        ):
+            raise ValidationError("invalid MFSPart FM net endpoints")
+        initial_maximum = max(
+            distance_matrix[assigned[source]][assigned[sink]]
+            for sink in sinks
+        )
+        if (
+            net["max_distance_limit"] >= 0
+            and initial_maximum > net["max_distance_limit"]
+        ):
+            raise ValidationError(
+                "MFSPart FM topology guard excludes its initial assignment"
+            )
+    normalised_paths = []
+    for path_index, path in enumerate(timing_paths):
+        weight = path.get("weight")
+        pins = path.get("pins")
+        if (
+            not isinstance(weight, (int, float))
+            or isinstance(weight, bool)
+            or not math.isfinite(weight)
+            or weight <= 0.0
+            or not isinstance(pins, (list, tuple))
+            or len(pins) < 2
+            or any(
+                not isinstance(pin, int)
+                or isinstance(pin, bool)
+                or pin < 0
+                or pin >= len(nodes)
+                for pin in pins
+            )
+            or len(set(pins)) != len(pins)
+        ):
+            raise ValidationError(
+                f"invalid MFSPart timing-path objective record {path_index}"
+            )
+        normalised_paths.append(
+            {"weight": float(weight), "pins": sorted(pins)}
+        )
     return {
         "schema": MFSPART_REFINER_INPUT_SCHEMA,
         "provider": MFSPART_REFINER_PROVIDER,
-        "graph": graph,
+        "graph": {**dict(graph), "nets": normalised_nets},
         "dimensions": list(dimensions),
         "parts": list(parts),
         "distances": distance_matrix,
@@ -121,13 +220,21 @@ def _normalise_refinement(
         "gamma": float(gamma),
         "lambda": float(violation_lambda),
         "mu": float(mu),
+        "bottleneck_beta": float(bottleneck_beta),
+        "timing_paths": normalised_paths,
+        "timing_path_beta": float(timing_path_beta),
     }
 
 
 def _write_native_input(path: Path, problem: Mapping[str, Any]) -> None:
     graph = problem["graph"]
+    input_v4 = bool(problem["timing_paths"]) or problem["timing_path_beta"] != 0.0
     lines = [
-        "EMUFLOW_MFSPART_REFINER_INPUT_V1",
+        (
+            "EMUFLOW_MFSPART_REFINER_INPUT_V4"
+            if input_v4
+            else "EMUFLOW_MFSPART_REFINER_INPUT_V3"
+        ),
         "PARAM "
         + " ".join(
             str(value)
@@ -142,6 +249,15 @@ def _write_native_input(path: Path, problem: Mapping[str, Any]) -> None:
                 format(problem["gamma"], ".17g"),
                 format(problem["lambda"], ".17g"),
                 format(problem["mu"], ".17g"),
+                format(problem["bottleneck_beta"], ".17g"),
+                *(
+                    (
+                        len(problem["timing_paths"]),
+                        format(problem["timing_path_beta"], ".17g"),
+                    )
+                    if input_v4
+                    else ()
+                ),
             )
         ),
     ]
@@ -167,12 +283,28 @@ def _write_native_input(path: Path, problem: Mapping[str, Any]) -> None:
                 for value in (
                     index,
                     format(net["weight"], ".17g"),
+                    format(net["bottleneck_weight"], ".17g"),
+                    net["max_distance_limit"],
                     net["source"],
                     len(net["sinks"]),
                     *net["sinks"],
                 )
             )
         )
+    if input_v4:
+        for index, timing_path in enumerate(problem["timing_paths"]):
+            lines.append(
+                "PATH "
+                + " ".join(
+                    str(value)
+                    for value in (
+                        index,
+                        format(timing_path["weight"], ".17g"),
+                        len(timing_path["pins"]),
+                        *timing_path["pins"],
+                    )
+                )
+            )
     lines.extend(
         f"ASSIGN {node} {part}"
         for node, part in enumerate(problem["assignment"])
@@ -233,10 +365,8 @@ def _parse_output(path: Path, node_count: int) -> Dict[str, Any]:
     }
 
 
-def _parse_checker_output(path: Path) -> Dict[str, Any]:
-    if not path.is_file():
-        raise EmuFlowError("MFSPart refiner checker produced no output")
-    lines = path.read_text(encoding="utf-8").splitlines()
+def _parse_checker_output_text(text: str) -> Dict[str, Any]:
+    lines = text.splitlines()
     if not lines or lines[0] != "EMUFLOW_MFSPART_REFINER_CHECK_OUTPUT_V1":
         raise ValidationError("invalid MFSPart refiner checker output header")
     status = None
@@ -275,6 +405,136 @@ def _parse_checker_output(path: Path) -> Dict[str, Any]:
     return metrics
 
 
+def _parse_checker_output(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        raise EmuFlowError("MFSPart refiner checker produced no output")
+    return _parse_checker_output_text(path.read_text(encoding="utf-8"))
+
+
+def validate_mfspart_native_certificate(
+    input_path: Path,
+    output_path: Path,
+    *,
+    checker: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Independently replay a native FM certificate without scratch writes."""
+
+    input_lines = input_path.read_text(encoding="utf-8").splitlines()
+    header = input_lines[:2]
+    if header[0] not in {
+        "EMUFLOW_MFSPART_REFINER_INPUT_V2",
+        "EMUFLOW_MFSPART_REFINER_INPUT_V3",
+        "EMUFLOW_MFSPART_REFINER_INPUT_V4",
+    }:
+        raise ValidationError("invalid MFSPart native certificate input")
+    fields = header[1].split()
+    try:
+        expected_fields = 14 if header[0].endswith("V4") else 12
+        if len(fields) != expected_fields or fields[0] != "PARAM":
+            raise ValidationError("invalid MFSPart native certificate PARAM")
+        node_count = int(fields[2])
+    except ValueError as error:
+        raise ValidationError(
+            "malformed MFSPart native certificate PARAM"
+        ) from error
+    if node_count <= 0:
+        raise ValidationError("invalid MFSPart native certificate node count")
+    guarded_nets = 0
+    zero_bottleneck_nets = 0
+    timing_paths = 0
+    timing_path_pins = 0
+    timing_path_objective_digest = hashlib.sha256()
+    if header[0] in {
+        "EMUFLOW_MFSPART_REFINER_INPUT_V3",
+        "EMUFLOW_MFSPART_REFINER_INPUT_V4",
+    }:
+        for line in input_lines[2:]:
+            record = line.split()
+            if not record:
+                continue
+            if record[0] == "PATH":
+                timing_paths += 1
+                try:
+                    if len(record) < 5:
+                        raise ValidationError(
+                            "invalid MFSPart native certificate PATH record"
+                        )
+                    path_pin_count = int(record[3])
+                except ValueError as error:
+                    raise ValidationError(
+                        "malformed MFSPart native certificate PATH record"
+                    ) from error
+                if path_pin_count < 2 or len(record) != 4 + path_pin_count:
+                    raise ValidationError(
+                        "invalid MFSPart native certificate PATH pin count"
+                    )
+                timing_path_pins += path_pin_count
+                timing_path_objective_digest.update(
+                    (line + "\n").encode("utf-8")
+                )
+                continue
+            if record[0] != "NET":
+                continue
+            try:
+                if len(record) < 8:
+                    raise ValidationError(
+                        "invalid MFSPart native certificate NET record"
+                    )
+                bottleneck_weight = float(record[3])
+                maximum_distance = int(record[4])
+            except ValueError as error:
+                raise ValidationError(
+                    "malformed MFSPart native certificate NET record"
+                ) from error
+            guarded_nets += maximum_distance >= 0
+            zero_bottleneck_nets += bottleneck_weight == 0.0
+    parsed = _parse_output(output_path, node_count)
+    command = resolve_native_executable(
+        "emuflow_mfspart_refiner_checker", checker
+    )
+    completed = subprocess.run(
+        [
+            command,
+            str(input_path.resolve()),
+            str(output_path.resolve()),
+            "/dev/stdout",
+        ],
+        cwd=input_path.parent,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ValidationError(
+            "MFSPart native certificate checker rejected refinement: "
+            + completed.stdout[-2000:]
+        )
+    checker_metrics = _parse_checker_output_text(completed.stdout)
+    if checker_metrics["attempted_moves"] != len(parsed["moves"]):
+        raise ValidationError("MFSPart checker move count mismatch")
+    if checker_metrics["kept_moves"] != sum(
+        bool(move.get("kept")) for move in parsed["moves"]
+    ):
+        raise ValidationError("MFSPart checker kept-prefix mismatch")
+    input_evidence = {
+        "native_header": header[0],
+        "guarded_nets": guarded_nets,
+        "zero_bottleneck_nets": zero_bottleneck_nets,
+    }
+    if header[0] == "EMUFLOW_MFSPART_REFINER_INPUT_V4":
+        input_evidence["timing_paths"] = timing_paths
+        input_evidence["timing_path_pins"] = timing_path_pins
+        input_evidence["timing_path_objective_sha256"] = (
+            timing_path_objective_digest.hexdigest()
+        )
+    return {
+        "parsed": parsed,
+        "checker_metrics": checker_metrics,
+        "input_evidence": input_evidence,
+    }
+
+
 def _adjacency_and_incidence(problem: Mapping[str, Any]):
     adjacency = [[] for _ in problem["graph"]["nodes"]]
     incidence = [[] for _ in problem["graph"]["nodes"]]
@@ -303,6 +563,50 @@ def _fits(problem, loads, node: int, target: int) -> bool:
     )
 
 
+def _timing_path_metrics(problem, assignment) -> Dict[str, float]:
+    crossed = 0
+    weighted = 0.0
+    for timing_path in problem.get("timing_paths", []):
+        if len({assignment[pin] for pin in timing_path["pins"]}) > 1:
+            crossed += 1
+            weighted += timing_path["weight"]
+    return {
+        "crossed_timing_paths": float(crossed),
+        "weighted_crossed_timing_paths": weighted,
+    }
+
+
+def _refinement_metrics(problem, assignment) -> Dict[str, float]:
+    metrics = _partition_metrics(problem, assignment)
+    metrics.update(_timing_path_metrics(problem, assignment))
+    return metrics
+
+
+def _timing_path_delta_exhaustive(
+    problem, assignment, node: int, candidate: int
+) -> float:
+    source = assignment[node]
+    if candidate == source or problem.get("timing_path_beta", 0.0) == 0.0:
+        return 0.0
+    delta = 0.0
+    for timing_path in problem.get("timing_paths", []):
+        pins = timing_path["pins"]
+        if node not in pins:
+            continue
+        before = len({assignment[pin] for pin in pins}) > 1
+        after = (
+            len(
+                {
+                    candidate if pin == node else assignment[pin]
+                    for pin in pins
+                }
+            )
+            > 1
+        )
+        delta += timing_path["weight"] * (int(before) - int(after))
+    return problem["timing_path_beta"] * delta
+
+
 def _compatibility(problem, adjacency, incidence, assignment, node: int, candidate: int) -> float:
     hop_score = 0.0
     violation = 0.0
@@ -313,12 +617,34 @@ def _compatibility(problem, adjacency, incidence, assignment, node: int, candida
         else:
             violation += weight * (1.0 + problem["mu"] * (distance - problem["hmax"]))
     connectivity = 0.0
+    bottleneck_hops = 0.0
     for net_index in incidence[node]:
         net = problem["graph"]["nets"][net_index]
         spanned = {candidate if net["source"] == node else assignment[net["source"]]}
         spanned.update(candidate if sink == node else assignment[sink] for sink in net["sinks"])
         connectivity += net["weight"] * len(spanned)
-    return hop_score - problem["gamma"] * connectivity - problem["lambda"] * violation
+        driver_part = candidate if net["source"] == node else assignment[net["source"]]
+        maximum_distance = max(
+            problem["distances"][driver_part][
+                candidate if sink == node else assignment[sink]
+            ]
+            for sink in net["sinks"]
+        )
+        if (
+            net["max_distance_limit"] >= 0
+            and maximum_distance > net["max_distance_limit"]
+        ):
+            return -math.inf
+        bottleneck_hops += net["bottleneck_weight"] * maximum_distance
+    return (
+        hop_score
+        - problem["gamma"] * connectivity
+        - problem["lambda"] * violation
+        - problem["bottleneck_beta"] * bottleneck_hops
+        + _timing_path_delta_exhaustive(
+            problem, assignment, node, candidate
+        )
+    )
 
 
 def _compatibility_indexed(
@@ -344,14 +670,34 @@ def _compatibility_indexed(
                 1.0 + problem["mu"] * (distance - problem["hmax"])
             )
     connectivity = 0.0
+    bottleneck_hops = 0.0
     source_part = assignment[node]
     for net_index in incidence[node]:
+        net = problem["graph"]["nets"][net_index]
         spanned_parts = net_unique_parts[net_index]
         if candidate != source_part:
             spanned_parts += int(net_part_counts[net_index][candidate] == 0)
             spanned_parts -= int(net_part_counts[net_index][source_part] == 1)
-        connectivity += problem["graph"]["nets"][net_index]["weight"] * spanned_parts
-    return hop_score - problem["gamma"] * connectivity - problem["lambda"] * violation
+        connectivity += net["weight"] * spanned_parts
+        driver_part = candidate if net["source"] == node else assignment[net["source"]]
+        maximum_distance = max(
+            problem["distances"][driver_part][
+                candidate if sink == node else assignment[sink]
+            ]
+            for sink in net["sinks"]
+        )
+        if (
+            net["max_distance_limit"] >= 0
+            and maximum_distance > net["max_distance_limit"]
+        ):
+            return -math.inf
+        bottleneck_hops += net["bottleneck_weight"] * maximum_distance
+    return (
+        hop_score
+        - problem["gamma"] * connectivity
+        - problem["lambda"] * violation
+        - problem["bottleneck_beta"] * bottleneck_hops
+    )
 
 
 def _pair_compatibility_indexed(
@@ -393,7 +739,12 @@ def _replay_exhaustive(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]]
             for target in range(len(problem["parts"])):
                 if target == source or problem["distances"][source][target] > problem["move_distance"] or not _fits(problem, loads, node, target):
                     continue
-                gain = _compatibility(problem, adjacency, incidence, assignment, node, target) - source_score
+                target_score = _compatibility(
+                    problem, adjacency, incidence, assignment, node, target
+                )
+                if not math.isfinite(target_score):
+                    continue
+                gain = target_score - source_score
                 choices.append((gain, -node, -target, node, source, target))
         if not choices:
             break
@@ -416,8 +767,8 @@ def _replay_exhaustive(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]]
         move["kept"] = index < best_prefix
         if move["kept"]:
             final[move["node"]] = move["target"]
-    initial_metrics = _partition_metrics(problem, problem["assignment"])
-    final_metrics = _partition_metrics(problem, final)
+    initial_metrics = _refinement_metrics(problem, problem["assignment"])
+    final_metrics = _refinement_metrics(problem, final)
     metrics = {
         "attempted_moves": float(len(moves)),
         "best_prefix": float(best_prefix),
@@ -481,6 +832,18 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
         [0] * len(problem["parts"]) for _ in problem["graph"]["nets"]
     ]
     net_unique_parts = [0] * len(problem["graph"]["nets"])
+    net_sink_part_counts = [
+        [0] * len(problem["parts"]) for _ in problem["graph"]["nets"]
+    ]
+    net_sink_top1 = [
+        [0] * len(problem["parts"]) for _ in problem["graph"]["nets"]
+    ]
+    net_sink_top2 = [
+        [0] * len(problem["parts"]) for _ in problem["graph"]["nets"]
+    ]
+    net_sink_top1_counts = [
+        [0] * len(problem["parts"]) for _ in problem["graph"]["nets"]
+    ]
     net_pins = []
     for net_index, net in enumerate(problem["graph"]["nets"]):
         pins = [net["source"], *net["sinks"]]
@@ -488,9 +851,120 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
         net_part_counts[net_index][assignment[net["source"]]] += 1
         for sink in net["sinks"]:
             net_part_counts[net_index][assignment[sink]] += 1
+            net_sink_part_counts[net_index][assignment[sink]] += 1
         net_unique_parts[net_index] = sum(
             count > 0 for count in net_part_counts[net_index]
         )
+
+    def rebuild_sink_distance_summary(net_index: int) -> None:
+        for driver_part in range(len(problem["parts"])):
+            first = 0
+            second = 0
+            first_count = 0
+            for sink_part, count in enumerate(net_sink_part_counts[net_index]):
+                if count == 0:
+                    continue
+                distance = problem["distances"][driver_part][sink_part]
+                if distance > first:
+                    second = first
+                    first = distance
+                    first_count = 1
+                elif distance == first:
+                    first_count += 1
+                elif distance > second:
+                    second = distance
+            net_sink_top1[net_index][driver_part] = first
+            net_sink_top2[net_index][driver_part] = second
+            net_sink_top1_counts[net_index][driver_part] = first_count
+
+    for net_index in range(len(problem["graph"]["nets"])):
+        rebuild_sink_distance_summary(net_index)
+
+    timing_paths = problem.get("timing_paths", [])
+    timing_path_incidence = [[] for _ in range(node_count)]
+    timing_path_part_counts = [
+        [0] * len(problem["parts"]) for _ in timing_paths
+    ]
+    timing_path_unique_parts = [0] * len(timing_paths)
+    timing_path_local_penalty = [0.0] * node_count
+    timing_path_rescue = [
+        [0.0] * len(problem["parts"]) for _ in range(node_count)
+    ]
+    for path_index, timing_path in enumerate(timing_paths):
+        for pin in timing_path["pins"]:
+            timing_path_incidence[pin].append(path_index)
+            timing_path_part_counts[path_index][assignment[pin]] += 1
+        timing_path_unique_parts[path_index] = sum(
+            count > 0 for count in timing_path_part_counts[path_index]
+        )
+
+    def update_timing_path_contribution(
+        path_index: int, sign: int, affected=None
+    ) -> None:
+        if problem["timing_path_beta"] == 0.0:
+            return
+        timing_path = timing_paths[path_index]
+        weighted = (
+            problem["timing_path_beta"] * timing_path["weight"] * sign
+        )
+        unique = timing_path_unique_parts[path_index]
+        if unique == 1:
+            for pin in timing_path["pins"]:
+                timing_path_local_penalty[pin] += weighted
+                if affected is not None:
+                    affected.add(pin)
+        elif unique == 2:
+            present = [
+                part
+                for part, count in enumerate(
+                    timing_path_part_counts[path_index]
+                )
+                if count > 0
+            ]
+            for part, other in zip(present, reversed(present)):
+                if timing_path_part_counts[path_index][part] != 1:
+                    continue
+                singleton = next(
+                    pin
+                    for pin in timing_path["pins"]
+                    if assignment[pin] == part
+                )
+                timing_path_rescue[singleton][other] += weighted
+                if affected is not None:
+                    affected.add(singleton)
+
+    for path_index in range(len(timing_paths)):
+        update_timing_path_contribution(path_index, 1)
+
+    def bottleneck_score(node: int, candidate: int) -> float:
+        score = 0.0
+        source_part = assignment[node]
+        for net_index in incidence[node]:
+            net = problem["graph"]["nets"][net_index]
+            if net["source"] == node:
+                maximum_distance = net_sink_top1[net_index][candidate]
+            else:
+                driver_part = assignment[net["source"]]
+                maximum_distance = net_sink_top1[net_index][driver_part]
+                if (
+                    candidate != source_part
+                    and net_sink_part_counts[net_index][source_part] == 1
+                    and problem["distances"][driver_part][source_part]
+                    == maximum_distance
+                    and net_sink_top1_counts[net_index][driver_part] == 1
+                ):
+                    maximum_distance = net_sink_top2[net_index][driver_part]
+                maximum_distance = max(
+                    maximum_distance,
+                    problem["distances"][driver_part][candidate],
+                )
+            if (
+                net["max_distance_limit"] >= 0
+                and maximum_distance > net["max_distance_limit"]
+            ):
+                return math.inf
+            score += net["bottleneck_weight"] * maximum_distance
+        return score
     # For a node/candidate pair, the connectivity delta is the weight of its
     # incident nets that do not yet contain candidate, minus the weight of
     # incident nets from which moving the node removes its source part.  Keep
@@ -598,7 +1072,11 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
         source_pair_score = pair_scores[node][source]
         source_connectivity = incident_unique_weighted[node]
         source_singleton_weight = incident_singleton_weights[node][source]
-        source_score = source_pair_score - problem["gamma"] * source_connectivity
+        source_score = (
+            source_pair_score
+            - problem["gamma"] * source_connectivity
+            - problem["bottleneck_beta"] * bottleneck_score(node, source)
+        )
         target_queue = []
         for target in range(len(problem["parts"])):
             if (
@@ -613,8 +1091,18 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
                 - incident_present_weights[node][target]
                 - source_singleton_weight
             )
-            target_score = pair_scores[node][target] - problem["gamma"] * (
-                source_connectivity + connectivity_delta
+            target_bottleneck_score = bottleneck_score(node, target)
+            if not math.isfinite(target_bottleneck_score):
+                cached_gains[node][target] = None
+                cached_gain_ranks[node][target] = None
+                continue
+            target_score = (
+                pair_scores[node][target]
+                - problem["gamma"]
+                * (source_connectivity + connectivity_delta)
+                - problem["bottleneck_beta"] * target_bottleneck_score
+                - timing_path_local_penalty[node]
+                + timing_path_rescue[node][target]
             )
             gain = target_score - source_score
             gain_rank = _gain_rank(gain)
@@ -688,6 +1176,9 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
         ):
             loads[source][dimension] -= weight
             loads[target][dimension] += weight
+        path_affected = set()
+        for path_index in timing_path_incidence[node]:
+            update_timing_path_contribution(path_index, -1, path_affected)
         assignment[node] = target
         for neighbor, weight in adjacency[node]:
             neighbor_part_weights[neighbor][source] -= weight
@@ -700,6 +1191,7 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
                     weight * pair_coefficients[target][candidate]
                 )
         for net_index in incidence[node]:
+            net = problem["graph"]["nets"][net_index]
             old_source_count = net_part_counts[net_index][source]
             old_target_count = net_part_counts[net_index][target]
             source_disappears = old_source_count == 1
@@ -710,6 +1202,10 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
             if net_part_counts[net_index][target] == 0:
                 net_unique_parts[net_index] += 1
             net_part_counts[net_index][target] += 1
+            if net["source"] != node:
+                net_sink_part_counts[net_index][source] -= 1
+                net_sink_part_counts[net_index][target] += 1
+                rebuild_sink_distance_summary(net_index)
             net_weight = problem["graph"]["nets"][net_index]["weight"]
             unique_delta = int(target_appears) - int(source_disappears)
             source_singleton_delta = (
@@ -732,6 +1228,15 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
             if target_appears:
                 for pin in net_pins[net_index]:
                     incident_present_weights[pin][target] += net_weight
+        for path_index in timing_path_incidence[node]:
+            counts = timing_path_part_counts[path_index]
+            counts[source] -= 1
+            if counts[source] == 0:
+                timing_path_unique_parts[path_index] -= 1
+            if counts[target] == 0:
+                timing_path_unique_parts[path_index] += 1
+            counts[target] += 1
+            update_timing_path_contribution(path_index, 1, path_affected)
         locked[node] = True
         versions[node] += 1
         cumulative += gain
@@ -753,6 +1258,7 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
             ineffective += 1
 
         affected = {neighbor for neighbor, _ in adjacency[node]}
+        affected.update(path_affected)
         for net_index in incidence[node]:
             net = problem["graph"]["nets"][net_index]
             affected.add(net["source"])
@@ -830,8 +1336,8 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
         move["kept"] = index < best_prefix
         if move["kept"]:
             final[move["node"]] = move["target"]
-    initial_metrics = _partition_metrics(problem, problem["assignment"])
-    final_metrics = _partition_metrics(problem, final)
+    initial_metrics = _refinement_metrics(problem, problem["assignment"])
+    final_metrics = _refinement_metrics(problem, final)
     metrics = {
         "attempted_moves": float(len(moves)),
         "best_prefix": float(best_prefix),
@@ -913,8 +1419,8 @@ def validate_mfspart_refinement(
         kept_moves = sum(bool(move.get("kept")) for move in actual_moves)
         if checker_metrics["kept_moves"] != kept_moves:
             raise ValidationError("MFSPart checker kept-prefix mismatch")
-        expected_initial = _partition_metrics(problem, problem["assignment"])
-        expected_final = _partition_metrics(problem, artifact["assignment"])
+        expected_initial = _refinement_metrics(problem, problem["assignment"])
+        expected_final = _refinement_metrics(problem, artifact["assignment"])
         for prefix, expected_metrics in (
             ("initial", expected_initial),
             ("final", expected_final),
@@ -984,12 +1490,31 @@ def refine_mfspart_level(
     gamma: float = 15.0,
     violation_lambda: float = 10_000.0,
     mu: float = 0.1,
+    bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
+    timing_paths: Sequence[Mapping[str, Any]] = (),
+    timing_path_beta: float = 0.0,
     executable: Optional[str] = None,
     checker: Optional[str] = None,
     python_replay_max_nodes: int = _DEFAULT_PYTHON_REPLAY_MAX_NODES,
     force_python_replay: bool = False,
 ) -> Dict[str, Any]:
-    problem = _normalise_refinement(graph, dimensions, parts, distances, capacities, assignment, hmax=hmax, move_distance=move_distance, early_stop=early_stop, gamma=gamma, violation_lambda=violation_lambda, mu=mu)
+    problem = _normalise_refinement(
+        graph,
+        dimensions,
+        parts,
+        distances,
+        capacities,
+        assignment,
+        hmax=hmax,
+        move_distance=move_distance,
+        early_stop=early_stop,
+        gamma=gamma,
+        violation_lambda=violation_lambda,
+        mu=mu,
+        bottleneck_beta=bottleneck_beta,
+        timing_paths=timing_paths,
+        timing_path_beta=timing_path_beta,
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     input_path = output_dir / "mfspart_refiner.in"
     output_path = output_dir / "mfspart_refiner.out"
@@ -1005,7 +1530,7 @@ def refine_mfspart_level(
     artifact = {
         "schema": MFSPART_REFINEMENT_SCHEMA,
         "provider": MFSPART_REFINER_PROVIDER,
-        "claim_scope": "independent paper-level direct k-way FM Eqs. 9--10",
+        "claim_scope": "paper-level direct k-way FM Eqs. 9--10 with EmuFlow class-weighted worst-sink-hop and immutable per-net topology guards",
         "moves": parsed["moves"],
         "assignment": parsed["assignment"],
         "metrics": parsed["metrics"],
@@ -1042,6 +1567,7 @@ def refine_mfspart_hierarchy(
     gamma: float = 15.0,
     violation_lambda: float = 10_000.0,
     mu: float = 0.1,
+    bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
     executable: Optional[str] = None,
     checker: Optional[str] = None,
     python_replay_max_nodes: int = _DEFAULT_PYTHON_REPLAY_MAX_NODES,
@@ -1082,6 +1608,7 @@ def refine_mfspart_hierarchy(
             gamma=gamma,
             violation_lambda=violation_lambda,
             mu=mu,
+            bottleneck_beta=bottleneck_beta,
             executable=executable,
             checker=checker,
             python_replay_max_nodes=python_replay_max_nodes,

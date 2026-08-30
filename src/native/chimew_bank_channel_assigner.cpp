@@ -28,6 +28,7 @@ struct Point {
 };
 
 struct Member {
+  int direction = -1;  // 0: FPGA A -> B, 1: FPGA B -> A.
   double timing_weight = 1.0;
   Point fanout;
   std::vector<Point> fanins;
@@ -37,7 +38,7 @@ struct Group {
   int index = -1;
   int domain = -1;
   int kind = -1;       // 0: TDM group, 1: common signal.
-  int direction = -1;  // 0: FPGA A -> B, 1: FPGA B -> A.
+  int direction = -1;  // 0: A -> B, 1: B -> A, 2: shared TDM bundle.
   int expected_members = 0;
   std::vector<Member> members;
 };
@@ -77,9 +78,11 @@ Input read_input(const std::string& path) {
   std::ifstream stream(path);
   std::string header;
   if (!(stream >> header) ||
-      header != "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V1") {
+      (header != "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V1" &&
+       header != "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V2")) {
     throw std::runtime_error("invalid Chimew bank/channel input header");
   }
+  const bool input_v2 = header == "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V2";
   Input input;
   std::string record;
   while (stream >> record) {
@@ -118,7 +121,8 @@ Input read_input(const std::string& path) {
             group.direction >> group.expected_members) ||
           group.index != static_cast<int>(input.groups.size()) ||
           group.domain < 0 || (group.kind != 0 && group.kind != 1) ||
-          (group.direction != 0 && group.direction != 1) ||
+          (group.direction != 0 && group.direction != 1 &&
+           (!input_v2 || group.direction != 2)) ||
           group.expected_members <= 0 ||
           (group.kind == 1 && group.expected_members != 1)) {
         throw std::runtime_error("invalid Chimew signal group");
@@ -129,7 +133,9 @@ Input read_input(const std::string& path) {
       int member_index = -1;
       int fanin_count = 0;
       Member member;
-      if (!(stream >> group_index >> member_index >> member.timing_weight >>
+      if (!(stream >> group_index >> member_index) ||
+          (input_v2 && !(stream >> member.direction)) ||
+          !(stream >> member.timing_weight >>
             member.fanout.x >>
             member.fanout.y >> fanin_count) ||
           group_index < 0 ||
@@ -139,6 +145,14 @@ Input read_input(const std::string& path) {
           fanin_count <= 0 || !std::isfinite(member.timing_weight) ||
           member.timing_weight <= 0.0 || !finite_point(member.fanout)) {
         throw std::runtime_error("invalid Chimew signal member");
+      }
+      if (!input_v2) {
+        member.direction = input.groups[group_index].direction;
+      }
+      if ((member.direction != 0 && member.direction != 1) ||
+          (input.groups[group_index].direction != 2 &&
+           member.direction != input.groups[group_index].direction)) {
+        throw std::runtime_error("invalid Chimew member direction");
       }
       member.fanins.resize(fanin_count);
       for (Point& fanin : member.fanins) {
@@ -176,16 +190,26 @@ Input read_input(const std::string& path) {
     if (static_cast<int>(group.members.size()) != group.expected_members) {
       throw std::runtime_error("Chimew group member count does not agree");
     }
+    if (group.direction == 2) {
+      bool seen_direction[2] = {false, false};
+      for (const Member& member : group.members) {
+        seen_direction[member.direction] = true;
+      }
+      if (!seen_direction[0] || !seen_direction[1]) {
+        throw std::runtime_error(
+            "bidirectional Chimew bundle lacks one direction");
+      }
+    }
   }
   return input;
 }
 
 double raw_cost(const Group& group, const Point& endpoint_a,
                 const Point& endpoint_b) {
-  const Point& output = group.direction == 0 ? endpoint_a : endpoint_b;
-  const Point& input = group.direction == 0 ? endpoint_b : endpoint_a;
   double cost = 0.0;
   for (const Member& member : group.members) {
+    const Point& output = member.direction == 0 ? endpoint_a : endpoint_b;
+    const Point& input = member.direction == 0 ? endpoint_b : endpoint_a;
     double member_cost = manhattan(member.fanout, output);
     double fanin_distance = 0.0;
     for (const Point& fanin : member.fanins) {
@@ -337,6 +361,55 @@ struct AssignmentResult {
   std::vector<std::int64_t> cost_for_left;
   std::int64_t total_cost = 0;
   std::vector<std::int64_t> potentials;
+};
+
+// Accumulate the sign of a short linear expression without relying on the
+// non-standard __int128 extension or overflowing int64_t.  The certificate
+// checks below contain at most three signed int64_t terms, so a two-limb
+// unsigned magnitude is more than sufficient while remaining strict C++17.
+class ExactSignedSum {
+ public:
+  void add(std::int64_t value, bool negate = false) {
+    const bool term_negative = (value < 0) != negate;
+    const std::uint64_t magnitude =
+        value < 0 ? static_cast<std::uint64_t>(-(value + 1)) + 1U
+                  : static_cast<std::uint64_t>(value);
+    if (magnitude == 0) {
+      return;
+    }
+    if (high_ == 0 && low_ == 0) {
+      negative_ = term_negative;
+      low_ = magnitude;
+      return;
+    }
+    if (negative_ == term_negative) {
+      const std::uint64_t previous = low_;
+      low_ += magnitude;
+      if (low_ < previous) {
+        ++high_;
+      }
+      return;
+    }
+    if (high_ != 0 || low_ >= magnitude) {
+      if (low_ < magnitude) {
+        --high_;
+      }
+      low_ -= magnitude;
+      if (high_ == 0 && low_ == 0) {
+        negative_ = false;
+      }
+      return;
+    }
+    low_ = magnitude - low_;
+    negative_ = term_negative;
+  }
+
+  bool negative() const { return negative_; }
+
+ private:
+  bool negative_ = false;
+  std::uint64_t high_ = 0;
+  std::uint64_t low_ = 0;
 };
 
 AssignmentResult assign(int right_count, const std::vector<int>& capacities,
@@ -510,11 +583,11 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
         return std::nullopt;
       }
       used_right[right] = true;
-      const __int128 reverse_reduced =
-          -static_cast<__int128>(result.cost_for_left[left]) +
-          static_cast<__int128>(result.potentials[first_left + left]) -
-          static_cast<__int128>(result.potentials[first_right + right]);
-      if (reverse_reduced < 0) {
+      ExactSignedSum reverse_reduced;
+      reverse_reduced.add(result.cost_for_left[left], true);
+      reverse_reduced.add(result.potentials[first_left + left]);
+      reverse_reduced.add(result.potentials[first_right + right], true);
+      if (reverse_reduced.negative()) {
         return std::nullopt;
       }
     }
@@ -522,32 +595,28 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
       if (result.right_for_left[candidate.left] == candidate.right) {
         continue;
       }
-      const __int128 forward_reduced =
-          static_cast<__int128>(candidate.cost) +
-          static_cast<__int128>(
-              result.potentials[first_right + candidate.right]) -
-          static_cast<__int128>(
-              result.potentials[first_left + candidate.left]);
-      if (forward_reduced < 0) {
+      ExactSignedSum forward_reduced;
+      forward_reduced.add(candidate.cost);
+      forward_reduced.add(
+          result.potentials[first_right + candidate.right]);
+      forward_reduced.add(
+          result.potentials[first_left + candidate.left], true);
+      if (forward_reduced.negative()) {
         return std::nullopt;
       }
     }
     for (int right = 0; right < right_count; ++right) {
-      const __int128 right_potential =
-          static_cast<__int128>(result.potentials[first_right + right]);
-      const __int128 source_potential =
-          static_cast<__int128>(result.potentials[source]);
-      const __int128 reduced = used_right[right]
-                                   ? right_potential - source_potential
-                                   : source_potential - right_potential;
-      if (reduced < 0) {
+      const std::int64_t right_potential =
+          result.potentials[first_right + right];
+      const std::int64_t source_potential = result.potentials[source];
+      if ((used_right[right] && right_potential < source_potential) ||
+          (!used_right[right] && source_potential < right_potential)) {
         return std::nullopt;
       }
     }
     for (int left = 0; left < left_count; ++left) {
-      if (static_cast<__int128>(result.potentials[sink]) -
-              static_cast<__int128>(result.potentials[first_left + left]) <
-          0) {
+      if (result.potentials[sink] <
+          result.potentials[first_left + left]) {
         return std::nullopt;
       }
     }
@@ -644,7 +713,7 @@ int bank_worker_count(std::size_t jobs) {
 Stage2Result solve_bank(const Input& input, int bank_index,
                         const std::vector<int>& groups, int priority) {
   const BankPair& bank = input.banks[bank_index];
-  int direction_counts[2] = {0, 0};
+  int direction_counts[3] = {0, 0, 0};
   int common_count = 0;
   for (int group_index : groups) {
     const Group& group = input.groups[group_index];
@@ -656,10 +725,15 @@ Stage2Result solve_bank(const Input& input, int bank_index,
   }
   int dedicated_direction = -1;
   if (common_count == 0) {
-    if (direction_counts[0] > 0 && direction_counts[1] == 0) {
+    if (direction_counts[0] > 0 && direction_counts[1] == 0 &&
+        direction_counts[2] == 0) {
       dedicated_direction = 0;
-    } else if (direction_counts[1] > 0 && direction_counts[0] == 0) {
+    } else if (direction_counts[1] > 0 && direction_counts[0] == 0 &&
+               direction_counts[2] == 0) {
       dedicated_direction = 1;
+    } else if (direction_counts[2] > 0 && direction_counts[0] == 0 &&
+               direction_counts[1] == 0) {
+      dedicated_direction = 2;
     }
   }
   std::vector<CandidateEdge> candidates;
@@ -675,6 +749,11 @@ Stage2Result solve_bank(const Input& input, int bank_index,
                            direction_counts[second_direction]) {
       required_kind = 0;
       required_direction = second_direction;
+    } else if (right < direction_counts[first_direction] +
+                           direction_counts[second_direction] +
+                           direction_counts[2]) {
+      required_kind = 0;
+      required_direction = 2;
     }
     const Channel& channel = input.channels[bank.channels[right]];
     for (int left = 0; left < static_cast<int>(groups.size()); ++left) {

@@ -9,9 +9,27 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.experiment_partition import _rebuild_timing_path_objective
+from emuflow.io import read_json, write_json
+from emuflow.mfspart_provider import (
+    _partition_graph,
+    _timing_path_groups,
+    refine_mfspart_partition,
+)
+from emuflow.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+from emuflow.partition import (
+    CUT_MODE_STATIC_EXACT,
+    build_clusters,
+    build_partition_assignment,
+    load_partition_constraints,
+    normalize_partition_constraints,
+)
 from emuflow.phase3 import run_phase3
+from emuflow.platform import Platform
+from emuflow.routing import load_route_constraints
 from emuflow.yosys import import_yosys_json
 from tests.native_build import tlr_router
+from tests.test_combinational_cut import _chain_ir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -178,6 +196,222 @@ class MFSPartPhase3Test(unittest.TestCase):
         self.assertGreater(
             assignment["provider_metadata"]["min_used_legalization_moves"], 0
         )
+
+    def test_directional_post_refinement_preserves_tritonpart_contract(self) -> None:
+        ir = import_yosys_json(
+            ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
+        )
+        platform = Platform.load(PLATFORM)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "counter.emuir.json"
+            ir_path.write_text(json.dumps(ir.to_dict()), encoding="utf-8")
+            run_phase3(
+                ir_path,
+                PLATFORM,
+                root / "phase3",
+                seed=19,
+                provider="greedy",
+            )
+            clusters = read_json(root / "phase3/clusters.json")
+            initial = read_json(root / "phase3/assignment.json")
+            constraints = load_partition_constraints(None, ir, platform)
+            refined, report = refine_mfspart_partition(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                load_route_constraints(None, platform),
+                initial,
+                root / "post-refinement",
+                early_stop=4,
+                refiner=self.executables["refiner"],
+                refiner_checker=self.executables["refiner_checker"],
+            )
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["direction_source"], "EmuIR net drivers/sinks")
+        self.assertEqual(refined["provider"], initial["provider"])
+        self.assertEqual(
+            refined["provider_metadata"][
+                "directional_mfspart_post_refinement"
+            ]["initial_assignment_provider"],
+            initial["provider"],
+        )
+        self.assertEqual(
+            set(refined["cluster_assignment"]),
+            set(initial["cluster_assignment"]),
+        )
+
+    def test_directional_graph_uses_emuir_driver_identity(self) -> None:
+        ir = import_yosys_json(
+            ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
+        )
+        platform = Platform.load(PLATFORM)
+        constraints = load_partition_constraints(None, ir, platform)
+        clusters = build_clusters(ir, constraints)
+        _nodes, graph_nets, _dimensions = _partition_graph(
+            ir, clusters, platform, {}
+        )
+        cluster_by_instance = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        ir_nets = {net["id"]: net for net in ir.value["nets"]}
+        self.assertTrue(graph_nets)
+        for graph_net in graph_nets:
+            net_id = graph_net["id"].rsplit("#d", 1)[0]
+            net = ir_nets[net_id]
+            driver_clusters = {
+                cluster_by_instance[endpoint["instance"]]
+                for endpoint in net["drivers"]
+                if endpoint["instance"] is not None
+            }
+            sink_clusters = {
+                cluster_by_instance[endpoint["instance"]]
+                for endpoint in net["sinks"]
+                if endpoint["instance"] is not None
+            }
+            self.assertIn(graph_net["source"], driver_clusters)
+            self.assertTrue(set(graph_net["sinks"]).issubset(sink_clusters))
+            self.assertEqual(graph_net["logical_net"], net_id)
+            self.assertEqual(graph_net["cut_class"], net["cut_class"])
+
+    def test_exact_guard_replaces_a_register_cut_with_a_valuable_comb_cut(self) -> None:
+        ir = _chain_ir()
+        platform = Platform.load(PLATFORM)
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_tolerance": 1.0,
+                "fixed": [
+                    {"instance": "q0", "fpga": "fpga0"},
+                    {"instance": "q1", "fpga": "fpga1"},
+                ],
+            },
+            ir,
+            platform,
+        )
+        clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=8,
+            comb_segment_budget_slots=1,
+            frame_slots=32,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        )
+        cluster_for = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        initial_targets = {
+            "q0": "fpga0",
+            "l0": "fpga1",
+            "l1": "fpga1",
+            "l2": "fpga1",
+            "q1": "fpga1",
+        }
+        initial = build_partition_assignment(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            {
+                cluster_for[instance]: target
+                for instance, target in initial_targets.items()
+            },
+            provider="test",
+            seed=0,
+        )
+        self.assertEqual(initial["metrics"]["combinational_cut_nets"], 0)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            refined, report = refine_mfspart_partition(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                load_route_constraints(None, platform, frame_slots=32),
+                initial,
+                Path(temporary_directory),
+                net_weights={"q": 10.0},
+                early_stop=3,
+                refiner=self.executables["refiner"],
+                refiner_checker=self.executables["refiner_checker"],
+            )
+        self.assertEqual(report["topology_guard"], (
+            "non-combinational-net-worst-sink-distance-non-regression-v1"
+        ))
+        self.assertGreater(report["guarded_nets"], 0)
+        self.assertGreater(refined["metrics"]["combinational_cut_nets"], 0)
+        self.assertEqual(refined["instance_assignment"]["l0"], "fpga0")
+
+    def test_timing_path_groups_follow_ordered_drivers_not_fanout_branches(self) -> None:
+        ir = _chain_ir()
+        platform = Platform.load(PLATFORM)
+        constraints = load_partition_constraints(None, ir, platform)
+        clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=3,
+            comb_segment_budget_slots=3,
+            frame_slots=32,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        )
+        node_index = {
+            cluster["id"]: index
+            for index, cluster in enumerate(
+                sorted(clusters["clusters"], key=lambda item: item["id"])
+            )
+        }
+        path = {
+            "id": "p0",
+            "clock_domain": "clk",
+            "clock_period_ns": 10.0,
+            "slack_ns": 0.0,
+            "fixed_delay_ns": 0.0,
+            "path_nets": ["q", "n0", "n1", "d"],
+            "normalized_slack": 0.0,
+            "startpoint": {
+                "object": "q0/Q",
+                "instance": "q0",
+                "port": "Q",
+                "bit": 0,
+            },
+            "endpoint": {
+                "object": "q1/D",
+                "instance": "q1",
+                "port": "D",
+                "bit": 0,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database = Path(temporary_directory) / "paths.json"
+            write_json(
+                database,
+                {
+                    "schema": "emuflow.sta-path-database/v1",
+                    "design": ir.value["design"]["name"],
+                    "paths": [path, {**path, "id": "p1"}],
+                },
+            )
+            groups, evidence = _timing_path_groups(
+                ir, clusters, node_index, database
+            )
+            ir_path = Path(temporary_directory) / "design.emuir.json"
+            clusters_path = Path(temporary_directory) / "clusters.json"
+            write_json(ir_path, ir.value)
+            write_json(clusters_path, clusters)
+            independently_rebuilt = _rebuild_timing_path_objective(
+                ir_path, clusters_path, database
+            )
+        self.assertEqual(evidence["eligible_paths"], 2)
+        self.assertEqual(evidence["compressed_groups"], 1)
+        self.assertEqual(groups[0]["weight"], 2.0)
+        self.assertEqual(len(groups[0]["pins"]), 5)
+        self.assertEqual(independently_rebuilt, evidence)
 
     def test_counter_runs_affected_multi_fpga_flow_with_mfspart(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

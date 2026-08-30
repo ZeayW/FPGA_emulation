@@ -8,6 +8,7 @@ from pathlib import Path
 from emuflow.canonical_experiment import (
     CANONICAL_EXPERIMENT_CONFIG_SCHEMA,
     compile_canonical_experiment_spec,
+    compile_static_exact_ab_experiment_spec,
 )
 from emuflow.experiment_dag import validate_experiment_spec
 from emuflow.errors import ValidationError
@@ -493,12 +494,13 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
             )
 
-    def test_partition_storage_peak_override_is_sealed_and_positive(self) -> None:
+    def test_partition_storage_estimate_override_is_sealed_and_positive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_path = self._config(root)
             config = json.loads(config_path.read_text())
-            config["partition_peak_gib"] = 8
+            config["partition_peak_gib"] = 4
+            config["partition_retained_gib"] = 1
             config_path.write_text(json.dumps(config), encoding="utf-8")
             output = root / "spec.json"
             compile_canonical_experiment_spec(config_path, REPOSITORY, output)
@@ -509,17 +511,28 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ]
             }
             partition = nodes["partition"]
-            self.assertEqual(partition["configuration"]["partition_peak_gib"], 8)
+            self.assertEqual(partition["configuration"]["partition_peak_gib"], 4)
             self.assertEqual(
-                partition["storage_estimate"]["peak_bytes"], 8 * 1024**3
+                partition["configuration"]["partition_retained_gib"], 1
+            )
+            self.assertEqual(
+                partition["storage_estimate"],
+                {
+                    "peak_bytes": 4 * 1024**3,
+                    "retained_bytes": 1 * 1024**3,
+                },
             )
 
-            config["partition_peak_gib"] = 0
-            config_path.write_text(json.dumps(config), encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "partition_peak_gib"):
-                compile_canonical_experiment_spec(
-                    config_path, REPOSITORY, root / "invalid-partition-spec.json"
-                )
+            for field in ("partition_peak_gib", "partition_retained_gib"):
+                invalid = dict(config)
+                invalid[field] = 0
+                config_path.write_text(json.dumps(invalid), encoding="utf-8")
+                with self.assertRaisesRegex(ValidationError, field):
+                    compile_canonical_experiment_spec(
+                        config_path,
+                        REPOSITORY,
+                        root / f"invalid-{field}.json",
+                    )
 
     def test_phase6_candidate_storage_peak_override_is_sealed_and_positive(
         self,
@@ -648,6 +661,29 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertNotIn("phase6-chimew", nodes)
             self.assertNotIn("qor-comparison", nodes)
             partition = nodes["partition"]
+            self.assertTrue(
+                partition["configuration"]["mfspart_post_refinement"]
+            )
+            self.assertEqual(
+                partition["configuration"][
+                    "mfspart_post_refinement_bottleneck_beta"
+                ],
+                256.0,
+            )
+            self.assertIn("--mfspart-post-refinement", partition["command"])
+            self.assertEqual(
+                partition["command"][
+                    partition["command"].index(
+                        "--mfspart-post-refinement-bottleneck-beta"
+                    )
+                    + 1
+                ],
+                "256",
+            )
+            self.assertIn(
+                "mfspart-post-refinement",
+                {artifact["path"] for artifact in partition["artifacts"]},
+            )
             self.assertEqual(
                 partition["configuration"]["cut_mode"],
                 "static-exact-combinational",
@@ -687,6 +723,76 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
                 "0",
             )
+            route = nodes["route"]
+
+    def test_static_exact_omitted_knobs_select_promoted_generalized_defaults(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config["cut_mode"] = "static-exact-combinational"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            nodes = {
+                item["id"]: item
+                for item in validate_experiment_spec(
+                    json.loads(output.read_text())
+                )["nodes"]
+            }
+            partition = nodes["partition"]
+            self.assertEqual(
+                partition["configuration"]["static_exact_candidate_policy"],
+                "assignment-derived-acyclic-v2",
+            )
+            self.assertEqual(
+                partition["configuration"][
+                    "max_cross_fpga_dependency_depth"
+                ],
+                8,
+            )
+            self.assertEqual(
+                partition["configuration"][
+                    "mfspart_post_refinement_timing_path_beta"
+                ],
+                0.0,
+            )
+
+    def test_generalized_static_exact_accepts_depth_beyond_two(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config.update(
+                {
+                    "cut_mode": "static-exact-combinational",
+                    "static_exact_candidate_policy": (
+                        "assignment-derived-acyclic-v2"
+                    ),
+                    "max_cross_fpga_dependency_depth": 8,
+                }
+            )
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            nodes = {
+                item["id"]: item
+                for item in validate_experiment_spec(
+                    json.loads(output.read_text())
+                )["nodes"]
+            }
+            partition = nodes["partition"]
+            self.assertEqual(
+                partition["configuration"]["static_exact_candidate_policy"],
+                "assignment-derived-acyclic-v2",
+            )
+            for arguments in (partition["command"], partition["validator"]):
+                index = arguments.index("--static-exact-candidate-policy")
+                self.assertEqual(
+                    arguments[index + 1], "assignment-derived-acyclic-v2"
+                )
             route = nodes["route"]
             self.assertEqual(
                 route["configuration"]["provider"],
@@ -857,6 +963,64 @@ class CanonicalExperimentTest(unittest.TestCase):
                     config_path, REPOSITORY, root / "spec.json"
                 )
 
+    def test_precomputed_tritonpart_solution_is_sealed_for_single_arm(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            solution = root / "candidate.part.3"
+            solution.write_text("0\n1\n0\n", encoding="utf-8")
+            config = json.loads(config_path.read_text())
+            config["partition_seed_attempts"] = 1
+            config["tritonpart_solution"] = str(solution)
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            partition = next(
+                item
+                for item in json.loads(output.read_text())["nodes"]
+                if item["id"] == "partition"
+            )
+            digest = hashlib.sha256(solution.read_bytes()).hexdigest()
+            self.assertEqual(partition["inputs"]["tritonpart_solution"], digest)
+            self.assertEqual(
+                partition["configuration"]["tritonpart_solution_sha256"],
+                digest,
+            )
+            for command in (partition["command"], partition["validator"]):
+                self.assertEqual(
+                    command[command.index("--tritonpart-solution") + 1],
+                    str(solution.resolve()),
+                )
+
+            config["partition_seed_attempts"] = 2
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "requires partition_seed_attempts=1"
+            ):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "invalid.json"
+                )
+
+    def test_static_exact_ab_rejects_one_solution_for_different_clusterings(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            solution = root / "candidate.part.3"
+            solution.write_text("0\n", encoding="utf-8")
+            config = json.loads(config_path.read_text())
+            config["tritonpart_solution"] = str(solution)
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "policy-specific partition searches"
+            ):
+                compile_static_exact_ab_experiment_spec(
+                    config_path, REPOSITORY, root / "ab.json"
+                )
+
     def test_partition_balance_repair_must_be_boolean(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -889,6 +1053,105 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             self.assertNotIn("--repair-balance", partition["command"])
             self.assertIn("--no-repair-balance", partition["validator"])
+
+    def test_static_exact_ab_compiler_shares_only_frontend_and_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "static-exact-ab.json"
+            report = compile_static_exact_ab_experiment_spec(
+                self._config(root), REPOSITORY, output
+            )
+            self.assertEqual(report["nodes"], 27)
+            self.assertEqual(report["physical_terminal_nodes"], 3)
+            self.assertEqual(report["physical_seeds"], [1])
+            spec = validate_experiment_spec(json.loads(output.read_text()))
+            nodes = {item["id"]: item for item in spec["nodes"]}
+            self.assertEqual(
+                sum(item["stage"] == "frontend" for item in spec["nodes"]), 1
+            )
+            self.assertEqual(
+                sum(item["stage"] == "timing" for item in spec["nodes"]), 1
+            )
+            self.assertNotIn("seq-phase6-placement-aware", nodes)
+            self.assertNotIn("seq-phase6-chimew", nodes)
+            self.assertEqual(
+                nodes["seq-partition"]["configuration"]["cut_mode"],
+                "sequential-only",
+            )
+            self.assertEqual(
+                nodes["v1-partition"]["configuration"][
+                    "static_exact_candidate_policy"
+                ],
+                "potential-frontier-depth-v1",
+            )
+            self.assertEqual(
+                nodes["v1-partition"]["configuration"][
+                    "minimum_combinational_cut_nets"
+                ],
+                0,
+            )
+            self.assertEqual(
+                nodes["v2-partition"]["configuration"][
+                    "static_exact_candidate_policy"
+                ],
+                "assignment-derived-acyclic-v2",
+            )
+            self.assertEqual(
+                nodes["v2-partition"]["configuration"][
+                    "minimum_combinational_cut_nets"
+                ],
+                1,
+            )
+            for prefix in ("seq", "v1", "v2"):
+                self.assertEqual(
+                    nodes[f"{prefix}-partition"]["configuration"]["seed"],
+                    0,
+                )
+                self.assertEqual(
+                    nodes[f"{prefix}-partition"]["configuration"][
+                        "seed_attempts"
+                    ],
+                    1,
+                )
+            comparison = nodes["static-exact-qor-comparison"]
+            self.assertEqual(
+                comparison["stage"], "static-exact-qor-compare"
+            )
+            self.assertIn(
+                "src/emuflow/static_exact_qor.py",
+                comparison["implementation"]["components"],
+            )
+            self.assertEqual(comparison["command"].count("--arm"), 3)
+            self.assertEqual(
+                comparison["configuration"][
+                    "legacy_minimum_combinational_cut_nets"
+                ],
+                0,
+            )
+            self.assertEqual(
+                comparison["configuration"][
+                    "generalized_minimum_combinational_cut_nets"
+                ],
+                1,
+            )
+            self.assertEqual(comparison["configuration"]["partition_seed"], 0)
+            self.assertEqual(
+                comparison["configuration"]["partition_seed_attempts"], 1
+            )
+            self.assertIn(
+                "{dependency:v2-phase7-baseline-seed1}",
+                comparison["command"],
+            )
+            self.assertEqual(
+                comparison["artifacts"],
+                [
+                    {
+                        "path": "static-exact-qor-comparison.json",
+                        "role": "evidence-critical",
+                        "retention": "required",
+                    }
+                ],
+            )
 
     def test_matrix_and_boarddb_materialization_contract_is_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

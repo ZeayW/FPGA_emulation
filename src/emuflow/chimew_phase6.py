@@ -387,29 +387,69 @@ def build_chimew_phase6_pin_plan(
         if channel is None:
             raise ValidationError("Chimew assignment has no electrical channel")
         domain = problem["domains"][group["domain"]]
-        source = domain["fpga_a"] if group["direction"] == 0 else domain["fpga_b"]
-        sink = domain["fpga_b"] if group["direction"] == 0 else domain["fpga_a"]
-        group_direction = "a_to_b" if group["direction"] == 0 else "b_to_a"
-        if channel["direction"] not in {"either", group_direction}:
+        group_direction = (
+            "a_to_b"
+            if group["direction"] == 0
+            else "b_to_a" if group["direction"] == 1 else "bidirectional"
+        )
+        if (
+            group_direction == "bidirectional"
+            and channel["direction"] != "either"
+        ) or (
+            group_direction != "bidirectional"
+            and channel["direction"] not in {"either", group_direction}
+        ):
             raise ValidationError("Chimew assignment electrical direction mismatch")
         if (channel["fpga_a"], channel["fpga_b"]) != (
             domain["fpga_a"], domain["fpga_b"]
         ):
             raise ValidationError("Chimew assignment electrical domain mismatch")
         member_ids = []
-        ratios = set()
+        ratios_by_direction = {"a_to_b": set(), "b_to_a": set()}
+        count_by_direction = {"a_to_b": 0, "b_to_a": 0}
+        slots = set()
+        member_directions = set()
         for member in group["members"]:
             entry_id = member["id"]
             entry = schedule_by_id.get(entry_id)
             if entry is None or entry_id in used_schedule_entries:
                 raise ValidationError("Chimew members do not cover unique schedule entries")
+            member_direction = (
+                "a_to_b" if member["direction"] == 0 else "b_to_a"
+            )
+            source = (
+                domain["fpga_a"]
+                if member_direction == "a_to_b"
+                else domain["fpga_b"]
+            )
+            sink = (
+                domain["fpga_b"]
+                if member_direction == "a_to_b"
+                else domain["fpga_a"]
+            )
             if (
                 entry.get("link") != channel["link"]
                 or entry.get("from") != source
                 or entry.get("to") != sink
             ):
                 raise ValidationError("Chimew member schedule domain does not agree")
-            ratios.add(_tdm_ratio(entry))
+            ratio = _tdm_ratio(entry)
+            slot = entry.get("slot")
+            if (
+                isinstance(slot, bool)
+                or not isinstance(slot, int)
+                or slot < 0
+                or slot in slots
+            ):
+                raise ValidationError(
+                    "Chimew group has a TDM slot collision: "
+                    f"group={group['id']!r}, entry={entry_id!r}, "
+                    f"ratio={ratio!r}, slot={slot!r}, prior_slots={sorted(slots)!r}"
+                )
+            ratios_by_direction[member_direction].add(ratio)
+            count_by_direction[member_direction] += 1
+            slots.add(slot)
+            member_directions.add(member_direction)
             used_schedule_entries.add(entry_id)
             member_ids.append(entry_id)
             plan_assignment[entry_id] = (group_index, channel["physical_lane"])
@@ -433,7 +473,22 @@ def build_chimew_phase6_pin_plan(
                     "sink_fallback": False,
                 }
             )
-        if len(ratios) != 1 or len(member_ids) > next(iter(ratios)):
+        if (
+            any(
+                len(ratios_by_direction[direction]) != 1
+                or count_by_direction[direction]
+                > next(iter(ratios_by_direction[direction]))
+                for direction in member_directions
+            )
+            or (
+                group_direction == "bidirectional"
+                and member_directions != {"a_to_b", "b_to_a"}
+            )
+            or (
+                group_direction != "bidirectional"
+                and member_directions != {group_direction}
+            )
+        ):
             raise ValidationError("Chimew group violates schedule TDM capacity")
         package_pin_keys = (
             (channel["fpga_a"], channel["package_pin_a"]),
@@ -766,33 +821,77 @@ def validate_chimew_phase6_binding(
         ):
             raise ValidationError("Chimew electrical binding physical lane is invalid")
         direction = record.get("direction")
-        if direction not in {"a_to_b", "b_to_a"}:
+        if direction not in {"a_to_b", "b_to_a", "bidirectional"}:
             raise ValidationError("Chimew electrical binding direction is invalid")
+        if direction == "bidirectional" and (
+            platform_link.direction != "full_duplex"
+            or platform_link.capacity_sharing != "shared_bidirectional"
+        ):
+            raise ValidationError(
+                "a bidirectional Chimew bundle requires shared full-duplex capacity"
+            )
         lane_key = (link, direction, physical_lane)
         if lane_key in lanes:
             raise ValidationError("Chimew electrical binding reuses a concrete lane")
         physical_key = (link, physical_lane)
         existing_directions = physical_lane_uses.setdefault(physical_key, set())
         if existing_directions and (
-            platform_link.direction != "full_duplex"
+            direction == "bidirectional"
+            or "bidirectional" in existing_directions
+            or platform_link.direction != "full_duplex"
             or platform_link.capacity_sharing != "per_direction"
         ):
             raise ValidationError("Chimew electrical binding reuses a concrete lane")
         existing_directions.add(direction)
         lanes.add(lane_key)
-        source, sink = (fpga_a, fpga_b) if direction == "a_to_b" else (fpga_b, fpga_a)
+        member_directions = set()
+        slots = set()
+        ratios_by_direction = {"a_to_b": set(), "b_to_a": set()}
+        count_by_direction = {"a_to_b": 0, "b_to_a": 0}
         for member in members:
             scheduled = schedule_by_id.get(member)
             planned = plan_by_id.get(member)
+            if scheduled is None:
+                raise ValidationError("Chimew electrical binding conflicts with pin plan")
+            if (scheduled.get("from"), scheduled.get("to")) == (fpga_a, fpga_b):
+                member_direction = "a_to_b"
+            elif (scheduled.get("from"), scheduled.get("to")) == (fpga_b, fpga_a):
+                member_direction = "b_to_a"
+            else:
+                raise ValidationError("Chimew electrical binding direction is invalid")
+            ratio = _tdm_ratio(scheduled)
+            slot = scheduled.get("slot")
             if (
-                scheduled is None
-                or planned is None
+                planned is None
                 or scheduled.get("link") != link
-                or scheduled.get("from") != source
-                or scheduled.get("to") != sink
                 or planned.get("physical_lane") != physical_lane
+                or isinstance(slot, bool)
+                or not isinstance(slot, int)
+                or slot < 0
+                or slot in slots
             ):
                 raise ValidationError("Chimew electrical binding conflicts with pin plan")
+            member_directions.add(member_direction)
+            ratios_by_direction[member_direction].add(ratio)
+            count_by_direction[member_direction] += 1
+            slots.add(slot)
+        if (
+            any(
+                len(ratios_by_direction[member_direction]) != 1
+                or count_by_direction[member_direction]
+                > next(iter(ratios_by_direction[member_direction]))
+                for member_direction in member_directions
+            )
+            or (
+                direction == "bidirectional"
+                and member_directions != {"a_to_b", "b_to_a"}
+            )
+            or (
+                direction != "bidirectional"
+                and member_directions != {direction}
+            )
+        ):
+            raise ValidationError("Chimew electrical binding TDM bundle is invalid")
         pin_keys = (
             (fpga_a, _string(record.get("package_pin_a"), "package_pin_a")),
             (fpga_b, _string(record.get("package_pin_b"), "package_pin_b")),

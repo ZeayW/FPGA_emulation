@@ -481,6 +481,84 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "concrete lane"):
             validate_chimew_electrical_map(electrical_map, platform, problem)
 
+    def test_shared_bidirectional_disjoint_slots_form_one_strict_bundle(self) -> None:
+        platform_document = copy.deepcopy(self.platform_document)
+        platform_document["links"][0]["capacity_sharing"] = "shared_bidirectional"
+        platform = Platform.from_dict(platform_document)
+        schedule = copy.deepcopy(self.schedule)
+        schedule["entries"][0]["tdm_ratio"] = 3
+        schedule["entries"][1]["tdm_ratio"] = 2
+        schedule["entries"][1]["slot"] = 1
+
+        assignment = copy.deepcopy(self.assignment_input)
+        assignment["groups"] = [
+            {
+                "id": "shared_bundle",
+                "domain": "AB",
+                "kind": "tdm_group",
+                "direction": "bidirectional",
+                "members": [
+                    {
+                        **assignment["groups"][0]["members"][0],
+                        "direction": "a_to_b",
+                    },
+                    {
+                        **assignment["groups"][1]["members"][0],
+                        "direction": "b_to_a",
+                    },
+                ],
+            }
+        ]
+        assignment["bank_pairs"][0]["channels"] = assignment["bank_pairs"][0][
+            "channels"
+        ][:1]
+        assignment["metrics"] = {
+            "groups": 1,
+            "signals": 2,
+            "fanins": 2,
+            "bank_pairs": 1,
+            "channels": 1,
+            "bidirectional_bundles": 1,
+        }
+        electrical = copy.deepcopy(self.electrical_map)
+        electrical["channels"] = electrical["channels"][:1]
+        electrical["metrics"] = {
+            "channels": 1,
+            "package_pins": 2,
+            "concrete_lanes": 1,
+        }
+        result = build_chimew_phase6_pin_plan(
+            schedule,
+            platform,
+            assignment,
+            electrical,
+            executable=str(self.executable),
+        )
+        self.assertEqual(
+            result["electrical_binding"]["entries"][0]["direction"],
+            "bidirectional",
+        )
+        self.assertEqual(
+            validate_chimew_phase6_binding(
+                schedule,
+                platform,
+                result["pin_plan"],
+                result["electrical_binding"],
+            )["status"],
+            "pass",
+        )
+
+        colliding = copy.deepcopy(schedule)
+        colliding["entries"][1]["slot"] = 0
+        with self.assertRaisesRegex(ValidationError, "slot collision"):
+            build_chimew_phase6_pin_plan(
+                colliding,
+                platform,
+                assignment,
+                electrical,
+                executable=str(self.executable),
+            )
+
     def test_path_adapter_emits_phase6_consumable_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

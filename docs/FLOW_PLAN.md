@@ -30,21 +30,27 @@ The initial semantic envelope is intentionally narrow:
 Multi-clock designs, runtime packet switching, partial reconfiguration, and
 transparent encrypted-IP partitioning are later extensions. Controlled static
 exact combinational cuts are an active opt-in extension. Characterization,
-depth-1/depth-2 partition legality, native-route contract propagation, and dependency-
+legacy depth-1/depth-2 and generalized assignment-derived partition legality,
+native-route contract propagation, and dependency-
 aware Phase 5 scheduling, Phase 6 exact boundary materialization, and event-
 driven macro-cycle equivalence are implemented. Small LUT/FF models receive
 complete one-step state/input enumeration, while larger models are honestly
 qualified as multi-seed trace validation rather than proof. Phase 7C now binds
 physical logic-segment evidence to the semantic contract and independently
 checks source-ready and final-capture deadlines. A real routed DLA complete-
-flow acceptance now exercises five naturally selected combinational cuts,
-covers all 157,811 semantic segments with endpoint-exact routed evidence, and
-independently reconstructs whole-design target-clock and virtual-runtime
-WNS/TNS over all 195,532 original timing paths. The target-clock result is
-reported but is not closed; this acceptance proves complete accounting and
-causal correctness rather than timing QoR improvement. The production default
-remains sequential-only because static exact V1 retains its explicit
-single-clock and fail-closed semantic scope.
+flow acceptance first exercised five naturally selected combinational cuts,
+covered all 157,811 semantic segments with endpoint-exact routed evidence, and
+independently reconstructed whole-design target-clock and virtual-runtime
+WNS/TNS over all 195,532 original timing paths. The later controlled three-arm
+DLA + EDA 2023 case6 experiment exercised 102 generalized cuts at dependency
+depth three and completed all physical/equivalence/deadline gates, but
+regressed global target-clock WNS/TNS from -84.5812926868 ns /
+-277276.1497366623 ns in sequential-only mode to -187.85581036 ns /
+-548934.0510065886 ns. This proves complete accounting and causal correctness,
+not timing-QoR improvement. The production default therefore remains
+sequential-only; generalized v2 stays opt-in until a later cost model passes
+the canonical no-regression promotion gate. Both exact policies retain the
+explicit single-clock and fail-closed semantic scope.
 Canonical Experiment v2 exact-mode evidence additionally requires at least one
 independently reconstructed selected combinational cut. A legal zero-cut run
 remains useful as a compatibility smoke but cannot satisfy this acceptance
@@ -504,8 +510,10 @@ Acceptance:
 - every frame completes before the virtual clock-enable;
 - partitioned and unpartitioned designs are cycle-equivalent.
 
-The first three items now also have a separate exact-mode implementation for
-depth-1/depth-2 combinational cuts. Its topological list scheduler uses the shared
+The first three items now also have a separate exact-mode implementation. The
+legacy candidate policy is depth-1/depth-2; generalized v2 derives the actual
+dependency DAG from the selected assignment and accepts any positive safety
+cap. Its topological list scheduler uses the shared
 `fabric-rising-edge-current-slot/v1` convention, computes launch-to-TX,
 RX-to-TX, and RX-to-capture readiness from the Phase 3 contract, and stops
 with a precise fixed-frame infeasibility diagnostic when any arrival or

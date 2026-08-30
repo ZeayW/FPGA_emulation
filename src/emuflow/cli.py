@@ -102,14 +102,27 @@ from .contest_public import (
 )
 from .contest_validation_matrix import load_contest_validation_matrix
 from .end_to_end_validation_matrix import load_end_to_end_validation_matrix
-from .canonical_experiment import compile_canonical_experiment_spec
+from .canonical_experiment import (
+    compile_canonical_experiment_spec,
+    compile_static_exact_ab_experiment_spec,
+)
 from .partition_qualification import compile_partition_qualification_spec
 from .canonical_qor import (
     parse_canonical_qor_arms,
     run_canonical_qor_comparison,
     validate_canonical_qor_comparison,
 )
+from .static_exact_qor import (
+    parse_static_exact_qor_arms,
+    run_static_exact_qor_comparison,
+    validate_static_exact_qor_comparison,
+)
+from .mfspart_refine import DEFAULT_TIMING_PATH_BETA
 from .combinational_cut import (
+    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
     characterize_combinational_cuts,
     validate_combinational_cut_characterization,
 )
@@ -131,6 +144,7 @@ from .experiment_store import (
     plan_experiment_gc,
     plan_legacy_run_migration,
     plan_legacy_run_retirement,
+    resume_legacy_run_retirement,
     validate_experiment_evidence_bundle,
 )
 from .experiment_stages import (
@@ -476,6 +490,14 @@ def _build_parser() -> argparse.ArgumentParser:
     experiment_retire_apply.add_argument("--plan", type=Path, required=True)
     experiment_retire_apply.add_argument("--expected-plan-sha256", required=True)
     experiment_retire_apply.add_argument("--receipt-root", type=Path, required=True)
+    experiment_retire_resume = experiment_subparsers.add_parser(
+        "retirement-resume",
+        help="resume removal of an unchanged atomically quarantined retirement",
+    )
+    experiment_retire_resume.add_argument("--receipt-root", type=Path, required=True)
+    experiment_retire_resume.add_argument(
+        "--expected-receipt-sha256", required=True
+    )
     experiment_plan = experiment_subparsers.add_parser(
         "plan", help="resolve cache hits and the next runnable DAG frontier"
     )
@@ -599,6 +621,14 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--min-used-fpgas", type=int)
     partition_run.add_argument("--balance-tolerance", type=float)
     partition_run.add_argument("--openroad")
+    partition_run.add_argument(
+        "--tritonpart-solution",
+        type=Path,
+        help=(
+            "import a precomputed TritonPart .part solution and seal its "
+            "content in the reusable Phase 3 checkpoint"
+        ),
+    )
     partition_run.add_argument("--hop-refiner")
     partition_run.add_argument("--patron-refiner")
     partition_run.add_argument("--patron-max-moves", type=int)
@@ -617,6 +647,28 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--mfspart-refiner")
     partition_run.add_argument("--mfspart-refiner-checker")
     partition_run.add_argument("--mfspart-legalizer")
+    partition_run.add_argument(
+        "--mfspart-post-refinement",
+        action=_BooleanOptionalAction,
+        default=None,
+        help=(
+            "directionally post-refine a TritonPart assignment with the "
+            "source-bound MFSPart FM refiner"
+        ),
+    )
+    partition_run.add_argument(
+        "--mfspart-post-refinement-early-stop", type=int, default=1000
+    )
+    partition_run.add_argument(
+        "--mfspart-post-refinement-bottleneck-beta",
+        type=float,
+        default=256.0,
+    )
+    partition_run.add_argument(
+        "--mfspart-post-refinement-timing-path-beta",
+        type=float,
+        default=DEFAULT_TIMING_PATH_BETA,
+    )
     partition_run.add_argument("--timeout-seconds", type=int, default=3600)
     partition_run.add_argument("--seed-attempts", type=int, default=1)
     partition_run.add_argument(
@@ -635,10 +687,20 @@ def _build_parser() -> argparse.ArgumentParser:
         default="sequential-only",
     )
     partition_run.add_argument(
-        "--max-cross-fpga-dependency-depth", type=int, default=1
+        "--max-cross-fpga-dependency-depth",
+        type=int,
+        default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
     )
     partition_run.add_argument(
         "--comb-segment-budget-slots", type=int, default=1
+    )
+    partition_run.add_argument(
+        "--static-exact-candidate-policy",
+        choices=(
+            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        ),
+        default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     )
     partition_run.add_argument(
         "--minimum-combinational-cut-nets", type=int, default=0
@@ -653,6 +715,21 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--platform", type=Path, required=True)
     partition_validate.add_argument("--constraints", type=Path)
     partition_validate.add_argument("--route-constraints", type=Path)
+    partition_validate.add_argument("--tritonpart-solution", type=Path)
+    partition_validate.add_argument(
+        "--mfspart-post-refinement",
+        action=_BooleanOptionalAction,
+        default=None,
+    )
+    partition_validate.add_argument(
+        "--mfspart-post-refinement-early-stop", type=int
+    )
+    partition_validate.add_argument(
+        "--mfspart-post-refinement-bottleneck-beta", type=float
+    )
+    partition_validate.add_argument(
+        "--mfspart-post-refinement-timing-path-beta", type=float
+    )
     partition_validate.add_argument("--provider")
     partition_validate.add_argument("--patron-initial-assignment", type=Path)
     partition_validate.add_argument(
@@ -681,6 +758,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-cross-fpga-dependency-depth", type=int
     )
     partition_validate.add_argument("--comb-segment-budget-slots", type=int)
+    partition_validate.add_argument(
+        "--static-exact-candidate-policy",
+        choices=(
+            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        ),
+    )
     partition_validate.add_argument(
         "--minimum-combinational-cut-nets", type=int
     )
@@ -926,6 +1010,54 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         required=True,
         metavar=("PROVIDER", "SEED", "ROOT"),
+    )
+    static_exact_qor_run = experiment_stage_subparsers.add_parser(
+        "static-exact-qor-compare-run",
+        help="compare sequential, legacy-v1, and generalized-v2 Phase 1-7 arms",
+    )
+    static_exact_qor_run.add_argument("--platform", type=Path, required=True)
+    static_exact_qor_run.add_argument(
+        "--arm",
+        nargs=6,
+        action="append",
+        required=True,
+        metavar=(
+            "LABEL",
+            "SEED",
+            "SHARED",
+            "LOOKAHEAD",
+            "PHASE6",
+            "PHASE7",
+        ),
+    )
+    static_exact_qor_run.add_argument(
+        "--reuse-validated-phase6-equivalence", action="store_true"
+    )
+    static_exact_qor_run.add_argument("--out", type=Path, required=True)
+    static_exact_qor_validate = experiment_stage_subparsers.add_parser(
+        "static-exact-qor-compare-validate",
+        help="independently rebuild a three-policy Static Exact QoR comparison",
+    )
+    static_exact_qor_validate.add_argument("root", type=Path)
+    static_exact_qor_validate.add_argument(
+        "--platform", type=Path, required=True
+    )
+    static_exact_qor_validate.add_argument(
+        "--arm",
+        nargs=6,
+        action="append",
+        required=True,
+        metavar=(
+            "LABEL",
+            "SEED",
+            "SHARED",
+            "LOOKAHEAD",
+            "PHASE6",
+            "PHASE7",
+        ),
+    )
+    static_exact_qor_validate.add_argument(
+        "--reuse-validated-phase6-equivalence", action="store_true"
     )
 
     platform_parser = subparsers.add_parser("platform", help="BoardDB operations")
@@ -1721,11 +1853,27 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--max-cross-fpga-dependency-depth",
         type=int,
-        choices=(1, 2),
-        default=1,
+        default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
     )
     multi_fpga_compile.add_argument(
         "--comb-segment-budget-slots", type=int, default=1
+    )
+    multi_fpga_compile.add_argument(
+        "--static-exact-candidate-policy",
+        choices=(
+            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        ),
+        default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    )
+    multi_fpga_compile.add_argument(
+        "--mfspart-post-refinement-timing-path-beta",
+        type=float,
+        default=DEFAULT_TIMING_PATH_BETA,
+        help=(
+            "weight of each distinct pre-partition timing path crossed by "
+            "Static Exact Phase 3; identical cluster paths are aggregated"
+        ),
     )
     multi_fpga_compile.add_argument(
         "--timing-driven",
@@ -2216,6 +2364,33 @@ def _build_parser() -> argparse.ArgumentParser:
         "--repository-root", type=Path, required=True
     )
     partition_qualification.add_argument("--out", type=Path, required=True)
+    static_exact_experiment = subparsers.add_parser(
+        "benchmark-static-exact-ab-compile",
+        help=(
+            "compile one content-addressed sequential/v1/v2 Static Exact "
+            "Phase 1-7 comparison DAG"
+        ),
+    )
+    static_exact_experiment.add_argument("--config", type=Path, required=True)
+    static_exact_experiment.add_argument(
+        "--repository-root", type=Path, required=True
+    )
+    static_exact_experiment.add_argument("--legacy-max-depth", type=int, default=2)
+    static_exact_experiment.add_argument(
+        "--generalized-max-depth", type=int, default=8
+    )
+    static_exact_experiment.add_argument(
+        "--minimum-combinational-cut-nets", type=int, default=1
+    )
+    static_exact_experiment.add_argument(
+        "--partition-seed",
+        type=int,
+        help=(
+            "single controlled Phase 3 seed shared by all A/B arms; "
+            "defaults to partition_seed in the canonical config"
+        ),
+    )
+    static_exact_experiment.add_argument("--out", type=Path, required=True)
 
     phase1 = subparsers.add_parser(
         "phase1", help="run the board-independent Phase 1 pipeline"
@@ -2449,8 +2624,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--max-cross-fpga-dependency-depth",
         type=int,
-        choices=(1, 2),
-        default=1,
+        default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
         help="static exact mode dependency-depth limit",
     )
     phase3.add_argument(
@@ -2458,6 +2632,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="provisional per-FPGA combinational segment slot budget",
+    )
+    phase3.add_argument(
+        "--static-exact-candidate-policy",
+        choices=(
+            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        ),
+        default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     )
     phase3.add_argument("--min-used-fpgas", type=int)
     phase3.add_argument("--balance-tolerance", type=float)
@@ -2571,6 +2753,25 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--patron-physical-system-timing", type=Path)
     phase3.add_argument(
         "--patron-physical-feedback-scale", type=float, default=0.0
+    )
+    phase3.add_argument(
+        "--mfspart-post-refinement",
+        action=_BooleanOptionalAction,
+        default=None,
+    )
+    phase3.add_argument(
+        "--mfspart-post-refinement-early-stop", type=int, default=1000
+    )
+    phase3.add_argument(
+        "--mfspart-post-refinement-bottleneck-beta",
+        type=float,
+        default=256.0,
+    )
+    phase3.add_argument("--timing-path-database", type=Path)
+    phase3.add_argument(
+        "--mfspart-post-refinement-timing-path-beta",
+        type=float,
+        default=DEFAULT_TIMING_PATH_BETA,
     )
 
     sta_parser = subparsers.add_parser(
@@ -3476,12 +3677,23 @@ def _dispatch(args: argparse.Namespace) -> int:
                 min_used_fpgas=args.min_used_fpgas,
                 balance_tolerance=args.balance_tolerance,
                 openroad=args.openroad,
+                tritonpart_solution=args.tritonpart_solution,
                 hop_refiner=args.hop_refiner,
                 mfspart_coarsener=args.mfspart_coarsener,
                 mfspart_initializer=args.mfspart_initializer,
                 mfspart_refiner=args.mfspart_refiner,
                 mfspart_refiner_checker=args.mfspart_refiner_checker,
                 mfspart_legalizer=args.mfspart_legalizer,
+                mfspart_post_refinement=args.mfspart_post_refinement,
+                mfspart_post_refinement_early_stop=(
+                    args.mfspart_post_refinement_early_stop
+                ),
+                mfspart_post_refinement_bottleneck_beta=(
+                    args.mfspart_post_refinement_bottleneck_beta
+                ),
+                mfspart_post_refinement_timing_path_beta=(
+                    args.mfspart_post_refinement_timing_path_beta
+                ),
                 timeout_seconds=args.timeout_seconds,
                 seed_attempts=args.seed_attempts,
                 repair_balance=args.repair_balance,
@@ -3492,6 +3704,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                     args.max_cross_fpga_dependency_depth
                 ),
                 comb_segment_budget_slots=args.comb_segment_budget_slots,
+                static_exact_candidate_policy=(
+                    args.static_exact_candidate_policy
+                ),
                 minimum_combinational_cut_nets=(
                     args.minimum_combinational_cut_nets
                 ),
@@ -3516,16 +3731,32 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.root,
                 constraints_path=args.constraints,
                 route_constraints_path=args.route_constraints,
+                tritonpart_solution=args.tritonpart_solution,
                 expected_provider=args.provider,
                 expected_seed=args.seed,
                 expected_seed_attempts=args.seed_attempts,
                 expected_repair_balance=args.repair_balance,
+                expected_mfspart_post_refinement=(
+                    args.mfspart_post_refinement
+                ),
+                expected_mfspart_post_refinement_early_stop=(
+                    args.mfspart_post_refinement_early_stop
+                ),
+                expected_mfspart_post_refinement_bottleneck_beta=(
+                    args.mfspart_post_refinement_bottleneck_beta
+                ),
+                expected_mfspart_post_refinement_timing_path_beta=(
+                    args.mfspart_post_refinement_timing_path_beta
+                ),
                 expected_cut_mode=args.cut_mode,
                 expected_max_cross_fpga_dependency_depth=(
                     args.max_cross_fpga_dependency_depth
                 ),
                 expected_comb_segment_budget_slots=(
                     args.comb_segment_budget_slots
+                ),
+                expected_static_exact_candidate_policy=(
+                    args.static_exact_candidate_policy
                 ),
                 expected_minimum_combinational_cut_nets=(
                     args.minimum_combinational_cut_nets
@@ -3746,11 +3977,29 @@ def _dispatch(args: argparse.Namespace) -> int:
                 parse_canonical_qor_arms(args.arm),
                 args.out,
             )
-        else:
+        elif args.experiment_stage_command == "qor-compare-validate":
             report = validate_canonical_qor_comparison(
                 args.root,
                 args.shared,
                 parse_canonical_qor_arms(args.arm),
+            )
+        elif args.experiment_stage_command == "static-exact-qor-compare-run":
+            report = run_static_exact_qor_comparison(
+                args.platform,
+                parse_static_exact_qor_arms(args.arm),
+                args.out,
+                reuse_validated_phase6_equivalence=(
+                    args.reuse_validated_phase6_equivalence
+                ),
+            )
+        else:
+            report = validate_static_exact_qor_comparison(
+                args.root,
+                args.platform,
+                parse_static_exact_qor_arms(args.arm),
+                reuse_validated_phase6_equivalence=(
+                    args.reuse_validated_phase6_equivalence
+                ),
             )
         _print_json(report)
         return 0
@@ -3798,6 +4047,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.plan,
                 args.expected_plan_sha256,
                 args.receipt_root,
+            )
+        elif args.experiment_command == "retirement-resume":
+            report = resume_legacy_run_retirement(
+                args.receipt_root,
+                args.expected_receipt_sha256,
             )
         elif args.experiment_command == "plan":
             report = plan_experiment(args.spec, args.cache, args.out)
@@ -4422,6 +4676,21 @@ def _dispatch(args: argparse.Namespace) -> int:
         _print_json(report)
         return 0
 
+    if args.command == "benchmark-static-exact-ab-compile":
+        report = compile_static_exact_ab_experiment_spec(
+            args.config,
+            args.repository_root,
+            args.out,
+            legacy_max_depth=args.legacy_max_depth,
+            generalized_max_depth=args.generalized_max_depth,
+            minimum_combinational_cut_nets=(
+                args.minimum_combinational_cut_nets
+            ),
+            partition_seed=args.partition_seed,
+        )
+        _print_json(report)
+        return 0
+
     if args.command == "phase1":
         report = run_phase1(
             yosys_json=args.yosys_json,
@@ -4715,6 +4984,12 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.max_cross_fpga_dependency_depth
             ),
             comb_segment_budget_slots=args.comb_segment_budget_slots,
+            static_exact_candidate_policy=(
+                args.static_exact_candidate_policy
+            ),
+            mfspart_post_refinement_timing_path_beta=(
+                args.mfspart_post_refinement_timing_path_beta
+            ),
             timing_driven=args.timing_driven,
             timing_backend=args.timing_backend,
             clock_periods=(
@@ -4879,6 +5154,17 @@ def _dispatch(args: argparse.Namespace) -> int:
             mfspart_refiner=args.mfspart_refiner,
             mfspart_refiner_checker=args.mfspart_refiner_checker,
             mfspart_legalizer=args.mfspart_legalizer,
+            mfspart_post_refinement=args.mfspart_post_refinement,
+            mfspart_post_refinement_early_stop=(
+                args.mfspart_post_refinement_early_stop
+            ),
+            mfspart_post_refinement_bottleneck_beta=(
+                args.mfspart_post_refinement_bottleneck_beta
+            ),
+            timing_path_database_path=args.timing_path_database,
+            mfspart_post_refinement_timing_path_beta=(
+                args.mfspart_post_refinement_timing_path_beta
+            ),
             cut_mode=args.cut_mode,
             max_cross_fpga_dependency_depth=(
                 args.max_cross_fpga_dependency_depth
@@ -4896,6 +5182,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             patron_physical_feedback_scale=(
                 args.patron_physical_feedback_scale
+            ),
+            static_exact_candidate_policy=(
+                args.static_exact_candidate_policy
             ),
         )
         _print_json(report)

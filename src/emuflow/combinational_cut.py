@@ -11,6 +11,7 @@ macro-cycle equivalence, and routed deadline qualification.  The production
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 from collections import defaultdict, deque
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set, Tuple
@@ -26,6 +27,21 @@ COMBINATIONAL_CUT_CHARACTERIZATION_SCHEMA = (
 STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA = (
     "emuflow.static-exact-combinational-cut/v1"
 )
+GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA = (
+    "emuflow.static-exact-combinational-cut/v2"
+)
+STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS = {
+    STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+    GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+}
+STATIC_EXACT_CANDIDATE_FRONTIER_V1 = "potential-frontier-depth-v1"
+STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2 = "assignment-derived-acyclic-v2"
+STATIC_EXACT_DEFAULT_CANDIDATE_POLICY = STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH = 8
+STATIC_EXACT_CANDIDATE_POLICIES = {
+    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+}
 SEQUENTIAL_TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
 SEQUENTIAL_LEGAL_CUT_CLASSES = {
     *SEQUENTIAL_TRANSPORTED_CUT_CLASSES,
@@ -247,15 +263,22 @@ def _splittable_instances(
     )
 
 
-def characterize_combinational_cuts(
-    ir: EmuIR, depth_limits: Sequence[int] = (1, 2)
+def _build_combinational_cut_candidate_index(
+    ir: EmuIR,
+    *,
+    include_dependency_levels: bool,
+    include_source_identity: bool,
 ) -> Dict[str, Any]:
-    limits = sorted(set(depth_limits))
-    if not limits or any(
-        isinstance(limit, bool) or not isinstance(limit, int) or limit not in {1, 2}
-        for limit in limits
-    ):
-        raise ValidationError("depth limits must be a non-empty subset of {1, 2}")
+    """Build the compact candidate index used by Phase 3 hot paths.
+
+    Full characterization also computes per-net audit records, atomic-component
+    summaries for every requested depth, and large human-facing metric tables.
+    Partition construction and semantic-contract reconstruction need only the
+    structurally eligible net IDs (plus legacy frontier levels).  Keeping that
+    production query separate avoids repeatedly materializing a full analysis
+    report for a real synthesized design while preserving the explicit
+    characterization command unchanged.
+    """
 
     instances = {item["id"]: item for item in ir.value["instances"]}
     classes = {
@@ -267,19 +290,15 @@ def characterize_combinational_cuts(
         for instance_id, classification in classes.items()
         if classification != "architectural-state-or-memory"
     )
-    # The ordered list is retained for deterministic SCC traversal, while
-    # graph construction must use a set for membership.  Real synthesized
-    # designs contain hundreds of thousands of instances and nets; testing
-    # membership in ``combinational_nodes`` directly would turn this otherwise
-    # linear scan into O(|nets| * |instances|).
     combinational_set = set(combinational_nodes)
     adjacency: Dict[str, Set[str]] = defaultdict(set)
     self_loops: Set[str] = set()
     incoming_by_instance: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
     for net in ir.value["nets"]:
-        for endpoint in net["sinks"]:
-            if endpoint["instance"] is not None:
-                incoming_by_instance[endpoint["instance"]].append(net)
+        if include_dependency_levels:
+            for endpoint in net["sinks"]:
+                if endpoint["instance"] is not None:
+                    incoming_by_instance[endpoint["instance"]].append(net)
         driver_instances = sorted(
             {
                 endpoint["instance"]
@@ -312,11 +331,14 @@ def characterize_combinational_cuts(
         for component in components
         if len(component) > 1 or component[0] in self_loops
     ]
-    cyclic_instances = {member for item in cyclic_components for member in item}
+    cyclic_instances = {
+        member
+        for component in cyclic_components
+        for member in component
+    }
 
     eligible_ids: Set[str] = set()
     ineligible: List[Dict[str, Any]] = []
-    net_by_id = {net["id"]: net for net in ir.value["nets"]}
     for net in ir.value["nets"]:
         if net["cut_class"] != "combinational":
             continue
@@ -327,7 +349,11 @@ def characterize_combinational_cuts(
         ]
         if len(drivers) != 1 or len(instance_drivers) != 1:
             reasons.add("not-single-instance-driver")
-        source = instance_drivers[0]["instance"] if len(instance_drivers) == 1 else None
+        source = (
+            instance_drivers[0]["instance"]
+            if len(instance_drivers) == 1
+            else None
+        )
         if source is not None:
             if classes[source] != "supported-soft-combinational":
                 reasons.add("driver-not-supported-soft-logic")
@@ -355,69 +381,127 @@ def characterize_combinational_cuts(
         else:
             eligible_ids.add(net["id"])
 
-    supported_nodes = sorted(
-        instance_id
-        for instance_id, classification in classes.items()
-        if classification == "supported-soft-combinational"
-        and instance_id not in cyclic_instances
-    )
-    supported_set = set(supported_nodes)
-    supported_successors: Dict[str, Set[str]] = defaultdict(set)
-    supported_indegree = {node: 0 for node in supported_nodes}
-    for source in supported_nodes:
-        for sink in adjacency.get(source, set()):
-            if sink in supported_set and sink not in supported_successors[source]:
-                supported_successors[source].add(sink)
-                supported_indegree[sink] += 1
-    supported_queue = deque(
-        sorted(node for node, degree in supported_indegree.items() if degree == 0)
-    )
-    frontier_by_instance: Dict[str, Set[str]] = {}
-    while supported_queue:
-        instance_id = supported_queue.popleft()
-        frontier: Set[str] = set()
-        for incoming in incoming_by_instance.get(instance_id, []):
-            if incoming["id"] in eligible_ids:
-                frontier.add(incoming["id"])
-                continue
-            for endpoint in incoming["drivers"]:
-                source = endpoint["instance"]
-                if source in supported_set:
-                    frontier.update(frontier_by_instance.get(source, set()))
-        frontier_by_instance[instance_id] = frontier
-        for sink in sorted(supported_successors.get(instance_id, set())):
-            supported_indegree[sink] -= 1
-            if supported_indegree[sink] == 0:
-                supported_queue.append(sink)
-    if len(frontier_by_instance) != len(supported_nodes):
-        raise ValidationError("supported soft-logic graph unexpectedly contains a cycle")
-
-    dependencies: Dict[str, Set[str]] = {}
-    for net_id in sorted(eligible_ids):
-        driver = next(
-            endpoint["instance"]
-            for endpoint in net_by_id[net_id]["drivers"]
-            if endpoint["instance"] is not None
-        )
-        dependencies[net_id] = set(frontier_by_instance.get(driver, set()))
-    successors: Dict[str, Set[str]] = defaultdict(set)
-    indegree = {net_id: len(items) for net_id, items in dependencies.items()}
-    for sink, sources in dependencies.items():
-        for source in sources:
-            successors[source].add(sink)
-    queue = deque(sorted(net_id for net_id, value in indegree.items() if value == 0))
     levels: Dict[str, int] = {}
-    while queue:
-        net_id = queue.popleft()
-        levels[net_id] = 1 + max(
-            (levels[source] for source in dependencies[net_id]), default=0
+    dependencies: Dict[str, Set[str]] = {}
+    if include_dependency_levels:
+        supported_nodes = sorted(
+            instance_id
+            for instance_id, classification in classes.items()
+            if classification == "supported-soft-combinational"
+            and instance_id not in cyclic_instances
         )
-        for sink in sorted(successors.get(net_id, set())):
-            indegree[sink] -= 1
-            if indegree[sink] == 0:
-                queue.append(sink)
-    if len(levels) != len(eligible_ids):
-        raise ValidationError("eligible combinational-cut dependency graph is cyclic")
+        supported_set = set(supported_nodes)
+        supported_successors: Dict[str, Set[str]] = defaultdict(set)
+        supported_indegree = {node: 0 for node in supported_nodes}
+        for source in supported_nodes:
+            for sink in adjacency.get(source, set()):
+                if sink in supported_set and sink not in supported_successors[source]:
+                    supported_successors[source].add(sink)
+                    supported_indegree[sink] += 1
+        supported_queue = deque(
+            sorted(
+                node for node, degree in supported_indegree.items() if degree == 0
+            )
+        )
+        frontier_by_instance: Dict[str, Set[str]] = {}
+        while supported_queue:
+            instance_id = supported_queue.popleft()
+            frontier: Set[str] = set()
+            for incoming in incoming_by_instance.get(instance_id, []):
+                if incoming["id"] in eligible_ids:
+                    frontier.add(incoming["id"])
+                    continue
+                for endpoint in incoming["drivers"]:
+                    source = endpoint["instance"]
+                    if source in supported_set:
+                        frontier.update(frontier_by_instance.get(source, set()))
+            frontier_by_instance[instance_id] = frontier
+            for sink in sorted(supported_successors.get(instance_id, set())):
+                supported_indegree[sink] -= 1
+                if supported_indegree[sink] == 0:
+                    supported_queue.append(sink)
+        if len(frontier_by_instance) != len(supported_nodes):
+            raise ValidationError(
+                "supported soft-logic graph unexpectedly contains a cycle"
+            )
+
+        net_by_id = {net["id"]: net for net in ir.value["nets"]}
+        for net_id in sorted(eligible_ids):
+            driver = next(
+                endpoint["instance"]
+                for endpoint in net_by_id[net_id]["drivers"]
+                if endpoint["instance"] is not None
+            )
+            dependencies[net_id] = set(frontier_by_instance.get(driver, set()))
+        successors: Dict[str, Set[str]] = defaultdict(set)
+        indegree = {
+            net_id: len(items) for net_id, items in dependencies.items()
+        }
+        for sink, sources in dependencies.items():
+            for source in sources:
+                successors[source].add(sink)
+        queue = deque(
+            sorted(net_id for net_id, value in indegree.items() if value == 0)
+        )
+        while queue:
+            net_id = queue.popleft()
+            levels[net_id] = 1 + max(
+                (levels[source] for source in dependencies[net_id]), default=0
+            )
+            for sink in sorted(successors.get(net_id, set())):
+                indegree[sink] -= 1
+                if indegree[sink] == 0:
+                    queue.append(sink)
+        if len(levels) != len(eligible_ids):
+            raise ValidationError(
+                "eligible combinational-cut dependency graph is cyclic"
+            )
+
+    result: Dict[str, Any] = {
+        "instances": instances,
+        "classes": classes,
+        "combinational_nodes": combinational_nodes,
+        "adjacency": adjacency,
+        "self_loops": self_loops,
+        "cyclic_components": cyclic_components,
+        "cyclic_instances": cyclic_instances,
+        "eligible_ids": eligible_ids,
+        "ineligible": ineligible,
+        "net_by_id": {net["id"]: net for net in ir.value["nets"]},
+        "dependencies": dependencies,
+        "dependency_levels": levels,
+    }
+    if include_source_identity:
+        result["canonical_emuir_sha256"] = _canonical_sha256(ir.to_dict())
+    return result
+
+
+def characterize_combinational_cuts(
+    ir: EmuIR, depth_limits: Sequence[int] = (1, 2)
+) -> Dict[str, Any]:
+    limits = sorted(set(depth_limits))
+    if not limits or any(
+        isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
+        for limit in limits
+    ):
+        raise ValidationError("depth limits must be positive integers")
+
+    candidate_index = _build_combinational_cut_candidate_index(
+        ir,
+        include_dependency_levels=True,
+        include_source_identity=False,
+    )
+    instances = candidate_index["instances"]
+    classes = candidate_index["classes"]
+    combinational_nodes = candidate_index["combinational_nodes"]
+    self_loops = candidate_index["self_loops"]
+    cyclic_components = candidate_index["cyclic_components"]
+    cyclic_instances = candidate_index["cyclic_instances"]
+    eligible_ids = candidate_index["eligible_ids"]
+    ineligible = candidate_index["ineligible"]
+    net_by_id = candidate_index["net_by_id"]
+    dependencies = candidate_index["dependencies"]
+    levels = candidate_index["dependency_levels"]
 
     eligible = []
     for net_id in sorted(eligible_ids):
@@ -534,6 +618,7 @@ def build_static_exact_semantic_contract(
     max_dependency_depth: int,
     comb_segment_budget_slots: int,
     frame_slots: int,
+    candidate_selection_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
 ) -> Dict[str, Any]:
     """Build the provisional Phase-3 exact-cut semantic contract.
 
@@ -542,8 +627,20 @@ def build_static_exact_semantic_contract(
     gates and are intentionally named as pending in the returned contract.
     """
 
-    if max_dependency_depth not in {1, 2}:
-        raise ValidationError("exact combinational-cut depth must be 1 or 2")
+    if candidate_selection_policy not in STATIC_EXACT_CANDIDATE_POLICIES:
+        raise ValidationError("unknown exact combinational-cut candidate policy")
+    if (
+        isinstance(max_dependency_depth, bool)
+        or not isinstance(max_dependency_depth, int)
+        or max_dependency_depth <= 0
+        or (
+            candidate_selection_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1
+            and max_dependency_depth not in {1, 2}
+        )
+    ):
+        if candidate_selection_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1:
+            raise ValidationError("legacy exact combinational-cut depth must be 1 or 2")
+        raise ValidationError("exact combinational-cut depth must be positive")
     if (
         isinstance(comb_segment_budget_slots, bool)
         or not isinstance(comb_segment_budget_slots, int)
@@ -559,8 +656,12 @@ def build_static_exact_semantic_contract(
             "exact combinational-cut frame slots must be at least two"
         )
 
-    characterization = characterize_combinational_cuts(ir, (1, 2))
-    eligible = {item["net"] for item in characterization["eligible_cuts"]}
+    candidate_index = _build_combinational_cut_candidate_index(
+        ir,
+        include_dependency_levels=False,
+        include_source_identity=False,
+    )
+    eligible = set(candidate_index["eligible_ids"])
     instances = {item["id"]: item for item in ir.value["instances"]}
     classes = {
         instance_id: _instance_class(instance)
@@ -729,13 +830,23 @@ def build_static_exact_semantic_contract(
                 visited.add(instance_id)
                 for outgoing in outgoing_by_instance.get(instance_id, []):
                     downstream_cut = cut_by_net.get(outgoing["id"])
-                    if (
-                        downstream_cut is not None
-                        and downstream_cut["source_fpgas"][0] == sink_fpga
-                    ):
-                        continue
                     for endpoint in outgoing["sinks"]:
                         sink = endpoint["instance"]
+                        # A transported downstream net can still have local
+                        # fanout on its source FPGA.  The downstream cut
+                        # contract owns only the remote branches; suppressing
+                        # the whole net drops real local architectural
+                        # captures and leaves Phase 7 unable to bind their
+                        # physical RX-to-capture segments.  Stop only at the
+                        # endpoints that actually leave ``sink_fpga``.
+                        if (
+                            downstream_cut is not None
+                            and downstream_cut["source_fpgas"][0]
+                            == sink_fpga
+                            and sink is not None
+                            and instance_assignment.get(sink) != sink_fpga
+                        ):
+                            continue
                         if sink is None:
                             capture_records.append(
                                 {
@@ -896,9 +1007,145 @@ def build_static_exact_semantic_contract(
             }
         )
 
+    uncongested_lower_bound = None
+    if candidate_selection_policy == STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2:
+        # Reject assignments that cannot possibly fit even before congestion
+        # and lane sharing are considered.  The concrete Phase-4 route and
+        # Phase-5 list schedule remain authoritative; this is a necessary,
+        # independently reconstructible lower bound that lets Phase 3 screen
+        # impossible generalized-cut candidates without pretending routing is
+        # already known.
+        fpga_ids = {
+            item.get("id")
+            for item in platform.get("fpgas", [])
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+        adjacency: Dict[str, List[Tuple[str, int]]] = defaultdict(list)
+        for raw_link in platform.get("links", []):
+            if not isinstance(raw_link, dict):
+                raise ValidationError("exact-cut platform link is invalid")
+            endpoints = raw_link.get("endpoints")
+            latency = raw_link.get("latency_cycles")
+            if (
+                not isinstance(endpoints, list)
+                or len(endpoints) != 2
+                or not all(isinstance(item, str) for item in endpoints)
+                or isinstance(latency, bool)
+                or not isinstance(latency, int)
+                or latency < 0
+            ):
+                raise ValidationError("exact-cut platform link timing is invalid")
+            left, right = endpoints
+            # Every additional tree hop needs one forwarding slot after the
+            # preceding arrival.  Adding latency+1 per arc and subtracting one
+            # at the destination exactly models the uncongested earliest
+            # arrival of the concrete list scheduler.
+            adjacency[left].append((right, latency + 1))
+            if raw_link.get("direction") in {"full_duplex", "half_duplex"}:
+                adjacency[right].append((left, latency + 1))
+
+        shortest_cache: Dict[str, Dict[str, int]] = {}
+
+        def earliest_offset(source: str, sink: str) -> int:
+            if source == sink:
+                return 0
+            if source not in shortest_cache:
+                distance = {source: 0}
+                queue = [(0, source)]
+                while queue:
+                    current, node = heapq.heappop(queue)
+                    if current != distance[node]:
+                        continue
+                    for neighbor, weight in adjacency.get(node, []):
+                        candidate = current + weight
+                        if candidate < distance.get(neighbor, 1 << 60):
+                            distance[neighbor] = candidate
+                            heapq.heappush(queue, (candidate, neighbor))
+                shortest_cache[source] = distance
+            raw = shortest_cache[source].get(sink)
+            if raw is None:
+                raise ValidationError(
+                    "generalized exact-cut assignment has no board path from "
+                    f"{source!r} to {sink!r}"
+                )
+            return raw - 1
+
+        arrivals: Dict[Tuple[str, str], int] = {}
+        lower_bound_nodes = []
+        maximum_arrival = 0
+        for net_id in sorted(
+            cut_by_net,
+            key=lambda item: (dependency_level[item], item),
+        ):
+            source_fpga = cut_by_net[net_id]["source_fpgas"][0]
+            if source_fpga not in fpga_ids:
+                raise ValidationError("exact-cut source FPGA is absent from platform")
+            readiness = []
+            if local_launches[net_id] or not dependencies[net_id]:
+                readiness.append(
+                    0
+                    if not local_launches[net_id] and not dependencies[net_id]
+                    else comb_segment_budget_slots
+                )
+            for predecessor in sorted(dependencies[net_id]):
+                key = (predecessor, source_fpga)
+                if key not in arrivals:
+                    raise ValidationError(
+                        "generalized exact-cut lower bound lacks predecessor arrival"
+                    )
+                readiness.append(arrivals[key] + comb_segment_budget_slots)
+            if not readiness:
+                raise ValidationError(
+                    f"generalized exact cut {net_id!r} has no readiness source"
+                )
+            ready = max(readiness)
+            sink_arrivals = {}
+            for sink_fpga in sorted(cut_by_net[net_id]["sink_fpgas"]):
+                arrival = ready + earliest_offset(source_fpga, sink_fpga)
+                arrivals[(net_id, sink_fpga)] = arrival
+                sink_arrivals[sink_fpga] = arrival
+                maximum_arrival = max(maximum_arrival, arrival)
+            lower_bound_nodes.append(
+                {
+                    "net": net_id,
+                    "source_ready_slot": ready,
+                    "sink_arrival_slots": sink_arrivals,
+                }
+            )
+        capture_slacks = []
+        for capture in capture_records:
+            arrival = arrivals.get((capture["cut_net"], capture["fpga"]))
+            if arrival is None:
+                raise ValidationError(
+                    "generalized exact-cut lower bound lacks capture arrival"
+                )
+            capture_slacks.append(
+                frame_slots
+                - 1
+                - (arrival + comb_segment_budget_slots)
+            )
+        minimum_slack = min(capture_slacks, default=frame_slots - 1)
+        if minimum_slack < 0:
+            raise ValidationError(
+                "generalized exact-cut assignment is infeasible even under an "
+                "uncongested minimum-latency board schedule: minimum capture "
+                f"slack is {minimum_slack} slots"
+            )
+        uncongested_lower_bound = {
+            "provider": "board-minimum-latency-dag-lower-bound-v1",
+            "qualification": "necessary-not-sufficient-before-routing",
+            "maximum_arrival_slot": maximum_arrival,
+            "minimum_capture_slack_slots": minimum_slack,
+            "cut_readiness": lower_bound_nodes,
+        }
+
     platform_value = dict(platform)
-    return {
-        "schema": STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+    result = {
+        "schema": (
+            STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA
+            if candidate_selection_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1
+            else GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA
+        ),
         "mode": "static-exact-combinational",
         "qualification": "partition-legality-only-provisional",
         "max_cross_fpga_dependency_depth": max_dependency_depth,
@@ -944,6 +1191,10 @@ def build_static_exact_semantic_contract(
             "global_target_and_runtime_timing": "pending",
         },
     }
+    if candidate_selection_policy == STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2:
+        result["candidate_selection_policy"] = candidate_selection_policy
+        result["uncongested_schedule_lower_bound"] = uncongested_lower_bound
+    return result
 
 
 def validate_combinational_cut_characterization(
