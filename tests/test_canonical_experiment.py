@@ -409,6 +409,12 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "shared-patron-initial-assignment",
             )
             self.assertNotIn("--patron-refiner", baseline["command"])
+            self.assertIn(
+                "--no-mfspart-post-refinement", baseline["command"]
+            )
+            self.assertIn(
+                "--no-mfspart-post-refinement", baseline["validator"]
+            )
             self.assertEqual(
                 partition["configuration"][
                     "patron_initial_assignment_source"

@@ -990,6 +990,7 @@ def compile_canonical_experiment_spec(
             )
         )
     else:
+        partition_command.insert(-2, "--no-mfspart-post-refinement")
         partition_validator.append("--no-mfspart-post-refinement")
     if partition_constraints is not None:
         partition_command.extend(("--constraints", str(partition_constraints)))
