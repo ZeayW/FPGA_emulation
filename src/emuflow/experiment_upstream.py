@@ -827,6 +827,10 @@ def materialize_shared_phase1_5(
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    # ``experiment_partition`` imports the reusable timing validator from this
+    # module, so import its Phase 3 validator lazily to avoid a module cycle.
+    from .experiment_partition import validate_partition_checkpoint
+
     validate_frontend_checkpoint(frontend_root, platform_path)
     validate_timing_checkpoint(frontend_root, timing_root)
     validate_partition_checkpoint(frontend_root, timing_root, platform_path, partition_root)

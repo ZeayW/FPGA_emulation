@@ -16,6 +16,7 @@ from emuflow.experiment_upstream import (
     EXPERIMENT_PARTITION_SCHEMA,
     EXPERIMENT_TDM_SCHEMA,
     _portable_cut_timing_projection,
+    materialize_shared_phase1_5,
     run_cut_timing_checkpoint,
     validate_tdm_checkpoint,
 )
@@ -26,6 +27,64 @@ def _sha256(path: Path) -> str:
 
 
 class ExperimentUpstreamTest(unittest.TestCase):
+    def test_shared_checkpoint_calls_partition_validator(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frontend = root / "frontend"
+            timing = root / "timing"
+            partition = root / "partition"
+            cut_timing = root / "cut-timing"
+            route = root / "route"
+            tdm = root / "tdm"
+            platform = root / "platform.json"
+            output = root / "shared"
+            with (
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_frontend_checkpoint"
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_timing_checkpoint"
+                ),
+                mock.patch(
+                    "emuflow.experiment_partition.validate_partition_checkpoint"
+                ) as validate_partition,
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_cut_timing_checkpoint"
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_route_checkpoint"
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_tdm_checkpoint"
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream._prepare_empty_output",
+                    return_value=output,
+                ),
+                mock.patch("emuflow.experiment_upstream._link_or_copy"),
+                mock.patch(
+                    "emuflow.experiment_upstream._sha256", return_value="0" * 64
+                ),
+                mock.patch("emuflow.experiment_upstream.write_json"),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_materialized_shared_phase1_5",
+                    return_value={"status": "pass"},
+                ),
+            ):
+                materialize_shared_phase1_5(
+                    frontend,
+                    timing,
+                    partition,
+                    cut_timing,
+                    route,
+                    tdm,
+                    platform,
+                    output,
+                )
+            validate_partition.assert_called_once_with(
+                frontend, timing, platform, partition
+            )
+
     def test_partition_run_rejects_solution_for_non_tritonpart_provider(
         self,
     ) -> None:
