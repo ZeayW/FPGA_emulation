@@ -679,6 +679,15 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument(
         "--minimum-combinational-cut-nets", type=int, default=0
     )
+    partition_run.add_argument(
+        "--managed-dag-node",
+        action="store_true",
+        help=(
+            "reuse validated immutable dependencies and defer the duplicate "
+            "producer-side full validation to experiment-cache's independent "
+            "validator"
+        ),
+    )
     partition_run.add_argument("--out", type=Path, required=True)
     partition_validate = experiment_stage_subparsers.add_parser(
         "partition-validate", help="independently validate a Phase 3 checkpoint"
@@ -729,6 +738,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     partition_validate.add_argument(
         "--minimum-combinational-cut-nets", type=int
+    )
+    partition_validate.add_argument(
+        "--online-validation",
+        action="store_true",
+        help=(
+            "check only the Phase-3 runtime contract; do not hash artifacts "
+            "or replay the optimizer"
+        ),
     )
 
     cut_timing_run = experiment_stage_subparsers.add_parser(
@@ -3592,6 +3609,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 minimum_combinational_cut_nets=(
                     args.minimum_combinational_cut_nets
                 ),
+                managed_dag_node=args.managed_dag_node,
             )
         elif args.experiment_stage_command == "partition-validate":
             report = validate_partition_checkpoint(
@@ -3631,6 +3649,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_minimum_combinational_cut_nets=(
                     args.minimum_combinational_cut_nets
                 ),
+                online_validation=args.online_validation,
             )
         elif args.experiment_stage_command == "cut-timing-run":
             report = run_cut_timing_checkpoint(

@@ -547,11 +547,13 @@ Exact mode, every initially transported non-combinational net receives an
 immutable worst-sink-distance non-regression guard. Combinational candidates
 remain movable and pay their ordinary timing-weighted cut/connectivity/hop
 cost, but are not rejected merely because they were local in the TritonPart
-assignment. The guard is checked by both the native optimizer and the
-independent certificate checker. Sequential-only mode retains the legacy
-objective. The checkpoint identity seals the weight, guard evidence, and the
-complete native certificate; reuse re-executes the independent C++
-global-best/best-prefix checker without writable scratch.
+assignment. The guard is enforced by the native optimizer and rechecked on the
+final assignment by the linear Phase 3 output-contract validator.
+Sequential-only mode retains the legacy objective. Managed production runs do
+not hash the refiner input/output and do not replay the global-best search.
+The complete C++ global-best/best-prefix checker remains an explicit algorithm
+qualification test for small graphs and selected offline studies; it is not on
+the Phase 3 runtime path.
 Use `--mfspart-post-refinement`,
 `--mfspart-post-refinement-early-stop`, and
 `--mfspart-post-refinement-bottleneck-beta` on the reusable Phase 3 stage for
@@ -584,10 +586,13 @@ Exact flows using TritonPart enable the guarded
 post-refinement and bind it to the generated TimingPathDB; non-Static-Exact
 flows retain the prior behavior.
 
-The native optimizer and its independent checker maintain per-path part
-counts and verify every selected move, raw gain, stable rank, capacity/fixed
-constraints, global-best choice, best prefix, and final assignment. The
-checkpoint validator separately rematerializes the compressed objective from
+The native optimizer maintains per-path part counts. Production Phase 3 checks
+the emitted move sequence, cumulative gains, kept prefix, final assignment,
+capacity/fixed constraints, and topology guards in one linear pass. It does
+not recompute every candidate gain or prove the global-best choice. The latter
+remains covered by the exhaustive Python oracle and independent C++ checker in
+the algorithm test suite. Offline deep qualification can separately
+rematerialize the compressed objective from
 the sealed EmuIR, clusters, and original TimingPathDB and compares the exact
 PATH-record digest, group count, and pin count. Small exhaustive and full
 repository tests pass. Canonical DLA + EDA 2023 case6 screening is now complete
@@ -1637,6 +1642,15 @@ moves only the atomic clusters required to remove provider balance violations;
 the ordinary independent Phase 3 validator still enforces the original
 per-resource bounds. Changing either policy invalidates Phase 3 and its
 descendants while leaving unchanged frontend and timing checkpoints reusable.
+The canonical partition node runs with `--managed-dag-node` and validates with
+`--online-validation`. In that mode the producer reuses already accepted
+frontend/timing dependencies, performs one in-memory linear legality pass on
+the final assignment, writes no Phase 3 content hashes, removes TritonPart and
+native-refiner scratch files after consuming them, and publishes only the
+winner assignment plus compact reports. The online MFSPart check records both
+optimizer and checker wall time and fails if checking takes longer than the
+optimizer. Full move-optimality replay is reserved for explicit qualification
+tests.
 `route_candidate_workers` defaults to `physical_workers`, is recorded in the
 route node configuration and command, and is independently checked against the
 Phase 4 candidate-generation certificate. Changing either provider or worker

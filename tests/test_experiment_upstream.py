@@ -26,6 +26,79 @@ def _sha256(path: Path) -> str:
 
 
 class ExperimentUpstreamTest(unittest.TestCase):
+    def test_managed_partition_hot_path_performs_no_hashing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frontend = root / "frontend"
+            timing = root / "timing"
+            output = root / "partition"
+            (frontend / "phase1").mkdir(parents=True)
+            timing.mkdir()
+            (frontend / "phase1/design.emuir.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            (timing / "partition-net-weights.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            (timing / "path-database.json").write_text(
+                "{}", encoding="utf-8"
+            )
+
+            def fake_phase3(*_args, **_kwargs):
+                for name in (
+                    "assignment.json",
+                    "clusters.json",
+                    "phase3_report.json",
+                ):
+                    (output / name).write_text("{}", encoding="utf-8")
+                return {
+                    "status": "pass",
+                    "validation": {
+                        "status": "pass",
+                        "combinational_cut_nets": 0,
+                    },
+                    "mfspart_post_refinement": {
+                        "refinement": {
+                            "runtime": {
+                                "optimizer_wall_seconds": 1.0,
+                                "candidate_check_wall_seconds": 0.1,
+                            }
+                        }
+                    },
+                }
+
+            with (
+                mock.patch(
+                    "emuflow.experiment_partition.run_phase3",
+                    side_effect=fake_phase3,
+                ),
+                mock.patch(
+                    "emuflow.experiment_partition._sha256",
+                    side_effect=AssertionError("hashing entered hot path"),
+                ),
+            ):
+                report = run_partition_checkpoint(
+                    frontend,
+                    timing,
+                    root / "platform.json",
+                    output,
+                    provider="tritonpart",
+                    managed_dag_node=True,
+                )
+                checked = validate_partition_checkpoint(
+                    frontend,
+                    timing,
+                    root / "platform.json",
+                    output,
+                    expected_provider="tritonpart",
+                    online_validation=True,
+                )
+        self.assertFalse(any("sha256" in key for key in report))
+        self.assertEqual(checked["status"], "pass")
+        self.assertLessEqual(
+            checked["runtime"]["validator_wall_seconds"], 1.0
+        )
+
     def test_partition_run_rejects_solution_for_non_tritonpart_provider(
         self,
     ) -> None:

@@ -238,6 +238,12 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "6",
             )
             self.assertIn("--repair-balance", nodes["partition"]["command"])
+            self.assertIn(
+                "--managed-dag-node", nodes["partition"]["command"]
+            )
+            self.assertIn(
+                "--online-validation", nodes["partition"]["validator"]
+            )
             self.assertEqual(
                 nodes["partition"]["validator"][
                     nodes["partition"]["validator"].index("--seed-attempts") + 1

@@ -775,6 +775,7 @@ def compile_canonical_experiment_spec(
         "--static-exact-candidate-policy", static_exact_candidate_policy,
         "--minimum-combinational-cut-nets",
         str(minimum_combinational_cut_nets),
+        "--managed-dag-node",
         "--route-constraints", str(route_constraints), "--openroad", str(tools["openroad"]), "--hop-refiner", str(tools["hop_refiner"]),
         "--out", "{output_dir}",
     ]
@@ -791,6 +792,7 @@ def compile_canonical_experiment_spec(
         "--static-exact-candidate-policy", static_exact_candidate_policy,
         "--minimum-combinational-cut-nets",
         str(minimum_combinational_cut_nets),
+        "--online-validation",
     ]
     if mfspart_post_refinement:
         partition_command.insert(-2, "--mfspart-post-refinement")

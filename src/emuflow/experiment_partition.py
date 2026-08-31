@@ -8,6 +8,7 @@ change must not invalidate those unrelated implementation closures.
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -167,6 +168,7 @@ def run_partition_checkpoint(
     comb_segment_budget_slots: int = 1,
     minimum_combinational_cut_nets: int = 0,
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     if mfspart_post_refinement is None:
         mfspart_post_refinement = (
@@ -196,7 +198,8 @@ def run_partition_checkpoint(
             "MFSPart post-refinement requires provider=tritonpart"
         )
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
-    validate_timing_checkpoint(frontend_root, timing_root)
+    if not managed_dag_node:
+        validate_timing_checkpoint(frontend_root, timing_root)
     weights_path = _require(timing_root, "partition-net-weights.json")
     timing_path_database = _require(timing_root, "path-database.json")
     output_dir = _prepare_empty_output(output_dir, "partition checkpoint")
@@ -234,6 +237,7 @@ def run_partition_checkpoint(
         max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
         comb_segment_budget_slots=comb_segment_budget_slots,
         static_exact_candidate_policy=static_exact_candidate_policy,
+        managed_dag_node=managed_dag_node,
     )
     report = {
         "schema": EXPERIMENT_PARTITION_SCHEMA,
@@ -263,65 +267,82 @@ def run_partition_checkpoint(
             cut_mode != CUT_MODE_SEQUENTIAL_ONLY
             and phase3["validation"].get("combinational_cut_nets", 0) > 0
         ),
-        "emuir_sha256": _sha256(ir_path),
-        "platform_sha256": _sha256(platform_path.resolve()),
-        "weights_sha256": _sha256(weights_path),
-        "timing_path_database_sha256": _sha256(timing_path_database),
-        "assignment_sha256": _sha256(output_dir / "assignment.json"),
-        "clusters_sha256": _sha256(output_dir / "clusters.json"),
-        "phase3_report_sha256": _sha256(output_dir / "phase3_report.json"),
-        "tritonpart_solution_sha256": (
-            _sha256(tritonpart_solution.resolve())
-            if tritonpart_solution is not None
-            else None
-        ),
-        "route_constraints_sha256": (
-            _sha256(route_constraints_path.resolve())
-            if route_constraints_path is not None
-            else None
-        ),
-        "constraints_sha256": (
-            _sha256(constraints_path.resolve())
-            if constraints_path is not None
-            else None
-        ),
         "phase3": phase3,
     }
-    write_json(output_dir / "experiment-partition-report.json", report)
-    validate_partition_checkpoint(
-        frontend_root,
-        timing_root,
-        platform_path,
-        output_dir,
-        constraints_path=constraints_path,
-        route_constraints_path=route_constraints_path,
-        tritonpart_solution=tritonpart_solution,
-        expected_provider=provider,
-        expected_seed=seed,
-        expected_seed_attempts=seed_attempts,
-        expected_repair_balance=repair_balance,
-        expected_mfspart_post_refinement=mfspart_post_refinement,
-        expected_mfspart_post_refinement_early_stop=(
-            mfspart_post_refinement_early_stop
-        ),
-        expected_mfspart_post_refinement_bottleneck_beta=(
-            mfspart_post_refinement_bottleneck_beta
-        ),
-        expected_mfspart_post_refinement_timing_path_beta=(
-            mfspart_post_refinement_timing_path_beta
-        ),
-        expected_cut_mode=cut_mode,
-        expected_max_cross_fpga_dependency_depth=(
-            max_cross_fpga_dependency_depth
-        ),
-        expected_comb_segment_budget_slots=comb_segment_budget_slots,
-        expected_minimum_combinational_cut_nets=(
-            minimum_combinational_cut_nets
-        ),
-        expected_static_exact_candidate_policy=(
-            static_exact_candidate_policy
-        ),
+    if not managed_dag_node:
+        # The standalone deep-qualification command retains its historical
+        # seals.  Managed production DAGs intentionally perform no content
+        # hashing in the Phase-3 hot path.
+        report.update(
+            {
+                "emuir_sha256": _sha256(ir_path),
+                "platform_sha256": _sha256(platform_path.resolve()),
+                "weights_sha256": _sha256(weights_path),
+                "timing_path_database_sha256": _sha256(
+                    timing_path_database
+                ),
+                "assignment_sha256": _sha256(
+                    output_dir / "assignment.json"
+                ),
+                "clusters_sha256": _sha256(output_dir / "clusters.json"),
+                "phase3_report_sha256": _sha256(
+                    output_dir / "phase3_report.json"
+                ),
+                "tritonpart_solution_sha256": (
+                    _sha256(tritonpart_solution.resolve())
+                    if tritonpart_solution is not None
+                    else None
+                ),
+                "route_constraints_sha256": (
+                    _sha256(route_constraints_path.resolve())
+                    if route_constraints_path is not None
+                    else None
+                ),
+                "constraints_sha256": (
+                    _sha256(constraints_path.resolve())
+                    if constraints_path is not None
+                    else None
+                ),
+            }
+        )
+    write_json(
+        output_dir / "experiment-partition-report.json", report, compact=True
     )
+    if not managed_dag_node:
+        validate_partition_checkpoint(
+            frontend_root,
+            timing_root,
+            platform_path,
+            output_dir,
+            constraints_path=constraints_path,
+            route_constraints_path=route_constraints_path,
+            tritonpart_solution=tritonpart_solution,
+            expected_provider=provider,
+            expected_seed=seed,
+            expected_seed_attempts=seed_attempts,
+            expected_repair_balance=repair_balance,
+            expected_mfspart_post_refinement=mfspart_post_refinement,
+            expected_mfspart_post_refinement_early_stop=(
+                mfspart_post_refinement_early_stop
+            ),
+            expected_mfspart_post_refinement_bottleneck_beta=(
+                mfspart_post_refinement_bottleneck_beta
+            ),
+            expected_mfspart_post_refinement_timing_path_beta=(
+                mfspart_post_refinement_timing_path_beta
+            ),
+            expected_cut_mode=cut_mode,
+            expected_max_cross_fpga_dependency_depth=(
+                max_cross_fpga_dependency_depth
+            ),
+            expected_comb_segment_budget_slots=comb_segment_budget_slots,
+            expected_minimum_combinational_cut_nets=(
+                minimum_combinational_cut_nets
+            ),
+            expected_static_exact_candidate_policy=(
+                static_exact_candidate_policy
+            ),
+        )
     return report
 
 
@@ -347,7 +368,9 @@ def validate_partition_checkpoint(
     expected_comb_segment_budget_slots: int | None = None,
     expected_minimum_combinational_cut_nets: int | None = None,
     expected_static_exact_candidate_policy: str | None = None,
+    online_validation: bool = False,
 ) -> Dict[str, Any]:
+    validation_started = time.perf_counter()
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     weights = _require(timing_root, "partition-net-weights.json")
     timing_path_database = timing_root / "path-database.json"
@@ -436,6 +459,52 @@ def validate_partition_checkpoint(
             raise ValidationError(
                 f"partition {field.replace('_', '-')} contract disagrees"
             )
+    if online_validation:
+        for relative in (
+            "assignment.json",
+            "clusters.json",
+            "phase3_report.json",
+        ):
+            _require(root, relative)
+        phase3 = report.get("phase3")
+        if (
+            not isinstance(phase3, dict)
+            or phase3.get("status") != "pass"
+            or not isinstance(phase3.get("validation"), dict)
+            or phase3["validation"].get("status") != "pass"
+        ):
+            raise ValidationError("partition online legality evidence is invalid")
+        runtime = (
+            phase3.get("mfspart_post_refinement") or {}
+        ).get("refinement", {}).get("runtime")
+        validator_wall_seconds = time.perf_counter() - validation_started
+        if isinstance(runtime, dict):
+            optimizer_wall_seconds = runtime.get("optimizer_wall_seconds")
+            candidate_check_wall_seconds = runtime.get(
+                "candidate_check_wall_seconds"
+            )
+            if (
+                not isinstance(optimizer_wall_seconds, (int, float))
+                or not isinstance(candidate_check_wall_seconds, (int, float))
+                or candidate_check_wall_seconds > optimizer_wall_seconds
+                or validator_wall_seconds > optimizer_wall_seconds
+            ):
+                raise ValidationError(
+                    "partition online validation exceeded optimizer runtime"
+                )
+        return {
+            "status": "pass",
+            "provider": report["provider"],
+            "validation": phase3["validation"],
+            "runtime": {
+                "validator_wall_seconds": validator_wall_seconds,
+                "optimizer_wall_seconds": (
+                    runtime.get("optimizer_wall_seconds")
+                    if isinstance(runtime, dict)
+                    else None
+                ),
+            },
+        }
     if route_constraints_path is not None and report.get(
         "route_constraints_sha256"
     ) != _sha256(route_constraints_path.resolve()):
@@ -544,19 +613,17 @@ def validate_partition_checkpoint(
                 "partition MFSPart post-refinement artifact seals are missing"
             )
         native_paths = {
-            "input_sha256": _require(post_root, "mfspart_refiner.in"),
-            "output_sha256": _require(post_root, "mfspart_refiner.out"),
-            "checker_output_sha256": _require(
-                post_root, "mfspart_refiner.check"
-            ),
+            "input": _require(post_root, "mfspart_refiner.in"),
+            "output": _require(post_root, "mfspart_refiner.out"),
+            "checker_output": _require(post_root, "mfspart_refiner.check"),
         }
         for label, path in native_paths.items():
-            if artifacts.get(label) != _sha256(path):
+            if artifacts.get(label) != path.name:
                 raise ValidationError(
-                    f"partition MFSPart post-refinement {label} seal is broken"
+                    f"partition MFSPart post-refinement {label} path is invalid"
                 )
         certificate = validate_mfspart_native_certificate(
-            native_paths["input_sha256"], native_paths["output_sha256"]
+            native_paths["input"], native_paths["output"]
         )
         if post_schema in {
             "emuflow.mfspart-post-refinement/v2",
