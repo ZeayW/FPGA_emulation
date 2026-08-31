@@ -74,6 +74,13 @@ def _directory(value: Any, label: str) -> Path:
     return path
 
 
+def _python_interpreter(value: Any, label: str) -> Path:
+    # Validate the target, but preserve the invoked path: resolving a venv's
+    # bin/python symlink selects the base interpreter and loses its packages.
+    _file(value, label)
+    return Path(value).expanduser().absolute()
+
+
 def _positive_integer(value: Any, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValidationError(f"canonical experiment {label} must be positive")
@@ -311,6 +318,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/native/chimew_signal_grouper.cpp",
     ),
     "lookahead": (
+        "src/emuflow/canonical_experiment.py::_python_interpreter",
         "src/emuflow/experiment_stages.py",
         "src/emuflow/academic_chimew.py",
         "src/emuflow/chimew_bank_channel.py",
@@ -332,6 +340,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/native/vpr_route_checker.cpp",
     ),
     "phase7": (
+        "src/emuflow/canonical_experiment.py::_python_interpreter",
         "src/emuflow/experiment_stages.py",
         "src/emuflow/multi_fpga_physical_flow.py",
         "src/emuflow/physical_backend.py",
@@ -514,6 +523,9 @@ def compile_canonical_experiment_spec(
             "canonical experiment tools must exactly cover " + ", ".join(sorted(required_tools))
         )
     tools = {label: _file(value, f"tool {label}") for label, value in tools_raw.items()}
+    tools["openparf_python"] = _python_interpreter(
+        tools_raw["openparf_python"], "tool openparf_python"
+    )
     openparf_install = _directory(config.get("openparf_install"), "openparf_install")
     openparf_manifest = _file(config.get("openparf_manifest"), "openparf_manifest")
     openparf_closure = validate_implementation_closure(
