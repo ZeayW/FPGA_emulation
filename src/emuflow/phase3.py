@@ -624,6 +624,8 @@ def run_phase3(
     output_dir.mkdir(parents=True, exist_ok=True)
     if managed_dag_node and provider == "tritonpart":
         shutil.rmtree(output_dir / "tritonpart", ignore_errors=True)
+    if managed_dag_node and provider == "patron":
+        shutil.rmtree(output_dir / "patron", ignore_errors=True)
     if managed_dag_node and hop_refinement["enabled"]:
         shutil.rmtree(output_dir / "hop-refinement", ignore_errors=True)
     persisted_clusters = (

@@ -1341,6 +1341,7 @@ class PartitionPressureTest(unittest.TestCase):
                 self.assertFalse(
                     (root / "phase3-managed/patron" / relative).exists()
                 )
+            self.assertFalse((root / "phase3-managed/patron").exists())
 
     def test_phase3_patron_consumes_generalized_static_exact_contract(
         self,

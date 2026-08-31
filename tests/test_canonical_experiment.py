@@ -393,8 +393,33 @@ class CanonicalExperimentTest(unittest.TestCase):
                 partition["configuration"]["mfspart_post_refinement"]
             )
             self.assertIn("--patron-refiner", partition["command"])
-            self.assertNotIn(
+            self.assertIn(
                 "--patron-initial-assignment", partition["command"]
+            )
+            self.assertEqual(
+                partition["dependencies"],
+                ["frontend", "timing", "patron-initial-partition"],
+            )
+            baseline = nodes["patron-initial-partition"]
+            self.assertEqual(
+                baseline["configuration"]["provider"], "tritonpart"
+            )
+            self.assertEqual(
+                baseline["configuration"]["purpose"],
+                "shared-patron-initial-assignment",
+            )
+            self.assertNotIn("--patron-refiner", baseline["command"])
+            self.assertEqual(
+                partition["configuration"][
+                    "patron_initial_assignment_source"
+                ],
+                "patron-initial-partition",
+            )
+            self.assertFalse(
+                any(
+                    artifact["path"] == "patron"
+                    for artifact in partition["artifacts"]
+                )
             )
 
     def test_compiler_can_reuse_a_frozen_baseline_for_patron(self) -> None:
@@ -471,12 +496,13 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "src/native/patron_refiner.cpp",
                 partition["implementation"]["components"],
             )
-            self.assertTrue(
+            self.assertFalse(
                 any(
                     artifact["path"] == "patron"
                     for artifact in partition["artifacts"]
                 )
             )
+            self.assertNotIn("patron-initial-partition", nodes)
             terminals = [
                 item for item in spec["nodes"] if item["stage"] == "phase7"
             ]
@@ -1167,7 +1193,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             report = compile_static_exact_ab_experiment_spec(
                 self._config(root), REPOSITORY, output
             )
-            self.assertEqual(report["nodes"], 27)
+            self.assertEqual(report["nodes"], 30)
             self.assertEqual(report["physical_terminal_nodes"], 3)
             self.assertEqual(report["physical_seeds"], [1])
             spec = validate_experiment_spec(json.loads(output.read_text()))

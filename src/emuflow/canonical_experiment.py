@@ -1028,15 +1028,76 @@ def compile_canonical_experiment_spec(
         partition_artifacts.append(
             _artifact("mfspart-post-refinement", "consumer-checkpoint")
         )
+    partition_dependencies = ["frontend", "timing"]
+    effective_patron_initial_assignment = (
+        str(patron_initial_assignment)
+        if patron_initial_assignment is not None
+        else None
+    )
     if partition_provider == "patron":
+        if effective_patron_initial_assignment is None:
+            baseline_command = list(partition_command)
+            baseline_command[
+                baseline_command.index("--provider") + 1
+            ] = "tritonpart"
+            baseline_validator = list(partition_validator)
+            baseline_validator[
+                baseline_validator.index("--provider") + 1
+            ] = "tritonpart"
+            node(
+                "patron-initial-partition",
+                "partition",
+                ["frontend", "timing"],
+                baseline_command,
+                baseline_validator,
+                list(partition_artifacts),
+                inputs=tuple(partition_inputs),
+                configuration={
+                    "provider": "tritonpart",
+                    "purpose": "shared-patron-initial-assignment",
+                    "seed": partition_seed,
+                    "seed_attempts": partition_seed_attempts,
+                    "repair_balance": partition_repair_balance,
+                    "mfspart_post_refinement": False,
+                    "route_constraints": contract["route_constraints"],
+                    "partition_constraints_sha256": base_inputs.get(
+                        "partition_constraints"
+                    ),
+                    "tritonpart_solution_sha256": base_inputs.get(
+                        "tritonpart_solution"
+                    ),
+                    "timeout_seconds": 3600,
+                    "num_initial_solutions": 50,
+                    "num_best_initial_solutions": 10,
+                    "cut_mode": cut_mode,
+                    "max_cross_fpga_dependency_depth": (
+                        max_cross_fpga_dependency_depth
+                    ),
+                    "comb_segment_budget_slots": comb_segment_budget_slots,
+                    "static_exact_candidate_policy": (
+                        static_exact_candidate_policy
+                    ),
+                    "minimum_combinational_cut_nets": (
+                        minimum_combinational_cut_nets
+                    ),
+                    "partition_peak_gib": partition_peak_gib,
+                    "partition_retained_gib": partition_retained_gib,
+                },
+                peak_gib=partition_peak_gib,
+                retained_gib=partition_retained_gib,
+            )
+            effective_patron_initial_assignment = (
+                "{dependency:patron-initial-partition}/assignment.json"
+            )
+            partition_dependencies.append("patron-initial-partition")
         partition_command[-2:-2] = [
             "--patron-refiner",
             str(tools["patron_refiner"]),
         ]
-        if patron_initial_assignment is not None:
+        if effective_patron_initial_assignment is not None:
             partition_command[-2:-2] = [
                 "--patron-initial-assignment",
-                str(patron_initial_assignment),
+                effective_patron_initial_assignment,
             ]
         if patron_flow_refinement:
             partition_command.insert(-2, "--patron-flow-refinement")
@@ -1051,11 +1112,11 @@ def compile_canonical_experiment_spec(
                 "--patron-physical-feedback-scale",
                 f"{patron_physical_feedback_scale:.17g}",
             ]
-        if patron_initial_assignment is not None:
+        if effective_patron_initial_assignment is not None:
             partition_validator.extend(
                 [
                 "--patron-initial-assignment",
-                str(patron_initial_assignment),
+                effective_patron_initial_assignment,
                 ]
             )
         if patron_flow_refinement:
@@ -1080,9 +1141,6 @@ def compile_canonical_experiment_spec(
             partition_inputs.append("patron_initial_assignment")
         if patron_physical_system_timing is not None:
             partition_inputs.append("patron_physical_system_timing")
-        partition_artifacts.append(
-            _artifact("patron", "evidence-critical")
-        )
     node(
         "partition",
         (
@@ -1090,7 +1148,7 @@ def compile_canonical_experiment_spec(
             if partition_provider == "patron"
             else "partition"
         ),
-        ["frontend", "timing"], partition_command,
+        partition_dependencies, partition_command,
         partition_validator,
         partition_artifacts,
         inputs=tuple(
@@ -1107,6 +1165,15 @@ def compile_canonical_experiment_spec(
             "provider": partition_provider,
             "patron_flow_refinement": patron_flow_refinement,
             "patron_algorithm_version": patron_algorithm_version,
+            "patron_initial_assignment_source": (
+                "external"
+                if patron_initial_assignment is not None
+                else (
+                    "patron-initial-partition"
+                    if partition_provider == "patron"
+                    else None
+                )
+            ),
             "patron_physical_system_timing_sha256": base_inputs.get(
                 "patron_physical_system_timing"
             ),
@@ -1591,6 +1658,7 @@ def compile_static_exact_ab_experiment_spec(
     common_ids = {"frontend", "timing"}
     sequential_keep = {
         *common_ids,
+        "patron-initial-partition",
         "partition",
         "cut-timing",
         "route",

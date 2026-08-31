@@ -1308,9 +1308,13 @@ emuflow multi-fpga compile examples/rtl/counter.v \
 The command writes a hash-bound `multi-fpga-flow-report.json` only after
 partition, route, schedule, split, and cycle-equivalence checks pass. The
 default partition configuration is source-built endpoint-exact PATRON with
-generalized Static Exact v2. PATRON creates a TritonPart initial assignment
-when no frozen initial assignment is supplied, then refines and independently
-validates the complete result.
+generalized Static Exact v2. A standalone PATRON command creates a TritonPart
+initial assignment when none is supplied. The canonical managed DAG instead
+materializes that initializer as a separate content-addressed partition
+checkpoint and feeds its frozen assignment to PATRON. All PATRON versions and
+physical-feedback descendants therefore reuse one validated initializer
+instead of rerunning the same TritonPart and hop-refinement work, after which
+PATRON refines and independently validates the complete result.
 The default `--mapping-profile vtr-hard-blocks` retains public VTR RAM/DSP
 resources. `--mapping-profile generic-soft` is available for architecture-
 neutral LUT6/FF experiments, but may expand memory-heavy designs substantially.
@@ -1929,7 +1933,10 @@ The canonical partition node runs with `--managed-dag-node` and validates with
 frontend/timing dependencies, performs one in-memory linear legality pass on
 the final assignment, writes no Phase 3 content hashes, removes TritonPart and
 native-refiner scratch files after consuming them, and publishes only the
-winner assignment plus compact reports. The online MFSPart check records both
+winner assignment plus compact reports. For PATRON, the TritonPart initializer
+is its own reusable `patron-initial-partition` node; the version-specific
+partition node consumes only that frozen assignment and never retains the
+`patron/` diagnostic tree. The online MFSPart check records both
 optimizer and checker wall time and fails if checking takes longer than the
 optimizer. Full move-optimality replay is reserved for explicit qualification
 tests.
