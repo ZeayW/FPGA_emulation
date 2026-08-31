@@ -224,6 +224,61 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   obsolete failed staging, or redundant captures; never delete unrelated
   tasks or unvalidated evidence merely to make a run fit.
 
+## Managed-flow hot paths must stay compact
+
+These rules apply to every producer, validator, checkpoint, and downstream
+consumer in the managed Phase 1--7 flow.  They are correctness and scalability
+requirements, not optional micro-optimizations.
+
+- Give each logical fact one canonical owner.  Do not copy the same assignment,
+  timing population, route table, instance map, semantic contract, or report
+  payload into several artifacts merely for downstream convenience.  Other
+  artifacts reference the canonical object by a stable identity and seal, and
+  reconstruct derivable views only when a consumer actually needs them.
+- Separate consumer interfaces from evidence and diagnostics.  A hot-path
+  checkpoint contains the minimal information required by its declared
+  consumers.  Detailed traces, candidate enumerations, exhaustive oracle
+  state, duplicated reports, profiling counters, and human-readable dumps are
+  diagnostic artifacts; they must not become mandatory inputs to every later
+  phase.  A diagnostic field may enter the hot path only when a named consumer
+  uses it semantically and that dependency is covered by tests.
+- Large structured interfaces must use deterministic compact storage or a
+  purpose-built indexed/sharded representation.  Avoid repeated object keys,
+  repeated instance-to-cluster/partition maps, pretty-printed duplicate trees,
+  and monolithic JSON scans when the irreducible vector plus canonical source
+  data can reconstruct the same logical document.  Storage envelopes must
+  preserve the logical schema, validate bounded decompression and exact row
+  counts, and round-trip deterministically.
+- Do not force a downstream stage to parse a large artifact merely to read a
+  small summary.  Publish a compact manifest/index for frequent queries and
+  load or expand the full payload only at the stage that consumes it.  Never
+  derive a tiny scheduling, routing, or timing input by repeatedly walking an
+  unrelated diagnostic report.
+- Hash canonical bytes once while producing or importing an artifact whenever
+  possible.  Do not materialize a second serialized copy solely to compute its
+  identity, and do not repeatedly rehash an immutable managed object at every
+  downstream boundary.  Publication/import performs the strong content hash
+  and semantic validation; routine managed consumers verify the sealed
+  manifest, immutable-object metadata, required dependency keys, and their
+  stage-specific invariants.  Explicit evidence validation, validator-version
+  changes, mutable external inputs, and final replay gates still perform the
+  required strong rehash or semantic reconstruction.
+- Production Phase 3 uses the scalable native optimizer plus the linear output
+  contract.  Global-best move replay, full native-input/output hashing,
+  exhaustive Python optimization, and complete candidate traces belong to
+  small-graph algorithm qualification or explicitly requested offline studies,
+  not to every managed large-design execution.
+- A representation-only optimization must not change logical schemas, QoR,
+  assignment, scheduling, routing, or validation strength.  Add round-trip,
+  corruption, truncation, relocation, and mixed-run rejection tests, plus a
+  regression that exercises a realistically large repeated structure and
+  guards against restoring duplicate hot-path payloads or whole-document
+  parsing.
+- Before adding any field or validation pass to a managed artifact, state its
+  canonical owner, which consumer requires it, whether it is derivable, when it
+  is hashed, and why the check cannot reuse an existing validated certificate.
+  If those answers are absent, keep the data out of the production hot path.
+
 ## End-to-end acceptance is mandatory
 
 - A Phase 6 algorithm, provider, optimization, or default-selection change is
