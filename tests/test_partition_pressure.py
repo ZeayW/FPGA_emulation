@@ -1278,6 +1278,26 @@ class PartitionPressureTest(unittest.TestCase):
 
             with (
                 patch(
+                    "emuflow.partition_pressure._canonical_digest",
+                    side_effect=lambda value: (
+                        (_ for _ in ()).throw(
+                            AssertionError(
+                                "managed producer hashed the pressure model"
+                            )
+                        )
+                        if isinstance(value, dict)
+                        and value.get("schema")
+                        == "emuflow.partition-pressure-model/v6"
+                        else _canonical_digest(value)
+                    ),
+                ),
+                patch(
+                    "emuflow.partition_pressure.validate_partition_artifacts",
+                    side_effect=AssertionError(
+                        "managed producer entered the full assignment validator"
+                    ),
+                ),
+                patch(
                     "emuflow.partition_pressure.validate_partition_pressure_model",
                     side_effect=AssertionError(
                         "managed producer rebuilt the pressure model"

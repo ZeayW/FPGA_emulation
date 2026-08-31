@@ -395,6 +395,8 @@ def run_phase3(
             algorithm_version=patron_algorithm_version,
             physical_feedback=patron_physical_feedback,
             physical_feedback_scale=patron_physical_feedback_scale,
+            output_validation=("caller" if managed_dag_node else "full"),
+            retain_trace_seals=not managed_dag_node,
         )
         if not managed_dag_node:
             write_json(output_dir / "patron" / "pressure_model.json", model)

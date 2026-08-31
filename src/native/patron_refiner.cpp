@@ -137,7 +137,7 @@ struct ProxyState {
   std::vector<ProxyNetState> net;
   std::vector<ProxyPathState> path;
   std::vector<std::set<int>> domain_paths;
-  std::multiset<double> slack_order;
+  std::set<std::pair<double, int>> slack_path_order;
   std::set<std::pair<long long, int>> ranked_path_order;
   double total_negative = 0.0;
   long long negative_paths = 0;
@@ -936,7 +936,7 @@ ProxyPathState build_proxy_path(
 Evaluation proxy_evaluation(const ProxyState& state) {
   Evaluation result;
   result.feasible = true;
-  const double worst = *state.slack_order.begin();
+  const double worst = state.slack_path_order.begin()->first;
   const int maximum_ratio = *state.ratio_order.rbegin();
   const int maximum_load = *std::max_element(
       state.domain_load.begin(), state.domain_load.end());
@@ -1016,14 +1016,15 @@ ProxyState build_proxy_state(
     for (int domain : state.path[path].dependency_domains) {
       state.domain_paths[domain].insert(path);
     }
-    state.slack_order.insert(state.path[path].normalized_slack);
+    state.slack_path_order.emplace(
+        state.path[path].normalized_slack, path);
     state.ranked_path_order.emplace(
         rank_float(state.path[path].normalized_slack), path);
     state.total_negative += std::min(0.0, state.path[path].normalized_slack);
     state.negative_paths += state.path[path].negative ? 1 : 0;
     state.snaking += state.path[path].snaking;
   }
-  require(!state.slack_order.empty() && !state.ranked_path_order.empty()
+  require(!state.slack_path_order.empty() && !state.ranked_path_order.empty()
               && !state.ratio_order.empty(),
           "scalable state is empty");
   state.evaluation = proxy_evaluation(state);
@@ -2407,12 +2408,6 @@ std::vector<int> diagnose_flow_corridors(
   return selected_assignment;
 }
 
-void erase_one(std::multiset<double>& values, double value) {
-  const auto found = values.find(value);
-  require(found != values.end(), "missing scalable slack record");
-  values.erase(found);
-}
-
 void erase_one(std::multiset<int>& values, int value) {
   const auto found = values.find(value);
   require(found != values.end(), "missing scalable ratio record");
@@ -2588,23 +2583,25 @@ ProxyDelta evaluate_proxy_changes(
   for (const auto& item : delta.paths) {
     const ProxyPathState& old = state.path[item.first];
     const ProxyPathState& replacement = item.second;
-    erase_one(state.slack_order, old.normalized_slack);
-    state.slack_order.insert(replacement.normalized_slack);
     candidate_negative += std::min(0.0, replacement.normalized_slack)
                           - std::min(0.0, old.normalized_slack);
     candidate_negative_paths += (replacement.negative ? 1 : 0)
                                 - (old.negative ? 1 : 0);
     candidate_snaking += replacement.snaking - old.snaking;
   }
-  for (const auto& item : delta.domain_delta) {
-    const int domain = item.first;
-    erase_one(state.ratio_order, state.domain_ratio[domain]);
-    state.ratio_order.insert(tdm_ratio(
-        model, state.domain_load[domain] + item.second, model.domain[domain]));
+  double worst = std::numeric_limits<double>::infinity();
+  for (const auto& item : delta.paths) {
+    worst = std::min(worst, item.second.normalized_slack);
   }
-
-  const double worst = *state.slack_order.begin();
-  const int maximum_ratio = *state.ratio_order.rbegin();
+  for (const auto& item : state.slack_path_order) {
+    if (!affected_paths.count(item.second)) {
+      worst = std::min(worst, item.first);
+      break;
+    }
+  }
+  require(std::isfinite(worst), "empty scalable candidate path order");
+  const int maximum_ratio = *std::max_element(
+      projected_ratios.begin(), projected_ratios.end());
   int maximum_load = 0;
   for (int domain = 0; domain < model.domains; ++domain) {
     const auto changed = delta.domain_delta.find(domain);
@@ -2636,19 +2633,6 @@ ProxyDelta evaluate_proxy_changes(
   };
   delta.feasible = true;
 
-  for (const auto& item : delta.domain_delta) {
-    const int domain = item.first;
-    erase_one(
-        state.ratio_order,
-        tdm_ratio(model,
-                  state.domain_load[domain] + item.second,
-                  model.domain[domain]));
-    state.ratio_order.insert(state.domain_ratio[domain]);
-  }
-  for (const auto& item : delta.paths) {
-    erase_one(state.slack_order, item.second.normalized_slack);
-    state.slack_order.insert(state.path[item.first].normalized_slack);
-  }
   return delta;
 }
 
@@ -2757,7 +2741,9 @@ void apply_proxy_delta(const Model& model,
     const std::size_t ranked_erased = state.ranked_path_order.erase(
         {rank_float(old.normalized_slack), item.first});
     require(ranked_erased == 1, "missing scalable ranked path");
-    erase_one(state.slack_order, old.normalized_slack);
+    const std::size_t slack_erased = state.slack_path_order.erase(
+        {old.normalized_slack, item.first});
+    require(slack_erased == 1, "missing scalable slack/path record");
     state.total_negative += std::min(0.0, item.second.normalized_slack)
                             - std::min(0.0, old.normalized_slack);
     state.negative_paths += (item.second.negative ? 1 : 0)
@@ -2767,7 +2753,7 @@ void apply_proxy_delta(const Model& model,
     for (int domain : old.dependency_domains) {
       state.domain_paths[domain].insert(item.first);
     }
-    state.slack_order.insert(old.normalized_slack);
+    state.slack_path_order.emplace(old.normalized_slack, item.first);
     state.ranked_path_order.emplace(
         rank_float(old.normalized_slack), item.first);
   }
@@ -3488,7 +3474,7 @@ void run_scalable(const Model& model, const std::string& output_path) {
              model.flow_version >= 8
                  && iteration < model.flow_max_tail_moves;
              ++iteration) {
-          require(!refined.slack_order.empty(),
+          require(!refined.slack_path_order.empty(),
                   "flow tail repair has no timing paths");
           std::set<int> candidate_clusters;
           const auto add_path_candidates = [&](int path) {

@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.errors import ValidationError
 from emuflow.partition import (
@@ -185,6 +186,45 @@ class HopPartitionRefinementTest(unittest.TestCase):
                 self.ir, self.platform, clusters, refined
             )["status"],
             "pass",
+        )
+
+    def test_native_noop_preserves_materialized_assignment_contract(self) -> None:
+        constraints, clusters, assignment = self._artifacts()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            route_constraints = root / "route_constraints.json"
+            route_constraints.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.system-route-constraints/v1",
+                        "max_route_hops": 3,
+                        "frame_slots": 32,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch(
+                "emuflow.partition_hops.build_partition_assignment",
+                side_effect=AssertionError(
+                    "no-op hop proof rebuilt the assignment contract"
+                ),
+            ):
+                refined, report = refine_partition_hops(
+                    self.ir,
+                    self.platform,
+                    clusters,
+                    constraints,
+                    assignment,
+                    root / "noop",
+                    route_constraints_path=route_constraints,
+                    executable=str(self.executable),
+                )
+        self.assertEqual(len(report["moves"]), 0)
+        self.assertEqual(
+            refined["cluster_assignment"], assignment["cluster_assignment"]
+        )
+        self.assertEqual(
+            refined.get("semantic_contract"), assignment.get("semantic_contract")
         )
 
     def test_candidate_hop_database_preserves_simplex_direction(self) -> None:

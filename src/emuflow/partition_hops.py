@@ -437,16 +437,24 @@ def refine_partition_hops(
         "native_metrics": native_metrics,
     }
     metadata["hop_feasibility"] = refinement_summary
-    primary = build_partition_assignment(
-        ir,
-        platform,
-        clusters_artifact,
-        partition_constraints,
-        cluster_assignment,
-        provider=assignment["provider"],
-        seed=assignment["seed"],
-        provider_metadata=metadata,
-    )
+    if cluster_assignment == assignment.get("cluster_assignment"):
+        # The native hop checker commonly proves the input already feasible.
+        # Preserve its canonical assignment/Static Exact contract instead of
+        # rebuilding the complete instance/net representation solely to add a
+        # compact proof summary.
+        primary = dict(assignment)
+        primary["provider_metadata"] = metadata
+    else:
+        primary = build_partition_assignment(
+            ir,
+            platform,
+            clusters_artifact,
+            partition_constraints,
+            cluster_assignment,
+            provider=assignment["provider"],
+            seed=assignment["seed"],
+            provider_metadata=metadata,
+        )
     replicas = _replica_targets(assignment)
     if replicas:
         replicas = {

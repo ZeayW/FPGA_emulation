@@ -26,6 +26,7 @@ from .partition import (
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
     validate_partition_artifacts,
+    validate_partition_artifacts_online,
 )
 from .platform import Platform
 from .native_tools import resolve_native_executable
@@ -1824,12 +1825,18 @@ def run_partition_pressure_native(
     algorithm_version: Optional[int] = None,
     physical_feedback: Optional[Mapping[str, Any]] = None,
     physical_feedback_scale: float = 0.0,
+    output_validation: str = "full",
+    retain_trace_seals: bool = True,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     limit = len(model["clusters"]) if max_moves is None else max_moves
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
         raise ValidationError("native PATRON max_moves is invalid")
     if not isinstance(flow_refinement, bool):
         raise ValidationError("native PATRON flow_refinement is invalid")
+    if output_validation not in {"full", "online", "caller"}:
+        raise ValidationError("native PATRON output validation mode is invalid")
+    if not isinstance(retain_trace_seals, bool):
+        raise ValidationError("native PATRON trace-seal flag is invalid")
     if algorithm_version is None:
         algorithm_version = (
             11
@@ -1918,6 +1925,13 @@ def run_partition_pressure_native(
         ) = (
             _parse_patron_native_output(native_output, indexes)
         )
+    provider_metadata = {
+        "initial_provider": initial_assignment.get("provider"),
+    }
+    model_sha256 = None
+    if retain_trace_seals:
+        model_sha256 = _canonical_digest(model)
+        provider_metadata["model_sha256"] = model_sha256
     final = build_partition_assignment(
         ir,
         platform,
@@ -1933,13 +1947,13 @@ def run_partition_pressure_native(
             }[algorithm_version]
         ),
         seed=initial_assignment.get("seed", 0),
-        provider_metadata={
-            "initial_provider": initial_assignment.get("provider"),
-            "model_sha256": _canonical_digest(model),
-        },
+        provider_metadata=provider_metadata,
     )
-    validate_partition_artifacts(ir, platform, clusters_artifact, final)
-    return final, {
+    if output_validation == "full":
+        validate_partition_artifacts(ir, platform, clusters_artifact, final)
+    elif output_validation == "online":
+        validate_partition_artifacts_online(platform, clusters_artifact, final)
+    trace = {
         "schema": (
             {
                 6: PARTITION_PRESSURE_TRACE_SCHEMA,
@@ -1993,16 +2007,24 @@ def run_partition_pressure_native(
             if use_physical_feedback
             else {}
         ),
-        "model_sha256": _canonical_digest(model),
-        "initial_assignment_sha256": _canonical_digest(initial_assignment),
         "initial_metrics": initial_metrics,
         "moves": moves,
         "batches": batches,
         "final_metrics": final_metrics,
-        "final_cluster_assignment_sha256": _canonical_digest(
-            cluster_assignment
-        ),
     }
+    if retain_trace_seals:
+        trace.update(
+            {
+                "model_sha256": model_sha256,
+                "initial_assignment_sha256": _canonical_digest(
+                    initial_assignment
+                ),
+                "final_cluster_assignment_sha256": _canonical_digest(
+                    cluster_assignment
+                ),
+            }
+        )
+    return final, trace
 
 
 def validate_partition_pressure_native_against_exhaustive(
