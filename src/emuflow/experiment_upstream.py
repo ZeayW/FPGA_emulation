@@ -978,6 +978,11 @@ def materialize_shared_phase1_5(
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
     managed_dag_node: bool = False,
+    constraints_path: Path | None = None,
+    route_constraints_path: Path | None = None,
+    tritonpart_solution: Path | None = None,
+    patron_initial_assignment_path: Path | None = None,
+    patron_physical_system_timing_path: Path | None = None,
 ) -> Dict[str, Any]:
     managed_dependencies: Dict[str, Dict[str, Any]] = {}
     if managed_dag_node:
@@ -1000,7 +1005,15 @@ def materialize_shared_phase1_5(
         validate_frontend_checkpoint(frontend_root, platform_path)
         validate_timing_checkpoint(frontend_root, timing_root)
         validate_partition_checkpoint(
-            frontend_root, timing_root, platform_path, partition_root
+            frontend_root,
+            timing_root,
+            platform_path,
+            partition_root,
+            constraints_path=constraints_path,
+            route_constraints_path=route_constraints_path,
+            tritonpart_solution=tritonpart_solution,
+            patron_initial_assignment_path=patron_initial_assignment_path,
+            patron_physical_system_timing_path=patron_physical_system_timing_path,
         )
         validate_cut_timing_checkpoint(
             frontend_root,
@@ -1011,9 +1024,18 @@ def materialize_shared_phase1_5(
             architecture_timing_db_path=architecture_timing_db_path,
         )
         validate_route_checkpoint(
-            partition_root, cut_timing_root, platform_path, route_root
+            partition_root,
+            cut_timing_root,
+            platform_path,
+            route_root,
+            constraints_path=route_constraints_path,
         )
-        validate_tdm_checkpoint(route_root, platform_path, tdm_root)
+        validate_tdm_checkpoint(
+            route_root,
+            platform_path,
+            tdm_root,
+            constraints_path=route_constraints_path,
+        )
     output_dir = _prepare_empty_output(output_dir, "shared Phase 1-5 checkpoint")
     mapping = {
         "frontend/phase1/design.emuir.json": (

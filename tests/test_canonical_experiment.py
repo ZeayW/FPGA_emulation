@@ -195,6 +195,15 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertNotIn("--opensta", nodes["cut-timing"]["command"])
             self.assertEqual(nodes["tdm"]["dependencies"], ["route"])
             self.assertIn("--route-constraints", nodes["partition"]["command"])
+            shared = nodes["shared-phase1-5"]
+            self.assertIn("route_constraints", shared["inputs"])
+            self.assertIn("timing_model", shared["inputs"])
+            self.assertIn("architecture_timing_db", shared["inputs"])
+            partition_command = nodes["partition"]["command"]
+            self.assertEqual(
+                shared["command"][shared["command"].index("--route-constraints") + 1],
+                partition_command[partition_command.index("--route-constraints") + 1],
+            )
             self.assertEqual(
                 nodes["frontend"]["configuration"]["mapping_profile"],
                 "vtr-hard-blocks",
@@ -459,6 +468,16 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertIn(
                 "patron_physical_system_timing", partition["inputs"]
             )
+            shared = nodes["shared-phase1-5"]
+            for label, option, source in (
+                ("patron_initial_assignment", "--patron-initial-assignment", initial),
+                ("patron_physical_system_timing", "--patron-physical-system-timing", physical_timing),
+            ):
+                self.assertEqual(shared["inputs"][label], partition["inputs"][label])
+                self.assertEqual(
+                    shared["command"][shared["command"].index(option) + 1],
+                    str(source.resolve()),
+                )
             self.assertIn(
                 "src/emuflow/partition_pressure.py",
                 partition["implementation"]["components"],
@@ -1045,6 +1064,12 @@ class CanonicalExperimentTest(unittest.TestCase):
             }
             partition = nodes["partition"]
             self.assertIn("partition_constraints", partition["inputs"])
+            shared = nodes["shared-phase1-5"]
+            self.assertIn("partition_constraints", shared["inputs"])
+            self.assertEqual(
+                shared["command"][shared["command"].index("--constraints") + 1],
+                str(constraints.resolve()),
+            )
             self.assertEqual(
                 partition["configuration"]["partition_constraints_sha256"],
                 hashlib.sha256(constraints.read_bytes()).hexdigest(),
@@ -1090,6 +1115,15 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             digest = hashlib.sha256(solution.read_bytes()).hexdigest()
             self.assertEqual(partition["inputs"]["tritonpart_solution"], digest)
+            shared = next(
+                item for item in json.loads(output.read_text())["nodes"]
+                if item["id"] == "shared-phase1-5"
+            )
+            self.assertEqual(shared["inputs"]["tritonpart_solution"], digest)
+            self.assertEqual(
+                shared["command"][shared["command"].index("--tritonpart-solution") + 1],
+                str(solution.resolve()),
+            )
             self.assertEqual(
                 partition["configuration"]["tritonpart_solution_sha256"],
                 digest,

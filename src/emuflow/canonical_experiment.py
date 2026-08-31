@@ -1225,12 +1225,35 @@ def compile_canonical_experiment_spec(
         peak_gib=12, retained_gib=3,
     )
     shared_dependencies = ["frontend", "timing", "partition", "cut-timing", "route", "tdm"]
+    shared_command = [
+        executable, "experiment-stage", "shared-materialize",
+        "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}",
+        "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}",
+        "--route", "{dependency:route}", "--tdm", "{dependency:tdm}",
+        "--platform", str(platform), "--timing-model", str(timing_model),
+        "--architecture-timing-db", str(architecture_timing),
+        "--route-constraints", str(route_constraints),
+    ]
+    shared_inputs = [
+        "platform", "tool.emuflow", "timing_model", "architecture_timing_db",
+        "route_constraints",
+    ]
+    for label, option, path in (
+        ("partition_constraints", "--constraints", partition_constraints),
+        ("tritonpart_solution", "--tritonpart-solution", tritonpart_solution),
+        ("patron_initial_assignment", "--patron-initial-assignment", patron_initial_assignment),
+        ("patron_physical_system_timing", "--patron-physical-system-timing", patron_physical_system_timing),
+    ):
+        if path is not None:
+            shared_command.extend((option, str(path)))
+            shared_inputs.append(label)
+    shared_command.extend(("--managed-dag-node", "--out", "{output_dir}"))
     node(
         "shared-phase1-5", "shared", shared_dependencies,
-        [executable, "experiment-stage", "shared-materialize", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--route", "{dependency:route}", "--tdm", "{dependency:tdm}", "--platform", str(platform), "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing), "--managed-dag-node", "--out", "{output_dir}"],
+        shared_command,
         [executable, "experiment-stage", "shared-validate", "--shared", "{artifact_root}", "--platform", str(platform), "--managed-dag-node"],
         [_artifact("frontend", "consumer-checkpoint"), _artifact("timing", "consumer-checkpoint"), _artifact("partition", "consumer-checkpoint"), _artifact("system-route", "consumer-checkpoint"), _artifact("tdm", "consumer-checkpoint"), _artifact("experiment-shared-report.json", "evidence-critical")],
-        inputs=("platform", "tool.emuflow"), configuration={"materialization": "same-filesystem-hardlink-or-copy"}, peak_gib=2, retained_gib=1,
+        inputs=tuple(shared_inputs), configuration={"materialization": "same-filesystem-hardlink-or-copy"}, peak_gib=2, retained_gib=1,
     )
 
     baseline_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline", "--managed-storage", "--managed-dag-node", "--out", "{output_dir}"]
