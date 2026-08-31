@@ -167,7 +167,7 @@ struct FlowEdge {
   long long capacity = 0;
 };
 
-void require(bool condition, const std::string& message);
+void require(bool condition, const char* message);
 
 class DinicFlow {
  public:
@@ -266,7 +266,7 @@ class DinicFlow {
   std::vector<int> next_;
 };
 
-void require(bool condition, const std::string& message) {
+void require(bool condition, const char* message) {
   if (!condition) {
     throw std::runtime_error(message);
   }
@@ -837,10 +837,13 @@ ProxyPathState build_proxy_path(
   const Path& path = model.path[path_index];
   double transport = 0.0;
   std::vector<int> sequence;
-  std::set<int> dependency_domains;
+  sequence.reserve(path.nets.size() * 2);
+  std::vector<int> dependency_domains;
+  dependency_domains.reserve(path.nets.size());
   if (path.start_cluster >= 0) {
     int target = state.assignment[path.end_cluster];
     std::vector<std::pair<int, int>> reverse_transitions;
+    reverse_transitions.reserve(path.nets.size());
     for (auto item = path.nets.rbegin(); item != path.nets.rend(); ++item) {
       const Net& net = model.net[*item];
       const ProxyNetState& net_state = selected_proxy_net(
@@ -862,7 +865,7 @@ ProxyPathState build_proxy_path(
       transport += predicted_transition_delay(
           model, route, ratios, sink_clusters);
       for (const Arc& arc : route.arcs) {
-        dependency_domains.insert(arc.domain);
+        dependency_domains.push_back(arc.domain);
       }
       reverse_transitions.emplace_back(source, target);
       target = source;
@@ -888,7 +891,7 @@ ProxyPathState build_proxy_path(
         const double delay = predicted_transition_delay(
             model, route, ratios, transition.sink_clusters);
         for (const Arc& arc : route.arcs) {
-          dependency_domains.insert(arc.domain);
+          dependency_domains.push_back(arc.domain);
         }
         const std::pair<int, int> identity = {
             transition.source, transition.sink};
@@ -910,14 +913,18 @@ ProxyPathState build_proxy_path(
       }
     }
   }
-  std::set<int> seen;
+  std::vector<bool> seen(model.parts, false);
   long long snaking = 0;
   for (int part : sequence) {
-    if (seen.count(part)) {
+    if (seen[part]) {
       ++snaking;
     }
-    seen.insert(part);
+    seen[part] = true;
   }
+  std::sort(dependency_domains.begin(), dependency_domains.end());
+  dependency_domains.erase(
+      std::unique(dependency_domains.begin(), dependency_domains.end()),
+      dependency_domains.end());
   if (sequence.size() > 1
       && sequence.front() == path.feedback_source
       && sequence.back() == path.feedback_sink) {
@@ -929,7 +936,7 @@ ProxyPathState build_proxy_path(
       slack,
       slack < 0.0,
       snaking,
-      std::vector<int>(dependency_domains.begin(), dependency_domains.end()),
+      std::move(dependency_domains),
   };
 }
 
@@ -2434,7 +2441,7 @@ ProxyDelta evaluate_proxy_changes(
   }
   std::vector<std::tuple<int, int, int>> changes = {
       {cluster, delta.source, target}};
-  std::set<int> changed_clusters = {cluster};
+  std::vector<int> changed_clusters = {cluster};
   if (partner >= 0) {
     if (partner == cluster || partner_target < 0
         || model.cluster[partner].fixed >= 0) {
@@ -2446,9 +2453,11 @@ ProxyDelta evaluate_proxy_changes(
     if (delta.partner_source == delta.partner_target) {
       return delta;
     }
-    if (!changed_clusters.insert(partner).second) {
+    if (std::find(changed_clusters.begin(), changed_clusters.end(), partner)
+        != changed_clusters.end()) {
       return delta;
     }
+    changed_clusters.push_back(partner);
     changes.emplace_back(
         partner, delta.partner_source, delta.partner_target);
   }
@@ -2459,9 +2468,11 @@ ProxyDelta evaluate_proxy_changes(
         || changed_target < 0 || changed_target >= model.parts
         || model.cluster[changed_cluster].fixed >= 0
         || state.assignment[changed_cluster] == changed_target
-        || !changed_clusters.insert(changed_cluster).second) {
+        || std::find(changed_clusters.begin(), changed_clusters.end(),
+                     changed_cluster) != changed_clusters.end()) {
       return delta;
     }
+    changed_clusters.push_back(changed_cluster);
     changes.emplace_back(changed_cluster,
                          state.assignment[changed_cluster],
                          changed_target);
@@ -2511,12 +2522,17 @@ ProxyDelta evaluate_proxy_changes(
       state.assignment[std::get<0>(change)] = std::get<1>(change);
     }
   };
-  std::set<int> affected_nets;
+  std::vector<int> affected_nets;
   for (const auto& change : changes) {
     const int changed_cluster = std::get<0>(change);
-    affected_nets.insert(cluster_nets[changed_cluster].begin(),
+    affected_nets.insert(affected_nets.end(),
+                         cluster_nets[changed_cluster].begin(),
                          cluster_nets[changed_cluster].end());
   }
+  std::sort(affected_nets.begin(), affected_nets.end());
+  affected_nets.erase(
+      std::unique(affected_nets.begin(), affected_nets.end()),
+      affected_nets.end());
   for (int net : affected_nets) {
     ProxyNetState replacement = build_proxy_net(model, state.assignment, net);
     if (!replacement.feasible) {
@@ -2545,24 +2561,31 @@ ProxyDelta evaluate_proxy_changes(
     }
   }
   std::vector<int> projected_ratios = state.domain_ratio;
-  std::set<int> ratio_changed_domains;
+  std::vector<int> ratio_changed_domains;
+  ratio_changed_domains.reserve(delta.domain_delta.size());
   for (const auto& item : delta.domain_delta) {
     const int projected_load = state.domain_load[item.first] + item.second;
     projected_ratios[item.first] = tdm_ratio(
         model, projected_load, model.domain[item.first]);
     if (projected_ratios[item.first] != state.domain_ratio[item.first]) {
-      ratio_changed_domains.insert(item.first);
+      ratio_changed_domains.push_back(item.first);
     }
   }
-  std::set<int> affected_paths;
+  std::vector<int> affected_paths;
   for (const auto& item : delta.nets) {
-    affected_paths.insert(
-        net_paths[item.first].begin(), net_paths[item.first].end());
+    affected_paths.insert(affected_paths.end(),
+                          net_paths[item.first].begin(),
+                          net_paths[item.first].end());
   }
   for (int domain : ratio_changed_domains) {
-    affected_paths.insert(
-        state.domain_paths[domain].begin(), state.domain_paths[domain].end());
+    affected_paths.insert(affected_paths.end(),
+                          state.domain_paths[domain].begin(),
+                          state.domain_paths[domain].end());
   }
+  std::sort(affected_paths.begin(), affected_paths.end());
+  affected_paths.erase(
+      std::unique(affected_paths.begin(), affected_paths.end()),
+      affected_paths.end());
   for (int path : affected_paths) {
     delta.paths.emplace(
         path,
@@ -2594,7 +2617,8 @@ ProxyDelta evaluate_proxy_changes(
     worst = std::min(worst, item.second.normalized_slack);
   }
   for (const auto& item : state.slack_path_order) {
-    if (!affected_paths.count(item.second)) {
+    if (!std::binary_search(
+            affected_paths.begin(), affected_paths.end(), item.second)) {
       worst = std::min(worst, item.first);
       break;
     }
