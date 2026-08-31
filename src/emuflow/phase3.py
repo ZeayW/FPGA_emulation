@@ -27,6 +27,7 @@ from .combinational_cut import (
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
+from .phase3_storage import pack_phase3_assignment, pack_phase3_clusters
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
@@ -293,15 +294,33 @@ def run_phase3(
         report["artifacts"]["hop_refinement"] = (
             "hop-refinement/hop_refinement.json"
         )
+    if managed_dag_node:
+        report["artifact_storage"] = {
+            "clusters": "emuflow.phase3-clusters-storage/v1",
+            "assignment": "emuflow.phase3-assignment-storage/v1",
+            "logical_schema": "unchanged-transparent-expansion",
+        }
 
     output_dir.mkdir(parents=True, exist_ok=True)
     if managed_dag_node and provider == "tritonpart":
         shutil.rmtree(output_dir / "tritonpart", ignore_errors=True)
     if managed_dag_node and hop_refinement["enabled"]:
         shutil.rmtree(output_dir / "hop-refinement", ignore_errors=True)
-    write_json(output_dir / "clusters.json", clusters, compact=True)
+    persisted_clusters = (
+        pack_phase3_clusters(clusters) if managed_dag_node else clusters
+    )
+    persisted_assignment = (
+        pack_phase3_assignment(assignment, clusters)
+        if managed_dag_node
+        else assignment
+    )
+    write_json(
+        output_dir / "clusters.json", persisted_clusters, compact=True
+    )
     write_json(output_dir / "constraints.normalized.json", constraints)
-    write_json(output_dir / "assignment.json", assignment, compact=True)
+    write_json(
+        output_dir / "assignment.json", persisted_assignment, compact=True
+    )
     if "replication" in assignment:
         write_json(output_dir / "replication.json", assignment["replication"])
     if hop_refinement["enabled"]:

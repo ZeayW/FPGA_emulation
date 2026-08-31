@@ -1651,6 +1651,17 @@ winner assignment plus compact reports. The online MFSPart check records both
 optimizer and checker wall time and fails if checking takes longer than the
 optimizer. Full move-optimality replay is reserved for explicit qualification
 tests.
+Managed Phase 3 checkpoints also use lossless columnar JSON storage for the
+cluster table, store only the irreducible cluster-to-FPGA vector, and compress
+the large Static Exact semantic contract inside the assignment envelope. The
+ordinary `read_json` API transparently reconstructs
+the unchanged `emuflow.clusters/v1` and `emuflow.partition-assignment/v1`
+logical objects, including instance assignment and per-FPGA cluster lists, from
+the paired checkpoint files. Standalone, user-authored Phase 3 output retains
+the plain logical JSON form. This removes repeated JSON keys, repeated FPGA
+names, and the duplicate instance assignment from the managed checkpoint hot
+path without weakening the independent Phase 3 validator or changing Phase
+4--7 semantics.
 `route_candidate_workers` defaults to `physical_workers`, is recorded in the
 route node configuration and command, and is independently checked against the
 Phase 4 candidate-generation certificate. Changing either provider or worker

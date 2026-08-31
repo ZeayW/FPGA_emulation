@@ -12,6 +12,20 @@ def read_json(path: Path) -> Dict[str, Any]:
         value = json.load(stream)
     if not isinstance(value, dict):
         raise ValueError(f"{path}: expected a JSON object at the document root")
+    schema = value.get("schema")
+    if schema in {
+        "emuflow.phase3-clusters-storage/v1",
+        "emuflow.phase3-assignment-storage/v1",
+    }:
+        from .phase3_storage import (
+            PACKED_ASSIGNMENT_SCHEMA,
+            expand_phase3_assignment,
+            expand_phase3_clusters,
+        )
+
+        if schema == PACKED_ASSIGNMENT_SCHEMA:
+            return expand_phase3_assignment(value, path, read_json)
+        return expand_phase3_clusters(value)
     return value
 
 
