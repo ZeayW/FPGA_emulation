@@ -734,13 +734,14 @@ def compile_canonical_experiment_spec(
         "--platform", str(platform), "--source", str(rtl), "--top", top,
         "--mapping-profile", contract["physical_mapping_profile"],
         "--yosys", str(tools["yosys"]),
+        "--managed-dag-node",
     ]
     for clock in clocks:
         frontend_command.extend(("--clock", clock))
     frontend_command.extend(("--out", "{output_dir}"))
     node(
         "frontend", "frontend", [], frontend_command,
-        [executable, "experiment-stage", "frontend-validate", "{artifact_root}", "--platform", str(platform)],
+        [executable, "experiment-stage", "frontend-validate", "{artifact_root}", "--platform", str(platform), "--managed-dag-node"],
         [_artifact("sources", "source-input"), _artifact("phase1", "consumer-checkpoint"), _artifact("synthesized.json", "consumer-checkpoint"), _artifact("experiment-frontend-report.json", "evidence-critical")],
         inputs=("rtl", "platform", "boarddb_report", "end_to_end_matrix", "benchmark_run_spec", "tool.emuflow", "tool.yosys"),
         configuration={"case_id": case_id, "contest_case_id": contract["contest_case_id"], "top": top, "clocks": clocks, "mapping_profile": contract["physical_mapping_profile"], "require_no_fabric_clock": True},
@@ -751,13 +752,14 @@ def compile_canonical_experiment_spec(
         executable, "experiment-stage", "timing-run", "--frontend", "{dependency:frontend}",
         "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing),
         "--opensta", str(tools["opensta"]),
+        "--managed-dag-node",
     ]
     for value in period_args:
         timing_command.extend(("--clock-period", value))
     timing_command.extend(("--out", "{output_dir}"))
     node(
         "timing", "timing", ["frontend"], timing_command,
-        [executable, "experiment-stage", "timing-validate", "{artifact_root}", "--frontend", "{dependency:frontend}"],
+        [executable, "experiment-stage", "timing-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--managed-dag-node"],
         [_artifact("path-database.json", "consumer-checkpoint"), _artifact("partition-net-weights.json", "consumer-checkpoint"), _artifact("experiment-timing-report.json", "evidence-critical")],
         inputs=("timing_model", "architecture_timing_db", "tool.emuflow", "tool.opensta"),
         configuration={"clock_periods": periods, "max_paths": 200000, "criticality_scale": 9.0, "criticality_exponent": 2.0},
@@ -846,13 +848,14 @@ def compile_canonical_experiment_spec(
         executable, "experiment-stage", "cut-timing-run", "--frontend", "{dependency:frontend}",
         "--timing", "{dependency:timing}", "--partition", "{dependency:partition}",
         "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing),
+        "--managed-dag-node",
     ]
     for value in period_args:
         cut_command.extend(("--clock-period", value))
     cut_command.extend(("--out", "{output_dir}"))
     node(
         "cut-timing", "cut-timing", ["frontend", "timing", "partition"], cut_command,
-        [executable, "experiment-stage", "cut-timing-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--partition", "{dependency:partition}", "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing)],
+        [executable, "experiment-stage", "cut-timing-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--partition", "{dependency:partition}", "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing), "--managed-dag-node"],
         [_artifact("cut-timing-paths.json", "consumer-checkpoint"), _artifact("cut-segment-qualification.json", "evidence-critical"), _artifact("experiment-cut-timing-report.json", "evidence-critical")],
         inputs=("timing_model", "architecture_timing_db", "tool.emuflow"),
         configuration={"clock_periods": periods},
@@ -868,8 +871,8 @@ def compile_canonical_experiment_spec(
     )
     node(
         "route", "route", ["partition", "cut-timing"],
-        [executable, "experiment-stage", "route-run", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers), "--router", str(tools["router"]), "--out", "{output_dir}"],
-        [executable, "experiment-stage", "route-validate", "{artifact_root}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers)],
+        [executable, "experiment-stage", "route-run", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers), "--router", str(tools["router"]), "--managed-storage", "--managed-dag-node", "--out", "{output_dir}"],
+        [executable, "experiment-stage", "route-validate", "{artifact_root}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers), "--managed-dag-node"],
         [_artifact("routes.json", "consumer-checkpoint"), _artifact("phase4_report.json", "consumer-checkpoint"), _artifact("experiment-route-report.json", "evidence-critical")],
         inputs=("platform", "route_constraints", "tool.emuflow", "tool.router"),
         configuration={"provider": route_provider, "candidate_workers": effective_candidate_workers, "route_constraints": contract["route_constraints"], "cut_mode": cut_mode},
@@ -884,6 +887,8 @@ def compile_canonical_experiment_spec(
         executable, "experiment-stage", "tdm-run", "--route",
         "{dependency:route}", "--platform", str(platform), "--provider",
         tdm_provider,
+        "--managed-storage",
+        "--managed-dag-node",
     ]
     tdm_inputs = ["platform", "route_constraints", "tool.emuflow"]
     tdm_artifacts = [
@@ -909,7 +914,7 @@ def compile_canonical_experiment_spec(
     node(
         "tdm", "tdm", ["route"],
         tdm_command,
-        [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", tdm_provider],
+        [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", tdm_provider, "--managed-dag-node"],
         tdm_artifacts,
         inputs=tuple(tdm_inputs),
         configuration={"provider": tdm_provider, "simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": contract["route_constraints"]["tdm_ratio_quantum"], "max_ratio": contract["route_constraints"]["frame_slots"], "post_refinement_iterations": 200, "cut_mode": cut_mode},
@@ -918,16 +923,16 @@ def compile_canonical_experiment_spec(
     shared_dependencies = ["frontend", "timing", "partition", "cut-timing", "route", "tdm"]
     node(
         "shared-phase1-5", "shared", shared_dependencies,
-        [executable, "experiment-stage", "shared-materialize", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--route", "{dependency:route}", "--tdm", "{dependency:tdm}", "--platform", str(platform), "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing), "--out", "{output_dir}"],
-        [executable, "experiment-stage", "shared-validate", "--shared", "{artifact_root}", "--platform", str(platform)],
+        [executable, "experiment-stage", "shared-materialize", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--route", "{dependency:route}", "--tdm", "{dependency:tdm}", "--platform", str(platform), "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing), "--managed-dag-node", "--out", "{output_dir}"],
+        [executable, "experiment-stage", "shared-validate", "--shared", "{artifact_root}", "--platform", str(platform), "--managed-dag-node"],
         [_artifact("frontend", "consumer-checkpoint"), _artifact("timing", "consumer-checkpoint"), _artifact("partition", "consumer-checkpoint"), _artifact("system-route", "consumer-checkpoint"), _artifact("tdm", "consumer-checkpoint"), _artifact("experiment-shared-report.json", "evidence-critical")],
         inputs=("platform", "tool.emuflow"), configuration={"materialization": "same-filesystem-hardlink-or-copy"}, peak_gib=2, retained_gib=1,
     )
 
-    baseline_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline", "--out", "{output_dir}"]
+    baseline_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline", "--managed-storage", "--managed-dag-node", "--out", "{output_dir}"]
     node(
         "phase6-baseline", "phase6", ["shared-phase1-5"], baseline_command,
-        [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline"],
+        [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline", "--managed-dag-node"],
         [_artifact("split", "consumer-checkpoint"), _artifact("schedule.json", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical")],
         inputs=("platform", "tool.emuflow"), configuration={"provider": "baseline", "equivalence_cycles": 16}, peak_gib=12, retained_gib=4, provider="baseline",
     )
@@ -940,9 +945,10 @@ def compile_canonical_experiment_spec(
         "--route-checker", str(tools["route_checker"]), "--openparf-install", str(openparf_install),
         "--openparf-python", str(tools["openparf_python"]), "--route-channel-width", str(channel_width), "--out", "{output_dir}",
     ]
+    lookahead_command.insert(-2, "--managed-dag-node")
     node(
         "physical-lookahead", "lookahead", ["shared-phase1-5", "phase6-baseline"], lookahead_command,
-        [executable, "experiment-stage", "lookahead-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--baseline-phase6", "{dependency:phase6-baseline}", "--reuse-validated-phase6-equivalence", "--platform", str(platform), "--seed", "1", "--workers", str(workers), "--region-count", str(region_count), "--architecture", str(physical_architecture), "--route-channel-width", str(channel_width)],
+        [executable, "experiment-stage", "lookahead-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--baseline-phase6", "{dependency:phase6-baseline}", "--reuse-validated-phase6-equivalence", "--platform", str(platform), "--seed", "1", "--workers", str(workers), "--region-count", str(region_count), "--architecture", str(physical_architecture), "--route-channel-width", str(channel_width), "--managed-dag-node"],
         [_artifact("physical", "consumer-checkpoint"), _artifact("lookahead", "consumer-checkpoint"), _artifact("experiment-lookahead-report.json", "evidence-critical")],
         inputs=("platform", "physical_architecture", "openparf_manifest", "openparf_implementation", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
         configuration={"physical_seed": 1, "physical_workers": workers, "physical_peak_gib": physical_peak_gib, "region_count": region_count, "route_channel_width": channel_width}, peak_gib=physical_peak_gib, retained_gib=10,
@@ -959,7 +965,7 @@ def compile_canonical_experiment_spec(
             if provider == "placement-aware"
             else [_artifact("chimew-pipeline", "consumer-checkpoint")]
         )
-        phase6_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider]
+        phase6_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider, "--managed-storage", "--managed-dag-node"]
         phase6_inputs = ["platform", "tool.emuflow"]
         if provider == "placement-aware":
             phase6_command.extend(("--pin-planner", str(tools["pin_planner"])))
@@ -977,7 +983,7 @@ def compile_canonical_experiment_spec(
         node(
             phase6_id, "phase6", ["shared-phase1-5", "physical-lookahead"],
             phase6_command,
-            [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider],
+            [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider, "--managed-dag-node"],
             [_artifact("split", "consumer-checkpoint"), _artifact("schedule.json", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical"), *extra_artifacts],
             inputs=tuple(phase6_inputs), configuration={"provider": provider, "equivalence_cycles": 16}, peak_gib=12, retained_gib=4, provider=provider,
         )
@@ -992,8 +998,8 @@ def compile_canonical_experiment_spec(
             phase7_id = f"phase7-{provider}-seed{seed}"
             node(
                 phase7_id, "phase7", ["shared-phase1-5", "physical-lookahead", phase6_id],
-                [executable, "experiment-stage", "phase7-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--phase6", f"{{dependency:{phase6_id}}}", "--reuse-validated-phase6-equivalence", "--platform", str(platform), "--seed", str(seed), "--workers", str(workers), "--yosys", str(tools["yosys"]), "--vpr", str(tools["vpr"]), "--architecture-importer", str(tools["architecture_importer"]), "--packed-importer", str(tools["packed_importer"]), "--route-checker", str(tools["route_checker"]), "--openparf-install", str(openparf_install), "--openparf-python", str(tools["openparf_python"]), "--route-channel-width", str(channel_width), "--out", "{output_dir}"],
-                [executable, "experiment-stage", "phase7-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--phase6", f"{{dependency:{phase6_id}}}", "--reuse-validated-phase6-equivalence", "--platform", str(platform), "--seed", str(seed), "--workers", str(workers), "--route-channel-width", str(channel_width)],
+                [executable, "experiment-stage", "phase7-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--phase6", f"{{dependency:{phase6_id}}}", "--reuse-validated-phase6-equivalence", "--platform", str(platform), "--seed", str(seed), "--workers", str(workers), "--yosys", str(tools["yosys"]), "--vpr", str(tools["vpr"]), "--architecture-importer", str(tools["architecture_importer"]), "--packed-importer", str(tools["packed_importer"]), "--route-checker", str(tools["route_checker"]), "--openparf-install", str(openparf_install), "--openparf-python", str(tools["openparf_python"]), "--route-channel-width", str(channel_width), "--managed-storage", "--managed-dag-node", "--out", "{output_dir}"],
+                [executable, "experiment-stage", "phase7-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--phase6", f"{{dependency:{phase6_id}}}", "--reuse-validated-phase6-equivalence", "--platform", str(platform), "--seed", str(seed), "--workers", str(workers), "--route-channel-width", str(channel_width), "--managed-dag-node"],
                 [
                     _artifact("runtime", "evidence-critical"),
                     _artifact(
@@ -1006,7 +1012,6 @@ def compile_canonical_experiment_spec(
                     _artifact(
                         "experiment-phase7-report.json", "evidence-critical"
                     ),
-                    _artifact("physical", "diagnostic"),
                 ],
                 inputs=("platform", "openparf_manifest", "openparf_implementation", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
                 configuration={"physical_backend": "open", "physical_workers": workers, "physical_peak_gib": physical_peak_gib, "physical_seed": seed, "route_channel_width": channel_width},

@@ -12,6 +12,7 @@ from .equivalence import (
 )
 from .errors import ValidationError
 from .io import read_json, write_json
+from .managed_json_storage import pack_managed_json
 from .ir import EmuIR
 from .netlist import (
     anchors_to_xdc_template,
@@ -167,6 +168,7 @@ def run_phase6(
     pin_plan_path: Optional[Path] = None,
     position_hints_path: Optional[Path] = None,
     electrical_binding_path: Optional[Path] = None,
+    managed_storage: bool = False,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     assignment = read_json(assignment_path)
@@ -220,7 +222,13 @@ def run_phase6(
         ir, assignment, schedule, platform, pin_plan
     )
     validation = validate_split_artifacts(
-        ir, assignment, schedule, platform, artifacts, pin_plan
+        ir,
+        assignment,
+        schedule,
+        platform,
+        artifacts,
+        pin_plan,
+        reconstruct=False,
     )
     if schedule.get("provider") == STATIC_EXACT_SCHEDULE_PROVIDER:
         equivalence = _static_exact_equivalence_evidence(
@@ -241,8 +249,24 @@ def run_phase6(
     if electrical_binding is not None:
         artifacts["manifest"]["electrical_binding"] = "electrical_binding.json"
     output_dir.mkdir(parents=True, exist_ok=True)
-    write_json(output_dir / "manifest.json", artifacts["manifest"])
-    write_json(output_dir / "lane_map.json", artifacts["lane_map"])
+    write_json(
+        output_dir / "manifest.json",
+        (
+            pack_managed_json(artifacts["manifest"])
+            if managed_storage
+            else artifacts["manifest"]
+        ),
+        compact=managed_storage,
+    )
+    write_json(
+        output_dir / "lane_map.json",
+        (
+            pack_managed_json(artifacts["lane_map"])
+            if managed_storage
+            else artifacts["lane_map"]
+        ),
+        compact=managed_storage,
+    )
     if pin_plan is not None:
         write_json(output_dir / "pin_plan.json", pin_plan)
         write_json(output_dir / "position_hints.json", position_hints)
@@ -258,13 +282,32 @@ def run_phase6(
     for item in artifacts["manifest"]["fpgas"]:
         fpga_id = item["fpga"]
         fpga_root = output_dir / fpga_id
-        write_json(fpga_root / "netlist.json", artifacts["netlists"][fpga_id])
         write_json(
-            fpga_root / "transport.json", artifacts["transports"][fpga_id]
+            fpga_root / "netlist.json",
+            (
+                pack_managed_json(artifacts["netlists"][fpga_id])
+                if managed_storage
+                else artifacts["netlists"][fpga_id]
+            ),
+            compact=managed_storage,
+        )
+        write_json(
+            fpga_root / "transport.json",
+            (
+                pack_managed_json(artifacts["transports"][fpga_id])
+                if managed_storage
+                else artifacts["transports"][fpga_id]
+            ),
+            compact=managed_storage,
         )
         write_json(
             fpga_root / "virtual_anchors.json",
-            artifacts["anchors"][fpga_id],
+            (
+                pack_managed_json(artifacts["anchors"][fpga_id])
+                if managed_storage
+                else artifacts["anchors"][fpga_id]
+            ),
+            compact=managed_storage,
         )
         (fpga_root / "transport_schedule.sv").write_text(
             transport_to_systemverilog(
@@ -334,6 +377,7 @@ def validate_phase6(
     electrical_binding_path: Optional[Path] = None,
     *,
     replay_equivalence: bool = True,
+    reconstruct_artifacts: bool = True,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     assignment = read_json(assignment_path)
@@ -393,7 +437,13 @@ def validate_phase6(
         )
     artifacts["manifest"].pop("electrical_binding", None)
     validation = validate_split_artifacts(
-        ir, assignment, schedule, platform, artifacts, pin_plan
+        ir,
+        assignment,
+        schedule,
+        platform,
+        artifacts,
+        pin_plan,
+        reconstruct=reconstruct_artifacts,
     )
     if (
         replay_equivalence

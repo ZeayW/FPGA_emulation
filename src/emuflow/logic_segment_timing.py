@@ -6,6 +6,7 @@ import hashlib
 import math
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
@@ -448,6 +449,121 @@ def _segment_id(member: str, cut_index: int, role: str) -> str:
     return f"logic_{digest}_{cut_index}_{role}"
 
 
+@dataclass(frozen=True)
+class LogicSegmentQueryInputs:
+    """Immutable global timing state shared by all per-FPGA workers."""
+
+    original_ir: EmuIR
+    assignment: Mapping[str, Any]
+    path_database: Mapping[str, Any]
+    routes: Mapping[str, Any]
+    schedule: Mapping[str, Any]
+    object_index: Mapping[str, Any]
+    database_paths: Mapping[str, Mapping[str, Any]]
+    route_timing: Mapping[str, Mapping[str, Any]]
+    route_by_net: Mapping[str, Mapping[str, Any]]
+    timing_records: List[Mapping[str, Any]]
+    original_nets: Mapping[str, Mapping[str, Any]]
+    original_instances: Mapping[str, Mapping[str, Any]]
+    incoming_nets_by_instance: Mapping[str, List[str]]
+    exact_contract: Optional[Mapping[str, Any]]
+    exact_contract_sha256: Optional[str]
+    exact_segment_by_key: Mapping[Any, str]
+    exact_captures: Mapping[str, Mapping[str, Any]]
+
+
+def prepare_logic_segment_query_inputs(
+    original_ir_path: Path,
+    assignment_path: Path,
+    path_database_path: Path,
+    routes_path: Path,
+    schedule_path: Path,
+    platform: Platform,
+) -> LogicSegmentQueryInputs:
+    """Parse and index global query inputs exactly once per physical run."""
+    original_ir = EmuIR.load(original_ir_path)
+    assignment = read_json(assignment_path)
+    path_database = read_json(path_database_path)
+    routes = read_json(routes_path)
+    schedule = read_json(schedule_path)
+    if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
+        raise ValidationError("logic segment assignment schema is invalid")
+    if path_database.get("schema") != STA_PATH_DATABASE_SCHEMA:
+        raise ValidationError("logic segment STA database schema is invalid")
+
+    exact_contract = schedule.get("semantic_contract")
+    exact_contract_sha256 = None
+    exact_segment_by_key: Dict[Any, str] = {}
+    exact_captures: Dict[str, Mapping[str, Any]] = {}
+    if isinstance(exact_contract, dict) and exact_contract.get("mode") == (
+        "static-exact-combinational"
+    ):
+        from .combinational_cut import semantic_contract_sha256
+
+        exact_contract_sha256 = semantic_contract_sha256(exact_contract)
+        if schedule.get("semantic_contract_sha256") != exact_contract_sha256:
+            raise ValidationError("logic segment exact contract digest disagrees")
+        exact_captures = {
+            item["id"]: item
+            for item in exact_contract["capture_requirements"]
+        }
+        for item in exact_contract["logic_segments"]:
+            if item["kind"] == "launch_to_tx":
+                key = ("launch", None, item["sink_cut_net"], item["fpga"], None)
+            elif item["kind"] == "rx_to_tx":
+                key = (
+                    "transition",
+                    item["source_cut_net"],
+                    item["sink_cut_net"],
+                    item["fpga"],
+                    None,
+                )
+            else:
+                capture = exact_captures[item["capture_requirement"]]
+                key = (
+                    "capture",
+                    item["source_cut_net"],
+                    None,
+                    item["fpga"],
+                    capture["endpoint"],
+                )
+            if key in exact_segment_by_key:
+                raise ValidationError(
+                    "logic segment exact contract mapping is ambiguous"
+                )
+            exact_segment_by_key[key] = item["id"]
+
+    incoming_nets_by_instance: Dict[str, List[str]] = defaultdict(list)
+    for net in original_ir.value["nets"]:
+        for endpoint in net["sinks"]:
+            instance = endpoint["instance"]
+            if instance is not None:
+                incoming_nets_by_instance[instance].append(net["id"])
+    return LogicSegmentQueryInputs(
+        original_ir=original_ir,
+        assignment=assignment,
+        path_database=path_database,
+        routes=routes,
+        schedule=schedule,
+        object_index=sta_object_index(original_ir),
+        database_paths={item["id"]: item for item in path_database["paths"]},
+        route_timing={item["path"]: item for item in routes["timing"]["paths"]},
+        route_by_net={item["net"]: item for item in routes["routes"]},
+        timing_records=reconstruct_tdm_schedule_timing_paths(
+            routes, platform, schedule
+        ),
+        original_nets={item["id"]: item for item in original_ir.value["nets"]},
+        original_instances={
+            item["id"]: item for item in original_ir.value["instances"]
+        },
+        incoming_nets_by_instance=incoming_nets_by_instance,
+        exact_contract=exact_contract,
+        exact_contract_sha256=exact_contract_sha256,
+        exact_segment_by_key=exact_segment_by_key,
+        exact_captures=exact_captures,
+    )
+
+
 def _write_logic_segment_query(
     original_ir_path: Path,
     assignment_path: Path,
@@ -463,19 +579,24 @@ def _write_logic_segment_query(
     *,
     object_provider: str,
     eblif_report: Optional[Mapping[str, Any]] = None,
+    prepared_inputs: Optional[LogicSegmentQueryInputs] = None,
 ) -> Dict[str, Any]:
     """Build physical path queries for all exact logical segments on one FPGA."""
-    original_ir = EmuIR.load(original_ir_path)
+    prepared = prepared_inputs or prepare_logic_segment_query_inputs(
+        original_ir_path,
+        assignment_path,
+        path_database_path,
+        routes_path,
+        schedule_path,
+        platform,
+    )
+    original_ir = prepared.original_ir
     merged_ir = EmuIR.load(merged_ir_path)
-    assignment = read_json(assignment_path)
-    path_database = read_json(path_database_path)
-    routes = read_json(routes_path)
-    schedule = read_json(schedule_path)
+    assignment = prepared.assignment
+    path_database = prepared.path_database
+    routes = prepared.routes
+    schedule = prepared.schedule
     boundary_identity = read_json(boundary_identity_path)
-    if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
-        raise ValidationError("logic segment assignment schema is invalid")
-    if path_database.get("schema") != STA_PATH_DATABASE_SCHEMA:
-        raise ValidationError("logic segment STA database schema is invalid")
     if merged_ir.value["design"]["name"] != f"{assignment['design']}__{fpga}":
         raise ValidationError("logic segment merged IR target is invalid")
     endpoints, _ = _boundary_maps(boundary_identity)
@@ -487,64 +608,15 @@ def _write_logic_segment_query(
         raise ValidationError(
             "logic segment boundary schedule/kind identities duplicate"
         )
-    exact_contract = schedule.get("semantic_contract")
-    exact_contract_sha256 = None
-    exact_segment_by_key = {}
-    exact_captures: Dict[str, Mapping[str, Any]] = {}
-    if isinstance(exact_contract, dict) and exact_contract.get("mode") == (
-        "static-exact-combinational"
-    ):
-        from .combinational_cut import semantic_contract_sha256
-
-        exact_contract_sha256 = semantic_contract_sha256(exact_contract)
-        if schedule.get("semantic_contract_sha256") != exact_contract_sha256:
-            raise ValidationError(
-                "logic segment exact contract digest disagrees"
-            )
-        captures = {
-            item["id"]: item for item in exact_contract["capture_requirements"]
-        }
-        exact_captures = captures
-        for item in exact_contract["logic_segments"]:
-            if item["kind"] == "launch_to_tx":
-                key = (
-                    "launch",
-                    None,
-                    item["sink_cut_net"],
-                    item["fpga"],
-                    None,
-                )
-            elif item["kind"] == "rx_to_tx":
-                key = (
-                    "transition",
-                    item["source_cut_net"],
-                    item["sink_cut_net"],
-                    item["fpga"],
-                    None,
-                )
-            else:
-                capture = captures[item["capture_requirement"]]
-                key = (
-                    "capture",
-                    item["source_cut_net"],
-                    None,
-                    item["fpga"],
-                    capture["endpoint"],
-                )
-            if key in exact_segment_by_key:
-                raise ValidationError(
-                    "logic segment exact contract mapping is ambiguous"
-                )
-            exact_segment_by_key[key] = item["id"]
-    object_index = sta_object_index(original_ir)
-    database_paths = {item["id"]: item for item in path_database["paths"]}
-    route_timing = {
-        item["path"]: item for item in routes["timing"]["paths"]
-    }
-    route_by_net = {item["net"]: item for item in routes["routes"]}
-    records = reconstruct_tdm_schedule_timing_paths(
-        routes, platform, schedule
-    )
+    exact_contract = prepared.exact_contract
+    exact_contract_sha256 = prepared.exact_contract_sha256
+    exact_segment_by_key = prepared.exact_segment_by_key
+    exact_captures = prepared.exact_captures
+    object_index = prepared.object_index
+    database_paths = prepared.database_paths
+    route_timing = prepared.route_timing
+    route_by_net = prepared.route_by_net
+    records = prepared.timing_records
     instance_index = {
         instance["id"]: index
         for index, instance in enumerate(merged_ir.value["instances"])
@@ -556,19 +628,9 @@ def _write_logic_segment_query(
     merged_net_index = {
         net["id"]: index for index, net in enumerate(merged_ir.value["nets"])
     }
-    original_nets = {
-        net["id"]: net for net in original_ir.value["nets"]
-    }
-    original_instances = {
-        instance["id"]: instance
-        for instance in original_ir.value["instances"]
-    }
-    incoming_nets_by_instance: Dict[str, List[str]] = defaultdict(list)
-    for net in original_ir.value["nets"]:
-        for endpoint in net["sinks"]:
-            instance = endpoint["instance"]
-            if instance is not None:
-                incoming_nets_by_instance[instance].append(net["id"])
+    original_nets = prepared.original_nets
+    original_instances = prepared.original_instances
+    incoming_nets_by_instance = prepared.incoming_nets_by_instance
     merged_pins = _instance_pin_inventory(merged_ir)
     eblif_top_ports = None
     if object_provider == "vpr" and eblif_report is not None:
@@ -1143,6 +1205,7 @@ def write_vpr_logic_segment_query(
     identity_path: Path,
     *,
     eblif_report: Optional[Mapping[str, Any]] = None,
+    prepared_inputs: Optional[LogicSegmentQueryInputs] = None,
 ) -> Dict[str, Any]:
     return _write_logic_segment_query(
         original_ir_path,
@@ -1158,6 +1221,7 @@ def write_vpr_logic_segment_query(
         identity_path,
         object_provider="vpr",
         eblif_report=eblif_report,
+        prepared_inputs=prepared_inputs,
     )
 
 
@@ -1173,6 +1237,8 @@ def write_vivado_logic_segment_query(
     fpga: str,
     query_path: Path,
     identity_path: Path,
+    *,
+    prepared_inputs: Optional[LogicSegmentQueryInputs] = None,
 ) -> Dict[str, Any]:
     return _write_logic_segment_query(
         original_ir_path,
@@ -1187,6 +1253,7 @@ def write_vivado_logic_segment_query(
         query_path,
         identity_path,
         object_provider="vivado",
+        prepared_inputs=prepared_inputs,
     )
 
 

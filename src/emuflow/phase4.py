@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .io import read_json, write_json
+from .managed_json_storage import pack_managed_json
 from .platform import Platform
 from .routing import (
     demands_from_assignment,
@@ -50,6 +51,7 @@ def run_phase4(
     physical_feedback_summary_path: Optional[Path] = None,
     physical_feedback_weight: float = 1.0,
     candidate_workers: int = 1,
+    managed_storage: bool = False,
 ) -> Dict[str, Any]:
     assignment = read_json(assignment_path)
     platform = Platform.load(platform_path)
@@ -303,7 +305,11 @@ def run_phase4(
                 output_dir / "physical_feedback.normalized.json",
                 read_json(physical_feedback_path),
             )
-    write_json(output_dir / "routes.json", routes)
+    write_json(
+        output_dir / "routes.json",
+        pack_managed_json(routes) if managed_storage else routes,
+        compact=managed_storage,
+    )
     write_json(output_dir / "phase4_report.json", report)
     return report
 

@@ -24,7 +24,11 @@ from .cut_segment_qualification import (
     build_cut_segment_qualification,
     validate_cut_segment_qualification,
 )
-from .experiment_stages import _prepare_empty_output, validate_shared_phase1_5
+from .experiment_stages import (
+    _managed_checkpoint,
+    _prepare_empty_output,
+    validate_shared_phase1_5,
+)
 from .io import read_json, write_json
 from .ir import EmuIR
 from .opensta import (
@@ -32,10 +36,8 @@ from .opensta import (
     run_opensta_path_database,
 )
 from .phase1 import analyze_clock_topology, run_phase1
-from .phase3 import run_phase3, validate_phase3
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
-from .partition_hops import validate_assignment_hop_constraints
 from .platform import Platform
 from .routing import load_route_constraints
 from .sta import (
@@ -56,6 +58,23 @@ EXPERIMENT_CUT_TIMING_SCHEMA = "emuflow.experiment-cut-timing-checkpoint/v4"
 EXPERIMENT_ROUTE_SCHEMA = "emuflow.experiment-route-checkpoint/v1"
 EXPERIMENT_TDM_SCHEMA = "emuflow.experiment-tdm-checkpoint/v1"
 EXPERIMENT_SHARED_SCHEMA = "emuflow.experiment-shared-phase1-5/v1"
+_SHARED_REQUIRED_ARTIFACTS = {
+    "frontend/phase1/design.emuir.json",
+    "frontend/phase1/phase1_report.json",
+    "partition/clusters.json",
+    "partition/assignment.json",
+    "partition/phase3_report.json",
+    "system-route/routes.json",
+    "system-route/phase4_report.json",
+    "tdm/schedule.json",
+    "tdm/phase5_report.json",
+    "timing/path-database.json",
+    "timing/partition-net-weights.json",
+    "timing/cut-timing-paths.json",
+    "timing/cut-segment-qualification.json",
+}
+_SHARED_OPTIONAL_ARTIFACTS = {"tdm/ratio_plan.json"}
+MANAGED_DAG_VALIDATION_MODE = "managed-independent-publish-v1"
 
 
 def _sha256(path: Path) -> str:
@@ -129,6 +148,7 @@ def run_frontend_checkpoint(
     yosys: Optional[str] = None,
     mapping_profile: str = "vtr-hard-blocks",
     require_no_fabric_clock: bool = True,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     output_dir = _prepare_empty_output(output_dir, "frontend checkpoint")
     sources = [path.resolve() for path in sources]
@@ -141,14 +161,14 @@ def run_frontend_checkpoint(
         relative = f"{index:04d}-{path.name}"
         copied = source_root / relative
         shutil.copy2(path, copied)
-        source_records.append(
-            {
-                "original_path": str(path),
-                "artifact": f"sources/{relative}",
-                "bytes": copied.stat().st_size,
-                "sha256": _sha256(copied),
-            }
-        )
+        record = {
+            "original_path": str(path),
+            "artifact": f"sources/{relative}",
+            "bytes": copied.stat().st_size,
+        }
+        if not managed_dag_node:
+            record["sha256"] = _sha256(copied)
+        source_records.append(record)
     synthesized = output_dir / "synthesized.json"
     synthesis_report: Dict[str, Any] | None = None
     normalization_report: Dict[str, Any] | None = None
@@ -161,14 +181,14 @@ def run_frontend_checkpoint(
         shutil.copy2(source_json, synthesized)
         copied = source_root / "0000-provided-yosys.json"
         shutil.copy2(source_json, copied)
-        source_records.append(
-            {
-                "original_path": str(source_json),
-                "artifact": "sources/0000-provided-yosys.json",
-                "bytes": copied.stat().st_size,
-                "sha256": _sha256(copied),
-            }
-        )
+        record = {
+            "original_path": str(source_json),
+            "artifact": "sources/0000-provided-yosys.json",
+            "bytes": copied.stat().st_size,
+        }
+        if not managed_dag_node:
+            record["sha256"] = _sha256(copied)
+        source_records.append(record)
         mode = "provided-yosys-json"
     else:
         if not sources or top is None:
@@ -219,15 +239,7 @@ def run_frontend_checkpoint(
         "top": top,
         "clocks": sorted(set(clocks)),
         "require_no_fabric_clock": require_no_fabric_clock,
-        "source_sha256": {
-            record["original_path"]: record["sha256"]
-            for record in source_records
-        },
         "source_artifacts": source_records,
-        "synthesized_sha256": _sha256(synthesized),
-        "emuir_sha256": _sha256(output_dir / "phase1/design.emuir.json"),
-        "platform_sha256": _sha256(platform_path.resolve()),
-        "phase1_report_sha256": _sha256(output_dir / "phase1/phase1_report.json"),
         "phase1": phase1,
         **({"synthesis": synthesis_report} if synthesis_report is not None else {}),
         **(
@@ -236,15 +248,43 @@ def run_frontend_checkpoint(
             else {}
         ),
     }
+    if managed_dag_node:
+        report["validation_mode"] = MANAGED_DAG_VALIDATION_MODE
+    else:
+        report.update(
+            {
+                "source_sha256": {
+                    record["original_path"]: record["sha256"]
+                    for record in source_records
+                },
+                "synthesized_sha256": _sha256(synthesized),
+                "emuir_sha256": _sha256(output_dir / "phase1/design.emuir.json"),
+                "platform_sha256": _sha256(platform_path.resolve()),
+                "phase1_report_sha256": _sha256(
+                    output_dir / "phase1/phase1_report.json"
+                ),
+            }
+        )
     write_json(output_dir / "experiment-frontend-report.json", report)
-    validate_frontend_checkpoint(output_dir, platform_path)
+    if not managed_dag_node:
+        validate_frontend_checkpoint(output_dir, platform_path)
     return report
 
 
-def validate_frontend_checkpoint(root: Path, platform_path: Path) -> Dict[str, Any]:
+def validate_frontend_checkpoint(
+    root: Path,
+    platform_path: Path,
+    *,
+    managed_dag_node: bool = False,
+) -> Dict[str, Any]:
     report = read_json(_require(root, "experiment-frontend-report.json"))
     if report.get("schema") != EXPERIMENT_FRONTEND_SCHEMA or report.get("status") != "pass":
         raise ValidationError("frontend checkpoint report is invalid")
+    if managed_dag_node:
+        if report.get("validation_mode") != MANAGED_DAG_VALIDATION_MODE:
+            raise ValidationError("frontend managed-validation contract is invalid")
+    elif report.get("validation_mode") is not None:
+        raise ValidationError("frontend checkpoint requires managed validation")
     synthesized = _require(root, "synthesized.json")
     ir_path = _require(root, "phase1/design.emuir.json")
     phase1_path = _require(root, "phase1/phase1_report.json")
@@ -272,24 +312,24 @@ def validate_frontend_checkpoint(root: Path, platform_path: Path) -> Dict[str, A
             raise ValidationError("frontend source provenance path is invalid")
         seen_sources.add(relative)
         copied = _require(root, relative)
-        if (
-            record.get("bytes") != copied.stat().st_size
-            or record.get("sha256") != _sha256(copied)
-        ):
+        if record.get("bytes") != copied.stat().st_size:
             raise ValidationError("frontend source artifact seal is broken")
-    if report.get("source_sha256") != {
-        record.get("original_path"): record.get("sha256")
-        for record in source_records
-    }:
-        raise ValidationError("frontend source provenance is inconsistent")
-    if report.get("synthesized_sha256") != _sha256(synthesized):
-        raise ValidationError("frontend synthesized JSON seal is broken")
-    if report.get("emuir_sha256") != _sha256(ir_path):
-        raise ValidationError("frontend EmuIR seal is broken")
-    if report.get("phase1_report_sha256") != _sha256(phase1_path):
-        raise ValidationError("frontend Phase 1 report seal is broken")
-    if report.get("platform_sha256") != _sha256(platform_path.resolve()):
-        raise ValidationError("frontend platform input seal is broken")
+        if not managed_dag_node and record.get("sha256") != _sha256(copied):
+            raise ValidationError("frontend source artifact seal is broken")
+    if not managed_dag_node:
+        if report.get("source_sha256") != {
+            record.get("original_path"): record.get("sha256")
+            for record in source_records
+        }:
+            raise ValidationError("frontend source provenance is inconsistent")
+        if report.get("synthesized_sha256") != _sha256(synthesized):
+            raise ValidationError("frontend synthesized JSON seal is broken")
+        if report.get("emuir_sha256") != _sha256(ir_path):
+            raise ValidationError("frontend EmuIR seal is broken")
+        if report.get("phase1_report_sha256") != _sha256(phase1_path):
+            raise ValidationError("frontend Phase 1 report seal is broken")
+        if report.get("platform_sha256") != _sha256(platform_path.resolve()):
+            raise ValidationError("frontend platform input seal is broken")
     platform = Platform.load(platform_path)
     if read_json(normalized_platform) != platform.to_dict():
         raise ValidationError("frontend normalized platform is not the supplied BoardDB")
@@ -331,6 +371,7 @@ def run_timing_checkpoint(
     max_paths: int = 200000,
     criticality_scale: float = 9.0,
     criticality_exponent: float = 2.0,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     output_dir = _prepare_empty_output(output_dir, "timing checkpoint")
@@ -355,40 +396,61 @@ def run_timing_checkpoint(
     report = {
         "schema": EXPERIMENT_TIMING_SCHEMA,
         "status": "pass",
-        "frontend_emuir_sha256": _sha256(ir_path),
         "clocks": dict(sorted((name, float(period)) for name, period in clocks.items())),
         "max_paths": max_paths,
         "criticality_scale": float(criticality_scale),
         "criticality_exponent": float(criticality_exponent),
-        "timing_model_sha256": _sha256(timing_model_path.resolve()),
-        "architecture_timing_db_sha256": (
-            _sha256(architecture_timing_db_path.resolve())
-            if architecture_timing_db_path is not None
-            else None
-        ),
-        "path_database_sha256": _sha256(database),
-        "partition_net_weights_sha256": _sha256(output_dir / "partition-net-weights.json"),
         "sta": sta,
         "weights": weights,
     }
+    if managed_dag_node:
+        report["validation_mode"] = MANAGED_DAG_VALIDATION_MODE
+    else:
+        report.update(
+            {
+                "frontend_emuir_sha256": _sha256(ir_path),
+                "timing_model_sha256": _sha256(timing_model_path.resolve()),
+                "architecture_timing_db_sha256": (
+                    _sha256(architecture_timing_db_path.resolve())
+                    if architecture_timing_db_path is not None
+                    else None
+                ),
+                "path_database_sha256": _sha256(database),
+                "partition_net_weights_sha256": _sha256(
+                    output_dir / "partition-net-weights.json"
+                ),
+            }
+        )
     write_json(output_dir / "experiment-timing-report.json", report)
-    validate_timing_checkpoint(frontend_root, output_dir)
+    if not managed_dag_node:
+        validate_timing_checkpoint(frontend_root, output_dir)
     return report
 
 
-def validate_timing_checkpoint(frontend_root: Path, root: Path) -> Dict[str, Any]:
+def validate_timing_checkpoint(
+    frontend_root: Path,
+    root: Path,
+    *,
+    managed_dag_node: bool = False,
+) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     report = read_json(_require(root, "experiment-timing-report.json"))
     if report.get("schema") != EXPERIMENT_TIMING_SCHEMA or report.get("status") != "pass":
         raise ValidationError("timing checkpoint report is invalid")
+    if managed_dag_node:
+        if report.get("validation_mode") != MANAGED_DAG_VALIDATION_MODE:
+            raise ValidationError("timing managed-validation contract is invalid")
+    elif report.get("validation_mode") is not None:
+        raise ValidationError("timing checkpoint requires managed validation")
     database_path = _require(root, "path-database.json")
     weights_path = _require(root, "partition-net-weights.json")
-    if report.get("frontend_emuir_sha256") != _sha256(ir_path):
-        raise ValidationError("timing checkpoint frontend seal is broken")
-    if report.get("path_database_sha256") != _sha256(database_path):
-        raise ValidationError("timing path database seal is broken")
-    if report.get("partition_net_weights_sha256") != _sha256(weights_path):
-        raise ValidationError("timing partition weights seal is broken")
+    if not managed_dag_node:
+        if report.get("frontend_emuir_sha256") != _sha256(ir_path):
+            raise ValidationError("timing checkpoint frontend seal is broken")
+        if report.get("path_database_sha256") != _sha256(database_path):
+            raise ValidationError("timing path database seal is broken")
+        if report.get("partition_net_weights_sha256") != _sha256(weights_path):
+            raise ValidationError("timing partition weights seal is broken")
     checked = validate_sta_path_database(database_path, ir_path)
     database = read_json(database_path)
     weights = read_json(weights_path)
@@ -419,126 +481,27 @@ def validate_timing_checkpoint(frontend_root: Path, root: Path) -> Dict[str, Any
 
 
 def run_partition_checkpoint(
-    frontend_root: Path,
-    timing_root: Path,
-    platform_path: Path,
-    output_dir: Path,
-    *,
-    provider: str = "tritonpart",
-    seed: int = 0,
-    constraints_path: Optional[Path] = None,
-    route_constraints_path: Optional[Path] = None,
-    min_used_fpgas: Optional[int] = None,
-    balance_tolerance: Optional[float] = None,
-    openroad: Optional[str] = None,
-    hop_refiner: Optional[str] = None,
-    timeout_seconds: int = 3600,
-    seed_attempts: int = 1,
-    num_initial_solutions: int = 50,
-    num_best_initial_solutions: int = 10,
+    *args: Any,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
-    ir_path = _require(frontend_root, "phase1/design.emuir.json")
-    validate_timing_checkpoint(frontend_root, timing_root)
-    weights_path = _require(timing_root, "partition-net-weights.json")
-    output_dir = _prepare_empty_output(output_dir, "partition checkpoint")
-    phase3 = run_phase3(
-        ir_path,
-        platform_path,
-        output_dir,
-        constraints_path=constraints_path,
-        seed=seed,
-        min_used_fpgas=min_used_fpgas,
-        balance_tolerance=balance_tolerance,
-        provider=provider,
-        openroad=openroad,
-        tritonpart_timeout_seconds=timeout_seconds,
-        tritonpart_seed_attempts=seed_attempts,
-        tritonpart_num_initial_solutions=num_initial_solutions,
-        tritonpart_num_best_initial_solutions=num_best_initial_solutions,
-        net_weights_path=weights_path,
-        route_constraints_path=route_constraints_path,
-        hop_refiner=hop_refiner,
-    )
-    report = {
-        "schema": EXPERIMENT_PARTITION_SCHEMA,
-        "status": "pass",
-        "provider": provider,
-        "seed": seed,
-        "emuir_sha256": _sha256(ir_path),
-        "platform_sha256": _sha256(platform_path.resolve()),
-        "weights_sha256": _sha256(weights_path),
-        "assignment_sha256": _sha256(output_dir / "assignment.json"),
-        "clusters_sha256": _sha256(output_dir / "clusters.json"),
-        "phase3_report_sha256": _sha256(output_dir / "phase3_report.json"),
-        "route_constraints_sha256": (
-            _sha256(route_constraints_path.resolve())
-            if route_constraints_path is not None
-            else None
-        ),
-        "phase3": phase3,
-    }
-    write_json(output_dir / "experiment-partition-report.json", report)
-    validate_partition_checkpoint(
-        frontend_root,
-        timing_root,
-        platform_path,
-        output_dir,
-        route_constraints_path=route_constraints_path,
-        expected_provider=provider,
-        expected_seed=seed,
-    )
-    return report
+    """Compatibility entry point for the isolated Phase-3 implementation."""
+
+    from .experiment_partition import run_partition_checkpoint as implementation
+
+    return implementation(*args, **kwargs)
 
 
 def validate_partition_checkpoint(
-    frontend_root: Path,
-    timing_root: Path,
-    platform_path: Path,
-    root: Path,
-    *,
-    route_constraints_path: Path | None = None,
-    expected_provider: str | None = None,
-    expected_seed: int | None = None,
+    *args: Any,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
-    ir_path = _require(frontend_root, "phase1/design.emuir.json")
-    weights = _require(timing_root, "partition-net-weights.json")
-    report = read_json(_require(root, "experiment-partition-report.json"))
-    if report.get("schema") != EXPERIMENT_PARTITION_SCHEMA or report.get("status") != "pass":
-        raise ValidationError("partition checkpoint report is invalid")
-    if expected_provider is not None and report.get("provider") != expected_provider:
-        raise ValidationError("partition provider contract disagrees")
-    if expected_seed is not None and report.get("seed") != expected_seed:
-        raise ValidationError("partition seed contract disagrees")
-    if route_constraints_path is not None:
-        if report.get("route_constraints_sha256") != _sha256(
-            route_constraints_path.resolve()
-        ):
-            raise ValidationError("partition route-constraints seal is broken")
-    seals = {
-        "emuir_sha256": ir_path,
-        "platform_sha256": platform_path.resolve(),
-        "weights_sha256": weights,
-        "assignment_sha256": _require(root, "assignment.json"),
-        "clusters_sha256": _require(root, "clusters.json"),
-        "phase3_report_sha256": _require(root, "phase3_report.json"),
-    }
-    for label, path in seals.items():
-        if report.get(label) != _sha256(path):
-            raise ValidationError(f"partition checkpoint {label} seal is broken")
-    checked = validate_phase3(ir_path, platform_path, seals["clusters_sha256"], seals["assignment_sha256"])
-    hop_audit = (
-        validate_assignment_hop_constraints(
-            seals["assignment_sha256"], platform_path, route_constraints_path
-        )
-        if route_constraints_path is not None
-        else {"status": "not-requested", "max_route_hops": None}
+    """Compatibility entry point for the isolated Phase-3 validator."""
+
+    from .experiment_partition import (
+        validate_partition_checkpoint as implementation,
     )
-    return {
-        "status": "pass",
-        "provider": report["provider"],
-        "hop_audit": hop_audit,
-        **checked,
-    }
+
+    return implementation(*args, **kwargs)
 
 
 def run_cut_timing_checkpoint(
@@ -552,10 +515,12 @@ def run_cut_timing_checkpoint(
     architecture_timing_db_path: Optional[Path] = None,
     opensta: Optional[str] = None,
     max_paths: int = 200000,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     assignment_path = _require(partition_root, "assignment.json")
-    validate_timing_checkpoint(frontend_root, timing_root)
+    if not managed_dag_node:
+        validate_timing_checkpoint(frontend_root, timing_root)
     assignment = read_json(assignment_path)
     cut_nets = sorted(
         item["net"] for item in assignment.get("cut_nets", [])
@@ -586,31 +551,41 @@ def run_cut_timing_checkpoint(
     report = {
         "schema": EXPERIMENT_CUT_TIMING_SCHEMA,
         "status": "pass",
-        "emuir_sha256": _sha256(ir_path),
-        "assignment_sha256": _sha256(assignment_path),
-        "complete_path_database_sha256": _sha256(complete_database),
         "cut_nets": cut_nets,
         "clocks": dict(sorted((name, float(period)) for name, period in clocks.items())),
-        "timing_model_sha256": _sha256(timing_model_path.resolve()),
-        "architecture_timing_db_sha256": (
-            _sha256(architecture_timing_db_path.resolve())
-            if architecture_timing_db_path is not None
-            else None
-        ),
-        "cut_segment_qualification_sha256": _sha256(qualification_path),
-        "cut_timing_paths_sha256": _sha256(output_dir / "cut-timing-paths.json"),
         "cut_segment_qualification": qualification,
         "projection": projection,
     }
+    if managed_dag_node:
+        report["validation_mode"] = MANAGED_DAG_VALIDATION_MODE
+    else:
+        report.update(
+            {
+                "emuir_sha256": _sha256(ir_path),
+                "assignment_sha256": _sha256(assignment_path),
+                "complete_path_database_sha256": _sha256(complete_database),
+                "timing_model_sha256": _sha256(timing_model_path.resolve()),
+                "architecture_timing_db_sha256": (
+                    _sha256(architecture_timing_db_path.resolve())
+                    if architecture_timing_db_path is not None
+                    else None
+                ),
+                "cut_segment_qualification_sha256": _sha256(qualification_path),
+                "cut_timing_paths_sha256": _sha256(
+                    output_dir / "cut-timing-paths.json"
+                ),
+            }
+        )
     write_json(output_dir / "experiment-cut-timing-report.json", report)
-    validate_cut_timing_checkpoint(
-        frontend_root,
-        timing_root,
-        partition_root,
-        output_dir,
-        timing_model_path=timing_model_path,
-        architecture_timing_db_path=architecture_timing_db_path,
-    )
+    if not managed_dag_node:
+        validate_cut_timing_checkpoint(
+            frontend_root,
+            timing_root,
+            partition_root,
+            output_dir,
+            timing_model_path=timing_model_path,
+            architecture_timing_db_path=architecture_timing_db_path,
+        )
     return report
 
 
@@ -622,39 +597,47 @@ def validate_cut_timing_checkpoint(
     *,
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     complete_database = _require(timing_root, "path-database.json")
-    validate_timing_checkpoint(frontend_root, timing_root)
+    if not managed_dag_node:
+        validate_timing_checkpoint(frontend_root, timing_root)
     assignment_path = _require(partition_root, "assignment.json")
     report = read_json(_require(root, "experiment-cut-timing-report.json"))
     if report.get("schema") != EXPERIMENT_CUT_TIMING_SCHEMA or report.get("status") != "pass":
         raise ValidationError("cut-timing checkpoint report is invalid")
+    if managed_dag_node:
+        if report.get("validation_mode") != MANAGED_DAG_VALIDATION_MODE:
+            raise ValidationError("cut-timing managed-validation contract is invalid")
+    elif report.get("validation_mode") is not None:
+        raise ValidationError("cut-timing checkpoint requires managed validation")
     qualification_path = _require(root, "cut-segment-qualification.json")
     projected = _require(root, "cut-timing-paths.json")
-    if report.get("emuir_sha256") != _sha256(ir_path) or report.get(
-        "assignment_sha256"
-    ) != _sha256(assignment_path):
-        raise ValidationError("cut-timing input seal is broken")
-    if report.get("complete_path_database_sha256") != _sha256(
-        complete_database
-    ):
-        raise ValidationError("cut-timing complete path database seal is broken")
-    if report.get("cut_timing_paths_sha256") != _sha256(projected):
-        raise ValidationError("cut-timing artifact seal is broken")
-    if report.get("cut_segment_qualification_sha256") != _sha256(
-        qualification_path
-    ):
-        raise ValidationError("cut-timing qualification artifact seal is broken")
-    if report.get("timing_model_sha256") != _sha256(timing_model_path.resolve()):
-        raise ValidationError("cut-timing model seal is broken")
-    expected_architecture_sha = (
-        _sha256(architecture_timing_db_path.resolve())
-        if architecture_timing_db_path is not None
-        else None
-    )
-    if report.get("architecture_timing_db_sha256") != expected_architecture_sha:
-        raise ValidationError("cut-timing architecture timing seal is broken")
+    if not managed_dag_node:
+        if report.get("emuir_sha256") != _sha256(ir_path) or report.get(
+            "assignment_sha256"
+        ) != _sha256(assignment_path):
+            raise ValidationError("cut-timing input seal is broken")
+        if report.get("complete_path_database_sha256") != _sha256(
+            complete_database
+        ):
+            raise ValidationError("cut-timing complete path database seal is broken")
+        if report.get("cut_timing_paths_sha256") != _sha256(projected):
+            raise ValidationError("cut-timing artifact seal is broken")
+        if report.get("cut_segment_qualification_sha256") != _sha256(
+            qualification_path
+        ):
+            raise ValidationError("cut-timing qualification artifact seal is broken")
+        if report.get("timing_model_sha256") != _sha256(timing_model_path.resolve()):
+            raise ValidationError("cut-timing model seal is broken")
+        expected_architecture_sha = (
+            _sha256(architecture_timing_db_path.resolve())
+            if architecture_timing_db_path is not None
+            else None
+        )
+        if report.get("architecture_timing_db_sha256") != expected_architecture_sha:
+            raise ValidationError("cut-timing architecture timing seal is broken")
     assignment = read_json(assignment_path)
     expected_cut_nets = sorted(
         item["net"]
@@ -679,14 +662,17 @@ def validate_cut_timing_checkpoint(
         project_sta_path_database(
             complete_database, assignment_path, rebuilt
         )
+        database_sha256 = (
+            None if managed_dag_node else _sha256(complete_database)
+        )
         if _portable_cut_timing_projection(
             read_json(rebuilt),
             complete_database.name,
-            database_sha256=_sha256(complete_database),
+            database_sha256=database_sha256,
         ) != _portable_cut_timing_projection(
             read_json(projected),
             complete_database.name,
-            database_sha256=_sha256(complete_database),
+            database_sha256=database_sha256,
         ):
             raise ValidationError("cut-timing projection reconstruction failed")
     return {
@@ -710,6 +696,8 @@ def run_route_checkpoint(
     provider: Optional[str] = None,
     candidate_workers: int = 1,
     router: Optional[str] = None,
+    managed_storage: bool = False,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     assignment = _require(partition_root, "assignment.json")
     timing_paths = _require(cut_timing_root, "cut-timing-paths.json")
@@ -725,25 +713,36 @@ def run_route_checkpoint(
         timing_paths_path=timing_paths,
         router=router,
         candidate_workers=candidate_workers,
+        managed_storage=managed_storage,
     )
     report = {
         "schema": EXPERIMENT_ROUTE_SCHEMA,
         "status": "pass",
-        "assignment_sha256": _sha256(assignment),
-        "timing_paths_sha256": _sha256(timing_paths),
-        "platform_sha256": _sha256(platform_path.resolve()),
-        "routes_sha256": _sha256(output_dir / "routes.json"),
-        "phase4_report_sha256": _sha256(output_dir / "phase4_report.json"),
         "phase4": phase4,
     }
+    if managed_dag_node:
+        report["validation_mode"] = MANAGED_DAG_VALIDATION_MODE
+    else:
+        report.update(
+            {
+                "assignment_sha256": _sha256(assignment),
+                "timing_paths_sha256": _sha256(timing_paths),
+                "platform_sha256": _sha256(platform_path.resolve()),
+                "routes_sha256": _sha256(output_dir / "routes.json"),
+                "phase4_report_sha256": _sha256(
+                    output_dir / "phase4_report.json"
+                ),
+            }
+        )
     write_json(output_dir / "experiment-route-report.json", report)
-    validate_route_checkpoint(
-        partition_root,
-        cut_timing_root,
-        platform_path,
-        output_dir,
-        constraints_path=constraints_path,
-    )
+    if not managed_dag_node:
+        validate_route_checkpoint(
+            partition_root,
+            cut_timing_root,
+            platform_path,
+            output_dir,
+            constraints_path=constraints_path,
+        )
     return report
 
 
@@ -756,6 +755,7 @@ def validate_route_checkpoint(
     constraints_path: Path | None = None,
     expected_provider: str | None = None,
     expected_candidate_workers: int | None = None,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     assignment = _require(partition_root, "assignment.json")
     timing_paths = _require(cut_timing_root, "cut-timing-paths.json")
@@ -763,16 +763,22 @@ def validate_route_checkpoint(
     report = read_json(_require(root, "experiment-route-report.json"))
     if report.get("schema") != EXPERIMENT_ROUTE_SCHEMA or report.get("status") != "pass":
         raise ValidationError("route checkpoint report is invalid")
+    if managed_dag_node:
+        if report.get("validation_mode") != MANAGED_DAG_VALIDATION_MODE:
+            raise ValidationError("route managed-validation contract is invalid")
+    elif report.get("validation_mode") is not None:
+        raise ValidationError("route checkpoint requires managed validation")
     phase4_report = _require(root, "phase4_report.json")
-    for label, path in {
-        "assignment_sha256": assignment,
-        "timing_paths_sha256": timing_paths,
-        "platform_sha256": platform_path.resolve(),
-        "routes_sha256": routes,
-        "phase4_report_sha256": phase4_report,
-    }.items():
-        if report.get(label) != _sha256(path):
-            raise ValidationError(f"route checkpoint {label} seal is broken")
+    if not managed_dag_node:
+        for label, path in {
+            "assignment_sha256": assignment,
+            "timing_paths_sha256": timing_paths,
+            "platform_sha256": platform_path.resolve(),
+            "routes_sha256": routes,
+            "phase4_report_sha256": phase4_report,
+        }.items():
+            if report.get(label) != _sha256(path):
+                raise ValidationError(f"route checkpoint {label} seal is broken")
     phase4 = read_json(phase4_report)
     if report.get("phase4") != phase4:
         raise ValidationError("route checkpoint embedded Phase 4 report disagrees")
@@ -817,6 +823,8 @@ def run_tdm_checkpoint(
     ratio_optimizer: Optional[str] = None,
     timing_dag_optimizer: Optional[str] = None,
     slot_optimizer: Optional[str] = None,
+    managed_storage: bool = False,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     routes = _require(route_root, "routes.json")
     output_dir = _prepare_empty_output(output_dir, "TDM checkpoint")
@@ -834,18 +842,29 @@ def run_tdm_checkpoint(
         ratio_quantum=ratio_quantum,
         post_refinement_iterations=post_refinement_iterations,
         slot_refinement_iterations=slot_refinement_iterations,
+        managed_storage=managed_storage,
     )
     report = {
         "schema": EXPERIMENT_TDM_SCHEMA,
         "status": "pass",
-        "routes_sha256": _sha256(routes),
-        "platform_sha256": _sha256(platform_path.resolve()),
-        "schedule_sha256": _sha256(output_dir / "schedule.json"),
-        "phase5_report_sha256": _sha256(output_dir / "phase5_report.json"),
         "phase5": phase5,
     }
+    if managed_dag_node:
+        report["validation_mode"] = MANAGED_DAG_VALIDATION_MODE
+    else:
+        report.update(
+            {
+                "routes_sha256": _sha256(routes),
+                "platform_sha256": _sha256(platform_path.resolve()),
+                "schedule_sha256": _sha256(output_dir / "schedule.json"),
+                "phase5_report_sha256": _sha256(
+                    output_dir / "phase5_report.json"
+                ),
+            }
+        )
     write_json(output_dir / "experiment-tdm-report.json", report)
-    validate_tdm_checkpoint(route_root, platform_path, output_dir)
+    if not managed_dag_node:
+        validate_tdm_checkpoint(route_root, platform_path, output_dir)
     return report
 
 
@@ -856,6 +875,7 @@ def validate_tdm_checkpoint(
     *,
     constraints_path: Path | None = None,
     expected_provider: str | None = None,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     routes = _require(route_root, "routes.json")
     schedule = _require(root, "schedule.json")
@@ -863,6 +883,11 @@ def validate_tdm_checkpoint(
     report = read_json(_require(root, "experiment-tdm-report.json"))
     if report.get("schema") != EXPERIMENT_TDM_SCHEMA or report.get("status") != "pass":
         raise ValidationError("TDM checkpoint report is invalid")
+    if managed_dag_node:
+        if report.get("validation_mode") != MANAGED_DAG_VALIDATION_MODE:
+            raise ValidationError("TDM managed-validation contract is invalid")
+    elif report.get("validation_mode") is not None:
+        raise ValidationError("TDM checkpoint requires managed validation")
     phase5_report = _require(root, "phase5_report.json")
     phase5 = read_json(phase5_report)
     route_document = read_json(routes)
@@ -901,14 +926,15 @@ def validate_tdm_checkpoint(
                 raise ValidationError(
                     "TDM ratio constraints contract disagrees"
                 )
-    for label, path in {
-        "routes_sha256": routes,
-        "platform_sha256": platform_path.resolve(),
-        "schedule_sha256": schedule,
-        "phase5_report_sha256": phase5_report,
-    }.items():
-        if report.get(label) != _sha256(path):
-            raise ValidationError(f"TDM checkpoint {label} seal is broken")
+    if not managed_dag_node:
+        for label, path in {
+            "routes_sha256": routes,
+            "platform_sha256": platform_path.resolve(),
+            "schedule_sha256": schedule,
+            "phase5_report_sha256": phase5_report,
+        }.items():
+            if report.get(label) != _sha256(path):
+                raise ValidationError(f"TDM checkpoint {label} seal is broken")
     if report.get("phase5") != phase5:
         raise ValidationError("TDM checkpoint embedded Phase 5 report disagrees")
     # The Phase 5 provider selects the optimization policy.  Academic ratio
@@ -949,66 +975,195 @@ def materialize_shared_phase1_5(
     *,
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
-    validate_frontend_checkpoint(frontend_root, platform_path)
-    validate_timing_checkpoint(frontend_root, timing_root)
-    validate_partition_checkpoint(frontend_root, timing_root, platform_path, partition_root)
-    validate_cut_timing_checkpoint(
-        frontend_root,
-        timing_root,
-        partition_root,
-        cut_timing_root,
-        timing_model_path=timing_model_path,
-        architecture_timing_db_path=architecture_timing_db_path,
-    )
-    validate_route_checkpoint(partition_root, cut_timing_root, platform_path, route_root)
-    validate_tdm_checkpoint(route_root, platform_path, tdm_root)
+    managed_dependencies: Dict[str, Dict[str, Any]] = {}
+    if managed_dag_node:
+        for label, root, stage in (
+            ("frontend", frontend_root, "frontend"),
+            ("timing", timing_root, "timing"),
+            ("partition", partition_root, "partition"),
+            ("cut-timing", cut_timing_root, "cut-timing"),
+            ("route", route_root, "route"),
+            ("tdm", tdm_root, "tdm"),
+        ):
+            checkpoint = _managed_checkpoint(root, expected_stage=stage)
+            if checkpoint is None:
+                raise ValidationError(
+                    "managed shared Phase 1-5 materialization requires "
+                    f"a validated immutable {label} dependency"
+                )
+            managed_dependencies[label] = checkpoint
+    else:
+        validate_frontend_checkpoint(frontend_root, platform_path)
+        validate_timing_checkpoint(frontend_root, timing_root)
+        validate_partition_checkpoint(
+            frontend_root, timing_root, platform_path, partition_root
+        )
+        validate_cut_timing_checkpoint(
+            frontend_root,
+            timing_root,
+            partition_root,
+            cut_timing_root,
+            timing_model_path=timing_model_path,
+            architecture_timing_db_path=architecture_timing_db_path,
+        )
+        validate_route_checkpoint(
+            partition_root, cut_timing_root, platform_path, route_root
+        )
+        validate_tdm_checkpoint(route_root, platform_path, tdm_root)
     output_dir = _prepare_empty_output(output_dir, "shared Phase 1-5 checkpoint")
     mapping = {
-        "frontend/phase1/design.emuir.json": frontend_root / "phase1/design.emuir.json",
-        "frontend/phase1/phase1_report.json": frontend_root / "phase1/phase1_report.json",
-        "partition/clusters.json": partition_root / "clusters.json",
-        "partition/assignment.json": partition_root / "assignment.json",
-        "partition/phase3_report.json": partition_root / "phase3_report.json",
-        "system-route/routes.json": route_root / "routes.json",
-        "system-route/phase4_report.json": route_root / "phase4_report.json",
-        "tdm/schedule.json": tdm_root / "schedule.json",
-        "tdm/phase5_report.json": tdm_root / "phase5_report.json",
-        "timing/path-database.json": timing_root / "path-database.json",
-        "timing/partition-net-weights.json": timing_root / "partition-net-weights.json",
-        "timing/cut-timing-paths.json": cut_timing_root / "cut-timing-paths.json",
-        "timing/cut-segment-qualification.json": cut_timing_root / "cut-segment-qualification.json",
+        "frontend/phase1/design.emuir.json": (
+            frontend_root / "phase1/design.emuir.json",
+            "frontend",
+        ),
+        "frontend/phase1/phase1_report.json": (
+            frontend_root / "phase1/phase1_report.json",
+            "frontend",
+        ),
+        "partition/clusters.json": (partition_root / "clusters.json", "partition"),
+        "partition/assignment.json": (
+            partition_root / "assignment.json",
+            "partition",
+        ),
+        "partition/phase3_report.json": (
+            partition_root / "phase3_report.json",
+            "partition",
+        ),
+        "system-route/routes.json": (route_root / "routes.json", "route"),
+        "system-route/phase4_report.json": (
+            route_root / "phase4_report.json",
+            "route",
+        ),
+        "tdm/schedule.json": (tdm_root / "schedule.json", "tdm"),
+        "tdm/phase5_report.json": (tdm_root / "phase5_report.json", "tdm"),
+        "timing/path-database.json": (
+            timing_root / "path-database.json",
+            "timing",
+        ),
+        "timing/partition-net-weights.json": (
+            timing_root / "partition-net-weights.json",
+            "timing",
+        ),
+        "timing/cut-timing-paths.json": (
+            cut_timing_root / "cut-timing-paths.json",
+            "cut-timing",
+        ),
+        "timing/cut-segment-qualification.json": (
+            cut_timing_root / "cut-segment-qualification.json",
+            "cut-timing",
+        ),
     }
     ratio_plan = tdm_root / "ratio_plan.json"
     if ratio_plan.is_file():
-        mapping["tdm/ratio_plan.json"] = ratio_plan
-    for relative, source in mapping.items():
+        mapping["tdm/ratio_plan.json"] = (ratio_plan, "tdm")
+    for relative, (source, _stage) in mapping.items():
         _link_or_copy(source, output_dir / relative)
-    report = {
+    report: Dict[str, Any] = {
         "schema": EXPERIMENT_SHARED_SCHEMA,
         "status": "pass",
-        "platform_sha256": _sha256(platform_path.resolve()),
-        "artifacts": {
-            relative: {"sha256": _sha256(output_dir / relative)}
-            for relative in sorted(mapping)
-        },
     }
+    if managed_dag_node:
+        # The DAG already binds every immutable dependency to its execution
+        # key and hashes this node once at publication.  Re-reading all large
+        # artifacts here would add no new trust boundary, so routine consumers
+        # carry only cheap size/source certificates.
+        report.update(
+            {
+                "validation_mode": "managed-dependency-certificates",
+                "platform": Platform.load(platform_path).name,
+                "artifacts": {
+                    relative: {
+                        "bytes": (output_dir / relative).stat().st_size,
+                        "source_stage": mapping[relative][1],
+                    }
+                    for relative in sorted(mapping)
+                },
+            }
+        )
+        report["dependency_execution_keys"] = {
+            label: checkpoint["execution_key"]
+            for label, checkpoint in sorted(managed_dependencies.items())
+        }
+    else:
+        report.update(
+            {
+                "validation_mode": "standalone-semantic-replay",
+                "platform_sha256": _sha256(platform_path.resolve()),
+                "artifacts": {
+                    relative: {"sha256": _sha256(output_dir / relative)}
+                    for relative in sorted(mapping)
+                },
+            }
+        )
     write_json(output_dir / "experiment-shared-report.json", report)
-    validate_materialized_shared_phase1_5(output_dir, platform_path)
+    validate_materialized_shared_phase1_5(
+        output_dir,
+        platform_path,
+        managed_dag_node=managed_dag_node,
+    )
     return report
 
 
 def validate_materialized_shared_phase1_5(
-    root: Path, platform_path: Path
+    root: Path,
+    platform_path: Path,
+    *,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     report = read_json(_require(root, "experiment-shared-report.json"))
     if report.get("schema") != EXPERIMENT_SHARED_SCHEMA or report.get("status") != "pass":
         raise ValidationError("shared Phase 1-5 checkpoint report is invalid")
-    if report.get("platform_sha256") != _sha256(platform_path.resolve()):
-        raise ValidationError("shared Phase 1-5 platform seal is broken")
     artifacts = report.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ValidationError("shared Phase 1-5 artifact table is invalid")
+    artifact_names = set(artifacts)
+    if (
+        not _SHARED_REQUIRED_ARTIFACTS.issubset(artifact_names)
+        or not artifact_names.issubset(
+            _SHARED_REQUIRED_ARTIFACTS | _SHARED_OPTIONAL_ARTIFACTS
+        )
+    ):
+        raise ValidationError("shared Phase 1-5 artifact inventory is invalid")
+    if managed_dag_node:
+        keys = report.get("dependency_execution_keys")
+        if (
+            report.get("validation_mode") != "managed-dependency-certificates"
+            or not isinstance(keys, dict)
+            or set(keys)
+            != {"frontend", "timing", "partition", "cut-timing", "route", "tdm"}
+            or any(
+                not isinstance(value, str)
+                or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                for value in keys.values()
+            )
+        ):
+            raise ValidationError(
+                "managed shared Phase 1-5 dependency certificate table is invalid"
+            )
+        platform = Platform.load(platform_path).name
+        if report.get("platform") != platform:
+            raise ValidationError("managed shared Phase 1-5 platform disagrees")
+        for relative, record in artifacts.items():
+            path = _require(root, relative)
+            if (
+                not isinstance(record, dict)
+                or not isinstance(record.get("bytes"), int)
+                or record["bytes"] < 0
+                or path.stat().st_size != record["bytes"]
+                or record.get("source_stage") not in keys
+            ):
+                raise ValidationError(
+                    f"managed shared Phase 1-5 artifact certificate is invalid: {relative}"
+                )
+        return {
+            "status": "pass",
+            "platform": platform,
+            "validation_mode": report["validation_mode"],
+        }
+    if report.get("platform_sha256") != _sha256(platform_path.resolve()):
+        raise ValidationError("shared Phase 1-5 platform seal is broken")
     for relative, record in artifacts.items():
         if not isinstance(record, dict) or record.get("sha256") != _sha256(_require(root, relative)):
             raise ValidationError(f"shared Phase 1-5 artifact seal is broken: {relative}")

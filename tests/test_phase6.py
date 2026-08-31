@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.equivalence import _MappedModel, simulate_partition_equivalence
 from emuflow.chimew_phase6 import (
@@ -475,6 +476,24 @@ class Phase6Test(unittest.TestCase):
                 self.platform,
                 broken,
             )
+
+    def test_producer_linear_validation_does_not_rebuild_split(self) -> None:
+        artifacts = build_split_artifacts(
+            self.ir, self.assignment, self.schedule, self.platform
+        )
+        with mock.patch(
+            "emuflow.netlist.build_split_artifacts",
+            side_effect=AssertionError("split reconstruction entered hot path"),
+        ):
+            validation = validate_split_artifacts(
+                self.ir,
+                self.assignment,
+                self.schedule,
+                self.platform,
+                artifacts,
+                reconstruct=False,
+            )
+        self.assertEqual(validation["status"], "pass")
 
     def test_round_barrier_register_input_cut_is_cycle_equivalent(self) -> None:
         constraints = normalize_partition_constraints(

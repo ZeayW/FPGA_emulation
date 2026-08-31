@@ -1535,6 +1535,37 @@ The cache exists only for that process: every later standalone validator starts
 a fresh session and therefore still detects filesystem changes. This avoids
 quadratic NFS reads without converting a previous run's `pass` label into trust.
 
+Managed execution also enforces a runtime budget at every phase boundary.
+Producer checks are limited to local schema/legality invariants and one linear
+in-memory pass over newly produced data. Expensive semantic reconstruction is
+performed once by the node's independent validator, not again by the producer,
+checkpoint publisher, and every downstream consumer. Immutable dependency
+execution keys are the routine consumer contract; SHA-256 is reserved for the
+single publish/import trust boundary rather than repeated inside the hot path.
+Managed staging keeps atomic temporary-file replacement but defers per-file
+`fsync` to final checkpoint publication.
+
+The canonical compiler enables this managed contract consistently for the
+frontend, timing, cut projection, Phase 3, system routing, TDM, physical
+lookahead, Phase 6, and Phase 7 runners and validators. Direct standalone CLI
+use keeps the conservative historical behavior: embedded artifact digests and
+producer self-checks remain enabled unless `--managed-dag-node` is explicitly
+selected inside an experiment-cache transaction. Algorithm-internal
+certificates (for example source-bound Chimew evidence) remain part of their
+algorithm's semantic validation; the optimization removes only redundant
+wrapper and checkpoint hashing/replay.
+
+Large JSON interfaces are stored losslessly in a transparent managed envelope:
+Phase 3 uses the compact cluster/assignment representation, while Phase 4
+routes, Phase 5 schedules/transport metadata, and Phase 6 split manifests use
+fast level-1 compression. `read_json` reconstructs the original logical
+schemas, so algorithms and standalone outputs are unchanged. Only the selected
+candidate is expanded into a complete checkpoint. Phase 7 workers share one
+parsed global timing/assignment/routing context instead of reparsing it once
+per FPGA, and same-seed baseline lookahead reuse hard-links the immutable
+physical tree on the same filesystem. The external independent validators
+still replay the full semantic contract once before publication.
+
 - `reuse`: a byte-valid content-addressed checkpoint already exists;
 - `revalidate`: execution output is reusable but the independent validator
   implementation changed and must certify it again;

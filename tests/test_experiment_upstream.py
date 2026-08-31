@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from emuflow.errors import ValidationError
@@ -13,10 +14,15 @@ from emuflow.experiment_partition import (
     validate_partition_checkpoint,
 )
 from emuflow.experiment_upstream import (
+    MANAGED_DAG_VALIDATION_MODE,
     EXPERIMENT_PARTITION_SCHEMA,
     EXPERIMENT_TDM_SCHEMA,
     _portable_cut_timing_projection,
+    materialize_shared_phase1_5,
     run_cut_timing_checkpoint,
+    run_route_checkpoint,
+    run_tdm_checkpoint,
+    validate_materialized_shared_phase1_5,
     validate_tdm_checkpoint,
 )
 
@@ -26,6 +32,193 @@ def _sha256(path: Path) -> str:
 
 
 class ExperimentUpstreamTest(unittest.TestCase):
+    def test_managed_route_and_tdm_write_directly_without_hash_or_self_replay(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            partition = root / "partition"
+            cut_timing = root / "cut-timing"
+            route = root / "route"
+            tdm = root / "tdm"
+            partition.mkdir()
+            cut_timing.mkdir()
+            (partition / "assignment.json").write_text("{}", encoding="utf-8")
+            (cut_timing / "cut-timing-paths.json").write_text(
+                "{}", encoding="utf-8"
+            )
+
+            def phase4(*_args, **kwargs):
+                self.assertTrue(kwargs["managed_storage"])
+                (route / "routes.json").write_text("{}", encoding="utf-8")
+                (route / "phase4_report.json").write_text("{}", encoding="utf-8")
+                return {"status": "pass"}
+
+            def phase5(*_args, **kwargs):
+                self.assertTrue(kwargs["managed_storage"])
+                (tdm / "schedule.json").write_text("{}", encoding="utf-8")
+                (tdm / "phase5_report.json").write_text("{}", encoding="utf-8")
+                return {"status": "pass"}
+
+            with (
+                mock.patch(
+                    "emuflow.experiment_upstream._sha256",
+                    side_effect=AssertionError("hashing entered managed hot path"),
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.run_phase4", side_effect=phase4
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.run_phase5", side_effect=phase5
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_route_checkpoint"
+                ) as route_validate,
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_tdm_checkpoint"
+                ) as tdm_validate,
+            ):
+                route_report = run_route_checkpoint(
+                    partition,
+                    cut_timing,
+                    root / "platform.json",
+                    route,
+                    managed_storage=True,
+                    managed_dag_node=True,
+                )
+                tdm_report = run_tdm_checkpoint(
+                    route,
+                    root / "platform.json",
+                    tdm,
+                    managed_storage=True,
+                    managed_dag_node=True,
+                )
+            route_validate.assert_not_called()
+            tdm_validate.assert_not_called()
+            self.assertEqual(
+                route_report["validation_mode"], MANAGED_DAG_VALIDATION_MODE
+            )
+            self.assertEqual(
+                tdm_report["validation_mode"], MANAGED_DAG_VALIDATION_MODE
+            )
+            self.assertFalse(any("sha256" in key for key in route_report))
+            self.assertFalse(any("sha256" in key for key in tdm_report))
+
+    def test_managed_shared_materialization_performs_no_hash_or_deep_replay(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            roots = {
+                name: root / name
+                for name in (
+                    "frontend",
+                    "timing",
+                    "partition",
+                    "cut-timing",
+                    "route",
+                    "tdm",
+                )
+            }
+            files = {
+                "frontend": ("phase1/design.emuir.json", "phase1/phase1_report.json"),
+                "timing": ("path-database.json", "partition-net-weights.json"),
+                "partition": ("clusters.json", "assignment.json", "phase3_report.json"),
+                "cut-timing": (
+                    "cut-timing-paths.json",
+                    "cut-segment-qualification.json",
+                ),
+                "route": ("routes.json", "phase4_report.json"),
+                "tdm": ("schedule.json", "phase5_report.json"),
+            }
+            for stage, relative_files in files.items():
+                for relative in relative_files:
+                    path = roots[stage] / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(f"{stage}:{relative}\n", encoding="utf-8")
+
+            def managed(_root, *, expected_stage):
+                return {
+                    "execution_key": hashlib.sha256(
+                        expected_stage.encode("utf-8")
+                    ).hexdigest()
+                }
+
+            with (
+                mock.patch(
+                    "emuflow.experiment_upstream._managed_checkpoint",
+                    side_effect=managed,
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream._sha256",
+                    side_effect=AssertionError("hashing entered managed hot path"),
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.Platform.load",
+                    return_value=SimpleNamespace(name="fixture-platform"),
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_frontend_checkpoint"
+                ) as frontend_validate,
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_timing_checkpoint"
+                ) as timing_validate,
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_partition_checkpoint"
+                ) as partition_validate,
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_cut_timing_checkpoint"
+                ) as cut_validate,
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_route_checkpoint"
+                ) as route_validate,
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_tdm_checkpoint"
+                ) as tdm_validate,
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_shared_phase1_5"
+                ) as shared_validate,
+            ):
+                report = materialize_shared_phase1_5(
+                    roots["frontend"],
+                    roots["timing"],
+                    roots["partition"],
+                    roots["cut-timing"],
+                    roots["route"],
+                    roots["tdm"],
+                    root / "platform.json",
+                    root / "shared",
+                    managed_dag_node=True,
+                )
+            for validator in (
+                frontend_validate,
+                timing_validate,
+                partition_validate,
+                cut_validate,
+                route_validate,
+                tdm_validate,
+                shared_validate,
+            ):
+                validator.assert_not_called()
+            self.assertEqual(
+                report["validation_mode"], "managed-dependency-certificates"
+            )
+            self.assertTrue(
+                all("sha256" not in record for record in report["artifacts"].values())
+            )
+
+            assignment = root / "shared/partition/assignment.json"
+            assignment.write_text("different-size", encoding="utf-8")
+            with mock.patch(
+                "emuflow.experiment_upstream.Platform.load",
+                return_value=SimpleNamespace(name="fixture-platform"),
+            ), self.assertRaisesRegex(ValidationError, "artifact certificate"):
+                validate_materialized_shared_phase1_5(
+                    root / "shared",
+                    root / "platform.json",
+                    managed_dag_node=True,
+                )
+
     def test_managed_partition_hot_path_performs_no_hashing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

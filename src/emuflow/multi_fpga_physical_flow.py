@@ -18,12 +18,14 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .logic_segment_timing import (
     import_vpr_logic_segment_timing,
+    prepare_logic_segment_query_inputs,
     validate_logic_segment_timing,
     write_vivado_logic_segment_query,
     write_vpr_logic_segment_query,
 )
 from .local_path_timing import (
     import_vpr_local_path_timing,
+    prepare_vpr_local_path_query_inputs,
     validate_local_path_timing,
     write_vpr_local_path_query,
 )
@@ -521,6 +523,38 @@ def run_multi_fpga_physical_flow(
         if logic_path_database_path is not None
         else path_database_path
     )
+    prepared_logic_inputs = None
+    prepared_local_inputs = None
+    if all(path is not None for path in logic_context):
+        assert original_ir_path is not None
+        assert assignment_path is not None
+        assert routes_path is not None
+        assert path_database_path is not None
+        assert effective_logic_path_database_path is not None
+        prepared_logic_inputs = prepare_logic_segment_query_inputs(
+            original_ir_path,
+            assignment_path,
+            effective_logic_path_database_path,
+            routes_path,
+            schedule_path,
+            platform,
+        )
+        if backend == "open":
+            prepared_local_inputs = prepare_vpr_local_path_query_inputs(
+                original_ir_path,
+                assignment_path,
+                path_database_path,
+                routes_path,
+                original_ir=prepared_logic_inputs.original_ir,
+                assignment=prepared_logic_inputs.assignment,
+                database=(
+                    prepared_logic_inputs.path_database
+                    if path_database_path.resolve()
+                    == effective_logic_path_database_path.resolve()
+                    else None
+                ),
+                routes=prepared_logic_inputs.routes,
+            )
     manifest_fpgas = [item.get("fpga") for item in manifest.get("fpgas", [])]
     if set(manifest_fpgas) != set(expected_fpgas):
         raise ValidationError("split manifest does not cover the BoardDB FPGAs")
@@ -825,6 +859,7 @@ def run_multi_fpga_physical_flow(
                     logic_query_path,
                     logic_identity_path,
                     eblif_report=eblif_report,
+                    prepared_inputs=prepared_logic_inputs,
                 )
                 logic_raw_path = (
                     fpga_root / "vpr-route" / "logic-segment-timing.tsv"
@@ -840,6 +875,7 @@ def run_multi_fpga_physical_flow(
                     fpga_id,
                     local_query_path,
                     local_identity_path,
+                    prepared_inputs=prepared_local_inputs,
                 )
                 local_raw_path = (
                     fpga_root / "vpr-route" / "local-path-timing.tsv"
@@ -1018,6 +1054,7 @@ def run_multi_fpga_physical_flow(
                     fpga_id,
                     logic_query_path,
                     logic_identity_path,
+                    prepared_inputs=prepared_logic_inputs,
                 )
             mapped_verilog = fpga_root / "partition.v"
             mapped_report = emit_vivado_mapped_verilog(

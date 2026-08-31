@@ -592,12 +592,10 @@ def import_vivado_path_database_tsv(
     )
 
 
-def validate_sta_path_database(
-    database_path: Path,
-    ir_path: Path,
+def validate_sta_path_database_value(
+    database: Mapping[str, Any],
+    ir: EmuIR,
 ) -> Dict[str, Any]:
-    database = read_json(database_path)
-    ir = EmuIR.load(ir_path)
     if database.get("schema") != STA_PATH_DATABASE_SCHEMA:
         raise ValidationError("STA path database schema is invalid")
     if database.get("design") != ir.value["design"]["name"]:
@@ -723,6 +721,15 @@ def validate_sta_path_database(
         "unique_path_nets": len(path_nets_union),
         "worst_slack_ns": worst_slack,
     }
+
+
+def validate_sta_path_database(
+    database_path: Path,
+    ir_path: Path,
+) -> Dict[str, Any]:
+    return validate_sta_path_database_value(
+        read_json(database_path), EmuIR.load(ir_path)
+    )
 
 
 def derive_partition_net_weights(
