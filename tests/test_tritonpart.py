@@ -21,6 +21,7 @@ from emuflow.tritonpart import (
     _tritonpart_ubfactor_percent_points,
     export_tritonpart_inputs,
     parse_tritonpart_solution,
+    run_tritonpart,
 )
 from emuflow.yosys import import_yosys_json
 
@@ -87,6 +88,35 @@ class TritonPartTest(unittest.TestCase):
             self.assertEqual(
                 len((output / "partition.fix").read_text().splitlines()),
                 vertex_count,
+            )
+
+    def test_managed_run_does_not_serialize_duplicate_input_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            solution = root / "solution.txt"
+            solution.write_text(
+                "\n".join(
+                    str(index % 2)
+                    for index, _ in enumerate(self.clusters["clusters"])
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            output = root / "run"
+            assignment = run_tritonpart(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                output,
+                seed=1,
+                solution_input=solution,
+                persist_input_manifest=False,
+            )
+            self.assertFalse((output / "tritonpart_input.json").exists())
+            self.assertEqual(
+                assignment["provider_metadata"]["artifacts"],
+                {"retained": False},
             )
 
     def test_atomic_balance_relaxation_is_relative_to_target_block(self) -> None:

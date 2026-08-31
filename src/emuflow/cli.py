@@ -181,7 +181,7 @@ from .fpga_interchange import (
     run_fpga_interchange_architecture_import,
     validate_fpga_interchange_architecture,
 )
-from .io import read_json, write_json
+from .io import json_write_policy, read_json, write_json
 from .ir import EmuIR
 from .lowering import run_placement_ir_lowering
 from .multi_fpga_flow import (
@@ -572,12 +572,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default="vtr-hard-blocks",
     )
     frontend_run.add_argument("--allow-fabric-clock", action="store_true")
+    frontend_run.add_argument("--managed-dag-node", action="store_true")
     frontend_run.add_argument("--out", type=Path, required=True)
     frontend_validate = experiment_stage_subparsers.add_parser(
         "frontend-validate", help="independently validate a frontend checkpoint"
     )
     frontend_validate.add_argument("root", type=Path)
     frontend_validate.add_argument("--platform", type=Path, required=True)
+    frontend_validate.add_argument("--managed-dag-node", action="store_true")
 
     timing_run = experiment_stage_subparsers.add_parser(
         "timing-run", help="run reusable pre-partition OpenSTA timing"
@@ -590,12 +592,14 @@ def _build_parser() -> argparse.ArgumentParser:
     timing_run.add_argument("--max-paths", type=int, default=200000)
     timing_run.add_argument("--criticality-scale", type=float, default=9.0)
     timing_run.add_argument("--criticality-exponent", type=float, default=2.0)
+    timing_run.add_argument("--managed-dag-node", action="store_true")
     timing_run.add_argument("--out", type=Path, required=True)
     timing_validate = experiment_stage_subparsers.add_parser(
         "timing-validate", help="independently validate a timing checkpoint"
     )
     timing_validate.add_argument("root", type=Path)
     timing_validate.add_argument("--frontend", type=Path, required=True)
+    timing_validate.add_argument("--managed-dag-node", action="store_true")
 
     partition_run = experiment_stage_subparsers.add_parser(
         "partition-run", help="run one reusable timing-driven Phase 3 checkpoint"
@@ -711,6 +715,15 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument(
         "--minimum-combinational-cut-nets", type=int, default=0
     )
+    partition_run.add_argument(
+        "--managed-dag-node",
+        action="store_true",
+        help=(
+            "reuse validated immutable dependencies and defer the duplicate "
+            "producer-side full validation to experiment-cache's independent "
+            "validator"
+        ),
+    )
     partition_run.add_argument("--out", type=Path, required=True)
     partition_validate = experiment_stage_subparsers.add_parser(
         "partition-validate", help="independently validate a Phase 3 checkpoint"
@@ -779,6 +792,14 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument(
         "--minimum-combinational-cut-nets", type=int
     )
+    partition_validate.add_argument(
+        "--online-validation",
+        action="store_true",
+        help=(
+            "check only the Phase-3 runtime contract; do not hash artifacts "
+            "or replay the optimizer"
+        ),
+    )
 
     cut_timing_run = experiment_stage_subparsers.add_parser(
         "cut-timing-run", help="extract and project partition cut timing paths"
@@ -791,6 +812,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cut_timing_run.add_argument("--architecture-timing-db", type=Path)
     cut_timing_run.add_argument("--opensta")
     cut_timing_run.add_argument("--max-paths", type=int, default=200000)
+    cut_timing_run.add_argument("--managed-dag-node", action="store_true")
     cut_timing_run.add_argument("--out", type=Path, required=True)
     cut_timing_validate = experiment_stage_subparsers.add_parser(
         "cut-timing-validate", help="independently validate cut timing"
@@ -803,6 +825,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--timing-model", type=Path, default=DEFAULT_TIMING_MODEL
     )
     cut_timing_validate.add_argument("--architecture-timing-db", type=Path)
+    cut_timing_validate.add_argument("--managed-dag-node", action="store_true")
 
     route_run = experiment_stage_subparsers.add_parser(
         "route-run", help="run one reusable timing-aware Phase 4 checkpoint"
@@ -816,6 +839,8 @@ def _build_parser() -> argparse.ArgumentParser:
     route_run.add_argument("--provider")
     route_run.add_argument("--candidate-workers", type=int, default=1)
     route_run.add_argument("--router")
+    route_run.add_argument("--managed-storage", action="store_true")
+    route_run.add_argument("--managed-dag-node", action="store_true")
     route_run.add_argument("--out", type=Path, required=True)
     route_validate = experiment_stage_subparsers.add_parser(
         "route-validate", help="independently validate a Phase 4 checkpoint"
@@ -827,6 +852,7 @@ def _build_parser() -> argparse.ArgumentParser:
     route_validate.add_argument("--constraints", type=Path)
     route_validate.add_argument("--provider")
     route_validate.add_argument("--candidate-workers", type=int)
+    route_validate.add_argument("--managed-dag-node", action="store_true")
 
     tdm_run = experiment_stage_subparsers.add_parser(
         "tdm-run", help="run one reusable timing-aware Phase 5 checkpoint"
@@ -843,6 +869,8 @@ def _build_parser() -> argparse.ArgumentParser:
     tdm_run.add_argument("--ratio-optimizer")
     tdm_run.add_argument("--timing-dag-optimizer")
     tdm_run.add_argument("--slot-optimizer")
+    tdm_run.add_argument("--managed-storage", action="store_true")
+    tdm_run.add_argument("--managed-dag-node", action="store_true")
     tdm_run.add_argument("--out", type=Path, required=True)
     tdm_validate = experiment_stage_subparsers.add_parser(
         "tdm-validate", help="independently validate a Phase 5 checkpoint"
@@ -852,6 +880,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tdm_validate.add_argument("--platform", type=Path, required=True)
     tdm_validate.add_argument("--constraints", type=Path)
     tdm_validate.add_argument("--provider")
+    tdm_validate.add_argument("--managed-dag-node", action="store_true")
 
     shared_materialize = experiment_stage_subparsers.add_parser(
         "shared-materialize", help="materialize a hard-linked validated Phase 1-5 view"
@@ -867,12 +896,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--timing-model", type=Path, default=DEFAULT_TIMING_MODEL
     )
     shared_materialize.add_argument("--architecture-timing-db", type=Path)
+    shared_materialize.add_argument("--managed-dag-node", action="store_true")
     shared_materialize.add_argument("--out", type=Path, required=True)
     shared_validate = experiment_stage_subparsers.add_parser(
         "shared-validate", help="validate a frozen Phase 1-5 flow root"
     )
     shared_validate.add_argument("--shared", type=Path, required=True)
     shared_validate.add_argument("--platform", type=Path, required=True)
+    shared_validate.add_argument("--managed-dag-node", action="store_true")
     lookahead_run = experiment_stage_subparsers.add_parser(
         "lookahead-run", help="run one reusable physical-lookahead checkpoint"
     )
@@ -897,6 +928,7 @@ def _build_parser() -> argparse.ArgumentParser:
     lookahead_run.add_argument("--openparf-install", type=Path)
     lookahead_run.add_argument("--openparf-python", type=Path)
     lookahead_run.add_argument("--route-channel-width", type=int, default=300)
+    lookahead_run.add_argument("--managed-dag-node", action="store_true")
     lookahead_run.add_argument("--out", type=Path, required=True)
     lookahead_resume = experiment_stage_subparsers.add_parser(
         "lookahead-resume",
@@ -916,6 +948,7 @@ def _build_parser() -> argparse.ArgumentParser:
     lookahead_resume.add_argument(
         "--reuse-validated-phase6-equivalence", action="store_true"
     )
+    lookahead_resume.add_argument("--managed-dag-node", action="store_true")
     lookahead_resume.add_argument("--out", type=Path, required=True)
     lookahead_validate = experiment_stage_subparsers.add_parser(
         "lookahead-validate", help="independently validate a lookahead checkpoint"
@@ -932,6 +965,7 @@ def _build_parser() -> argparse.ArgumentParser:
     lookahead_validate.add_argument("--region-count", type=int)
     lookahead_validate.add_argument("--architecture", type=Path)
     lookahead_validate.add_argument("--route-channel-width", type=int)
+    lookahead_validate.add_argument("--managed-dag-node", action="store_true")
     phase6_run = experiment_stage_subparsers.add_parser(
         "phase6-run", help="run one reusable Phase 6 provider checkpoint"
     )
@@ -950,6 +984,8 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6_run.add_argument("--chimew-refiner")
     phase6_run.add_argument("--chimew-rudy")
     phase6_run.add_argument("--chimew-assigner")
+    phase6_run.add_argument("--managed-storage", action="store_true")
+    phase6_run.add_argument("--managed-dag-node", action="store_true")
     phase6_run.add_argument("--out", type=Path, required=True)
     phase6_validate = experiment_stage_subparsers.add_parser(
         "phase6-validate", help="independently validate a Phase 6 checkpoint"
@@ -961,6 +997,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6_validate.add_argument(
         "--provider", choices=("baseline", "placement-aware", "chimew")
     )
+    phase6_validate.add_argument("--managed-dag-node", action="store_true")
     phase7_run = experiment_stage_subparsers.add_parser(
         "phase7-run", help="run one provider/seed physical terminal checkpoint"
     )
@@ -981,6 +1018,8 @@ def _build_parser() -> argparse.ArgumentParser:
     phase7_run.add_argument("--openparf-install", type=Path)
     phase7_run.add_argument("--openparf-python", type=Path)
     phase7_run.add_argument("--route-channel-width", type=int, default=300)
+    phase7_run.add_argument("--managed-storage", action="store_true")
+    phase7_run.add_argument("--managed-dag-node", action="store_true")
     phase7_run.add_argument("--out", type=Path, required=True)
     phase7_validate = experiment_stage_subparsers.add_parser(
         "phase7-validate", help="independently validate a Phase 7 checkpoint"
@@ -996,6 +1035,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase7_validate.add_argument("--seed", type=int)
     phase7_validate.add_argument("--workers", type=int)
     phase7_validate.add_argument("--route-channel-width", type=int)
+    phase7_validate.add_argument("--managed-dag-node", action="store_true")
     qor_compare_run = experiment_stage_subparsers.add_parser(
         "qor-compare-run",
         help="aggregate all nine canonical Phase 7 QoR arms",
@@ -3665,93 +3705,107 @@ def _build_parser() -> argparse.ArgumentParser:
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "experiment-stage":
         if args.experiment_stage_command == "frontend-run":
-            report = run_frontend_checkpoint(
-                args.platform,
-                args.out,
-                sources=args.source,
-                top=args.top,
-                clocks=args.clock,
-                yosys_json=args.yosys_json,
-                yosys=args.yosys,
-                mapping_profile=args.mapping_profile,
-                require_no_fabric_clock=not args.allow_fabric_clock,
-            )
+            with json_write_policy(durable=not args.managed_dag_node):
+                report = run_frontend_checkpoint(
+                    args.platform,
+                    args.out,
+                    sources=args.source,
+                    top=args.top,
+                    clocks=args.clock,
+                    yosys_json=args.yosys_json,
+                    yosys=args.yosys,
+                    mapping_profile=args.mapping_profile,
+                    require_no_fabric_clock=not args.allow_fabric_clock,
+                    managed_dag_node=args.managed_dag_node,
+                )
         elif args.experiment_stage_command == "frontend-validate":
-            report = validate_frontend_checkpoint(args.root, args.platform)
-        elif args.experiment_stage_command == "timing-run":
-            report = run_timing_checkpoint(
-                args.frontend,
-                args.out,
-                clocks=parse_clock_definitions(args.clock_period),
-                timing_model_path=args.timing_model,
-                architecture_timing_db_path=args.architecture_timing_db,
-                opensta=args.opensta,
-                max_paths=args.max_paths,
-                criticality_scale=args.criticality_scale,
-                criticality_exponent=args.criticality_exponent,
-            )
-        elif args.experiment_stage_command == "timing-validate":
-            report = validate_timing_checkpoint(args.frontend, args.root)
-        elif args.experiment_stage_command == "partition-run":
-            report = run_partition_checkpoint(
-                args.frontend,
-                args.timing,
+            report = validate_frontend_checkpoint(
+                args.root,
                 args.platform,
-                args.out,
-                provider=args.provider,
-                seed=args.seed,
-                constraints_path=args.constraints,
-                route_constraints_path=args.route_constraints,
-                min_used_fpgas=args.min_used_fpgas,
-                balance_tolerance=args.balance_tolerance,
-                openroad=args.openroad,
-                tritonpart_solution=args.tritonpart_solution,
-                hop_refiner=args.hop_refiner,
-                mfspart_coarsener=args.mfspart_coarsener,
-                mfspart_initializer=args.mfspart_initializer,
-                mfspart_refiner=args.mfspart_refiner,
-                mfspart_refiner_checker=args.mfspart_refiner_checker,
-                mfspart_legalizer=args.mfspart_legalizer,
-                mfspart_post_refinement=args.mfspart_post_refinement,
-                mfspart_post_refinement_early_stop=(
-                    args.mfspart_post_refinement_early_stop
-                ),
-                mfspart_post_refinement_bottleneck_beta=(
-                    args.mfspart_post_refinement_bottleneck_beta
-                ),
-                mfspart_post_refinement_timing_path_beta=(
-                    args.mfspart_post_refinement_timing_path_beta
-                ),
-                timeout_seconds=args.timeout_seconds,
-                seed_attempts=args.seed_attempts,
-                repair_balance=args.repair_balance,
-                num_initial_solutions=args.num_initial_solutions,
-                num_best_initial_solutions=args.num_best_initial_solutions,
-                cut_mode=args.cut_mode,
-                max_cross_fpga_dependency_depth=(
-                    args.max_cross_fpga_dependency_depth
-                ),
-                comb_segment_budget_slots=args.comb_segment_budget_slots,
-                static_exact_candidate_policy=(
-                    args.static_exact_candidate_policy
-                ),
-                minimum_combinational_cut_nets=(
-                    args.minimum_combinational_cut_nets
-                ),
-                patron_refiner=args.patron_refiner,
-                patron_max_moves=args.patron_max_moves,
-                patron_flow_refinement=args.patron_flow_refinement,
-                patron_algorithm_version=args.patron_algorithm_version,
-                patron_initial_assignment_path=(
-                    args.patron_initial_assignment
-                ),
-                patron_physical_system_timing_path=(
-                    args.patron_physical_system_timing
-                ),
-                patron_physical_feedback_scale=(
-                    args.patron_physical_feedback_scale
-                ),
+                managed_dag_node=args.managed_dag_node,
             )
+        elif args.experiment_stage_command == "timing-run":
+            with json_write_policy(durable=not args.managed_dag_node):
+                report = run_timing_checkpoint(
+                    args.frontend,
+                    args.out,
+                    clocks=parse_clock_definitions(args.clock_period),
+                    timing_model_path=args.timing_model,
+                    architecture_timing_db_path=args.architecture_timing_db,
+                    opensta=args.opensta,
+                    max_paths=args.max_paths,
+                    criticality_scale=args.criticality_scale,
+                    criticality_exponent=args.criticality_exponent,
+                    managed_dag_node=args.managed_dag_node,
+                )
+        elif args.experiment_stage_command == "timing-validate":
+            report = validate_timing_checkpoint(
+                args.frontend,
+                args.root,
+                managed_dag_node=args.managed_dag_node,
+            )
+        elif args.experiment_stage_command == "partition-run":
+            with json_write_policy(durable=not args.managed_dag_node):
+                report = run_partition_checkpoint(
+                    args.frontend,
+                    args.timing,
+                    args.platform,
+                    args.out,
+                    provider=args.provider,
+                    seed=args.seed,
+                    constraints_path=args.constraints,
+                    route_constraints_path=args.route_constraints,
+                    min_used_fpgas=args.min_used_fpgas,
+                    balance_tolerance=args.balance_tolerance,
+                    openroad=args.openroad,
+                    tritonpart_solution=args.tritonpart_solution,
+                    hop_refiner=args.hop_refiner,
+                    mfspart_coarsener=args.mfspart_coarsener,
+                    mfspart_initializer=args.mfspart_initializer,
+                    mfspart_refiner=args.mfspart_refiner,
+                    mfspart_refiner_checker=args.mfspart_refiner_checker,
+                    mfspart_legalizer=args.mfspart_legalizer,
+                    mfspart_post_refinement=args.mfspart_post_refinement,
+                    mfspart_post_refinement_early_stop=(
+                        args.mfspart_post_refinement_early_stop
+                    ),
+                    mfspart_post_refinement_bottleneck_beta=(
+                        args.mfspart_post_refinement_bottleneck_beta
+                    ),
+                    mfspart_post_refinement_timing_path_beta=(
+                        args.mfspart_post_refinement_timing_path_beta
+                    ),
+                    timeout_seconds=args.timeout_seconds,
+                    seed_attempts=args.seed_attempts,
+                    repair_balance=args.repair_balance,
+                    num_initial_solutions=args.num_initial_solutions,
+                    num_best_initial_solutions=args.num_best_initial_solutions,
+                    cut_mode=args.cut_mode,
+                    max_cross_fpga_dependency_depth=(
+                        args.max_cross_fpga_dependency_depth
+                    ),
+                    comb_segment_budget_slots=args.comb_segment_budget_slots,
+                    static_exact_candidate_policy=(
+                        args.static_exact_candidate_policy
+                    ),
+                    minimum_combinational_cut_nets=(
+                        args.minimum_combinational_cut_nets
+                    ),
+                    patron_refiner=args.patron_refiner,
+                    patron_max_moves=args.patron_max_moves,
+                    patron_flow_refinement=args.patron_flow_refinement,
+                    patron_algorithm_version=args.patron_algorithm_version,
+                    patron_initial_assignment_path=(
+                        args.patron_initial_assignment
+                    ),
+                    patron_physical_system_timing_path=(
+                        args.patron_physical_system_timing
+                    ),
+                    patron_physical_feedback_scale=(
+                        args.patron_physical_feedback_scale
+                    ),
+                    managed_dag_node=args.managed_dag_node,
+                )
         elif args.experiment_stage_command == "partition-validate":
             report = validate_partition_checkpoint(
                 args.frontend,
@@ -3805,19 +3859,22 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_patron_physical_feedback_scale=(
                     args.patron_physical_feedback_scale
                 ),
+                online_validation=args.online_validation,
             )
         elif args.experiment_stage_command == "cut-timing-run":
-            report = run_cut_timing_checkpoint(
-                args.frontend,
-                args.timing,
-                args.partition,
-                args.out,
-                clocks=parse_clock_definitions(args.clock_period),
-                timing_model_path=args.timing_model,
-                architecture_timing_db_path=args.architecture_timing_db,
-                opensta=args.opensta,
-                max_paths=args.max_paths,
-            )
+            with json_write_policy(durable=not args.managed_dag_node):
+                report = run_cut_timing_checkpoint(
+                    args.frontend,
+                    args.timing,
+                    args.partition,
+                    args.out,
+                    clocks=parse_clock_definitions(args.clock_period),
+                    timing_model_path=args.timing_model,
+                    architecture_timing_db_path=args.architecture_timing_db,
+                    opensta=args.opensta,
+                    max_paths=args.max_paths,
+                    managed_dag_node=args.managed_dag_node,
+                )
         elif args.experiment_stage_command == "cut-timing-validate":
             report = validate_cut_timing_checkpoint(
                 args.frontend,
@@ -3826,20 +3883,24 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.root,
                 timing_model_path=args.timing_model,
                 architecture_timing_db_path=args.architecture_timing_db,
+                managed_dag_node=args.managed_dag_node,
             )
         elif args.experiment_stage_command == "route-run":
-            report = run_route_checkpoint(
-                args.partition,
-                args.cut_timing,
-                args.platform,
-                args.out,
-                constraints_path=args.constraints,
-                frame_slots=args.frame_slots,
-                max_iterations=args.max_iterations,
-                provider=args.provider,
-                candidate_workers=args.candidate_workers,
-                router=args.router,
-            )
+            with json_write_policy(durable=not args.managed_dag_node):
+                report = run_route_checkpoint(
+                    args.partition,
+                    args.cut_timing,
+                    args.platform,
+                    args.out,
+                    constraints_path=args.constraints,
+                    frame_slots=args.frame_slots,
+                    max_iterations=args.max_iterations,
+                    provider=args.provider,
+                    candidate_workers=args.candidate_workers,
+                    router=args.router,
+                    managed_storage=args.managed_storage,
+                    managed_dag_node=args.managed_dag_node,
+                )
         elif args.experiment_stage_command == "route-validate":
             report = validate_route_checkpoint(
                 args.partition,
@@ -3849,23 +3910,27 @@ def _dispatch(args: argparse.Namespace) -> int:
                 constraints_path=args.constraints,
                 expected_provider=args.provider,
                 expected_candidate_workers=args.candidate_workers,
+                managed_dag_node=args.managed_dag_node,
             )
         elif args.experiment_stage_command == "tdm-run":
-            report = run_tdm_checkpoint(
-                args.route,
-                args.platform,
-                args.out,
-                simulation_frames=args.simulation_frames,
-                provider=args.provider,
-                ratio_max_iterations=args.ratio_max_iterations,
-                max_ratio=args.max_ratio,
-                ratio_quantum=args.ratio_quantum,
-                post_refinement_iterations=args.post_refinement_iterations,
-                slot_refinement_iterations=args.slot_refinement_iterations,
-                ratio_optimizer=args.ratio_optimizer,
-                timing_dag_optimizer=args.timing_dag_optimizer,
-                slot_optimizer=args.slot_optimizer,
-            )
+            with json_write_policy(durable=not args.managed_dag_node):
+                report = run_tdm_checkpoint(
+                    args.route,
+                    args.platform,
+                    args.out,
+                    simulation_frames=args.simulation_frames,
+                    provider=args.provider,
+                    ratio_max_iterations=args.ratio_max_iterations,
+                    max_ratio=args.max_ratio,
+                    ratio_quantum=args.ratio_quantum,
+                    post_refinement_iterations=args.post_refinement_iterations,
+                    slot_refinement_iterations=args.slot_refinement_iterations,
+                    ratio_optimizer=args.ratio_optimizer,
+                    timing_dag_optimizer=args.timing_dag_optimizer,
+                    slot_optimizer=args.slot_optimizer,
+                    managed_storage=args.managed_storage,
+                    managed_dag_node=args.managed_dag_node,
+                )
         elif args.experiment_stage_command == "tdm-validate":
             report = validate_tdm_checkpoint(
                 args.route,
@@ -3873,6 +3938,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.root,
                 constraints_path=args.constraints,
                 expected_provider=args.provider,
+                managed_dag_node=args.managed_dag_node,
             )
         elif args.experiment_stage_command == "shared-materialize":
             report = materialize_shared_phase1_5(
@@ -3886,34 +3952,39 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.out,
                 timing_model_path=args.timing_model,
                 architecture_timing_db_path=args.architecture_timing_db,
+                managed_dag_node=args.managed_dag_node,
             )
         elif args.experiment_stage_command == "shared-validate":
             report = validate_materialized_shared_phase1_5(
-                args.shared, args.platform
+                args.shared,
+                args.platform,
+                managed_dag_node=args.managed_dag_node,
             )
         elif args.experiment_stage_command == "lookahead-run":
-            report = run_physical_lookahead(
-                args.shared,
-                args.baseline_phase6,
-                args.platform,
-                args.out,
-                seed=args.seed,
-                workers=args.workers,
-                region_count=args.region_count,
-                architecture=args.architecture,
-                architecture_id=args.architecture_id,
-                yosys=args.yosys,
-                vpr=args.vpr,
-                architecture_importer=args.architecture_importer,
-                packed_importer=args.packed_importer,
-                route_checker=args.route_checker,
-                openparf_install=args.openparf_install,
-                openparf_python=args.openparf_python,
-                route_channel_width=args.route_channel_width,
-                reuse_validated_phase6_equivalence=(
-                    args.reuse_validated_phase6_equivalence
-                ),
-            )
+            with json_write_policy(durable=not args.managed_dag_node):
+                report = run_physical_lookahead(
+                    args.shared,
+                    args.baseline_phase6,
+                    args.platform,
+                    args.out,
+                    seed=args.seed,
+                    workers=args.workers,
+                    region_count=args.region_count,
+                    architecture=args.architecture,
+                    architecture_id=args.architecture_id,
+                    yosys=args.yosys,
+                    vpr=args.vpr,
+                    architecture_importer=args.architecture_importer,
+                    packed_importer=args.packed_importer,
+                    route_checker=args.route_checker,
+                    openparf_install=args.openparf_install,
+                    openparf_python=args.openparf_python,
+                    route_channel_width=args.route_channel_width,
+                    reuse_validated_phase6_equivalence=(
+                        args.reuse_validated_phase6_equivalence
+                    ),
+                    managed_dag_node=args.managed_dag_node,
+                )
         elif args.experiment_stage_command == "lookahead-resume":
             report = resume_physical_lookahead(
                 args.shared,
@@ -3929,6 +4000,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 reuse_validated_phase6_equivalence=(
                     args.reuse_validated_phase6_equivalence
                 ),
+                managed_dag_node=args.managed_dag_node,
             )
         elif args.experiment_stage_command == "lookahead-validate":
             report = validate_physical_lookahead(
@@ -3944,22 +4016,26 @@ def _dispatch(args: argparse.Namespace) -> int:
                 reuse_validated_phase6_equivalence=(
                     args.reuse_validated_phase6_equivalence
                 ),
+                managed_dag_node=args.managed_dag_node,
             )
         elif args.experiment_stage_command == "phase6-run":
-            report = run_phase6_checkpoint(
-                args.shared,
-                args.lookahead,
-                args.platform,
-                args.out,
-                provider=args.provider,
-                equivalence_cycles=args.equivalence_cycles,
-                equivalence_seed=args.equivalence_seed,
-                pin_planner=args.pin_planner,
-                chimew_grouper=args.chimew_grouper,
-                chimew_refiner=args.chimew_refiner,
-                chimew_rudy=args.chimew_rudy,
-                chimew_assigner=args.chimew_assigner,
-            )
+            with json_write_policy(durable=not args.managed_dag_node):
+                report = run_phase6_checkpoint(
+                    args.shared,
+                    args.lookahead,
+                    args.platform,
+                    args.out,
+                    provider=args.provider,
+                    equivalence_cycles=args.equivalence_cycles,
+                    equivalence_seed=args.equivalence_seed,
+                    pin_planner=args.pin_planner,
+                    chimew_grouper=args.chimew_grouper,
+                    chimew_refiner=args.chimew_refiner,
+                    chimew_rudy=args.chimew_rudy,
+                    chimew_assigner=args.chimew_assigner,
+                    managed_storage=args.managed_storage,
+                    managed_dag_node=args.managed_dag_node,
+                )
         elif args.experiment_stage_command == "phase6-validate":
             report = validate_phase6_checkpoint(
                 args.root,
@@ -3967,28 +4043,31 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.lookahead,
                 args.platform,
                 expected_provider=args.provider,
+                managed_dag_node=args.managed_dag_node,
             )
         elif args.experiment_stage_command == "phase7-run":
-            report = run_phase7_checkpoint(
-                args.shared,
-                args.lookahead,
-                args.phase6,
-                args.platform,
-                args.out,
-                seed=args.seed,
-                workers=args.workers,
-                yosys=args.yosys,
-                vpr=args.vpr,
-                architecture_importer=args.architecture_importer,
-                packed_importer=args.packed_importer,
-                route_checker=args.route_checker,
-                openparf_install=args.openparf_install,
-                openparf_python=args.openparf_python,
-                route_channel_width=args.route_channel_width,
-                reuse_validated_phase6_equivalence=(
-                    args.reuse_validated_phase6_equivalence
-                ),
-            )
+            with json_write_policy(durable=not args.managed_dag_node):
+                report = run_phase7_checkpoint(
+                    args.shared,
+                    args.lookahead,
+                    args.phase6,
+                    args.platform,
+                    args.out,
+                    seed=args.seed,
+                    workers=args.workers,
+                    yosys=args.yosys,
+                    vpr=args.vpr,
+                    architecture_importer=args.architecture_importer,
+                    packed_importer=args.packed_importer,
+                    route_checker=args.route_checker,
+                    openparf_install=args.openparf_install,
+                    openparf_python=args.openparf_python,
+                    route_channel_width=args.route_channel_width,
+                    reuse_validated_phase6_equivalence=(
+                        args.reuse_validated_phase6_equivalence
+                    ),
+                    managed_dag_node=args.managed_dag_node,
+                )
         elif args.experiment_stage_command == "phase7-validate":
             report = validate_phase7_checkpoint(
                 args.root,
@@ -4002,6 +4081,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 reuse_validated_phase6_equivalence=(
                     args.reuse_validated_phase6_equivalence
                 ),
+                managed_dag_node=args.managed_dag_node,
             )
         elif args.experiment_stage_command == "qor-compare-run":
             report = run_canonical_qor_comparison(

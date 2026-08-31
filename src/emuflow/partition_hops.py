@@ -433,7 +433,7 @@ def refine_partition_hops(
             "reproduction"
         ),
         "native_status": status,
-        "moves": moves,
+        "move_count": len(moves),
         "native_metrics": native_metrics,
     }
     metadata["hop_feasibility"] = refinement_summary

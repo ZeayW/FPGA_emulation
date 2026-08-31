@@ -11,6 +11,7 @@ from emuflow.cli import _Python38BooleanOptionalAction, _build_parser
 from emuflow.errors import EmuFlowError
 from emuflow.experiment_stages import (
     _ValidationSession,
+    _link_tree,
     _phase7_qor_projection,
     _physical_timing_databases,
     _placement_aware_positions,
@@ -18,6 +19,7 @@ from emuflow.experiment_stages import (
     _validate_managed_phase6_checkpoint,
     _sta_path_database,
     _timing_paths,
+    run_phase6_checkpoint,
     validate_phase6_checkpoint,
     validate_shared_phase1_5,
     resume_physical_lookahead,
@@ -32,6 +34,78 @@ from emuflow.runtime import QOR_REPORT_SCHEMA
 
 
 class ExperimentStagesTest(unittest.TestCase):
+    def test_managed_phase6_omits_wrapper_hash_and_self_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shared = root / "shared"
+            for relative in (
+                "frontend/phase1/design.emuir.json",
+                "partition/clusters.json",
+                "partition/assignment.json",
+                "partition/phase3_report.json",
+                "system-route/routes.json",
+                "system-route/phase4_report.json",
+                "tdm/schedule.json",
+                "tdm/phase5_report.json",
+            ):
+                path = shared / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}", encoding="utf-8")
+
+            def phase6(*_args, **_kwargs):
+                split = root / "output/split"
+                split.mkdir(parents=True)
+                (split / "manifest.json").write_text("{}", encoding="utf-8")
+                return {"status": "pass", "equivalence": {"status": "pass"}}
+
+            with (
+                mock.patch(
+                    "emuflow.experiment_stages.validate_shared_phase1_5",
+                    return_value={"status": "pass"},
+                ),
+                mock.patch(
+                    "emuflow.experiment_stages.run_phase6", side_effect=phase6
+                ),
+                mock.patch(
+                    "emuflow.experiment_stages._sha256",
+                    side_effect=AssertionError("hashing entered managed hot path"),
+                ),
+                mock.patch(
+                    "emuflow.experiment_stages.validate_phase6_checkpoint"
+                ) as validate,
+            ):
+                report = run_phase6_checkpoint(
+                    shared,
+                    None,
+                    root / "platform.json",
+                    root / "output",
+                    provider="baseline",
+                    managed_storage=True,
+                    managed_dag_node=True,
+                )
+            validate.assert_not_called()
+            self.assertEqual(
+                report["validation_mode"],
+                "managed-independent-publish-v1",
+            )
+            self.assertNotIn("schedule_sha256", report)
+            self.assertNotIn("manifest_sha256", report)
+
+    def test_link_tree_reuses_immutable_files_without_copying(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            destination = root / "destination"
+            (source / "nested").mkdir(parents=True)
+            payload = source / "nested/payload.bin"
+            payload.write_bytes(b"immutable checkpoint payload")
+
+            _link_tree(source, destination)
+
+            linked = destination / "nested/payload.bin"
+            self.assertEqual(linked.read_bytes(), payload.read_bytes())
+            self.assertEqual(linked.stat().st_ino, payload.stat().st_ino)
+
     def test_python38_boolean_optional_action_supports_both_spelling(self) -> None:
         parser = argparse.ArgumentParser()
         parser.add_argument(
@@ -561,11 +635,13 @@ class ExperimentStagesTest(unittest.TestCase):
                 "d",
                 "--platform",
                 "board.json",
+                "--managed-dag-node",
                 "--out",
                 "shared",
             ]
         )
         self.assertEqual(shared.experiment_stage_command, "shared-materialize")
+        self.assertTrue(shared.managed_dag_node)
 
     def test_baseline_phase6_does_not_require_lookahead(self) -> None:
         args = _build_parser().parse_args(

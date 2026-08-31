@@ -69,6 +69,8 @@ def _timing_path_groups(
     clusters_artifact: Mapping[str, Any],
     node_index: Mapping[str, int],
     database_path: Path,
+    *,
+    include_hash_evidence: bool = True,
 ) -> tuple[list[dict[str, Any]], Dict[str, Any]]:
     database = read_json(database_path)
     if (
@@ -126,17 +128,25 @@ def _timing_path_groups(
         {"weight": weight, "pins": list(pins)}
         for pins, weight in sorted(grouped.items())
     ]
-    return timing_paths, {
+    report = {
         "schema": "emuflow.mfspart-timing-path-objective/v1",
-        "database_sha256": _sha256(database_path),
         "database_paths": len(database["paths"]),
         "eligible_paths": eligible_paths,
         "unmaterialized_paths": unmaterialized_paths,
         "compressed_groups": len(timing_paths),
         "compressed_pins": sum(len(path["pins"]) for path in timing_paths),
-        "objective_sha256": _timing_path_objective_sha256(timing_paths),
         "weighting": "uniform-path-count-with-identical-pin-set-aggregation",
     }
+    if include_hash_evidence:
+        report.update(
+            {
+                "database_sha256": _sha256(database_path),
+                "objective_sha256": _timing_path_objective_sha256(
+                    timing_paths
+                ),
+            }
+        )
+    return timing_paths, report
 
 
 def _platform_problem(
@@ -377,6 +387,8 @@ def refine_mfspart_partition(
     timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     refiner: Optional[str] = None,
     refiner_checker: Optional[str] = None,
+    defer_semantic_contract: bool = False,
+    online_validation: bool = False,
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """Directionally refine a sealed TritonPart assignment in one FM level.
 
@@ -424,6 +436,7 @@ def refine_mfspart_partition(
             clusters_artifact,
             node_index,
             timing_path_database_path,
+            include_hash_evidence=not online_validation,
         )
         timing_path_objective["status"] = "enabled"
         timing_path_objective["beta"] = timing_path_beta
@@ -485,6 +498,7 @@ def refine_mfspart_partition(
         timing_path_beta=effective_timing_path_beta,
         executable=refiner,
         checker=refiner_checker,
+        online_validation=online_validation,
     )
     refined_cluster_assignment = {
         node["id"]: parts[refinement["assignment"][index]]
@@ -542,7 +556,25 @@ def refine_mfspart_partition(
         provider=assignment["provider"],
         seed=assignment["seed"],
         provider_metadata=metadata,
+        _include_semantic_contract=not defer_semantic_contract,
     )
+    persisted_refinement = refinement
+    if online_validation:
+        persisted_refinement = {
+            key: value
+            for key, value in refinement.items()
+            if key not in {"moves", "assignment", "artifacts"}
+        }
+        persisted_refinement["artifacts"] = {"log": "mfspart_refiner.log"}
+        for name in (
+            "mfspart_refiner.in",
+            "mfspart_refiner.out",
+            "mfspart_refiner.check",
+            "mfspart_refiner_checker.log",
+        ):
+            path = output_dir / name
+            if path.exists():
+                path.unlink()
     report = {
         "schema": MFSPART_POST_REFINEMENT_SCHEMA,
         "status": "pass",
@@ -570,10 +602,10 @@ def refine_mfspart_partition(
             net["cut_class"] == "combinational" for net in nets
         ),
         "effective_balance_tolerance_by_dimension": effective_balance,
-        "refinement": refinement,
+        "refinement": persisted_refinement,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
-    write_json(output_dir / "post_refinement.json", report)
+    write_json(output_dir / "post_refinement.json", report, compact=True)
     return refined, report
 
 

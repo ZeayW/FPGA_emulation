@@ -17,6 +17,7 @@ from emuflow.mfspart_refine import (
     refine_mfspart_level,
     validate_mfspart_native_certificate,
     validate_mfspart_refinement,
+    validate_mfspart_refinement_online,
 )
 
 
@@ -686,7 +687,73 @@ class MFSPartRefinementTest(unittest.TestCase):
             "native-orthant-global-best-certificate",
         )
         self.assertEqual(artifact["assignment"], [0, 0])
-        self.assertIn("checker_output_sha256", artifact["artifacts"])
+        self.assertEqual(
+            artifact["artifacts"]["checker_output"],
+            "mfspart_refiner.check",
+        )
+        self.assertFalse(
+            any("sha256" in key for key in artifact["artifacts"])
+        )
+
+    def test_online_validation_stays_within_optimizer_runtime(self) -> None:
+        parts, distances, capacities = _line_problem()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = refine_mfspart_level(
+                self._violating_graph(),
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0, 2],
+                root,
+                hmax=1,
+                early_stop=2,
+                executable=str(self.executable),
+                checker=str(self.checker),
+                online_validation=True,
+            )
+            self.assertFalse((root / "mfspart_refiner.check").exists())
+        self.assertEqual(
+            artifact["validation"]["mode"],
+            "linear-phase3-output-contract",
+        )
+        self.assertTrue(
+            artifact["runtime"]["candidate_check_within_optimizer_budget"]
+        )
+        self.assertLessEqual(
+            artifact["runtime"]["candidate_check_wall_seconds"],
+            artifact["runtime"]["optimizer_wall_seconds"],
+        )
+
+    def test_online_validation_rejects_non_prefix_assignment(self) -> None:
+        parts, distances, capacities = _line_problem()
+        problem = _normalise_refinement(
+            self._violating_graph(),
+            ["cells"],
+            parts,
+            distances,
+            capacities,
+            [0, 2],
+            hmax=1,
+            move_distance=2,
+            early_stop=2,
+            gamma=15.0,
+            violation_lambda=10_000.0,
+            mu=0.1,
+        )
+        artifact = {
+            "schema": "emuflow.mfspart-refinement/v1",
+            "moves": [],
+            "assignment": [0, 1],
+            "metrics": {
+                "attempted_moves": 0.0,
+                "best_prefix": 0.0,
+                "best_cumulative_gain": 0.0,
+            },
+        }
+        with self.assertRaisesRegex(ValidationError, "kept prefix"):
+            validate_mfspart_refinement_online(artifact, problem)
 
     def test_read_only_native_certificate_replay_rejects_tampering(self) -> None:
         parts, distances, capacities = _line_problem()
@@ -844,6 +911,49 @@ class MFSPartRefinementTest(unittest.TestCase):
         self.assertLess(
             artifact["validation"]["checker_orthant_tree_nodes_visited"],
             1_000,
+        )
+
+    def test_online_check_scales_to_100k_within_optimizer_budget(self) -> None:
+        node_count = 100_000
+        graph = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [1]}
+                for _ in range(node_count)
+            ],
+            "nets": [
+                {"weight": 1.0, "source": node, "sinks": [node + 1]}
+                for node in range(0, node_count, 2)
+            ],
+        }
+        parts = ["F0", "F1"]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_level(
+                graph,
+                ["cells"],
+                parts,
+                {
+                    "F0": {"F0": 0, "F1": 1},
+                    "F1": {"F0": 1, "F1": 0},
+                },
+                {part: {"cells": 200_000} for part in parts},
+                [0] * node_count,
+                Path(temporary_directory),
+                hmax=1,
+                early_stop=20,
+                executable=str(self.executable),
+                checker=str(self.checker),
+                online_validation=True,
+            )
+        self.assertEqual(
+            artifact["validation"]["mode"],
+            "linear-phase3-output-contract",
+        )
+        self.assertTrue(
+            artifact["runtime"]["candidate_check_within_optimizer_budget"]
+        )
+        self.assertLessEqual(
+            artifact["runtime"]["candidate_check_wall_seconds"],
+            artifact["runtime"]["optimizer_wall_seconds"],
         )
 
     def test_high_fanout_connectivity_uses_indexed_part_counts(self) -> None:

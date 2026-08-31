@@ -32,6 +32,7 @@ def run_phase7c(
     routes_path: Optional[Path] = None,
     board_link_timing_path: Optional[Path] = None,
     simulation_frames: int = 12,
+    materialize_physical_summary: bool = True,
 ) -> Dict[str, Any]:
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
@@ -72,7 +73,7 @@ def run_phase7c(
     write_json(output_dir / "qor_report.json", qor)
     if physical_summary is not None:
         write_json(output_dir / "system_timing.json", qor["timing"])
-    if physical_summary is not None:
+    if physical_summary is not None and materialize_physical_summary:
         write_json(output_dir / "physical_summary.json", physical_summary)
     (output_dir / "virtual_runtime_controller.sv").write_text(
         virtual_runtime_controller_to_systemverilog(),
@@ -121,7 +122,8 @@ def run_phase7c(
     }
     if physical_summary is not None:
         report["system_timing"] = qor["timing"]
-        report["artifacts"]["physical_summary"] = "physical_summary.json"
+        if materialize_physical_summary:
+            report["artifacts"]["physical_summary"] = "physical_summary.json"
         report["artifacts"]["system_timing"] = "system_timing.json"
     else:
         report["runtime_timing"] = qor["timing"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -13,6 +14,7 @@ from .partition import (
     build_partition_assignment,
     load_partition_constraints,
     validate_partition_artifacts,
+    validate_partition_artifacts_online,
 )
 from .errors import ValidationError
 from .partition_hops import refine_partition_hops
@@ -36,6 +38,7 @@ from .combinational_cut import (
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
+from .phase3_storage import pack_phase3_assignment, pack_phase3_clusters
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
@@ -48,14 +51,7 @@ def _rebase_patron_initial_assignment(
     constraints: Dict[str, Any],
     frozen: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Re-express a frozen instance placement using the current clusters.
-
-    Content-addressed experiment reuse may import an assignment produced by an
-    older, semantically compatible cluster-ID scheme.  PATRON must preserve the
-    actual instance placement, not require those incidental IDs to match.  A
-    current cluster is accepted only when all of its instances already occupy
-    one FPGA in the frozen assignment; this never invents or changes a move.
-    """
+    """Re-express a frozen instance placement using the current clusters."""
 
     raw = frozen.get("instance_assignment")
     if not isinstance(raw, dict):
@@ -105,6 +101,35 @@ def _rebase_patron_initial_assignment(
     return rebased
 
 
+def _mfspart_report_summary(report: Optional[Dict[str, Any]]) -> Any:
+    if report is None:
+        return None
+    refinement = report["refinement"]
+    return {
+        key: value
+        for key, value in report.items()
+        if key != "refinement"
+    } | {
+        "refinement": {
+            "schema": refinement["schema"],
+            "provider": refinement["provider"],
+            "claim_scope": refinement["claim_scope"],
+            "metrics": refinement["metrics"],
+            "validation": refinement["validation"],
+            "runtime": refinement.get("runtime"),
+            "artifacts": refinement["artifacts"],
+        }
+    }
+
+
+def _hop_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in report.items()
+        if key not in {"moves", "input"}
+    } | {"move_count": len(report.get("moves", []))}
+
+
 def run_phase3(
     ir_path: Path,
     platform_path: Path,
@@ -152,6 +177,7 @@ def run_phase3(
     patron_initial_assignment_path: Optional[Path] = None,
     patron_physical_system_timing_path: Optional[Path] = None,
     patron_physical_feedback_scale: float = 0.0,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(patron_flow_refinement, bool):
         raise ValidationError("PATRON flow refinement flag is invalid")
@@ -249,6 +275,7 @@ def run_phase3(
             ),
             repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
             repair_balance=tritonpart_repair_balance,
+            persist_input_manifest=not managed_dag_node,
         )
     elif provider in {"repart", "repart-replication"}:
         assignment = run_repart(
@@ -303,6 +330,7 @@ def run_phase3(
                 ),
                 repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
                 repair_balance=tritonpart_repair_balance,
+                persist_input_manifest=not managed_dag_node,
             )
         else:
             initial = _rebase_patron_initial_assignment(
@@ -423,7 +451,7 @@ def run_phase3(
             raise ValueError(
                 "MFSPart post-refinement requires provider='tritonpart'"
             )
-        if timing_path_database_path is not None:
+        if timing_path_database_path is not None and not managed_dag_node:
             validate_sta_path_database(timing_path_database_path, ir_path)
         assignment, mfspart_post_refinement_report = refine_mfspart_partition(
             ir,
@@ -440,6 +468,8 @@ def run_phase3(
             timing_path_beta=mfspart_post_refinement_timing_path_beta,
             refiner=mfspart_refiner,
             refiner_checker=mfspart_refiner_checker,
+            defer_semantic_contract=True,
+            online_validation=True,
         )
     assignment, hop_refinement = refine_partition_hops(
         ir,
@@ -452,12 +482,12 @@ def run_phase3(
         net_weights_path=net_weights_path,
         executable=hop_refiner,
     )
-    validation = validate_partition_artifacts(
-        ir,
-        platform,
-        clusters,
-        assignment,
+    validation = (
+        validate_partition_artifacts_online(platform, clusters, assignment)
+        if managed_dag_node
+        else validate_partition_artifacts(ir, platform, clusters, assignment)
     )
+    persisted_hop_refinement = _hop_report_summary(hop_refinement)
     report: Dict[str, Any] = {
         "schema": PHASE3_REPORT_SCHEMA,
         "phase": 3,
@@ -467,8 +497,10 @@ def run_phase3(
         "provider": assignment["provider"],
         "seed": assignment["seed"],
         "validation": validation,
-        "hop_refinement": hop_refinement,
-        "mfspart_post_refinement": mfspart_post_refinement_report,
+        "hop_refinement": persisted_hop_refinement,
+        "mfspart_post_refinement": _mfspart_report_summary(
+            mfspart_post_refinement_report
+        ),
         "partitions": [
             {
                 key: value
@@ -494,7 +526,10 @@ def run_phase3(
             "assignment.json#/semantic_contract"
         )
     if provider == "tritonpart":
-        report["artifacts"]["tritonpart"] = "tritonpart/tritonpart_input.json"
+        if not managed_dag_node:
+            report["artifacts"]["tritonpart"] = (
+                "tritonpart/tritonpart_input.json"
+            )
         if mfspart_post_refinement_report is not None:
             report["artifacts"]["mfspart_post_refinement"] = (
                 "mfspart-post-refinement/post_refinement.json"
@@ -538,19 +573,42 @@ def run_phase3(
         report["artifacts"]["hop_refinement"] = (
             "hop-refinement/hop_refinement.json"
         )
+    if managed_dag_node:
+        report["artifact_storage"] = {
+            "clusters": "emuflow.phase3-clusters-storage/v1",
+            "assignment": "emuflow.phase3-assignment-storage/v1",
+            "logical_schema": "unchanged-transparent-expansion",
+        }
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    write_json(output_dir / "clusters.json", clusters)
+    if managed_dag_node and provider == "tritonpart":
+        shutil.rmtree(output_dir / "tritonpart", ignore_errors=True)
+    if managed_dag_node and hop_refinement["enabled"]:
+        shutil.rmtree(output_dir / "hop-refinement", ignore_errors=True)
+    persisted_clusters = (
+        pack_phase3_clusters(clusters) if managed_dag_node else clusters
+    )
+    persisted_assignment = (
+        pack_phase3_assignment(assignment, clusters)
+        if managed_dag_node
+        else assignment
+    )
+    write_json(
+        output_dir / "clusters.json", persisted_clusters, compact=True
+    )
     write_json(output_dir / "constraints.normalized.json", constraints)
-    write_json(output_dir / "assignment.json", assignment)
+    write_json(
+        output_dir / "assignment.json", persisted_assignment, compact=True
+    )
     if "replication" in assignment:
         write_json(output_dir / "replication.json", assignment["replication"])
     if hop_refinement["enabled"]:
         write_json(
             output_dir / "hop-refinement" / "hop_refinement.json",
-            hop_refinement,
+            persisted_hop_refinement,
+            compact=True,
         )
-    write_json(output_dir / "phase3_report.json", report)
+    write_json(output_dir / "phase3_report.json", report, compact=True)
     return report
 
 

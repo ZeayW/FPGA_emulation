@@ -906,6 +906,8 @@ def build_partition_assignment(
     provider: str,
     seed: int,
     provider_metadata: Optional[Mapping[str, Any]] = None,
+    *,
+    _include_semantic_contract: bool = True,
 ) -> Dict[str, Any]:
     """Build the common Phase 3 assignment artifact for any provider."""
 
@@ -934,7 +936,10 @@ def build_partition_assignment(
     cut_nets, cut_metrics = compute_cut_nets(ir, instance_assignment)
     semantic_contract = None
     cut_policy = clusters_artifact.get("policy", {})
-    if cut_policy.get("cut_mode") == CUT_MODE_STATIC_EXACT:
+    if (
+        cut_policy.get("cut_mode") == CUT_MODE_STATIC_EXACT
+        and _include_semantic_contract
+    ):
         from .combinational_cut import build_static_exact_semantic_contract
 
         semantic_contract = build_static_exact_semantic_contract(
@@ -1047,6 +1052,147 @@ def build_partition_assignment(
         result["provider_metadata"] = dict(provider_metadata)
     if semantic_contract is not None:
         result["semantic_contract"] = semantic_contract
+    return result
+
+
+def validate_partition_artifacts_online(
+    platform: Platform,
+    clusters_artifact: Mapping[str, Any],
+    assignment_artifact: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Check the final Phase-3 assignment contract without optimizer replay.
+
+    Cluster construction and Static Exact schedule semantics are validated by
+    their owning stages.  This pass checks only assignment coverage, fixed and
+    group constraints, capacity, balance, and the internally materialized
+    cluster mapping.  It consumes the already-resident objects once.
+    """
+
+    if clusters_artifact.get("schema") != CLUSTERS_SCHEMA:
+        raise ValidationError("invalid online clusters schema")
+    if assignment_artifact.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
+        raise ValidationError("invalid online assignment schema")
+    if assignment_artifact.get("replication") is not None:
+        raise ValidationError(
+            "online assignment validation does not support replication"
+        )
+    raw_clusters = clusters_artifact.get("clusters")
+    raw_assignment = assignment_artifact.get("instance_assignment")
+    cluster_assignment = assignment_artifact.get("cluster_assignment")
+    metrics = assignment_artifact.get("metrics")
+    constraints = assignment_artifact.get("constraints")
+    if (
+        not isinstance(raw_clusters, list)
+        or not isinstance(raw_assignment, dict)
+        or not isinstance(cluster_assignment, dict)
+        or not isinstance(metrics, dict)
+        or not isinstance(constraints, dict)
+    ):
+        raise ValidationError("incomplete online partition artifact")
+
+    fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
+    cluster_ids = set()
+    instance_ids = set()
+    resource_totals = {
+        fpga_id: {field: 0 for field in RESOURCE_FIELDS}
+        for fpga_id in fpga_by_id
+    }
+    expected_cluster_assignment = {}
+    for index, cluster in enumerate(raw_clusters):
+        if not isinstance(cluster, dict):
+            raise ValidationError(f"clusters[{index}] is not an object")
+        cluster_id = cluster.get("id")
+        members = cluster.get("instances")
+        resources = cluster.get("resources")
+        if (
+            not isinstance(cluster_id, str)
+            or not cluster_id
+            or cluster_id in cluster_ids
+            or not isinstance(members, list)
+            or not members
+            or not all(isinstance(member, str) for member in members)
+            or not isinstance(resources, dict)
+        ):
+            raise ValidationError(f"clusters[{index}] is malformed")
+        duplicate_members = instance_ids & set(members)
+        if duplicate_members:
+            raise ValidationError("online clusters contain duplicate instances")
+        cluster_ids.add(cluster_id)
+        instance_ids.update(members)
+        assigned_parts = {raw_assignment.get(member) for member in members}
+        if len(assigned_parts) != 1:
+            raise ValidationError("online assignment splits a cluster")
+        part = next(iter(assigned_parts))
+        if part not in fpga_by_id:
+            raise ValidationError("online assignment references an unknown FPGA")
+        expected_cluster_assignment[cluster_id] = part
+        vector = ResourceVector.from_mapping(resources)
+        for field in RESOURCE_FIELDS:
+            resource_totals[part][field] += getattr(vector, field)
+
+    if set(raw_assignment) != instance_ids:
+        raise ValidationError("online assignment does not exactly cover instances")
+    if set(cluster_assignment) != cluster_ids:
+        raise ValidationError("online assignment does not exactly cover clusters")
+    if cluster_assignment != expected_cluster_assignment:
+        raise ValidationError("online cluster assignment disagrees with instances")
+    for fixed in constraints.get("fixed", []):
+        if raw_assignment.get(fixed.get("instance")) != fixed.get("fpga"):
+            raise ValidationError("online assignment violates a fixed instance")
+    for group in constraints.get("groups", []):
+        parts = {
+            raw_assignment.get(instance)
+            for instance in group.get("instances", [])
+        }
+        if len(parts) != 1 or next(iter(parts), None) not in fpga_by_id:
+            raise ValidationError("online assignment splits a fixed group")
+    resources_by_fpga = {
+        fpga_id: ResourceVector.from_mapping(totals)
+        for fpga_id, totals in resource_totals.items()
+    }
+    for fpga_id, resources in resources_by_fpga.items():
+        if not resources.fits_capacity(fpga_by_id[fpga_id].effective_capacity):
+            raise ValidationError("online assignment exceeds FPGA capacity")
+    used_fpgas = len(set(cluster_assignment.values()))
+    if used_fpgas < constraints.get("min_used_fpgas", 1):
+        raise ValidationError("online assignment uses too few FPGAs")
+
+    balance = validate_cluster_assignment_balance(
+        platform,
+        raw_clusters,
+        cluster_assignment,
+        constraints["balance_tolerance"],
+        constraints.get("balance_tolerance_by_dimension", {}),
+    )
+    result = {
+        "status": "pass",
+        "instances": len(instance_ids),
+        "clusters": len(cluster_ids),
+        "used_fpgas": used_fpgas,
+        "illegal_cuts": 0,
+        **{
+            key: value
+            for key, value in metrics.items()
+            if key not in {"instances", "clusters", "used_fpgas"}
+        },
+        **balance,
+        "resources_by_fpga": {
+            fpga_id: resources.to_dict(include_zeros=False)
+            for fpga_id, resources in resources_by_fpga.items()
+        },
+    }
+    semantic_contract = assignment_artifact.get("semantic_contract")
+    if semantic_contract is not None:
+        result.update(
+            {
+                "cut_mode": CUT_MODE_STATIC_EXACT,
+                "qualification": "partition-legality-only-provisional",
+                "semantic_contract": {
+                    "status": "pass",
+                    **semantic_contract["metrics"],
+                },
+            }
+        )
     return result
 
 

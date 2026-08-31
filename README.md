@@ -549,11 +549,13 @@ Exact mode, every initially transported non-combinational net receives an
 immutable worst-sink-distance non-regression guard. Combinational candidates
 remain movable and pay their ordinary timing-weighted cut/connectivity/hop
 cost, but are not rejected merely because they were local in the TritonPart
-assignment. The guard is checked by both the native optimizer and the
-independent certificate checker. Sequential-only mode retains the legacy
-objective. The checkpoint identity seals the weight, guard evidence, and the
-complete native certificate; reuse re-executes the independent C++
-global-best/best-prefix checker without writable scratch.
+assignment. The guard is enforced by the native optimizer and rechecked on the
+final assignment by the linear Phase 3 output-contract validator.
+Sequential-only mode retains the legacy objective. Managed production runs do
+not hash the refiner input/output and do not replay the global-best search.
+The complete C++ global-best/best-prefix checker remains an explicit algorithm
+qualification test for small graphs and selected offline studies; it is not on
+the Phase 3 runtime path.
 Use `--mfspart-post-refinement`,
 `--mfspart-post-refinement-early-stop`, and
 `--mfspart-post-refinement-bottleneck-beta` on the reusable Phase 3 stage for
@@ -586,10 +588,13 @@ Exact flows using TritonPart enable the guarded
 post-refinement and bind it to the generated TimingPathDB; non-Static-Exact
 flows retain the prior behavior.
 
-The native optimizer and its independent checker maintain per-path part
-counts and verify every selected move, raw gain, stable rank, capacity/fixed
-constraints, global-best choice, best prefix, and final assignment. The
-checkpoint validator separately rematerializes the compressed objective from
+The native optimizer maintains per-path part counts. Production Phase 3 checks
+the emitted move sequence, cumulative gains, kept prefix, final assignment,
+capacity/fixed constraints, and topology guards in one linear pass. It does
+not recompute every candidate gain or prove the global-best choice. The latter
+remains covered by the exhaustive Python oracle and independent C++ checker in
+the algorithm test suite. Offline deep qualification can separately
+rematerialize the compressed objective from
 the sealed EmuIR, clusters, and original TimingPathDB and compares the exact
 PATH-record digest, group count, and pin count. Small exhaustive and full
 repository tests pass. Canonical DLA + EDA 2023 case6 screening is now complete
@@ -1743,6 +1748,37 @@ The cache exists only for that process: every later standalone validator starts
 a fresh session and therefore still detects filesystem changes. This avoids
 quadratic NFS reads without converting a previous run's `pass` label into trust.
 
+Managed execution also enforces a runtime budget at every phase boundary.
+Producer checks are limited to local schema/legality invariants and one linear
+in-memory pass over newly produced data. Expensive semantic reconstruction is
+performed once by the node's independent validator, not again by the producer,
+checkpoint publisher, and every downstream consumer. Immutable dependency
+execution keys are the routine consumer contract; SHA-256 is reserved for the
+single publish/import trust boundary rather than repeated inside the hot path.
+Managed staging keeps atomic temporary-file replacement but defers per-file
+`fsync` to final checkpoint publication.
+
+The canonical compiler enables this managed contract consistently for the
+frontend, timing, cut projection, Phase 3, system routing, TDM, physical
+lookahead, Phase 6, and Phase 7 runners and validators. Direct standalone CLI
+use keeps the conservative historical behavior: embedded artifact digests and
+producer self-checks remain enabled unless `--managed-dag-node` is explicitly
+selected inside an experiment-cache transaction. Algorithm-internal
+certificates (for example source-bound Chimew evidence) remain part of their
+algorithm's semantic validation; the optimization removes only redundant
+wrapper and checkpoint hashing/replay.
+
+Large JSON interfaces are stored losslessly in a transparent managed envelope:
+Phase 3 uses the compact cluster/assignment representation, while Phase 4
+routes, Phase 5 schedules/transport metadata, and Phase 6 split manifests use
+fast level-1 compression. `read_json` reconstructs the original logical
+schemas, so algorithms and standalone outputs are unchanged. Only the selected
+candidate is expanded into a complete checkpoint. Phase 7 workers share one
+parsed global timing/assignment/routing context instead of reparsing it once
+per FPGA, and same-seed baseline lookahead reuse hard-links the immutable
+physical tree on the same filesystem. The external independent validators
+still replay the full semantic contract once before publication.
+
 - `reuse`: a byte-valid content-addressed checkpoint already exists;
 - `revalidate`: execution output is reusable but the independent validator
   implementation changed and must certify it again;
@@ -1888,6 +1924,26 @@ moves only the atomic clusters required to remove provider balance violations;
 the ordinary independent Phase 3 validator still enforces the original
 per-resource bounds. Changing either policy invalidates Phase 3 and its
 descendants while leaving unchanged frontend and timing checkpoints reusable.
+The canonical partition node runs with `--managed-dag-node` and validates with
+`--online-validation`. In that mode the producer reuses already accepted
+frontend/timing dependencies, performs one in-memory linear legality pass on
+the final assignment, writes no Phase 3 content hashes, removes TritonPart and
+native-refiner scratch files after consuming them, and publishes only the
+winner assignment plus compact reports. The online MFSPart check records both
+optimizer and checker wall time and fails if checking takes longer than the
+optimizer. Full move-optimality replay is reserved for explicit qualification
+tests.
+Managed Phase 3 checkpoints also use lossless columnar JSON storage for the
+cluster table, store only the irreducible cluster-to-FPGA vector, and compress
+the large Static Exact semantic contract inside the assignment envelope. The
+ordinary `read_json` API transparently reconstructs
+the unchanged `emuflow.clusters/v1` and `emuflow.partition-assignment/v1`
+logical objects, including instance assignment and per-FPGA cluster lists, from
+the paired checkpoint files. Standalone, user-authored Phase 3 output retains
+the plain logical JSON form. This removes repeated JSON keys, repeated FPGA
+names, and the duplicate instance assignment from the managed checkpoint hot
+path without weakening the independent Phase 3 validator or changing Phase
+4--7 semantics.
 `route_candidate_workers` defaults to `physical_workers`, is recorded in the
 route node configuration and command, and is independently checked against the
 Phase 4 candidate-generation certificate. Changing either provider or worker

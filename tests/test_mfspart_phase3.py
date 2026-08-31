@@ -403,6 +403,17 @@ class MFSPartPhase3Test(unittest.TestCase):
             groups, evidence = _timing_path_groups(
                 ir, clusters, node_index, database
             )
+            with patch(
+                "emuflow.mfspart_provider._sha256",
+                side_effect=AssertionError("online path must not hash"),
+            ):
+                online_groups, online_evidence = _timing_path_groups(
+                    ir,
+                    clusters,
+                    node_index,
+                    database,
+                    include_hash_evidence=False,
+                )
             ir_path = Path(temporary_directory) / "design.emuir.json"
             clusters_path = Path(temporary_directory) / "clusters.json"
             write_json(ir_path, ir.value)
@@ -415,6 +426,10 @@ class MFSPartPhase3Test(unittest.TestCase):
         self.assertEqual(groups[0]["weight"], 2.0)
         self.assertEqual(len(groups[0]["pins"]), 5)
         self.assertEqual(independently_rebuilt, evidence)
+        self.assertEqual(online_groups, groups)
+        self.assertFalse(
+            any("sha256" in key for key in online_evidence)
+        )
 
     def test_counter_runs_affected_multi_fpga_flow_with_mfspart(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

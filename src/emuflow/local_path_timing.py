@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
@@ -20,7 +21,7 @@ from .sta import (
     STA_PATH_DATABASE_SCHEMA,
     sta_object_index,
     sta_path_endpoints,
-    validate_sta_path_database,
+    validate_sta_path_database_value,
 )
 
 
@@ -262,23 +263,37 @@ def _explicit_vpr_path_pins(
     return pins
 
 
-def write_vpr_local_path_query(
+@dataclass(frozen=True)
+class LocalPathQueryInputs:
+    """Immutable original-design timing state shared by FPGA workers."""
+
+    original_ir: EmuIR
+    assignment: Mapping[str, Any]
+    database: Mapping[str, Any]
+    routes: Mapping[str, Any]
+    object_index: Mapping[str, Any]
+    original_nets: Mapping[str, Mapping[str, Any]]
+    cross_path_ids: frozenset[str]
+    source_manifest: Mapping[str, Any]
+
+
+def prepare_vpr_local_path_query_inputs(
     original_ir_path: Path,
     assignment_path: Path,
     path_database_path: Path,
     routes_path: Path,
-    merged_ir_path: Path,
-    fpga: str,
-    query_path: Path,
-    identity_path: Path,
-) -> Dict[str, Any]:
-    """Materialize every original same-partition path as a routed VPR query."""
-    validate_sta_path_database(path_database_path, original_ir_path)
-    original_ir = EmuIR.load(original_ir_path)
-    merged_ir = EmuIR.load(merged_ir_path)
-    assignment = read_json(assignment_path)
-    database = read_json(path_database_path)
-    routes = read_json(routes_path)
+    *,
+    original_ir: EmuIR | None = None,
+    assignment: Mapping[str, Any] | None = None,
+    database: Mapping[str, Any] | None = None,
+    routes: Mapping[str, Any] | None = None,
+) -> LocalPathQueryInputs:
+    """Validate, hash and index global local-path inputs once per run."""
+    original_ir = original_ir or EmuIR.load(original_ir_path)
+    assignment = assignment or read_json(assignment_path)
+    database = database or read_json(path_database_path)
+    routes = routes or read_json(routes_path)
+    validate_sta_path_database_value(database, original_ir)
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError("local path assignment schema is invalid")
     if assignment.get("design") != database.get("design"):
@@ -297,12 +312,56 @@ def write_vpr_local_path_query(
         ):
             raise ValidationError("local path route member coverage is invalid")
         cross_path_ids.update(members)
+    return LocalPathQueryInputs(
+        original_ir=original_ir,
+        assignment=assignment,
+        database=database,
+        routes=routes,
+        object_index=sta_object_index(original_ir),
+        original_nets={
+            item["id"]: item for item in original_ir.value["nets"]
+        },
+        cross_path_ids=frozenset(cross_path_ids),
+        source_manifest=_source_manifest(
+            database,
+            path_database_path,
+            original_ir_path,
+            assignment_path,
+            routes_path,
+        ),
+    )
+
+
+def write_vpr_local_path_query(
+    original_ir_path: Path,
+    assignment_path: Path,
+    path_database_path: Path,
+    routes_path: Path,
+    merged_ir_path: Path,
+    fpga: str,
+    query_path: Path,
+    identity_path: Path,
+    *,
+    prepared_inputs: LocalPathQueryInputs | None = None,
+) -> Dict[str, Any]:
+    """Materialize every original same-partition path as a routed VPR query."""
+    prepared = prepared_inputs or prepare_vpr_local_path_query_inputs(
+        original_ir_path,
+        assignment_path,
+        path_database_path,
+        routes_path,
+    )
+    original_ir = prepared.original_ir
+    merged_ir = EmuIR.load(merged_ir_path)
+    assignment = prepared.assignment
+    database = prepared.database
+    cross_path_ids = prepared.cross_path_ids
     if merged_ir.value["design"]["name"] != f"{assignment['design']}__{fpga}":
         raise ValidationError("local path merged IR target is invalid")
     instance_assignment = assignment.get("instance_assignment")
     if not isinstance(instance_assignment, dict):
         raise ValidationError("local path instance assignment is invalid")
-    object_index = sta_object_index(original_ir)
+    object_index = prepared.object_index
     merged_index = {
         item["id"]: index
         for index, item in enumerate(merged_ir.value["instances"])
@@ -310,9 +369,7 @@ def write_vpr_local_path_query(
     merged_instances = {
         item["id"]: item for item in merged_ir.value["instances"]
     }
-    original_nets = {
-        item["id"]: item for item in original_ir.value["nets"]
-    }
+    original_nets = prepared.original_nets
     records = []
     unresolved = []
     for path in database["paths"]:
@@ -384,13 +441,7 @@ def write_vpr_local_path_query(
         "design": assignment["design"],
         "fpga": fpga,
         "provider": "original-timing-pathdb-to-vpr-selected-chain-v2",
-        "source": _source_manifest(
-            database,
-            path_database_path,
-            original_ir_path,
-            assignment_path,
-            routes_path,
-        ),
+        "source": dict(prepared.source_manifest),
         "coverage": {"local_paths": len(records)},
         "paths": records,
     }

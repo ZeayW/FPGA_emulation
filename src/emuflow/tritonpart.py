@@ -232,6 +232,7 @@ def export_tritonpart_inputs(
     net_weights: Optional[Mapping[str, float]] = None,
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
+    write_manifest: bool = True,
 ) -> Dict[str, Any]:
     if (
         isinstance(num_initial_solutions, bool)
@@ -437,7 +438,8 @@ def export_tritonpart_inputs(
             "solution": solution_path.name,
         },
     }
-    write_json(output_dir / "tritonpart_input.json", artifact)
+    if write_manifest:
+        write_json(output_dir / "tritonpart_input.json", artifact, compact=True)
     return artifact
 
 
@@ -962,6 +964,7 @@ def run_tritonpart(
     num_best_initial_solutions: int = 10,
     repair_min_used_fpgas: bool = False,
     repair_balance: bool = False,
+    persist_input_manifest: bool = True,
 ) -> Dict[str, Any]:
     if seed_attempts <= 0:
         raise ValueError("TritonPart seed_attempts must be positive")
@@ -978,7 +981,16 @@ def run_tritonpart(
         net_weights=net_weights,
         num_initial_solutions=num_initial_solutions,
         num_best_initial_solutions=num_best_initial_solutions,
+        write_manifest=False,
     )
+    tritonpart_input["seed"] = seed
+    if persist_input_manifest:
+        # Standalone qualification retains one human-inspectable manifest.
+        # Managed production consumes the native files directly and must not
+        # serialize this large duplicate only to delete it after selection.
+        write_json(
+            output_dir / "tritonpart_input.json", tritonpart_input, compact=True
+        )
     tcl_path = output_dir / tritonpart_input["files"]["tcl"]
     tcl_template = tcl_path.read_text(encoding="utf-8")
 
@@ -996,6 +1008,7 @@ def run_tritonpart(
     selected_solution_path: Optional[Path] = None
     selected_repair_moves: List[Dict[str, Any]] = []
     selected_balance_repair: Optional[Dict[str, Any]] = None
+    selected_assignment_preview: Optional[Dict[str, Any]] = None
     selected_objective: Optional[Tuple[Any, ...]] = None
     selected_attempt_mode: Optional[str] = None
     attempts = []
@@ -1044,8 +1057,6 @@ def run_tritonpart(
         )
         tcl_path.write_text(tcl_text, encoding="utf-8")
         tritonpart_input["seed"] = attempt_seed
-        write_json(output_dir / "tritonpart_input.json", tritonpart_input)
-
         if solution_input is not None:
             if not solution_input.is_file():
                 raise ValidationError(
@@ -1327,6 +1338,7 @@ def run_tritonpart(
             )
             selected_repair_moves = repair_moves
             selected_balance_repair = balance_repair
+            selected_assignment_preview = preview if exact_risk is not None else None
 
     if cluster_assignment is None:
         raise ValidationError(
@@ -1341,7 +1353,6 @@ def run_tritonpart(
     ):
         shutil.copyfile(selected_solution_path, solution_path)
     tritonpart_input["seed"] = selected_seed
-    tritonpart_input["seed_attempts"] = attempts
     timed_nets = set(net_weights or {})
     timed_cut_edges = [
         edge
@@ -1362,8 +1373,56 @@ def run_tritonpart(
             edge["weight"] for edge in timed_cut_edges
         ),
     }
-    tritonpart_input["timing_weight_result"] = timing_weight_result
-    write_json(output_dir / "tritonpart_input.json", tritonpart_input)
+    provider_metadata = {
+        "mode": mode,
+        "selected_attempt_mode": selected_attempt_mode,
+        "executable": resolved_executable,
+        "input_schema": TRITONPART_INPUT_SCHEMA,
+        "vertex_dimensions": tritonpart_input["vertex_dimensions"],
+        "hyperedges": len(tritonpart_input["hyperedges"]),
+        "timing_weights": timing_weight_result,
+        "requested_balance_percent": tritonpart_input[
+            "requested_balance_percent"
+        ],
+        "effective_balance_percent": tritonpart_input[
+            "effective_balance_percent"
+        ],
+        "tritonpart_ubfactor_percent_points": tritonpart_input[
+            "tritonpart_ubfactor_percent_points"
+        ],
+        "balance_auto_relaxed": tritonpart_input["balance_auto_relaxed"],
+        "seed_attempts": attempts,
+        "search_effort": tritonpart_input["search_effort"],
+        "min_used_fpgas_repair": {
+            "enabled": repair_min_used_fpgas,
+            "moves": selected_repair_moves,
+        },
+        "balance_repair": {
+            "enabled": repair_balance,
+            "summary": selected_balance_repair,
+        },
+        "artifacts": (
+            {
+                **tritonpart_input["files"],
+                "input": "tritonpart_input.json",
+                "log": (
+                    selected_log.name
+                    if selected_log is not None and mode == "execute"
+                    else None
+                ),
+            }
+            if persist_input_manifest
+            else {"retained": False}
+        ),
+    }
+    if selected_assignment_preview is not None:
+        # Static Exact candidate qualification already materialized this exact
+        # assignment and its semantic contract.  Reuse it instead of walking
+        # the complete instance/net graph a second time merely to attach
+        # provider metadata.
+        result = dict(selected_assignment_preview)
+        result["provider_metadata"] = provider_metadata
+        return result
     return build_partition_assignment(
         ir,
         platform,
@@ -1372,42 +1431,5 @@ def run_tritonpart(
         cluster_assignment,
         provider=TRITONPART_PROVIDER,
         seed=selected_seed,
-        provider_metadata={
-            "mode": mode,
-            "selected_attempt_mode": selected_attempt_mode,
-            "executable": resolved_executable,
-            "input_schema": TRITONPART_INPUT_SCHEMA,
-            "vertex_dimensions": tritonpart_input["vertex_dimensions"],
-            "hyperedges": len(tritonpart_input["hyperedges"]),
-            "timing_weights": timing_weight_result,
-            "requested_balance_percent": tritonpart_input[
-                "requested_balance_percent"
-            ],
-            "effective_balance_percent": tritonpart_input[
-                "effective_balance_percent"
-            ],
-            "tritonpart_ubfactor_percent_points": tritonpart_input[
-                "tritonpart_ubfactor_percent_points"
-            ],
-            "balance_auto_relaxed": tritonpart_input["balance_auto_relaxed"],
-            "seed_attempts": attempts,
-            "search_effort": tritonpart_input["search_effort"],
-            "min_used_fpgas_repair": {
-                "enabled": repair_min_used_fpgas,
-                "moves": selected_repair_moves,
-            },
-            "balance_repair": {
-                "enabled": repair_balance,
-                "summary": selected_balance_repair,
-            },
-            "artifacts": {
-                **tritonpart_input["files"],
-                "input": "tritonpart_input.json",
-                "log": (
-                    selected_log.name
-                    if selected_log is not None and mode == "execute"
-                    else None
-                ),
-            },
-        },
+        provider_metadata=provider_metadata,
     )

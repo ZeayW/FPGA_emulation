@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import math
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -43,6 +45,7 @@ EXPERIMENT_PHASE6_SCHEMA = "emuflow.experiment-phase6-checkpoint/v1"
 LEGACY_EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v1"
 EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v2"
 PHASE7_QOR_PROJECTION_SCHEMA = "emuflow.phase7-qor-projection/v1"
+MANAGED_DAG_VALIDATION_MODE = "managed-independent-publish-v1"
 _PROVIDERS = {"baseline", "placement-aware", "chimew"}
 _PHASE6_VALIDATION_MODES = {
     "full-replay",
@@ -86,6 +89,21 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _link_tree(source: Path, destination: Path) -> None:
+    """Clone an immutable checkpoint tree without duplicating file data."""
+
+    def link_or_copy(source_file: str, destination_file: str) -> str:
+        try:
+            os.link(source_file, destination_file)
+        except OSError as error:
+            if error.errno not in {errno.EXDEV, errno.EPERM, errno.EACCES}:
+                raise
+            shutil.copy2(source_file, destination_file)
+        return destination_file
+
+    shutil.copytree(source, destination, copy_function=link_or_copy)
+
+
 def _managed_checkpoint(
     root: Path,
     *,
@@ -105,6 +123,7 @@ def _managed_checkpoint(
     checkpoint = validate_experiment_checkpoint(
         checkpoint_path,
         verify_artifact_content=False,
+        verify_immutable_tree=False,
     )
     if (
         checkpoint.get("schema") != "emuflow.experiment-checkpoint/v2"
@@ -540,6 +559,7 @@ def run_physical_lookahead(
     openparf_python: Path | None = None,
     route_channel_width: int = 300,
     reuse_validated_phase6_equivalence: bool = False,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     session = _ValidationSession()
     shared = validate_shared_phase1_5(
@@ -608,6 +628,7 @@ def run_physical_lookahead(
         architecture_id=architecture_id,
         route_channel_width=route_channel_width,
         reuse_validated_phase6_equivalence=reuse_validated_phase6_equivalence,
+        managed_dag_node=managed_dag_node,
         _validation_session=session,
     )
 
@@ -625,6 +646,7 @@ def resume_physical_lookahead(
     architecture_id: str = VTR_HARD_BLOCK_PROFILE,
     route_channel_width: int = 300,
     reuse_validated_phase6_equivalence: bool = False,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     """Finish a lookahead checkpoint around an independently resumed physical run."""
 
@@ -658,6 +680,7 @@ def resume_physical_lookahead(
         architecture_id=architecture_id,
         route_channel_width=route_channel_width,
         reuse_validated_phase6_equivalence=reuse_validated_phase6_equivalence,
+        managed_dag_node=managed_dag_node,
         _validation_session=_ValidationSession(),
     )
 
@@ -739,6 +762,7 @@ def _finish_physical_lookahead(
     architecture_id: str,
     route_channel_width: int,
     reuse_validated_phase6_equivalence: bool = False,
+    managed_dag_node: bool = False,
     _validation_session: _ValidationSession | None = None,
 ) -> Dict[str, Any]:
     session = _validation_session or _ValidationSession()
@@ -769,22 +793,23 @@ def _finish_physical_lookahead(
         )
         if baseline["provider"] != "baseline":
             raise ValidationError("physical lookahead requires baseline Phase 6")
-    session.validate_physical(physical)
+    if not managed_dag_node:
+        session.validate_physical(physical)
     if physical.get("execution", {}).get("requested_workers") != workers:
         raise ValidationError("resumed physical-lookahead worker count disagrees")
     physical_architecture = physical.get("architecture", {})
     expected_architecture_sha256 = (
         _sha256(architecture.expanduser().resolve())
-        if architecture is not None
+        if architecture is not None and not managed_dag_node
         else None
     )
     if expected_architecture_sha256 is not None and physical_architecture.get(
         "sha256"
     ) != expected_architecture_sha256:
         raise ValidationError("resumed physical-lookahead architecture disagrees")
-    if physical.get("split_manifest", {}).get("sha256") != _sha256(
-        split_root / "manifest.json"
-    ):
+    if not managed_dag_node and physical.get("split_manifest", {}).get(
+        "sha256"
+    ) != _sha256(split_root / "manifest.json"):
         raise ValidationError("resumed physical-lookahead Phase 6 seal disagrees")
     for fpga in physical.get("fpgas", []):
         stages = fpga.get("stages", {})
@@ -822,25 +847,35 @@ def _finish_physical_lookahead(
         "architecture_id": architecture_id,
         "route_channel_width": route_channel_width,
         "shared": shared,
-        "baseline_phase6_manifest_sha256": _sha256(split_root / "manifest.json"),
-        "physical_summary_sha256": _sha256(
-            output_dir / "physical/physical-summary.json"
-        ),
-        "lookahead_report_sha256": _sha256(
-            output_dir / "lookahead/academic-chimew-lookahead-report.json"
-        ),
         "metrics": lookahead["metrics"],
     }
+    if managed_dag_node:
+        report["validation_mode"] = MANAGED_DAG_VALIDATION_MODE
+    else:
+        report.update(
+            {
+                "baseline_phase6_manifest_sha256": _sha256(
+                    split_root / "manifest.json"
+                ),
+                "physical_summary_sha256": _sha256(
+                    output_dir / "physical/physical-summary.json"
+                ),
+                "lookahead_report_sha256": _sha256(
+                    output_dir / "lookahead/academic-chimew-lookahead-report.json"
+                ),
+            }
+        )
     write_json(output_dir / "experiment-lookahead-report.json", report)
-    validate_physical_lookahead(
-        output_dir,
-        shared_root,
-        baseline_phase6_root,
-        platform_path,
-        reuse_validated_phase6_equivalence=reuse_validated_phase6_equivalence,
-        _validation_session=session,
-        _physical_report=physical,
-    )
+    if not managed_dag_node:
+        validate_physical_lookahead(
+            output_dir,
+            shared_root,
+            baseline_phase6_root,
+            platform_path,
+            reuse_validated_phase6_equivalence=reuse_validated_phase6_equivalence,
+            _validation_session=session,
+            _physical_report=physical,
+        )
     return report
 
 
@@ -856,6 +891,7 @@ def validate_physical_lookahead(
     expected_architecture: Path | None = None,
     expected_route_channel_width: int | None = None,
     reuse_validated_phase6_equivalence: bool = False,
+    managed_dag_node: bool = False,
     _validation_session: _ValidationSession | None = None,
     _physical_report: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
@@ -915,6 +951,11 @@ def validate_physical_lookahead(
     report = read_json(_require_file(root, "experiment-lookahead-report.json"))
     if report.get("schema") != EXPERIMENT_LOOKAHEAD_SCHEMA or report.get("status") != "pass":
         raise ValidationError("experiment physical-lookahead report is invalid")
+    if managed_dag_node:
+        if report.get("validation_mode") != MANAGED_DAG_VALIDATION_MODE:
+            raise ValidationError("lookahead managed-validation contract is invalid")
+    elif report.get("validation_mode") is not None:
+        raise ValidationError("lookahead checkpoint requires managed validation")
     physical_path = _require_file(root, "physical/multi-fpga-physical-flow-report.json")
     physical_report = (
         _physical_report
@@ -933,9 +974,11 @@ def validate_physical_lookahead(
             raise ValidationError(
                 f"experiment physical-lookahead {field} contract disagrees"
             )
-    if expected_architecture is not None and report.get(
-        "architecture_sha256"
-    ) != _sha256(expected_architecture.resolve()):
+    if (
+        expected_architecture is not None
+        and not managed_dag_node
+        and report.get("architecture_sha256") != _sha256(expected_architecture.resolve())
+    ):
         raise ValidationError(
             "experiment physical-lookahead architecture contract disagrees"
         )
@@ -962,27 +1005,28 @@ def validate_physical_lookahead(
                 raise ValidationError(
                     "experiment physical-lookahead VPR channel width disagrees"
                 )
-    if report.get("physical_summary_sha256") != _sha256(
-        _require_file(root, "physical/physical-summary.json")
-    ):
-        raise ValidationError("experiment physical-lookahead summary seal is broken")
-    baseline_digest = report.get("baseline_phase6_manifest_sha256")
-    split_manifest = split_root / "manifest.json"
-    if split_manifest.is_file():
-        if baseline_digest != _sha256(split_manifest):
+    if not managed_dag_node:
+        if report.get("physical_summary_sha256") != _sha256(
+            _require_file(root, "physical/physical-summary.json")
+        ):
+            raise ValidationError("experiment physical-lookahead summary seal is broken")
+        baseline_digest = report.get("baseline_phase6_manifest_sha256")
+        split_manifest = split_root / "manifest.json"
+        if split_manifest.is_file():
+            if baseline_digest != _sha256(split_manifest):
+                raise ValidationError(
+                    "experiment physical-lookahead Phase 6 seal is broken"
+                )
+        elif not isinstance(baseline_digest, str) or len(baseline_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in baseline_digest
+        ):
             raise ValidationError(
-                "experiment physical-lookahead Phase 6 seal is broken"
+                "experiment physical-lookahead Phase 6 digest is invalid"
             )
-    elif not isinstance(baseline_digest, str) or len(baseline_digest) != 64 or any(
-        character not in "0123456789abcdef" for character in baseline_digest
-    ):
-        raise ValidationError(
-            "experiment physical-lookahead Phase 6 digest is invalid"
-        )
     lookahead_report = _require_file(
         root, "lookahead/academic-chimew-lookahead-report.json"
     )
-    if report.get("lookahead_report_sha256") != _sha256(lookahead_report):
+    if not managed_dag_node and report.get("lookahead_report_sha256") != _sha256(lookahead_report):
         raise ValidationError("experiment Chimew lookahead seal is broken")
     lookahead = read_json(lookahead_report)
     if lookahead.get("status") != "pass":
@@ -1017,6 +1061,8 @@ def run_phase6_checkpoint(
     chimew_refiner: str | None = None,
     chimew_rudy: str | None = None,
     chimew_assigner: str | None = None,
+    managed_storage: bool = False,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     session = _ValidationSession()
     if provider not in _PROVIDERS:
@@ -1034,13 +1080,29 @@ def run_phase6_checkpoint(
             raise ValidationError(
                 f"experiment Phase 6 provider {provider} requires physical lookahead"
             )
-        lookahead = validate_physical_lookahead(
-            lookahead_root,
-            shared_root,
-            None,
-            platform_path,
-            _validation_session=session,
-        )
+        if managed_dag_node:
+            if _managed_checkpoint(
+                lookahead_root, expected_stage="lookahead"
+            ) is None:
+                raise ValidationError(
+                    "managed Phase 6 requires a validated lookahead checkpoint"
+                )
+            lookahead_report = read_json(
+                _require_file(lookahead_root, "experiment-lookahead-report.json")
+            )
+            lookahead = {
+                "status": lookahead_report.get("status"),
+                "seed": lookahead_report.get("seed"),
+                "metrics": lookahead_report.get("metrics"),
+            }
+        else:
+            lookahead = validate_physical_lookahead(
+                lookahead_root,
+                shared_root,
+                None,
+                platform_path,
+                _validation_session=session,
+            )
     paths = _shared_paths(shared_root)
     output_dir = _prepare_empty_output(output_dir, "Phase 6 checkpoint")
     schedule_path = paths["schedule"]
@@ -1120,6 +1182,7 @@ def run_phase6_checkpoint(
         pin_plan_path=pin_plan_path,
         position_hints_path=position_hints_path,
         electrical_binding_path=electrical_binding_path,
+        managed_storage=managed_storage,
     )
     report = {
         "schema": EXPERIMENT_PHASE6_SCHEMA,
@@ -1127,19 +1190,27 @@ def run_phase6_checkpoint(
         "provider": provider,
         "shared": shared,
         "lookahead": lookahead,
-        "schedule_sha256": _sha256(output_dir / "schedule.json"),
-        "manifest_sha256": _sha256(output_dir / "split/manifest.json"),
         "equivalence": phase6["equivalence"],
     }
+    if managed_dag_node:
+        report["validation_mode"] = MANAGED_DAG_VALIDATION_MODE
+    else:
+        report.update(
+            {
+                "schedule_sha256": _sha256(output_dir / "schedule.json"),
+                "manifest_sha256": _sha256(output_dir / "split/manifest.json"),
+            }
+        )
     write_json(output_dir / "experiment-phase6-report.json", report)
-    validate_phase6_checkpoint(
-        output_dir,
-        shared_root,
-        lookahead_root,
-        platform_path,
-        validation_mode="producer-self-check",
-        _validation_session=session,
-    )
+    if not managed_dag_node:
+        validate_phase6_checkpoint(
+            output_dir,
+            shared_root,
+            lookahead_root,
+            platform_path,
+            validation_mode="producer-self-check",
+            _validation_session=session,
+        )
     return report
 
 
@@ -1151,6 +1222,7 @@ def validate_phase6_checkpoint(
     *,
     expected_provider: str | None = None,
     validation_mode: str = "full-replay",
+    managed_dag_node: bool = False,
     _validation_session: _ValidationSession | None = None,
 ) -> Dict[str, Any]:
     if validation_mode not in _PHASE6_VALIDATION_MODES:
@@ -1185,7 +1257,10 @@ def validate_phase6_checkpoint(
             raise ValidationError("experiment Phase 6 provider contract disagrees")
         return copy.deepcopy(cached)
     validate_shared_phase1_5(
-        shared_root, platform_path, _validation_session=session
+        shared_root,
+        platform_path,
+        reuse_managed_checkpoint=True,
+        _validation_session=session,
     )
     report = read_json(_require_file(root, "experiment-phase6-report.json"))
     provider = report.get("provider")
@@ -1193,6 +1268,12 @@ def validate_phase6_checkpoint(
         raise ValidationError("experiment Phase 6 checkpoint report is invalid")
     if expected_provider is not None and provider != expected_provider:
         raise ValidationError("experiment Phase 6 provider contract disagrees")
+    if managed_dag_node:
+        if report.get("validation_mode") != MANAGED_DAG_VALIDATION_MODE:
+            raise ValidationError("Phase 6 managed-validation contract is invalid")
+        validation_mode = "producer-self-check"
+    elif report.get("validation_mode") is not None:
+        raise ValidationError("Phase 6 checkpoint requires managed validation")
     if provider == "baseline":
         if report.get("lookahead") is not None:
             raise ValidationError("baseline Phase 6 must not depend on lookahead")
@@ -1201,13 +1282,21 @@ def validate_phase6_checkpoint(
             raise ValidationError(
                 f"experiment Phase 6 provider {provider} requires physical lookahead"
             )
-        validate_physical_lookahead(
-            lookahead_root,
-            shared_root,
-            None,
-            platform_path,
-            _validation_session=session,
-        )
+        if managed_dag_node:
+            if _managed_checkpoint(
+                lookahead_root, expected_stage="lookahead"
+            ) is None:
+                raise ValidationError(
+                    "managed Phase 6 requires a validated lookahead checkpoint"
+                )
+        else:
+            validate_physical_lookahead(
+                lookahead_root,
+                shared_root,
+                None,
+                platform_path,
+                _validation_session=session,
+            )
     paths = _shared_paths(shared_root)
     manifest = _require_file(root, "split/manifest.json")
     validate_phase6(
@@ -1217,6 +1306,7 @@ def validate_phase6_checkpoint(
         platform_path,
         manifest,
         replay_equivalence=validation_mode == "full-replay",
+        reconstruct_artifacts=validation_mode == "full-replay",
     )
     if provider == "placement-aware":
         validate_pin_plan(
@@ -1227,9 +1317,10 @@ def validate_phase6_checkpoint(
         )
     elif provider == "chimew":
         validate_chimew_phase6_pipeline(root / "chimew-pipeline")
-    if report.get("schedule_sha256") != _sha256(root / "schedule.json") or report.get(
-        "manifest_sha256"
-    ) != _sha256(manifest):
+    if not managed_dag_node and (
+        report.get("schedule_sha256") != _sha256(root / "schedule.json")
+        or report.get("manifest_sha256") != _sha256(manifest)
+    ):
         raise ValidationError("experiment Phase 6 checkpoint seal is broken")
     result = {
         "status": "pass",
@@ -1258,6 +1349,7 @@ def run_phase7_checkpoint(
     openparf_python: Path | None = None,
     route_channel_width: int = 300,
     reuse_validated_phase6_equivalence: bool = False,
+    managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     session = _ValidationSession()
     phase6 = validate_phase6_checkpoint(
@@ -1267,7 +1359,7 @@ def run_phase7_checkpoint(
         platform_path,
         validation_mode=(
             "validated-checkpoint-reuse"
-            if reuse_validated_phase6_equivalence
+            if reuse_validated_phase6_equivalence or managed_dag_node
             else "full-replay"
         ),
         _validation_session=session,
@@ -1277,7 +1369,7 @@ def run_phase7_checkpoint(
     output_dir = _prepare_empty_output(output_dir, "Phase 7 checkpoint")
     lookahead_report = read_json(lookahead_root / "experiment-lookahead-report.json")
     if phase6["provider"] == "baseline" and seed == lookahead_report["seed"]:
-        shutil.copytree(lookahead_root / "physical", output_dir / "physical")
+        _link_tree(lookahead_root / "physical", output_dir / "physical")
     else:
         run_multi_fpga_physical_flow(
             phase6_root / "split",
@@ -1313,6 +1405,7 @@ def run_phase7_checkpoint(
         physical_summary_path=output_dir / "physical/physical-summary.json",
         routes_path=paths["routes"],
         board_link_timing_path=_board_link_timing(shared_root),
+        materialize_physical_summary=False,
     )
     if runtime.get("status") != "pass":
         raise ValidationError("experiment Phase 7C did not reach physical closure")
@@ -1323,34 +1416,45 @@ def run_phase7_checkpoint(
         "physical_seed": seed,
         "workers": workers,
         "route_channel_width": route_channel_width,
-        "phase6_manifest_sha256": _sha256(phase6_root / "split/manifest.json"),
-        "frozen_upstream": {
-            "emuir_sha256": _sha256(paths["ir"]),
-            "assignment_sha256": _sha256(paths["assignment"]),
-            "routes_sha256": _sha256(paths["routes"]),
-            "schedule_sha256": _sha256(phase6_root / "schedule.json"),
-        },
-        "physical_summary_sha256": _sha256(
-            output_dir / "physical/physical-summary.json"
-        ),
-        "physical_flow_report_sha256": _sha256(
-            output_dir / "physical/multi-fpga-physical-flow-report.json"
-        ),
-        "qor_sha256": _sha256(output_dir / "runtime/qor_report.json"),
         "qor_projection": _phase7_qor_projection(
             read_json(output_dir / "runtime/qor_report.json")
         ),
     }
+    if managed_dag_node:
+        report["validation_mode"] = MANAGED_DAG_VALIDATION_MODE
+    else:
+        report.update(
+            {
+                "phase6_manifest_sha256": _sha256(
+                    phase6_root / "split/manifest.json"
+                ),
+                "frozen_upstream": {
+                    "emuir_sha256": _sha256(paths["ir"]),
+                    "assignment_sha256": _sha256(paths["assignment"]),
+                    "routes_sha256": _sha256(paths["routes"]),
+                    "schedule_sha256": _sha256(phase6_root / "schedule.json"),
+                },
+                "physical_summary_sha256": _sha256(
+                    output_dir / "physical/physical-summary.json"
+                ),
+                "physical_flow_report_sha256": _sha256(
+                    output_dir / "physical/multi-fpga-physical-flow-report.json"
+                ),
+                "qor_sha256": _sha256(output_dir / "runtime/qor_report.json"),
+            }
+        )
     write_json(output_dir / "experiment-phase7-report.json", report)
-    validate_phase7_checkpoint(
-        output_dir,
-        shared_root,
-        lookahead_root,
-        phase6_root,
-        platform_path,
-        reuse_validated_phase6_equivalence=reuse_validated_phase6_equivalence,
-        _validation_session=session,
-    )
+    if not managed_dag_node:
+        validate_phase7_checkpoint(
+            output_dir,
+            shared_root,
+            lookahead_root,
+            phase6_root,
+            platform_path,
+            reuse_validated_phase6_equivalence=reuse_validated_phase6_equivalence,
+            replay_qor=False,
+            _validation_session=session,
+        )
     return report
 
 
@@ -1365,6 +1469,8 @@ def validate_phase7_checkpoint(
     expected_workers: int | None = None,
     expected_route_channel_width: int | None = None,
     reuse_validated_phase6_equivalence: bool = False,
+    replay_qor: bool = True,
+    managed_dag_node: bool = False,
     _validation_session: _ValidationSession | None = None,
 ) -> Dict[str, Any]:
     session = _validation_session or _ValidationSession()
@@ -1375,7 +1481,7 @@ def validate_phase7_checkpoint(
         platform_path,
         validation_mode=(
             "validated-checkpoint-reuse"
-            if reuse_validated_phase6_equivalence
+            if reuse_validated_phase6_equivalence or managed_dag_node
             else "full-replay"
         ),
         _validation_session=session,
@@ -1388,6 +1494,11 @@ def validate_phase7_checkpoint(
         or report.get("provider") != phase6["provider"]
     ):
         raise ValidationError("experiment Phase 7 checkpoint report is invalid")
+    if managed_dag_node:
+        if report.get("validation_mode") != MANAGED_DAG_VALIDATION_MODE:
+            raise ValidationError("Phase 7 managed-validation contract is invalid")
+    elif report.get("validation_mode") is not None:
+        raise ValidationError("Phase 7 checkpoint requires managed validation")
     if expected_seed is not None and report.get("physical_seed") != expected_seed:
         raise ValidationError("experiment Phase 7 seed contract disagrees")
     if expected_workers is not None and report.get("workers") != expected_workers:
@@ -1397,14 +1508,15 @@ def validate_phase7_checkpoint(
     ) != expected_route_channel_width:
         raise ValidationError("experiment Phase 7 channel-width contract disagrees")
     paths = _shared_paths(shared_root)
-    expected_upstream = {
-        "emuir_sha256": _sha256(paths["ir"]),
-        "assignment_sha256": _sha256(paths["assignment"]),
-        "routes_sha256": _sha256(paths["routes"]),
-        "schedule_sha256": _sha256(phase6_root / "schedule.json"),
-    }
-    if report.get("frozen_upstream") != expected_upstream:
-        raise ValidationError("experiment Phase 7 frozen-upstream seal is broken")
+    if not managed_dag_node:
+        expected_upstream = {
+            "emuir_sha256": _sha256(paths["ir"]),
+            "assignment_sha256": _sha256(paths["assignment"]),
+            "routes_sha256": _sha256(paths["routes"]),
+            "schedule_sha256": _sha256(phase6_root / "schedule.json"),
+        }
+        if report.get("frozen_upstream") != expected_upstream:
+            raise ValidationError("experiment Phase 7 frozen-upstream seal is broken")
     physical_report = read_json(
         _require_file(root, "physical/multi-fpga-physical-flow-report.json")
     )
@@ -1427,7 +1539,7 @@ def validate_phase7_checkpoint(
             ) != expected_route_channel_width:
                 raise ValidationError("experiment Phase 7 VPR channel width disagrees")
     physical_report_path = root / "physical/multi-fpga-physical-flow-report.json"
-    if (
+    if not managed_dag_node and (
         report.get("physical_summary_sha256")
         != _sha256(root / "physical/physical-summary.json")
         or report.get("qor_sha256") != _sha256(root / "runtime/qor_report.json")
@@ -1445,23 +1557,25 @@ def validate_phase7_checkpoint(
             raise ValidationError("experiment Phase 7 QoR projection is invalid")
     elif report.get("qor") != qor:
         raise ValidationError("experiment Phase 7 legacy QoR seal is broken")
-    with tempfile.TemporaryDirectory() as temporary:
-        replay = run_phase7c(
-            phase6_root / "schedule.json",
-            platform_path,
-            paths["phase3_report"],
-            paths["phase4_report"],
-            paths["phase5_report"],
-            phase6_root / "split/phase6_report.json",
-            Path(temporary),
-            physical_summary_path=root / "physical/physical-summary.json",
-            routes_path=paths["routes"],
-            board_link_timing_path=_board_link_timing(shared_root),
-        )
-        if replay.get("status") != "pass" or read_json(
-            Path(temporary) / "qor_report.json"
-        ) != qor:
-            raise ValidationError("experiment Phase 7 QoR replay disagrees")
+    if replay_qor:
+        with tempfile.TemporaryDirectory() as temporary:
+            replay = run_phase7c(
+                phase6_root / "schedule.json",
+                platform_path,
+                paths["phase3_report"],
+                paths["phase4_report"],
+                paths["phase5_report"],
+                phase6_root / "split/phase6_report.json",
+                Path(temporary),
+                physical_summary_path=root / "physical/physical-summary.json",
+                routes_path=paths["routes"],
+                board_link_timing_path=_board_link_timing(shared_root),
+                materialize_physical_summary=False,
+            )
+            if replay.get("status") != "pass" or read_json(
+                Path(temporary) / "qor_report.json"
+            ) != qor:
+                raise ValidationError("experiment Phase 7 QoR replay disagrees")
     return {
         "status": "pass",
         "provider": report["provider"],

@@ -6,6 +6,7 @@ import hashlib
 import heapq
 import math
 import subprocess
+import time
 from bisect import bisect_right
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
@@ -1475,6 +1476,165 @@ def validate_mfspart_refinement(
     }
 
 
+def validate_mfspart_refinement_online(
+    artifact: Mapping[str, Any],
+    problem: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Validate only the Phase-3 output contract in linear time.
+
+    The full global-best FM replay is an algorithm qualification test, not a
+    production-flow legality requirement.  The online path checks the facts
+    needed by downstream stages without recomputing candidate gains.
+    """
+
+    if artifact.get("schema") != MFSPART_REFINEMENT_SCHEMA:
+        raise ValidationError("invalid MFSPart refinement schema")
+    moves = artifact.get("moves")
+    final = artifact.get("assignment")
+    metrics = artifact.get("metrics")
+    if not isinstance(moves, list) or not isinstance(final, list):
+        raise ValidationError("invalid MFSPart online refinement result")
+    if not isinstance(metrics, dict):
+        raise ValidationError("invalid MFSPart online refinement metrics")
+
+    nodes = problem["graph"]["nodes"]
+    node_count = len(nodes)
+    part_count = len(problem["parts"])
+    dimension_count = len(problem["dimensions"])
+    initial = list(problem["assignment"])
+    if len(final) != node_count:
+        raise ValidationError("MFSPart final assignment size mismatch")
+    if any(
+        isinstance(part, bool)
+        or not isinstance(part, int)
+        or part < 0
+        or part >= part_count
+        for part in final
+    ):
+        raise ValidationError("MFSPart final assignment contains an invalid part")
+
+    attempted = list(initial)
+    kept = list(initial)
+    seen_nodes = set()
+    kept_prefix = 0
+    previous_cumulative = 0.0
+    saw_unkept = False
+    for index, move in enumerate(moves):
+        if not isinstance(move, dict):
+            raise ValidationError("MFSPart move must be an object")
+        node = move.get("node")
+        source = move.get("source")
+        target = move.get("target")
+        gain = move.get("gain")
+        cumulative = move.get("cumulative_gain")
+        is_kept = move.get("kept")
+        if (
+            isinstance(node, bool)
+            or not isinstance(node, int)
+            or node < 0
+            or node >= node_count
+            or node in seen_nodes
+        ):
+            raise ValidationError("MFSPart move node is invalid or repeated")
+        if (
+            isinstance(source, bool)
+            or not isinstance(source, int)
+            or isinstance(target, bool)
+            or not isinstance(target, int)
+            or source < 0
+            or source >= part_count
+            or target < 0
+            or target >= part_count
+            or source == target
+            or attempted[node] != source
+        ):
+            raise ValidationError("MFSPart move source/target is invalid")
+        if (
+            not isinstance(gain, (int, float))
+            or not math.isfinite(float(gain))
+            or not isinstance(cumulative, (int, float))
+            or not math.isfinite(float(cumulative))
+            or not math.isclose(
+                float(cumulative),
+                previous_cumulative + float(gain),
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            )
+        ):
+            raise ValidationError("MFSPart move gain certificate is invalid")
+        if not isinstance(is_kept, bool) or (saw_unkept and is_kept):
+            raise ValidationError("MFSPart kept moves are not a prefix")
+        fixed_part = nodes[node]["fixed_part"]
+        if fixed_part >= 0 and target != fixed_part:
+            raise ValidationError("MFSPart moved a fixed node")
+        seen_nodes.add(node)
+        attempted[node] = target
+        previous_cumulative = float(cumulative)
+        if is_kept:
+            kept[node] = target
+            kept_prefix = index + 1
+        else:
+            saw_unkept = True
+
+    if final != kept:
+        raise ValidationError("MFSPart final assignment differs from kept prefix")
+    if metrics.get("attempted_moves") != float(len(moves)):
+        raise ValidationError("MFSPart attempted-move count mismatch")
+    if metrics.get("best_prefix") != float(kept_prefix):
+        raise ValidationError("MFSPart best-prefix count mismatch")
+    expected_best_gain = (
+        float(moves[kept_prefix - 1]["cumulative_gain"])
+        if kept_prefix
+        else 0.0
+    )
+    actual_best_gain = metrics.get("best_cumulative_gain")
+    if (
+        not isinstance(actual_best_gain, (int, float))
+        or not math.isclose(
+            float(actual_best_gain),
+            expected_best_gain,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+    ):
+        raise ValidationError("MFSPart best cumulative gain mismatch")
+
+    loads = [[0] * dimension_count for _ in range(part_count)]
+    for node, part in enumerate(final):
+        fixed_part = nodes[node]["fixed_part"]
+        if fixed_part >= 0 and part != fixed_part:
+            raise ValidationError("MFSPart final assignment violates a fixed node")
+        for dimension, weight in enumerate(nodes[node]["weights"]):
+            loads[part][dimension] += weight
+    for part in range(part_count):
+        for dimension in range(dimension_count):
+            if loads[part][dimension] > problem["capacities"][part][dimension]:
+                raise ValidationError("MFSPart final assignment exceeds capacity")
+
+    guarded_nets = 0
+    distances = problem["distances"]
+    for net in problem["graph"]["nets"]:
+        limit = net.get("max_distance_limit", -1)
+        if limit < 0:
+            continue
+        guarded_nets += 1
+        source_part = final[net["source"]]
+        if any(
+            distances[source_part][final[sink]] > limit
+            for sink in net["sinks"]
+        ):
+            raise ValidationError("MFSPart final assignment violates topology guard")
+
+    return {
+        "status": "pass",
+        "mode": "linear-phase3-output-contract",
+        "attempted_moves": len(moves),
+        "kept_moves": kept_prefix,
+        "best_cumulative_gain": expected_best_gain,
+        "guarded_nets": guarded_nets,
+    }
+
+
 def refine_mfspart_level(
     graph: Mapping[str, Any],
     dimensions: Sequence[str],
@@ -1497,6 +1657,7 @@ def refine_mfspart_level(
     checker: Optional[str] = None,
     python_replay_max_nodes: int = _DEFAULT_PYTHON_REPLAY_MAX_NODES,
     force_python_replay: bool = False,
+    online_validation: bool = False,
 ) -> Dict[str, Any]:
     problem = _normalise_refinement(
         graph,
@@ -1522,10 +1683,20 @@ def refine_mfspart_level(
     checker_output_path = output_dir / "mfspart_refiner.check"
     _write_native_input(input_path, problem)
     command = resolve_native_executable("emuflow_mfspart_refiner", executable)
-    completed = subprocess.run([command, str(input_path.resolve()), str(output_path.resolve())], cwd=output_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+    optimizer_started = time.perf_counter()
+    completed = subprocess.run(
+        [command, str(input_path.resolve()), str(output_path.resolve())],
+        cwd=output_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    optimizer_wall_seconds = time.perf_counter() - optimizer_started
     log_path.write_text(completed.stdout, encoding="utf-8")
     if completed.returncode != 0:
         raise EmuFlowError(f"MFSPart refiner failed with exit code {completed.returncode}: {completed.stdout[-2000:]}")
+    check_started = time.perf_counter()
     parsed = _parse_output(output_path, len(graph["nodes"]))
     artifact = {
         "schema": MFSPART_REFINEMENT_SCHEMA,
@@ -1534,21 +1705,44 @@ def refine_mfspart_level(
         "moves": parsed["moves"],
         "assignment": parsed["assignment"],
         "metrics": parsed["metrics"],
-        "artifacts": {"input_sha256": _sha256(input_path), "output_sha256": _sha256(output_path)},
+        "artifacts": {
+            "input": input_path.name,
+            "output": output_path.name,
+        },
     }
-    artifact["validation"] = validate_mfspart_refinement(
-        artifact,
-        problem,
-        native_input_path=input_path,
-        native_output_path=output_path,
-        checker_output_path=checker_output_path,
-        checker=checker,
-        python_replay_max_nodes=python_replay_max_nodes,
-        force_python_replay=force_python_replay,
-    )
-    if checker_output_path.is_file():
-        artifact["artifacts"]["checker_output_sha256"] = _sha256(
-            checker_output_path
+    if online_validation:
+        artifact["validation"] = validate_mfspart_refinement_online(
+            artifact, problem
+        )
+    else:
+        artifact["validation"] = validate_mfspart_refinement(
+            artifact,
+            problem,
+            native_input_path=input_path,
+            native_output_path=output_path,
+            checker_output_path=checker_output_path,
+            checker=checker,
+            python_replay_max_nodes=python_replay_max_nodes,
+            force_python_replay=force_python_replay,
+        )
+        if checker_output_path.is_file():
+            artifact["artifacts"]["checker_output"] = checker_output_path.name
+    candidate_check_wall_seconds = time.perf_counter() - check_started
+    artifact["runtime"] = {
+        "optimizer_wall_seconds": optimizer_wall_seconds,
+        "candidate_check_wall_seconds": candidate_check_wall_seconds,
+        "candidate_check_within_optimizer_budget": (
+            candidate_check_wall_seconds <= optimizer_wall_seconds
+        ),
+    }
+    if (
+        online_validation
+        and candidate_check_wall_seconds > optimizer_wall_seconds
+    ):
+        raise ValidationError(
+            "MFSPart online check exceeded optimizer runtime: "
+            f"check={candidate_check_wall_seconds:.6f}s, "
+            f"optimizer={optimizer_wall_seconds:.6f}s"
         )
     return artifact
 

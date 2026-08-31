@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 from .errors import TDMScheduleInfeasibleError
 from .io import read_json, write_json
+from .managed_json_storage import pack_managed_json
 from .platform import Platform
 from .tdm import (
     TDM_BASELINE_PROVIDER,
@@ -48,6 +49,7 @@ def run_phase5(
     post_refinement_iterations: int = 200,
     slot_refinement_iterations: int = 0,
     convergence: float = 1.0e-9,
+    managed_storage: bool = False,
 ) -> Dict[str, Any]:
     if (
         isinstance(slot_refinement_iterations, bool)
@@ -373,18 +375,32 @@ def run_phase5(
         report["artifacts"]["ratio_plan"] = "ratio_plan.json"
     output_dir.mkdir(parents=True, exist_ok=True)
     if ratio_plan is not None:
-        write_json(output_dir / "ratio_plan.json", ratio_plan, compact=True)
+        write_json(
+            output_dir / "ratio_plan.json",
+            pack_managed_json(ratio_plan) if managed_storage else ratio_plan,
+            compact=True,
+        )
     # Phase 5 machine artifacts can contain one record per routed hop.  Using
     # compact JSON keeps the encoder on CPython's C fast path; pretty-printing
     # a million-hop schedule can otherwise dominate the actual optimizer.
-    write_json(output_dir / "schedule.json", schedule, compact=True)
+    write_json(
+        output_dir / "schedule.json",
+        pack_managed_json(schedule) if managed_storage else schedule,
+        compact=True,
+    )
     (output_dir / "schedule.tsv").write_text(
         schedule_to_tsv(schedule), encoding="utf-8"
     )
     write_json(
-        output_dir / "transport_manifest.json", manifest, compact=True
+        output_dir / "transport_manifest.json",
+        pack_managed_json(manifest) if managed_storage else manifest,
+        compact=True,
     )
-    write_json(output_dir / "tdm_feedback.json", feedback, compact=True)
+    write_json(
+        output_dir / "tdm_feedback.json",
+        pack_managed_json(feedback) if managed_storage else feedback,
+        compact=True,
+    )
     (output_dir / "transport_schedule_tb.sv").write_text(
         schedule_to_systemverilog_testbench(
             routes,

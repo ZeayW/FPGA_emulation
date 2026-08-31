@@ -849,16 +849,19 @@ def validate_split_artifacts(
     platform: Platform,
     artifacts: Mapping[str, Any],
     pin_plan: Optional[Mapping[str, Any]] = None,
+    *,
+    reconstruct: bool = True,
 ) -> Dict[str, Any]:
-    expected = build_split_artifacts(
-        ir, assignment, schedule, platform, pin_plan
-    )
-    for key in ("manifest", "lane_map", "netlists", "transports", "anchors"):
-        if artifacts.get(key) != expected[key]:
-            raise ValidationError(
-                f"split artifact {key!r} does not match independent "
-                "reconstruction"
-            )
+    if reconstruct:
+        expected = build_split_artifacts(
+            ir, assignment, schedule, platform, pin_plan
+        )
+        for key in ("manifest", "lane_map", "netlists", "transports", "anchors"):
+            if artifacts.get(key) != expected[key]:
+                raise ValidationError(
+                    f"split artifact {key!r} does not match independent "
+                    "reconstruction"
+                )
 
     instance_counts = Counter(
         instance["id"]

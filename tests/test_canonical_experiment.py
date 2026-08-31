@@ -244,6 +244,12 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "6",
             )
             self.assertIn("--repair-balance", nodes["partition"]["command"])
+            self.assertIn(
+                "--managed-dag-node", nodes["partition"]["command"]
+            )
+            self.assertIn(
+                "--online-validation", nodes["partition"]["validator"]
+            )
             self.assertEqual(
                 nodes["partition"]["validator"][
                     nodes["partition"]["validator"].index("--seed-attempts") + 1
@@ -331,10 +337,10 @@ class CanonicalExperimentTest(unittest.TestCase):
                     roles["physical/multi-fpga-physical-flow-report.json"],
                     "evidence-critical",
                 )
-                self.assertEqual(roles["physical"], "diagnostic")
+                self.assertNotIn("physical", roles)
             self.assertTrue(
                 all(
-                    item["validator"][-6:]
+                    item["validator"][-7:]
                     == [
                         "--seed",
                         str(item["physical_seed"]),
@@ -342,6 +348,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                         "8",
                         "--route-channel-width",
                         "300",
+                        "--managed-dag-node",
                     ]
                     for item in terminals
                 )

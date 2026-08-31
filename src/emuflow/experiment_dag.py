@@ -660,6 +660,7 @@ def validate_experiment_checkpoint(
     *,
     expected_key: Optional[str] = None,
     verify_artifact_content: bool = True,
+    verify_immutable_tree: bool = True,
 ) -> Dict[str, Any]:
     value = read_json(manifest_path)
     schema = value.get("schema")
@@ -728,7 +729,12 @@ def validate_experiment_checkpoint(
     ):
         if value.get("output_immutable") is not True:
             raise ValidationError("managed checkpoint lacks immutable-output seal")
-        _validate_tree_immutable(output_dir)
+        if verify_immutable_tree:
+            _validate_tree_immutable(output_dir)
+        elif output_dir.stat().st_mode & 0o222:
+            raise ValidationError(
+                "managed checkpoint output root is writable"
+            )
     return value
 
 
