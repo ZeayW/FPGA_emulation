@@ -519,6 +519,8 @@ def build_partition_pressure_model(
     constraints: Mapping[str, Any],
     timing_database: Mapping[str, Any],
     route_constraints: Mapping[str, Any],
+    *,
+    independent_validation: bool = True,
 ) -> Dict[str, Any]:
     """Build the immutable source-bound reference model."""
 
@@ -530,15 +532,16 @@ def build_partition_pressure_model(
         timing_database,
         route_constraints,
     )
-    validate_partition_pressure_model(
-        ir,
-        platform,
-        clusters_artifact,
-        constraints,
-        timing_database,
-        route_constraints,
-        model,
-    )
+    if independent_validation:
+        validate_partition_pressure_model(
+            ir,
+            platform,
+            clusters_artifact,
+            constraints,
+            timing_database,
+            route_constraints,
+            model,
+        )
     return model
 
 

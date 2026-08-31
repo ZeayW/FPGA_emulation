@@ -1276,6 +1276,52 @@ class PartitionPressureTest(unittest.TestCase):
                 set(self.initial["cluster_assignment"]),
             )
 
+            with (
+                patch(
+                    "emuflow.partition_pressure.validate_partition_pressure_model",
+                    side_effect=AssertionError(
+                        "managed producer rebuilt the pressure model"
+                    ),
+                ),
+                patch(
+                    "emuflow.phase3.validate_partition_pressure_native_bundle",
+                    side_effect=AssertionError(
+                        "managed producer entered offline deep replay"
+                    ),
+                ),
+            ):
+                managed = run_phase3(
+                    ir_path,
+                    platform_path,
+                    root / "phase3-managed",
+                    min_used_fpgas=2,
+                    balance_tolerance=1.0,
+                    provider="patron",
+                    cut_mode="sequential-only",
+                    tritonpart_solution=solution_path,
+                    route_constraints_path=route_path,
+                    timing_database_path=timing_path,
+                    patron_refiner=str(patron_refiner()),
+                    managed_dag_node=True,
+                )
+            self.assertEqual(managed["status"], "pass")
+            self.assertEqual(
+                managed["algorithm_validation"]["qualification"],
+                "managed-native-output-contract",
+            )
+            self.assertEqual(
+                managed["patron_diagnostics"]["storage"], "not-persisted"
+            )
+            for relative in (
+                "pressure_model.json",
+                "refinement_trace.json",
+                "initial_assignment.json",
+                "candidate_assignment.json",
+            ):
+                self.assertFalse(
+                    (root / "phase3-managed/patron" / relative).exists()
+                )
+
     def test_phase3_patron_consumes_generalized_static_exact_contract(
         self,
     ) -> None:

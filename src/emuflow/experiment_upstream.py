@@ -984,7 +984,7 @@ def materialize_shared_phase1_5(
         for label, root, stage in (
             ("frontend", frontend_root, "frontend"),
             ("timing", timing_root, "timing"),
-            ("partition", partition_root, "partition"),
+            ("partition", partition_root, ("partition", "partition-patron")),
             ("cut-timing", cut_timing_root, "cut-timing"),
             ("route", route_root, "route"),
             ("tdm", tdm_root, "tdm"),

@@ -360,6 +360,7 @@ def run_phase3(
             constraints,
             timing_database,
             route_constraints,
+            independent_validation=not managed_dag_node,
         )
         patron_physical_feedback = None
         patron_physical_feedback_validation = None
@@ -395,46 +396,74 @@ def run_phase3(
             physical_feedback=patron_physical_feedback,
             physical_feedback_scale=patron_physical_feedback_scale,
         )
-        write_json(output_dir / "patron" / "pressure_model.json", model)
-        write_json(
-            output_dir / "patron" / "refinement_trace.json", patron_trace
-        )
-        write_json(
-            output_dir / "patron" / "initial_assignment.json", initial
-        )
-        write_json(
-            output_dir / "patron" / "candidate_assignment.json",
-            assignment,
-        )
-        write_json(
-            output_dir / "patron" / "initial_hop_refinement.json",
-            patron_initial_hop,
-        )
-        if patron_physical_feedback is not None:
+        if not managed_dag_node:
+            write_json(output_dir / "patron" / "pressure_model.json", model)
             write_json(
-                output_dir / "patron" / "physical_feedback.json",
+                output_dir / "patron" / "refinement_trace.json", patron_trace
+            )
+            write_json(
+                output_dir / "patron" / "initial_assignment.json", initial
+            )
+            write_json(
+                output_dir / "patron" / "candidate_assignment.json",
+                assignment,
+            )
+            write_json(
+                output_dir / "patron" / "initial_hop_refinement.json",
+                patron_initial_hop,
+            )
+            if patron_physical_feedback is not None:
+                write_json(
+                    output_dir / "patron" / "physical_feedback.json",
+                    patron_physical_feedback,
+                )
+                write_json(
+                    output_dir
+                    / "patron"
+                    / "physical_feedback_source_assignment.json",
+                    patron_feedback_source_assignment,
+                )
+            patron_validation = validate_partition_pressure_native_bundle(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                timing_database,
+                route_constraints,
+                model,
+                initial,
+                assignment,
+                patron_trace,
                 patron_physical_feedback,
+                patron_physical_feedback_scale,
             )
-            write_json(
-                output_dir
-                / "patron"
-                / "physical_feedback_source_assignment.json",
-                patron_feedback_source_assignment,
+        else:
+            initial_validation = validate_partition_artifacts_online(
+                platform, clusters, initial
             )
-        patron_validation = validate_partition_pressure_native_bundle(
-            ir,
-            platform,
-            clusters,
-            constraints,
-            timing_database,
-            route_constraints,
-            model,
-            initial,
-            assignment,
-            patron_trace,
-            patron_physical_feedback,
-            patron_physical_feedback_scale,
-        )
+            candidate_validation = validate_partition_artifacts_online(
+                platform, clusters, assignment
+            )
+            moves = patron_trace.get("moves")
+            batches = patron_trace.get("batches")
+            if not isinstance(moves, list) or not isinstance(batches, list):
+                raise ValidationError("managed PATRON trace shape is invalid")
+            patron_validation = {
+                "status": "pass",
+                "mode": patron_trace.get("mode"),
+                "qualification": "managed-native-output-contract",
+                "deep_replay": "deferred-to-offline-qualification",
+                "initial_assignment": initial_validation,
+                "candidate_assignment": candidate_validation,
+                "model": {
+                    "clusters": len(model.get("clusters", [])),
+                    "nets": len(model.get("nets", [])),
+                    "paths": len(model.get("paths", [])),
+                    "capacity_domains": len(model.get("capacities", [])),
+                },
+                "moves": len(moves),
+                "batches": len(batches),
+            }
         if patron_physical_feedback_validation is not None:
             patron_validation["physical_feedback"] = (
                 patron_physical_feedback_validation
@@ -543,29 +572,39 @@ def run_phase3(
     elif provider == "patron":
         report["patron_algorithm_version"] = patron_algorithm_version
         report["algorithm_validation"] = patron_validation
-        report["artifacts"].update(
-            {
-                "patron_model": "patron/pressure_model.json",
-                "patron_trace": "patron/refinement_trace.json",
-                "patron_initial_assignment": (
-                    "patron/initial_assignment.json"
-                ),
-                "patron_candidate_assignment": (
-                    "patron/candidate_assignment.json"
-                ),
-                "patron_initial_hop_refinement": (
-                    "patron/initial_hop_refinement.json"
-                ),
+        if not managed_dag_node:
+            report["artifacts"].update(
+                {
+                    "patron_model": "patron/pressure_model.json",
+                    "patron_trace": "patron/refinement_trace.json",
+                    "patron_initial_assignment": (
+                        "patron/initial_assignment.json"
+                    ),
+                    "patron_candidate_assignment": (
+                        "patron/candidate_assignment.json"
+                    ),
+                    "patron_initial_hop_refinement": (
+                        "patron/initial_hop_refinement.json"
+                    ),
+                }
+            )
+        else:
+            report["patron_diagnostics"] = {
+                "storage": "not-persisted",
+                "reason": "managed-production-hot-path",
+                "offline_qualification": "available-via-standalone-phase3",
             }
-        )
-        if patron_physical_system_timing_path is not None:
+        if (
+            patron_physical_system_timing_path is not None
+            and not managed_dag_node
+        ):
             report["artifacts"]["patron_physical_feedback"] = (
                 "patron/physical_feedback.json"
             )
             report["artifacts"][
                 "patron_physical_feedback_source_assignment"
             ] = "patron/physical_feedback_source_assignment.json"
-        if patron_initial_assignment_path is None:
+        if patron_initial_assignment_path is None and not managed_dag_node:
             report["artifacts"]["tritonpart"] = (
                 "patron/tritonpart/tritonpart_input.json"
             )

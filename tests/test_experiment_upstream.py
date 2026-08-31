@@ -196,9 +196,14 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     path.write_text(f"{stage}:{relative}\n", encoding="utf-8")
 
             def managed(_root, *, expected_stage):
+                stage_key = (
+                    "|".join(expected_stage)
+                    if isinstance(expected_stage, tuple)
+                    else expected_stage
+                )
                 return {
                     "execution_key": hashlib.sha256(
-                        expected_stage.encode("utf-8")
+                        stage_key.encode("utf-8")
                     ).hexdigest()
                 }
 

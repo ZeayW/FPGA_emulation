@@ -10,7 +10,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Sequence
 
 from .academic_chimew import materialize_academic_chimew_inputs
 from .chimew_pipeline import (
@@ -107,7 +107,7 @@ def _link_tree(source: Path, destination: Path) -> None:
 def _managed_checkpoint(
     root: Path,
     *,
-    expected_stage: str,
+    expected_stage: str | Sequence[str],
 ) -> Dict[str, Any] | None:
     """Return a sealed managed checkpoint for a routine consumer, if present."""
 
@@ -125,9 +125,14 @@ def _managed_checkpoint(
         verify_artifact_content=False,
         verify_immutable_tree=False,
     )
+    expected_stages = (
+        {expected_stage}
+        if isinstance(expected_stage, str)
+        else set(expected_stage)
+    )
     if (
         checkpoint.get("schema") != "emuflow.experiment-checkpoint/v2"
-        or checkpoint.get("stage") != expected_stage
+        or checkpoint.get("stage") not in expected_stages
         or checkpoint.get("storage") != "managed"
         or checkpoint.get("output_immutable") is not True
         or Path(checkpoint.get("output_dir", "")).resolve() != root
