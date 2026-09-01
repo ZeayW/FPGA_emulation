@@ -204,6 +204,12 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             )
 
     def test_every_partition_is_bound_through_checked_route(self):
+        self._checked_partition_flow(resume=False)
+
+    def test_resumed_flow_preserves_packed_contract_before_route_reuse(self):
+        self._checked_partition_flow(resume=True)
+
+    def _checked_partition_flow(self, *, resume):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             split = root / "split"
@@ -438,7 +444,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 patch(
                     "emuflow.multi_fpga_physical_flow.run_packed_netlist_import",
                     side_effect=fake_packed,
-                ),
+                ) as packed_import,
                 patch(
                     "emuflow.multi_fpga_physical_flow.run_packed_openparf_placement",
                     side_effect=fake_placement,
@@ -459,7 +465,11 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     root / "physical",
                     architecture=architecture,
                     workers=2,
+                    resume=resume,
                 )
+                self.assertEqual(packed_import.call_count, 2)
+                for call in packed_import.call_args_list:
+                    self.assertEqual(call.kwargs["resume"], resume)
                 self.assertEqual(
                     (root / "physical/architecture/vtr-flagship.xml").read_bytes(),
                     architecture.read_bytes(),
@@ -485,8 +495,8 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
         )
         self.assertEqual(report["execution"]["requested_workers"], 2)
         self.assertEqual(report["execution"]["effective_workers"], 2)
-        self.assertFalse(report["execution"]["pack_place_resume"])
-        self.assertFalse(report["execution"]["route_resume"])
+        self.assertEqual(report["execution"]["pack_place_resume"], resume)
+        self.assertEqual(report["execution"]["route_resume"], resume)
 
     def test_rejects_non_positive_worker_count(self):
         with tempfile.TemporaryDirectory() as temporary:

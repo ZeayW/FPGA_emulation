@@ -230,6 +230,16 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "src/native/chimew_position_refiner.cpp",
                 nodes["physical-lookahead"]["implementation"]["components"],
             )
+            self.assertIn(
+                "src/emuflow/packed_netlist.py",
+                nodes["physical-lookahead"]["implementation"]["components"],
+            )
+            for node in nodes.values():
+                if node["stage"] == "phase7":
+                    self.assertIn(
+                        "src/emuflow/packed_netlist.py",
+                        node["implementation"]["components"],
+                    )
             self.assertIn("--hop-refiner", nodes["partition"]["command"])
             self.assertEqual(
                 nodes["partition"]["configuration"]["seed_attempts"], 6

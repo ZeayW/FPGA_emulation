@@ -2125,6 +2125,15 @@ certificate is rehashed and semantically revalidated, and its relative path
 below `physical/` must remain identical.  Mixed layouts or modified bytes are
 rejected.  The validator returns runtime paths rebased only into the validated
 new copy; external inputs and the immutable source attempt are never rewritten.
+During `--resume`, the packed-netlist importer independently re-extracts the
+current native netlist and compares its complete contract with the retained
+one. Only the absolute source path may differ after relocation; the original
+contract bytes and provenance are preserved so a completed route's SHA-256
+certificate remains valid. Changed netlist content, architecture/circuit
+identities or contract payloads are rejected without overwriting the retained
+file. Fresh runs are unchanged. The packed-contract implementation is included
+in the physical-lookahead and Phase 7 implementation closures; changing it
+invalidates those nodes, not unchanged upstream partitioning checkpoints.
 
 Build and verify the portable implementation closure used by a v2 node:
 

@@ -725,6 +725,7 @@ def run_multi_fpga_physical_flow(
                 architecture_path=architecture_path,
                 circuit_path=circuit,
                 executable=packed_importer,
+                resume=resume,
             )
             boundary_identity_path = Path(
                 lowering_report["boundary_identity"]["output"]

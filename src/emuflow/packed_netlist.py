@@ -353,6 +353,7 @@ def run_packed_netlist_import(
     architecture_path: Optional[Path] = None,
     circuit_path: Optional[Path] = None,
     executable: Optional[str] = None,
+    resume: bool = False,
 ) -> Dict[str, Any]:
     packed_netlist_path = packed_netlist_path.resolve()
     if not packed_netlist_path.is_file():
@@ -389,7 +390,25 @@ def run_packed_netlist_import(
             _sha256(circuit_path) if circuit_path is not None else None
         ),
     )
-    write_json(output_path, value)
+    if resume and (output_path.exists() or output_path.is_symlink()):
+        if output_path.is_symlink() or not output_path.is_file():
+            raise ValidationError("packed-netlist resume contract is not a regular file")
+        existing = read_json(output_path)
+        # Re-extract from the current native inputs before trusting a retained
+        # contract. Its absolute source path records original provenance, not
+        # runtime identity: relocating identical bytes must not rewrite the
+        # contract sealed by an already completed route/checker certificate.
+        source = existing.get("source") if isinstance(existing, dict) else None
+        old_path = source.get("path") if isinstance(source, dict) else None
+        if not isinstance(old_path, str) or not Path(old_path).is_absolute():
+            raise ValidationError("packed-netlist resume source path is invalid")
+        expected = {**value, "source": {**value["source"], "path": old_path}}
+        if existing != expected:
+            raise ValidationError("packed-netlist resume contract disagrees with native inputs")
+        # Keep the original bytes, including formatting; the downstream route
+        # gate independently verifies their original SHA-256 certificate.
+    else:
+        write_json(output_path, value)
     return {
         **report,
         "provider": "emuflow-cpp-vpr-packed-netlist-importer",
