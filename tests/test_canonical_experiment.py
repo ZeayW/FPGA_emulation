@@ -1,8 +1,10 @@
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
+import venv
 from pathlib import Path
 
 from emuflow.canonical_experiment import (
@@ -155,6 +157,48 @@ class CanonicalExperimentTest(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
         return path
 
+    def test_compiler_preserves_openparf_virtualenv_interpreter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment = root / "openparf-venv"
+            venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
+            interpreter = environment / "bin/python"
+            self.assertTrue(interpreter.is_symlink())
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config["tools"]["openparf_python"] = str(interpreter)
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            spec = validate_experiment_spec(json.loads(output.read_text()))
+            physical_nodes = [
+                node for node in spec["nodes"]
+                if "--openparf-python" in node["command"]
+            ]
+            self.assertTrue(physical_nodes)
+            for node in physical_nodes:
+                command = node["command"]
+                executable = command[command.index("--openparf-python") + 1]
+                self.assertEqual(executable, str(interpreter.absolute()))
+                self.assertIn(
+                    "src/emuflow/canonical_experiment.py::_python_interpreter",
+                    node["implementation"]["components"],
+                )
+                self.assertEqual(
+                    node["inputs"]["tool.openparf_python"],
+                    hashlib.sha256(interpreter.read_bytes()).hexdigest(),
+                )
+                prefix = subprocess.check_output(
+                    [executable, "-c", "import sys; print(sys.prefix)"], text=True
+                ).strip()
+                self.assertEqual(Path(prefix).resolve(), environment.resolve())
+            for node in spec["nodes"]:
+                if node["id"] in {"frontend", "timing", "partition", "cut-timing", "route", "tdm", "shared-phase1-5", "phase6-baseline"}:
+                    self.assertNotIn(
+                        "src/emuflow/canonical_experiment.py::_python_interpreter",
+                        node["implementation"]["components"],
+                    )
+
     def test_compiler_defaults_to_one_physical_seed_per_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -195,6 +239,15 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertNotIn("--opensta", nodes["cut-timing"]["command"])
             self.assertEqual(nodes["tdm"]["dependencies"], ["route"])
             self.assertIn("--route-constraints", nodes["partition"]["command"])
+            shared = nodes["shared-phase1-5"]
+            self.assertIn("route_constraints", shared["inputs"])
+            self.assertIn("timing_model", shared["inputs"])
+            self.assertIn("architecture_timing_db", shared["inputs"])
+            partition_command = nodes["partition"]["command"]
+            self.assertEqual(
+                shared["command"][shared["command"].index("--route-constraints") + 1],
+                partition_command[partition_command.index("--route-constraints") + 1],
+            )
             self.assertEqual(
                 nodes["frontend"]["configuration"]["mapping_profile"],
                 "vtr-hard-blocks",
@@ -459,6 +512,16 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertIn(
                 "patron_physical_system_timing", partition["inputs"]
             )
+            shared = nodes["shared-phase1-5"]
+            for label, option, source in (
+                ("patron_initial_assignment", "--patron-initial-assignment", initial),
+                ("patron_physical_system_timing", "--patron-physical-system-timing", physical_timing),
+            ):
+                self.assertEqual(shared["inputs"][label], partition["inputs"][label])
+                self.assertEqual(
+                    shared["command"][shared["command"].index(option) + 1],
+                    str(source.resolve()),
+                )
             self.assertIn(
                 "src/emuflow/partition_pressure.py",
                 partition["implementation"]["components"],
@@ -1045,6 +1108,12 @@ class CanonicalExperimentTest(unittest.TestCase):
             }
             partition = nodes["partition"]
             self.assertIn("partition_constraints", partition["inputs"])
+            shared = nodes["shared-phase1-5"]
+            self.assertIn("partition_constraints", shared["inputs"])
+            self.assertEqual(
+                shared["command"][shared["command"].index("--constraints") + 1],
+                str(constraints.resolve()),
+            )
             self.assertEqual(
                 partition["configuration"]["partition_constraints_sha256"],
                 hashlib.sha256(constraints.read_bytes()).hexdigest(),
@@ -1090,6 +1159,15 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             digest = hashlib.sha256(solution.read_bytes()).hexdigest()
             self.assertEqual(partition["inputs"]["tritonpart_solution"], digest)
+            shared = next(
+                item for item in json.loads(output.read_text())["nodes"]
+                if item["id"] == "shared-phase1-5"
+            )
+            self.assertEqual(shared["inputs"]["tritonpart_solution"], digest)
+            self.assertEqual(
+                shared["command"][shared["command"].index("--tritonpart-solution") + 1],
+                str(solution.resolve()),
+            )
             self.assertEqual(
                 partition["configuration"]["tritonpart_solution_sha256"],
                 digest,

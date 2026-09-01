@@ -43,6 +43,13 @@ class ExperimentUpstreamTest(unittest.TestCase):
             tdm = root / "tdm"
             platform = root / "platform.json"
             output = root / "shared"
+            partition_inputs = {
+                "constraints_path": root / "partition-constraints.json",
+                "route_constraints_path": root / "route-constraints.json",
+                "tritonpart_solution": root / "initial.part",
+                "patron_initial_assignment_path": root / "initial.json",
+                "patron_physical_system_timing_path": root / "system-timing.json",
+            }
             with (
                 mock.patch(
                     "emuflow.experiment_upstream.validate_frontend_checkpoint"
@@ -58,10 +65,10 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 ),
                 mock.patch(
                     "emuflow.experiment_upstream.validate_route_checkpoint"
-                ),
+                ) as validate_route,
                 mock.patch(
                     "emuflow.experiment_upstream.validate_tdm_checkpoint"
-                ),
+                ) as validate_tdm,
                 mock.patch(
                     "emuflow.experiment_upstream._prepare_empty_output",
                     return_value=output,
@@ -85,10 +92,38 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     tdm,
                     platform,
                     output,
+                    **partition_inputs,
                 )
             validate_partition.assert_called_once_with(
-                frontend, timing, platform, partition
+                frontend, timing, platform, partition, **partition_inputs
             )
+            validate_route.assert_called_once_with(
+                partition, cut_timing, platform, route,
+                constraints_path=partition_inputs["route_constraints_path"],
+            )
+            validate_tdm.assert_called_once_with(
+                route, platform, tdm,
+                constraints_path=partition_inputs["route_constraints_path"],
+            )
+
+    def test_shared_cli_forwards_partition_validation_inputs(self) -> None:
+        from emuflow.cli import main
+
+        required = ("frontend", "timing", "partition", "cut-timing", "route", "tdm", "platform", "out")
+        forwarded = {
+            "constraints": "constraints_path",
+            "route-constraints": "route_constraints_path",
+            "tritonpart-solution": "tritonpart_solution",
+            "patron-initial-assignment": "patron_initial_assignment_path",
+            "patron-physical-system-timing": "patron_physical_system_timing_path",
+        }
+        argv = ["experiment-stage", "shared-materialize"]
+        for option in (*required, *forwarded):
+            argv.extend((f"--{option}", f"fixture-{option}"))
+        with mock.patch("emuflow.cli.materialize_shared_phase1_5", return_value={}) as run:
+            self.assertEqual(main(argv), 0)
+        for option, keyword in forwarded.items():
+            self.assertEqual(run.call_args.kwargs[keyword], Path(f"fixture-{option}"))
 
     def test_managed_route_and_tdm_write_directly_without_hash_or_self_replay(
         self,

@@ -1713,6 +1713,23 @@ boundaries. The executable pairs are `frontend-run/validate`,
 `cut-timing-run/validate`, `route-run/validate`, and `tdm-run/validate`.
 `shared-materialize` then creates a small same-filesystem hard-linked view of
 their validated consumer artifacts, and `shared-validate` rechecks that view.
+The canonical compiler binds `shared-materialize` to the same route constraints
+and optional partition constraints, TritonPart solution, PATRON initial assignment
+and physical system timing as the partition producer. Standalone callers must
+pass the corresponding `--route-constraints`, `--constraints`,
+`--tritonpart-solution`, `--patron-initial-assignment` and
+`--patron-physical-system-timing` inputs when used by their partition checkpoint.
+This preserves independent model/trace validation instead of reconstructing a
+custom PATRON pressure model with default link limits or missing feedback. A
+materialization-only repair does not require recomputing valid upstream stages;
+regenerate the DAG and reuse checkpoints with matching content identities.
+The canonical compiler also preserves the configured `tools.openparf_python`
+invocation path, including a virtual environment's `bin/python` symlink. It
+validates and hashes the interpreter target without replacing the runtime path
+with the base Python, which may lack PyTorch and other OpenPARF dependencies.
+The interpreter-binding implementation is sealed in physical-lookahead and
+Phase 7 closures only; correcting it does not invalidate completed Phase 1--6
+ancestors. Regenerate the DAG before retrying an affected physical stage.
 The hard links do not duplicate file allocation; on a cross-filesystem test
 environment the command safely falls back to copying. v2 DAGs still model the
 six producing stages separately. `phase6-run --provider baseline` consumes Phase 5

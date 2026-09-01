@@ -897,6 +897,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     shared_materialize.add_argument("--architecture-timing-db", type=Path)
     shared_materialize.add_argument("--managed-dag-node", action="store_true")
+    shared_materialize.add_argument("--constraints", type=Path)
+    shared_materialize.add_argument("--route-constraints", type=Path)
+    shared_materialize.add_argument("--tritonpart-solution", type=Path)
+    shared_materialize.add_argument("--patron-initial-assignment", type=Path)
+    shared_materialize.add_argument("--patron-physical-system-timing", type=Path)
     shared_materialize.add_argument("--out", type=Path, required=True)
     shared_validate = experiment_stage_subparsers.add_parser(
         "shared-validate", help="validate a frozen Phase 1-5 flow root"
@@ -3953,6 +3958,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 timing_model_path=args.timing_model,
                 architecture_timing_db_path=args.architecture_timing_db,
                 managed_dag_node=args.managed_dag_node,
+                constraints_path=args.constraints,
+                route_constraints_path=args.route_constraints,
+                tritonpart_solution=args.tritonpart_solution,
+                patron_initial_assignment_path=args.patron_initial_assignment,
+                patron_physical_system_timing_path=args.patron_physical_system_timing,
             )
         elif args.experiment_stage_command == "shared-validate":
             report = validate_materialized_shared_phase1_5(

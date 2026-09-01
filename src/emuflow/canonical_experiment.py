@@ -74,6 +74,13 @@ def _directory(value: Any, label: str) -> Path:
     return path
 
 
+def _python_interpreter(value: Any, label: str) -> Path:
+    # Validate the target, but preserve the invoked path: resolving a venv's
+    # bin/python symlink selects the base interpreter and loses its packages.
+    _file(value, label)
+    return Path(value).expanduser().absolute()
+
+
 def _positive_integer(value: Any, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValidationError(f"canonical experiment {label} must be positive")
@@ -311,6 +318,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/native/chimew_signal_grouper.cpp",
     ),
     "lookahead": (
+        "src/emuflow/canonical_experiment.py::_python_interpreter",
         "src/emuflow/experiment_stages.py",
         "src/emuflow/academic_chimew.py",
         "src/emuflow/chimew_bank_channel.py",
@@ -332,6 +340,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/native/vpr_route_checker.cpp",
     ),
     "phase7": (
+        "src/emuflow/canonical_experiment.py::_python_interpreter",
         "src/emuflow/experiment_stages.py",
         "src/emuflow/multi_fpga_physical_flow.py",
         "src/emuflow/physical_backend.py",
@@ -514,6 +523,9 @@ def compile_canonical_experiment_spec(
             "canonical experiment tools must exactly cover " + ", ".join(sorted(required_tools))
         )
     tools = {label: _file(value, f"tool {label}") for label, value in tools_raw.items()}
+    tools["openparf_python"] = _python_interpreter(
+        tools_raw["openparf_python"], "tool openparf_python"
+    )
     openparf_install = _directory(config.get("openparf_install"), "openparf_install")
     openparf_manifest = _file(config.get("openparf_manifest"), "openparf_manifest")
     openparf_closure = validate_implementation_closure(
@@ -1225,12 +1237,35 @@ def compile_canonical_experiment_spec(
         peak_gib=12, retained_gib=3,
     )
     shared_dependencies = ["frontend", "timing", "partition", "cut-timing", "route", "tdm"]
+    shared_command = [
+        executable, "experiment-stage", "shared-materialize",
+        "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}",
+        "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}",
+        "--route", "{dependency:route}", "--tdm", "{dependency:tdm}",
+        "--platform", str(platform), "--timing-model", str(timing_model),
+        "--architecture-timing-db", str(architecture_timing),
+        "--route-constraints", str(route_constraints),
+    ]
+    shared_inputs = [
+        "platform", "tool.emuflow", "timing_model", "architecture_timing_db",
+        "route_constraints",
+    ]
+    for label, option, path in (
+        ("partition_constraints", "--constraints", partition_constraints),
+        ("tritonpart_solution", "--tritonpart-solution", tritonpart_solution),
+        ("patron_initial_assignment", "--patron-initial-assignment", patron_initial_assignment),
+        ("patron_physical_system_timing", "--patron-physical-system-timing", patron_physical_system_timing),
+    ):
+        if path is not None:
+            shared_command.extend((option, str(path)))
+            shared_inputs.append(label)
+    shared_command.extend(("--managed-dag-node", "--out", "{output_dir}"))
     node(
         "shared-phase1-5", "shared", shared_dependencies,
-        [executable, "experiment-stage", "shared-materialize", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--route", "{dependency:route}", "--tdm", "{dependency:tdm}", "--platform", str(platform), "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing), "--managed-dag-node", "--out", "{output_dir}"],
+        shared_command,
         [executable, "experiment-stage", "shared-validate", "--shared", "{artifact_root}", "--platform", str(platform), "--managed-dag-node"],
         [_artifact("frontend", "consumer-checkpoint"), _artifact("timing", "consumer-checkpoint"), _artifact("partition", "consumer-checkpoint"), _artifact("system-route", "consumer-checkpoint"), _artifact("tdm", "consumer-checkpoint"), _artifact("experiment-shared-report.json", "evidence-critical")],
-        inputs=("platform", "tool.emuflow"), configuration={"materialization": "same-filesystem-hardlink-or-copy"}, peak_gib=2, retained_gib=1,
+        inputs=tuple(shared_inputs), configuration={"materialization": "same-filesystem-hardlink-or-copy"}, peak_gib=2, retained_gib=1,
     )
 
     baseline_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline", "--managed-storage", "--managed-dag-node", "--out", "{output_dir}"]
