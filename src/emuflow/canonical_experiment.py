@@ -739,6 +739,7 @@ def compile_canonical_experiment_spec(
             "max_cross_fpga_dependency_depth to be 1 or 2"
         )
     patron_initial_assignment = None
+    patron_initial_clusters = None
     patron_physical_system_timing = None
     if (
         partition_provider == "patron"
@@ -747,6 +748,16 @@ def compile_canonical_experiment_spec(
         patron_initial_assignment = _file(
             config["patron_initial_assignment"],
             "patron_initial_assignment",
+        )
+    if config.get("patron_initial_clusters") is not None:
+        if partition_provider != "patron" or patron_initial_assignment is None:
+            raise ValidationError(
+                "canonical patron_initial_clusters requires provider=patron "
+                "and patron_initial_assignment"
+            )
+        patron_initial_clusters = _file(
+            config["patron_initial_clusters"],
+            "patron_initial_clusters",
         )
     physical_system_timing_value = config.get(
         "patron_physical_system_timing"
@@ -798,6 +809,11 @@ def compile_canonical_experiment_spec(
             else {}
         ),
         **(
+            {"patron_initial_clusters": _sha256(patron_initial_clusters)}
+            if patron_initial_clusters is not None
+            else {}
+        ),
+        **(
             {
                 "patron_physical_system_timing": _sha256(
                     patron_physical_system_timing
@@ -831,6 +847,11 @@ def compile_canonical_experiment_spec(
                 )
             }
             if patron_initial_assignment is not None
+            else {}
+        ),
+        **(
+            {"patron_initial_clusters": str(patron_initial_clusters)}
+            if patron_initial_clusters is not None
             else {}
         ),
         **(
@@ -1035,6 +1056,11 @@ def compile_canonical_experiment_spec(
         if patron_initial_assignment is not None
         else None
     )
+    effective_patron_initial_clusters = (
+        str(patron_initial_clusters)
+        if patron_initial_clusters is not None
+        else None
+    )
     if partition_provider == "patron":
         if effective_patron_initial_assignment is None:
             baseline_command = list(partition_command)
@@ -1090,6 +1116,9 @@ def compile_canonical_experiment_spec(
             effective_patron_initial_assignment = (
                 "{dependency:patron-initial-partition}/assignment.json"
             )
+            effective_patron_initial_clusters = (
+                "{dependency:patron-initial-partition}/clusters.json"
+            )
             partition_dependencies.append("patron-initial-partition")
         partition_command[-2:-2] = [
             "--patron-refiner",
@@ -1099,6 +1128,11 @@ def compile_canonical_experiment_spec(
             partition_command[-2:-2] = [
                 "--patron-initial-assignment",
                 effective_patron_initial_assignment,
+            ]
+        if effective_patron_initial_clusters is not None:
+            partition_command[-2:-2] = [
+                "--patron-initial-clusters",
+                effective_patron_initial_clusters,
             ]
         if patron_flow_refinement:
             partition_command.insert(-2, "--patron-flow-refinement")
@@ -1118,6 +1152,13 @@ def compile_canonical_experiment_spec(
                 [
                 "--patron-initial-assignment",
                 effective_patron_initial_assignment,
+                ]
+            )
+        if effective_patron_initial_clusters is not None:
+            partition_validator.extend(
+                [
+                    "--patron-initial-clusters",
+                    effective_patron_initial_clusters,
                 ]
             )
         if patron_flow_refinement:
@@ -1140,6 +1181,8 @@ def compile_canonical_experiment_spec(
         partition_inputs.append("tool.patron_refiner")
         if patron_initial_assignment is not None:
             partition_inputs.append("patron_initial_assignment")
+        if patron_initial_clusters is not None:
+            partition_inputs.append("patron_initial_clusters")
         if patron_physical_system_timing is not None:
             partition_inputs.append("patron_physical_system_timing")
     node(
@@ -1172,6 +1215,15 @@ def compile_canonical_experiment_spec(
                 else (
                     "patron-initial-partition"
                     if partition_provider == "patron"
+                    else None
+                )
+            ),
+            "patron_initial_clusters_source": (
+                "external"
+                if patron_initial_clusters is not None
+                else (
+                    "patron-initial-partition"
+                    if effective_patron_initial_clusters is not None
                     else None
                 )
             ),

@@ -1311,7 +1311,8 @@ default partition configuration is source-built endpoint-exact PATRON with
 generalized Static Exact v2. A standalone PATRON command creates a TritonPart
 initial assignment when none is supplied. The canonical managed DAG instead
 materializes that initializer as a separate content-addressed partition
-checkpoint and feeds its frozen assignment to PATRON. All PATRON versions and
+checkpoint and feeds its frozen assignment and validated cluster table to
+PATRON. All PATRON versions and
 physical-feedback descendants therefore reuse one validated initializer
 instead of rerunning the same TritonPart and hop-refinement work, after which
 PATRON refines and independently validates the complete result.
@@ -1936,7 +1937,8 @@ native-refiner scratch files after consuming them, and publishes only the
 winner assignment plus compact reports. For PATRON, the TritonPart initializer
 is its own reusable `patron-initial-partition` node; the version-specific
 partition node consumes only that frozen assignment and never retains the
-`patron/` diagnostic tree. The online MFSPart check records both
+matching validated cluster table, rather than rebuilding the same clustering,
+and never retains the `patron/` diagnostic tree. The online MFSPart check records both
 optimizer and checker wall time and fails if checking takes longer than the
 optimizer. Full move-optimality replay is reserved for explicit qualification
 tests.
@@ -1952,7 +1954,11 @@ names, and the duplicate instance assignment from the managed checkpoint hot
 path without weakening the independent Phase 3 validator or changing Phase
 4--7 semantics.
 PATRON arms also reuse one frozen, independently validated TritonPart plus
-topology-hop initializer. A supplied frozen assignment is audited and consumed
+topology-hop initializer. In a managed DAG, the initializer's assignment and
+cluster table are passed as an explicit pair; the consumer checks their cheap
+configuration contract and relies on the initializer node's independent
+validation instead of reconstructing all clusters. A supplied frozen
+assignment is audited and consumed
 exactly rather than silently running the hop optimizer again. When its cluster
 identity already matches, the managed producer validates and reuses that
 canonical assignment instead of rebuilding its instance map, cut nets, and

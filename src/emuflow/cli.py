@@ -646,6 +646,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=6,
     )
     partition_run.add_argument("--patron-initial-assignment", type=Path)
+    partition_run.add_argument("--patron-initial-clusters", type=Path)
     partition_run.add_argument(
         "--patron-physical-system-timing", type=Path
     )
@@ -751,6 +752,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     partition_validate.add_argument("--provider")
     partition_validate.add_argument("--patron-initial-assignment", type=Path)
+    partition_validate.add_argument("--patron-initial-clusters", type=Path)
     partition_validate.add_argument(
         "--patron-physical-system-timing", type=Path
     )
@@ -2812,6 +2814,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=6,
     )
     phase3.add_argument("--patron-initial-assignment", type=Path)
+    phase3.add_argument("--patron-initial-clusters", type=Path)
     phase3.add_argument("--patron-physical-system-timing", type=Path)
     phase3.add_argument(
         "--patron-physical-feedback-scale", type=float, default=0.0
@@ -3798,6 +3801,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                     patron_initial_assignment_path=(
                         args.patron_initial_assignment
                     ),
+                    patron_initial_clusters_path=(
+                        args.patron_initial_clusters
+                    ),
                     patron_physical_system_timing_path=(
                         args.patron_physical_system_timing
                     ),
@@ -3846,6 +3852,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ),
                 patron_initial_assignment_path=(
                     args.patron_initial_assignment
+                ),
+                patron_initial_clusters_path=(
+                    args.patron_initial_clusters
                 ),
                 expected_patron_flow_refinement=(
                     args.patron_flow_refinement
@@ -5291,6 +5300,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             patron_initial_assignment_path=(
                 args.patron_initial_assignment
             ),
+            patron_initial_clusters_path=args.patron_initial_clusters,
             patron_physical_system_timing_path=(
                 args.patron_physical_system_timing
             ),

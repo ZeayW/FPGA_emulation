@@ -183,6 +183,7 @@ def run_partition_checkpoint(
     patron_flow_refinement: bool = False,
     patron_algorithm_version: int = 6,
     patron_initial_assignment_path: Optional[Path] = None,
+    patron_initial_clusters_path: Optional[Path] = None,
     patron_physical_system_timing_path: Optional[Path] = None,
     patron_physical_feedback_scale: float = 0.0,
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
@@ -280,6 +281,7 @@ def run_partition_checkpoint(
         patron_flow_refinement=patron_flow_refinement,
         patron_algorithm_version=patron_algorithm_version,
         patron_initial_assignment_path=patron_initial_assignment_path,
+        patron_initial_clusters_path=patron_initial_clusters_path,
         patron_physical_system_timing_path=(
             patron_physical_system_timing_path
         ),
@@ -312,6 +314,9 @@ def run_partition_checkpoint(
         "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
         "patron_flow_refinement": patron_flow_refinement,
         "patron_algorithm_version": patron_algorithm_version,
+        "patron_initial_clusters_reused": (
+            patron_initial_clusters_path is not None
+        ),
         "patron_physical_feedback_scale": patron_physical_feedback_scale,
         "static_exact_combinational_cut_exercised": (
             cut_mode != CUT_MODE_SEQUENTIAL_ONLY
@@ -422,6 +427,7 @@ def run_partition_checkpoint(
                 minimum_combinational_cut_nets
             ),
             patron_initial_assignment_path=patron_initial_assignment_path,
+            patron_initial_clusters_path=patron_initial_clusters_path,
             expected_patron_flow_refinement=patron_flow_refinement,
             expected_patron_algorithm_version=patron_algorithm_version,
             patron_physical_system_timing_path=(
@@ -459,6 +465,7 @@ def validate_partition_checkpoint(
     expected_comb_segment_budget_slots: int | None = None,
     expected_minimum_combinational_cut_nets: int | None = None,
     patron_initial_assignment_path: Path | None = None,
+    patron_initial_clusters_path: Path | None = None,
     expected_patron_flow_refinement: bool | None = None,
     expected_patron_algorithm_version: int | None = None,
     patron_physical_system_timing_path: Path | None = None,
@@ -478,6 +485,12 @@ def validate_partition_checkpoint(
         raise ValidationError("partition checkpoint report is invalid")
     if expected_provider is not None and report.get("provider") != expected_provider:
         raise ValidationError("partition provider contract disagrees")
+    if report.get("patron_initial_clusters_reused", False) is not (
+        patron_initial_clusters_path is not None
+    ):
+        raise ValidationError(
+            "partition PATRON initial-clusters contract disagrees"
+        )
     if expected_seed is not None and report.get("seed") != expected_seed:
         raise ValidationError("partition seed contract disagrees")
     if (

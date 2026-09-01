@@ -35,6 +35,7 @@ from .sta import validate_sta_path_database
 from .tritonpart import load_partition_net_weights, run_tritonpart
 from .routing import load_route_constraints
 from .combinational_cut import (
+    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
@@ -42,6 +43,49 @@ from .phase3_storage import pack_phase3_assignment, pack_phase3_clusters
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
+
+
+def _validate_reused_patron_clusters(
+    ir: EmuIR,
+    clusters: Dict[str, Any],
+    *,
+    cut_mode: str,
+    max_cross_fpga_dependency_depth: int,
+    comb_segment_budget_slots: int,
+    frame_slots: int,
+    static_exact_candidate_policy: str,
+) -> None:
+    """Check the cheap contract for a validated managed cluster checkpoint."""
+
+    if clusters.get("schema") != "emuflow.clusters/v1":
+        raise ValidationError("PATRON initial clusters schema is invalid")
+    if clusters.get("design") != ir.value["design"]["name"]:
+        raise ValidationError("PATRON initial clusters design disagrees")
+    if clusters.get("instances") != len(ir.value["instances"]):
+        raise ValidationError("PATRON initial clusters instance count disagrees")
+    policy = clusters.get("policy")
+    if not isinstance(policy, dict):
+        raise ValidationError("PATRON initial clusters policy is invalid")
+    actual_cut_mode = policy.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
+    if actual_cut_mode != cut_mode:
+        raise ValidationError("PATRON initial clusters cut mode disagrees")
+    if cut_mode == CUT_MODE_STATIC_EXACT:
+        expected = {
+            "max_cross_fpga_dependency_depth": (
+                max_cross_fpga_dependency_depth
+            ),
+            "comb_segment_budget_slots": comb_segment_budget_slots,
+            "frame_slots": frame_slots,
+            "candidate_selection_policy": static_exact_candidate_policy,
+        }
+        for field, value in expected.items():
+            actual = policy.get(field)
+            if field == "candidate_selection_policy" and actual is None:
+                actual = STATIC_EXACT_CANDIDATE_FRONTIER_V1
+            if actual != value:
+                raise ValidationError(
+                    f"PATRON initial clusters {field} disagrees"
+                )
 
 
 def _rebase_patron_initial_assignment(
@@ -68,6 +112,11 @@ def _rebase_patron_initial_assignment(
     if unknown:
         raise ValidationError(
             f"PATRON frozen assignment references unknown FPGAs {unknown}"
+        )
+    if frozen.get("constraints") != constraints:
+        raise ValidationError(
+            "PATRON frozen assignment constraints disagree with the current "
+            "Phase 3 contract"
         )
 
     cluster_assignment: Dict[str, str] = {}
@@ -212,10 +261,20 @@ def run_phase3(
     patron_flow_refinement: bool = False,
     patron_algorithm_version: int = 6,
     patron_initial_assignment_path: Optional[Path] = None,
+    patron_initial_clusters_path: Optional[Path] = None,
     patron_physical_system_timing_path: Optional[Path] = None,
     patron_physical_feedback_scale: float = 0.0,
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
+    if patron_initial_clusters_path is not None and (
+        provider != "patron"
+        or patron_initial_assignment_path is None
+        or not managed_dag_node
+    ):
+        raise ValidationError(
+            "PATRON initial clusters require a managed PATRON DAG node and "
+            "a frozen initial assignment"
+        )
     if not isinstance(patron_flow_refinement, bool):
         raise ValidationError("PATRON flow refinement flag is invalid")
     if (
@@ -272,17 +331,31 @@ def run_phase3(
     route_constraints = load_route_constraints(
         route_constraints_path, platform
     )
-    clusters = build_clusters(
-        ir,
-        constraints,
-        cut_mode=cut_mode,
-        max_cross_fpga_dependency_depth=(
-            max_cross_fpga_dependency_depth
-        ),
-        comb_segment_budget_slots=comb_segment_budget_slots,
-        frame_slots=route_constraints["frame_slots"],
-        static_exact_candidate_policy=static_exact_candidate_policy,
-    )
+    if patron_initial_clusters_path is None:
+        clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=cut_mode,
+            max_cross_fpga_dependency_depth=(
+                max_cross_fpga_dependency_depth
+            ),
+            comb_segment_budget_slots=comb_segment_budget_slots,
+            frame_slots=route_constraints["frame_slots"],
+            static_exact_candidate_policy=static_exact_candidate_policy,
+        )
+    else:
+        clusters = read_json(patron_initial_clusters_path)
+        _validate_reused_patron_clusters(
+            ir,
+            clusters,
+            cut_mode=cut_mode,
+            max_cross_fpga_dependency_depth=(
+                max_cross_fpga_dependency_depth
+            ),
+            comb_segment_budget_slots=comb_segment_budget_slots,
+            frame_slots=route_constraints["frame_slots"],
+            static_exact_candidate_policy=static_exact_candidate_policy,
+        )
     patron_validation = None
     if provider == "greedy":
         assignment = assign_clusters(
@@ -585,6 +658,9 @@ def run_phase3(
         "hop_refinement": persisted_hop_refinement,
         "mfspart_post_refinement": _mfspart_report_summary(
             mfspart_post_refinement_report
+        ),
+        "patron_initial_clusters_reused": (
+            patron_initial_clusters_path is not None
         ),
         "partitions": [
             {

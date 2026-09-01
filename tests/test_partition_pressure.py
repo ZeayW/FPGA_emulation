@@ -1436,6 +1436,7 @@ class PartitionPressureTest(unittest.TestCase):
             timing_path = root / "timing.json"
             route_path = root / "routes.json"
             initial_path = root / "initial.json"
+            initial_clusters_path = root / "initial-clusters.json"
             write_json(ir_path, ir.value)
             write_json(platform_path, self.platform.to_dict())
             write_json(constraints_path, constraints)
@@ -1449,25 +1450,35 @@ class PartitionPressureTest(unittest.TestCase):
                 },
             )
             write_json(initial_path, initial)
-            report = run_phase3(
-                ir_path,
-                platform_path,
-                root / "phase3",
-                constraints_path=constraints_path,
-                provider="patron",
-                route_constraints_path=route_path,
-                timing_database_path=timing_path,
-                patron_refiner=str(patron_refiner()),
-                patron_initial_assignment_path=initial_path,
-                cut_mode=CUT_MODE_STATIC_EXACT,
-                max_cross_fpga_dependency_depth=8,
-                comb_segment_budget_slots=1,
-                static_exact_candidate_policy=(
-                    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+            write_json(initial_clusters_path, clusters)
+            with patch(
+                "emuflow.phase3.build_clusters",
+                side_effect=AssertionError(
+                    "managed PATRON rebuilt validated initial clusters"
                 ),
-            )
+            ):
+                report = run_phase3(
+                    ir_path,
+                    platform_path,
+                    root / "phase3",
+                    constraints_path=constraints_path,
+                    provider="patron",
+                    route_constraints_path=route_path,
+                    timing_database_path=timing_path,
+                    patron_refiner=str(patron_refiner()),
+                    patron_initial_assignment_path=initial_path,
+                    patron_initial_clusters_path=initial_clusters_path,
+                    cut_mode=CUT_MODE_STATIC_EXACT,
+                    max_cross_fpga_dependency_depth=8,
+                    comb_segment_budget_slots=1,
+                    static_exact_candidate_policy=(
+                        STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+                    ),
+                    managed_dag_node=True,
+                )
             assignment = read_json(root / "phase3/assignment.json")
             self.assertEqual(report["status"], "pass")
+            self.assertTrue(report["patron_initial_clusters_reused"])
             self.assertEqual(
                 report["cut_mode"], "static-exact-combinational"
             )

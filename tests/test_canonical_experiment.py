@@ -396,6 +396,9 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertIn(
                 "--patron-initial-assignment", partition["command"]
             )
+            self.assertIn(
+                "--patron-initial-clusters", partition["command"]
+            )
             self.assertEqual(
                 partition["dependencies"],
                 ["frontend", "timing", "patron-initial-partition"],
@@ -421,6 +424,12 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
                 "patron-initial-partition",
             )
+            self.assertEqual(
+                partition["configuration"][
+                    "patron_initial_clusters_source"
+                ],
+                "patron-initial-partition",
+            )
             self.assertFalse(
                 any(
                     artifact["path"] == "patron"
@@ -435,6 +444,10 @@ class CanonicalExperimentTest(unittest.TestCase):
             config = json.loads(config_path.read_text())
             initial = root / "baseline-assignment.json"
             initial.write_text('{"frozen":"fixture"}\n', encoding="utf-8")
+            initial_clusters = root / "baseline-clusters.json"
+            initial_clusters.write_text(
+                '{"schema":"emuflow.clusters/v1"}\n', encoding="utf-8"
+            )
             physical_timing = root / "prior-system-timing.json"
             physical_timing.write_text(
                 '{"schema":"emuflow.system-timing/v2"}\n',
@@ -444,6 +457,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             config["cut_mode"] = "sequential-only"
             config["patron_flow_refinement"] = True
             config["patron_initial_assignment"] = str(initial)
+            config["patron_initial_clusters"] = str(initial_clusters)
             config["patron_physical_system_timing"] = str(physical_timing)
             config["patron_physical_feedback_scale"] = 0.25
             config["tools"]["patron_refiner"] = sys.executable
@@ -465,6 +479,9 @@ class CanonicalExperimentTest(unittest.TestCase):
                 partition["configuration"]["patron_algorithm_version"], 11
             )
             self.assertIn("--patron-refiner", partition["command"])
+            self.assertIn(
+                "--patron-initial-clusters", partition["command"]
+            )
             self.assertIn("--patron-flow-refinement", partition["command"])
             self.assertIn(
                 "--patron-flow-refinement", partition["validator"]
