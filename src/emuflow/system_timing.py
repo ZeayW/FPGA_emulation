@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -203,7 +201,7 @@ def _board_link_delay_database(
 def _local_path_database(
     physical_summary: Mapping[str, Any],
     virtual_period: float,
-    routes: Mapping[str, Any],
+    routes_artifact_sha256: str | None,
 ) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     raw = physical_summary.get("local_path_timing")
     if raw is None:
@@ -280,13 +278,16 @@ def _local_path_database(
             )
     records.sort(key=lambda item: item["path"])
     if source is not None:
-        # Match io.write_json() byte-for-byte.  The certificate binds the
-        # concrete routes artifact, not merely an arbitrary equivalent JSON
-        # serialization.
-        encoded_routes = (
-            json.dumps(routes, indent=2, sort_keys=True) + "\n"
-        ).encode("utf-8")
-        if hashlib.sha256(encoded_routes).hexdigest() != source["routes_sha256"]:
+        # The certificate binds the concrete routes artifact byte-for-byte.
+        # A Mapping cannot recover that identity: managed nodes may choose
+        # compact JSON while direct runs use pretty JSON for the same value.
+        # Require the digest captured while reading the actual input file.
+        if routes_artifact_sha256 is None:
+            raise ValidationError(
+                "physical local path timing requires the concrete route "
+                "artifact digest"
+            )
+        if routes_artifact_sha256 != source["routes_sha256"]:
             raise ValidationError(
                 "physical local path timing is bound to another route artifact"
             )
@@ -300,6 +301,8 @@ def build_system_timing(
     phase5_report: Mapping[str, Any],
     physical_summary: Mapping[str, Any],
     platform: Platform,
+    *,
+    routes_artifact_sha256: str | None = None,
 ) -> Dict[str, Any]:
     """Compose P&R delay and concrete TDM/link delay on every STA path.
 
@@ -564,7 +567,7 @@ def build_system_timing(
         discontinuous_paths += (discontinuities > 0) * len(member_ids)
 
     local_paths, original_source = _local_path_database(
-        physical_summary, virtual_period, routes
+        physical_summary, virtual_period, routes_artifact_sha256
     )
     system_paths = sorted(
         [*local_paths, *cross_paths], key=lambda item: item["path"]

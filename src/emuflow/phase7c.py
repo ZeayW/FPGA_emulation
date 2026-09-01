@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -18,6 +19,14 @@ from .runtime import (
 
 
 PHASE7C_REPORT_SCHEMA = "emuflow.phase7c-report/v2"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def run_phase7c(
@@ -57,6 +66,9 @@ def run_phase7c(
         physical_summary = dict(physical_summary)
         physical_summary["board_link_timing"] = board_link_timing
     routes = read_json(routes_path) if routes_path is not None else None
+    routes_artifact_sha256 = (
+        _sha256(routes_path) if routes_path is not None else None
+    )
     qor = aggregate_qor(
         runtime,
         read_json(phase3_report_path),
@@ -67,6 +79,7 @@ def run_phase7c(
         platform,
         routes=routes,
         schedule=schedule,
+        routes_artifact_sha256=routes_artifact_sha256,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "runtime_contract.json", runtime)

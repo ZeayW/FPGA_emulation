@@ -651,6 +651,7 @@ def aggregate_qor(
     platform: Platform,
     routes: Optional[Mapping[str, Any]] = None,
     schedule: Optional[Mapping[str, Any]] = None,
+    routes_artifact_sha256: Optional[str] = None,
 ) -> Dict[str, Any]:
     for name, report in (
         ("phase3", phase3_report),
@@ -688,6 +689,7 @@ def aggregate_qor(
             phase5_report,
             physical_summary,
             platform,
+            routes_artifact_sha256=routes_artifact_sha256,
         )
     physical_closed = (
         physical["status"] == "pass"

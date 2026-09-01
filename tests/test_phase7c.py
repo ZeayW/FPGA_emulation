@@ -519,9 +519,11 @@ class Phase7CTest(unittest.TestCase):
             "original_ir_sha256": "b" * 64,
             "assignment_sha256": "c" * 64,
             "routes_sha256": hashlib.sha256(
-                (json.dumps(self.routes, indent=2, sort_keys=True) + "\n").encode(
-                    "utf-8"
-                )
+                json.dumps(
+                    self.routes,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
             ).hexdigest(),
             "original_paths": 2,
             "original_path_ids_sha256": path_id_set_sha256(path_ids),
@@ -574,6 +576,7 @@ class Phase7CTest(unittest.TestCase):
             self.platform,
             routes=self.routes,
             schedule=self.schedule,
+            routes_artifact_sha256=source["routes_sha256"],
         )
         self.assertEqual(qor["status"], "pass")
         self.assertTrue(qor["whole_design_timing_complete"])
@@ -622,6 +625,7 @@ class Phase7CTest(unittest.TestCase):
             self.platform,
             routes=self.routes,
             schedule=self.schedule,
+            routes_artifact_sha256=source["routes_sha256"],
         )
         selected_exactness = selected_qor["timing"]["path_exactness"]
         self.assertEqual(
@@ -644,6 +648,23 @@ class Phase7CTest(unittest.TestCase):
                 self.platform,
                 routes=self.routes,
                 schedule=self.schedule,
+                routes_artifact_sha256=source["routes_sha256"],
+            )
+
+        with self.assertRaisesRegex(
+            ValidationError, "bound to another route artifact"
+        ):
+            aggregate_qor(
+                runtime,
+                self.reports["phase3"],
+                self.reports["phase4"],
+                self.reports["phase5"],
+                self.reports["phase6"],
+                physical,
+                self.platform,
+                routes=self.routes,
+                schedule=self.schedule,
+                routes_artifact_sha256="0" * 64,
             )
 
     def test_qor_uses_versioned_board_link_delay_bound(self):
@@ -989,6 +1010,83 @@ class Phase7CTest(unittest.TestCase):
             )
             for filename in closed["artifacts"].values():
                 self.assertTrue((root / "closed" / filename).is_file())
+
+    def test_phase7c_binds_local_timing_to_compact_route_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            route_bytes = json.dumps(
+                self.routes,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            routes_path = root / "routes.json"
+            routes_path.write_bytes(route_bytes)
+            path_ids = ["local-critical", "system-critical"]
+            source = {
+                "path_database_sha256": "a" * 64,
+                "original_ir_sha256": "b" * 64,
+                "assignment_sha256": "c" * 64,
+                "routes_sha256": hashlib.sha256(route_bytes).hexdigest(),
+                "original_paths": len(path_ids),
+                "original_path_ids_sha256": path_id_set_sha256(path_ids),
+            }
+            physical = self._physical_summary()
+            physical["local_path_timing"] = {
+                fpga: {
+                    "schema": "emuflow.local-path-timing/v1",
+                    "status": "pass",
+                    "design": "dut",
+                    "fpga": fpga,
+                    "provider": "test",
+                    "qualification": (
+                        "source-bound-routed-endpoint-delay-with-capture-setup"
+                    ),
+                    "source": source,
+                    "coverage": {"local_paths": 1 if fpga == "fpga0" else 0},
+                    "paths": (
+                        [
+                            {
+                                "id": "local-critical",
+                                "kind": "local",
+                                "fpga": fpga,
+                                "clock_domain": "clk",
+                                "clock_period_ns": 20.0,
+                                "start_pin": "i0.Q[0]",
+                                "end_pin": "i1.D[0]",
+                                "delay_ns": 4.0,
+                            }
+                        ]
+                        if fpga == "fpga0"
+                        else []
+                    ),
+                }
+                for fpga in ("fpga0", "fpga1")
+            }
+            paths = {"routes": routes_path}
+            for name, value in {
+                "schedule": self.schedule,
+                **self.reports,
+                "platform": self.platform.to_dict(),
+                "physical": physical,
+            }.items():
+                paths[name] = root / f"{name}.json"
+                paths[name].write_text(json.dumps(value), encoding="utf-8")
+            closed = run_phase7c(
+                paths["schedule"],
+                paths["platform"],
+                paths["phase3"],
+                paths["phase4"],
+                paths["phase5"],
+                paths["phase6"],
+                root / "closed",
+                physical_summary_path=paths["physical"],
+                routes_path=paths["routes"],
+            )
+            self.assertEqual(closed["status"], "pass")
+            self.assertEqual(
+                closed["system_timing"]["source_binding"]["routes_sha256"],
+                source["routes_sha256"],
+            )
 
     def test_heterogeneous_fabric_clocks_are_outside_v1(self):
         value = self.platform.to_dict()
