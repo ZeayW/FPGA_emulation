@@ -1953,7 +1953,10 @@ path without weakening the independent Phase 3 validator or changing Phase
 4--7 semantics.
 PATRON arms also reuse one frozen, independently validated TritonPart plus
 topology-hop initializer. A supplied frozen assignment is audited and consumed
-exactly rather than silently running the hop optimizer again. PATRON natively
+exactly rather than silently running the hop optimizer again. When its cluster
+identity already matches, the managed producer validates and reuses that
+canonical assignment instead of rebuilding its instance map, cut nets, and
+Static Exact semantic contract. PATRON natively
 enforces route reachability and the maximum-hop constraint on every candidate,
 so its selected result receives an independent in-memory hop audit instead of
 a second topology-FM optimization pass. This keeps Phase 3 attributable to the

@@ -84,6 +84,21 @@ def _rebase_patron_initial_assignment(
             f"clusters={split_clusters[:8]}"
         )
 
+    frozen_cluster_assignment = frozen.get("cluster_assignment")
+    if (
+        isinstance(frozen_cluster_assignment, dict)
+        and frozen_cluster_assignment == cluster_assignment
+    ):
+        # The overwhelmingly common managed-flow case reuses the exact
+        # clustering that produced the frozen assignment.  Rebuilding the
+        # complete assignment here would duplicate every instance mapping,
+        # cut-net record, and Static Exact semantic-contract record merely to
+        # recover identical bytes.  The online validator independently checks
+        # cluster coverage, resource bounds, and assignment consistency.
+        candidate = dict(frozen)
+        validate_partition_artifacts_online(platform, clusters, candidate)
+        return candidate
+
     rebased = build_partition_assignment(
         ir,
         platform,

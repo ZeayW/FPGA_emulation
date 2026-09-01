@@ -35,6 +35,7 @@ from emuflow.partition_pressure import (
     validate_partition_pressure_scalable_trace,
 )
 from emuflow.phase3 import promote_patron_baseline, run_phase3
+from emuflow.phase3 import _rebase_patron_initial_assignment
 from emuflow.platform import Platform
 from emuflow.io import read_json, write_json
 from emuflow.routing import normalize_route_constraints
@@ -247,6 +248,22 @@ class PartitionPressureTest(unittest.TestCase):
             self.timing,
             self.route_constraints,
         )
+
+    def test_frozen_assignment_rebase_reuses_identical_clusters(self) -> None:
+        with patch(
+            "emuflow.phase3.build_partition_assignment",
+            side_effect=AssertionError(
+                "identical frozen clusters rebuilt the full assignment"
+            ),
+        ):
+            rebased = _rebase_patron_initial_assignment(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                self.initial,
+            )
+        self.assertEqual(rebased, self.initial)
 
     def test_model_is_source_bound_and_tamper_evident(self) -> None:
         checked = validate_partition_pressure_model(
