@@ -1407,7 +1407,13 @@ selected by the current omitted-option default, while the previously measured
 ranked-frontier version 9 is reproducible with
 `--patron-algorithm-version 9`.  Version 11 must name both a frozen initial
 assignment and a matching prior complete-global `system-timing/v2` artifact;
-it is never inferred from cache presence.  The older
+it is never inferred from cache presence.  The endpoint-pair residual model
+retains complete timing-path source coverage but does not fabricate feedback
+for a routed path that leaves one FPGA and returns to the same endpoint FPGA.
+Such an exact reentrant cross-FPGA path is counted as
+`endpoint_pair_ineligible_cross_paths` and omitted from the pair-residual
+payload because its intermediate excursion cannot be represented by a
+distinct source/sink pair.  The older
 `--patron-flow-refinement` spelling remains an explicit version-10 producer
 alias when no physical-feedback input is present.  A four-arm complete-flow
 gate for Static Exact v2 plus v6, v9, v6-to-v11, and v9-to-v11 is pending;

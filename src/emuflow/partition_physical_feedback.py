@@ -95,6 +95,7 @@ def _reconstruct_partition_physical_feedback(
 
     records = []
     cross_paths = 0
+    endpoint_pair_ineligible_cross_paths = 0
     raw_positive_total = 0.0
     maximum_residual = 0.0
     for index, pressure_path in enumerate(model_paths):
@@ -114,7 +115,6 @@ def _reconstruct_partition_physical_feedback(
             or not isinstance(sequence, list)
             or len(sequence) < 2
             or any(part not in fpgas for part in sequence)
-            or sequence[0] == sequence[-1]
         ):
             raise ValidationError(
                 f"physical feedback path {path_id!r} is not endpoint-pair exact"
@@ -130,6 +130,14 @@ def _reconstruct_partition_physical_feedback(
             raise ValidationError(
                 f"physical feedback path {path_id!r} disagrees with assignment"
             )
+        # A routed path may leave one FPGA and later return to it. Its full
+        # transition chain is exact, but a source/sink-pair residual cannot
+        # represent the intermediate excursion because both endpoint
+        # assignments are the same. Retain it in complete source coverage and
+        # report it as ineligible instead of inventing a distinct endpoint pair.
+        if sequence[0] == sequence[-1]:
+            endpoint_pair_ineligible_cross_paths += 1
+            continue
         period = _finite(
             pressure_path.get("clock_period_ns"),
             f"physical feedback path {path_id} period",
@@ -201,6 +209,9 @@ def _reconstruct_partition_physical_feedback(
         "metrics": {
             "source_paths": len(model_paths),
             "cross_fpga_paths": cross_paths,
+            "endpoint_pair_ineligible_cross_paths": (
+                endpoint_pair_ineligible_cross_paths
+            ),
             "positive_residual_paths": len(records),
             "mean_positive_residual_ns": (
                 raw_positive_total / len(records) if records else 0.0

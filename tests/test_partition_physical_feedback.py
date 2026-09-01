@@ -204,6 +204,57 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
                 self.model, self.assignment, inconsistent
             )
 
+    def test_feedback_reports_cross_fpga_reentrant_paths_as_ineligible(
+        self,
+    ) -> None:
+        reentrant_assignment = copy.deepcopy(self.assignment)
+        critical = self.model["paths"][0]
+        start = critical["start_cluster"]
+        end = critical["end_cluster"]
+        part = reentrant_assignment["cluster_assignment"][start]
+        reentrant_assignment["cluster_assignment"][end] = part
+
+        reentrant_timing = copy.deepcopy(self.system_timing)
+        reentrant_timing["paths"][0]["logical_fpga_sequence"] = [
+            part,
+            "b" if part == "a" else "a",
+            part,
+        ]
+        feedback = build_partition_physical_feedback(
+            self.model, reentrant_assignment, reentrant_timing
+        )
+        checked = validate_partition_physical_feedback(
+            self.model,
+            reentrant_assignment,
+            reentrant_timing,
+            feedback,
+        )
+        self.assertEqual(checked["status"], "pass")
+        self.assertEqual(checked["source_paths"], 2)
+        self.assertEqual(checked["cross_fpga_paths"], 2)
+        self.assertEqual(checked["endpoint_pair_ineligible_cross_paths"], 1)
+        self.assertEqual(checked["positive_residual_paths"], 1)
+        self.assertEqual(
+            [record["path"] for record in feedback["paths"]],
+            ["p-relaxed"],
+        )
+
+        assignment_mismatch = copy.deepcopy(reentrant_assignment)
+        assignment_mismatch["cluster_assignment"][end] = (
+            "b" if part == "a" else "a"
+        )
+        with self.assertRaisesRegex(ValidationError, "assignment"):
+            build_partition_physical_feedback(
+                self.model, assignment_mismatch, reentrant_timing
+            )
+
+        inexact = copy.deepcopy(reentrant_timing)
+        inexact["paths"][0]["partition_chain_exact"] = False
+        with self.assertRaisesRegex(ValidationError, "endpoint-pair exact"):
+            build_partition_physical_feedback(
+                self.model, reentrant_assignment, inexact
+            )
+
     def test_feedback_applies_only_to_the_observed_endpoint_pair(self) -> None:
         observed = evaluate_partition_pressure(
             self.ir,
