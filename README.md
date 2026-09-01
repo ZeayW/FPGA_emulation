@@ -1115,7 +1115,10 @@ prefixes before forwarding them to OpenROAD, OpenSTA, VPR, and OpenPARF. The
 matching relocatable Bison data directory is also fixed in every parser-build
 environment instead of relying on a system `/usr/share/bison` path.
 OpenROAD and standalone OpenSTA are both configured without Tcl readline so
-their configuration cannot disagree between the two builds. OpenSTA writes
+their configuration cannot disagree between the two builds. OpenROAD's
+readline-script discovery helper is compiled only when readline is enabled;
+batch-only builds do not require the optional `TCLRL_VERSION_STR` macro.
+OpenSTA writes
 its generated configuration header into each binary tree rather than the
 shared imported source tree, so concurrent standalone and OpenROAD builds
 cannot race or contaminate a clean checkout. OpenROAD likewise promotes the
