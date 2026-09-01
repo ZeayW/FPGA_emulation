@@ -90,6 +90,11 @@ class ExperimentStagesTest(unittest.TestCase):
             )
             self.assertNotIn("schedule_sha256", report)
             self.assertNotIn("manifest_sha256", report)
+            self.assertFalse((root / "output/schedule.json").exists())
+            self.assertEqual(
+                report["schedule_ref"],
+                {"owner": "shared-phase1-5", "artifact": "tdm/schedule.json"},
+            )
 
     def test_link_tree_reuses_immutable_files_without_copying(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

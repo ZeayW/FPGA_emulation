@@ -67,16 +67,24 @@ class _ValidationSession:
         self.shared: Dict[tuple[str, str], Dict[str, Any]] = {}
         self.phase6: Dict[tuple[str, str, str | None, str], Dict[str, Any]] = {}
         self.lookahead: Dict[tuple[Any, ...], Dict[str, Any]] = {}
-        self.physical: Dict[int, tuple[Mapping[str, Any], Dict[str, Any]]] = {}
+        self.physical: Dict[
+            tuple[int, int], tuple[Mapping[str, Any], Dict[str, Any]]
+        ] = {}
 
     def validate_physical(
-        self, report: Mapping[str, Any]
+        self,
+        report: Mapping[str, Any],
+        physical_summary: Mapping[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        key = id(report)
+        key = (id(report), id(physical_summary))
         cached = self.physical.get(key)
         if cached is not None and cached[0] is report:
             return copy.deepcopy(cached[1])
-        result = validate_multi_fpga_physical_report(report)
+        result = (
+            validate_multi_fpga_physical_report(report)
+            if physical_summary is None
+            else validate_multi_fpga_physical_report(report, physical_summary)
+        )
         self.physical[key] = (report, copy.deepcopy(result))
         return result
 
@@ -333,13 +341,33 @@ def _physical_timing_databases(root: Path) -> tuple[Path | None, Path | None]:
     if source_digest is not None:
         if not isinstance(source_digest, str) or len(source_digest) != 64:
             raise ValidationError("physical timing population digest is invalid")
+        sealed_digests: Dict[Path, str] = {}
+        shared_report_path = root / "experiment-shared-report.json"
+        if shared_report_path.is_file():
+            shared_report = read_json(shared_report_path)
+            if (
+                shared_report.get("validation_mode")
+                == "managed-dependency-certificates"
+            ):
+                record = shared_report.get("artifacts", {}).get(
+                    "timing/path-database.json"
+                )
+                if isinstance(record, dict) and isinstance(
+                    record.get("sha256"), str
+                ):
+                    sealed_digests[full] = record["sha256"]
         candidates = [(full, full)]
         if cut is not None:
             candidates.append((cut, cut))
         matched = [
             candidate
             for candidate in candidates
-            if _sha256(candidate[0]) == source_digest
+            if (
+                sealed_digests[candidate[0]]
+                if candidate[0] in sealed_digests
+                else _sha256(candidate[0])
+            )
+            == source_digest
         ]
         if not matched:
             raise ValidationError(
@@ -482,7 +510,9 @@ def validate_shared_phase1_5(
             if (
                 report.get("schema") != "emuflow.experiment-shared-phase1-5/v1"
                 or report.get("status") != "pass"
-                or report.get("platform_sha256") != _sha256(platform_path)
+                or report.get("validation_mode")
+                != "managed-dependency-certificates"
+                or report.get("platform") != Platform.load(platform_path).name
             ):
                 raise ValidationError("managed shared checkpoint contract is invalid")
             artifacts = report.get("artifacts")
@@ -499,18 +529,26 @@ def validate_shared_phase1_5(
             hashes = {}
             for label, relative in required.items():
                 record = artifacts.get(relative)
+                digest = (
+                    record.get("sha256", record.get("source_artifact_sha256"))
+                    if isinstance(record, dict)
+                    else None
+                )
                 if (
                     not isinstance(record, dict)
-                    or not isinstance(record.get("sha256"), str)
+                    or not isinstance(digest, str)
                 ):
                     raise ValidationError(
                         "managed shared checkpoint artifact seal is invalid"
                     )
-                hashes[label] = record["sha256"]
+                hashes[label] = digest
             result = {
                 "status": "pass",
-                "platform": Platform.load(platform_path).name,
+                "platform": report["platform"],
                 "phase1_5_sha256": hashes,
+                "dependency_execution_keys": copy.deepcopy(
+                    report.get("dependency_execution_keys")
+                ),
             }
             session.shared[key] = copy.deepcopy(result)
             return result
@@ -614,6 +652,7 @@ def run_physical_lookahead(
         seed=seed,
         route_channel_width=route_channel_width,
         workers=workers,
+        managed_storage=managed_dag_node,
         original_ir_path=(paths["ir"] if path_database else None),
         assignment_path=(paths["assignment"] if path_database else None),
         routes_path=(paths["routes"] if path_database else None),
@@ -967,7 +1006,10 @@ def validate_physical_lookahead(
         if _physical_report is not None
         else read_json(physical_path)
     )
-    session.validate_physical(physical_report)
+    session.validate_physical(
+        physical_report,
+        read_json(_require_file(root, "physical/physical-summary.json")),
+    )
     expected = {
         "seed": expected_seed,
         "workers": expected_workers,
@@ -1175,11 +1217,22 @@ def run_phase6_checkpoint(
         electrical_binding_path = adapter / "electrical_binding.json"
         if pipeline.get("status") != "pass":
             raise ValidationError("experiment Chimew pipeline did not pass")
-    shutil.copy2(schedule_path, output_dir / "schedule.json")
+    if managed_dag_node:
+        if (
+            schedule_path.resolve() != paths["schedule"].resolve()
+            and read_json(schedule_path) != read_json(paths["schedule"])
+        ):
+            raise ValidationError(
+                "managed Phase 6 provider changed the frozen Phase 5 schedule"
+            )
+        phase6_schedule_path = paths["schedule"]
+    else:
+        shutil.copy2(schedule_path, output_dir / "schedule.json")
+        phase6_schedule_path = output_dir / "schedule.json"
     phase6 = run_phase6(
         paths["ir"],
         paths["assignment"],
-        output_dir / "schedule.json",
+        phase6_schedule_path,
         platform_path,
         output_dir / "split",
         equivalence_cycles=equivalence_cycles,
@@ -1196,13 +1249,21 @@ def run_phase6_checkpoint(
         "shared": shared,
         "lookahead": lookahead,
         "equivalence": phase6["equivalence"],
+        "schedule_ref": (
+            {
+                "owner": "shared-phase1-5",
+                "artifact": "tdm/schedule.json",
+            }
+            if managed_dag_node
+            else {"artifact": "schedule.json"}
+        ),
     }
     if managed_dag_node:
         report["validation_mode"] = MANAGED_DAG_VALIDATION_MODE
     else:
         report.update(
             {
-                "schedule_sha256": _sha256(output_dir / "schedule.json"),
+                "schedule_sha256": _sha256(phase6_schedule_path),
                 "manifest_sha256": _sha256(output_dir / "split/manifest.json"),
             }
         )
@@ -1304,10 +1365,20 @@ def validate_phase6_checkpoint(
             )
     paths = _shared_paths(shared_root)
     manifest = _require_file(root, "split/manifest.json")
+    schedule_path = (
+        paths["schedule"] if managed_dag_node else root / "schedule.json"
+    )
+    expected_schedule_ref = (
+        {"owner": "shared-phase1-5", "artifact": "tdm/schedule.json"}
+        if managed_dag_node
+        else {"artifact": "schedule.json"}
+    )
+    if report.get("schedule_ref") != expected_schedule_ref:
+        raise ValidationError("experiment Phase 6 schedule reference is invalid")
     validate_phase6(
         paths["ir"],
         paths["assignment"],
-        root / "schedule.json",
+        schedule_path,
         platform_path,
         manifest,
         replay_equivalence=validation_mode == "full-replay",
@@ -1315,7 +1386,7 @@ def validate_phase6_checkpoint(
     )
     if provider == "placement-aware":
         validate_pin_plan(
-            read_json(root / "schedule.json"),
+            read_json(schedule_path),
             Platform.load(platform_path),
             read_json(root / "placement-aware-position-hints.json"),
             read_json(root / "placement-aware-pin-plan.json"),
@@ -1323,7 +1394,7 @@ def validate_phase6_checkpoint(
     elif provider == "chimew":
         validate_chimew_phase6_pipeline(root / "chimew-pipeline")
     if not managed_dag_node and (
-        report.get("schedule_sha256") != _sha256(root / "schedule.json")
+        report.get("schedule_sha256") != _sha256(schedule_path)
         or report.get("manifest_sha256") != _sha256(manifest)
     ):
         raise ValidationError("experiment Phase 6 checkpoint seal is broken")
@@ -1370,6 +1441,9 @@ def run_phase7_checkpoint(
         _validation_session=session,
     )
     paths = _shared_paths(shared_root)
+    phase6_schedule_path = (
+        paths["schedule"] if managed_dag_node else phase6_root / "schedule.json"
+    )
     path_database, logic_path_database = _physical_timing_databases(shared_root)
     output_dir = _prepare_empty_output(output_dir, "Phase 7 checkpoint")
     lookahead_report = read_json(lookahead_root / "experiment-lookahead-report.json")
@@ -1379,7 +1453,7 @@ def run_phase7_checkpoint(
         run_multi_fpga_physical_flow(
             phase6_root / "split",
             platform_path,
-            phase6_root / "schedule.json",
+            phase6_schedule_path,
             output_dir / "physical",
             backend="open",
             architecture=lookahead_root / "physical/architecture/vtr-flagship.xml",
@@ -1393,6 +1467,7 @@ def run_phase7_checkpoint(
             seed=seed,
             route_channel_width=route_channel_width,
             workers=workers,
+            managed_storage=managed_dag_node,
             original_ir_path=(paths["ir"] if path_database else None),
             assignment_path=(paths["assignment"] if path_database else None),
             routes_path=(paths["routes"] if path_database else None),
@@ -1400,7 +1475,7 @@ def run_phase7_checkpoint(
             logic_path_database_path=logic_path_database,
         )
     runtime = run_phase7c(
-        phase6_root / "schedule.json",
+        phase6_schedule_path,
         platform_path,
         paths["phase3_report"],
         paths["phase4_report"],
@@ -1437,7 +1512,7 @@ def run_phase7_checkpoint(
                     "emuir_sha256": _sha256(paths["ir"]),
                     "assignment_sha256": _sha256(paths["assignment"]),
                     "routes_sha256": _sha256(paths["routes"]),
-                    "schedule_sha256": _sha256(phase6_root / "schedule.json"),
+                    "schedule_sha256": _sha256(phase6_schedule_path),
                 },
                 "physical_summary_sha256": _sha256(
                     output_dir / "physical/physical-summary.json"
@@ -1513,19 +1588,25 @@ def validate_phase7_checkpoint(
     ) != expected_route_channel_width:
         raise ValidationError("experiment Phase 7 channel-width contract disagrees")
     paths = _shared_paths(shared_root)
+    phase6_schedule_path = (
+        paths["schedule"] if managed_dag_node else phase6_root / "schedule.json"
+    )
     if not managed_dag_node:
         expected_upstream = {
             "emuir_sha256": _sha256(paths["ir"]),
             "assignment_sha256": _sha256(paths["assignment"]),
             "routes_sha256": _sha256(paths["routes"]),
-            "schedule_sha256": _sha256(phase6_root / "schedule.json"),
+            "schedule_sha256": _sha256(phase6_schedule_path),
         }
         if report.get("frozen_upstream") != expected_upstream:
             raise ValidationError("experiment Phase 7 frozen-upstream seal is broken")
     physical_report = read_json(
         _require_file(root, "physical/multi-fpga-physical-flow-report.json")
     )
-    session.validate_physical(physical_report)
+    session.validate_physical(
+        physical_report,
+        read_json(_require_file(root, "physical/physical-summary.json")),
+    )
     if expected_workers is not None and physical_report.get("execution", {}).get(
         "requested_workers"
     ) != expected_workers:
@@ -1565,7 +1646,7 @@ def validate_phase7_checkpoint(
     if replay_qor:
         with tempfile.TemporaryDirectory() as temporary:
             replay = run_phase7c(
-                phase6_root / "schedule.json",
+                phase6_schedule_path,
                 platform_path,
                 paths["phase3_report"],
                 paths["phase4_report"],

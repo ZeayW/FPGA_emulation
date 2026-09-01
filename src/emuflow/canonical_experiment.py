@@ -1357,7 +1357,7 @@ def compile_canonical_experiment_spec(
     node(
         "phase6-baseline", "phase6", ["shared-phase1-5"], baseline_command,
         [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline", "--managed-dag-node"],
-        [_artifact("split", "consumer-checkpoint"), _artifact("schedule.json", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical")],
+        [_artifact("split", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical")],
         inputs=("platform", "tool.emuflow"), configuration={"provider": "baseline", "equivalence_cycles": 16}, peak_gib=12, retained_gib=4, provider="baseline",
     )
     lookahead_command = [
@@ -1408,7 +1408,7 @@ def compile_canonical_experiment_spec(
             phase6_id, "phase6", ["shared-phase1-5", "physical-lookahead"],
             phase6_command,
             [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider, "--managed-dag-node"],
-            [_artifact("split", "consumer-checkpoint"), _artifact("schedule.json", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical"), *extra_artifacts],
+            [_artifact("split", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical"), *extra_artifacts],
             inputs=tuple(phase6_inputs),
             configuration={
                 "provider": provider,

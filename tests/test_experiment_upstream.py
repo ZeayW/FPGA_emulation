@@ -162,6 +162,65 @@ class ExperimentUpstreamTest(unittest.TestCase):
             self.assertFalse(any("sha256" in key for key in route_report))
             self.assertFalse(any("sha256" in key for key in tdm_report))
 
+    def test_managed_timing_loads_and_validates_database_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frontend = root / "frontend"
+            output = root / "timing"
+            ir_path = frontend / "phase1/design.emuir.json"
+            ir_path.parent.mkdir(parents=True)
+            ir_path.write_text("{}", encoding="utf-8")
+            database_value = {"schema": "emuflow.sta-paths/v1", "paths": []}
+            ir_value = object()
+
+            def run_opensta(_ir, database, **kwargs):
+                self.assertFalse(kwargs["validate_output"])
+                database.write_text("{}", encoding="utf-8")
+                return {"status": "pass"}
+
+            def derive(database, ir, output_path, **kwargs):
+                self.assertIs(database, database_value)
+                self.assertIs(ir, ir_value)
+                self.assertTrue(kwargs["input_already_validated"])
+                output_path.write_text("{}", encoding="utf-8")
+                return {"status": "pass"}
+
+            with (
+                mock.patch(
+                    "emuflow.experiment_upstream.run_opensta_path_database",
+                    side_effect=run_opensta,
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.read_json",
+                    return_value=database_value,
+                ) as read,
+                mock.patch(
+                    "emuflow.experiment_upstream.EmuIR.load",
+                    return_value=ir_value,
+                ) as load_ir,
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_sta_path_database_value",
+                    return_value={"status": "pass", "paths": 0},
+                ) as validate,
+                mock.patch(
+                    "emuflow.experiment_upstream.derive_partition_net_weights_value",
+                    side_effect=derive,
+                ),
+            ):
+                from emuflow.experiment_upstream import run_timing_checkpoint
+
+                report = run_timing_checkpoint(
+                    frontend,
+                    output,
+                    clocks={"clk": 10.0},
+                    managed_dag_node=True,
+                )
+
+            read.assert_called_once_with(output.resolve() / "path-database.json")
+            load_ir.assert_called_once_with(ir_path.resolve())
+            validate.assert_called_once_with(database_value, ir_value)
+            self.assertEqual(report["validation_mode"], MANAGED_DAG_VALIDATION_MODE)
+
     def test_managed_shared_materialization_performs_no_hash_or_deep_replay(
         self,
     ) -> None:
@@ -204,7 +263,16 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 return {
                     "execution_key": hashlib.sha256(
                         stage_key.encode("utf-8")
-                    ).hexdigest()
+                    ).hexdigest(),
+                    "artifacts": {
+                        relative: {
+                            "kind": "file",
+                            "sha256": hashlib.sha256(
+                                f"{_root.name}:{relative}".encode("utf-8")
+                            ).hexdigest(),
+                        }
+                        for relative in files[_root.name]
+                    },
                 }
 
             with (
@@ -267,7 +335,10 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 report["validation_mode"], "managed-dependency-certificates"
             )
             self.assertTrue(
-                all("sha256" not in record for record in report["artifacts"].values())
+                all(
+                    isinstance(record.get("source_artifact_sha256"), str)
+                    for record in report["artifacts"].values()
+                )
             )
 
             assignment = root / "shared/partition/assignment.json"
@@ -372,19 +443,40 @@ class ExperimentUpstreamTest(unittest.TestCase):
 
     @mock.patch("emuflow.experiment_upstream.validate_cut_timing_checkpoint")
     @mock.patch("emuflow.experiment_upstream._sha256", return_value="0" * 64)
-    @mock.patch("emuflow.experiment_upstream.project_sta_path_database")
-    @mock.patch("emuflow.experiment_upstream.build_cut_segment_qualification")
+    @mock.patch("emuflow.experiment_upstream.project_sta_path_database_value")
+    @mock.patch("emuflow.experiment_upstream.build_cut_segment_qualification_value")
+    @mock.patch("emuflow.experiment_upstream.EmuIR.load")
+    @mock.patch("emuflow.experiment_upstream.read_json")
     @mock.patch("emuflow.experiment_upstream.validate_timing_checkpoint")
     def test_cut_timing_projects_complete_prepartition_database(
         self,
         _validate_timing,
+        read_json,
+        load_ir,
         build_qualification,
         project,
         _sha,
         _validate_cut,
     ) -> None:
-        build_qualification.return_value = {"status": "pass"}
-        project.return_value = {"status": "pass"}
+        assignment_value = {
+            "schema": "emuflow.partition-assignment/v1",
+            "cut_nets": [{"net": "n0"}],
+        }
+        database_value = {"schema": "emuflow.sta-paths/v1"}
+        read_json.side_effect = [assignment_value, database_value]
+        ir_value = object()
+        load_ir.return_value = ir_value
+        build_qualification.return_value = {
+            "status": "pass",
+            "summary": {
+                "timed_structural_nets": 1,
+                "no_timed_endpoint_nets": 0,
+            },
+        }
+        project.return_value = (
+            {"schema": "emuflow.sta-paths/v1"},
+            {"status": "pass"},
+        )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             frontend = root / "frontend"
@@ -417,17 +509,11 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 clocks={"clk": 10.0},
             )
 
-            self.assertEqual(project.call_args.args[0], complete.resolve())
-            self.assertNotEqual(
-                project.call_args.args[0], output / "cut-segment-qualification.json"
-            )
+            self.assertIs(project.call_args.args[0], database_value)
+            self.assertIs(project.call_args.args[1], assignment_value)
             self.assertEqual(
                 build_qualification.call_args.args[:3],
-                (
-                    (frontend / "phase1/design.emuir.json").resolve(),
-                    (partition / "assignment.json").resolve(),
-                    complete.resolve(),
-                ),
+                (ir_value, assignment_value, database_value),
             )
             self.assertEqual(
                 _validate_cut.call_args.args[:3],
@@ -533,7 +619,13 @@ class ExperimentUpstreamTest(unittest.TestCase):
             "platform_sha256": _sha256(platform),
             "schedule_sha256": _sha256(tdm / "schedule.json"),
             "phase5_report_sha256": _sha256(tdm / "phase5_report.json"),
-            "phase5": phase5,
+            "phase5_ref": {
+                "artifact": "phase5_report.json",
+                "provider": phase5.get("provider"),
+                "optimization_provider": phase5.get("optimization_provider"),
+                "design": phase5.get("design"),
+                "platform": phase5.get("platform"),
+            },
         }
         (tdm / "experiment-tdm-report.json").write_text(
             json.dumps(report), encoding="utf-8"

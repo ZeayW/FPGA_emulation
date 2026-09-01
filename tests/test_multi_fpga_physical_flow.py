@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
-from emuflow.io import write_json
+from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.multi_fpga_physical_flow import (
     _partition_declares_dut_clock,
@@ -14,6 +14,7 @@ from emuflow.multi_fpga_physical_flow import (
     _record_chimew_fixed_io_target,
     _write_vpr_runtime_sdc,
     run_multi_fpga_physical_flow,
+    validate_multi_fpga_physical_report,
 )
 
 
@@ -460,6 +461,18 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     architecture=architecture,
                     workers=2,
                 )
+                managed_report = run_multi_fpga_physical_flow(
+                    split,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical-managed",
+                    architecture=architecture,
+                    workers=2,
+                    managed_storage=True,
+                )
+                managed_summary = read_json(
+                    root / "physical-managed/physical-summary.json"
+                )
                 self.assertEqual(
                     (root / "physical/architecture/vtr-flagship.xml").read_bytes(),
                     architecture.read_bytes(),
@@ -487,6 +500,17 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
         self.assertEqual(report["execution"]["effective_workers"], 2)
         self.assertFalse(report["execution"]["pack_place_resume"])
         self.assertFalse(report["execution"]["route_resume"])
+        self.assertNotIn("physical_summary", managed_report)
+        self.assertEqual(
+            managed_report["physical_summary_ref"], "physical-summary.json"
+        )
+        self.assertEqual(
+            validate_multi_fpga_physical_report(
+                managed_report,
+                managed_summary,
+            )["status"],
+            "pass",
+        )
 
     def test_rejects_non_positive_worker_count(self):
         with tempfile.TemporaryDirectory() as temporary:

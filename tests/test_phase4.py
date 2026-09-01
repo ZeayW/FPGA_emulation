@@ -1075,6 +1075,18 @@ class Phase4Test(unittest.TestCase):
                 report["artifacts"]["candidate_pool"],
                 "route_candidate_pool.json",
             )
+            managed_report = run_phase4(
+                assignment_path=assignment_path,
+                platform_path=PLATFORM_PATH,
+                output_dir=root / "phase4-managed",
+                frame_slots=1,
+                router=str(tlr_router()),
+                managed_storage=True,
+            )
+            self.assertNotIn("candidate_pool", managed_report["artifacts"])
+            self.assertFalse(
+                (root / "phase4-managed/route_candidate_pool.json").exists()
+            )
 
     def test_native_router_uses_both_diamond_paths(self) -> None:
         platform = Platform.from_dict(

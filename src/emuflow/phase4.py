@@ -56,7 +56,9 @@ def run_phase4(
     assignment = read_json(assignment_path)
     platform = Platform.load(platform_path)
     output_dir.mkdir(parents=True, exist_ok=True)
-    candidate_pool_path = output_dir / "route_candidate_pool.json"
+    candidate_pool_path = (
+        None if managed_storage else output_dir / "route_candidate_pool.json"
+    )
     constraints = load_route_constraints(
         constraints_path,
         platform,
@@ -257,7 +259,7 @@ def run_phase4(
     if exact_mode:
         report["cut_mode"] = "static-exact-combinational"
         report["qualification"] = "route-contract-propagation-pass"
-    if timing_paths is not None:
+    if timing_paths is not None and not managed_storage:
         report["artifacts"]["timing_paths"] = "timing_paths.normalized.json"
     # Seal the execution contract for every native provider.  The experiment
     # checkpoint validator must be able to distinguish a deterministic
@@ -269,7 +271,7 @@ def run_phase4(
         "ordering": "demand-index-then-generator-index",
         "route_artifact_deterministic": True,
     }
-    if candidate_pool_path.is_file():
+    if candidate_pool_path is not None and candidate_pool_path.is_file():
         report["artifacts"]["candidate_pool"] = "route_candidate_pool.json"
     if tdm_feedback is not None:
         report["tdm_feedback"] = routes["joint_optimization"][
@@ -283,20 +285,22 @@ def run_phase4(
                 physical_feedback_weight
             )
         report["tdm_feedback"]["validation"] = tdm_feedback_validation
-        report["artifacts"]["tdm_feedback"] = (
-            "tdm_feedback.normalized.json"
-        )
+        if not managed_storage:
+            report["artifacts"]["tdm_feedback"] = (
+                "tdm_feedback.normalized.json"
+            )
         if physical_feedback_path is not None:
             report["tdm_feedback"]["physical_validation"] = (
                 physical_feedback_validation
             )
-            report["artifacts"]["physical_feedback"] = (
-                "physical_feedback.normalized.json"
-            )
+            if not managed_storage:
+                report["artifacts"]["physical_feedback"] = (
+                    "physical_feedback.normalized.json"
+                )
     write_json(output_dir / "route_constraints.normalized.json", constraints)
-    if timing_paths is not None:
+    if timing_paths is not None and not managed_storage:
         write_json(output_dir / "timing_paths.normalized.json", timing_paths)
-    if tdm_feedback is not None:
+    if tdm_feedback is not None and not managed_storage:
         write_json(
             output_dir / "tdm_feedback.normalized.json", tdm_feedback
         )

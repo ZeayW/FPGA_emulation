@@ -1763,6 +1763,24 @@ single publish/import trust boundary rather than repeated inside the hot path.
 Managed staging keeps atomic temporary-file replacement but defers per-file
 `fsync` to final checkpoint publication.
 
+The managed Phase 1--7 implementation applies that rule at each concrete
+boundary. Phase 1 owns the synthesized EmuIR and performs resource and clock
+analysis once; its normalized platform and source copies are distinct replay
+inputs rather than duplicated algorithm state. Timing preparation loads and
+validates the complete TimingPathDB once, then derives partition weights from
+that same in-memory object. Cut-timing qualification likewise reuses one loaded
+EmuIR, assignment, and TimingPathDB and stores only compact summaries in its
+wrapper report. Phase 4 does not retain the optional native route-candidate
+pool or normalized timing/feedback copies unless a provider consumes the pool
+semantically. Phase 5 retains only the schedule, ratio plan when applicable,
+and compact report; simulation traces, TSV, transport manifests, generated
+testbenches, and feedback dumps remain standalone diagnostics. Phase 6
+references the canonical Phase 5 schedule instead of copying it into every
+provider checkpoint. Phase 7 references the canonical physical summary from
+its flow report and reuses the sealed TimingPathDB identity instead of hashing
+the full database again. Standalone commands still materialize their
+human-oriented diagnostics for interactive use.
+
 The canonical compiler enables this managed contract consistently for the
 frontend, timing, cut projection, Phase 3, system routing, TDM, physical
 lookahead, Phase 6, and Phase 7 runners and validators. Direct standalone CLI

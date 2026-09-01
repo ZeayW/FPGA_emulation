@@ -976,7 +976,10 @@ def route_system_native(
             }
         )
     candidate_pool = None
-    if native["candidates"]:
+    candidate_pool_is_semantic_input = provider == GLOBAL_CANDIDATE_PROVIDER
+    if native["candidates"] and (
+        candidate_pool_path is not None or candidate_pool_is_semantic_input
+    ):
         candidates = []
         candidate_max_hops = 0
         for demand_index, demand in enumerate(model["demands"]):
@@ -1032,6 +1035,12 @@ def route_system_native(
         validate_route_candidate_pool(assignment, platform, candidate_pool)
         if candidate_pool_path is not None:
             write_json(candidate_pool_path, candidate_pool)
+    else:
+        # Candidate alternatives are diagnostic evidence, not a downstream
+        # routing interface.  Managed runs deliberately omit that optional
+        # artifact and release the native candidate table before constructing
+        # the canonical routes/timing payload.
+        native["candidates"].clear()
     timing_records = []
     if timing_paths is not None:
         for index, path in enumerate(timing_paths["paths"]):

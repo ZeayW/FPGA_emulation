@@ -1101,6 +1101,7 @@ def run_opensta_path_database(
     log_path: Optional[Path] = None,
     through_nets: Optional[Sequence[str]] = None,
     through_coverage_path: Optional[Path] = None,
+    validate_output: bool = True,
 ) -> Dict[str, Any]:
     if max_paths <= 0:
         raise ValidationError("OpenSTA max_paths must be positive")
@@ -1253,7 +1254,11 @@ def run_opensta_path_database(
             else {}
         )
 
-    checked = validate_sta_path_database(output_path, ir_path)
+    checked = (
+        validate_sta_path_database(output_path, ir_path)
+        if validate_output
+        else {"status": "deferred-to-managed-stage"}
+    )
     covered_through_nets = []
     through_coverage: Dict[str, Any] | None = None
     if through_net_ids:

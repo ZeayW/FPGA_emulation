@@ -310,27 +310,32 @@ def run_phase5(
             if isinstance(routes.get("timing"), dict)
             else None
         )
-    simulation = simulate_tdm_schedule(
-        routes,
-        schedule,
-        frames=simulation_frames,
-    )
-    manifest = build_transport_manifest(routes, schedule, platform)
-    feedback = build_tdm_feedback(
-        routes,
-        platform,
-        schedule,
-        ratio_plan,
-        prepared_ratio_model=prepared_ratio_model,
-    )
-    feedback_validation = validate_tdm_feedback(
-        routes,
-        platform,
-        schedule,
-        feedback,
-        ratio_plan,
-        prepared_ratio_model=prepared_ratio_model,
-    )
+    simulation = None
+    manifest = None
+    feedback = None
+    feedback_validation = None
+    if not managed_storage:
+        simulation = simulate_tdm_schedule(
+            routes,
+            schedule,
+            frames=simulation_frames,
+        )
+        manifest = build_transport_manifest(routes, schedule, platform)
+        feedback = build_tdm_feedback(
+            routes,
+            platform,
+            schedule,
+            ratio_plan,
+            prepared_ratio_model=prepared_ratio_model,
+        )
+        feedback_validation = validate_tdm_feedback(
+            routes,
+            platform,
+            schedule,
+            feedback,
+            ratio_plan,
+            prepared_ratio_model=prepared_ratio_model,
+        )
     report: Dict[str, Any] = {
         "schema": PHASE5_REPORT_SCHEMA,
         "phase": 5,
@@ -357,17 +362,26 @@ def run_phase5(
             if candidate_selection is not None
             else {}
         ),
-        "simulation": simulation,
-        "tdm_feedback_validation": feedback_validation,
         "artifacts": {
             "schedule": "schedule.json",
-            "schedule_tsv": "schedule.tsv",
-            "transport_manifest": "transport_manifest.json",
-            "rtl_testbench": "transport_schedule_tb.sv",
             "report": "phase5_report.json",
-            "tdm_feedback": "tdm_feedback.json",
         },
     }
+    if not managed_storage:
+        report.update(
+            {
+                "simulation": simulation,
+                "tdm_feedback_validation": feedback_validation,
+            }
+        )
+        report["artifacts"].update(
+            {
+                "schedule_tsv": "schedule.tsv",
+                "transport_manifest": "transport_manifest.json",
+                "rtl_testbench": "transport_schedule_tb.sv",
+                "tdm_feedback": "tdm_feedback.json",
+            }
+        )
     if exact_mode:
         report["cut_mode"] = "static-exact-combinational"
         report["qualification"] = "dependency-schedule-readiness-pass"
@@ -388,28 +402,30 @@ def run_phase5(
         pack_managed_json(schedule) if managed_storage else schedule,
         compact=True,
     )
-    (output_dir / "schedule.tsv").write_text(
-        schedule_to_tsv(schedule), encoding="utf-8"
-    )
-    write_json(
-        output_dir / "transport_manifest.json",
-        pack_managed_json(manifest) if managed_storage else manifest,
-        compact=True,
-    )
-    write_json(
-        output_dir / "tdm_feedback.json",
-        pack_managed_json(feedback) if managed_storage else feedback,
-        compact=True,
-    )
-    (output_dir / "transport_schedule_tb.sv").write_text(
-        schedule_to_systemverilog_testbench(
-            routes,
-            schedule,
-            platform,
-            frames=simulation_frames,
-        ),
-        encoding="utf-8",
-    )
+    if not managed_storage:
+        assert manifest is not None and feedback is not None
+        (output_dir / "schedule.tsv").write_text(
+            schedule_to_tsv(schedule), encoding="utf-8"
+        )
+        write_json(
+            output_dir / "transport_manifest.json",
+            manifest,
+            compact=True,
+        )
+        write_json(
+            output_dir / "tdm_feedback.json",
+            feedback,
+            compact=True,
+        )
+        (output_dir / "transport_schedule_tb.sv").write_text(
+            schedule_to_systemverilog_testbench(
+                routes,
+                schedule,
+                platform,
+                frames=simulation_frames,
+            ),
+            encoding="utf-8",
+        )
     write_json(output_dir / "phase5_report.json", report)
     return report
 

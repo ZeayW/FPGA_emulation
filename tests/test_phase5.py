@@ -1981,6 +1981,23 @@ class Phase5Test(unittest.TestCase):
                 "phase5_report.json",
             ):
                 self.assertTrue((root / "phase5" / filename).is_file())
+            managed_report = run_phase5(
+                routes_path=routes_path,
+                platform_path=platform_path,
+                output_dir=root / "phase5-managed",
+                simulation_frames=9,
+                managed_storage=True,
+            )
+            self.assertEqual(
+                set(managed_report["artifacts"]), {"schedule", "report"}
+            )
+            for filename in (
+                "schedule.tsv",
+                "transport_manifest.json",
+                "transport_schedule_tb.sv",
+                "tdm_feedback.json",
+            ):
+                self.assertFalse((root / "phase5-managed" / filename).exists())
 
     def test_multihop_precedence_includes_store_and_forward_cycle(self) -> None:
         platform = Platform.from_dict(

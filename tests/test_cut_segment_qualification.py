@@ -72,7 +72,7 @@ class CutSegmentQualificationTest(unittest.TestCase):
         return ir_path, assignment_path, database_path, cut_net
 
     @mock.patch(
-        "emuflow.cut_segment_qualification.validate_sta_path_database",
+        "emuflow.cut_segment_qualification.validate_sta_path_database_value",
         return_value={"status": "pass", "paths": 1},
     )
     def test_reconstructs_structural_cut_and_segment_identity(self, _validate):
@@ -88,7 +88,7 @@ class CutSegmentQualificationTest(unittest.TestCase):
         self.assertEqual(record["capture_segment_ids"], ["segment000001"])
 
     @mock.patch(
-        "emuflow.cut_segment_qualification.validate_sta_path_database",
+        "emuflow.cut_segment_qualification.validate_sta_path_database_value",
         return_value={"status": "pass", "paths": 1},
     )
     def test_independent_rebuild_rejects_tampering(self, _validate):

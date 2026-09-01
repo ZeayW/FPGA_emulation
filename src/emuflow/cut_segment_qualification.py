@@ -23,7 +23,7 @@ from .opensta import (
     classify_through_net_timing_endpoints,
     load_timing_model,
 )
-from .sta import validate_sta_path_database
+from .sta import validate_sta_path_database_value
 
 
 CUT_SEGMENT_QUALIFICATION_SCHEMA = (
@@ -115,6 +115,27 @@ def build_cut_segment_qualification(
 
     ir = EmuIR.load(ir_path)
     assignment = read_json(assignment_path)
+    database = read_json(path_database_path)
+    validate_sta_path_database_value(database, ir)
+    return build_cut_segment_qualification_value(
+        ir,
+        assignment,
+        database,
+        timing_model_path=timing_model_path,
+        architecture_timing_db_path=architecture_timing_db_path,
+    )
+
+
+def build_cut_segment_qualification_value(
+    ir: EmuIR,
+    assignment: Mapping[str, Any],
+    database: Mapping[str, Any],
+    *,
+    timing_model_path: Path = DEFAULT_TIMING_MODEL,
+    architecture_timing_db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Build qualification from one validated in-memory input set."""
+
     cut_nets = _cut_nets(assignment)
     segment_ids = _segment_ids_by_cut(assignment, cut_nets)
     if architecture_timing_db_path is not None:
@@ -127,8 +148,6 @@ def build_cut_segment_qualification(
     structural = classify_through_net_timing_endpoints(
         ir, model, cut_nets, instance_cell_types
     )
-    validate_sta_path_database(path_database_path, ir_path)
-    database = read_json(path_database_path)
     member_ids: Dict[str, list[str]] = {net: [] for net in cut_nets}
     for path in database.get("paths", []):
         if not isinstance(path, dict) or not isinstance(path.get("path_nets"), list):
@@ -211,10 +230,14 @@ def validate_cut_segment_qualification(
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    expected = build_cut_segment_qualification(
-        ir_path,
-        assignment_path,
-        path_database_path,
+    ir = EmuIR.load(ir_path)
+    assignment = read_json(assignment_path)
+    database = read_json(path_database_path)
+    validate_sta_path_database_value(database, ir)
+    expected = build_cut_segment_qualification_value(
+        ir,
+        assignment,
+        database,
         timing_model_path=timing_model_path,
         architecture_timing_db_path=architecture_timing_db_path,
     )

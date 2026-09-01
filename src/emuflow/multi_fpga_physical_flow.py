@@ -282,6 +282,7 @@ def _physical_clock_delays(
 
 def validate_multi_fpga_physical_report(
     report: Mapping[str, Any],
+    physical_summary: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if report.get("schema") != MULTI_FPGA_PHYSICAL_SCHEMA:
         raise ValidationError("multi-FPGA physical-flow schema is invalid")
@@ -430,7 +431,11 @@ def validate_multi_fpga_physical_report(
                 f"physical critical path for {fpga_id} is invalid"
             )
         worst_critical_path = max(worst_critical_path, float(critical_path))
-    summary = report.get("physical_summary")
+    summary = (
+        physical_summary
+        if physical_summary is not None
+        else report.get("physical_summary")
+    )
     if not isinstance(summary, dict) or summary.get("status") != "pass":
         raise ValidationError("multi-FPGA physical summary did not pass")
     if sum(item["original_cells"] for item in summary["fpgas"]) != original_cells:
@@ -475,6 +480,7 @@ def run_multi_fpga_physical_flow(
     path_database_path: Optional[Path] = None,
     logic_path_database_path: Optional[Path] = None,
     workers: int = 1,
+    managed_storage: bool = False,
     resume: bool = False,
 ) -> Dict[str, Any]:
     if workers < 1:
@@ -1254,8 +1260,13 @@ def run_multi_fpga_physical_flow(
         },
         "expected_fpgas": expected_fpgas,
         "fpgas": records,
-        "physical_summary": physical_summary,
     }
-    report["summary"] = validate_multi_fpga_physical_report(report)
+    if managed_storage:
+        report["physical_summary_ref"] = "physical-summary.json"
+    else:
+        report["physical_summary"] = physical_summary
+    report["summary"] = validate_multi_fpga_physical_report(
+        report, physical_summary
+    )
     write_json(output_dir / "multi-fpga-physical-flow-report.json", report)
     return report

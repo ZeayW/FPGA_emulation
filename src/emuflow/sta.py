@@ -746,6 +746,35 @@ def derive_partition_net_weights(
     all extracted paths containing the net. The power-law edge weight is the
     standard timing-driven partitioning form ``1 + scale * criticality^p``.
     """
+    database = read_json(database_path)
+    ir = EmuIR.load(ir_path)
+    return derive_partition_net_weights_value(
+        database,
+        ir,
+        output_path,
+        source_path_database=str(database_path),
+        criticality_scale=criticality_scale,
+        criticality_exponent=criticality_exponent,
+    )
+
+
+def derive_partition_net_weights_value(
+    database: Mapping[str, Any],
+    ir: EmuIR,
+    output_path: Path,
+    *,
+    source_path_database: str,
+    criticality_scale: float = 9.0,
+    criticality_exponent: float = 2.0,
+    input_already_validated: bool = False,
+) -> Dict[str, Any]:
+    """Derive partition weights from one already-loaded TimingPathDB.
+
+    Managed timing checkpoints load the large database once, validate that
+    object once, and reuse it here.  Standalone callers retain the same strong
+    validation through the path-based wrapper above.
+    """
+
     for name, value in (
         ("criticality_scale", criticality_scale),
         ("criticality_exponent", criticality_exponent),
@@ -757,8 +786,14 @@ def derive_partition_net_weights(
             or float(value) <= 0.0
         ):
             raise ValidationError(f"{name} must be positive")
-    checked = validate_sta_path_database(database_path, ir_path)
-    database = read_json(database_path)
+    checked = (
+        {
+            "paths": len(database.get("paths", [])),
+            "design": database.get("design"),
+        }
+        if input_already_validated
+        else validate_sta_path_database_value(database, ir)
+    )
     criticality_by_net: Dict[str, float] = {}
     path_count_by_net: Dict[str, int] = {}
     for path in database["paths"]:
@@ -789,7 +824,7 @@ def derive_partition_net_weights(
         "design": database["design"],
         "source": {
             "provider": "sta-max-criticality-power-law-v1",
-            "path_database": str(database_path),
+            "path_database": source_path_database,
             "path_database_provider": database["source"]["provider"],
         },
         "parameters": {
@@ -822,6 +857,32 @@ def project_sta_path_database(
 ) -> Dict[str, Any]:
     database = read_json(database_path)
     assignment = read_json(assignment_path)
+    artifact, summary = project_sta_path_database_value(
+        database,
+        assignment,
+        source_input_sha256=_file_sha256(database_path),
+        output_path=str(output_path),
+    )
+    write_json(output_path, artifact)
+    return summary
+
+
+def project_sta_path_database_value(
+    database: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    *,
+    source_input_sha256: str,
+    output_path: str | None = None,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Project one loaded TimingPathDB onto one loaded assignment.
+
+    ``source_input_sha256`` is supplied by the managed dependency certificate
+    or computed once by the standalone wrapper.  This keeps provenance stable
+    without re-reading an immutable multi-gigabyte input merely to hash it.
+    """
+
+    if re.fullmatch(r"[0-9a-f]{64}", source_input_sha256) is None:
+        raise ValidationError("STA path projection input digest is invalid")
     if database.get("schema") != STA_PATH_DATABASE_SCHEMA:
         raise ValidationError("STA path database schema is invalid")
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
@@ -1039,13 +1100,12 @@ def project_sta_path_database(
             # atomically moved into the content-addressed object store.  A
             # producer-local absolute path would make an otherwise identical
             # projection fail independent reconstruction after that move.
-            "input_sha256": _file_sha256(database_path),
+            "input_sha256": source_input_sha256,
         },
         "normalization": normalization,
         "paths": paths,
     })
-    write_json(output_path, artifact)
-    return {
+    return artifact, {
         "status": "pass",
         "design": assignment["design"],
         "database_paths": len(raw_paths),
@@ -1054,7 +1114,7 @@ def project_sta_path_database(
         "cut_nets": len(cut_nets),
         "covered_cut_nets": len(covered_cut_nets),
         "uncovered_cut_nets": len(cut_nets - covered_cut_nets),
-        "output": str(output_path),
+        **({"output": output_path} if output_path is not None else {}),
     }
 
 
