@@ -1241,6 +1241,18 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(
                 reused["algorithm_validation"]["status"], "pass"
             )
+            self.assertFalse(reused["hop_refinement"]["enabled"])
+            self.assertEqual(
+                reused["hop_refinement"]["reason"],
+                "patron-native-hop-contract-audited",
+            )
+            self.assertFalse((root / "phase3-reused/hop-refinement").exists())
+            self.assertFalse(
+                (
+                    root
+                    / "phase3-reused/patron/initial-hop-refinement"
+                ).exists()
+            )
             legacy = copy.deepcopy(self.initial)
             legacy["cluster_assignment"] = {
                 f"legacy-{index}": fpga

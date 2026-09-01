@@ -1951,6 +1951,14 @@ the plain logical JSON form. This removes repeated JSON keys, repeated FPGA
 names, and the duplicate instance assignment from the managed checkpoint hot
 path without weakening the independent Phase 3 validator or changing Phase
 4--7 semantics.
+PATRON arms also reuse one frozen, independently validated TritonPart plus
+topology-hop initializer. A supplied frozen assignment is audited and consumed
+exactly rather than silently running the hop optimizer again. PATRON natively
+enforces route reachability and the maximum-hop constraint on every candidate,
+so its selected result receives an independent in-memory hop audit instead of
+a second topology-FM optimization pass. This keeps Phase 3 attributable to the
+selected PATRON version and avoids materializing the same large hop-refiner
+input twice per arm.
 `route_candidate_workers` defaults to `physical_workers`, is recorded in the
 route node configuration and command, and is independently checked against the
 Phase 4 candidate-generation certificate. Changing either provider or worker

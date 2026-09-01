@@ -17,7 +17,7 @@ from .partition import (
     validate_partition_artifacts_online,
 )
 from .errors import ValidationError
-from .partition_hops import refine_partition_hops
+from .partition_hops import refine_partition_hops, validate_assignment_hops
 from .partition_pressure import (
     build_partition_pressure_model,
     run_partition_pressure_native,
@@ -128,6 +128,28 @@ def _hop_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
         for key, value in report.items()
         if key not in {"moves", "input"}
     } | {"move_count": len(report.get("moves", []))}
+
+
+def _patron_hop_audit_report(
+    platform: Platform,
+    assignment: Dict[str, Any],
+    route_constraints: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Audit PATRON's native hop contract without another optimizer pass."""
+
+    audit = validate_assignment_hops(
+        platform, assignment, route_constraints
+    )
+    return {
+        "schema": "emuflow.hop-partition-refinement/v1",
+        "status": "pass",
+        "enabled": False,
+        "reason": "patron-native-hop-contract-audited",
+        "algorithm": "patron-native-hop-contract-v1",
+        "before": audit,
+        "after": audit,
+        "moves": [],
+    }
 
 
 def run_phase3(
@@ -341,17 +363,26 @@ def run_phase3(
                 read_json(patron_initial_assignment_path),
             )
         patron_feedback_source_assignment = initial
-        initial, patron_initial_hop = refine_partition_hops(
-            ir,
-            platform,
-            clusters,
-            constraints,
-            initial,
-            output_dir / "patron" / "initial-hop-refinement",
-            route_constraints_path=route_constraints_path,
-            net_weights_path=net_weights_path,
-            executable=hop_refiner,
-        )
+        if patron_initial_assignment_path is not None:
+            # A frozen assignment is an exact PATRON input, not a request to
+            # silently optimize it again. Fail closed if it is not already
+            # hop-feasible. Every arm can therefore reuse the one validated
+            # TritonPart plus hop initializer checkpoint.
+            patron_initial_hop = _patron_hop_audit_report(
+                platform, initial, route_constraints
+            )
+        else:
+            initial, patron_initial_hop = refine_partition_hops(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                initial,
+                output_dir / "patron" / "initial-hop-refinement",
+                route_constraints_path=route_constraints_path,
+                net_weights_path=net_weights_path,
+                executable=hop_refiner,
+            )
         timing_database = read_json(timing_database_path)
         model = build_partition_pressure_model(
             ir,
@@ -502,17 +533,25 @@ def run_phase3(
             defer_semantic_contract=True,
             online_validation=True,
         )
-    assignment, hop_refinement = refine_partition_hops(
-        ir,
-        platform,
-        clusters,
-        constraints,
-        assignment,
-        output_dir / "hop-refinement",
-        route_constraints_path=route_constraints_path,
-        net_weights_path=net_weights_path,
-        executable=hop_refiner,
-    )
+    if provider == "patron":
+        # PATRON already evaluates reachability and max-hop legality for every
+        # native candidate. A second topology FM pass duplicates a large input
+        # and obscures the exact assignment PATRON selected.
+        hop_refinement = _patron_hop_audit_report(
+            platform, assignment, route_constraints
+        )
+    else:
+        assignment, hop_refinement = refine_partition_hops(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            assignment,
+            output_dir / "hop-refinement",
+            route_constraints_path=route_constraints_path,
+            net_weights_path=net_weights_path,
+            executable=hop_refiner,
+        )
     validation = (
         validate_partition_artifacts_online(platform, clusters, assignment)
         if managed_dag_node

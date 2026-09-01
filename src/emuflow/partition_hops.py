@@ -125,6 +125,29 @@ def validate_assignment_hop_constraints(
     return audit
 
 
+def validate_assignment_hops(
+    platform: Platform,
+    assignment: Mapping[str, Any],
+    route_constraints: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Check an in-memory assignment without materializing refiner input."""
+
+    hop_limit = route_constraints.get("max_route_hops")
+    if hop_limit is None:
+        return {"status": "not-requested", "max_route_hops": None}
+    audit = audit_assignment_hops(
+        assignment,
+        _shortest_hop_distances(platform, route_constraints),
+        hop_limit,
+    )
+    if audit["status"] != "pass":
+        raise ValidationError(
+            "partition assignment violates route reachability/max-hop "
+            "constraints"
+        )
+    return audit
+
+
 def _primary_net_records(
     ir: EmuIR,
     clusters_artifact: Mapping[str, Any],
