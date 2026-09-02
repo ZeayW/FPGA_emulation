@@ -1587,9 +1587,21 @@ materializes routes and Phase 5 remains the authoritative deterministic exact
 dependency/slot scheduler.  The native implementation and independent Python
 endpoint/transition reconstruction are versioned as PATRON v13 and are
 available with `--patron-algorithm-version 13` only for generalized Static
-Exact.  Compact qualification is complete; the large-design cut-contract and
-complete Phase 7 promotion gates remain pending, so v13 is not yet the omitted-
-option default and has no claimed QoR improvement.
+Exact.  Compact qualification is complete.  The large-design cut-contract gate
+found that the TimingPathDB transition guard alone was insufficient: relative
+to the frozen input, capture requirements still increased by 32.96% and logic
+segments by 29.79%.  That candidate was rejected before Phase 4 rather than
+wasting a physical run.
+
+Phase 3 therefore also applies an exact-contract promotion gate to v13.  It
+reuses the initial and candidate contracts that assignment construction has
+already materialized; it does not reread a large JSON file, recompute a hash,
+or run the scheduler in the optimizer loop.  A candidate is promoted only when
+the lexicographic tuple `(logic segments, capture requirements, transported
+cuts, dependency edges)` improves.  Otherwise the frozen legal assignment is
+selected and the rejected candidate remains explicit diagnostic evidence.
+V13 remains an experimental explicit option and has no claimed end-to-end QoR
+improvement.
 
 ### Automatic validation archives
 

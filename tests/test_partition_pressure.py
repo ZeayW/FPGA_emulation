@@ -37,7 +37,11 @@ from emuflow.partition_pressure import (
     validate_partition_pressure_scalable_trace,
 )
 from emuflow.phase3 import promote_patron_baseline, run_phase3
-from emuflow.phase3 import _rebase_patron_initial_assignment
+from emuflow.phase3 import (
+    PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER,
+    _rebase_patron_initial_assignment,
+    _select_patron_static_exact_assignment,
+)
 from emuflow.platform import Platform
 from emuflow.io import read_json, write_json
 from emuflow.routing import normalize_route_constraints
@@ -266,6 +270,66 @@ class PartitionPressureTest(unittest.TestCase):
                 self.initial,
             )
         self.assertEqual(rebased, self.initial)
+
+    def test_static_exact_semantic_gate_rejects_segment_expansion(self) -> None:
+        initial = {
+            "provider": "frozen",
+            "semantic_contract": {
+                "metrics": {
+                    "logic_segments": 100,
+                    "capture_requirements": 80,
+                    "transported_cut_nets": 10,
+                    "dependency_edges": 5,
+                }
+            },
+        }
+        candidate = {
+            "provider": "patron-v13",
+            "semantic_contract": {
+                "metrics": {
+                    "logic_segments": 101,
+                    "capture_requirements": 70,
+                    "transported_cut_nets": 9,
+                    "dependency_edges": 4,
+                }
+            },
+        }
+        selected, report = _select_patron_static_exact_assignment(
+            initial, candidate
+        )
+        self.assertEqual(report["selected"], "initial")
+        self.assertEqual(
+            selected["provider"],
+            PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER,
+        )
+        self.assertEqual(
+            selected["semantic_contract"], initial["semantic_contract"]
+        )
+
+    def test_static_exact_semantic_gate_accepts_segment_improvement(self) -> None:
+        initial = {
+            "provider": "frozen",
+            "semantic_contract": {
+                "metrics": {
+                    "logic_segments": 100,
+                    "capture_requirements": 80,
+                    "transported_cut_nets": 10,
+                    "dependency_edges": 5,
+                }
+            },
+        }
+        candidate = copy.deepcopy(initial)
+        candidate["provider"] = "patron-v13"
+        candidate["semantic_contract"]["metrics"]["logic_segments"] = 99
+        selected, report = _select_patron_static_exact_assignment(
+            initial, candidate
+        )
+        self.assertIs(selected, candidate)
+        self.assertEqual(report["selected"], "candidate")
+
+    def test_static_exact_semantic_gate_rejects_malformed_contract(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "requires a contract"):
+            _select_patron_static_exact_assignment({}, {})
 
     def test_model_is_source_bound_and_tamper_evident(self) -> None:
         checked = validate_partition_pressure_model(

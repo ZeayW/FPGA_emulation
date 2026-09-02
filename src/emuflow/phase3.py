@@ -43,6 +43,79 @@ from .phase3_storage import pack_phase3_assignment, pack_phase3_clusters
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
+PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER = (
+    "patron-static-exact-semantic-gate-v1"
+)
+
+
+def _patron_static_exact_semantic_key(
+    assignment: Dict[str, Any],
+) -> tuple[int, int, int, int]:
+    contract = assignment.get("semantic_contract")
+    metrics = contract.get("metrics") if isinstance(contract, dict) else None
+    if not isinstance(metrics, dict):
+        raise ValidationError(
+            "PATRON Static Exact semantic gate requires a contract"
+        )
+    fields = (
+        "logic_segments",
+        "capture_requirements",
+        "transported_cut_nets",
+        "dependency_edges",
+    )
+    values: Dict[str, int] = {}
+    for field in fields:
+        value = metrics.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValidationError(
+                f"PATRON Static Exact semantic metric {field!r} is invalid"
+            )
+        values[field] = value
+    return (
+        values["logic_segments"],
+        values["capture_requirements"],
+        values["transported_cut_nets"],
+        values["dependency_edges"],
+    )
+
+
+def _select_patron_static_exact_assignment(
+    initial: Dict[str, Any],
+    candidate: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Choose a PATRON result using already-materialized exact contracts."""
+
+    initial_key = _patron_static_exact_semantic_key(initial)
+    candidate_key = _patron_static_exact_semantic_key(candidate)
+    accepted = candidate_key < initial_key
+    selection = {
+        "status": "pass",
+        "provider": PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER,
+        "policy": "exact-contract-lexicographic-non-regression-v1",
+        "objective_fields": [
+            "logic_segments",
+            "capture_requirements",
+            "transported_cut_nets",
+            "dependency_edges",
+        ],
+        "initial_objective": list(initial_key),
+        "candidate_objective": list(candidate_key),
+        "selected": "candidate" if accepted else "initial",
+        "candidate_provider": candidate.get("provider"),
+        "initial_provider": initial.get("provider"),
+    }
+    if accepted:
+        return candidate, selection
+    selected = {
+        **initial,
+        "provider": PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER,
+        "provider_metadata": {
+            "selected_provider": initial.get("provider"),
+            "rejected_candidate_provider": candidate.get("provider"),
+            "selection_policy": selection["policy"],
+        },
+    }
+    return selected, selection
 
 
 def _validate_reused_patron_clusters(
@@ -595,6 +668,13 @@ def run_phase3(
         if patron_physical_feedback_validation is not None:
             patron_validation["physical_feedback"] = (
                 patron_physical_feedback_validation
+            )
+        if patron_algorithm_version == 13:
+            assignment, semantic_selection = (
+                _select_patron_static_exact_assignment(initial, assignment)
+            )
+            patron_validation["static_exact_semantic_selection"] = (
+                semantic_selection
             )
     else:
         raise ValueError(
