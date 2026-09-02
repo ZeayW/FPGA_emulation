@@ -45,6 +45,7 @@ struct Cluster {
 struct Net {
   std::vector<int> drivers;
   std::vector<int> sinks;
+  int max_distance_limit = -1;
 };
 
 struct Transition {
@@ -340,8 +341,9 @@ Model read_model(const std::string& path) {
   const bool flow_v9 = token == "EMUFLOW_PATRON_INPUT_V9";
   const bool flow_v10 = token == "EMUFLOW_PATRON_INPUT_V10";
   const bool flow_v11 = token == "EMUFLOW_PATRON_INPUT_V11";
+  const bool flow_v12 = token == "EMUFLOW_PATRON_INPUT_V12";
   const bool flow_input = flow_v7 || flow_v8 || flow_v9 || flow_v10
-                          || flow_v11;
+                          || flow_v11 || flow_v12;
   require(token == "EMUFLOW_PATRON_INPUT_V6" || flow_input,
           "invalid input header");
   Model model;
@@ -375,11 +377,11 @@ Model read_model(const std::string& path) {
         >> model.flow_corridor_distance >> model.flow_piercing_strategy
         >> model.flow_max_legal_candidates
         >> model.flow_max_polish_moves;
-    if (flow_v8 || flow_v9 || flow_v10 || flow_v11) {
+    if (flow_v8 || flow_v9 || flow_v10 || flow_v11 || flow_v12) {
       stream >> model.flow_max_frontier_paths
           >> model.flow_max_tail_moves;
     }
-    if (flow_v10 || flow_v11) {
+    if (flow_v10 || flow_v11 || flow_v12) {
       stream >> model.physical_hop_guard_scale_ns;
     }
     require(stream.good() && enabled == 1
@@ -391,7 +393,8 @@ Model read_model(const std::string& path) {
                 && model.flow_piercing_strategy <= 3
                 && model.flow_max_legal_candidates > 0
                 && model.flow_max_polish_moves >= 0
-                && (!(flow_v8 || flow_v9 || flow_v10 || flow_v11)
+                && (!(flow_v8 || flow_v9 || flow_v10 || flow_v11
+                      || flow_v12)
                     || (model.flow_max_frontier_paths > 0
                         && model.flow_max_tail_moves >= 0)),
             "invalid FLOW");
@@ -399,10 +402,14 @@ Model read_model(const std::string& path) {
                 && model.physical_hop_guard_scale_ns >= 0.0,
             "invalid physical hop guard");
     model.flow_refinement = true;
-    model.flow_version = flow_v11
-                             ? 11
-                             : (flow_v10 ? 10
-                                         : (flow_v9 ? 9 : (flow_v8 ? 8 : 7)));
+    model.flow_version = flow_v12
+                             ? 12
+                             : (flow_v11
+                                    ? 11
+                                    : (flow_v10
+                                           ? 10
+                                           : (flow_v9 ? 9
+                                                      : (flow_v8 ? 8 : 7))));
   }
 
   model.hard_capacity.assign(
@@ -496,6 +503,12 @@ Model read_model(const std::string& path) {
       require(cluster >= 0 && cluster < model.clusters,
               "invalid NET sink");
       model.net[net].sinks.push_back(cluster);
+    }
+    if (flow_v12) {
+      stream >> model.net[net].max_distance_limit;
+      require(stream.good()
+                  && model.net[net].max_distance_limit >= -1,
+              "invalid NET static-exact topology guard");
     }
   }
 
@@ -605,7 +618,10 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
         const Route& route = model.route[source][sink];
         if (!route.reachable
             || (model.max_hops >= 0
-                && static_cast<int>(route.arcs.size()) > model.max_hops)) {
+                && static_cast<int>(route.arcs.size()) > model.max_hops)
+            || (model.net[net_index].max_distance_limit >= 0
+                && static_cast<int>(route.arcs.size())
+                       > model.net[net_index].max_distance_limit)) {
           return result;
         }
         transitions[net_index].push_back(
@@ -782,7 +798,10 @@ ProxyNetState build_proxy_net(const Model& model,
       const Route& route = model.route[source][sink];
       if (!route.reachable
           || (model.max_hops >= 0
-              && static_cast<int>(route.arcs.size()) > model.max_hops)) {
+              && static_cast<int>(route.arcs.size()) > model.max_hops)
+          || (model.net[net_index].max_distance_limit >= 0
+              && static_cast<int>(route.arcs.size())
+                     > model.net[net_index].max_distance_limit)) {
         state.feasible = false;
         return state;
       }
@@ -2830,7 +2849,9 @@ void write_output(const std::string& output_path,
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
   const char* header = "EMUFLOW_PATRON_OUTPUT_V6\n";
-  if (flow_output_version == 11) {
+  if (flow_output_version == 12) {
+    header = "EMUFLOW_PATRON_OUTPUT_V12\n";
+  } else if (flow_output_version == 11) {
     header = "EMUFLOW_PATRON_OUTPUT_V11\n";
   } else if (flow_output_version == 10) {
     header = "EMUFLOW_PATRON_OUTPUT_V10\n";
@@ -4147,7 +4168,9 @@ void run_scalable(const Model& model, const std::string& output_path) {
   std::cerr << '\n';
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   std::string mode = "endpoint-exact-critical-ejection-v6";
-  if (model.flow_version == 11) {
+  if (model.flow_version == 12) {
+    mode = "endpoint-exact-critical-flow-v12";
+  } else if (model.flow_version == 11) {
     mode = "endpoint-exact-critical-flow-v11";
   } else if (model.flow_version == 10) {
     mode = "endpoint-exact-critical-flow-v10";

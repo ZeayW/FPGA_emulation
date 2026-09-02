@@ -22,6 +22,7 @@ from .errors import ValidationError
 from .ir import EmuIR
 from .io import read_json, write_json
 from .partition import (
+    CUT_MODE_STATIC_EXACT,
     build_partition_assignment,
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
@@ -59,6 +60,9 @@ PARTITION_PRESSURE_FLOW_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v10"
 PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V11 = (
     "emuflow.partition-pressure-trace/v11"
 )
+PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V12 = (
+    "emuflow.partition-pressure-trace/v12"
+)
 
 PATRON_FLOW_REFINEMENT_ALGORITHM_V1 = (
     "flowcutter-bidirectional-piercing-v1"
@@ -71,6 +75,9 @@ PATRON_FLOW_REFINEMENT_ALGORITHM = (
 )
 PATRON_FLOW_REFINEMENT_ALGORITHM_V5 = (
     "flowcutter-bidirectional-piercing-endpoint-residual-v5"
+)
+PATRON_FLOW_REFINEMENT_ALGORITHM_V6 = (
+    "flowcutter-ranked-frontier-static-exact-topology-guard-v6"
 )
 PATRON_FLOW_REFINEMENT_ALGORITHM_V3 = (
     "flowcutter-bidirectional-piercing-ranked-frontier-closure-v3"
@@ -101,6 +108,9 @@ PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER = (
 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11 = (
     "patron-endpoint-exact-flow-native-v11"
 )
+PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V12 = (
+    "patron-static-exact-topology-guard-flow-native-v12"
+)
 GAIN_QUANTUM = 1.0e-9
 BOUNDARY_FANOUT_PENALTY_SCALE_NS = 0.0
 MAX_SCALABLE_SWEEPS = 4
@@ -124,7 +134,7 @@ def _flow_refinement_configuration(
     physical_feedback_sha256: Optional[str] = None,
     physical_feedback_scale: float = 0.0,
 ) -> Dict[str, Any]:
-    if version not in (1, 2, 3, 4, 5):
+    if version not in (1, 2, 3, 4, 5, 6):
         raise ValidationError("native PATRON flow version is invalid")
     if (
         isinstance(physical_feedback_scale, bool)
@@ -149,7 +159,9 @@ def _flow_refinement_configuration(
     result = {
         "enabled": enabled,
         "algorithm": (
-            PATRON_FLOW_REFINEMENT_ALGORITHM_V5
+            PATRON_FLOW_REFINEMENT_ALGORITHM_V6
+            if version == 6
+            else PATRON_FLOW_REFINEMENT_ALGORITHM_V5
             if version == 5
             else (
                 PATRON_FLOW_REFINEMENT_ALGORITHM
@@ -222,6 +234,17 @@ def _flow_refinement_configuration(
                 ),
                 "physical_feedback_sha256": physical_feedback_sha256,
                 "physical_feedback_scale": float(physical_feedback_scale),
+            }
+        )
+    if version == 6:
+        result.update(
+            {
+                "physical_hop_guard": "disabled-by-static-exact-topology-guard",
+                "physical_hop_guard_scale_ns": 0.0,
+                "static_exact_topology_guard": (
+                    "initial-transported-non-combinational-"
+                    "worst-hop-non-regression-v1"
+                ),
             }
         )
     return result
@@ -616,6 +639,81 @@ def _capacity_key_by_arc(model: Mapping[str, Any]) -> Dict[Tuple[str, str, str],
     return result
 
 
+def _static_exact_topology_guard_limits(
+    clusters_artifact: Mapping[str, Any],
+    model: Mapping[str, Any],
+    initial_assignment: Mapping[str, Any],
+) -> Dict[str, int]:
+    """Freeze the initial hop bound of architectural transport nets.
+
+    Generalized combinational cuts remain unconstrained because they are the
+    new Static Exact degree of freedom.  An architectural net that is already
+    transported may improve or become local, but it may not acquire a longer
+    worst source-to-sink board path during PATRON refinement.
+    """
+
+    if (
+        clusters_artifact.get("policy", {}).get("cut_mode")
+        != CUT_MODE_STATIC_EXACT
+    ):
+        raise ValidationError(
+            "PATRON static-exact topology guard requires Static Exact clusters"
+        )
+    cluster_assignment = initial_assignment.get("cluster_assignment")
+    if not isinstance(cluster_assignment, dict):
+        raise ValidationError(
+            "PATRON static-exact topology guard assignment is invalid"
+        )
+    limits: Dict[str, int] = {}
+    for net in model["nets"]:
+        if net["cut_class"] == "combinational":
+            limits[net["net"]] = -1
+            continue
+        sources = {cluster_assignment[item] for item in net["drivers"]}
+        sinks = {cluster_assignment[item] for item in net["sinks"]}
+        maximum = 0
+        for source in sources:
+            for sink in sinks:
+                if source == sink:
+                    continue
+                route = model["shortest_routes"][source][sink]
+                if route is None:
+                    raise ValidationError(
+                        "PATRON initial architectural transport is unreachable"
+                    )
+                maximum = max(maximum, len(route))
+        limits[net["net"]] = maximum if maximum > 0 else -1
+    return limits
+
+
+def _check_static_exact_topology_guard(
+    model: Mapping[str, Any],
+    cluster_assignment: Mapping[str, str],
+    limits: Mapping[str, int],
+) -> None:
+    for net in model["nets"]:
+        limit = limits.get(net["net"])
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise ValidationError(
+                "PATRON static-exact topology guard coverage is invalid"
+            )
+        if limit < 0:
+            continue
+        sources = {cluster_assignment[item] for item in net["drivers"]}
+        sinks = {cluster_assignment[item] for item in net["sinks"]}
+        for source in sources:
+            for sink in sinks:
+                if source == sink:
+                    continue
+                route = model["shortest_routes"][source][sink]
+                if route is None or len(route) > limit:
+                    raise ValidationError(
+                        "PATRON static-exact topology guard regressed net "
+                        f"{net['net']!r}: {source!r}->{sink!r} exceeds "
+                        f"{limit} hops"
+                    )
+
+
 def _predicted_route_delay(
     platform: Platform,
     route_constraints: Mapping[str, Any],
@@ -754,6 +852,7 @@ def evaluate_partition_pressure(
     physical_hop_guard_scale_ns: float = 0.0,
     physical_feedback: Optional[Mapping[str, Any]] = None,
     physical_feedback_scale: float = 0.0,
+    static_exact_topology_guard_limits: Optional[Mapping[str, int]] = None,
 ) -> Dict[str, Any]:
     """Fully recompute the PATRON objective for one compact assignment."""
 
@@ -813,6 +912,11 @@ def evaluate_partition_pressure(
     routes_by_net: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     max_hops = model["configuration"]["max_route_hops"]
     unreachable = []
+
+    if static_exact_topology_guard_limits is not None:
+        _check_static_exact_topology_guard(
+            model, cluster_parts, static_exact_topology_guard_limits
+        )
 
     for net in model["nets"]:
         sources = sorted({cluster_parts[item] for item in net["drivers"]})
@@ -1364,10 +1468,17 @@ def _write_patron_native_input(
     physical_feedback: Optional[Mapping[str, Any]] = None,
     physical_feedback_scale: float = 0.0,
 ) -> Dict[str, Any]:
-    if flow_version not in {6, 9, 10, 11}:
+    if flow_version not in {6, 9, 10, 11, 12}:
         raise ValidationError("native PATRON algorithm version is invalid")
     flow_refinement = flow_version != 6
     use_physical_feedback = physical_feedback is not None
+    if flow_version == 12 and (
+        clusters_artifact.get("policy", {}).get("cut_mode")
+        != CUT_MODE_STATIC_EXACT
+    ):
+        raise ValidationError(
+            "native PATRON v12 requires generalized Static Exact clusters"
+        )
     if use_physical_feedback:
         if flow_version != 11:
             raise ValidationError(
@@ -1424,6 +1535,13 @@ def _write_patron_native_input(
     nets = sorted(model["nets"], key=lambda item: item["net"])
     net_index = {net["net"]: index for index, net in enumerate(nets)}
     max_hops = model["configuration"]["max_route_hops"]
+    topology_guard_limits = (
+        _static_exact_topology_guard_limits(
+            clusters_artifact, model, initial_assignment
+        )
+        if flow_version == 12
+        else {net["net"]: -1 for net in nets}
+    )
 
     lines = [
         (
@@ -1460,7 +1578,7 @@ def _write_patron_native_input(
         ]
         if flow_version >= 10:
             fields.append(
-                f"{(0.0 if use_physical_feedback else PATRON_FLOW_PHYSICAL_HOP_GUARD_SCALE_NS):.17g}"
+                f"{(PATRON_FLOW_PHYSICAL_HOP_GUARD_SCALE_NS if flow_version == 10 else 0.0):.17g}"
             )
         lines.append(" ".join(fields))
     total_cells = sum(cluster["cells"] for cluster in clusters)
@@ -1544,18 +1662,17 @@ def _write_patron_native_input(
     for index, net in enumerate(nets):
         drivers = [cluster_index[item] for item in net["drivers"]]
         sinks = [cluster_index[item] for item in net["sinks"]]
-        lines.append(
-            " ".join(
-                [
-                    "NET",
-                    str(index),
-                    str(len(drivers)),
-                    *(str(item) for item in drivers),
-                    str(len(sinks)),
-                    *(str(item) for item in sinks),
-                ]
-            )
-        )
+        fields = [
+            "NET",
+            str(index),
+            str(len(drivers)),
+            *(str(item) for item in drivers),
+            str(len(sinks)),
+            *(str(item) for item in sinks),
+        ]
+        if flow_version == 12:
+            fields.append(str(topology_guard_limits[net["net"]]))
+        lines.append(" ".join(fields))
     for index, timing_path in enumerate(model["paths"]):
         path_nets = [
             net_index[net]
@@ -1600,6 +1717,7 @@ def _write_patron_native_input(
     return {
         "parts": parts,
         "clusters": [cluster["cluster"] for cluster in clusters],
+        "static_exact_topology_guard_limits": topology_guard_limits,
     }
 
 
@@ -1637,6 +1755,7 @@ def _parse_patron_native_output(
         "EMUFLOW_PATRON_OUTPUT_V9",
         "EMUFLOW_PATRON_OUTPUT_V10",
         "EMUFLOW_PATRON_OUTPUT_V11",
+        "EMUFLOW_PATRON_OUTPUT_V12",
     ):
         raise ValidationError("native PATRON output header is invalid")
     output_version = lines[0]
@@ -1734,6 +1853,7 @@ def _parse_patron_native_output(
                 "EMUFLOW_PATRON_OUTPUT_V9",
                 "EMUFLOW_PATRON_OUTPUT_V10",
                 "EMUFLOW_PATRON_OUTPUT_V11",
+                "EMUFLOW_PATRON_OUTPUT_V12",
             ):
                 raise ValidationError("native PATRON v6 returned a BATCH")
             index, change_count = map(int, fields[1:3])
@@ -1762,6 +1882,7 @@ def _parse_patron_native_output(
                 "EMUFLOW_PATRON_OUTPUT_V9",
                 "EMUFLOW_PATRON_OUTPUT_V10",
                 "EMUFLOW_PATRON_OUTPUT_V11",
+                "EMUFLOW_PATRON_OUTPUT_V12",
             ):
                 raise ValidationError("native PATRON v6 returned a CHANGE")
             batch, cluster, source, target = map(int, fields[1:])
@@ -1846,7 +1967,7 @@ def run_partition_pressure_native(
     if (
         isinstance(algorithm_version, bool)
         or not isinstance(algorithm_version, int)
-        or algorithm_version not in {6, 9, 10, 11}
+        or algorithm_version not in {6, 9, 10, 11, 12}
     ):
         raise ValidationError("native PATRON algorithm version is invalid")
     if flow_refinement and algorithm_version == 6:
@@ -1925,9 +2046,20 @@ def run_partition_pressure_native(
         ) = (
             _parse_patron_native_output(native_output, indexes)
         )
+    if algorithm_version == 12:
+        _check_static_exact_topology_guard(
+            model,
+            cluster_assignment,
+            indexes["static_exact_topology_guard_limits"],
+        )
     provider_metadata = {
         "initial_provider": initial_assignment.get("provider"),
     }
+    if algorithm_version == 12:
+        provider_metadata["static_exact_topology_guard"] = (
+            "initial-transported-non-combinational-"
+            "worst-hop-non-regression-v1"
+        )
     model_sha256 = None
     if retain_trace_seals:
         model_sha256 = _canonical_digest(model)
@@ -1944,6 +2076,7 @@ def run_partition_pressure_native(
                 9: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9,
                 10: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
                 11: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11,
+                12: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V12,
             }[algorithm_version]
         ),
         seed=initial_assignment.get("seed", 0),
@@ -1960,6 +2093,7 @@ def run_partition_pressure_native(
                 9: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9,
                 10: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
                 11: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V11,
+                12: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V12,
             }[algorithm_version]
         ),
         "design": model["design"],
@@ -1970,6 +2104,7 @@ def run_partition_pressure_native(
                 9: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9,
                 10: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
                 11: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11,
+                12: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V12,
             }[algorithm_version]
         ),
         "mode": mode,
@@ -1992,7 +2127,9 @@ def run_partition_pressure_native(
                 flow_refinement,
                 len(model["clusters"]),
                 version=(
-                    {6: 1, 9: 3, 10: 4, 11: 5}[algorithm_version]
+                    {6: 1, 9: 3, 10: 4, 11: 5, 12: 6}[
+                        algorithm_version
+                    ]
                 ),
                 physical_feedback_sha256=feedback_sha256,
                 physical_feedback_scale=(
@@ -2137,6 +2274,7 @@ def validate_partition_pressure_native_bundle(
         not in (
             PARTITION_PRESSURE_TRACE_SCHEMA,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V11,
+            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V12,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V8,
@@ -2146,6 +2284,7 @@ def validate_partition_pressure_native_bundle(
         not in (
             PARTITION_PRESSURE_NATIVE_PROVIDER,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11,
+            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V12,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V8,
@@ -2199,6 +2338,7 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-flow-v9",
         "endpoint-exact-critical-flow-v10",
         "endpoint-exact-critical-flow-v11",
+        "endpoint-exact-critical-flow-v12",
     ):
         raise ValidationError("native PATRON trace mode is invalid")
     expected_provider = (
@@ -2218,6 +2358,9 @@ def validate_partition_pressure_native_bundle(
             "endpoint-exact-critical-flow-v11": (
                 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11
             ),
+            "endpoint-exact-critical-flow-v12": (
+                PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V12
+            ),
         }[mode]
         if mode in (
             "endpoint-exact-critical-flow-v7",
@@ -2225,6 +2368,7 @@ def validate_partition_pressure_native_bundle(
             "endpoint-exact-critical-flow-v9",
             "endpoint-exact-critical-flow-v10",
             "endpoint-exact-critical-flow-v11",
+            "endpoint-exact-critical-flow-v12",
         )
         else PARTITION_PRESSURE_NATIVE_PROVIDER
     )
@@ -2255,6 +2399,7 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-flow-v9",
         "endpoint-exact-critical-flow-v10",
         "endpoint-exact-critical-flow-v11",
+        "endpoint-exact-critical-flow-v12",
     )
     flow_version = {
         "endpoint-exact-critical-flow-v7": 1,
@@ -2262,6 +2407,7 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-flow-v9": 3,
         "endpoint-exact-critical-flow-v10": 4,
         "endpoint-exact-critical-flow-v11": 5,
+        "endpoint-exact-critical-flow-v12": 6,
     }.get(mode, 1)
     expected_algorithm_version = (
         {
@@ -2270,6 +2416,7 @@ def validate_partition_pressure_native_bundle(
             3: 9,
             4: 10,
             5: 11,
+            6: 12,
         }[flow_version]
         if flow_enabled
         else 6
@@ -2299,7 +2446,7 @@ def validate_partition_pressure_native_bundle(
     else:
         if physical_feedback is not None or physical_feedback_scale != 0.0:
             raise ValidationError(
-                "legacy native PATRON trace has unexpected physical feedback"
+                "native PATRON trace has unexpected physical feedback"
             )
         expected_feedback_sha256 = None
     expected_flow_configuration = _flow_refinement_configuration(
@@ -2325,6 +2472,7 @@ def validate_partition_pressure_native_bundle(
                 "endpoint-exact-critical-flow-v9",
                 "endpoint-exact-critical-flow-v10",
                 "endpoint-exact-critical-flow-v11",
+                "endpoint-exact-critical-flow-v12",
             )
             and (
                 trace_schema
@@ -2335,6 +2483,7 @@ def validate_partition_pressure_native_bundle(
                         3: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9,
                         4: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
                         5: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V11,
+                        6: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V12,
                     }[flow_version]
                 )
             )
@@ -2375,6 +2524,13 @@ def validate_partition_pressure_native_bundle(
         raise ValidationError("native PATRON scalable trace bounds are invalid")
     physical_hop_guard_scale_ns = float(
         expected_flow_configuration.get("physical_hop_guard_scale_ns", 0.0)
+    )
+    static_exact_topology_guard_limits = (
+        _static_exact_topology_guard_limits(
+            clusters_artifact, model, initial_assignment
+        )
+        if flow_version == 6
+        else None
     )
     cluster_ids = {
         record["cluster"] for record in model["clusters"]
@@ -2556,6 +2712,9 @@ def validate_partition_pressure_native_bundle(
             physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
             physical_feedback=physical_feedback,
             physical_feedback_scale=physical_feedback_scale,
+            static_exact_topology_guard_limits=(
+                static_exact_topology_guard_limits
+            ),
         )
         before_expected = before_evaluation["metrics"]["objective_key"]
         trial = dict(current)
@@ -2598,6 +2757,9 @@ def validate_partition_pressure_native_bundle(
             physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
             physical_feedback=physical_feedback,
             physical_feedback_scale=physical_feedback_scale,
+            static_exact_topology_guard_limits=(
+                static_exact_topology_guard_limits
+            ),
         )
         after_expected = after_evaluation["metrics"]["objective_key"]
         before = batch.get("before_objective_key")
@@ -2680,6 +2842,9 @@ def validate_partition_pressure_native_bundle(
         physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
         physical_feedback=physical_feedback,
         physical_feedback_scale=physical_feedback_scale,
+        static_exact_topology_guard_limits=(
+            static_exact_topology_guard_limits
+        ),
     )
     final_evaluation = evaluate_partition_pressure(
         ir,
@@ -2693,6 +2858,9 @@ def validate_partition_pressure_native_bundle(
         physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
         physical_feedback=physical_feedback,
         physical_feedback_scale=physical_feedback_scale,
+        static_exact_topology_guard_limits=(
+            static_exact_topology_guard_limits
+        ),
     )
     maximum_endpoint_error = 0.0
     maximum_endpoint_relative_error = 0.0

@@ -582,6 +582,32 @@ class CanonicalExperimentTest(unittest.TestCase):
                 exact_nodes["partition"]["configuration"]["cut_mode"],
                 "static-exact-combinational",
             )
+            config["patron_algorithm_version"] = 12
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            guarded_output = root / "patron-v12-static-exact.json"
+            compile_canonical_experiment_spec(
+                config_path, REPOSITORY, guarded_output
+            )
+            guarded_nodes = {
+                node["id"]: node
+                for node in validate_experiment_spec(
+                    json.loads(guarded_output.read_text())
+                )["nodes"]
+            }
+            self.assertEqual(
+                guarded_nodes["partition"]["configuration"][
+                    "patron_algorithm_version"
+                ],
+                12,
+            )
+            config["cut_mode"] = "sequential-only"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "v12 requires generalized Static Exact"
+            ):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "invalid-v12.json"
+                )
 
     def test_physical_storage_peak_override_is_sealed_and_positive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -20,7 +20,9 @@ from emuflow.combinational_cut import (
 )
 from emuflow.partition_pressure import (
     _canonical_digest,
+    _check_static_exact_topology_guard,
     _flow_refinement_configuration,
+    _static_exact_topology_guard_limits,
     _parse_patron_native_output,
     _write_patron_native_input,
     build_partition_pressure_model,
@@ -2212,6 +2214,195 @@ class PartitionPressureTest(unittest.TestCase):
             trace,
         )
         self.assertEqual(replay["status"], "pass")
+
+    def test_v12_preserves_initial_architectural_transport_distance(self) -> None:
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "pressure_static_exact_guard",
+                    "top": "pressure_static_exact_guard",
+                    "source_format": "fixture",
+                },
+                "ports": [],
+                "instances": [
+                    {
+                        "id": f"u{index}",
+                        "type": "LUT1",
+                        "resources": {"lut": 1},
+                    }
+                    for index in range(4)
+                ],
+                "nets": [
+                    {
+                        "id": "architectural-relaxed",
+                        "cut_class": "register_output",
+                        "drivers": [_endpoint("u0", "O")],
+                        "sinks": [_endpoint("u1", "I")],
+                    },
+                    {
+                        "id": "architectural-critical",
+                        "cut_class": "register_output",
+                        "drivers": [_endpoint("u1", "O")],
+                        "sinks": [_endpoint("u2", "I")],
+                    },
+                ],
+                "clocks": [
+                    {
+                        "id": "clk",
+                        "name": "clk",
+                        "source_port": "clk",
+                        "period_ns": None,
+                    }
+                ],
+                "warnings": [],
+            }
+        )
+        platform = Platform.from_dict(
+            _platform_value(
+                "pressure_static_exact_guard_platform",
+                ["a", "b", "c"],
+                [
+                    _link("ab", "a", "b", lanes=8, latency=1),
+                    _link("bc", "b", "c", lanes=8, latency=1),
+                ],
+            )
+        )
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "min_used_fpgas": 3,
+                "balance_tolerance": 2.0,
+            },
+            ir,
+            platform,
+        )
+        clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            static_exact_candidate_policy=(
+                STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+            ),
+            frame_slots=64,
+        )
+        by_instance = {
+            cluster["instances"][0]: cluster["id"]
+            for cluster in clusters["clusters"]
+        }
+        initial = build_partition_assignment(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            {
+                by_instance["u0"]: "a",
+                by_instance["u1"]: "b",
+                by_instance["u2"]: "c",
+                by_instance["u3"]: "b",
+            },
+            provider="fixture",
+            seed=1,
+        )
+        routes = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 64,
+                "tdm_ratio_quantum": 1,
+                "max_route_hops": 2,
+            },
+            platform,
+        )
+        timing = {
+            "schema": "emuflow.sta-path-database/v1",
+            "design": "pressure_static_exact_guard",
+            "source": {"provider": "fixture", "input": "fixture"},
+            "normalization": {
+                "positive_slack_scale_ns": 20.0,
+                "negative_slack_scale_ns": 1.0,
+                "max_clock_period_ns": 20.0,
+            },
+            "paths": [
+                {
+                    "id": "p-relaxed",
+                    "startpoint": _endpoint("u0", "O"),
+                    "endpoint": _endpoint("u1", "I"),
+                    "clock_domain": "clk",
+                    "clock_period_ns": 10.0,
+                    "slack_ns": 100.0,
+                    "fixed_delay_ns": 0.0,
+                    "path_nets": ["architectural-relaxed"],
+                    "normalized_slack": 5.0,
+                },
+                {
+                    "id": "p-critical",
+                    "startpoint": _endpoint("u1", "O"),
+                    "endpoint": _endpoint("u2", "I"),
+                    "clock_domain": "clk",
+                    "clock_period_ns": 10.0,
+                    "slack_ns": -10.0,
+                    "fixed_delay_ns": 20.0,
+                    "path_nets": ["architectural-critical"],
+                    "normalized_slack": -1.0,
+                },
+            ],
+        }
+        model = build_partition_pressure_model(
+            ir, platform, clusters, constraints, timing, routes
+        )
+        limits = _static_exact_topology_guard_limits(
+            clusters, model, initial
+        )
+        self.assertEqual(limits["architectural-relaxed"], 1)
+        trial = dict(initial["cluster_assignment"])
+        trial[by_instance["u1"]] = "c"
+        with self.assertRaisesRegex(ValidationError, "regressed net"):
+            _check_static_exact_topology_guard(model, trial, limits)
+
+        unguarded, _ = run_partition_pressure_native(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            routes,
+            model,
+            initial,
+            executable=str(patron_refiner()),
+            max_moves=4,
+            algorithm_version=9,
+        )
+        guarded, trace = run_partition_pressure_native(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            routes,
+            model,
+            initial,
+            executable=str(patron_refiner()),
+            max_moves=4,
+            algorithm_version=12,
+        )
+        self.assertEqual(
+            unguarded["cluster_assignment"][by_instance["u1"]], "c"
+        )
+        self.assertNotEqual(
+            guarded["cluster_assignment"][by_instance["u1"]], "c"
+        )
+        self.assertEqual(trace["mode"], "endpoint-exact-critical-flow-v12")
+        checked = validate_partition_pressure_native_bundle(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            timing,
+            routes,
+            model,
+            initial,
+            guarded,
+            trace,
+        )
+        self.assertEqual(checked["status"], "pass")
 
 
 if __name__ == "__main__":
