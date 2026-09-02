@@ -1599,7 +1599,9 @@ already materialized; it does not reread a large JSON file, recompute a hash,
 or run the scheduler in the optimizer loop.  A candidate is promoted only when
 the lexicographic tuple `(logic segments, capture requirements, transported
 cuts, dependency edges)` improves.  Otherwise the frozen legal assignment is
-selected and the rejected candidate remains explicit diagnostic evidence.
+selected without rewriting its artifact identity, so matching downstream DAG
+nodes remain reusable; the rejected candidate remains explicit diagnostic
+evidence in the Phase 3 report.
 V13 remains an experimental explicit option and has no claimed end-to-end QoR
 improvement.
 

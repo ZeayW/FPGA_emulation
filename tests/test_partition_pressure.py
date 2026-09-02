@@ -298,8 +298,10 @@ class PartitionPressureTest(unittest.TestCase):
             initial, candidate
         )
         self.assertEqual(report["selected"], "initial")
+        self.assertIs(selected, initial)
+        self.assertEqual(selected["provider"], "frozen")
         self.assertEqual(
-            selected["provider"],
+            report["provider"],
             PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER,
         )
         self.assertEqual(

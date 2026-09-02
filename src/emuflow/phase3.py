@@ -106,16 +106,10 @@ def _select_patron_static_exact_assignment(
     }
     if accepted:
         return candidate, selection
-    selected = {
-        **initial,
-        "provider": PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER,
-        "provider_metadata": {
-            "selected_provider": initial.get("provider"),
-            "rejected_candidate_provider": candidate.get("provider"),
-            "selection_policy": selection["policy"],
-        },
-    }
-    return selected, selection
+    # Preserve the exact frozen artifact identity.  The selection evidence is
+    # stored in the Phase-3 report; rewriting provider metadata here would
+    # invalidate otherwise reusable downstream DAG nodes.
+    return initial, selection
 
 
 def _validate_reused_patron_clusters(
