@@ -55,6 +55,58 @@ secondary metric improves: the negative-path count increases even while total
 negative slack decreases substantially.  Case7/case9 topology replication
 remains the gate before changing the repository-wide default provider.
 
+## Controlled four-arm baseline-provider diagnostic
+
+The previously pending v6, v9, v6-to-v11, and v9-to-v11 diagnostic completed
+the full Phase 7 path on `koios-dla-medium-l5__eda2023-case6`.  It deliberately
+uses the baseline Phase 6 provider, physical seed 1, one physical worker, and
+route channel width 300.  This is a controlled algorithm diagnostic, not the
+canonical baseline/placement-aware/Chimew provider matrix and not a replacement
+for the Chimew/eight-worker acceptance result above.
+
+| arm | target WNS (ns) | target TNS (ns) | negative paths | per-FPGA physical WNS (ns) | unrouted / DRC |
+|---|---:|---:|---:|---:|---:|
+| v6 | -95.390825202 | -264,633.1135519021 | 6,271 | 7.02073 | 0 / 0 |
+| v9 | -95.390825202 | -264,633.1135519021 | 6,271 | 7.02073 | 0 / 0 |
+| v6 to v11 | -97.289380855 | -260,656.0599069793 | 6,051 | 10.1567 | 0 / 0 |
+| v9 to v11 | -97.289380855 | -260,656.0599069793 | 6,051 | 10.1567 | 0 / 0 |
+
+All four arms independently cover all 195,532 original TimingPathDB paths,
+with no fallback or discontinuous compressed paths.  They use EmuIR digest
+`cb6c74059d40279442b5c1c2f272fea6ad5ea7a1e7c1084f9bfe402ebcae5e99`
+and original path-ID digest
+`a2fb7551b567957f38fe4159605886bee5ee60d861875cd1cdc8a2fc215bba8b`.
+The cold arms ran from source commit
+`512ad2f1443a9cd2d0d27234f063d32a2cd29e59`; the feedback arms ran from
+`2e986c9ee056f7fbb1129f86e45dc49d6dc9e2a6`.
+
+The cold assignments converge to one physical result, and both feedback
+descendants converge to another.  Relative to either parent, v11 improves TNS
+by `3,977.053644922824 ns` (1.5029% deficit reduction) and removes 220 negative
+paths, but worsens WNS by `1.8985556530000025 ns` (1.9903% deficit increase).
+It therefore fails the declared dual-metric promotion gate under this
+configuration.  This qualified negative result does not contradict the
+Chimew/eight-worker gate because the Phase 6 provider and physical worker
+contract differ.
+
+The independently validated compact Phase 7 report and evidence-manifest
+identities are:
+
+| arm | Phase 7 report SHA-256 | evidence manifest SHA-256 |
+|---|---|---|
+| v6 | `6d1fa34fd2d17c104d028d3a80ea006b0b8c89aad00e490bf9a1c12cb1292465` | `db4208c78f452f6cdbf815485b913ef7d1686328a7c8cf96a929b1a4a49dcc32` |
+| v9 | `7e27d4c9511dd2973f4c8f41365a7406db421a4b9f794c12a79eb43fc67cae4e` | `260025a1308a5e6fcdec48b880bd2aab6222435711e2d113eefdac6072381d0a` |
+| v6 to v11 | `f24036bac8952afbd41942640a71298f80294cea3afe0c0337a0a89e1ba6d9f4` | `1917a6c0c3aa4dd57f6f754ea66880cda2ee96e12217b6bf5d589ab710d07324` |
+| v9 to v11 | `017981d498e18e0dfe0d443fd9466cf5a7b7051cf73b35ea952d49af7f9f91ac` | `9ca78aa4deb7ca90e7b6a29ee684e9c9db14834cca3d26810e5fafcc136edda1` |
+
+The two complete feedback archives remain outside the source repository.  The
+v6-to-v11 archive contains 343,798,596 bytes and has SHA-256
+`fb69a0bdcff9f18124be0717e5e84ebc37b327ba1d6e2b17c4c05d73b901c8aa`;
+the v9-to-v11 archive contains 343,808,333 bytes and has SHA-256
+`f198dd971effad98ea7dfcb1f96cf87062b337d4898b857500351399cac32ed1`.
+The large routed outputs, experiment manifests, and machine-readable reports
+remain external evidence rather than source-tree inputs.
+
 ## What the literature actually optimizes
 
 There is no single universal multi-FPGA partitioning SOTA.  Recent work leads
