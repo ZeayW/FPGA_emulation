@@ -1411,14 +1411,15 @@ it is never inferred from cache presence.  The older
 `--patron-flow-refinement` spelling remains an explicit version-10 producer
 alias when no physical-feedback input is present.  A controlled four-arm
 baseline-provider diagnostic for v6, v9, v6-to-v11, and v9-to-v11 has completed
-the full Phase 7 path on DLA/EDA2023-case6.  The cold arms are physically
-identical; both v11 descendants reduce negative paths by 220 and improve TNS by
-`3,977.053644922824 ns`, but regress WNS by `1.8985556530000025 ns`.  They
-therefore fail the dual-metric promotion gate under this configuration.  This
-single-provider, single-seed result is not the canonical provider matrix and
-does not replace the separate Chimew/eight-worker result below; the complete
-controls and evidence hashes are in
-[the four-arm result record](docs/PATRON_STATIC_EXACT_FOUR_ARM_RESULT.md).
+the full Phase 7 path on `koios-dla-medium-l5__eda2023-case6`.  The cold arms
+are physically identical; both v11 descendants reduce negative paths by 220
+and improve TNS by `3,977.053644922824 ns`, but regress WNS by
+`1.8985556530000025 ns`.  They therefore fail the dual-metric promotion gate
+under this configuration.  This single-provider, single-seed result is not the
+canonical provider matrix and does not replace the separate
+Chimew/eight-worker result below.  Its frozen controls and evidence identities
+are recorded in
+[the timing/TDM partitioning upgrade plan](docs/PARTITIONING_TIMING_TDM_UPGRADE.md).
 Canonical experiment configs may set
 `partition_provider=patron`, reuse `patron_initial_assignment`, and restrict
 `phase6_providers` plus `physical_seeds` (for example Chimew/seed 1) so an A/B
