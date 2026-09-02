@@ -25,6 +25,7 @@ from .multi_fpga_physical_flow import (
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
 )
+from .native_tools import resolve_native_executable
 from .phase3 import validate_phase3
 from .phase4 import validate_phase4
 from .phase5 import validate_phase5
@@ -52,6 +53,10 @@ _PHASE6_VALIDATION_MODES = {
     "producer-self-check",
     "validated-checkpoint-reuse",
 }
+_ACADEMIC_CHIMEW_LOOKAHEAD_TOOLS = (
+    "emuflow_chimew_signal_grouper",
+    "emuflow_chimew_position_refiner",
+)
 
 
 class _ValidationSession:
@@ -95,6 +100,13 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _preflight_academic_chimew_lookahead_tools() -> None:
+    """Fail before the expensive physical prepass if lookahead tools are absent."""
+
+    for executable in _ACADEMIC_CHIMEW_LOOKAHEAD_TOOLS:
+        resolve_native_executable(executable)
 
 
 def _link_tree(source: Path, destination: Path) -> None:
@@ -632,6 +644,7 @@ def run_physical_lookahead(
         )
         if baseline["provider"] != "baseline":
             raise ValidationError("physical lookahead requires baseline Phase 6")
+    _preflight_academic_chimew_lookahead_tools()
     path_database, logic_path_database = _physical_timing_databases(shared_root)
     output_dir = _prepare_empty_output(output_dir, "physical-lookahead")
     physical = run_multi_fpga_physical_flow(

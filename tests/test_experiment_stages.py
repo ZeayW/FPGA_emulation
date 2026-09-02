@@ -15,11 +15,13 @@ from emuflow.experiment_stages import (
     _phase7_qor_projection,
     _physical_timing_databases,
     _placement_aware_positions,
+    _preflight_academic_chimew_lookahead_tools,
     _prepare_empty_output,
     _validate_managed_phase6_checkpoint,
     _sta_path_database,
     _timing_paths,
     run_phase6_checkpoint,
+    run_physical_lookahead,
     validate_phase6_checkpoint,
     validate_shared_phase1_5,
     resume_physical_lookahead,
@@ -34,6 +36,54 @@ from emuflow.runtime import QOR_REPORT_SCHEMA
 
 
 class ExperimentStagesTest(unittest.TestCase):
+    def test_physical_lookahead_preflights_native_tools_before_backend(self) -> None:
+        missing = EmuFlowError("missing exact native build product")
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch(
+                "emuflow.experiment_stages.validate_shared_phase1_5",
+                return_value={"status": "pass"},
+            ),
+            mock.patch(
+                "emuflow.experiment_stages._shared_paths",
+                return_value={},
+            ),
+            mock.patch(
+                "emuflow.experiment_stages.resolve_native_executable",
+                side_effect=missing,
+            ) as resolve,
+            mock.patch(
+                "emuflow.experiment_stages.run_multi_fpga_physical_flow"
+            ) as physical,
+        ):
+            with self.assertRaisesRegex(
+                EmuFlowError, "missing exact native build product"
+            ):
+                run_physical_lookahead(
+                    Path(temporary) / "shared",
+                    None,
+                    Path(temporary) / "platform.json",
+                    Path(temporary) / "output",
+                    seed=1,
+                    workers=8,
+                    region_count=4,
+                )
+        resolve.assert_called_once_with("emuflow_chimew_signal_grouper")
+        physical.assert_not_called()
+
+    def test_academic_lookahead_preflights_both_native_tools(self) -> None:
+        with mock.patch(
+            "emuflow.experiment_stages.resolve_native_executable"
+        ) as resolve:
+            _preflight_academic_chimew_lookahead_tools()
+        self.assertEqual(
+            resolve.call_args_list,
+            [
+                mock.call("emuflow_chimew_signal_grouper"),
+                mock.call("emuflow_chimew_position_refiner"),
+            ],
+        )
+
     def test_managed_phase6_omits_wrapper_hash_and_self_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
