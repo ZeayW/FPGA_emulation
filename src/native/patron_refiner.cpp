@@ -829,6 +829,16 @@ ProxyNetState build_proxy_net(const Model& model,
   return state;
 }
 
+bool proxy_transport_feasible(const Model& model,
+                              const std::vector<int>& assignment) {
+  for (int net = 0; net < model.nets; ++net) {
+    if (!build_proxy_net(model, assignment, net).feasible) {
+      return false;
+    }
+  }
+  return true;
+}
+
 const ProxyNetState& selected_proxy_net(
     const ProxyState& state,
     const std::map<int, ProxyNetState>& replacements,
@@ -1141,7 +1151,8 @@ std::vector<int> diagnose_flow_corridors(
           "flow corridor topology sides are inconsistent");
   const auto consider_dual_improving
       = [&](const std::vector<int>& assignment, bool capacity_compatible) {
-          if (!capacity_compatible) {
+          if (!capacity_compatible
+              || !proxy_transport_feasible(model, assignment)) {
             return;
           }
           std::vector<int> counts(model.parts, 0);
@@ -1370,7 +1381,8 @@ std::vector<int> diagnose_flow_corridors(
     }
     const std::vector<int> raw_candidate_assignment = candidate_assignment;
     const std::vector<std::vector<double>> raw_candidate_load = candidate_load;
-    ProxyState candidate = build_proxy_state(model, &candidate_assignment);
+    const bool transport_compatible
+        = proxy_transport_feasible(model, candidate_assignment);
     std::cerr << "PATRON_FLOW_CORRIDOR pair=" << edge_left << ':'
               << pair_target
               << " boundary=" << boundary.size()
@@ -1382,19 +1394,25 @@ std::vector<int> diagnose_flow_corridors(
               << " moved_to_left=" << moved_to_left
               << " moved_to_target=" << moved_to_target
               << " capacity_compatible=" << (capacity_compatible ? 1 : 0)
-              << " domain_load=" << candidate.domain_load[cover_domain]
-              << " improving="
-              << (capacity_compatible
-                          && less_ranked(candidate.evaluation.ranked,
-                                         state.evaluation.ranked)
-                      ? 1
-                      : 0)
-              << " rank=";
-    for (long long value : candidate.evaluation.ranked) {
-      std::cerr << value << ',';
+              << " transport_compatible="
+              << (transport_compatible ? 1 : 0);
+    if (transport_compatible) {
+      ProxyState candidate = build_proxy_state(model, &candidate_assignment);
+      std::cerr << " domain_load=" << candidate.domain_load[cover_domain]
+                << " improving="
+                << (capacity_compatible
+                            && less_ranked(candidate.evaluation.ranked,
+                                           state.evaluation.ranked)
+                        ? 1
+                        : 0)
+                << " rank=";
+      for (long long value : candidate.evaluation.ranked) {
+        std::cerr << value << ',';
+      }
     }
     std::cerr << '\n';
-    consider_dual_improving(candidate_assignment, capacity_compatible);
+    consider_dual_improving(
+        candidate_assignment, capacity_compatible && transport_compatible);
 
     if (!capacity_compatible) {
       struct SpillOption {
@@ -1539,7 +1557,12 @@ std::vector<int> diagnose_flow_corridors(
                 << " options=" << options.size()
                 << " spills=" << spills
                 << " capacity_compatible=" << (legalized_capacity ? 1 : 0);
-      if (legalized_capacity) {
+      const bool legalized_transport
+          = legalized_capacity
+            && proxy_transport_feasible(model, candidate_assignment);
+      std::cerr << " transport_compatible="
+                << (legalized_transport ? 1 : 0);
+      if (legalized_transport) {
         ProxyState legalized = build_proxy_state(model, &candidate_assignment);
         std::cerr << " domain_load=" << legalized.domain_load[cover_domain]
                   << " improving="
@@ -1734,7 +1757,12 @@ std::vector<int> diagnose_flow_corridors(
                           << (assigned_all ? unassigned.size() : 0)
                           << " capacity_compatible="
                           << (region_capacity ? 1 : 0);
-                if (region_capacity) {
+                const bool region_transport
+                    = region_capacity
+                      && proxy_transport_feasible(model, region_assignment);
+                std::cerr << " transport_compatible="
+                          << (region_transport ? 1 : 0);
+                if (region_transport) {
                   ProxyState legalized
                       = build_proxy_state(model, &region_assignment);
                   std::cerr << " domain_load="
@@ -2229,7 +2257,10 @@ std::vector<int> diagnose_flow_corridors(
                             << " sink_excess=" << piercing_sink_excess
                             << '\n';
                 }
-                if (piercing_capacity) {
+                const bool piercing_transport
+                    = piercing_capacity
+                      && proxy_transport_feasible(model, piercing_assignment);
+                if (piercing_transport) {
                   ProxyState candidate
                       = build_proxy_state(model, &piercing_assignment);
                   std::cerr << "PATRON_FLOW_PIERCING_FEASIBLE pair="
@@ -2315,6 +2346,13 @@ std::vector<int> diagnose_flow_corridors(
                   if (assignment.empty()) {
                     return;
                   }
+                  if (!proxy_transport_feasible(model, assignment)) {
+                    std::cerr << "PATRON_FLOW_PARAMETRIC_RESULT pair="
+                              << edge_left << ':' << pair_target
+                              << " label=" << label
+                              << " transport_compatible=0\n";
+                    return;
+                  }
                   ProxyState legalized = build_proxy_state(model, &assignment);
                   std::cerr << "PATRON_FLOW_PARAMETRIC_RESULT pair="
                             << edge_left << ':' << pair_target
@@ -2339,7 +2377,9 @@ std::vector<int> diagnose_flow_corridors(
           report_parametric("flowcutter-piercing", best_piercing_assignment);
           report_parametric("flowcutter-dual-improving",
                             best_dual_piercing_assignment);
-          if (!best_piercing_assignment.empty()) {
+          if (!best_piercing_assignment.empty()
+              && proxy_transport_feasible(
+                  model, best_piercing_assignment)) {
             ProxyState polished
                 = build_proxy_state(model, &best_piercing_assignment);
             std::vector<int> polish_order = parametric_variables;
@@ -3445,6 +3485,9 @@ void run_scalable(const Model& model, const std::string& output_path) {
       if (!capacity_compatible) {
         continue;
       }
+      if (!proxy_transport_feasible(model, candidate_assignment)) {
+        continue;
+      }
       ProxyState candidate = build_proxy_state(model, &candidate_assignment);
       std::cerr << "PATRON_BLOCK_PERMUTATION map=";
       for (int part : permutation) {
@@ -3510,7 +3553,8 @@ void run_scalable(const Model& model, const std::string& output_path) {
     std::vector<int> flow_assignment = diagnose_flow_corridors(
         model, state, cluster_nets, net_paths, exposure, cover_domain);
     if (flow_apply) {
-      if (!flow_assignment.empty()) {
+      if (!flow_assignment.empty()
+          && proxy_transport_feasible(model, flow_assignment)) {
         ProxyState refined = build_proxy_state(model, &flow_assignment);
         long long evaluated_tail_moves = 0;
         long long feasible_tail_moves = 0;
