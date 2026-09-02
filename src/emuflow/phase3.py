@@ -280,7 +280,7 @@ def run_phase3(
     if (
         isinstance(patron_algorithm_version, bool)
         or not isinstance(patron_algorithm_version, int)
-        or patron_algorithm_version not in {6, 9, 10, 11, 12}
+        or patron_algorithm_version not in {6, 9, 10, 11, 12, 13}
     ):
         raise ValidationError("PATRON algorithm version is invalid")
     if patron_physical_system_timing_path is not None:
@@ -290,11 +290,11 @@ def run_phase3(
         patron_algorithm_version = 10
     patron_flow_refinement = patron_algorithm_version != 6
     if (
-        patron_algorithm_version == 12
+        patron_algorithm_version in {12, 13}
         and cut_mode != CUT_MODE_STATIC_EXACT
     ):
         raise ValidationError(
-            "PATRON v12 requires generalized Static Exact mode"
+            "PATRON v12/v13 requires generalized Static Exact mode"
         )
     if patron_flow_refinement and provider != "patron":
         raise ValidationError(

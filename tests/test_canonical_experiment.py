@@ -600,10 +600,30 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
                 12,
             )
+            config["patron_algorithm_version"] = 13
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            transition_guarded_output = (
+                root / "patron-v13-static-exact.json"
+            )
+            compile_canonical_experiment_spec(
+                config_path, REPOSITORY, transition_guarded_output
+            )
+            transition_guarded_nodes = {
+                node["id"]: node
+                for node in validate_experiment_spec(
+                    json.loads(transition_guarded_output.read_text())
+                )["nodes"]
+            }
+            self.assertEqual(
+                transition_guarded_nodes["partition"]["configuration"][
+                    "patron_algorithm_version"
+                ],
+                13,
+            )
             config["cut_mode"] = "sequential-only"
             config_path.write_text(json.dumps(config), encoding="utf-8")
             with self.assertRaisesRegex(
-                ValidationError, "v12 requires generalized Static Exact"
+                ValidationError, "v12/v13 requires generalized Static Exact"
             ):
                 compile_canonical_experiment_spec(
                     config_path, REPOSITORY, root / "invalid-v12.json"

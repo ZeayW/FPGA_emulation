@@ -1567,6 +1567,30 @@ replication remains additional QoR evidence after the primary case6 gate.  The
 complete design, literature basis, and gate are documented in
 [the timing/TDM partitioning upgrade plan](docs/PARTITIONING_TIMING_TDM_UPGRADE.md).
 
+V12 is the explicit generalized-Static-Exact profile that prevents PATRON from
+increasing the routed-hop distance of any initially transported
+non-combinational net.  Its complete baseline-Phase-6, seed-1 gate reached
+`-91.259624603 ns` complete-global WNS and `-446,455.39933616295 ns` TNS.
+Although its internal timing proxy improved substantially, the materialized
+Static Exact contract increased capture requirements by 33.3% and logic
+segments by 30.1%; the final WNS also regressed by `0.064237394 ns` relative
+to the matching v6/v9 arm.  V12 is therefore retained as rejected diagnostic
+evidence rather than promoted.
+
+V13 adds the missing scalable semantic guard.  It incrementally counts the
+partition transitions along each TimingPathDB path, uses that count in place
+of the older repeated-part-only `snaking` tie-break, and rejects every direct,
+ejection, corridor, legalization, permutation, and tail-repair candidate whose
+total path-transition count exceeds the frozen initial assignment.  It does
+not run the exact scheduler inside the Phase 3 move loop: Phase 4 still
+materializes routes and Phase 5 remains the authoritative deterministic exact
+dependency/slot scheduler.  The native implementation and independent Python
+endpoint/transition reconstruction are versioned as PATRON v13 and are
+available with `--patron-algorithm-version 13` only for generalized Static
+Exact.  Compact qualification is complete; the large-design cut-contract and
+complete Phase 7 promotion gates remain pending, so v13 is not yet the omitted-
+option default and has no claimed QoR improvement.
+
 ### Automatic validation archives
 
 A successful full-flow run can be archived as part of the same command. The

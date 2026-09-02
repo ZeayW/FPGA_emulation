@@ -642,7 +642,7 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument(
         "--patron-algorithm-version",
         type=int,
-        choices=(6, 9, 10, 11, 12),
+        choices=(6, 9, 10, 11, 12, 13),
         default=6,
     )
     partition_run.add_argument("--patron-initial-assignment", type=Path)
@@ -767,7 +767,7 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument(
         "--patron-algorithm-version",
         type=int,
-        choices=(6, 9, 10, 11, 12),
+        choices=(6, 9, 10, 11, 12, 13),
     )
     partition_validate.add_argument("--seed", type=int)
     partition_validate.add_argument("--seed-attempts", type=int)
@@ -1868,7 +1868,7 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--patron-algorithm-version",
         type=int,
-        choices=(6, 9, 10, 11, 12),
+        choices=(6, 9, 10, 11, 12, 13),
         default=6,
     )
     multi_fpga_compile.add_argument(
@@ -2810,7 +2810,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--patron-algorithm-version",
         type=int,
-        choices=(6, 9, 10, 11, 12),
+        choices=(6, 9, 10, 11, 12, 13),
         default=6,
     )
     phase3.add_argument("--patron-initial-assignment", type=Path)
@@ -3270,7 +3270,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument(
         "--patron-algorithm-version",
         type=int,
-        choices=(6, 9, 10, 11, 12),
+        choices=(6, 9, 10, 11, 12, 13),
         default=6,
     )
     cross_stage_optimize.add_argument(

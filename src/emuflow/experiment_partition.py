@@ -659,7 +659,7 @@ def validate_partition_checkpoint(
     if (
         isinstance(actual_patron_algorithm_version, bool)
         or not isinstance(actual_patron_algorithm_version, int)
-        or actual_patron_algorithm_version not in {6, 9, 10, 11, 12}
+        or actual_patron_algorithm_version not in {6, 9, 10, 11, 12, 13}
         or actual_patron_flow_refinement
         is not (actual_patron_algorithm_version != 6)
     ):

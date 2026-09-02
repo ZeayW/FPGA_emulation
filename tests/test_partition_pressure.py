@@ -278,6 +278,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.model,
         )
         self.assertEqual(checked["status"], "pass")
+
         self.assertEqual(checked["paths"], 2)
         broken = copy.deepcopy(self.model)
         broken["paths"][0]["base_slack_ns"] += 0.25
@@ -2401,6 +2402,52 @@ class PartitionPressureTest(unittest.TestCase):
             initial,
             guarded,
             trace,
+        )
+        self.assertEqual(checked["status"], "pass")
+
+        transition_guarded, transition_trace = run_partition_pressure_native(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            routes,
+            model,
+            initial,
+            executable=str(patron_refiner()),
+            max_moves=4,
+            algorithm_version=13,
+        )
+        self.assertNotEqual(
+            transition_guarded["cluster_assignment"][by_instance["u1"]],
+            "c",
+        )
+        self.assertEqual(
+            transition_trace["mode"],
+            "endpoint-exact-critical-flow-v13",
+        )
+        self.assertIn(
+            "total_path_partition_transitions",
+            transition_trace["initial_metrics"],
+        )
+        self.assertLessEqual(
+            transition_trace["final_metrics"][
+                "total_path_partition_transitions"
+            ],
+            transition_trace["initial_metrics"][
+                "total_path_partition_transitions"
+            ],
+        )
+        checked = validate_partition_pressure_native_bundle(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            timing,
+            routes,
+            model,
+            initial,
+            transition_guarded,
+            transition_trace,
         )
         self.assertEqual(checked["status"], "pass")
 
