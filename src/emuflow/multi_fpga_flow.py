@@ -1028,7 +1028,7 @@ def run_multi_fpga_flow(
     max_ratio: Optional[int] = None,
     ratio_quantum: int = 8,
     post_refinement_iterations: int = 200,
-    slot_refinement_iterations: int = 0,
+    slot_refinement_iterations: int = 200,
     ratio_convergence: float = 1.0e-9,
     cross_stage_iterations: int = 0,
     cross_stage_feedback_optimizer: Optional[str] = None,

@@ -1025,7 +1025,7 @@ def run_cross_stage_optimization(
     max_ratio: Optional[int] = None,
     ratio_quantum: int = 8,
     post_refinement_iterations: int = 200,
-    slot_refinement_iterations: int = 0,
+    slot_refinement_iterations: int = 200,
     ratio_convergence: float = 1.0e-9,
     pair_pressure_weight: float = 1.0,
     feedback_steps: Optional[Tuple[float, ...]] = None,

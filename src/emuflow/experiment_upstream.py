@@ -898,7 +898,7 @@ def run_tdm_checkpoint(
     max_ratio: Optional[int] = None,
     ratio_quantum: int = 8,
     post_refinement_iterations: int = 200,
-    slot_refinement_iterations: int = 0,
+    slot_refinement_iterations: int = 200,
     ratio_optimizer: Optional[str] = None,
     timing_dag_optimizer: Optional[str] = None,
     slot_optimizer: Optional[str] = None,

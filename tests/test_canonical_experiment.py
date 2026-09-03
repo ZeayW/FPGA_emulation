@@ -435,6 +435,16 @@ class CanonicalExperimentTest(unittest.TestCase):
                     for artifact in partition["artifacts"]
                 )
             )
+            tdm = nodes["tdm"]
+            self.assertEqual(
+                tdm["configuration"]["slot_refinement_iterations"], 200
+            )
+            self.assertEqual(
+                tdm["command"][
+                    tdm["command"].index("--slot-refinement-iterations") + 1
+                ],
+                "200",
+            )
 
     def test_compiler_can_reuse_a_frozen_baseline_for_patron(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

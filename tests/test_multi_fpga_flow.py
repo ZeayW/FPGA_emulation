@@ -29,6 +29,7 @@ from emuflow.timing_routing import (
 from tests.native_build import (
     tdm_partition_feedback,
     tdm_ratio_optimizer,
+    tdm_slot_optimizer,
     tdm_timing_dag_optimizer,
     tlr_router,
 )
@@ -193,7 +194,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             checkpoint.cut_mode, "static-exact-combinational"
         )
 
-    def test_cli_exact_mode_does_not_inherit_slot_refinement_default(self):
+    def test_cli_exact_mode_inherits_unified_slot_refinement_default(self):
         base = [
             "multi-fpga",
             "compile",
@@ -216,7 +217,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             run.return_value = {"status": "pass"}
             self.assertEqual(_dispatch(exact), 0)
             self.assertEqual(
-                run.call_args.kwargs["slot_refinement_iterations"], 0
+                run.call_args.kwargs["slot_refinement_iterations"], 200
             )
             self.assertEqual(
                 run.call_args.kwargs["static_exact_candidate_policy"],
@@ -234,7 +235,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             run.reset_mock()
             self.assertEqual(_dispatch(safe), 0)
             self.assertEqual(
-                run.call_args.kwargs["slot_refinement_iterations"], 0
+                run.call_args.kwargs["slot_refinement_iterations"], 200
             )
             self.assertEqual(
                 run.call_args.kwargs["partition_provider"], "patron"
@@ -705,6 +706,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 router=str(tlr_router()),
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                slot_optimizer=str(tdm_slot_optimizer()),
                 frame_slots=32,
                 optimize_frame_slots=True,
                 cross_stage_iterations=1,
@@ -880,6 +882,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 router=str(tlr_router()),
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                slot_optimizer=str(tdm_slot_optimizer()),
                 cross_stage_iterations=0,
                 equivalence_cycles=2,
             )

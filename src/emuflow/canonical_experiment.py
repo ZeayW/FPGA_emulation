@@ -1336,6 +1336,7 @@ def compile_canonical_experiment_spec(
         "--ratio-optimizer", str(tools["ratio_optimizer"]),
         "--timing-dag-optimizer", str(tools["timing_dag_optimizer"]),
         "--slot-optimizer", str(tools["slot_optimizer"]),
+        "--slot-refinement-iterations", "200",
     ))
     tdm_inputs.extend((
         "tool.ratio_optimizer",
@@ -1350,7 +1351,7 @@ def compile_canonical_experiment_spec(
         [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", tdm_provider, "--managed-dag-node"],
         tdm_artifacts,
         inputs=tuple(tdm_inputs),
-        configuration={"provider": tdm_provider, "simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": contract["route_constraints"]["tdm_ratio_quantum"], "max_ratio": contract["route_constraints"]["frame_slots"], "post_refinement_iterations": 200, "cut_mode": cut_mode},
+        configuration={"provider": tdm_provider, "simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": contract["route_constraints"]["tdm_ratio_quantum"], "max_ratio": contract["route_constraints"]["frame_slots"], "post_refinement_iterations": 200, "slot_refinement_iterations": 200, "cut_mode": cut_mode},
         peak_gib=12, retained_gib=3,
     )
     shared_dependencies = ["frontend", "timing", "partition", "cut-timing", "route", "tdm"]

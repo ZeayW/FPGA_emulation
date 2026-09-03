@@ -279,7 +279,9 @@ emuflow phase3 \
   --ir build/phase1/design.emuir.json \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --provider patron \
-  --comb-segment-budget-slots 1 \
+  --cut-mode static-exact-combinational \
+  --static-exact-candidate-policy assignment-derived-acyclic-v2 \
+  --max-cross-fpga-dependency-depth 8 \
   --out build/phase3-exact
 
 emuflow phase4 \

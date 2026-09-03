@@ -864,7 +864,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tdm_run.add_argument("--max-ratio", type=int)
     tdm_run.add_argument("--ratio-quantum", type=int, default=8)
     tdm_run.add_argument("--post-refinement-iterations", type=int, default=200)
-    tdm_run.add_argument("--slot-refinement-iterations", type=int, default=0)
+    tdm_run.add_argument("--slot-refinement-iterations", type=int, default=200)
     tdm_run.add_argument("--ratio-optimizer")
     tdm_run.add_argument("--timing-dag-optimizer")
     tdm_run.add_argument("--slot-optimizer")
@@ -2062,8 +2062,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "explicit slot-refinement iteration count; defaults to 0 for "
-            "static exact combinational cuts and 200 otherwise"
+            "slot-refinement iteration count; defaults to 200 for both "
+            "sequential and sampled-virtual-wire transport"
         ),
     )
     multi_fpga_compile.add_argument(
@@ -5041,16 +5041,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             return 0
         if args.archive_cleanup and args.archive_out is None:
             raise EmuFlowError("--archive-cleanup requires --archive-out")
-        # Exact-mode list scheduling is already the concrete dependency-aware
-        # realization.  Do not silently opt it into the ordinary CLI's slot
-        # optimizer default.  An explicitly supplied nonzero value remains
-        # visible and is rejected by run_multi_fpga_flow's exact-mode gate.
         if args.slot_refinement_iterations is None:
-            args.slot_refinement_iterations = (
-                0
-                if args.cut_mode == "static-exact-combinational"
-                else 200
-            )
+            args.slot_refinement_iterations = 200
         report = run_multi_fpga_flow(
             platform_path=args.platform,
             output_dir=args.out,
@@ -5391,12 +5383,6 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "phase5":
-        phase5_routes = read_json(args.routes)
-        phase5_slot_refinement_iterations = (
-            0
-            if phase5_routes.get("semantic_contract") is not None
-            else args.slot_refinement_iterations
-        )
         report = run_phase5(
             routes_path=args.routes,
             platform_path=args.platform,
@@ -5410,7 +5396,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             max_ratio=args.max_ratio,
             ratio_quantum=args.ratio_quantum,
             post_refinement_iterations=args.post_refinement_iterations,
-            slot_refinement_iterations=phase5_slot_refinement_iterations,
+            slot_refinement_iterations=args.slot_refinement_iterations,
             convergence=args.ratio_convergence,
         )
         _print_json(report)

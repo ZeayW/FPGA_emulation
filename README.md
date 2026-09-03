@@ -343,16 +343,17 @@ emuflow phase3 \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --provider greedy \
   --cut-mode static-exact-combinational \
-  --max-cross-fpga-dependency-depth 1 \
-  --comb-segment-budget-slots 1 \
+  --max-cross-fpga-dependency-depth 8 \
   --out build/phase3-exact
 ```
 
 That opt-in Phase 3 artifact is qualified only as
-`partition-legality-only-provisional`. Phase 4 can now propagate the contract
-through the timing-oblivious native router, and Phase 5 can produce and
-independently reconstruct a deterministic dependency-aware schedule with
-path-local source-ready and final-capture certificates.  A reconvergent TX
+`partition-legality-only-provisional`. Phase 4 binds that structural contract
+to concrete multicast branches, while the ordinary timing-aware router remains
+free to optimize those branches. Unified Phase 5 then assigns ratios, lanes,
+and slots with the same optimizers used by sequential-only mode and independently
+reconstructs path-local source-ready and final-capture certificates. A
+reconvergent TX
 source retains every transported predecessor and any local architectural
 register, memory, or primary-input launch as separate timing branches; the TX
 is ready only after all applicable branches are ready:
@@ -656,17 +657,17 @@ emuflow phase6 \
   --out build/phase6-exact
 ```
 
-The same path is wired through the one-command flow. Exact mode currently
-requires the native route tree with post-route timing annotation, the dedicated
-dependency scheduler, a fixed frame, and no unqualified ratio/slot optimizer:
+The same path is wired through the one-command flow. Static Exact adds sampled
+wire readiness and capture constraints to the provider-neutral timing contract;
+it does not select a dedicated router or scheduler. Phase 4 and Phase 5 use the
+normal timing-aware multicast, ratio, lane, and slot optimizers:
 
 ```bash
 emuflow multi-fpga compile design.v \
   --top top --clock clk --clock-period clk=10 \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --cut-mode static-exact-combinational \
-  --max-cross-fpga-dependency-depth 1 \
-  --comb-segment-budget-slots 1 \
+  --max-cross-fpga-dependency-depth 8 \
   --frame-slots 32 --physical --out build/exact-flow
 
 emuflow multi-fpga validate \
