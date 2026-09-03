@@ -531,12 +531,14 @@ if(EMUFLOW_BUILD_VPR_ROUTE_CHECKER)
 endif()
 
 if(EMUFLOW_BUILD_TLR_ROUTER)
+  find_package(Threads REQUIRED)
   add_executable(
     emuflow_tlr_router
     "${CMAKE_SOURCE_DIR}/src/native/tlr_router.cpp"
   )
   target_compile_features(emuflow_tlr_router PRIVATE cxx_std_17)
   target_compile_options(emuflow_tlr_router PRIVATE -O3)
+  target_link_libraries(emuflow_tlr_router PRIVATE Threads::Threads)
   set_target_properties(
     emuflow_tlr_router
     PROPERTIES
