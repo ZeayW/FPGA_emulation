@@ -14,6 +14,7 @@ from emuflow.vtr_netlist import normalize_vtr_hard_block_json
 from emuflow.yosys import import_yosys_json
 from tests.native_build import (
     tdm_ratio_optimizer,
+    tdm_slot_optimizer,
     tdm_timing_dag_optimizer,
     tlr_router,
     vtr_architecture_importer,
@@ -284,6 +285,7 @@ class VtrNetlistTest(unittest.TestCase):
                 min_used_fpgas=2,
                 router=str(tlr_router()),
                 ratio_optimizer=str(tdm_ratio_optimizer()),
+                slot_optimizer=str(tdm_slot_optimizer()),
                 timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 frame_slots=32,
                 equivalence_cycles=4,
