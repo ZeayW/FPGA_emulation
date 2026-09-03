@@ -39,8 +39,10 @@ from emuflow.partition_pressure import (
 from emuflow.phase3 import promote_patron_baseline, run_phase3
 from emuflow.phase3 import (
     PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER,
+    PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
     _rebase_patron_initial_assignment,
     _select_patron_static_exact_assignment,
+    _select_patron_static_exact_assignment_v14,
 )
 from emuflow.platform import Platform
 from emuflow.io import read_json, write_json
@@ -332,6 +334,70 @@ class PartitionPressureTest(unittest.TestCase):
     def test_static_exact_semantic_gate_rejects_malformed_contract(self) -> None:
         with self.assertRaisesRegex(ValidationError, "requires a contract"):
             _select_patron_static_exact_assignment({}, {})
+
+    def test_v14_trust_region_accepts_equal_semantics_and_better_timing(self) -> None:
+        initial = {
+            "provider": "strong-tritonpart",
+            "cluster_assignment": {"c0": "a", "c1": "b"},
+            "semantic_contract": {
+                "metrics": {
+                    "logic_segments": 100,
+                    "capture_requirements": 80,
+                    "transported_cut_nets": 10,
+                    "dependency_edges": 5,
+                }
+            },
+        }
+        candidate = copy.deepcopy(initial)
+        candidate["provider"] = "patron-v14"
+        candidate["cluster_assignment"] = {"c0": "b", "c1": "a"}
+        trace = {
+            "initial_metrics": {
+                "objective_key": [84.0, 189000.0, 5000, 4, 100, 10, 20, 10]
+            },
+            "final_metrics": {
+                "objective_key": [83.0, 180000.0, 4900, 4, 100, 10, 20, 10]
+            },
+        }
+        selected, report = _select_patron_static_exact_assignment_v14(
+            initial, candidate, trace
+        )
+        self.assertIs(selected, candidate)
+        self.assertEqual(report["selected"], "candidate")
+        self.assertEqual(
+            report["provider"], PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER
+        )
+
+    def test_v14_trust_region_rejects_any_semantic_regression(self) -> None:
+        initial = {
+            "provider": "strong-tritonpart",
+            "cluster_assignment": {"c0": "a", "c1": "b"},
+            "semantic_contract": {
+                "metrics": {
+                    "logic_segments": 100,
+                    "capture_requirements": 80,
+                    "transported_cut_nets": 10,
+                    "dependency_edges": 5,
+                }
+            },
+        }
+        candidate = copy.deepcopy(initial)
+        candidate["provider"] = "patron-v14"
+        candidate["cluster_assignment"] = {"c0": "b", "c1": "a"}
+        candidate["semantic_contract"]["metrics"]["dependency_edges"] = 6
+        trace = {
+            "initial_metrics": {
+                "objective_key": [84.0, 189000.0, 5000, 4, 100, 10, 20, 10]
+            },
+            "final_metrics": {
+                "objective_key": [83.0, 180000.0, 4900, 4, 100, 10, 20, 10]
+            },
+        }
+        selected, report = _select_patron_static_exact_assignment_v14(
+            initial, candidate, trace
+        )
+        self.assertIs(selected, initial)
+        self.assertFalse(report["semantic_non_regression"])
 
     def test_model_is_source_bound_and_tamper_evident(self) -> None:
         checked = validate_partition_pressure_model(
@@ -1535,6 +1601,7 @@ class PartitionPressureTest(unittest.TestCase):
                     route_constraints_path=route_path,
                     timing_database_path=timing_path,
                     patron_refiner=str(patron_refiner()),
+                    patron_algorithm_version=14,
                     patron_initial_assignment_path=initial_path,
                     patron_initial_clusters_path=initial_clusters_path,
                     cut_mode=CUT_MODE_STATIC_EXACT,
@@ -1562,6 +1629,13 @@ class PartitionPressureTest(unittest.TestCase):
             )
             self.assertEqual(
                 report["algorithm_validation"]["status"], "pass"
+            )
+            self.assertEqual(report["patron_algorithm_version"], 14)
+            self.assertEqual(
+                report["algorithm_validation"][
+                    "static_exact_semantic_selection"
+                ]["provider"],
+                PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
             )
 
     def test_scalable_native_sweep_improves_a_sparse_chain(self) -> None:
@@ -2468,6 +2542,43 @@ class PartitionPressureTest(unittest.TestCase):
             initial,
             guarded,
             trace,
+        )
+        self.assertEqual(checked["status"], "pass")
+
+        trust_region, trust_trace = run_partition_pressure_native(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            routes,
+            model,
+            initial,
+            executable=str(patron_refiner()),
+            max_moves=4,
+            algorithm_version=14,
+        )
+        self.assertEqual(
+            trust_trace["mode"], "endpoint-exact-critical-flow-v14"
+        )
+        self.assertLessEqual(
+            trust_trace["final_metrics"]["total_path_partition_transitions"],
+            trust_trace["initial_metrics"]["total_path_partition_transitions"],
+        )
+        self.assertLessEqual(
+            trust_trace["final_metrics"]["cut_bits"],
+            trust_trace["initial_metrics"]["cut_bits"],
+        )
+        checked = validate_partition_pressure_native_bundle(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            timing,
+            routes,
+            model,
+            initial,
+            trust_region,
+            trust_trace,
         )
         self.assertEqual(checked["status"], "pass")
 

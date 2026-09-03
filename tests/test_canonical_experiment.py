@@ -623,7 +623,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             config["cut_mode"] = "sequential-only"
             config_path.write_text(json.dumps(config), encoding="utf-8")
             with self.assertRaisesRegex(
-                ValidationError, "v12/v13 requires generalized Static Exact"
+                ValidationError, "v12/v13/v14 requires generalized Static Exact"
             ):
                 compile_canonical_experiment_spec(
                     config_path, REPOSITORY, root / "invalid-v12.json"

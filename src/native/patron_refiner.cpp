@@ -147,6 +147,8 @@ struct ProxyState {
   long long transitions = 0;
   long long transition_limit = std::numeric_limits<long long>::max();
   bool transition_objective = false;
+  long long cut_limit = std::numeric_limits<long long>::max();
+  bool cut_guard = false;
   long long hops = 0;
   long long cuts = 0;
   Evaluation evaluation;
@@ -347,8 +349,9 @@ Model read_model(const std::string& path) {
   const bool flow_v11 = token == "EMUFLOW_PATRON_INPUT_V11";
   const bool flow_v12 = token == "EMUFLOW_PATRON_INPUT_V12";
   const bool flow_v13 = token == "EMUFLOW_PATRON_INPUT_V13";
+  const bool flow_v14 = token == "EMUFLOW_PATRON_INPUT_V14";
   const bool flow_input = flow_v7 || flow_v8 || flow_v9 || flow_v10
-                          || flow_v11 || flow_v12 || flow_v13;
+                          || flow_v11 || flow_v12 || flow_v13 || flow_v14;
   require(token == "EMUFLOW_PATRON_INPUT_V6" || flow_input,
           "invalid input header");
   Model model;
@@ -383,11 +386,11 @@ Model read_model(const std::string& path) {
         >> model.flow_max_legal_candidates
         >> model.flow_max_polish_moves;
     if (flow_v8 || flow_v9 || flow_v10 || flow_v11 || flow_v12
-        || flow_v13) {
+        || flow_v13 || flow_v14) {
       stream >> model.flow_max_frontier_paths
           >> model.flow_max_tail_moves;
     }
-    if (flow_v10 || flow_v11 || flow_v12 || flow_v13) {
+    if (flow_v10 || flow_v11 || flow_v12 || flow_v13 || flow_v14) {
       stream >> model.physical_hop_guard_scale_ns;
     }
     require(stream.good() && enabled == 1
@@ -400,7 +403,7 @@ Model read_model(const std::string& path) {
                 && model.flow_max_legal_candidates > 0
                 && model.flow_max_polish_moves >= 0
                 && (!(flow_v8 || flow_v9 || flow_v10 || flow_v11
-                      || flow_v12 || flow_v13)
+                      || flow_v12 || flow_v13 || flow_v14)
                     || (model.flow_max_frontier_paths > 0
                         && model.flow_max_tail_moves >= 0)),
             "invalid FLOW");
@@ -408,7 +411,9 @@ Model read_model(const std::string& path) {
                 && model.physical_hop_guard_scale_ns >= 0.0,
             "invalid physical hop guard");
     model.flow_refinement = true;
-    model.flow_version = flow_v13
+    model.flow_version = flow_v14
+                             ? 14
+                             : (flow_v13
                              ? 13
                              : (flow_v12
                              ? 12
@@ -417,7 +422,7 @@ Model read_model(const std::string& path) {
                                     : (flow_v10
                                            ? 10
                                            : (flow_v9 ? 9
-                                                      : (flow_v8 ? 8 : 7)))));
+                                                      : (flow_v8 ? 8 : 7))))));
   }
 
   model.hard_capacity.assign(
@@ -512,7 +517,7 @@ Model read_model(const std::string& path) {
               "invalid NET sink");
       model.net[net].sinks.push_back(cluster);
     }
-    if (flow_v12 || flow_v13) {
+    if (flow_v12 || flow_v13 || flow_v14) {
       stream >> model.net[net].max_distance_limit;
       require(stream.good()
                   && model.net[net].max_distance_limit >= -1,
@@ -1006,8 +1011,9 @@ Evaluation proxy_evaluation(const ProxyState& state) {
       state.hops,
       state.cuts,
   };
-  result.feasible = !state.transition_objective
-                    || state.transitions <= state.transition_limit;
+  result.feasible = (!state.transition_objective
+                     || state.transitions <= state.transition_limit)
+                    && (!state.cut_guard || state.cuts <= state.cut_limit);
   if (!result.feasible) {
     std::fill(result.ranked.begin(), result.ranked.end(),
               std::numeric_limits<long long>::max());
@@ -1019,9 +1025,12 @@ ProxyState build_proxy_state(
     const Model& model,
     const std::vector<int>* assignment_override = nullptr,
     long long transition_limit_override
+        = std::numeric_limits<long long>::max(),
+    long long cut_limit_override
         = std::numeric_limits<long long>::max()) {
   ProxyState state;
-  state.transition_objective = model.flow_version == 13;
+  state.transition_objective = model.flow_version >= 13;
+  state.cut_guard = model.flow_version >= 14;
   state.assignment.resize(model.clusters);
   state.resource_load.assign(
       model.parts, std::vector<double>(model.dimensions, 0.0));
@@ -1085,6 +1094,11 @@ ProxyState build_proxy_state(
                                       != std::numeric_limits<long long>::max()
                                ? transition_limit_override
                                : state.transitions;
+  state.cut_limit = state.cut_guard
+                        && cut_limit_override
+                               != std::numeric_limits<long long>::max()
+                        ? cut_limit_override
+                        : state.cuts;
   require(!state.slack_path_order.empty() && !state.ranked_path_order.empty()
               && !state.ratio_order.empty(),
           "scalable state is empty");
@@ -1192,7 +1206,7 @@ std::vector<int> diagnose_flow_corridors(
             return;
           }
           ProxyState candidate = build_proxy_state(
-              model, &assignment, state.transition_limit);
+              model, &assignment, state.transition_limit, state.cut_limit);
           if (candidate.evaluation.ranked.size() >= 2
               && state.evaluation.ranked.size() >= 2
               && candidate.evaluation.ranked[0]
@@ -1424,7 +1438,7 @@ std::vector<int> diagnose_flow_corridors(
               << (transport_compatible ? 1 : 0);
     if (transport_compatible) {
       ProxyState candidate = build_proxy_state(
-          model, &candidate_assignment, state.transition_limit);
+          model, &candidate_assignment, state.transition_limit, state.cut_limit);
       std::cerr << " domain_load=" << candidate.domain_load[cover_domain]
                 << " improving="
                 << (capacity_compatible
@@ -1591,7 +1605,7 @@ std::vector<int> diagnose_flow_corridors(
                 << (legalized_transport ? 1 : 0);
       if (legalized_transport) {
         ProxyState legalized = build_proxy_state(
-            model, &candidate_assignment, state.transition_limit);
+            model, &candidate_assignment, state.transition_limit, state.cut_limit);
         std::cerr << " domain_load=" << legalized.domain_load[cover_domain]
                   << " improving="
                   << (less_ranked(legalized.evaluation.ranked,
@@ -1792,7 +1806,8 @@ std::vector<int> diagnose_flow_corridors(
                           << (region_transport ? 1 : 0);
                 if (region_transport) {
                   ProxyState legalized = build_proxy_state(
-                      model, &region_assignment, state.transition_limit);
+                      model, &region_assignment, state.transition_limit,
+                      state.cut_limit);
                   std::cerr << " domain_load="
                             << legalized.domain_load[cover_domain]
                             << " improving="
@@ -2290,7 +2305,8 @@ std::vector<int> diagnose_flow_corridors(
                       && proxy_transport_feasible(model, piercing_assignment);
                 if (piercing_transport) {
                   ProxyState candidate = build_proxy_state(
-                      model, &piercing_assignment, state.transition_limit);
+                      model, &piercing_assignment, state.transition_limit,
+                      state.cut_limit);
                   std::cerr << "PATRON_FLOW_PIERCING_FEASIBLE pair="
                             << edge_left << ':' << pair_target
                             << " index=" << feasible_piercing_cuts
@@ -2382,7 +2398,7 @@ std::vector<int> diagnose_flow_corridors(
                     return;
                   }
                   ProxyState legalized = build_proxy_state(
-                      model, &assignment, state.transition_limit);
+                      model, &assignment, state.transition_limit, state.cut_limit);
                   std::cerr << "PATRON_FLOW_PARAMETRIC_RESULT pair="
                             << edge_left << ':' << pair_target
                             << " label=" << label
@@ -2410,7 +2426,8 @@ std::vector<int> diagnose_flow_corridors(
               && proxy_transport_feasible(
                   model, best_piercing_assignment)) {
             ProxyState polished = build_proxy_state(
-                model, &best_piercing_assignment, state.transition_limit);
+                model, &best_piercing_assignment, state.transition_limit,
+                state.cut_limit);
             std::vector<int> polish_order = parametric_variables;
             std::sort(polish_order.begin(), polish_order.end(),
                       [&](int left, int right) {
@@ -2706,6 +2723,9 @@ ProxyDelta evaluate_proxy_changes(
       && candidate_transitions > state.transition_limit) {
     return delta;
   }
+  if (state.cut_guard && candidate_cuts > state.cut_limit) {
+    return delta;
+  }
   double worst = std::numeric_limits<double>::infinity();
   for (const auto& item : delta.paths) {
     worst = std::min(worst, item.second.normalized_slack);
@@ -2927,7 +2947,9 @@ void write_output(const std::string& output_path,
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
   const char* header = "EMUFLOW_PATRON_OUTPUT_V6\n";
-  if (flow_output_version == 13) {
+  if (flow_output_version == 14) {
+    header = "EMUFLOW_PATRON_OUTPUT_V14\n";
+  } else if (flow_output_version == 13) {
     header = "EMUFLOW_PATRON_OUTPUT_V13\n";
   } else if (flow_output_version == 12) {
     header = "EMUFLOW_PATRON_OUTPUT_V12\n";
@@ -3529,7 +3551,7 @@ void run_scalable(const Model& model, const std::string& output_path) {
         continue;
       }
       ProxyState candidate = build_proxy_state(
-          model, &candidate_assignment, state.transition_limit);
+          model, &candidate_assignment, state.transition_limit, state.cut_limit);
       std::cerr << "PATRON_BLOCK_PERMUTATION map=";
       for (int part : permutation) {
         std::cerr << part << ',';
@@ -3597,7 +3619,7 @@ void run_scalable(const Model& model, const std::string& output_path) {
       if (!flow_assignment.empty()
           && proxy_transport_feasible(model, flow_assignment)) {
         ProxyState refined = build_proxy_state(
-            model, &flow_assignment, state.transition_limit);
+            model, &flow_assignment, state.transition_limit, state.cut_limit);
         long long evaluated_tail_moves = 0;
         long long feasible_tail_moves = 0;
         int accepted_tail_moves = 0;
@@ -4253,11 +4275,13 @@ void run_scalable(const Model& model, const std::string& output_path) {
   }
   std::cerr << '\n';
   const ProxyState endpoint = build_proxy_state(
-      model, &state.assignment, state.transition_limit);
+      model, &state.assignment, state.transition_limit, state.cut_limit);
   require(endpoint.evaluation.feasible,
           "final scalable assignment violates path-transition guard");
   std::string mode = "endpoint-exact-critical-ejection-v6";
-  if (model.flow_version == 13) {
+  if (model.flow_version == 14) {
+    mode = "endpoint-exact-critical-flow-v14";
+  } else if (model.flow_version == 13) {
     mode = "endpoint-exact-critical-flow-v13";
   } else if (model.flow_version == 12) {
     mode = "endpoint-exact-critical-flow-v12";

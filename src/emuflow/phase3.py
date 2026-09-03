@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -45,6 +46,9 @@ from .phase3_storage import pack_phase3_assignment, pack_phase3_clusters
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
 PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER = (
     "patron-static-exact-semantic-gate-v1"
+)
+PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER = (
+    "patron-static-exact-trust-region-gate-v2"
 )
 
 
@@ -110,6 +114,78 @@ def _select_patron_static_exact_assignment(
     # stored in the Phase-3 report; rewriting provider metadata here would
     # invalidate otherwise reusable downstream DAG nodes.
     return initial, selection
+
+
+def _select_patron_static_exact_assignment_v14(
+    initial: Dict[str, Any],
+    candidate: Dict[str, Any],
+    patron_trace: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Accept a timing improvement only inside the exact semantic trust region."""
+
+    initial_key = _patron_static_exact_semantic_key(initial)
+    candidate_key = _patron_static_exact_semantic_key(candidate)
+    initial_objective = patron_trace.get("initial_metrics", {}).get(
+        "objective_key"
+    )
+    candidate_objective = patron_trace.get("final_metrics", {}).get(
+        "objective_key"
+    )
+    if (
+        not isinstance(initial_objective, list)
+        or not isinstance(candidate_objective, list)
+        or len(initial_objective) != 8
+        or len(candidate_objective) != 8
+        or not all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            for value in initial_objective + candidate_objective
+        )
+    ):
+        raise ValidationError("PATRON v14 timing objective certificate is invalid")
+    initial_rank = tuple(
+        round(float(value) / 1.0e-9) if index < 2 else round(float(value))
+        for index, value in enumerate(initial_objective)
+    )
+    candidate_rank = tuple(
+        round(float(value) / 1.0e-9) if index < 2 else round(float(value))
+        for index, value in enumerate(candidate_objective)
+    )
+    semantic_non_regression = all(
+        candidate_value <= initial_value
+        for initial_value, candidate_value in zip(initial_key, candidate_key)
+    )
+    assignment_changed = candidate.get("cluster_assignment") != initial.get(
+        "cluster_assignment"
+    )
+    timing_improved = candidate_rank < initial_rank
+    accepted = semantic_non_regression and assignment_changed and timing_improved
+    selection = {
+        "status": "pass",
+        "provider": PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
+        "policy": (
+            "componentwise-semantic-non-regression-and-"
+            "strict-timing-improvement-v2"
+        ),
+        "objective_fields": [
+            "logic_segments",
+            "capture_requirements",
+            "transported_cut_nets",
+            "dependency_edges",
+        ],
+        "initial_objective": list(initial_key),
+        "candidate_objective": list(candidate_key),
+        "initial_timing_rank": list(initial_rank),
+        "candidate_timing_rank": list(candidate_rank),
+        "semantic_non_regression": semantic_non_regression,
+        "assignment_changed": assignment_changed,
+        "timing_improved": timing_improved,
+        "selected": "candidate" if accepted else "initial",
+        "candidate_provider": candidate.get("provider"),
+        "initial_provider": initial.get("provider"),
+    }
+    return (candidate if accepted else initial), selection
 
 
 def _validate_reused_patron_clusters(
@@ -347,7 +423,7 @@ def run_phase3(
     if (
         isinstance(patron_algorithm_version, bool)
         or not isinstance(patron_algorithm_version, int)
-        or patron_algorithm_version not in {6, 9, 10, 11, 12, 13}
+        or patron_algorithm_version not in {6, 9, 10, 11, 12, 13, 14}
     ):
         raise ValidationError("PATRON algorithm version is invalid")
     if patron_physical_system_timing_path is not None:
@@ -357,11 +433,11 @@ def run_phase3(
         patron_algorithm_version = 10
     patron_flow_refinement = patron_algorithm_version != 6
     if (
-        patron_algorithm_version in {12, 13}
+        patron_algorithm_version in {12, 13, 14}
         and cut_mode != CUT_MODE_STATIC_EXACT
     ):
         raise ValidationError(
-            "PATRON v12/v13 requires generalized Static Exact mode"
+            "PATRON v12/v13/v14 requires generalized Static Exact mode"
         )
     if patron_flow_refinement and provider != "patron":
         raise ValidationError(
@@ -666,6 +742,15 @@ def run_phase3(
         if patron_algorithm_version == 13:
             assignment, semantic_selection = (
                 _select_patron_static_exact_assignment(initial, assignment)
+            )
+            patron_validation["static_exact_semantic_selection"] = (
+                semantic_selection
+            )
+        elif patron_algorithm_version == 14:
+            assignment, semantic_selection = (
+                _select_patron_static_exact_assignment_v14(
+                    initial, assignment, patron_trace
+                )
             )
             patron_validation["static_exact_semantic_selection"] = (
                 semantic_selection

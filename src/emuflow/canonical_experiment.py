@@ -450,11 +450,11 @@ def compile_canonical_experiment_spec(
     if (
         isinstance(patron_algorithm_version, bool)
         or not isinstance(patron_algorithm_version, int)
-        or patron_algorithm_version not in {6, 9, 10, 11, 12, 13}
+        or patron_algorithm_version not in {6, 9, 10, 11, 12, 13, 14}
     ):
         raise ValidationError(
             "canonical patron_algorithm_version must be 6, 9, 10, 11, 12, "
-            "or 13"
+            "13, or 14"
         )
     patron_flow_refinement = patron_algorithm_version != 6
     if (
@@ -548,11 +548,11 @@ def compile_canonical_experiment_spec(
         raise ValidationError("canonical experiment clocks/periods are invalid")
     cut_mode = config.get("cut_mode", CUT_MODE_STATIC_EXACT)
     if (
-        patron_algorithm_version in {12, 13}
+        patron_algorithm_version in {12, 13, 14}
         and cut_mode != CUT_MODE_STATIC_EXACT
     ):
         raise ValidationError(
-            "canonical PATRON v12/v13 requires generalized Static Exact mode"
+            "canonical PATRON v12/v13/v14 requires generalized Static Exact mode"
         )
     if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
         raise ValidationError("canonical experiment cut_mode is invalid")

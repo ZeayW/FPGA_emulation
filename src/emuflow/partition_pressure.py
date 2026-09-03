@@ -66,6 +66,9 @@ PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V12 = (
 PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V13 = (
     "emuflow.partition-pressure-trace/v13"
 )
+PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14 = (
+    "emuflow.partition-pressure-trace/v14"
+)
 
 PATRON_FLOW_REFINEMENT_ALGORITHM_V1 = (
     "flowcutter-bidirectional-piercing-v1"
@@ -84,6 +87,9 @@ PATRON_FLOW_REFINEMENT_ALGORITHM_V6 = (
 )
 PATRON_FLOW_REFINEMENT_ALGORITHM_V7 = (
     "flowcutter-ranked-frontier-static-exact-transition-guard-v7"
+)
+PATRON_FLOW_REFINEMENT_ALGORITHM_V8 = (
+    "flowcutter-ranked-frontier-static-exact-trust-region-v8"
 )
 PATRON_FLOW_REFINEMENT_ALGORITHM_V3 = (
     "flowcutter-bidirectional-piercing-ranked-frontier-closure-v3"
@@ -120,6 +126,9 @@ PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V12 = (
 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V13 = (
     "patron-static-exact-transition-guard-flow-native-v13"
 )
+PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14 = (
+    "patron-static-exact-trust-region-flow-native-v14"
+)
 GAIN_QUANTUM = 1.0e-9
 BOUNDARY_FANOUT_PENALTY_SCALE_NS = 0.0
 MAX_SCALABLE_SWEEPS = 4
@@ -143,7 +152,7 @@ def _flow_refinement_configuration(
     physical_feedback_sha256: Optional[str] = None,
     physical_feedback_scale: float = 0.0,
 ) -> Dict[str, Any]:
-    if version not in (1, 2, 3, 4, 5, 6, 7):
+    if version not in (1, 2, 3, 4, 5, 6, 7, 8):
         raise ValidationError("native PATRON flow version is invalid")
     if (
         isinstance(physical_feedback_scale, bool)
@@ -168,7 +177,9 @@ def _flow_refinement_configuration(
     result = {
         "enabled": enabled,
         "algorithm": (
-            PATRON_FLOW_REFINEMENT_ALGORITHM_V7
+            PATRON_FLOW_REFINEMENT_ALGORITHM_V8
+            if version == 8
+            else PATRON_FLOW_REFINEMENT_ALGORITHM_V7
             if version == 7
             else PATRON_FLOW_REFINEMENT_ALGORITHM_V6
             if version == 6
@@ -247,7 +258,7 @@ def _flow_refinement_configuration(
                 "physical_feedback_scale": float(physical_feedback_scale),
             }
         )
-    if version in (6, 7):
+    if version in (6, 7, 8):
         result.update(
             {
                 "physical_hop_guard": "disabled-by-static-exact-topology-guard",
@@ -258,11 +269,20 @@ def _flow_refinement_configuration(
                 ),
             }
         )
-    if version == 7:
+    if version in (7, 8):
         result.update(
             {
                 "path_transition_objective": "timing-path-partition-transitions-v1",
                 "path_transition_guard": "initial-total-non-regression-v1",
+            }
+        )
+    if version == 8:
+        result.update(
+            {
+                "cut_count_guard": "initial-total-non-regression-v1",
+                "static_exact_trust_region": (
+                    "componentwise-semantic-non-regression-v2"
+                ),
             }
         )
     return result
@@ -1496,16 +1516,16 @@ def _write_patron_native_input(
     physical_feedback: Optional[Mapping[str, Any]] = None,
     physical_feedback_scale: float = 0.0,
 ) -> Dict[str, Any]:
-    if flow_version not in {6, 9, 10, 11, 12, 13}:
+    if flow_version not in {6, 9, 10, 11, 12, 13, 14}:
         raise ValidationError("native PATRON algorithm version is invalid")
     flow_refinement = flow_version != 6
     use_physical_feedback = physical_feedback is not None
-    if flow_version in {12, 13} and (
+    if flow_version in {12, 13, 14} and (
         clusters_artifact.get("policy", {}).get("cut_mode")
         != CUT_MODE_STATIC_EXACT
     ):
         raise ValidationError(
-            "native PATRON v12/v13 requires generalized Static Exact clusters"
+            "native PATRON v12/v13/v14 requires generalized Static Exact clusters"
         )
     if use_physical_feedback:
         if flow_version != 11:
@@ -1567,7 +1587,7 @@ def _write_patron_native_input(
         _static_exact_topology_guard_limits(
             clusters_artifact, model, initial_assignment
         )
-        if flow_version in {12, 13}
+        if flow_version in {12, 13, 14}
         else {net["net"]: -1 for net in nets}
     )
 
@@ -1698,7 +1718,7 @@ def _write_patron_native_input(
             str(len(sinks)),
             *(str(item) for item in sinks),
         ]
-        if flow_version in {12, 13}:
+        if flow_version in {12, 13, 14}:
             fields.append(str(topology_guard_limits[net["net"]]))
         lines.append(" ".join(fields))
     for index, timing_path in enumerate(model["paths"]):
@@ -1792,11 +1812,15 @@ def _parse_patron_native_output(
         "EMUFLOW_PATRON_OUTPUT_V11",
         "EMUFLOW_PATRON_OUTPUT_V12",
         "EMUFLOW_PATRON_OUTPUT_V13",
+        "EMUFLOW_PATRON_OUTPUT_V14",
     ):
         raise ValidationError("native PATRON output header is invalid")
     output_version = lines[0]
     path_transition_objective = (
-        output_version == "EMUFLOW_PATRON_OUTPUT_V13"
+        output_version in {
+            "EMUFLOW_PATRON_OUTPUT_V13",
+            "EMUFLOW_PATRON_OUTPUT_V14",
+        }
     )
     def indexed(label: str, values: List[str], index: int) -> str:
         if index < 0 or index >= len(values):
@@ -1895,6 +1919,7 @@ def _parse_patron_native_output(
                 "EMUFLOW_PATRON_OUTPUT_V11",
                 "EMUFLOW_PATRON_OUTPUT_V12",
                 "EMUFLOW_PATRON_OUTPUT_V13",
+                "EMUFLOW_PATRON_OUTPUT_V14",
             ):
                 raise ValidationError("native PATRON v6 returned a BATCH")
             index, change_count = map(int, fields[1:3])
@@ -1925,6 +1950,7 @@ def _parse_patron_native_output(
                 "EMUFLOW_PATRON_OUTPUT_V11",
                 "EMUFLOW_PATRON_OUTPUT_V12",
                 "EMUFLOW_PATRON_OUTPUT_V13",
+                "EMUFLOW_PATRON_OUTPUT_V14",
             ):
                 raise ValidationError("native PATRON v6 returned a CHANGE")
             batch, cluster, source, target = map(int, fields[1:])
@@ -2010,7 +2036,7 @@ def run_partition_pressure_native(
     if (
         isinstance(algorithm_version, bool)
         or not isinstance(algorithm_version, int)
-        or algorithm_version not in {6, 9, 10, 11, 12, 13}
+        or algorithm_version not in {6, 9, 10, 11, 12, 13, 14}
     ):
         raise ValidationError("native PATRON algorithm version is invalid")
     if flow_refinement and algorithm_version == 6:
@@ -2089,7 +2115,7 @@ def run_partition_pressure_native(
         ) = (
             _parse_patron_native_output(native_output, indexes)
         )
-    if algorithm_version in {12, 13}:
+    if algorithm_version in {12, 13, 14}:
         _check_static_exact_topology_guard(
             model,
             cluster_assignment,
@@ -2098,12 +2124,12 @@ def run_partition_pressure_native(
     provider_metadata = {
         "initial_provider": initial_assignment.get("provider"),
     }
-    if algorithm_version in {12, 13}:
+    if algorithm_version in {12, 13, 14}:
         provider_metadata["static_exact_topology_guard"] = (
             "initial-transported-non-combinational-"
             "worst-hop-non-regression-v1"
         )
-    if algorithm_version == 13:
+    if algorithm_version in {13, 14}:
         provider_metadata.update(
             {
                 "path_transition_objective": (
@@ -2111,6 +2137,16 @@ def run_partition_pressure_native(
                 ),
                 "path_transition_guard": (
                     "initial-total-non-regression-v1"
+                ),
+            }
+        )
+    if algorithm_version == 14:
+        provider_metadata.update(
+            {
+                "cut_count_guard": "initial-total-non-regression-v1",
+                "static_exact_selection": (
+                    "componentwise-semantic-non-regression-and-"
+                    "strict-timing-improvement-v2"
                 ),
             }
         )
@@ -2132,6 +2168,7 @@ def run_partition_pressure_native(
                 11: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11,
                 12: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V12,
                 13: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V13,
+                14: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14,
             }[algorithm_version]
         ),
         seed=initial_assignment.get("seed", 0),
@@ -2150,6 +2187,7 @@ def run_partition_pressure_native(
                 11: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V11,
                 12: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V12,
                 13: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V13,
+                14: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14,
             }[algorithm_version]
         ),
         "design": model["design"],
@@ -2162,6 +2200,7 @@ def run_partition_pressure_native(
                 11: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11,
                 12: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V12,
                 13: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V13,
+                14: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14,
             }[algorithm_version]
         ),
         "mode": mode,
@@ -2184,7 +2223,7 @@ def run_partition_pressure_native(
                 flow_refinement,
                 len(model["clusters"]),
                 version=(
-                    {6: 1, 9: 3, 10: 4, 11: 5, 12: 6, 13: 7}[
+                    {6: 1, 9: 3, 10: 4, 11: 5, 12: 6, 13: 7, 14: 8}[
                         algorithm_version
                     ]
                 ),
@@ -2333,6 +2372,7 @@ def validate_partition_pressure_native_bundle(
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V11,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V12,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V13,
+            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V8,
@@ -2344,6 +2384,7 @@ def validate_partition_pressure_native_bundle(
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V12,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V13,
+            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V8,
@@ -2399,6 +2440,7 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-flow-v11",
         "endpoint-exact-critical-flow-v12",
         "endpoint-exact-critical-flow-v13",
+        "endpoint-exact-critical-flow-v14",
     ):
         raise ValidationError("native PATRON trace mode is invalid")
     expected_provider = (
@@ -2424,6 +2466,9 @@ def validate_partition_pressure_native_bundle(
             "endpoint-exact-critical-flow-v13": (
                 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V13
             ),
+            "endpoint-exact-critical-flow-v14": (
+                PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14
+            ),
         }[mode]
         if mode in (
             "endpoint-exact-critical-flow-v7",
@@ -2433,6 +2478,7 @@ def validate_partition_pressure_native_bundle(
             "endpoint-exact-critical-flow-v11",
             "endpoint-exact-critical-flow-v12",
             "endpoint-exact-critical-flow-v13",
+            "endpoint-exact-critical-flow-v14",
         )
         else PARTITION_PRESSURE_NATIVE_PROVIDER
     )
@@ -2465,6 +2511,7 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-flow-v11",
         "endpoint-exact-critical-flow-v12",
         "endpoint-exact-critical-flow-v13",
+        "endpoint-exact-critical-flow-v14",
     )
     flow_version = {
         "endpoint-exact-critical-flow-v7": 1,
@@ -2474,6 +2521,7 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-flow-v11": 5,
         "endpoint-exact-critical-flow-v12": 6,
         "endpoint-exact-critical-flow-v13": 7,
+        "endpoint-exact-critical-flow-v14": 8,
     }.get(mode, 1)
     expected_algorithm_version = (
         {
@@ -2484,6 +2532,7 @@ def validate_partition_pressure_native_bundle(
             5: 11,
             6: 12,
             7: 13,
+            8: 14,
         }[flow_version]
         if flow_enabled
         else 6
@@ -2541,6 +2590,7 @@ def validate_partition_pressure_native_bundle(
                 "endpoint-exact-critical-flow-v11",
                 "endpoint-exact-critical-flow-v12",
                 "endpoint-exact-critical-flow-v13",
+                "endpoint-exact-critical-flow-v14",
             )
             and (
                 trace_schema
@@ -2553,6 +2603,7 @@ def validate_partition_pressure_native_bundle(
                         5: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V11,
                         6: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V12,
                         7: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V13,
+                        8: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14,
                     }[flow_version]
                 )
             )
@@ -2598,7 +2649,7 @@ def validate_partition_pressure_native_bundle(
         _static_exact_topology_guard_limits(
             clusters_artifact, model, initial_assignment
         )
-        if flow_version in {6, 7}
+        if flow_version in {6, 7, 8}
         else None
     )
     cluster_ids = {
@@ -2636,7 +2687,8 @@ def validate_partition_pressure_native_bundle(
     sweep_index = {cluster: index for index, cluster in enumerate(sweep_order)}
     current = dict(initial_assignment["cluster_assignment"])
     transition_limit = None
-    if flow_version == 7:
+    cut_limit = None
+    if flow_version in {7, 8}:
         initial_objective = native_trace.get("initial_metrics", {}).get(
             "objective_key"
         )
@@ -2648,6 +2700,8 @@ def validate_partition_pressure_native_bundle(
                 "native PATRON transition-guard limit is invalid"
             )
         transition_limit = int(initial_objective[5])
+        if flow_version == 8:
+            cut_limit = int(initial_objective[7])
     previous_sweep = -1
     previous_sweep_index = -1
     previous_phase = 0
@@ -2754,9 +2808,13 @@ def validate_partition_pressure_native_bundle(
             raise ValidationError(
                 f"native PATRON move {index} ranked objective is invalid"
             )
-        if flow_version == 7 and int(after[5]) > transition_limit:
+        if flow_version in {7, 8} and int(after[5]) > transition_limit:
             raise ValidationError(
                 f"native PATRON move {index} regresses path transitions"
+            )
+        if flow_version == 8 and int(after[7]) > cut_limit:
+            raise ValidationError(
+                f"native PATRON move {index} regresses cut count"
             )
         if previous_after is not None:
             maximum_chain_error = max(
@@ -2801,7 +2859,7 @@ def validate_partition_pressure_native_bundle(
             static_exact_topology_guard_limits=(
                 static_exact_topology_guard_limits
             ),
-            path_transition_objective=(flow_version == 7),
+            path_transition_objective=(flow_version in {7, 8}),
         )
         before_expected = before_evaluation["metrics"]["objective_key"]
         trial = dict(current)
@@ -2847,7 +2905,7 @@ def validate_partition_pressure_native_bundle(
             static_exact_topology_guard_limits=(
                 static_exact_topology_guard_limits
             ),
-            path_transition_objective=(flow_version == 7),
+            path_transition_objective=(flow_version in {7, 8}),
         )
         after_expected = after_evaluation["metrics"]["objective_key"]
         before = batch.get("before_objective_key")
@@ -2903,10 +2961,12 @@ def validate_partition_pressure_native_bundle(
             raise ValidationError(
                 "native PATRON batch is not dual-objective improving"
             )
-        if flow_version == 7 and int(after[5]) > transition_limit:
+        if flow_version in {7, 8} and int(after[5]) > transition_limit:
             raise ValidationError(
                 "native PATRON batch regresses path transitions"
             )
+        if flow_version == 8 and int(after[7]) > cut_limit:
+            raise ValidationError("native PATRON batch regresses cut count")
         if previous_after is not None:
             maximum_chain_error = max(
                 maximum_chain_error,
@@ -2937,7 +2997,7 @@ def validate_partition_pressure_native_bundle(
         static_exact_topology_guard_limits=(
             static_exact_topology_guard_limits
         ),
-        path_transition_objective=(flow_version == 7),
+        path_transition_objective=(flow_version in {7, 8}),
     )
     final_evaluation = evaluate_partition_pressure(
         ir,
@@ -2954,7 +3014,7 @@ def validate_partition_pressure_native_bundle(
         static_exact_topology_guard_limits=(
             static_exact_topology_guard_limits
         ),
-        path_transition_objective=(flow_version == 7),
+        path_transition_objective=(flow_version in {7, 8}),
     )
     maximum_endpoint_error = 0.0
     maximum_endpoint_relative_error = 0.0
@@ -2998,6 +3058,11 @@ def validate_partition_pressure_native_bundle(
                     f"field={objective_index}, native={left_value}, "
                     f"independent={right_value}, error={error}"
                 )
+    final_objective = final_evaluation["metrics"]["objective_key"]
+    if flow_version in {7, 8} and int(final_objective[5]) > transition_limit:
+        raise ValidationError("native PATRON endpoint regresses path transitions")
+    if flow_version == 8 and int(final_objective[7]) > cut_limit:
+        raise ValidationError("native PATRON endpoint regresses cut count")
     return {
         "status": "pass",
         "mode": mode,
