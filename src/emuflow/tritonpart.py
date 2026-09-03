@@ -1265,9 +1265,6 @@ def run_tritonpart(
                 attempts.append(attempt)
                 continue
             contract_metrics = preview["semantic_contract"]["metrics"]
-            lower_bound = preview["semantic_contract"].get(
-                "uncongested_schedule_lower_bound", {}
-            )
             exact_risk = {
                 "combinational_cut_nets": contract_metrics[
                     "combinational_cut_nets"
@@ -1275,9 +1272,6 @@ def run_tritonpart(
                 "maximum_combinational_dependency_depth": contract_metrics[
                     "maximum_combinational_dependency_depth"
                 ],
-                "uncongested_minimum_capture_slack_slots": lower_bound.get(
-                    "minimum_capture_slack_slots"
-                ),
             }
             attempt["static_exact_risk"] = exact_risk
 
@@ -1302,12 +1296,6 @@ def run_tritonpart(
             float(attempt["cut_weight"]),
             *(
                 (
-                    -int(
-                        exact_risk.get(
-                            "uncongested_minimum_capture_slack_slots"
-                        )
-                        or 0
-                    ),
                     int(
                         exact_risk[
                             "maximum_combinational_dependency_depth"

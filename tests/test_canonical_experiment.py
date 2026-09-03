@@ -14,7 +14,6 @@ from emuflow.experiment_dag import validate_experiment_spec
 from emuflow.errors import ValidationError
 from emuflow.experiment_identity import build_implementation_closure
 from emuflow.io import write_json
-from emuflow.tdm import TDM_STATIC_EXACT_PROVIDER
 from emuflow.tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
@@ -867,7 +866,6 @@ class CanonicalExperimentTest(unittest.TestCase):
                     "cut_mode": "static-exact-combinational",
                     "partition_provider": "tritonpart",
                     "max_cross_fpga_dependency_depth": 2,
-                    "comb_segment_budget_slots": 2,
                     "route_candidate_workers": 7,
                 }
             )
@@ -876,7 +874,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             report = compile_canonical_experiment_spec(
                 config_path, REPOSITORY, output
             )
-            self.assertEqual(report["physical_terminal_nodes"], 1)
+            self.assertEqual(report["physical_terminal_nodes"], 3)
             self.assertEqual(report["terminal_nodes"], 1)
             self.assertEqual(
                 report["cut_mode"], "static-exact-combinational"
@@ -887,9 +885,9 @@ class CanonicalExperimentTest(unittest.TestCase):
                     json.loads(output.read_text())
                 )["nodes"]
             }
-            self.assertNotIn("phase6-placement-aware", nodes)
-            self.assertNotIn("phase6-chimew", nodes)
-            self.assertNotIn("qor-comparison", nodes)
+            self.assertIn("phase6-placement-aware", nodes)
+            self.assertIn("phase6-chimew", nodes)
+            self.assertIn("qor-comparison", nodes)
             partition = nodes["partition"]
             self.assertTrue(
                 partition["configuration"]["mfspart_post_refinement"]
@@ -917,9 +915,6 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertEqual(
                 partition["configuration"]["cut_mode"],
                 "static-exact-combinational",
-            )
-            self.assertEqual(
-                partition["configuration"]["comb_segment_budget_slots"], 2
             )
             self.assertEqual(
                 partition["configuration"][
@@ -1026,16 +1021,16 @@ class CanonicalExperimentTest(unittest.TestCase):
             route = nodes["route"]
             self.assertEqual(
                 route["configuration"]["provider"],
-                NATIVE_TIMING_EVALUATED_PROVIDER,
+                GLOBAL_CANDIDATE_PROVIDER,
             )
-            self.assertEqual(route["configuration"]["candidate_workers"], 1)
+            self.assertEqual(route["configuration"]["candidate_workers"], 8)
             tdm = nodes["tdm"]
             self.assertEqual(
                 tdm["configuration"]["provider"],
-                TDM_STATIC_EXACT_PROVIDER,
+                TDM_TIMING_DAG_RATIO_PROVIDER,
             )
-            self.assertNotIn("--ratio-optimizer", tdm["command"])
-            self.assertNotIn(
+            self.assertIn("--ratio-optimizer", tdm["command"])
+            self.assertIn(
                 "ratio_plan.json",
                 {item["path"] for item in tdm["artifacts"]},
             )
@@ -1044,7 +1039,11 @@ class CanonicalExperimentTest(unittest.TestCase):
             ]
             self.assertEqual(
                 {(item["provider"], item["physical_seed"]) for item in terminals},
-                {("baseline", 1)},
+                {
+                    ("baseline", 1),
+                    ("placement-aware", 1),
+                    ("chimew", 1),
+                },
             )
 
     def test_multiple_physical_seeds_remain_an_explicit_opt_in(self) -> None:

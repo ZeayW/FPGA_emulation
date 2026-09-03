@@ -85,7 +85,6 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 equivalence_cycles=2,
                 cut_mode="static-exact-combinational",
                 max_cross_fpga_dependency_depth=1,
-                comb_segment_budget_slots=1,
                 static_exact_candidate_policy=(
                     "potential-frontier-depth-v1"
                 ),
@@ -103,7 +102,13 @@ class MultiFpgaFlowTest(unittest.TestCase):
             )
             self.assertEqual(
                 report["stages"]["tdm"]["provider"],
-                "deterministic-static-exact-list-schedule-v1",
+                "deterministic-round-barrier-earliest-slot-v2",
+            )
+            self.assertEqual(
+                json.loads((root / "tdm/schedule.json").read_text())[
+                    "transport_semantics"
+                ],
+                "sampled-virtual-wire",
             )
             self.assertEqual(
                 report["stages"]["split"]["equivalence"]["qualification"],
@@ -265,10 +270,10 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 run.call_args.kwargs["slot_refinement_iterations"], 7
             )
 
-    def test_exact_mode_still_rejects_explicit_slot_refinement(self):
+    def test_exact_mode_allows_unified_slot_refinement(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(
-                EmuFlowError, "does not accept unqualified ratio/slot"
+                EmuFlowError, "requires at least one --clock-period"
             ):
                 run_multi_fpga_flow(
                     platform_path=PLATFORM,

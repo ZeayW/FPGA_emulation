@@ -12,10 +12,7 @@ from .logic_segment_timing import validate_logic_segment_timing
 from .platform import Platform
 
 
-STATIC_EXACT_DEADLINE_SCHEMA = "emuflow.static-exact-segment-deadlines/v1"
-STATIC_EXACT_SCHEDULE_PROVIDER = "deterministic-static-exact-list-schedule-v1"
-
-
+STATIC_EXACT_DEADLINE_SCHEMA = "emuflow.static-exact-segment-deadlines/v2"
 def _finite_nonnegative(value: Any, context: str) -> float:
     if (
         isinstance(value, bool)
@@ -27,27 +24,40 @@ def _finite_nonnegative(value: Any, context: str) -> float:
     return float(value)
 
 
-def _exact_contract(schedule: Mapping[str, Any]) -> Tuple[Mapping[str, Any], str]:
-    if schedule.get("provider") != STATIC_EXACT_SCHEDULE_PROVIDER:
+def _exact_contract(
+    schedule: Mapping[str, Any],
+    semantic_contract: Mapping[str, Any],
+) -> Tuple[Mapping[str, Any], str, Mapping[str, Any]]:
+    from .tdm import (
+        is_sampled_virtual_wire_schedule,
+        sampled_virtual_wire_timing_constraints,
+    )
+
+    if not is_sampled_virtual_wire_schedule(schedule):
         raise ValidationError("static exact deadlines require an exact schedule")
-    contract = schedule.get("semantic_contract")
+    contract = semantic_contract
     if (
         not isinstance(contract, dict)
         or contract.get("mode") != "static-exact-combinational"
     ):
         raise ValidationError("static exact schedule contract is invalid")
     digest = semantic_contract_sha256(contract)
-    if schedule.get("semantic_contract_sha256") != digest:
+    if (
+        schedule.get("semantic_contract_schema") != contract.get("schema")
+        or schedule.get("semantic_contract_sha256") != digest
+    ):
         raise ValidationError("static exact schedule contract digest disagrees")
     frame_slots = schedule.get("metrics", {}).get("frame_slots")
+    timing_constraints = schedule.get("timing_constraints")
     if (
         isinstance(frame_slots, bool)
         or not isinstance(frame_slots, int)
         or frame_slots <= 1
-        or contract.get("commit_slot") != frame_slots - 1
+        or timing_constraints
+        != sampled_virtual_wire_timing_constraints(frame_slots)
     ):
         raise ValidationError("static exact commit slot disagrees with schedule")
-    return contract, digest
+    return contract, digest, timing_constraints
 
 
 def _slot_period_ns(platform: Platform, entries: List[Mapping[str, Any]]) -> float:
@@ -138,11 +148,15 @@ def _source_entries(
 
 def build_static_exact_segment_deadlines(
     schedule: Mapping[str, Any],
+    semantic_contract: Mapping[str, Any],
     physical_summary: Mapping[str, Any],
     platform: Platform,
 ) -> Dict[str, Any]:
     """Rebuild physical settle windows for every exact semantic segment."""
-    contract, digest = _exact_contract(schedule)
+    contract, digest, timing_constraints = _exact_contract(
+        schedule, semantic_contract
+    )
+    from .tdm import sampled_logic_segment_budget_slots
     entries = list(schedule.get("entries", []))
     slot_ns = _slot_period_ns(platform, entries)
     uncertainty_ns = _finite_nonnegative(
@@ -156,7 +170,7 @@ def build_static_exact_segment_deadlines(
     for entry in entries:
         entries_by_net[entry["net"]].append(entry)
     arrivals = _arrival_by_net_fpga(entries)
-    commit_slot = contract["commit_slot"]
+    commit_slot = timing_constraints["commit_slot"]
     records = []
     missing = []
     for segment in sorted(contract["logic_segments"], key=lambda item: item["id"]):
@@ -225,10 +239,14 @@ def build_static_exact_segment_deadlines(
             "clock_uncertainty_ns": uncertainty_ns,
             "causal_source": causal_source,
             "causal_sink": causal_sink,
-            "contract_budget_slots": segment["budget_slots"],
+            "schedule_settle_slots": sampled_logic_segment_budget_slots(
+                segment, timing_constraints
+            ),
         }
         if configuration_stable_constant:
-            if segment.get("budget_slots") != 0:
+            if sampled_logic_segment_budget_slots(
+                segment, timing_constraints
+            ) != 0:
                 raise ValidationError(
                     f"static exact constant segment {segment_id!r} must "
                     "have a zero-slot budget"
@@ -327,7 +345,7 @@ def build_static_exact_segment_deadlines(
             )
         ),
         "semantic_contract_sha256": digest,
-        "slot_edge_convention": contract["slot_edge_convention"]["id"],
+        "slot_edge_convention": timing_constraints["slot_edge_convention"],
         "commit_slot": commit_slot,
         "slot_period_ns": slot_ns,
         "clock_uncertainty_ns": uncertainty_ns,
@@ -358,13 +376,16 @@ def build_static_exact_segment_deadlines(
 def validate_static_exact_segment_deadlines(
     database: Mapping[str, Any],
     schedule: Mapping[str, Any],
+    semantic_contract: Mapping[str, Any],
     physical_summary: Mapping[str, Any],
     platform: Platform,
 ) -> Dict[str, Any]:
     """Independently reject any changed deadline, identity, or coverage field."""
     if database.get("schema") != STATIC_EXACT_DEADLINE_SCHEMA:
         raise ValidationError("static exact deadline schema is invalid")
-    contract, digest = _exact_contract(schedule)
+    contract, digest, timing_constraints = _exact_contract(
+        schedule, semantic_contract
+    )
     if (
         database.get("design") != schedule.get("design")
         or database.get("platform") != platform.name
@@ -372,8 +393,8 @@ def validate_static_exact_segment_deadlines(
         != "static-exact-routed-causal-deadline-reconstruction-v1"
         or database.get("semantic_contract_sha256") != digest
         or database.get("slot_edge_convention")
-        != contract["slot_edge_convention"]["id"]
-        or database.get("commit_slot") != contract["commit_slot"]
+        != timing_constraints["slot_edge_convention"]
+        or database.get("commit_slot") != timing_constraints["commit_slot"]
     ):
         raise ValidationError("static exact deadline identity disagrees")
     entries = list(schedule["entries"])
@@ -470,7 +491,7 @@ def validate_static_exact_segment_deadlines(
                     "static exact validator found an incomplete capture chain"
                 )
             starts = arrival["arrival_slot"]
-            deadline = contract["commit_slot"]
+            deadline = timing_constraints["commit_slot"]
             causal_source = arrival["id"]
             causal_sink = semantic["capture_requirement"]
         available = deadline - starts
@@ -485,7 +506,13 @@ def validate_static_exact_segment_deadlines(
             "available_slots": available,
             "causal_source": causal_source,
             "causal_sink": causal_sink,
-            "contract_budget_slots": semantic["budget_slots"],
+            "schedule_settle_slots": (
+                0
+                if kind == "launch_to_tx"
+                and semantic.get("source_semantics")
+                == "configuration-stable-constant"
+                else timing_constraints["settle_slots"]
+            ),
         }
         for field, value in fixed.items():
             if record.get(field) != value:
@@ -508,7 +535,7 @@ def validate_static_exact_segment_deadlines(
                 )
         physical = evidence.get(segment_id, [])
         if configuration_stable_constant:
-            if semantic.get("budget_slots") != 0:
+            if fixed["schedule_settle_slots"] != 0:
                 raise ValidationError(
                     f"static exact constant segment {segment_id!r} must "
                     "have a zero-slot budget"

@@ -24,11 +24,17 @@ struct Hop {
   int lane = -1;
   int ratio = 1;
   int latency = 0;
-  int parent = -1;
+  int release = 0;
   int priority = -1;
   double base_ns = 0.0;
   double beta_ns = 0.0;
   int lane_resource = -1;
+};
+
+struct Dependency {
+  int parent = -1;
+  int child = -1;
+  int delay = 0;
 };
 
 struct Sink {
@@ -40,6 +46,7 @@ struct Sink {
 struct TimingPath {
   int index = -1;
   double period_ns = 0.0;
+  double required_time_ns = 0.0;
   double fixed_ns = 0.0;
   std::vector<int> hops;
 };
@@ -54,6 +61,7 @@ struct Model {
   double negative_scale_ns = 1.0;
   double maximum_period_ns = 1.0;
   std::vector<Hop> hops;
+  std::vector<Dependency> dependencies;
   std::vector<Sink> sinks;
   std::vector<TimingPath> paths;
   int lane_resource_count = 0;
@@ -88,7 +96,7 @@ Model read_model(const std::string& path) {
   if (!input) throw std::runtime_error("cannot open input");
   std::string header;
   std::getline(input, header);
-  if (header != "EMUFLOW_TDM_SLOT_INPUT_V1") {
+  if (header != "EMUFLOW_TDM_SLOT_INPUT_V3") {
     throw std::runtime_error("invalid input header");
   }
   Model model;
@@ -108,9 +116,13 @@ Model read_model(const std::string& path) {
     } else if (kind == "HOP") {
       Hop hop;
       fields >> hop.index >> hop.round >> hop.domain >> hop.lane >>
-          hop.ratio >> hop.latency >> hop.parent >> hop.priority >>
+          hop.ratio >> hop.latency >> hop.release >> hop.priority >>
           hop.base_ns >> hop.beta_ns;
       model.hops.push_back(hop);
+    } else if (kind == "DEP") {
+      Dependency dependency;
+      fields >> dependency.parent >> dependency.child >> dependency.delay;
+      model.dependencies.push_back(dependency);
     } else if (kind == "SINK") {
       Sink sink;
       fields >> sink.route >> sink.round >> sink.hop;
@@ -119,7 +131,7 @@ Model read_model(const std::string& path) {
       TimingPath timing_path;
       std::string hops;
       fields >> timing_path.index >> timing_path.period_ns >>
-          timing_path.fixed_ns >> hops;
+          timing_path.required_time_ns >> timing_path.fixed_ns >> hops;
       timing_path.hops = parse_indices(hops);
       model.paths.push_back(std::move(timing_path));
     } else {
@@ -149,9 +161,20 @@ Model read_model(const std::string& path) {
     const auto& hop = model.hops[index];
     if (hop.index != index || hop.round < 0 || hop.domain < 0 ||
         hop.lane < 0 || hop.ratio <= 0 || hop.latency < 0 ||
-        hop.priority < 0 || hop.parent >= static_cast<int>(model.hops.size()) ||
-        (hop.parent >= 0 && model.hops[hop.parent].round != hop.round)) {
+        hop.release < 0 || hop.priority < 0) {
       throw std::runtime_error("invalid hop record");
+    }
+  }
+  std::set<std::pair<int, int>> dependency_pairs;
+  for (const auto& dependency : model.dependencies) {
+    if (dependency.parent < 0 || dependency.child < 0 ||
+        dependency.parent >= static_cast<int>(model.hops.size()) ||
+        dependency.child >= static_cast<int>(model.hops.size()) ||
+        dependency.parent == dependency.child || dependency.delay < 0 ||
+        model.hops[dependency.parent].round !=
+            model.hops[dependency.child].round ||
+        !dependency_pairs.emplace(dependency.parent, dependency.child).second) {
+      throw std::runtime_error("invalid dependency record");
     }
   }
   std::set<int> priorities;
@@ -162,6 +185,7 @@ Model read_model(const std::string& path) {
   for (int index = 0; index < static_cast<int>(model.paths.size()); ++index) {
     if (model.paths[index].index != index ||
         model.paths[index].period_ns <= 0.0 ||
+        model.paths[index].required_time_ns <= 0.0 ||
         model.paths[index].fixed_ns < 0.0) {
       throw std::runtime_error("invalid timing path record");
     }
@@ -217,9 +241,13 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
   result.ready.assign(hop_count, -1);
   result.round_ready.assign(maximum_round + 1, -1);
   result.route_completion.assign(maximum_route + 1, -1);
-  std::vector<std::vector<int>> children(hop_count);
-  for (const auto& hop : model.hops) {
-    if (hop.parent >= 0) children[hop.parent].push_back(hop.index);
+  std::vector<std::vector<std::pair<int, int>>> children(hop_count);
+  std::vector<std::vector<std::pair<int, int>>> parents(hop_count);
+  for (const auto& dependency : model.dependencies) {
+    children[dependency.parent].emplace_back(
+        dependency.child, dependency.delay);
+    parents[dependency.child].emplace_back(
+        dependency.parent, dependency.delay);
   }
   // The external resource identifiers are sparse, and even the compacted
   // resource_count * frame_slots product can be enormous.  Only one cell per
@@ -281,21 +309,26 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
     std::priority_queue<int, std::vector<int>, decltype(compare)> ready_queue(
         compare);
     int expected = 0;
+    std::vector<int> remaining_parents(hop_count, 0);
     for (const auto& hop : model.hops) {
       if (hop.round != round) continue;
       ++expected;
-      if (hop.parent < 0) ready_queue.push(hop.index);
+      remaining_parents[hop.index] =
+          static_cast<int>(parents[hop.index].size());
+      if (remaining_parents[hop.index] == 0) ready_queue.push(hop.index);
     }
     int scheduled = 0;
     while (!ready_queue.empty()) {
       const int index = ready_queue.top();
       ready_queue.pop();
       const auto& hop = model.hops[index];
-      const int ready =
-          hop.parent < 0
-              ? source_ready
-              : result.slots[hop.parent] + model.hops[hop.parent].latency +
-                    model.settle_slots;
+      int ready = std::max(source_ready, hop.release);
+      for (const auto& dependency : parents[index]) {
+        const int parent = dependency.first;
+        ready = std::max(
+            ready, result.slots[parent] + model.hops[parent].latency +
+                       dependency.second);
+      }
       const int latest = std::min(
           ready + hop.ratio,
           model.frame_slots - model.runtime_barrier_slots - hop.latency);
@@ -311,7 +344,10 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
       result.slots[index] = slot;
       result.ready[index] = ready;
       ++scheduled;
-      for (int child : children[index]) ready_queue.push(child);
+      for (const auto& dependency : children[index]) {
+        const int child = dependency.first;
+        if (--remaining_parents[child] == 0) ready_queue.push(child);
+      }
     }
     if (scheduled != expected) return result;
     for (const auto& sink : model.sinks) {
@@ -330,7 +366,7 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
       delay += hop.base_ns +
                hop.beta_ns * (result.slots[index] - result.ready[index]);
     }
-    const double slack = path.period_ns - delay;
+    const double slack = path.required_time_ns - delay;
     const double normalized = normalized_slack(model, path.period_ns, slack);
     if (normalized < result.worst_normalized_slack) {
       result.worst_normalized_slack = normalized;

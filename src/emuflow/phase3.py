@@ -48,7 +48,7 @@ PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER = (
     "patron-static-exact-semantic-gate-v1"
 )
 PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER = (
-    "patron-static-exact-trust-region-gate-v2"
+    "patron-static-exact-legality-timing-gate-v3"
 )
 
 
@@ -160,13 +160,20 @@ def _select_patron_static_exact_assignment_v14(
         "cluster_assignment"
     )
     timing_improved = candidate_rank < initial_rank
-    accepted = semantic_non_regression and assignment_changed and timing_improved
+    # ``candidate`` was already materialized through
+    # ``build_partition_assignment``.  That construction is the authoritative
+    # scheduler-independent legality gate: it checks the cut DAG, SCC/stateful
+    # boundaries, dependency-depth policy, fixed constraints, capacity, and
+    # board reachability.  Frame/slot feasibility belongs to Phase 5.  Counts
+    # such as dependency edges and capture segments are downstream diagnostics,
+    # not correctness constraints and not reasons to reject a timing gain.
+    accepted = assignment_changed and timing_improved
     selection = {
         "status": "pass",
         "provider": PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
         "policy": (
-            "componentwise-semantic-non-regression-and-"
-            "strict-timing-improvement-v2"
+            "materialized-static-exact-legality-and-"
+            "strict-timing-improvement-v3"
         ),
         "objective_fields": [
             "logic_segments",
@@ -179,6 +186,7 @@ def _select_patron_static_exact_assignment_v14(
         "initial_timing_rank": list(initial_rank),
         "candidate_timing_rank": list(candidate_rank),
         "semantic_non_regression": semantic_non_regression,
+        "semantic_counts_are_diagnostics": True,
         "assignment_changed": assignment_changed,
         "timing_improved": timing_improved,
         "selected": "candidate" if accepted else "initial",
@@ -194,8 +202,6 @@ def _validate_reused_patron_clusters(
     *,
     cut_mode: str,
     max_cross_fpga_dependency_depth: int,
-    comb_segment_budget_slots: int,
-    frame_slots: int,
     static_exact_candidate_policy: str,
 ) -> None:
     """Check the cheap contract for a validated managed cluster checkpoint."""
@@ -217,8 +223,6 @@ def _validate_reused_patron_clusters(
             "max_cross_fpga_dependency_depth": (
                 max_cross_fpga_dependency_depth
             ),
-            "comb_segment_budget_slots": comb_segment_budget_slots,
-            "frame_slots": frame_slots,
             "candidate_selection_policy": static_exact_candidate_policy,
         }
         for field, value in expected.items():
@@ -396,7 +400,6 @@ def run_phase3(
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
-    comb_segment_budget_slots: int = 1,
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     timing_database_path: Optional[Path] = None,
     patron_refiner: Optional[str] = None,
@@ -489,8 +492,6 @@ def run_phase3(
             max_cross_fpga_dependency_depth=(
                 max_cross_fpga_dependency_depth
             ),
-            comb_segment_budget_slots=comb_segment_budget_slots,
-            frame_slots=route_constraints["frame_slots"],
             static_exact_candidate_policy=static_exact_candidate_policy,
         )
     else:
@@ -502,8 +503,6 @@ def run_phase3(
             max_cross_fpga_dependency_depth=(
                 max_cross_fpga_dependency_depth
             ),
-            comb_segment_budget_slots=comb_segment_budget_slots,
-            frame_slots=route_constraints["frame_slots"],
             static_exact_candidate_policy=static_exact_candidate_policy,
         )
     patron_validation = None
@@ -848,7 +847,7 @@ def run_phase3(
         report["static_exact_candidate_policy"] = (
             static_exact_candidate_policy
         )
-        report["qualification"] = "partition-legality-only-provisional"
+        report["qualification"] = "structural-partition-legality"
         report["artifacts"]["semantic_contract"] = (
             "assignment.json#/semantic_contract"
         )

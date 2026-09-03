@@ -226,16 +226,19 @@ def compress_sta_paths(paths_artifact: Mapping[str, Any]) -> Dict[str, Any]:
 
     Equal cut signatures alone are insufficient across clock domains because
     normalized slack has a different scale.  Requiring the same domain,
-    period, and cut-net sequence makes the maximum-fixed-delay representative
-    dominate the other members for every possible route delay.
+    period, source-STA required time, and cut-net sequence makes the
+    maximum-fixed-delay representative dominate the other members for every
+    possible route delay.
     """
 
     representatives: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
     members: Dict[Tuple[Any, ...], List[str]] = defaultdict(list)
     for path in paths_artifact["paths"]:
+        required_time_ns = path["fixed_delay_ns"] + path["slack_ns"]
         signature = (
             path["clock_domain"],
             path["clock_period_ns"],
+            required_time_ns,
             tuple(path["cut_signature"]),
             tuple(path["cut_nets"]),
             tuple(
@@ -272,7 +275,7 @@ def compress_sta_paths(paths_artifact: Mapping[str, Any]) -> Dict[str, Any]:
             "original_paths": len(paths_artifact["paths"]),
             "compressed_paths": len(compressed),
             "lossless_by": (
-                "clock-domain+period+ordered-cut-signature+"
+                "clock-domain+period+required-time+ordered-cut-signature+"
                 "cut-net-sequence+member-sink-transitions/max-fixed-delay"
             ),
         },
@@ -1049,6 +1052,9 @@ def route_system_native(
                     "path": path["id"],
                     "clock_domain": path["clock_domain"],
                     "clock_period_ns": path["clock_period_ns"],
+                    "required_time_ns": (
+                        path["fixed_delay_ns"] + path["slack_ns"]
+                    ),
                     "fixed_delay_ns": path["fixed_delay_ns"],
                     "cut_nets": path["cut_nets"],
                     "cut_signature": path["cut_signature"],
@@ -1377,10 +1383,11 @@ def reconstruct_system_route_timing(
     normalization = timing_paths["normalization"]
     path_records = []
     for path in timing_paths["paths"]:
+        required_time = path["fixed_delay_ns"] + path["slack_ns"]
         delay = path["fixed_delay_ns"] + sum(
             route_delay_by_net[net] for net in path["cut_nets"]
         )
-        slack = path["clock_period_ns"] - delay
+        slack = required_time - delay
         normalized = (
             slack
             * path["clock_period_ns"]
@@ -1398,7 +1405,7 @@ def reconstruct_system_route_timing(
         tdm_delay = path["fixed_delay_ns"] + sum(
             route_tdm_delay_by_net[net] for net in path["cut_nets"]
         )
-        tdm_slack = path["clock_period_ns"] - tdm_delay
+        tdm_slack = required_time - tdm_delay
         tdm_normalized = (
             tdm_slack
             * path["clock_period_ns"]
@@ -1418,6 +1425,7 @@ def reconstruct_system_route_timing(
                 "path": path["id"],
                 "clock_domain": path["clock_domain"],
                 "clock_period_ns": path["clock_period_ns"],
+                "required_time_ns": required_time,
                 "fixed_delay_ns": path["fixed_delay_ns"],
                 "cut_nets": path["cut_nets"],
                 "cut_signature": path["cut_signature"],
@@ -1856,6 +1864,12 @@ def validate_native_system_routes(
                     f"routes.timing path {expected['id']!r}.{key}: "
                     "does not match normalized STA input"
                 )
+        required_time = expected["fixed_delay_ns"] + expected["slack_ns"]
+        if actual.get("required_time_ns") != required_time:
+            raise ValidationError(
+                f"routes.timing path {expected['id']!r}.required_time_ns: "
+                "does not match normalized STA input"
+            )
         if actual.get("cut_transitions") != expected.get(
             "cut_transitions"
         ):
@@ -1867,7 +1881,7 @@ def validate_native_system_routes(
             route_delay_by_net[net]
             for net in expected["cut_nets"]
         )
-        slack = expected["clock_period_ns"] - delay
+        slack = required_time - delay
         if slack >= 0.0:
             normalized = (
                 slack
@@ -1906,7 +1920,7 @@ def validate_native_system_routes(
             route_tdm_delay_by_net[net]
             for net in expected["cut_nets"]
         )
-        tdm_slack = expected["clock_period_ns"] - tdm_delay
+        tdm_slack = required_time - tdm_delay
         if tdm_slack >= 0.0:
             tdm_normalized = (
                 tdm_slack

@@ -188,6 +188,10 @@ def _candidate_fallback_patches(schedule_side_effect):
         validate_tdm_feedback=mock.Mock(return_value={"status": "pass"}),
         schedule_to_tsv=mock.Mock(return_value=""),
         schedule_to_systemverilog_testbench=mock.Mock(return_value=""),
+        build_cross_layer_timing_contract=mock.Mock(return_value={}),
+        validate_cross_layer_timing_contract=mock.Mock(
+            return_value={"status": "pass"}
+        ),
     )
     return patcher, plan_builder
 
@@ -220,7 +224,6 @@ class Phase5Test(unittest.TestCase):
                     "capture_requirement": f"capture-{index}",
                     "source_cut_net": f"net-{index}",
                     "fpga": "fpga1",
-                    "budget_slots": 1,
                 }
                 for index in range(count)
             }
@@ -229,7 +232,15 @@ class Phase5Test(unittest.TestCase):
             (f"net-{index}", "fpga1"): 1 for index in range(count)
         }
         records, minimum = _exact_capture_certificate(
-            {"commit_slot": 3}, segments, captures, arrivals
+            segments,
+            captures,
+            arrivals,
+            {
+                "schema": "emuflow.sampled-virtual-wire-timing-constraints/v1",
+                "settle_slots": 1,
+                "commit_slot": 3,
+                "slot_edge_convention": "tx-sample-before-rx-shadow-update-v1",
+            },
         )
         self.assertEqual(len(records), count)
         self.assertEqual(minimum, 1)
@@ -1989,7 +2000,8 @@ class Phase5Test(unittest.TestCase):
                 managed_storage=True,
             )
             self.assertEqual(
-                set(managed_report["artifacts"]), {"schedule", "report"}
+                set(managed_report["artifacts"]),
+                {"schedule", "cross_layer_timing", "report"},
             )
             for filename in (
                 "schedule.tsv",

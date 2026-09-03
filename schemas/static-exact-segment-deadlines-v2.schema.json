@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/static-exact-segment-deadlines-v2.schema.json",
+  "title": "EmuFlow Sampled Virtual Wire Segment Deadlines v2",
+  "type": "object",
+  "required": [
+    "schema", "status", "design", "platform", "provider", "qualification",
+    "semantic_contract_sha256", "slot_edge_convention", "commit_slot",
+    "slot_period_ns", "clock_uncertainty_ns", "coverage",
+    "worst_source_ready_slack_ns", "worst_final_capture_slack_ns",
+    "failed_segments", "missing_segments", "segments"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.static-exact-segment-deadlines/v2"},
+    "status": {"enum": ["pass", "fail", "incomplete"]},
+    "design": {"type": "string", "minLength": 1},
+    "platform": {"type": "string", "minLength": 1},
+    "provider": {"const": "static-exact-routed-causal-deadline-reconstruction-v1"},
+    "qualification": {
+      "enum": [
+        "routed-endpoint-exact-deadline-pass",
+        "routed-endpoint-exact-plus-structural-constant-deadline-pass",
+        "routed-conservative-bound-deadline-pass",
+        "routed-segment-deadline-fail",
+        "incomplete-missing-segment-evidence"
+      ]
+    },
+    "semantic_contract_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "slot_edge_convention": {"const": "tx-sample-before-rx-shadow-update-v1"},
+    "commit_slot": {"type": "integer", "minimum": 1},
+    "slot_period_ns": {"type": "number", "exclusiveMinimum": 0},
+    "clock_uncertainty_ns": {"type": "number", "minimum": 0},
+    "coverage": {
+      "type": "object",
+      "required": [
+        "contract_segments", "measured_segments", "endpoint_exact_segments",
+        "structural_constant_segments", "conservative_bound_segments",
+        "missing_segments"
+      ],
+      "properties": {
+        "contract_segments": {"type": "integer", "minimum": 0},
+        "measured_segments": {"type": "integer", "minimum": 0},
+        "endpoint_exact_segments": {"type": "integer", "minimum": 0},
+        "structural_constant_segments": {"type": "integer", "minimum": 0},
+        "conservative_bound_segments": {"type": "integer", "minimum": 0},
+        "missing_segments": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "worst_source_ready_slack_ns": {"type": ["number", "null"]},
+    "worst_final_capture_slack_ns": {"type": ["number", "null"]},
+    "failed_segments": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "missing_segments": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id", "kind", "fpga", "start_slot", "deadline_slot",
+          "available_slots", "slot_period_ns", "deadline_budget_ns",
+          "clock_uncertainty_ns", "causal_source", "causal_sink",
+          "schedule_settle_slots", "evidence", "physical_delay_bound_ns",
+          "slack_ns", "status"
+        ],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["launch_to_tx", "rx_to_tx", "rx_to_capture"]},
+          "fpga": {"type": "string", "minLength": 1},
+          "start_slot": {"type": "integer", "minimum": 0},
+          "deadline_slot": {"type": "integer", "minimum": 0},
+          "available_slots": {"type": "integer", "minimum": 0},
+          "slot_period_ns": {"type": "number", "exclusiveMinimum": 0},
+          "deadline_budget_ns": {"type": "number", "minimum": 0},
+          "clock_uncertainty_ns": {"type": "number", "minimum": 0},
+          "causal_source": {"type": "string", "minLength": 1},
+          "causal_sink": {"type": "string", "minLength": 1},
+          "schedule_settle_slots": {"type": "integer", "minimum": 0},
+          "evidence": {
+            "enum": [
+              "routed-endpoint-exact", "routed-cone-upper-bound",
+              "structural-configuration-stable-constant", "missing"
+            ]
+          },
+          "physical_measurements": {"type": "integer", "minimum": 0},
+          "physical_delay_bound_ns": {"type": ["number", "null"], "minimum": 0},
+          "slack_ns": {"type": ["number", "null"]},
+          "status": {"enum": ["pass", "fail", "incomplete"]}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

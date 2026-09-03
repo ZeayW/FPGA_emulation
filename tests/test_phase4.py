@@ -98,6 +98,36 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_path_compression_keeps_distinct_required_times(self) -> None:
+        normalized = normalize_sta_paths(
+            {
+                "schema": "emuflow.sta-paths/v1",
+                "design": "required_time_compression",
+                "paths": [
+                    {
+                        "id": "p0",
+                        "clock_domain": "clk",
+                        "clock_period_ns": 10.0,
+                        "slack_ns": 1.0,
+                        "fixed_delay_ns": 5.0,
+                        "cut_nets": ["n0"],
+                    },
+                    {
+                        "id": "p1",
+                        "clock_domain": "clk",
+                        "clock_period_ns": 10.0,
+                        "slack_ns": 1.0,
+                        "fixed_delay_ns": 6.0,
+                        "cut_nets": ["n0"],
+                    },
+                ],
+            },
+            [{"net": "n0", "source": "a", "sinks": ["b"]}],
+        )
+        compressed = compress_sta_paths(normalized)
+        self.assertEqual(compressed["compression"]["compressed_paths"], 2)
+        self.assertIn("required-time", compressed["compression"]["lossless_by"])
+
     def test_timing_oblivious_route_retains_independent_timing_records(
         self,
     ) -> None:
@@ -746,7 +776,7 @@ class Phase4Test(unittest.TestCase):
                             "id": "raw_slack_worst",
                             "clock_domain": "slow",
                             "clock_period_ns": 100.0,
-                            "slack_ns": -1.0,
+                            "slack_ns": -2.0,
                             "fixed_delay_ns": 110.0,
                             "cut_nets": ["long_period"],
                         },

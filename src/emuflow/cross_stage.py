@@ -272,7 +272,12 @@ def _path_metrics(
         delay = float(fixed_delay) + sum(
             transport_delay_by_net[net] for net in crossed
         )
-        realized_slack = float(period) - delay
+        # Preserve the source STA constraint rather than assuming that the
+        # full clock period is available to this path.  The exported fixed
+        # delay and slack define the path-specific required arrival time
+        # (including setup/uncertainty/skew adjustments known to source STA).
+        required_time = float(fixed_delay) + float(slack)
+        realized_slack = required_time - delay
         realized_normalized = _normalized_slack(
             float(period),
             realized_slack,
@@ -283,6 +288,7 @@ def _path_metrics(
                 "path": path_id,
                 "crossed_cut_nets": len(crossed),
                 "delay_ns": delay,
+                "required_time_ns": required_time,
                 "slack_ns": realized_slack,
                 "normalized_slack": realized_normalized,
             }

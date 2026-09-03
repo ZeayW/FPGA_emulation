@@ -256,7 +256,7 @@ from .serial_wrapper import run_phase6c
 from .serial_phy_provider import validate_serial_phy_provider_file
 from .serial_phy_elaboration import run_serial_phy_elaboration
 from .serial_phy_recipe import materialize_serial_phy_recipe
-from .tdm import TDM_BASELINE_PROVIDER, TDM_STATIC_EXACT_PROVIDER
+from .tdm import TDM_BASELINE_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
@@ -703,9 +703,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
     )
     partition_run.add_argument(
-        "--comb-segment-budget-slots", type=int, default=1
-    )
-    partition_run.add_argument(
         "--static-exact-candidate-policy",
         choices=(
             STATIC_EXACT_CANDIDATE_FRONTIER_V1,
@@ -784,7 +781,6 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument(
         "--max-cross-fpga-dependency-depth", type=int
     )
-    partition_validate.add_argument("--comb-segment-budget-slots", type=int)
     partition_validate.add_argument(
         "--static-exact-candidate-policy",
         choices=(
@@ -1916,9 +1912,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
     )
     multi_fpga_compile.add_argument(
-        "--comb-segment-budget-slots", type=int, default=1
-    )
-    multi_fpga_compile.add_argument(
         "--static-exact-candidate-policy",
         choices=(
             STATIC_EXACT_CANDIDATE_FRONTIER_V1,
@@ -2045,7 +2038,6 @@ def _build_parser() -> argparse.ArgumentParser:
             TDM_RATIO_PROVIDER,
             TDM_TIMING_DAG_RATIO_PROVIDER,
             TDM_BASELINE_PROVIDER,
-            TDM_STATIC_EXACT_PROVIDER,
         ),
         help=(
             f"explicit Phase 5 provider; timing-enabled flows default to "
@@ -2687,12 +2679,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="static exact mode dependency-depth limit",
     )
     phase3.add_argument(
-        "--comb-segment-budget-slots",
-        type=int,
-        default=1,
-        help="per-FPGA combinational segment slot budget",
-    )
-    phase3.add_argument(
         "--static-exact-candidate-policy",
         choices=(
             STATIC_EXACT_CANDIDATE_FRONTIER_V1,
@@ -3066,7 +3052,6 @@ def _build_parser() -> argparse.ArgumentParser:
             TDM_RATIO_PROVIDER,
             TDM_TIMING_DAG_RATIO_PROVIDER,
             TDM_BASELINE_PROVIDER,
-            TDM_STATIC_EXACT_PROVIDER,
         ),
         default=None,
         help=(
@@ -3329,7 +3314,6 @@ def _build_parser() -> argparse.ArgumentParser:
             TDM_RATIO_PROVIDER,
             TDM_TIMING_DAG_RATIO_PROVIDER,
             TDM_BASELINE_PROVIDER,
-            TDM_STATIC_EXACT_PROVIDER,
         ),
     )
     cross_stage_optimize.add_argument("--ratio-optimizer")
@@ -3788,7 +3772,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                     max_cross_fpga_dependency_depth=(
                         args.max_cross_fpga_dependency_depth
                     ),
-                    comb_segment_budget_slots=args.comb_segment_budget_slots,
                     static_exact_candidate_policy=(
                         args.static_exact_candidate_policy
                     ),
@@ -3841,9 +3824,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_cut_mode=args.cut_mode,
                 expected_max_cross_fpga_dependency_depth=(
                     args.max_cross_fpga_dependency_depth
-                ),
-                expected_comb_segment_budget_slots=(
-                    args.comb_segment_budget_slots
                 ),
                 expected_static_exact_candidate_policy=(
                     args.static_exact_candidate_policy
@@ -5107,7 +5087,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             max_cross_fpga_dependency_depth=(
                 args.max_cross_fpga_dependency_depth
             ),
-            comb_segment_budget_slots=args.comb_segment_budget_slots,
             static_exact_candidate_policy=(
                 args.static_exact_candidate_policy
             ),
@@ -5293,7 +5272,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             max_cross_fpga_dependency_depth=(
                 args.max_cross_fpga_dependency_depth
             ),
-            comb_segment_budget_slots=args.comb_segment_budget_slots,
             timing_database_path=args.timing_database,
             patron_refiner=args.patron_refiner,
             patron_max_moves=args.patron_max_moves,

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/sampled-virtual-wire-timing-constraints-v1.schema.json",
+  "title": "EmuFlow Sampled Virtual Wire Phase-5 Timing Constraints v1",
+  "type": "object",
+  "required": ["schema", "settle_slots", "commit_slot", "slot_edge_convention"],
+  "properties": {
+    "schema": {"const": "emuflow.sampled-virtual-wire-timing-constraints/v1"},
+    "settle_slots": {"type": "integer", "minimum": 0},
+    "commit_slot": {"type": "integer", "minimum": 1},
+    "slot_edge_convention": {"const": "tx-sample-before-rx-shadow-update-v1"}
+  },
+  "additionalProperties": false
+}

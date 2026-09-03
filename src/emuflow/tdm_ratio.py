@@ -341,6 +341,7 @@ def _prepare_model(
             )
         period = path.get("clock_period_ns")
         fixed = path.get("fixed_delay_ns")
+        required = path.get("required_time_ns", period)
         if (
             isinstance(period, bool)
             or not isinstance(period, (int, float))
@@ -348,6 +349,10 @@ def _prepare_model(
             or isinstance(fixed, bool)
             or not isinstance(fixed, (int, float))
             or float(fixed) < 0.0
+            or isinstance(required, bool)
+            or not isinstance(required, (int, float))
+            or not math.isfinite(float(required))
+            or float(required) <= 0.0
         ):
             raise ValidationError(
                 f"routes.timing.paths[{index}]: invalid timing values"
@@ -358,6 +363,7 @@ def _prepare_model(
                 "id": path["path"],
                 "clock_domain": path["clock_domain"],
                 "clock_period_ns": float(period),
+                "required_time_ns": float(required),
                 "fixed_delay_ns": float(fixed),
                 "cut_nets": list(raw_cut_nets),
                 "compressed_path_ids": list(
@@ -408,7 +414,7 @@ def _write_native_input(
     continuous_seed: Optional[Sequence[float]] = None,
 ) -> None:
     normalization = model["normalization"]
-    header = "EMUFLOW_TDM_RATIO_INPUT_V7"
+    header = "EMUFLOW_TDM_RATIO_INPUT_V8"
     with path.open("w", encoding="utf-8", newline="\n") as stream:
         stream.write(header + "\n")
         stream.write(
@@ -435,6 +441,7 @@ def _write_native_input(
             stream.write(
                 f"PATH {timing_path['index']} "
                 f"{timing_path['clock_period_ns']:.17g} "
+                f"{timing_path['required_time_ns']:.17g} "
                 f"{timing_path['fixed_delay_ns']:.17g} {hops}\n"
             )
         if continuous_seed is not None:
@@ -567,7 +574,9 @@ def _discrete_timing_records(
             * (hop_records[hop]["discrete_ratio"] - 1)
             for hop in timing_path["hops"]
         )
-        slack = timing_path["clock_period_ns"] - delay
+        slack = timing_path.get(
+            "required_time_ns", timing_path["clock_period_ns"]
+        ) - delay
         normalized = _normalized_slack(
             timing_path["clock_period_ns"],
             slack,
@@ -1004,7 +1013,9 @@ def _round_barrier_legalize(
                 for path_position, beta in path_impacts:
                     timing_path = current_timing[path_position]
                     delay = timing_path["delay_ns"] + beta * ratio_delta
-                    slack = timing_path["clock_period_ns"] - delay
+                    slack = timing_path.get(
+                        "required_time_ns", timing_path["clock_period_ns"]
+                    ) - delay
                     candidate_worst = min(
                         candidate_worst,
                         _normalized_slack(
@@ -1691,7 +1702,7 @@ def validate_tdm_ratio_plan(
             + model["hops"][hop]["beta_ns"] * (ratios[hop] - 1)
             for hop in expected["hops"]
         )
-        slack = expected["clock_period_ns"] - delay
+        slack = expected["required_time_ns"] - delay
         normalized = _normalized_slack(
             expected["clock_period_ns"],
             slack,
@@ -1720,9 +1731,7 @@ def validate_tdm_ratio_plan(
             * (continuous_ratios[hop] - 1.0)
             for hop in expected["hops"]
         )
-        continuous_slack = (
-            expected["clock_period_ns"] - continuous_delay
-        )
+        continuous_slack = expected["required_time_ns"] - continuous_delay
         continuous_normalized_values.append(
             _normalized_slack(
                 expected["clock_period_ns"],

@@ -179,7 +179,9 @@ def exact_timing_ratio_assignment(
                 + hops[hop]["beta_ns"] * (ratios[hop] - 1)
                 for hop in timing_path["hops"]
             )
-            slack = timing_path["clock_period_ns"] - delay
+            slack = timing_path.get(
+                "required_time_ns", timing_path["clock_period_ns"]
+            ) - delay
             path_metrics.append(
                 (
                     _normalized_slack(
@@ -397,7 +399,7 @@ def _reconstruct_slot_oracle_result(
             delay += hop["base_delay_ns"] + hop["beta_ns"] * (
                 slots[index] - ready_by_hop[index]
             )
-        slack = path["clock_period_ns"] - delay
+        slack = path.get("required_time_ns", path["clock_period_ns"]) - delay
         worst = min(
             worst,
             _normalized_slack(

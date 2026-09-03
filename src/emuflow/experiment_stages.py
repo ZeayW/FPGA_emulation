@@ -17,6 +17,10 @@ from .chimew_pipeline import (
     run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
 )
+from .cross_layer_timing import (
+    validate_cross_layer_physical_binding,
+    validate_cross_layer_timing_contract,
+)
 from .errors import EmuFlowError, ValidationError
 from .experiment_storage import validate_experiment_write_path
 from .io import read_json, write_json
@@ -301,6 +305,9 @@ def _shared_paths(root: Path) -> Dict[str, Path]:
         "routes": _require_file(root, "system-route/routes.json"),
         "phase4_report": _require_file(root, "system-route/phase4_report.json"),
         "schedule": _require_file(root, "tdm/schedule.json"),
+        "cross_layer_timing": _require_file(
+            root, "tdm/cross_layer_timing.json"
+        ),
         "phase5_report": _require_file(root, "tdm/phase5_report.json"),
     }
 
@@ -1270,6 +1277,10 @@ def run_phase6_checkpoint(
             if managed_dag_node
             else {"artifact": "schedule.json"}
         ),
+        "cross_layer_timing_ref": {
+            "owner": "shared-phase1-5",
+            "artifact": "tdm/cross_layer_timing.json",
+        },
     }
     if managed_dag_node:
         report["validation_mode"] = MANAGED_DAG_VALIDATION_MODE
@@ -1277,6 +1288,9 @@ def run_phase6_checkpoint(
         report.update(
             {
                 "schedule_sha256": _sha256(phase6_schedule_path),
+                "cross_layer_timing_sha256": _sha256(
+                    paths["cross_layer_timing"]
+                ),
                 "manifest_sha256": _sha256(output_dir / "split/manifest.json"),
             }
         )
@@ -1388,6 +1402,18 @@ def validate_phase6_checkpoint(
     )
     if report.get("schedule_ref") != expected_schedule_ref:
         raise ValidationError("experiment Phase 6 schedule reference is invalid")
+    if report.get("cross_layer_timing_ref") != {
+        "owner": "shared-phase1-5",
+        "artifact": "tdm/cross_layer_timing.json",
+    }:
+        raise ValidationError(
+            "experiment Phase 6 cross-layer timing reference is invalid"
+        )
+    validate_cross_layer_timing_contract(
+        read_json(paths["routes"]),
+        read_json(paths["cross_layer_timing"]),
+        read_json(schedule_path),
+    )
     validate_phase6(
         paths["ir"],
         paths["assignment"],
@@ -1408,6 +1434,8 @@ def validate_phase6_checkpoint(
         validate_chimew_phase6_pipeline(root / "chimew-pipeline")
     if not managed_dag_node and (
         report.get("schedule_sha256") != _sha256(schedule_path)
+        or report.get("cross_layer_timing_sha256")
+        != _sha256(paths["cross_layer_timing"])
         or report.get("manifest_sha256") != _sha256(manifest)
     ):
         raise ValidationError("experiment Phase 6 checkpoint seal is broken")
@@ -1534,6 +1562,9 @@ def run_phase7_checkpoint(
                     output_dir / "physical/multi-fpga-physical-flow-report.json"
                 ),
                 "qor_sha256": _sha256(output_dir / "runtime/qor_report.json"),
+                "cross_layer_physical_binding_sha256": _sha256(
+                    output_dir / "runtime/cross_layer_physical_binding.json"
+                ),
             }
         )
     write_json(output_dir / "experiment-phase7-report.json", report)
@@ -1616,10 +1647,42 @@ def validate_phase7_checkpoint(
     physical_report = read_json(
         _require_file(root, "physical/multi-fpga-physical-flow-report.json")
     )
+    physical_summary = read_json(
+        _require_file(root, "physical/physical-summary.json")
+    )
     session.validate_physical(
         physical_report,
-        read_json(_require_file(root, "physical/physical-summary.json")),
+        physical_summary,
     )
+    routes = read_json(paths["routes"])
+    schedule = read_json(phase6_schedule_path)
+    cross_layer_timing = read_json(paths["cross_layer_timing"])
+    validate_cross_layer_timing_contract(
+        routes,
+        cross_layer_timing,
+        schedule,
+    )
+    board_link_timing_path = _board_link_timing(shared_root)
+    if board_link_timing_path is not None:
+        physical_summary = dict(physical_summary)
+        physical_summary["board_link_timing"] = read_json(
+            board_link_timing_path
+        )
+    physical_binding_path = _require_file(
+        root, "runtime/cross_layer_physical_binding.json"
+    )
+    physical_binding = read_json(physical_binding_path)
+    physical_binding_validation = validate_cross_layer_physical_binding(
+        cross_layer_timing,
+        schedule,
+        physical_summary,
+        Platform.load(platform_path),
+        physical_binding,
+    )
+    if physical_binding_validation.get("status") != "pass":
+        raise ValidationError(
+            "experiment Phase 7 physical timing evidence is incomplete"
+        )
     if expected_workers is not None and physical_report.get("execution", {}).get(
         "requested_workers"
     ) != expected_workers:
@@ -1642,6 +1705,8 @@ def validate_phase7_checkpoint(
         report.get("physical_summary_sha256")
         != _sha256(root / "physical/physical-summary.json")
         or report.get("qor_sha256") != _sha256(root / "runtime/qor_report.json")
+        or report.get("cross_layer_physical_binding_sha256")
+        != _sha256(physical_binding_path)
         or (
             schema == EXPERIMENT_PHASE7_SCHEMA
             and report.get("physical_flow_report_sha256")
@@ -1671,9 +1736,14 @@ def validate_phase7_checkpoint(
                 board_link_timing_path=_board_link_timing(shared_root),
                 materialize_physical_summary=False,
             )
-            if replay.get("status") != "pass" or read_json(
-                Path(temporary) / "qor_report.json"
-            ) != qor:
+            if (
+                replay.get("status") != "pass"
+                or read_json(Path(temporary) / "qor_report.json") != qor
+                or read_json(
+                    Path(temporary) / "cross_layer_physical_binding.json"
+                )
+                != physical_binding
+            ):
                 raise ValidationError("experiment Phase 7 QoR replay disagrees")
     return {
         "status": "pass",

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://emuflow.dev/schemas/static-exact-schedule-certificate-v1.schema.json",
-  "title": "EmuFlow Static Exact Schedule Certificate v1",
+  "$id": "https://emuflow.dev/schemas/sampled-virtual-wire-schedule-certificate-v1.schema.json",
+  "title": "EmuFlow Sampled Virtual Wire Schedule Certificate v1",
   "type": "object",
   "required": [
     "schema",
@@ -13,7 +13,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "emuflow.static-exact-schedule-certificate/v1"
+      "const": "emuflow.sampled-virtual-wire-schedule-certificate/v1"
     },
     "provider": {
       "const": "independent-readiness-certificate-v1"

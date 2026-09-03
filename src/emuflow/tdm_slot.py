@@ -37,6 +37,7 @@ def _write_native_input(
         COMBINATIONAL_SETTLE_SLOTS,
         RUNTIME_BARRIER_SLOTS,
         _route_hops,
+        sampled_logic_segment_budget_slots,
     )
 
     entries = {
@@ -48,6 +49,12 @@ def _write_native_input(
         ): entry
         for entry in schedule["entries"]
     }
+    exact_contract = routes.get("semantic_contract")
+    timing_constraints = schedule.get("timing_constraints")
+    if exact_contract is not None and not isinstance(timing_constraints, dict):
+        raise ValidationError(
+            "sampled virtual-wire schedule lacks Phase-5 timing constraints"
+        )
     plan_by_key = {
         _hop_key(
             hop["demand"], hop["link"], hop["from"], hop["to"]
@@ -63,29 +70,85 @@ def _write_native_input(
         ),
     )
     priority = {key: index for index, key in enumerate(priority_keys)}
-    parent_by_index: Dict[int, int] = {}
+    dependencies = []
+    release_by_index: Dict[int, int] = {
+        hop["index"]: 0 for hop in ratio_plan["hops"]
+    }
     sink_records = []
+    incoming_by_net_fpga: Dict[Tuple[str, str], int] = {}
+    first_hops_by_net: Dict[str, list[int]] = {}
     for route_index, route in enumerate(
         sorted(routes["routes"], key=lambda item: item["id"])
     ):
         incoming = {}
+        first_hops = []
         for _depth, edge in _route_hops(route):
             key = _hop_key(
                 route["id"], edge["link"], edge["from"], edge["to"]
             )
             hop = plan_by_key[key]
-            parent_by_index[hop["index"]] = incoming.get(
-                edge["from"], -1
-            )
+            parent = incoming.get(edge["from"])
+            if parent is None:
+                first_hops.append(hop["index"])
+            else:
+                dependencies.append(
+                    (parent, hop["index"], COMBINATIONAL_SETTLE_SLOTS)
+                )
             incoming[edge["to"]] = hop["index"]
+            incoming_by_net_fpga[(route["net"], edge["to"])] = hop["index"]
+        first_hops_by_net[route["net"]] = first_hops
         for sink in route["sinks"]:
             sink_records.append(
                 (
                     route_index,
-                    route.get("transport_round", 0),
+                    0
+                    if exact_contract is not None
+                    else route.get("transport_round", 0),
                     incoming[sink],
                 )
             )
+
+    if exact_contract is not None:
+        nodes = {
+            item["net"]: item for item in exact_contract["cut_nodes"]
+        }
+        segments = {
+            item["id"]: item for item in exact_contract["logic_segments"]
+        }
+        for net, node in sorted(nodes.items()):
+            roots = first_hops_by_net.get(net, [])
+            if not roots:
+                raise ValidationError(
+                    f"cross-layer timing cut {net!r} has no source hop"
+                )
+            for segment_id in node["source_segment_ids"]:
+                segment = segments[segment_id]
+                budget = sampled_logic_segment_budget_slots(
+                    segment, timing_constraints
+                )
+                if segment["kind"] == "launch_to_tx":
+                    for child in roots:
+                        release_by_index[child] = max(
+                            release_by_index[child], budget
+                        )
+                elif segment["kind"] == "rx_to_tx":
+                    predecessor = incoming_by_net_fpga.get(
+                        (
+                            segment["source_cut_net"],
+                            node["source_fpgas"][0],
+                        )
+                    )
+                    if predecessor is None:
+                        raise ValidationError(
+                            "cross-layer timing predecessor has no routed "
+                            "arrival hop"
+                        )
+                    for child in roots:
+                        dependencies.append((predecessor, child, budget))
+                else:
+                    raise ValidationError(
+                        "cross-layer source segment has unsupported semantics"
+                    )
 
     normalization = ratio_plan["normalization"]
     frame_slots = schedule["route_constraints"]["frame_slots"]
@@ -96,7 +159,7 @@ def _write_native_input(
         )
     planned_ready = realization.get("source_ready_slot")
     lines = [
-        "EMUFLOW_TDM_SLOT_INPUT_V1",
+        "EMUFLOW_TDM_SLOT_INPUT_V3",
         (
             f"PARAM {frame_slots} {RUNTIME_BARRIER_SLOTS} "
             f"{COMBINATIONAL_SETTLE_SLOTS} {max_iterations} "
@@ -112,12 +175,20 @@ def _write_native_input(
             hop["demand"], hop["link"], hop["from"], hop["to"]
         )
         lines.append(
-            f"HOP {hop['index']} {hop['transport_round']} "
+            f"HOP {hop['index']} "
+            f"{0 if exact_contract is not None else hop['transport_round']} "
             f"{hop['domain']} {hop['lane']} {hop['discrete_ratio']} "
             f"{link_by_id[hop['link']].latency_cycles} "
-            f"{parent_by_index[hop['index']]} {priority[key]} "
+            f"{release_by_index[hop['index']]} {priority[key]} "
             f"{hop['base_delay_ns']:.17g} {hop['beta_ns']:.17g}"
         )
+    dependency_delays = {}
+    for parent, child, delay in dependencies:
+        dependency_delays[(parent, child)] = max(
+            dependency_delays.get((parent, child), 0), delay
+        )
+    for (parent, child), delay in sorted(dependency_delays.items()):
+        lines.append(f"DEP {parent} {child} {delay}")
     for route, transport_round, hop in sink_records:
         lines.append(f"SINK {route} {transport_round} {hop}")
     for timing_path in ratio_plan["timing_paths"]:
@@ -125,6 +196,7 @@ def _write_native_input(
         lines.append(
             f"PATH {timing_path['index']} "
             f"{timing_path['clock_period_ns']:.17g} "
+            f"{timing_path.get('required_time_ns', timing_path['clock_period_ns']):.17g} "
             f"{timing_path['fixed_delay_ns']:.17g} {hops or '-'}"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -209,7 +281,11 @@ def _apply_native_schedule(
 ) -> Dict[str, Any]:
     from .tdm import (
         COMBINATIONAL_SETTLE_SLOTS,
+        SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
         TDM_ACADEMIC_SCHEDULE_PROVIDER,
+        _exact_capture_certificate,
+        _exact_contract_indexes,
+        _exact_source_readiness,
         _domain_schedule_records,
         _round_barrier_realization,
         _round_order,
@@ -243,17 +319,52 @@ def _apply_native_schedule(
 
     completion_by_round: Dict[int, int] = {}
     completions = []
-    ordered_routes, _active_rounds = _round_order(routes["routes"])
+    exact_contract = routes.get("semantic_contract")
+    exact_arrivals = {}
+    exact_readiness = []
+    if exact_contract is None:
+        ordered_routes, _active_rounds = _round_order(routes["routes"])
+        exact_nodes = exact_segments = exact_captures = None
+    else:
+        exact_nodes, exact_segments, exact_captures = (
+            _exact_contract_indexes(exact_contract)
+        )
+        route_by_net = {item["net"]: item for item in routes["routes"]}
+        ordered_routes = [
+            route_by_net[node["net"]]
+            for node in sorted(
+                exact_nodes.values(),
+                key=lambda item: (item["dependency_level"], item["net"]),
+            )
+        ]
+        _active_rounds = [0]
     for route in ordered_routes:
         transport_round = route.get("transport_round", 0)
-        source_ready = max(
-            (
-                completion + COMBINATIONAL_SETTLE_SLOTS
-                for prior_round, completion in completion_by_round.items()
-                if prior_round < transport_round
-            ),
-            default=0,
-        )
+        if exact_contract is None:
+            source_ready = max(
+                (
+                    completion + COMBINATIONAL_SETTLE_SLOTS
+                    for prior_round, completion in completion_by_round.items()
+                    if prior_round < transport_round
+                ),
+                default=0,
+            )
+        else:
+            source_ready, evidence = _exact_source_readiness(
+                exact_nodes[route["net"]],
+                exact_segments,
+                exact_arrivals,
+                refined["timing_constraints"],
+            )
+            exact_readiness.append(
+                {
+                    "demand": route["id"],
+                    "net": route["net"],
+                    "source": route["source"],
+                    "source_ready_slot": source_ready,
+                    "evidence": evidence,
+                }
+            )
         arrival_by_node = {route["source"]: source_ready - 1}
         for _depth, edge in _route_hops(route):
             entry = entries_by_hop[
@@ -270,15 +381,21 @@ def _apply_native_schedule(
             completion,
             completion_by_round.get(transport_round, completion),
         )
-        completions.append(
-            {
-                "demand": route["id"],
-                "net": route["net"],
-                "transport_round": transport_round,
-                "source_ready_slot": source_ready,
-                "completion_slot": completion,
+        completion_record = {
+            "demand": route["id"],
+            "net": route["net"],
+            "transport_round": transport_round,
+            "source_ready_slot": source_ready,
+            "completion_slot": completion,
+        }
+        if exact_contract is not None:
+            sink_arrivals = {
+                sink: arrival_by_node[sink] for sink in sorted(route["sinks"])
             }
-        )
+            completion_record["sink_arrival_slots"] = sink_arrivals
+            for sink, arrival in sink_arrivals.items():
+                exact_arrivals[(route["net"], sink)] = arrival
+        completions.append(completion_record)
 
     refined["entries"].sort(
         key=lambda entry: (
@@ -309,6 +426,34 @@ def _apply_native_schedule(
     refined["metrics"]["maximum_ratio_wait_slots"] = max(
         entry["ratio_wait_slots"] for entry in refined["entries"]
     )
+    if exact_contract is not None:
+        captures, minimum_capture_slack = _exact_capture_certificate(
+            exact_segments,
+            exact_captures,
+            exact_arrivals,
+            refined["timing_constraints"],
+        )
+        refined["schedule_dependency_certificate"] = {
+            "schema": SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
+            "provider": "independent-readiness-certificate-v1",
+            "topological_cut_order": [
+                route["net"] for route in ordered_routes
+            ],
+            "demand_readiness": exact_readiness,
+            "capture_readiness": captures,
+            "minimum_capture_slack_slots": minimum_capture_slack,
+        }
+        refined["metrics"].update(
+            {
+                "commit_slot": refined["timing_constraints"]["commit_slot"],
+                "dependency_edges": len(exact_contract["dependency_edges"]),
+                "maximum_combinational_dependency_depth": exact_contract[
+                    "metrics"
+                ]["maximum_combinational_dependency_depth"],
+                "capture_requirements": len(captures),
+                "minimum_capture_slack_slots": minimum_capture_slack,
+            }
+        )
     baseline_timing = reconstruct_tdm_schedule_timing(
         routes, platform, schedule, model=prepared_ratio_model
     )

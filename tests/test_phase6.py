@@ -184,6 +184,7 @@ class Phase6Test(unittest.TestCase):
             self.platform,
             artifacts,
         )
+        self.assertNotIn("semantic_contract", artifacts["manifest"])
         equivalence = simulate_partition_equivalence(
             self.ir, self.assignment, self.schedule, cycles=12
         )

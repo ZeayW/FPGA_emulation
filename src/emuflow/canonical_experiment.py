@@ -37,7 +37,6 @@ from .mfspart_refine import (
     DEFAULT_TIMING_PATH_BETA,
 )
 from .routing import load_route_constraints
-from .tdm import TDM_STATIC_EXACT_PROVIDER
 from .tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
@@ -718,10 +717,6 @@ def compile_canonical_experiment_spec(
     mfspart_post_refinement_timing_path_beta = float(
         mfspart_post_refinement_timing_path_beta
     )
-    comb_segment_budget_slots = _positive_integer(
-        config.get("comb_segment_budget_slots", 1),
-        "comb_segment_budget_slots",
-    )
     static_exact_candidate_policy = config.get(
         "static_exact_candidate_policy",
         STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
@@ -984,7 +979,6 @@ def compile_canonical_experiment_spec(
         "--cut-mode", cut_mode,
         "--max-cross-fpga-dependency-depth",
         str(max_cross_fpga_dependency_depth),
-        "--comb-segment-budget-slots", str(comb_segment_budget_slots),
         "--static-exact-candidate-policy", static_exact_candidate_policy,
         "--minimum-combinational-cut-nets",
         str(minimum_combinational_cut_nets),
@@ -1001,7 +995,6 @@ def compile_canonical_experiment_spec(
         "--cut-mode", cut_mode,
         "--max-cross-fpga-dependency-depth",
         str(max_cross_fpga_dependency_depth),
-        "--comb-segment-budget-slots", str(comb_segment_budget_slots),
         "--static-exact-candidate-policy", static_exact_candidate_policy,
         "--minimum-combinational-cut-nets",
         str(minimum_combinational_cut_nets),
@@ -1118,7 +1111,6 @@ def compile_canonical_experiment_spec(
                     "max_cross_fpga_dependency_depth": (
                         max_cross_fpga_dependency_depth
                     ),
-                    "comb_segment_budget_slots": comb_segment_budget_slots,
                     "static_exact_candidate_policy": (
                         static_exact_candidate_policy
                     ),
@@ -1288,7 +1280,6 @@ def compile_canonical_experiment_spec(
             "max_cross_fpga_dependency_depth": (
                 max_cross_fpga_dependency_depth
             ),
-            "comb_segment_budget_slots": comb_segment_budget_slots,
             "static_exact_candidate_policy": static_exact_candidate_policy,
             "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
             "partition_peak_gib": partition_peak_gib,
@@ -1313,14 +1304,8 @@ def compile_canonical_experiment_spec(
         configuration={"clock_periods": periods},
         peak_gib=4, retained_gib=1,
     )
-    route_provider = (
-        NATIVE_TIMING_EVALUATED_PROVIDER
-        if cut_mode == CUT_MODE_STATIC_EXACT
-        else GLOBAL_CANDIDATE_PROVIDER
-    )
-    effective_candidate_workers = (
-        1 if cut_mode == CUT_MODE_STATIC_EXACT else route_candidate_workers
-    )
+    route_provider = GLOBAL_CANDIDATE_PROVIDER
+    effective_candidate_workers = route_candidate_workers
     node(
         "route", "route", ["partition", "cut-timing"],
         [executable, "experiment-stage", "route-run", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers), "--router", str(tools["router"]), "--managed-storage", "--managed-dag-node", "--out", "{output_dir}"],
@@ -1330,11 +1315,7 @@ def compile_canonical_experiment_spec(
         configuration={"provider": route_provider, "candidate_workers": effective_candidate_workers, "route_constraints": contract["route_constraints"], "cut_mode": cut_mode},
         peak_gib=12, retained_gib=3,
     )
-    tdm_provider = (
-        TDM_STATIC_EXACT_PROVIDER
-        if cut_mode == CUT_MODE_STATIC_EXACT
-        else TDM_TIMING_DAG_RATIO_PROVIDER
-    )
+    tdm_provider = TDM_TIMING_DAG_RATIO_PROVIDER
     tdm_command = [
         executable, "experiment-stage", "tdm-run", "--route",
         "{dependency:route}", "--platform", str(platform), "--provider",
@@ -1345,23 +1326,23 @@ def compile_canonical_experiment_spec(
     tdm_inputs = ["platform", "route_constraints", "tool.emuflow"]
     tdm_artifacts = [
         _artifact("schedule.json", "consumer-checkpoint"),
+        _artifact("cross_layer_timing.json", "consumer-checkpoint"),
         _artifact("phase5_report.json", "consumer-checkpoint"),
         _artifact("experiment-tdm-report.json", "evidence-critical"),
     ]
-    if cut_mode != CUT_MODE_STATIC_EXACT:
-        tdm_command.extend((
-            "--ratio-quantum", str(contract["route_constraints"]["tdm_ratio_quantum"]),
-            "--max-ratio", str(contract["route_constraints"]["frame_slots"]),
-            "--ratio-optimizer", str(tools["ratio_optimizer"]),
-            "--timing-dag-optimizer", str(tools["timing_dag_optimizer"]),
-            "--slot-optimizer", str(tools["slot_optimizer"]),
-        ))
-        tdm_inputs.extend((
-            "tool.ratio_optimizer",
-            "tool.timing_dag_optimizer",
-            "tool.slot_optimizer",
-        ))
-        tdm_artifacts.insert(1, _artifact("ratio_plan.json", "consumer-checkpoint"))
+    tdm_command.extend((
+        "--ratio-quantum", str(contract["route_constraints"]["tdm_ratio_quantum"]),
+        "--max-ratio", str(contract["route_constraints"]["frame_slots"]),
+        "--ratio-optimizer", str(tools["ratio_optimizer"]),
+        "--timing-dag-optimizer", str(tools["timing_dag_optimizer"]),
+        "--slot-optimizer", str(tools["slot_optimizer"]),
+    ))
+    tdm_inputs.extend((
+        "tool.ratio_optimizer",
+        "tool.timing_dag_optimizer",
+        "tool.slot_optimizer",
+    ))
+    tdm_artifacts.insert(1, _artifact("ratio_plan.json", "consumer-checkpoint"))
     tdm_command.extend(("--out", "{output_dir}"))
     node(
         "tdm", "tdm", ["route"],
@@ -1405,10 +1386,10 @@ def compile_canonical_experiment_spec(
         inputs=("platform", "physical_architecture", "openparf_manifest", "openparf_implementation", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
         configuration={"physical_seed": 1, "physical_workers": workers, "physical_peak_gib": physical_peak_gib, "region_count": region_count, "route_channel_width": channel_width}, peak_gib=physical_peak_gib, retained_gib=10,
     )
-    phase6_research_providers = (
-        ()
-        if cut_mode == CUT_MODE_STATIC_EXACT
-        else ("placement-aware", "chimew")
+    phase6_research_providers = tuple(
+        provider
+        for provider in phase6_providers
+        if provider != "baseline"
     )
     for provider in phase6_research_providers:
         phase6_id = f"phase6-{provider}"
@@ -1447,11 +1428,7 @@ def compile_canonical_experiment_spec(
             retained_gib=4,
             provider=provider,
         )
-    phase7_providers = (
-        ("baseline",)
-        if cut_mode == CUT_MODE_STATIC_EXACT
-        else tuple(phase6_providers)
-    )
+    phase7_providers = tuple(phase6_providers)
     for provider in phase7_providers:
         for seed in physical_seeds:
             phase6_id = f"phase6-{provider}"
@@ -1482,28 +1459,6 @@ def compile_canonical_experiment_spec(
         for provider in phase7_providers
         for seed in physical_seeds
     ]
-    if cut_mode == CUT_MODE_STATIC_EXACT:
-        spec = {
-            "schema": EXPERIMENT_SPEC_V2_SCHEMA,
-            "experiment_id": case_id,
-            "source_commit": source_commit,
-            "nodes": nodes,
-        }
-        validated = validate_experiment_spec(spec)
-        write_json(output_path, spec)
-        return {
-            "status": "pass",
-            "experiment_id": case_id,
-            "nodes": len(validated["nodes"]),
-            "physical_terminal_nodes": len(physical_seeds),
-            "terminal_nodes": len(physical_seeds),
-            "cut_mode": cut_mode,
-            "static_exact_candidate_policy": static_exact_candidate_policy,
-            "max_cross_fpga_dependency_depth": (
-                max_cross_fpga_dependency_depth
-            ),
-            "output": str(output_path.resolve()),
-        }
     if set(phase7_providers) != {"baseline", "placement-aware", "chimew"}:
         # Restricted provider sets are the supported incremental path for
         # computing only missing physical arms.  The canonical QoR comparison
@@ -1585,6 +1540,9 @@ def compile_canonical_experiment_spec(
         "nodes": len(validated["nodes"]),
         "physical_terminal_nodes": len(phase7_providers) * len(physical_seeds),
         "terminal_nodes": 1,
+        "cut_mode": cut_mode,
+        "static_exact_candidate_policy": static_exact_candidate_policy,
+        "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth,
         "output": str(output_path.resolve()),
     }
 
@@ -1728,6 +1686,7 @@ def compile_static_exact_ab_experiment_spec(
             # seeds remain a separate paired axis below.
             arm_config["partition_seed"] = controlled_partition_seed
             arm_config["partition_seed_attempts"] = 1
+            arm_config["phase6_providers"] = ["baseline"]
             arm_config_path = temporary_root / f"{prefix}-config.json"
             arm_spec_path = temporary_root / f"{prefix}-spec.json"
             write_json(arm_config_path, arm_config)

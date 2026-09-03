@@ -119,7 +119,9 @@ def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
             "end_pin",
         }
         if schema == LOCAL_PATH_IDENTITY_SCHEMA_V2:
-            expected_fields.update({"measurement", "path_pins"})
+            expected_fields.update(
+                {"required_time_ns", "measurement", "path_pins"}
+            )
         if not isinstance(path, dict) or set(path) != expected_fields:
             raise ValidationError(f"{context} is invalid")
         path_id = path["id"]
@@ -142,6 +144,14 @@ def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
         ):
             raise ValidationError(f"{context} is invalid")
         if schema == LOCAL_PATH_IDENTITY_SCHEMA_V2:
+            required_time = path["required_time_ns"]
+            if (
+                isinstance(required_time, bool)
+                or not isinstance(required_time, (int, float))
+                or not math.isfinite(float(required_time))
+                or float(required_time) <= 0.0
+            ):
+                raise ValidationError(f"{context} required time is invalid")
             measurement = path["measurement"]
             pins = path["path_pins"]
             if measurement not in {
@@ -402,6 +412,8 @@ def write_vpr_local_path_query(
             "fpga": fpga,
             "clock_domain": path["clock_domain"],
             "clock_period_ns": float(path["clock_period_ns"]),
+            "required_time_ns": float(path["fixed_delay_ns"])
+            + float(path["slack_ns"]),
             "start_pin": _vpr_atom_pin(
                 merged_ir, merged_index, start, merged_instances
             ),

@@ -9,7 +9,9 @@ from .errors import ValidationError
 from .combinational_cut import (
     GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+    STATIC_EXACT_CANDIDATE_POLICIES,
     STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS,
+    STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
     semantic_contract_sha256,
 )
 from .io import read_json
@@ -34,25 +36,26 @@ def static_exact_contract_from_assignment(
         contract.get("schema") not in STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS
         or contract.get("mode") != "static-exact-combinational"
         or contract.get("qualification")
-        != "partition-legality-only-provisional"
+        != "structural-partition-legality"
     ):
         raise ValidationError(
             "assignment.semantic_contract is not a supported exact-cut contract"
         )
     if contract.get("schema") == GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA:
-        lower_bound = contract.get("uncongested_schedule_lower_bound")
-        if (
-            contract.get("candidate_selection_policy")
-            != STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
-            or not isinstance(lower_bound, dict)
-            or lower_bound.get("provider")
-            != "board-minimum-latency-dag-lower-bound-v1"
-            or lower_bound.get("qualification")
-            != "necessary-not-sufficient-before-routing"
+        if contract.get("candidate_selection_policy") != (
+            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
         ):
             raise ValidationError(
                 "assignment generalized exact-cut certificate is incomplete"
             )
+    if (
+        contract.get("schema") == STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA
+        and contract.get("candidate_selection_policy")
+        not in STATIC_EXACT_CANDIDATE_POLICIES
+    ):
+        raise ValidationError(
+            "assignment structural exact-cut certificate is incomplete"
+        )
     raw_cuts = assignment.get("cut_nets")
     raw_nodes = contract.get("cut_nodes")
     if not isinstance(raw_cuts, list) or not isinstance(raw_nodes, list):

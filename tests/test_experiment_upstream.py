@@ -246,7 +246,11 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     "cut-segment-qualification.json",
                 ),
                 "route": ("routes.json", "phase4_report.json"),
-                "tdm": ("schedule.json", "phase5_report.json"),
+                "tdm": (
+                    "schedule.json",
+                    "cross_layer_timing.json",
+                    "phase5_report.json",
+                ),
             }
             for stage, relative_files in files.items():
                 for relative in relative_files:
@@ -606,6 +610,9 @@ class ExperimentUpstreamTest(unittest.TestCase):
         (tdm / "schedule.json").write_text(
             json.dumps({"provider": provider}), encoding="utf-8"
         )
+        (tdm / "cross_layer_timing.json").write_text(
+            "{}", encoding="utf-8"
+        )
         phase5 = {"provider": provider}
         if optimization_provider is not None:
             phase5["optimization_provider"] = optimization_provider
@@ -618,6 +625,9 @@ class ExperimentUpstreamTest(unittest.TestCase):
             "routes_sha256": _sha256(route / "routes.json"),
             "platform_sha256": _sha256(platform),
             "schedule_sha256": _sha256(tdm / "schedule.json"),
+            "cross_layer_timing_sha256": _sha256(
+                tdm / "cross_layer_timing.json"
+            ),
             "phase5_report_sha256": _sha256(tdm / "phase5_report.json"),
             "phase5_ref": {
                 "artifact": "phase5_report.json",
@@ -832,7 +842,6 @@ class ExperimentUpstreamTest(unittest.TestCase):
                         "policy": {
                             "cut_mode": "static-exact-combinational",
                             "max_cross_fpga_dependency_depth": 1,
-                            "comb_segment_budget_slots": 3,
                         }
                     }
                 ),
@@ -845,7 +854,6 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     "clusters_sha256": _sha256(clusters_path),
                     "cut_mode": "static-exact-combinational",
                     "max_cross_fpga_dependency_depth": 1,
-                    "comb_segment_budget_slots": 3,
                 }
             )
             report_path.write_text(json.dumps(report), encoding="utf-8")
@@ -856,15 +864,14 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 partition,
                 expected_cut_mode="static-exact-combinational",
                 expected_max_cross_fpga_dependency_depth=1,
-                expected_comb_segment_budget_slots=3,
             )
             self.assertEqual(checked["cut_mode"], "static-exact-combinational")
 
-            report["comb_segment_budget_slots"] = 2
+            report["max_cross_fpga_dependency_depth"] = 2
             report_path.write_text(json.dumps(report), encoding="utf-8")
             with self.assertRaisesRegex(
                 ValidationError,
-                "comb-segment-budget-slots seal disagrees",
+                "max-cross-fpga-dependency-depth seal disagrees",
             ):
                 validate_partition_checkpoint(
                     frontend, timing, platform, partition
@@ -885,7 +892,6 @@ class ExperimentUpstreamTest(unittest.TestCase):
                         "policy": {
                             "cut_mode": "static-exact-combinational",
                             "max_cross_fpga_dependency_depth": 1,
-                            "comb_segment_budget_slots": 1,
                         }
                     }
                 ),
@@ -898,7 +904,6 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     "clusters_sha256": _sha256(clusters_path),
                     "cut_mode": "static-exact-combinational",
                     "max_cross_fpga_dependency_depth": 1,
-                    "comb_segment_budget_slots": 1,
                     "minimum_combinational_cut_nets": 1,
                 }
             )
@@ -947,9 +952,13 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     expected_minimum_combinational_cut_nets=1,
                 )
 
+    @mock.patch(
+        "emuflow.experiment_upstream.validate_cross_layer_timing_contract",
+        return_value={"status": "pass"},
+    )
     @mock.patch("emuflow.experiment_upstream.validate_phase5")
     def test_tdm_validator_binds_academic_optimization_provider(
-        self, validate_phase5
+        self, validate_phase5, _validate_cross_layer
     ) -> None:
         validate_phase5.return_value = {"status": "pass"}
         with tempfile.TemporaryDirectory() as temporary:
@@ -977,9 +986,13 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     ),
                 )
 
+    @mock.patch(
+        "emuflow.experiment_upstream.validate_cross_layer_timing_contract",
+        return_value={"status": "pass"},
+    )
     @mock.patch("emuflow.experiment_upstream.validate_phase5")
     def test_tdm_validator_preserves_baseline_provider_contract(
-        self, validate_phase5
+        self, validate_phase5, _validate_cross_layer
     ) -> None:
         validate_phase5.return_value = {"status": "pass"}
         with tempfile.TemporaryDirectory() as temporary:

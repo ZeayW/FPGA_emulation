@@ -324,8 +324,6 @@ def build_clusters(
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
-    comb_segment_budget_slots: int = 1,
-    frame_slots: int = 2,
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
 ) -> Dict[str, Any]:
     if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
@@ -361,20 +359,6 @@ def build_clusters(
             raise ValidationError(
                 "max_cross_fpga_dependency_depth must be positive"
             )
-        if (
-            isinstance(comb_segment_budget_slots, bool)
-            or not isinstance(comb_segment_budget_slots, int)
-            or comb_segment_budget_slots <= 0
-        ):
-            raise ValidationError(
-                "comb_segment_budget_slots must be a positive integer"
-            )
-        if (
-            isinstance(frame_slots, bool)
-            or not isinstance(frame_slots, int)
-            or frame_slots < 2
-        ):
-            raise ValidationError("frame_slots must be an integer at least two")
         candidate_index = _build_combinational_cut_candidate_index(
             ir,
             include_dependency_levels=(
@@ -490,8 +474,6 @@ def build_clusters(
                 "max_cross_fpga_dependency_depth": (
                     max_cross_fpga_dependency_depth
                 ),
-                "comb_segment_budget_slots": comb_segment_budget_slots,
-                "frame_slots": frame_slots,
                 "eligible_combinational_cut_nets": sorted(
                     released_combinational_nets
                 ),
@@ -501,7 +483,7 @@ def build_clusters(
                 "characterization_source_sha256": candidate_index[
                     "canonical_emuir_sha256"
                 ],
-                "qualification": "partition-legality-only-provisional",
+                "qualification": "structural-partition-legality",
             }
         )
         if static_exact_candidate_policy == STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2:
@@ -950,10 +932,6 @@ def build_partition_assignment(
             max_dependency_depth=cut_policy[
                 "max_cross_fpga_dependency_depth"
             ],
-            comb_segment_budget_slots=cut_policy[
-                "comb_segment_budget_slots"
-            ],
-            frame_slots=cut_policy["frame_slots"],
             candidate_selection_policy=cut_policy.get(
                 "candidate_selection_policy",
                 STATIC_EXACT_CANDIDATE_FRONTIER_V1,
@@ -1186,7 +1164,7 @@ def validate_partition_artifacts_online(
         result.update(
             {
                 "cut_mode": CUT_MODE_STATIC_EXACT,
-                "qualification": "partition-legality-only-provisional",
+                "qualification": "structural-partition-legality",
                 "semantic_contract": {
                     "status": "pass",
                     **semantic_contract["metrics"],
@@ -1577,8 +1555,6 @@ def validate_partition_artifacts(
     if cut_mode == CUT_MODE_STATIC_EXACT:
         required_policy = {
             "max_cross_fpga_dependency_depth",
-            "comb_segment_budget_slots",
-            "frame_slots",
             "eligible_combinational_cut_nets",
             "transported_cut_classes",
             "characterization_source_sha256",
@@ -1597,10 +1573,6 @@ def validate_partition_artifacts(
             max_cross_fpga_dependency_depth=cut_policy[
                 "max_cross_fpga_dependency_depth"
             ],
-            comb_segment_budget_slots=cut_policy[
-                "comb_segment_budget_slots"
-            ],
-            frame_slots=cut_policy["frame_slots"],
             static_exact_candidate_policy=cut_policy.get(
                 "candidate_selection_policy",
                 STATIC_EXACT_CANDIDATE_FRONTIER_V1,
@@ -1745,10 +1717,6 @@ def validate_partition_artifacts(
             max_dependency_depth=cut_policy[
                 "max_cross_fpga_dependency_depth"
             ],
-            comb_segment_budget_slots=cut_policy[
-                "comb_segment_budget_slots"
-            ],
-            frame_slots=cut_policy["frame_slots"],
             candidate_selection_policy=cut_policy.get(
                 "candidate_selection_policy",
                 STATIC_EXACT_CANDIDATE_FRONTIER_V1,
@@ -1822,7 +1790,7 @@ def validate_partition_artifacts(
         result.update(
             {
                 "cut_mode": CUT_MODE_STATIC_EXACT,
-                "qualification": "partition-legality-only-provisional",
+                "qualification": "structural-partition-legality",
                 "semantic_contract": {
                     "status": "pass",
                     **expected_contract["metrics"],

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/static-exact-combinational-cut-v3.schema.json",
+  "title": "EmuFlow Static Exact Structural Contract v3",
+  "type": "object",
+  "required": [
+    "schema",
+    "mode",
+    "qualification",
+    "candidate_selection_policy",
+    "max_cross_fpga_dependency_depth",
+    "cut_nodes",
+    "dependency_edges",
+    "logic_segments",
+    "capture_requirements",
+    "metrics",
+    "source_identity"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.static-exact-combinational-cut/v3"},
+    "mode": {"const": "static-exact-combinational"},
+    "qualification": {"const": "structural-partition-legality"},
+    "candidate_selection_policy": {
+      "enum": ["potential-frontier-depth-v1", "assignment-derived-acyclic-v2"]
+    },
+    "max_cross_fpga_dependency_depth": {"type": "integer", "minimum": 1},
+    "cut_nodes": {"type": "array", "items": {"type": "object"}},
+    "dependency_edges": {"type": "array", "items": {"type": "object"}},
+    "logic_segments": {"type": "array", "items": {"type": "object"}},
+    "capture_requirements": {"type": "array", "items": {"type": "object"}},
+    "metrics": {"type": "object"},
+    "source_identity": {"type": "object"}
+  },
+  "additionalProperties": false
+}

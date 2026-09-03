@@ -2173,7 +2173,8 @@ class Router {
     for (int demand : path.demands) {
       delay += routes_[demand].max_delay_ns;
     }
-    const double slack = path.clock_period_ns - delay;
+    const double transport_delay = delay - path.fixed_delay_ns;
+    const double slack = path.baseline_slack_ns - transport_delay;
     return {delay, slack, normalized_slack(path, slack)};
   }
 
@@ -2237,7 +2238,8 @@ class Router {
     for (int demand : path.demands) {
       delay += demand_tdm_delay(demand);
     }
-    const double slack = path.clock_period_ns - delay;
+    const double transport_delay = delay - path.fixed_delay_ns;
+    const double slack = path.baseline_slack_ns - transport_delay;
     return {delay, slack, normalized_slack(path, slack)};
   }
 

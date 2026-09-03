@@ -97,6 +97,7 @@ class ExperimentStagesTest(unittest.TestCase):
                 "system-route/phase4_report.json",
                 "tdm/schedule.json",
                 "tdm/phase5_report.json",
+                "tdm/cross_layer_timing.json",
             ):
                 path = shared / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -289,6 +290,7 @@ class ExperimentStagesTest(unittest.TestCase):
                 "system-route/phase4_report.json",
                 "tdm/schedule.json",
                 "tdm/phase5_report.json",
+                "tdm/cross_layer_timing.json",
             ):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)

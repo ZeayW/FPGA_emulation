@@ -94,15 +94,14 @@ def build_split_artifacts(
     if assignment.get("semantic_contract") is not None:
         from .combinational_cut import semantic_contract_sha256
         from .routing import static_exact_contract_from_assignment
-        from .tdm import TDM_STATIC_EXACT_PROVIDER
+        from .tdm import is_sampled_virtual_wire_schedule
 
         exact_contract = static_exact_contract_from_assignment(assignment)
         if exact_contract is None:
             raise ValidationError("exact assignment contract is missing")
         exact_contract_sha256 = semantic_contract_sha256(exact_contract)
         if (
-            schedule.get("provider") != TDM_STATIC_EXACT_PROVIDER
-            or schedule.get("semantic_contract") != exact_contract
+            not is_sampled_virtual_wire_schedule(schedule)
             or schedule.get("semantic_contract_sha256")
             != exact_contract_sha256
         ):
@@ -540,7 +539,7 @@ def build_split_artifacts(
             {
                 "cut_mode": "static-exact-combinational",
                 "qualification": "exact-boundary-materialization-pass",
-                "semantic_contract": exact_contract,
+                "semantic_contract_schema": exact_contract["schema"],
                 "semantic_contract_sha256": exact_contract_sha256,
             }
             if exact_contract is not None
@@ -910,7 +909,8 @@ def validate_split_artifacts(
             manifest.get("cut_mode") != "static-exact-combinational"
             or manifest.get("qualification")
             != "exact-boundary-materialization-pass"
-            or manifest.get("semantic_contract") != exact_contract
+            or manifest.get("semantic_contract_schema")
+            != exact_contract.get("schema")
             or manifest.get("semantic_contract_sha256") != exact_digest
         ):
             raise ValidationError(

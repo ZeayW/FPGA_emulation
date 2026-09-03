@@ -275,6 +275,14 @@ def exact_route_tree_selection(
             worst_route = float("inf")
             worst_tdm = float("inf")
             for path in timing_paths["paths"]:
+                required_time = path.get(
+                    "required_time_ns",
+                    (
+                        path["fixed_delay_ns"] + path["slack_ns"]
+                        if "slack_ns" in path
+                        else path["clock_period_ns"]
+                    ),
+                )
                 route_total = path["fixed_delay_ns"] + sum(
                     route_delay[net] for net in path["cut_nets"]
                 )
@@ -285,7 +293,7 @@ def exact_route_tree_selection(
                     worst_route,
                     _normalized_slack(
                         path["clock_period_ns"],
-                        path["clock_period_ns"] - route_total,
+                        required_time - route_total,
                         timing_paths["normalization"],
                     ),
                 )
@@ -293,7 +301,7 @@ def exact_route_tree_selection(
                     worst_tdm,
                     _normalized_slack(
                         path["clock_period_ns"],
-                        path["clock_period_ns"] - tdm_total,
+                        required_time - tdm_total,
                         timing_paths["normalization"],
                     ),
                 )

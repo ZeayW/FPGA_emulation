@@ -301,18 +301,15 @@ or depth-2 eligible nets, as explicitly configured, emits
 `emuflow.static-exact-combinational-cut/v1`, and
 independently reconstructs both clusters and contract. Its qualification is
 only `partition-legality-only-provisional`; production defaults and safe-mode
-Phase 4--7 behavior are unchanged. Exact-mode Phase 4 accepts only the native
-route tree, with optional post-route timing annotation, copies the full
-contract and canonical digest into the route artifact, and independently
-checks every routed demand against its cut-node metadata. Exact-mode Phase 5 uses
-`deterministic-static-exact-list-schedule-v1`: it topologically orders cut
-nodes, derives each source-ready edge from every applicable local launch and
-predecessor arrival (including reconvergent cones containing both kinds),
-reserves collision-free lane/slots, and proves each final capture is ready by
-the fixed commit edge. Its versioned
-`emuflow.static-exact-schedule-certificate/v1` is reconstructed through a
-separate checker path. Ratio, feedback, timing-aware routing, and slot-
-refinement providers remain fail-closed for exact mode.
+Phase 4--7 behavior are unchanged. Phase 4 uses the ordinary multicast router
+and binds every original timing path to an ordered sink branch, cut identity,
+demand, and routed hop. Phase 5 uses the ordinary timing-DAG ratio/lane/slot
+pipeline. For sampled virtual wires it adds source readiness, predecessor
+arrival, settle, and final capture/commit constraints to that same solver and
+emits an independently reconstructed
+`emuflow.sampled-virtual-wire-schedule-certificate/v1`. Timing-aware routing,
+ratio optimization, feedback, and slot refinement remain available; Static
+Exact does not select a separate Phase 5 provider.
 
 All exact-mode stages share the
 `fabric-rising-edge-current-slot/v1` convention: TX samples on the rising edge
@@ -513,10 +510,10 @@ Acceptance:
 - every frame completes before the virtual clock-enable;
 - partitioned and unpartitioned designs are cycle-equivalent.
 
-The first three items now also have a separate exact-mode implementation. The
-legacy candidate policy is depth-1/depth-2; generalized v2 derives the actual
+The first three items also enforce sampled virtual-wire constraints. The legacy
+candidate policy is depth-1/depth-2; generalized v2 derives the actual
 dependency DAG from the selected assignment and accepts any positive safety
-cap. Its topological list scheduler uses the shared
+cap. The unified TDM scheduler uses the shared
 `fabric-rising-edge-current-slot/v1` convention, computes launch-to-TX,
 RX-to-TX, and RX-to-capture readiness from the Phase 3 contract, and stops
 with a precise fixed-frame infeasibility diagnostic when any arrival or
@@ -531,7 +528,7 @@ models also receive complete one-step state/input enumeration; a checked-in
 Yosys formal miter is a canonical regression and does not by itself claim
 arbitrary-design formal closure.
 
-The initial dependency-free list schedule is refined by an in-tree C++ engine.
+The initial dependency-aware list schedule is refined by an in-tree C++ engine.
 It exhaustively reorders bounded neighborhoods containing a delayed worst-path
 hop and up to three preceding lane blockers, accepting an order only when
 independently reconstructed worst normalized slack, completion, or total wait

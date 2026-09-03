@@ -123,6 +123,7 @@
           "id",
           "clock_domain",
           "clock_period_ns",
+          "required_time_ns",
           "fixed_delay_ns",
           "cut_nets",
           "hops",

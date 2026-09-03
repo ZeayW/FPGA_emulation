@@ -2,8 +2,9 @@
 
 ## Status and claim boundary
 
-The production flow remains `sequential-only` pending real QoR promotion. The
-legacy opt-in depth-1/depth-2 path and generalized v2 path now pass Phase 3
+The production flow defaults to generalized Static Exact partitioning. The
+legacy depth-1/depth-2 policy remains an explicit comparison arm. Both it and
+the assignment-derived generalized path pass Phase 3
 partition legality, Phase 4 native-route contract propagation,
 and Phase 5 dependency/capture scheduling. Safe-mode Phase 3 transports
 register outputs, transport-safe register inputs, and replicated primary
@@ -61,19 +62,16 @@ local `+1` rules.
 
 ## Semantic contract
 
-Phase 3 emits one versioned sub-contract. The implemented opt-in path binds it
-through routes, schedule, Phase 6 split, and Phase 7C:
+Phase 3 emits one versioned structural sub-contract. Phase 5 owns the separate
+slot/readiness policy, and downstream artifacts bind the structural contract by
+schema and digest instead of copying the full JSON:
 
 ```json
 {
-  "schema": "emuflow.static-exact-combinational-cut/v2",
+  "schema": "emuflow.static-exact-combinational-cut/v3",
   "mode": "static-exact-combinational",
   "candidate_selection_policy": "assignment-derived-acyclic-v2",
   "max_cross_fpga_dependency_depth": 8,
-  "comb_segment_budget_slots": 1,
-  "slot_edge_convention": {
-    "id": "fabric-rising-edge-current-slot/v1"
-  },
   "cut_nodes": [],
   "dependency_edges": [],
   "logic_segments": [],
@@ -114,11 +112,9 @@ The first version is intentionally fail-closed:
 - v2 never filters a candidate using its depth in the graph of all *possible*
   cuts. A deep potential candidate can be the only selected boundary in its
   cone and therefore have actual depth one;
-- v2 independently computes an uncongested BoardDB minimum-latency lower bound
-  over the selected dependency DAG. An assignment that cannot reach every
-  terminal capture before commit even under this optimistic bound is rejected
-  in Phase 3. Concrete routing, contention, lane capacity, and physical delay
-  remain stricter downstream gates.
+- Phase 3 does not compute or enforce frame/slot readiness. Concrete routing,
+  contention, ratios, lane capacity, settle time, and commit feasibility are
+  reconstructed and enforced by unified Phase 4/5.
 
 The characterization report is an upper bound because it ignores capacity,
 user group/fixed constraints, BoardDB hop limits, link capacity, schedule
@@ -133,10 +129,10 @@ feasibility, and physical segment deadlines.
    semantic contract, provider-independent cluster/legality reconstruction,
    and balance fixture. Its strongest qualification is
    `partition-legality-only-provisional`.
-3. **Phase 4/5 arbitrary budgeted DAG depth (implemented, opt-in).** Exact contract propagation,
-   canonical contract digest binding, deterministic
-   dependency-aware list scheduling, source-ready/capture certificate, fixed
-   frame fail-closed diagnostics, and tamper tests.
+3. **Unified Phase 4/5 arbitrary budgeted DAG depth (implemented).** Exact
+   branch-level route binding, canonical contract digest binding, normal
+   timing-DAG ratio/lane/slot optimization with dependency readiness constraints,
+   source-ready/capture certificates, fixed-frame diagnostics, and tamper tests.
 4. **Phase 6 (implemented, opt-in).** Contract-bound exact boundaries,
    hidden-bypass rejection, deterministic shadow startup, event-driven
    macro-cycle simulation, complete small-model one-step enumeration, and a
@@ -153,12 +149,11 @@ feasibility, and physical segment deadlines.
    and replays all 195,532 original timing paths. Its negative 10 ns
    target-clock WNS/TNS is reported honestly; the gate proves complete timing
    evidence and positive causal segment deadlines, not target-clock closure.
-6. **Optimizer integration.** TritonPart screens every candidate assignment
-   against the reconstructed contract and the BoardDB lower bound before seed
-   selection. The dedicated exact scheduler is a generic topological,
-   capacity-aware list scheduler; it is no longer limited to depth two. The
-   ordinary timing-DAG/ratio optimizers remain fail-closed until they consume
-   the same dependency contract.
+6. **Optimizer integration.** Partition providers screen candidate assignments
+   only against the reconstructed structural contract and BoardDB reachability.
+   The ordinary Phase 5 timing-DAG/ratio/lane/slot providers consume sampled-wire
+   readiness and capture constraints directly; there is no dedicated Static
+   Exact scheduler or Phase 3 scheduler-feasibility gate.
 
 ## Canonical search-space audit
 
@@ -178,14 +173,14 @@ V2 therefore adds 33,444 structurally legal candidate boundaries over v1 and
 removes the large atomic-cluster tail: sequential-only has 72 clusters above
 500 instances, whereas v2 has none above 100. The current canonical result is
 not candidate-starved. Its two selected cuts are the optimizer's cost-aware
-choice from the larger legal space, and both survive the complete exact
-scheduler, shadow-transport, equivalence, and routed segment-deadline gates.
+choice from the larger legal space, and both survive the unified TDM schedule,
+shadow-transport, equivalence, and routed segment-deadline gates.
 Forcing a larger cut count would optimize an activity metric rather than final
 timing QoR and is not part of the default policy.
 
 The accepted v2 assignment reaches actual dependency depth two, so the
 configured depth-eight safety cap is not active on this case. Likewise, the
-dedicated Phase 5 scheduler already accepts arbitrary acyclic depth subject to
+unified Phase 5 scheduler accepts arbitrary acyclic depth subject to
 the fixed frame, routed latency, lane capacity, relay readiness, and capture
 deadline. These measurements do not justify weakening either fail-closed gate
 or replacing the fixed-frame feasibility proof with an assumed benefit.
@@ -316,7 +311,6 @@ emuflow multi-fpga compile design.v \
   --cut-mode static-exact-combinational \
   --static-exact-candidate-policy assignment-derived-acyclic-v2 \
   --max-cross-fpga-dependency-depth 8 \
-  --comb-segment-budget-slots 1 \
   --frame-slots 32 --physical --out build/exact-flow
 
 emuflow multi-fpga validate \
@@ -339,17 +333,15 @@ Experiment v2 compiler by adding these fields to the case config:
   "cut_mode": "static-exact-combinational",
   "static_exact_candidate_policy": "assignment-derived-acyclic-v2",
   "max_cross_fpga_dependency_depth": 8,
-  "comb_segment_budget_slots": 1,
   "minimum_combinational_cut_nets": 1
 }
 ```
 
-Those values are part of the Phase 3 producer and validator identities.  The
-compiler fixes Phase 4 to the native route tree with post-route timing
-annotation, Phase 5 to the exact dependency scheduler, omits ratio optimizers,
-and makes the ordinary CLI slot-refinement default zero for this mode. An
-explicit nonzero request is still rejected until that optimizer is dependency-
-qualified. The compiler produces one independently sealed physical Phase 7
+Those values are part of the Phase 3 producer and validator identities. The
+compiler uses the same timing-aware Phase 4 and timing-DAG ratio/lane/slot
+providers as the register-only flow. Sampled-wire readiness is part of the
+Phase 5 model, so ratio and slot refinement remain enabled and independently
+checked. The compiler produces one independently sealed physical Phase 7
 terminal per provider at seed 1 by default. Seeds 2 and 3 remain an explicit
 statistical-robustness opt-in rather than a routine completion gate. Canonical
 static-exact runs default

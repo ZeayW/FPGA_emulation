@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/cross-layer-timing-v1.schema.json",
+  "title": "EmuFlow Provider-Neutral Cross-Layer Timing Contract v1",
+  "type": "object",
+  "required": [
+    "schema", "provider", "design", "platform", "transport_semantics",
+    "route_binding", "path_bindings", "logic_segment_bindings",
+    "hop_bindings", "metrics",
+    "schedule_binding"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.cross-layer-timing/v1"},
+    "provider": {"const": "provider-neutral-route-schedule-binding-v1"},
+    "design": {"type": "string", "minLength": 1},
+    "platform": {"type": "string", "minLength": 1},
+    "transport_semantics": {
+      "enum": ["registered-boundary", "sampled-virtual-wire"]
+    },
+    "semantic_binding": {
+      "type": "object",
+      "required": ["schema", "sha256"],
+      "properties": {
+        "schema": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "route_binding": {"$ref": "#/$defs/artifactBinding"},
+    "schedule_binding": {"$ref": "#/$defs/artifactBinding"},
+    "path_bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path", "members", "clock_domain", "required_time_ns",
+          "estimated_logic_delay_ns", "cuts"
+        ],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "members": {
+            "type": "array", "minItems": 1, "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1}
+          },
+          "clock_domain": {"type": "string", "minLength": 1},
+          "required_time_ns": {"type": "number", "exclusiveMinimum": 0},
+          "estimated_logic_delay_ns": {"type": "number", "minimum": 0},
+          "cuts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "cut", "index", "logical_net", "demand", "from", "to"
+              ],
+              "properties": {
+                "cut": {"type": "string", "minLength": 1},
+                "index": {"type": "integer", "minimum": 0},
+                "logical_net": {"type": "string", "minLength": 1},
+                "demand": {"type": "string", "minLength": 1},
+                "from": {"type": "string", "minLength": 1},
+                "to": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "logic_segment_bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["segment", "kind", "fpga"],
+        "properties": {
+          "segment": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["launch_to_tx", "rx_to_tx", "rx_to_capture"]},
+          "fpga": {"type": "string", "minLength": 1},
+          "source_semantics": {
+            "const": "configuration-stable-constant"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "hop_bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["demand", "link", "from", "to", "entry"],
+        "properties": {
+          "demand": {"type": "string", "minLength": 1},
+          "link": {"type": "string", "minLength": 1},
+          "from": {"type": "string", "minLength": 1},
+          "to": {"type": "string", "minLength": 1},
+          "entry": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "paths", "path_cut_bindings", "logic_segments", "scheduled_hops"
+      ],
+      "properties": {
+        "paths": {"type": "integer", "minimum": 0},
+        "path_cut_bindings": {"type": "integer", "minimum": 0},
+        "logic_segments": {"type": "integer", "minimum": 0},
+        "scheduled_hops": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "artifactBinding": {
+      "type": "object",
+      "required": ["provider", "sha256"],
+      "properties": {
+        "provider": {"type": ["string", "null"]},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

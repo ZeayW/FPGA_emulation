@@ -3,6 +3,11 @@ import json
 import unittest
 from pathlib import Path
 
+from emuflow.board_link_timing import build_board_link_timing_model
+from emuflow.cross_layer_timing import (
+    build_cross_layer_physical_binding,
+    build_cross_layer_timing_contract,
+)
 from emuflow.errors import ValidationError
 from emuflow.combinational_cut import semantic_contract_sha256
 from emuflow.static_exact_timing import (
@@ -10,7 +15,10 @@ from emuflow.static_exact_timing import (
     validate_static_exact_segment_deadlines,
 )
 from emuflow.runtime import build_virtual_runtime
-from emuflow.system_timing import build_system_timing
+from emuflow.system_timing import (
+    _sampled_virtual_wire_path_delay,
+    build_system_timing,
+)
 from emuflow.tdm import (
     build_tdm_schedule,
     reconstruct_tdm_schedule_timing,
@@ -202,6 +210,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
                     "path": "path0",
                     "clock_domain": "clk",
                     "clock_period_ns": 20.0,
+                    "required_time_ns": 18.0,
                     "fixed_delay_ns": 2.0,
                     "cut_nets": ["n0", "d"],
                 }
@@ -218,7 +227,10 @@ class StaticExactSystemTimingTest(unittest.TestCase):
 
     def test_routed_segment_deadlines_pass_with_exact_coverage(self):
         result = build_static_exact_segment_deadlines(
-            self.schedule, self.physical, self.platform
+            self.schedule,
+            self.assignment["semantic_contract"],
+            self.physical,
+            self.platform,
         )
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["coverage"]["contract_segments"], 3)
@@ -226,17 +238,70 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         self.assertAlmostEqual(result["worst_source_ready_slack_ns"], 1.0)
         self.assertGreater(result["worst_final_capture_slack_ns"], 0.0)
         validation = validate_static_exact_segment_deadlines(
-            result, self.schedule, self.physical, self.platform
+            result,
+            self.schedule,
+            self.assignment["semantic_contract"],
+            self.physical,
+            self.platform,
         )
         self.assertEqual(validation["status"], "pass")
 
+    def test_schedule_references_semantics_without_duplicating_contract(self):
+        self.assertNotIn("semantic_contract", self.schedule)
+        self.assertEqual(
+            self.schedule["semantic_contract_schema"],
+            self.assignment["semantic_contract"]["schema"],
+        )
+        self.assertEqual(
+            self.schedule["semantic_contract_sha256"],
+            semantic_contract_sha256(self.assignment["semantic_contract"]),
+        )
+        contract = build_cross_layer_timing_contract(
+            self.routes, self.schedule
+        )
+        self.assertEqual(
+            contract["metrics"]["logic_segments"],
+            len(self.assignment["semantic_contract"]["logic_segments"]),
+        )
+
+    def test_physical_binding_aggregates_original_members_by_semantic_segment(self):
+        physical = self._system_physical()
+        launch = copy.deepcopy(
+            physical["logic_segment_timing"]["fpga0"]["segments"][0]
+        )
+        launch.update(
+            {
+                "id": "physical-launch-second-member",
+                "member_path": "path1",
+                "delay_ns": 3.5,
+            }
+        )
+        physical["logic_segment_timing"]["fpga0"]["segments"].append(launch)
+        contract = build_cross_layer_timing_contract(
+            self.routes, self.schedule
+        )
+        binding = build_cross_layer_physical_binding(
+            contract, self.schedule, physical, self.platform
+        )
+        bound = next(
+            item
+            for item in binding["logic_segment_bindings"]
+            if item["segment"] == "segment000000"
+        )
+        self.assertEqual(bound["measured_min_delay_ns"], 3.0)
+        self.assertEqual(bound["measured_max_delay_ns"], 3.5)
+        self.assertEqual(bound["measurement"], "routed-endpoint-exact")
+
     def test_deadline_schema_tracks_the_complete_producer_contract(self):
         result = build_static_exact_segment_deadlines(
-            self.schedule, self.physical, self.platform
+            self.schedule,
+            self.assignment["semantic_contract"],
+            self.physical,
+            self.platform,
         )
         schema_path = (
             Path(__file__).resolve().parents[1]
-            / "schemas/static-exact-segment-deadlines-v1.schema.json"
+            / "schemas/static-exact-segment-deadlines-v2.schema.json"
         )
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         self.assertEqual(schema["properties"]["schema"]["const"], result["schema"])
@@ -252,7 +317,10 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             "delay_ns"
         ] = 4.5
         result = build_static_exact_segment_deadlines(
-            self.schedule, physical, self.platform
+            self.schedule,
+            self.assignment["semantic_contract"],
+            physical,
+            self.platform,
         )
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["failed_segments"], ["segment000000"])
@@ -265,20 +333,30 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             {"segments": 0, "system_paths": 0, "member_paths": 0}
         )
         result = build_static_exact_segment_deadlines(
-            self.schedule, physical, self.platform
+            self.schedule,
+            self.assignment["semantic_contract"],
+            physical,
+            self.platform,
         )
         self.assertEqual(result["status"], "incomplete")
         self.assertEqual(result["missing_segments"], ["segment000001"])
 
     def test_tampered_deadline_report_and_contract_binding_are_rejected(self):
         result = build_static_exact_segment_deadlines(
-            self.schedule, self.physical, self.platform
+            self.schedule,
+            self.assignment["semantic_contract"],
+            self.physical,
+            self.platform,
         )
         tampered = copy.deepcopy(result)
         tampered["segments"][0]["deadline_slot"] += 1
         with self.assertRaisesRegex(ValidationError, "disagrees"):
             validate_static_exact_segment_deadlines(
-                tampered, self.schedule, self.physical, self.platform
+                tampered,
+                self.schedule,
+                self.assignment["semantic_contract"],
+                self.physical,
+                self.platform,
             )
         physical = copy.deepcopy(self.physical)
         physical["logic_segment_timing"]["fpga0"][
@@ -286,7 +364,10 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         ] = "0" * 64
         with self.assertRaisesRegex(ValidationError, "another contract"):
             build_static_exact_segment_deadlines(
-                self.schedule, physical, self.platform
+                self.schedule,
+                self.assignment["semantic_contract"],
+                physical,
+                self.platform,
             )
 
     def test_system_timing_cannot_hide_missing_or_late_exact_segment(self):
@@ -304,6 +385,20 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         self.assertEqual(
             passing["static_exact_segment_deadlines"]["status"], "pass"
         )
+        path = passing["paths"][0]
+        self.assertEqual(
+            path["scheduled_link_tdm_model"],
+            "sampled-virtual-wire-event-propagation",
+        )
+        # launch(3 ns) is ready for slot 1 at 4 ns; the two physical links
+        # arrive at 12.5 ns and 24.5 ns, then the 7 ns capture segment ends at
+        # 31.5 ns. The old separable sum produced 29.5 ns and was incorrect.
+        self.assertAlmostEqual(path["system_delay_bound_ns"], 31.5)
+        self.assertAlmostEqual(path["target_required_time_ns"], 18.0)
+        self.assertAlmostEqual(path["source_required_time_adjustment_ns"], 2.0)
+        self.assertAlmostEqual(path["target_clock_slack_bound_ns"], -13.5)
+        self.assertAlmostEqual(path["minimum_tx_readiness_slack_ns"], 1.0)
+        self.assertEqual(path["sampled_event_timing_status"], "pass")
 
         missing = copy.deepcopy(physical)
         missing["logic_segment_timing"]["fpga1"]["segments"] = []
@@ -336,6 +431,118 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         self.assertGreater(
             failed["runtime_clock"]["worst_slack_bound_ns"], 0.0
         )
+
+    def test_physical_link_delay_can_invalidate_a_logically_legal_schedule(self):
+        runtime, routes, phase5 = self._system_inputs()
+        physical = self._system_physical()
+        physical["board_link_timing"] = build_board_link_timing_model(
+            self.platform
+        )
+        for link in physical["board_link_timing"]["links"]:
+            if link["from"] == "fpga0" and link["to"] == "fpga1":
+                link["delay_bound_ns"] = 10.0
+                link["qualification"] = "characterized-upper-bound"
+                link["source"] = {
+                    "kind": "vendor-characterization",
+                    "reference": "fixture",
+                }
+
+        result = build_system_timing(
+            runtime,
+            routes,
+            self.schedule,
+            phase5,
+            physical,
+            self.platform,
+        )
+        self.assertEqual(
+            result["static_exact_segment_deadlines"]["status"], "pass"
+        )
+        self.assertEqual(result["status"], "fail")
+        path = result["paths"][0]
+        self.assertEqual(path["sampled_event_timing_status"], "fail")
+        self.assertAlmostEqual(path["minimum_tx_readiness_slack_ns"], -1.0)
+        self.assertEqual(result["path_exactness"]["sampled_event_failures"], 1)
+
+    def test_depth_three_event_chain_uses_each_fixed_tx_slot(self):
+        entries = {
+            f"e{index}": {"id": f"e{index}", "slot": slot}
+            for index, slot in enumerate((1, 4, 7))
+        }
+        hops = [
+            {
+                "schedule_entry": f"e{index}",
+                "demand": f"d{index}",
+                "link": "link_0_1",
+                "from": "fpga0" if index % 2 == 0 else "fpga1",
+                "to": "fpga1" if index % 2 == 0 else "fpga0",
+                "tx_endpoint": f"tx{index}",
+                "rx_endpoint": f"rx{index}",
+                "base_link_delay_ns": 8.0,
+                "tdm_wait_slots": 0,
+                "tdm_slot_ns": 4.0,
+                "link_tdm_delay_ns": 8.0,
+            }
+            for index in range(3)
+        ]
+        record = {
+            "path": "depth3",
+            "cut_nets": ["n0", "n1", "n2"],
+            "scheduled_hops": hops,
+        }
+        segments = [
+            {
+                "kind": kind,
+                "cut_index": index,
+                "delay_ns": delay,
+                "replace_tx_endpoint": (
+                    f"tx{index}" if index < 3 else None
+                ),
+            }
+            for index, (kind, delay) in enumerate(
+                (("launch", 3.0), ("transition", 2.0),
+                 ("transition", 2.0), ("capture", 2.0))
+            )
+        ]
+        routes = {
+            f"n{index}": {"id": f"d{index}"} for index in range(3)
+        }
+        endpoint_delays = {
+            endpoint: 0.5
+            for index in range(3)
+            for endpoint in (f"tx{index}", f"rx{index}")
+        }
+        result = _sampled_virtual_wire_path_delay(
+            record,
+            "member0",
+            segments,
+            endpoint_delays,
+            None,
+            entries,
+            routes,
+            commit_slot=10,
+            uncertainty_ns=0.5,
+        )
+        self.assertEqual(result["sampled_event_timing_status"], "pass")
+        self.assertAlmostEqual(result["system_delay_bound_ns"], 39.0)
+        self.assertAlmostEqual(result["minimum_tx_readiness_slack_ns"], 0.5)
+        self.assertAlmostEqual(result["capture_commit_slack_ns"], 1.0)
+
+        late = copy.deepcopy(segments)
+        late[1]["delay_ns"] = 4.0
+        failed = _sampled_virtual_wire_path_delay(
+            record,
+            "member0",
+            late,
+            endpoint_delays,
+            None,
+            entries,
+            routes,
+            commit_slot=10,
+            uncertainty_ns=0.5,
+        )
+        self.assertEqual(failed["sampled_event_timing_status"], "fail")
+        self.assertAlmostEqual(failed["minimum_tx_readiness_slack_ns"], -1.0)
 
     def test_clockless_partition_requires_complete_routed_logic_segments(self):
         runtime, routes, phase5 = self._system_inputs()
@@ -376,9 +583,12 @@ class StaticExactSystemTimingTest(unittest.TestCase):
 
     def test_configuration_stable_constant_needs_no_physical_launch(self):
         schedule = copy.deepcopy(self.schedule)
+        semantic_contract = copy.deepcopy(
+            self.assignment["semantic_contract"]
+        )
         launch = next(
             item
-            for item in schedule["semantic_contract"]["logic_segments"]
+            for item in semantic_contract["logic_segments"]
             if item["id"] == "segment000000"
         )
         launch.update(
@@ -390,7 +600,8 @@ class StaticExactSystemTimingTest(unittest.TestCase):
                 "source_semantics": "configuration-stable-constant",
             }
         )
-        digest = semantic_contract_sha256(schedule["semantic_contract"])
+        digest = semantic_contract_sha256(semantic_contract)
+        schedule["semantic_contract_schema"] = semantic_contract["schema"]
         schedule["semantic_contract_sha256"] = digest
         physical = copy.deepcopy(self.physical)
         for database in physical["logic_segment_timing"].values():
@@ -406,7 +617,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         )
 
         deadlines = build_static_exact_segment_deadlines(
-            schedule, physical, self.platform
+            schedule, semantic_contract, physical, self.platform
         )
         self.assertEqual(deadlines["status"], "pass")
         self.assertEqual(deadlines["coverage"]["missing_segments"], 0)
@@ -426,7 +637,11 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         self.assertEqual(constant["physical_delay_bound_ns"], 0.0)
         self.assertEqual(
             validate_static_exact_segment_deadlines(
-                deadlines, schedule, physical, self.platform
+                deadlines,
+                schedule,
+                semantic_contract,
+                physical,
+                self.platform,
             )["status"],
             "pass",
         )
@@ -442,7 +657,11 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             ValidationError, "constant deadline"
         ):
             validate_static_exact_segment_deadlines(
-                tampered, schedule, physical, self.platform
+                tampered,
+                schedule,
+                semantic_contract,
+                physical,
+                self.platform,
             )
 
 

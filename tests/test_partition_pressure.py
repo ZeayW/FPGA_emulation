@@ -368,7 +368,7 @@ class PartitionPressureTest(unittest.TestCase):
             report["provider"], PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER
         )
 
-    def test_v14_trust_region_rejects_any_semantic_regression(self) -> None:
+    def test_v14_accepts_timing_gain_despite_diagnostic_count_regression(self) -> None:
         initial = {
             "provider": "strong-tritonpart",
             "cluster_assignment": {"c0": "a", "c1": "b"},
@@ -396,8 +396,10 @@ class PartitionPressureTest(unittest.TestCase):
         selected, report = _select_patron_static_exact_assignment_v14(
             initial, candidate, trace
         )
-        self.assertIs(selected, initial)
+        self.assertIs(selected, candidate)
+        self.assertEqual(report["selected"], "candidate")
         self.assertFalse(report["semantic_non_regression"])
+        self.assertTrue(report["semantic_counts_are_diagnostics"])
 
     def test_model_is_source_bound_and_tamper_evident(self) -> None:
         checked = validate_partition_pressure_model(
@@ -1538,8 +1540,6 @@ class PartitionPressureTest(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=8,
-            comb_segment_budget_slots=1,
-            frame_slots=8,
             static_exact_candidate_policy=(
                 STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
             ),
@@ -1606,7 +1606,6 @@ class PartitionPressureTest(unittest.TestCase):
                     patron_initial_clusters_path=initial_clusters_path,
                     cut_mode=CUT_MODE_STATIC_EXACT,
                     max_cross_fpga_dependency_depth=8,
-                    comb_segment_budget_slots=1,
                     static_exact_candidate_policy=(
                         STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
                     ),
@@ -2425,7 +2424,6 @@ class PartitionPressureTest(unittest.TestCase):
             static_exact_candidate_policy=(
                 STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
             ),
-            frame_slots=64,
         )
         by_instance = {
             cluster["instances"][0]: cluster["id"]

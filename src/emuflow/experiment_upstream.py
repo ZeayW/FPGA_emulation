@@ -24,6 +24,7 @@ from .errors import EmuFlowError, ValidationError
 from .cut_segment_qualification import (
     build_cut_segment_qualification_value,
 )
+from .cross_layer_timing import validate_cross_layer_timing_contract
 from .experiment_stages import (
     _managed_checkpoint,
     _prepare_empty_output,
@@ -47,7 +48,7 @@ from .sta import (
     validate_sta_path_database_value,
 )
 from .synthesis import run_generic_yosys
-from .tdm import TDM_STATIC_EXACT_PROVIDER
+from .tdm import TDM_BASELINE_PROVIDER, is_sampled_virtual_wire_schedule
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_netlist import normalize_vtr_hard_block_json
 
@@ -68,6 +69,7 @@ _SHARED_REQUIRED_ARTIFACTS = {
     "system-route/routes.json",
     "system-route/phase4_report.json",
     "tdm/schedule.json",
+    "tdm/cross_layer_timing.json",
     "tdm/phase5_report.json",
     "timing/path-database.json",
     "timing/partition-net-weights.json",
@@ -962,6 +964,7 @@ def validate_tdm_checkpoint(
 ) -> Dict[str, Any]:
     routes = _require(route_root, "routes.json")
     schedule = _require(root, "schedule.json")
+    cross_layer_timing = _require(root, "cross_layer_timing.json")
     ratio_plan = root / "ratio_plan.json"
     report = read_json(_require(root, "experiment-tdm-report.json"))
     if report.get("schema") != EXPERIMENT_TDM_SCHEMA or report.get("status") != "pass":
@@ -977,7 +980,7 @@ def validate_tdm_checkpoint(
     schedule_document = read_json(schedule)
     actual_provider = schedule_document.get("provider")
     exact_mode = route_document.get("semantic_contract") is not None
-    if exact_mode != (actual_provider == TDM_STATIC_EXACT_PROVIDER):
+    if exact_mode != is_sampled_virtual_wire_schedule(schedule_document):
         raise ValidationError(
             "TDM checkpoint exact-cut route/schedule contract disagrees"
         )
@@ -985,17 +988,18 @@ def validate_tdm_checkpoint(
         raise ValidationError(
             "TDM checkpoint Phase 5 provider disagrees with schedule"
         )
-    if exact_mode and ratio_plan.exists():
-        raise ValidationError(
-            "static exact TDM checkpoint may not contain a ratio plan"
-        )
+    cross_layer_validation = validate_cross_layer_timing_contract(
+        route_document,
+        read_json(cross_layer_timing),
+        schedule_document,
+    )
     if constraints_path is not None:
         constraints = load_route_constraints(
             constraints_path, Platform.load(platform_path)
         )
         if route_document.get("constraints") != constraints:
             raise ValidationError("TDM route-constraints contract disagrees")
-        if not exact_mode:
+        if actual_provider != TDM_BASELINE_PROVIDER:
             if not ratio_plan.is_file():
                 raise ValidationError(
                     "TDM contest constraints require a ratio plan"
@@ -1014,6 +1018,7 @@ def validate_tdm_checkpoint(
             "routes_sha256": routes,
             "platform_sha256": platform_path.resolve(),
             "schedule_sha256": schedule,
+            "cross_layer_timing_sha256": cross_layer_timing,
             "phase5_report_sha256": phase5_report,
         }.items():
             if report.get(label) != _sha256(path):
@@ -1039,7 +1044,11 @@ def validate_tdm_checkpoint(
     checked = validate_phase5(
         routes, platform_path, schedule, ratio_plan_path=ratio_plan if ratio_plan.is_file() else None
     )
-    return {"status": "pass", **checked}
+    return {
+        "status": "pass",
+        **checked,
+        "cross_layer_timing": cross_layer_validation,
+    }
 
 
 def _link_or_copy(source: Path, destination: Path) -> None:
@@ -1126,6 +1135,10 @@ def materialize_shared_phase1_5(
             "route",
         ),
         "tdm/schedule.json": (tdm_root / "schedule.json", "tdm"),
+        "tdm/cross_layer_timing.json": (
+            tdm_root / "cross_layer_timing.json",
+            "tdm",
+        ),
         "tdm/phase5_report.json": (tdm_root / "phase5_report.json", "tdm"),
         "timing/path-database.json": (
             timing_root / "path-database.json",

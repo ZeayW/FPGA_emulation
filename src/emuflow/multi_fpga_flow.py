@@ -48,7 +48,8 @@ from .mfspart_refine import DEFAULT_TIMING_PATH_BETA
 from .platform import Platform
 from .runtime import validate_virtual_runtime
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
-from .tdm import TDM_BASELINE_PROVIDER, TDM_STATIC_EXACT_PROVIDER
+from .tdm import TDM_BASELINE_PROVIDER
+from .tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     NATIVE_ROUTER_PROVIDER,
     NATIVE_TIMING_EVALUATED_PROVIDER,
@@ -489,12 +490,7 @@ def validate_multi_fpga_flow_report(
                 "timing-driven report is missing partition weights"
             )
         if not timing_optimization:
-            expected_tdm_provider = (
-                TDM_STATIC_EXACT_PROVIDER
-                if partition_validation.get("cut_mode")
-                == CUT_MODE_STATIC_EXACT
-                else TDM_BASELINE_PROVIDER
-            )
+            expected_tdm_provider = TDM_BASELINE_PROVIDER
             if (
                 stages["system_route"].get("provider")
                 != NATIVE_TIMING_EVALUATED_PROVIDER
@@ -863,12 +859,21 @@ def validate_multi_fpga_flow_bundle(
         ratio_plan_path=ratio_plan_path if ratio_plan_path.is_file() else None,
     )
     timing_validation = phase5_validation.pop("timing", None)
+    cross_layer_validation = phase5_validation.pop(
+        "cross_layer_timing", None
+    )
     if phase5_validation != report["stages"]["tdm"]["validation"]:
         raise ValidationError("independent Phase 5 replay disagrees")
     if timing_validation is not None and timing_validation != report["stages"][
         "tdm"
     ].get("timing_validation"):
         raise ValidationError("independent Phase 5 timing replay disagrees")
+    if cross_layer_validation != report["stages"]["tdm"].get(
+        "cross_layer_timing_validation"
+    ):
+        raise ValidationError(
+            "independent cross-layer timing replay disagrees"
+        )
 
     phase6_validation = validate_phase6(
         ir_path,
@@ -994,7 +999,6 @@ def run_multi_fpga_flow(
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
-    comb_segment_budget_slots: int = 1,
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     timing_driven: bool = True,
@@ -1081,39 +1085,6 @@ def run_multi_fpga_flow(
     if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
         raise EmuFlowError("unsupported combinational cut mode")
     exact_cut_mode = cut_mode == CUT_MODE_STATIC_EXACT
-    if exact_cut_mode:
-        if optimize_frame_slots or cross_stage_iterations:
-            raise EmuFlowError(
-                "static exact combinational cuts require one fixed Phase 3--5 "
-                "frame; frame search/cross-stage optimization is not yet "
-                "dependency-qualified"
-            )
-        if route_provider not in {
-            None,
-            NATIVE_ROUTER_PROVIDER,
-            NATIVE_TIMING_EVALUATED_PROVIDER,
-        }:
-            raise EmuFlowError(
-                "static exact combinational cuts require native routing with "
-                "optional post-route timing annotation"
-            )
-        if tdm_provider not in {None, TDM_STATIC_EXACT_PROVIDER}:
-            raise EmuFlowError(
-                "static exact combinational cuts require the dependency-aware "
-                "TDM provider"
-            )
-        if route_candidate_workers != 1:
-            raise EmuFlowError(
-                "static exact native routing requires one route candidate worker"
-            )
-        if any(
-            value is not None
-            for value in (ratio_optimizer, timing_dag_optimizer, slot_optimizer)
-        ) or slot_refinement_iterations != 0:
-            raise EmuFlowError(
-                "static exact scheduling does not accept unqualified ratio/slot "
-                "optimizers"
-            )
     if not 2 <= phase6_chimew_region_count <= 31:
         raise EmuFlowError("--phase6-chimew-region-count must be in [2, 31]")
     if phase6_provider == "chimew" and (
@@ -1485,7 +1456,6 @@ def run_multi_fpga_flow(
         route_constraints_path=effective_route_constraints,
         cut_mode=cut_mode,
         max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
-        comb_segment_budget_slots=comb_segment_budget_slots,
         timing_database_path=(
             path_database_path if partition_provider == "patron" else None
         ),
@@ -1534,14 +1504,13 @@ def run_multi_fpga_flow(
 
     effective_route_provider = route_provider
     effective_tdm_provider = tdm_provider
-    if exact_cut_mode:
-        effective_route_provider = (
-            NATIVE_TIMING_EVALUATED_PROVIDER
-            if projected_timing_paths is not None
-            else NATIVE_ROUTER_PROVIDER
+    if exact_cut_mode and effective_tdm_provider is None:
+        effective_tdm_provider = (
+            TDM_TIMING_DAG_RATIO_PROVIDER
+            if timing_driven and projected_timing_paths is not None
+            else TDM_BASELINE_PROVIDER
         )
-        effective_tdm_provider = TDM_STATIC_EXACT_PROVIDER
-    if internal_timing_database and not timing_driven and not exact_cut_mode:
+    if internal_timing_database and not timing_driven:
         if route_provider not in {
             None,
             NATIVE_ROUTER_PROVIDER,

@@ -15,7 +15,6 @@ from .local_path_timing import (
 )
 from .platform import Platform
 from .static_exact_timing import (
-    STATIC_EXACT_SCHEDULE_PROVIDER,
     build_static_exact_segment_deadlines,
     validate_static_exact_segment_deadlines,
 )
@@ -198,6 +197,150 @@ def _board_link_delay_database(
     }
 
 
+def _sampled_virtual_wire_path_delay(
+    record: Mapping[str, Any],
+    member: str,
+    segments: List[Mapping[str, Any]],
+    endpoint_delays: Mapping[str, float],
+    board_link_delays: Optional[Mapping[tuple[str, str, str], float]],
+    schedule_entries: Mapping[str, Mapping[str, Any]],
+    routes_by_net: Mapping[str, Mapping[str, Any]],
+    *,
+    commit_slot: int,
+    uncertainty_ns: float,
+) -> Dict[str, Any]:
+    """Propagate one sampled path through its fixed physical schedule.
+
+    A sampled virtual wire is not an additive ``logic + TDM`` path.  Each
+    first-hop TX samples at the concrete Phase-5 slot, so logic that becomes
+    ready earlier waits until that slot and logic that becomes ready later is
+    a physical timing failure.  Relay TX endpoints obey the same rule.  This
+    evaluator deliberately consumes the fixed schedule; it never reschedules
+    a path during Phase 7C.
+    """
+
+    ordered_segments = sorted(segments, key=lambda item: item["cut_index"])
+    cut_nets = list(record["cut_nets"])
+    if len(ordered_segments) != len(cut_nets) + 1:
+        raise ValidationError(
+            f"sampled path {record['path']!r}/{member!r} has incomplete "
+            "physical logic-segment coverage"
+        )
+    scheduled_hops = list(record["scheduled_hops"])
+    hops_by_cut: List[List[Mapping[str, Any]]] = []
+    used_entries = set()
+    for net in cut_nets:
+        route = routes_by_net.get(net)
+        if route is None:
+            raise ValidationError(
+                f"sampled path {record['path']!r} has no route for cut {net!r}"
+            )
+        demand = route.get("id")
+        hops = [hop for hop in scheduled_hops if hop["demand"] == demand]
+        if not hops:
+            raise ValidationError(
+                f"sampled path {record['path']!r} has no scheduled hops for "
+                f"cut {net!r}"
+            )
+        for hop in hops:
+            entry_id = hop["schedule_entry"]
+            if entry_id in used_entries:
+                raise ValidationError(
+                    f"sampled path {record['path']!r} reuses schedule entry "
+                    f"{entry_id!r}"
+                )
+            used_entries.add(entry_id)
+        hops_by_cut.append(hops)
+    if len(used_entries) != len(scheduled_hops):
+        raise ValidationError(
+            f"sampled path {record['path']!r} scheduled-hop binding is not exact"
+        )
+
+    arrival_ns = 0.0
+    physical_logic_ns = 0.0
+    physical_interface_ns = 0.0
+    board_ns = 0.0
+    minimum_tx_slack_ns = math.inf
+    for cut_index, hops in enumerate(hops_by_cut):
+        segment = ordered_segments[cut_index]
+        segment_delay = float(segment["delay_ns"])
+        physical_logic_ns += segment_delay
+        ready_ns = arrival_ns + segment_delay
+        expected_tx = hops[0]["tx_endpoint"]
+        if segment.get("replace_tx_endpoint") != expected_tx:
+            raise ValidationError(
+                f"sampled path {record['path']!r}/{member!r} logic segment "
+                f"{cut_index} does not terminate at its first TX"
+            )
+        for hop_index, hop in enumerate(hops):
+            entry_id = hop["schedule_entry"]
+            entry = schedule_entries.get(entry_id)
+            if entry is None:
+                raise ValidationError(
+                    f"sampled path {record['path']!r} references missing "
+                    f"schedule entry {entry_id!r}"
+                )
+            slot_ns = float(hop["tdm_slot_ns"])
+            tx_time_ns = float(entry["slot"]) * slot_ns
+            if hop_index:
+                relay_tx_delay = endpoint_delays[hop["tx_endpoint"]]
+                ready_ns = arrival_ns + relay_tx_delay
+                physical_interface_ns += relay_tx_delay
+            tx_slack_ns = tx_time_ns - uncertainty_ns - ready_ns
+            minimum_tx_slack_ns = min(minimum_tx_slack_ns, tx_slack_ns)
+            key = (hop["link"], hop["from"], hop["to"])
+            link_delay_ns = (
+                float(board_link_delays[key])
+                if board_link_delays is not None
+                else float(hop["base_link_delay_ns"])
+            )
+            rx_delay_ns = endpoint_delays[hop["rx_endpoint"]]
+            board_ns += link_delay_ns
+            physical_interface_ns += rx_delay_ns
+            arrival_ns = tx_time_ns + link_delay_ns + rx_delay_ns
+            ready_ns = arrival_ns
+
+    capture = ordered_segments[-1]
+    if (
+        capture.get("kind") != "capture"
+        or capture.get("replace_tx_endpoint") is not None
+    ):
+        raise ValidationError(
+            f"sampled path {record['path']!r}/{member!r} lacks one final "
+            "physical capture segment"
+        )
+    capture_delay_ns = float(capture["delay_ns"])
+    physical_logic_ns += capture_delay_ns
+    capture_ready_ns = arrival_ns + capture_delay_ns
+    slot_periods = {float(hop["tdm_slot_ns"]) for hop in scheduled_hops}
+    if len(slot_periods) != 1:
+        raise ValidationError(
+            "sampled virtual-wire global timing requires one slot period"
+        )
+    slot_period_ns = slot_periods.pop()
+    commit_deadline_ns = float(commit_slot) * slot_period_ns
+    capture_slack_ns = commit_deadline_ns - uncertainty_ns - capture_ready_ns
+    causal_slack_ns = min(minimum_tx_slack_ns, capture_slack_ns)
+    total_delay_ns = capture_ready_ns + uncertainty_ns
+    physical_stage_ns = physical_logic_ns + physical_interface_ns
+    return {
+        "system_delay_bound_ns": total_delay_ns,
+        "physical_logic_delay_bound_ns": physical_logic_ns,
+        "physical_interface_delay_bound_ns": physical_interface_ns,
+        "physical_routed_stage_delay_bound_ns": physical_stage_ns,
+        "scheduled_link_tdm_delay_ns": max(
+            0.0, capture_ready_ns - physical_stage_ns
+        ),
+        "sampled_event_timing_status": (
+            "pass" if causal_slack_ns >= -1.0e-9 else "fail"
+        ),
+        "minimum_tx_readiness_slack_ns": minimum_tx_slack_ns,
+        "capture_commit_slack_ns": capture_slack_ns,
+        "clock_uncertainty_ns": uncertainty_ns,
+        "board_delay_bound_ns": board_ns,
+    }
+
+
 def _local_path_database(
     physical_summary: Mapping[str, Any],
     virtual_period: float,
@@ -228,6 +371,7 @@ def _local_path_database(
             ids.add(path_id)
             delay = float(item["delay_ns"])
             period = float(item["clock_period_ns"])
+            required_time = float(item.get("required_time_ns", period))
             measurement = item.get(
                 "measurement", "endpoint-longest-path-fallback"
             )
@@ -252,7 +396,14 @@ def _local_path_database(
                     "path_scope": "same-fpga-local",
                     "clock_domain": item["clock_domain"],
                     "target_period_ns": period,
+                    "target_required_time_ns": required_time,
+                    "source_required_time_adjustment_ns": (
+                        period - required_time
+                    ),
                     "virtual_period_ns": virtual_period,
+                    "runtime_required_time_ns": (
+                        virtual_period - (period - required_time)
+                    ),
                     "logical_fpga_sequence": [fpga],
                     "logical_cut_transitions": [],
                     "routed_hops": [],
@@ -267,8 +418,10 @@ def _local_path_database(
                     "scheduled_link_tdm_model_delay_ns": 0.0,
                     "scheduled_link_tdm_model": "not-applicable-local-path",
                     "system_delay_bound_ns": delay,
-                    "target_clock_slack_bound_ns": period - delay,
-                    "runtime_clock_slack_bound_ns": virtual_period - delay,
+                    "target_clock_slack_bound_ns": required_time - delay,
+                    "runtime_clock_slack_bound_ns": (
+                        virtual_period - (period - required_time) - delay
+                    ),
                     "partition_chain_exact": True,
                     "physical_logic_segments_exact": physical_logic_exact,
                     "physical_logic_segments_cone_bound": (
@@ -343,13 +496,40 @@ def build_system_timing(
         physical_summary, platform
     )
     exact_deadlines = None
-    if schedule.get("provider") == STATIC_EXACT_SCHEDULE_PROVIDER:
+    from .tdm import is_sampled_virtual_wire_schedule
+
+    if is_sampled_virtual_wire_schedule(schedule):
+        semantic_contract = routes.get("semantic_contract")
+        if not isinstance(semantic_contract, dict):
+            raise ValidationError(
+                "sampled virtual-wire timing requires the routed semantic "
+                "contract"
+            )
         exact_deadlines = build_static_exact_segment_deadlines(
-            schedule, physical_summary, platform
+            schedule, semantic_contract, physical_summary, platform
         )
         validate_static_exact_segment_deadlines(
-            exact_deadlines, schedule, physical_summary, platform
+            exact_deadlines,
+            schedule,
+            semantic_contract,
+            physical_summary,
+            platform,
         )
+    sampled_schedule = exact_deadlines is not None
+    sampled_uncertainty_ns = _finite_number(
+        physical_summary.get("static_exact_clock_uncertainty_ns", 0.0),
+        "sampled virtual-wire clock uncertainty",
+    )
+    if sampled_uncertainty_ns < 0.0:
+        raise ValidationError(
+            "sampled virtual-wire clock uncertainty must be non-negative"
+        )
+    schedule_entries = {
+        item["id"]: item for item in schedule.get("entries", [])
+    }
+    routes_by_net = {
+        item["net"]: item for item in routes.get("routes", [])
+    }
     expected_fpgas = {fpga.id for fpga in platform.fpgas}
     if set(delays) != expected_fpgas:
         raise ValidationError(
@@ -364,6 +544,8 @@ def build_system_timing(
     exact_logic_paths = 0
     cone_bound_logic_paths = 0
     measured_logic_paths = 0
+    sampled_event_paths = 0
+    sampled_event_failures = 0
     for record in records:
         transitions = record["cut_transitions"]
         partitions, discontinuities = _logic_partition_sequence(transitions)
@@ -473,6 +655,10 @@ def build_system_timing(
                         "local_delay": segment_delay,
                         "interface_delay": unreplaced_interface,
                         "cone_bound_segments": cone_bound_segments,
+                        "segments": sorted(
+                            member_segments[member],
+                            key=lambda item: item["cut_index"],
+                        ),
                     }
                     for (
                         composite,
@@ -503,6 +689,9 @@ def build_system_timing(
                 )
             transport_model = "board-link-timing-db"
         target_period = record["clock_period_ns"]
+        target_required_time = record.get("required_time_ns", target_period)
+        required_time_adjustment = target_period - target_required_time
+        runtime_required_time = virtual_period - required_time_adjustment
         for member in member_ids:
             member_local_delay = local_delay
             member_interface_delay = interface_delay
@@ -530,14 +719,50 @@ def build_system_timing(
                     member_logic_model = "routed-staging-chain-exact"
                     logic_exact = True
                     exact_logic_paths += 1
-            total_delay = member_physical_delay + transport_delay
-            cross_paths.append({
+            sampled_event = None
+            if sampled_schedule and member_physical is not None:
+                assert endpoint_delays is not None
+                sampled_event = _sampled_virtual_wire_path_delay(
+                    record,
+                    member,
+                    measurement["segments"],
+                    endpoint_delays,
+                    board_link_delays,
+                    schedule_entries,
+                    routes_by_net,
+                    commit_slot=exact_deadlines["commit_slot"],
+                    uncertainty_ns=sampled_uncertainty_ns,
+                )
+                member_local_delay = sampled_event[
+                    "physical_logic_delay_bound_ns"
+                ]
+                member_interface_delay = sampled_event[
+                    "physical_interface_delay_bound_ns"
+                ]
+                member_physical_delay = sampled_event[
+                    "physical_routed_stage_delay_bound_ns"
+                ]
+                transport_delay = sampled_event[
+                    "scheduled_link_tdm_delay_ns"
+                ]
+                transport_model = "sampled-virtual-wire-event-propagation"
+                total_delay = sampled_event["system_delay_bound_ns"]
+                sampled_event_paths += 1
+                sampled_event_failures += int(
+                    sampled_event["sampled_event_timing_status"] == "fail"
+                )
+            else:
+                total_delay = member_physical_delay + transport_delay
+            path_record = {
                 "path": member,
                 "representative_path": record["path"],
                 "path_scope": "cross-fpga",
                 "clock_domain": record["clock_domain"],
                 "target_period_ns": target_period,
+                "target_required_time_ns": target_required_time,
+                "source_required_time_adjustment_ns": required_time_adjustment,
                 "virtual_period_ns": virtual_period,
+                "runtime_required_time_ns": runtime_required_time,
                 "logical_fpga_sequence": partitions,
                 "logical_cut_transitions": transitions,
                 "routed_hops": record["routed_hops"],
@@ -558,12 +783,37 @@ def build_system_timing(
                 ],
                 "scheduled_link_tdm_model": transport_model,
                 "system_delay_bound_ns": total_delay,
-                "target_clock_slack_bound_ns": target_period - total_delay,
-                "runtime_clock_slack_bound_ns": virtual_period - total_delay,
+                "target_clock_slack_bound_ns": (
+                    target_required_time - total_delay
+                ),
+                "runtime_clock_slack_bound_ns": (
+                    runtime_required_time - total_delay
+                ),
                 "partition_chain_exact": discontinuities == 0,
                 "physical_logic_segments_exact": logic_exact,
                 "physical_logic_segments_cone_bound": cone_bound,
-            })
+            }
+            if sampled_event is not None:
+                path_record.update(
+                    {
+                        "sampled_event_timing_status": sampled_event[
+                            "sampled_event_timing_status"
+                        ],
+                        "minimum_tx_readiness_slack_ns": sampled_event[
+                            "minimum_tx_readiness_slack_ns"
+                        ],
+                        "capture_commit_slack_ns": sampled_event[
+                            "capture_commit_slack_ns"
+                        ],
+                        "clock_uncertainty_ns": sampled_event[
+                            "clock_uncertainty_ns"
+                        ],
+                        "board_delay_bound_ns": sampled_event[
+                            "board_delay_bound_ns"
+                        ],
+                    }
+                )
+            cross_paths.append(path_record)
         discontinuous_paths += (discontinuities > 0) * len(member_ids)
 
     local_paths, original_source = _local_path_database(
@@ -632,36 +882,57 @@ def build_system_timing(
             status = "incomplete"
         elif exact_deadlines["status"] == "fail":
             status = "fail"
+        elif sampled_event_paths != len(cross_paths):
+            status = "incomplete"
+        elif sampled_event_failures:
+            status = "fail"
+    if (
+        sampled_schedule
+        and sampled_event_paths == len(cross_paths)
+        and whole_exact_logic_paths == whole_logic_paths
+    ):
+        qualification = "sampled-virtual-wire-event-propagated-physical"
+    elif (
+        sampled_schedule
+        and sampled_event_paths == len(cross_paths)
+        and whole_measured_logic_paths == whole_logic_paths
+    ):
+        qualification = (
+            "sampled-virtual-wire-event-propagated-physical-bounds"
+        )
+    elif whole_exact_logic_paths == whole_logic_paths:
+        qualification = "staging-aware-physical-plus-concrete-link-tdm"
+    elif whole_measured_logic_paths == whole_logic_paths:
+        qualification = (
+            "staging-aware-routed-physical-bounds-plus-concrete-link-tdm"
+        )
+    elif whole_measured_logic_paths > 0:
+        qualification = (
+            "hybrid-staging-aware-and-partition-maxima-plus-concrete-link-tdm"
+        )
+    elif endpoint_delays is not None:
+        qualification = (
+            "partition-logic-maxima-plus-endpoint-exact-interface-plus-"
+            "concrete-link-tdm"
+        )
+    else:
+        qualification = (
+            "conservative-partition-physical-maxima-plus-concrete-link-tdm"
+        )
     return {
         "schema": SYSTEM_TIMING_SCHEMA,
         "status": status,
         "design": runtime["design"],
         "platform": platform.name,
-        "qualification": (
-            "staging-aware-physical-plus-concrete-link-tdm"
-            if whole_exact_logic_paths == whole_logic_paths
-            else (
-                "staging-aware-routed-physical-bounds-plus-concrete-link-tdm"
-                if whole_measured_logic_paths == whole_logic_paths
-                else (
-                    "hybrid-staging-aware-and-partition-maxima-plus-concrete-"
-                    "link-tdm"
-                    if whole_measured_logic_paths > 0
-                    else (
-                        "partition-logic-maxima-plus-endpoint-exact-interface-"
-                        "plus-concrete-link-tdm"
-                        if endpoint_delays is not None
-                        else (
-                            "conservative-partition-physical-maxima-plus-"
-                            "concrete-link-tdm"
-                        )
-                    )
-                )
-            )
-        ),
+        "qualification": qualification,
         "timing_scope": timing_scope,
         "path_exactness": {
             "scheduled_link_tdm": True,
+            "sampled_virtual_wire_event_propagation": (
+                sampled_event_paths == len(cross_paths)
+                if sampled_schedule
+                else None
+            ),
             "physical_boundary_endpoints": endpoint_delays is not None,
             "physical_logic_segments": (
                 whole_exact_logic_paths == whole_logic_paths
@@ -697,6 +968,8 @@ def build_system_timing(
                 local_cone_bound_logic_paths
             ),
             "discontinuous_compressed_paths": discontinuous_paths,
+            "sampled_event_paths": sampled_event_paths,
+            "sampled_event_failures": sampled_event_failures,
         },
         "physical_source": {
             "provider": physical_summary.get("provider"),

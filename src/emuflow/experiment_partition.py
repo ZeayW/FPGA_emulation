@@ -176,7 +176,6 @@ def run_partition_checkpoint(
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
-    comb_segment_budget_slots: int = 1,
     minimum_combinational_cut_nets: int = 0,
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
@@ -269,7 +268,6 @@ def run_partition_checkpoint(
         ),
         cut_mode=cut_mode,
         max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
-        comb_segment_budget_slots=comb_segment_budget_slots,
         static_exact_candidate_policy=static_exact_candidate_policy,
         timing_database_path=(
             _require(timing_root, "path-database.json")
@@ -309,7 +307,6 @@ def run_partition_checkpoint(
         "max_cross_fpga_dependency_depth": (
             max_cross_fpga_dependency_depth
         ),
-        "comb_segment_budget_slots": comb_segment_budget_slots,
         "static_exact_candidate_policy": static_exact_candidate_policy,
         "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
         "patron_flow_refinement": patron_flow_refinement,
@@ -423,7 +420,6 @@ def run_partition_checkpoint(
             expected_max_cross_fpga_dependency_depth=(
                 max_cross_fpga_dependency_depth
             ),
-            expected_comb_segment_budget_slots=comb_segment_budget_slots,
             expected_minimum_combinational_cut_nets=(
                 minimum_combinational_cut_nets
             ),
@@ -464,7 +460,6 @@ def validate_partition_checkpoint(
     expected_mfspart_post_refinement_timing_path_beta: float | None = None,
     expected_cut_mode: str | None = None,
     expected_max_cross_fpga_dependency_depth: int | None = None,
-    expected_comb_segment_budget_slots: int | None = None,
     expected_minimum_combinational_cut_nets: int | None = None,
     patron_initial_assignment_path: Path | None = None,
     patron_initial_clusters_path: Path | None = None,
@@ -544,7 +539,6 @@ def validate_partition_checkpoint(
     legacy_cut_defaults = {
         "cut_mode": CUT_MODE_SEQUENTIAL_ONLY,
         "max_cross_fpga_dependency_depth": 1,
-        "comb_segment_budget_slots": 1,
         "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         "minimum_combinational_cut_nets": 0,
     }
@@ -554,7 +548,6 @@ def validate_partition_checkpoint(
             "max_cross_fpga_dependency_depth",
             expected_max_cross_fpga_dependency_depth,
         ),
-        ("comb_segment_budget_slots", expected_comb_segment_budget_slots),
         (
             "static_exact_candidate_policy",
             expected_static_exact_candidate_policy,
@@ -970,7 +963,7 @@ def validate_partition_checkpoint(
             "cut_mode", CUT_MODE_SEQUENTIAL_ONLY
         ),
     }
-    # The dependency-depth, segment-budget, and candidate-policy knobs have no
+    # The dependency-depth and candidate-policy knobs have no
     # assignment semantics in sequential-only mode and are consequently absent
     # from its cluster artifact.  They remain sealed as invocation configuration
     # above, but only Static Exact can independently reconstruct them from the
@@ -980,9 +973,6 @@ def validate_partition_checkpoint(
             {
                 "max_cross_fpga_dependency_depth": cut_policy[
                     "max_cross_fpga_dependency_depth"
-                ],
-                "comb_segment_budget_slots": cut_policy[
-                    "comb_segment_budget_slots"
                 ],
                 "static_exact_candidate_policy": cut_policy.get(
                     "candidate_selection_policy",

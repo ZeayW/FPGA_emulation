@@ -26,7 +26,6 @@ from .runtime import virtual_runtime_controller_to_systemverilog
 
 
 PHASE6_REPORT_SCHEMA = "emuflow.phase6-report/v1"
-STATIC_EXACT_SCHEDULE_PROVIDER = "deterministic-static-exact-list-schedule-v1"
 
 
 def _static_exact_equivalence_evidence(
@@ -230,7 +229,9 @@ def run_phase6(
         pin_plan,
         reconstruct=False,
     )
-    if schedule.get("provider") == STATIC_EXACT_SCHEDULE_PROVIDER:
+    from .tdm import is_sampled_virtual_wire_schedule
+
+    if is_sampled_virtual_wire_schedule(schedule):
         equivalence = _static_exact_equivalence_evidence(
             ir,
             assignment,
@@ -445,10 +446,9 @@ def validate_phase6(
         pin_plan,
         reconstruct=reconstruct_artifacts,
     )
-    if (
-        replay_equivalence
-        and schedule.get("provider") == STATIC_EXACT_SCHEDULE_PROVIDER
-    ):
+    from .tdm import is_sampled_virtual_wire_schedule
+
+    if replay_equivalence and is_sampled_virtual_wire_schedule(schedule):
         validation["static_exact_equivalence"] = (
             _static_exact_equivalence_evidence(
                 ir,

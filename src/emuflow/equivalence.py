@@ -687,7 +687,10 @@ def _static_exact_equivalence_context(
 ) -> Dict[str, Any]:
     from .combinational_cut import semantic_contract_sha256
     from .routing import static_exact_contract_from_assignment
-    from .tdm import TDM_STATIC_EXACT_PROVIDER
+    from .tdm import (
+        is_sampled_virtual_wire_schedule,
+        sampled_virtual_wire_timing_constraints,
+    )
 
     contract = static_exact_contract_from_assignment(assignment)
     if contract is None:
@@ -695,16 +698,13 @@ def _static_exact_equivalence_context(
             "static exact macro-cycle equivalence requires an assignment "
             "semantic contract"
         )
-    if schedule.get("provider") != TDM_STATIC_EXACT_PROVIDER:
+    if not is_sampled_virtual_wire_schedule(schedule):
         raise ValidationError(
-            "static exact macro-cycle equivalence requires the dependency-"
-            "aware schedule provider"
+            "static exact macro-cycle equivalence requires sampled virtual-"
+            "wire transport semantics"
         )
     digest = semantic_contract_sha256(contract)
-    if (
-        schedule.get("semantic_contract") != contract
-        or schedule.get("semantic_contract_sha256") != digest
-    ):
+    if schedule.get("semantic_contract_sha256") != digest:
         raise ValidationError(
             "static exact schedule is not bound to the assignment contract"
         )
@@ -772,15 +772,16 @@ def _static_exact_equivalence_context(
             "static exact capture segment coverage is incomplete"
         )
     frame_slots = schedule.get("metrics", {}).get("frame_slots")
-    commit_slot = contract.get("commit_slot")
+    timing_constraints = schedule.get("timing_constraints")
     if (
         isinstance(frame_slots, bool)
         or not isinstance(frame_slots, int)
         or frame_slots <= 1
-        or contract.get("frame_slots") != frame_slots
-        or commit_slot != frame_slots - 1
+        or timing_constraints
+        != sampled_virtual_wire_timing_constraints(frame_slots)
     ):
         raise ValidationError("static exact frame/commit contract is invalid")
+    commit_slot = timing_constraints["commit_slot"]
     entry_ids = set()
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
@@ -867,6 +868,7 @@ def _static_exact_equivalence_context(
         "entries": entries,
         "frame_slots": frame_slots,
         "commit_slot": commit_slot,
+        "timing_constraints": timing_constraints,
         "override_pins_by_shadow": {
             key: tuple(sorted(set(value)))
             for key, value in override_pins_by_shadow.items()
@@ -998,6 +1000,7 @@ def _static_exact_source_ready_slot(
     node: Mapping[str, Any],
     segment_by_id: Mapping[str, Mapping[str, Any]],
     current_arrivals: Mapping[Tuple[str, str], int],
+    timing_constraints: Mapping[str, Any],
 ) -> Tuple[int, List[Dict[str, Any]]]:
     evidence = []
     predecessor_coverage = []
@@ -1013,15 +1016,11 @@ def _static_exact_source_ready_slot(
                 f"static exact cut {node.get('net')!r} references unknown "
                 f"segment {segment_id!r}"
             )
-        budget = segment.get("budget_slots")
-        if (
-            isinstance(budget, bool)
-            or not isinstance(budget, int)
-            or budget < 0
-        ):
-            raise ValidationError(
-                f"static exact segment {segment_id!r} has invalid budget"
-            )
+        from .tdm import sampled_logic_segment_budget_slots
+
+        budget = sampled_logic_segment_budget_slots(
+            segment, timing_constraints
+        )
         if segment.get("kind") == "launch_to_tx":
             if segment.get("sink_cut_net") != node.get("net"):
                 raise ValidationError(
@@ -1136,6 +1135,7 @@ def _simulate_static_exact_macro_step(
                     node,
                     context["segment_by_id"],
                     current_arrivals,
+                    context["timing_constraints"],
                 )
                 source_ready_checks += 1
                 if entry["ready_slot"] != ready_slot or slot < ready_slot:
@@ -1245,7 +1245,11 @@ def _simulate_static_exact_macro_step(
                 f"static exact capture {capture_id!r} consumes no current-"
                 "frame arrival"
             )
-        ready_slot = current_arrivals[key] + segment["budget_slots"]
+        from .tdm import sampled_logic_segment_budget_slots
+
+        ready_slot = current_arrivals[key] + sampled_logic_segment_budget_slots(
+            segment, context["timing_constraints"]
+        )
         if ready_slot > context["commit_slot"]:
             raise ValidationError(
                 f"static exact capture {capture_id!r} is ready at "

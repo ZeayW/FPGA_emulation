@@ -613,6 +613,7 @@ class Phase7CTest(unittest.TestCase):
             "emuflow.local-path-identity/v2"
         )
         selected_path = selected["local_path_timing"]["fpga0"]["paths"][0]
+        selected_path["required_time_ns"] = 18.0
         selected_path["measurement"] = "explicit-routed-path-chain"
         selected_path["path_pins"] = ["i0.Q[0]", "i1.D[0]"]
         selected_qor = aggregate_qor(
@@ -627,6 +628,13 @@ class Phase7CTest(unittest.TestCase):
             schedule=self.schedule,
             routes_artifact_sha256=source["routes_sha256"],
         )
+        selected_local = next(
+            item
+            for item in selected_qor["timing"]["paths"]
+            if item["path"] == "local-critical"
+        )
+        self.assertEqual(selected_local["target_required_time_ns"], 18.0)
+        self.assertEqual(selected_local["target_clock_slack_bound_ns"], 14.0)
         selected_exactness = selected_qor["timing"]["path_exactness"]
         self.assertEqual(
             selected_exactness["local_original_paths_endpoint_exact"], 1
@@ -976,6 +984,16 @@ class Phase7CTest(unittest.TestCase):
             }.items():
                 paths[name] = root / f"{name}.json"
                 paths[name].write_text(json.dumps(value), encoding="utf-8")
+            from emuflow.cross_layer_timing import build_cross_layer_timing_contract
+
+            (root / "cross_layer_timing.json").write_text(
+                json.dumps(
+                    build_cross_layer_timing_contract(
+                        self.routes, self.schedule
+                    )
+                ),
+                encoding="utf-8",
+            )
             generated = run_phase7c(
                 paths["schedule"],
                 paths["platform"],
@@ -1071,6 +1089,16 @@ class Phase7CTest(unittest.TestCase):
             }.items():
                 paths[name] = root / f"{name}.json"
                 paths[name].write_text(json.dumps(value), encoding="utf-8")
+            from emuflow.cross_layer_timing import build_cross_layer_timing_contract
+
+            (root / "cross_layer_timing.json").write_text(
+                json.dumps(
+                    build_cross_layer_timing_contract(
+                        self.routes, self.schedule
+                    )
+                ),
+                encoding="utf-8",
+            )
             closed = run_phase7c(
                 paths["schedule"],
                 paths["platform"],
@@ -1082,7 +1110,11 @@ class Phase7CTest(unittest.TestCase):
                 physical_summary_path=paths["physical"],
                 routes_path=paths["routes"],
             )
-            self.assertEqual(closed["status"], "pass")
+            self.assertEqual(closed["status"], "incomplete")
+            self.assertEqual(
+                closed["physical_evidence_completeness"]["status"],
+                "incomplete",
+            )
             self.assertEqual(
                 closed["system_timing"]["source_binding"]["routes_sha256"],
                 source["routes_sha256"],

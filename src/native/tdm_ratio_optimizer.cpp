@@ -38,6 +38,7 @@ struct Hop {
 
 struct TimingPath {
   double clock_period_ns = 0.0;
+  double required_time_ns = 0.0;
   double fixed_delay_ns = 0.0;
   std::vector<int> hops;
 };
@@ -82,12 +83,13 @@ Input read_input(const std::string& path) {
   }
   std::string line;
   std::getline(stream, line);
+  const bool input_v8 = line == "EMUFLOW_TDM_RATIO_INPUT_V8";
   const bool input_v7 = line == "EMUFLOW_TDM_RATIO_INPUT_V7";
   const bool input_v4 = line == "EMUFLOW_TDM_RATIO_INPUT_V4";
   const bool input_v6 = line == "EMUFLOW_TDM_RATIO_INPUT_V6";
   const bool input_v5 = line == "EMUFLOW_TDM_RATIO_INPUT_V5";
   const bool input_v3 = input_v5 || line == "EMUFLOW_TDM_RATIO_INPUT_V3";
-  if (!input_v7 && !input_v6 && !input_v4 && !input_v5 && !input_v3 &&
+  if (!input_v8 && !input_v7 && !input_v6 && !input_v4 && !input_v5 && !input_v3 &&
       line != "EMUFLOW_TDM_RATIO_INPUT_V2") {
     throw std::runtime_error("invalid input header");
   }
@@ -100,7 +102,7 @@ Input read_input(const std::string& path) {
     std::string kind;
     record >> kind;
     if (kind == "PARAM") {
-      if (input_v7) {
+      if (input_v8 || input_v7) {
         record >> input.max_iterations >> input.max_ratio >>
             input.ratio_quantum >> input.min_ratio >>
             input.post_refinement_iterations >> input.exact_domain_limit >>
@@ -137,7 +139,7 @@ Input read_input(const std::string& path) {
       int index = -1;
       Hop hop;
       record >> index >> hop.domain >> hop.direction;
-      if (input_v7 || input_v6) {
+      if (input_v8 || input_v7 || input_v6) {
         record >> hop.compatibility;
       } else {
         hop.compatibility = 0;
@@ -151,15 +153,20 @@ Input read_input(const std::string& path) {
       int index = -1;
       TimingPath timing_path;
       std::string hops;
-      record >> index >> timing_path.clock_period_ns >>
-          timing_path.fixed_delay_ns >> hops;
+      record >> index >> timing_path.clock_period_ns;
+      if (input_v8) {
+        record >> timing_path.required_time_ns;
+      } else {
+        timing_path.required_time_ns = timing_path.clock_period_ns;
+      }
+      record >> timing_path.fixed_delay_ns >> hops;
       timing_path.hops = parse_list(hops);
       if (index != static_cast<int>(input.paths.size())) {
         throw std::runtime_error("PATH indices must be contiguous");
       }
       input.paths.push_back(std::move(timing_path));
     } else if (kind == "SEED" &&
-               (input_v7 || input_v6 || input_v4 || input_v5)) {
+               (input_v8 || input_v7 || input_v6 || input_v4 || input_v5)) {
       int index = -1;
       double ratio = 0.0;
       record >> index >> ratio;
@@ -209,6 +216,7 @@ Input read_input(const std::string& path) {
   }
   for (const TimingPath& timing_path : input.paths) {
     if (timing_path.clock_period_ns <= 0.0 ||
+        timing_path.required_time_ns <= 0.0 ||
         timing_path.fixed_delay_ns < 0.0 || timing_path.hops.empty()) {
       throw std::runtime_error("invalid timing path");
     }
@@ -221,7 +229,7 @@ Input read_input(const std::string& path) {
       }
     }
   }
-  if ((input_v7 || input_v6 || input_v4 || input_v5) &&
+  if ((input_v8 || input_v7 || input_v6 || input_v4 || input_v5) &&
       !input.seed_ratios.empty() &&
       input.seed_ratios.size() != input.hops.size()) {
     throw std::runtime_error("seeded input requires one SEED per hop");
@@ -365,7 +373,7 @@ class Optimizer {
       delay += input_.hops[hop].base_delay_ns +
           input_.hops[hop].beta_ns * (ratios[hop] - 1.0);
     }
-    const double slack = path.clock_period_ns - delay;
+    const double slack = path.required_time_ns - delay;
     return {delay, slack, normalized_slack(path, slack)};
   }
 
@@ -376,7 +384,7 @@ class Optimizer {
       delay += input_.hops[hop].base_delay_ns +
           input_.hops[hop].beta_ns * (discrete_[hop] - 1.0);
     }
-    const double slack = path.clock_period_ns - delay;
+    const double slack = path.required_time_ns - delay;
     return {delay, slack, normalized_slack(path, slack)};
   }
 
@@ -393,7 +401,7 @@ class Optimizer {
       delay += input_.hops[hop].base_delay_ns +
           input_.hops[hop].beta_ns * (ratio - 1.0);
     }
-    const double slack = path.clock_period_ns - delay;
+    const double slack = path.required_time_ns - delay;
     return {delay, slack, normalized_slack(path, slack)};
   }
 
@@ -1000,7 +1008,7 @@ class Optimizer {
         const auto meets_target = [&](int ratio) {
           const double delay = other_delay + input_.hops[hop].base_delay_ns +
               input_.hops[hop].beta_ns * (ratio - 1.0);
-          const double slack = path.clock_period_ns - delay;
+          const double slack = path.required_time_ns - delay;
           return normalized_slack(path, slack) + input_.convergence >= target;
         };
         int low = 0;
@@ -1122,7 +1130,7 @@ class Optimizer {
         ? target * input_.positive_scale * input_.max_period /
               path.clock_period_ns
         : target * input_.negative_scale * path.clock_period_ns;
-    return path.clock_period_ns - required_slack;
+    return path.required_time_ns - required_slack;
   }
 
   bool build_global_budget_solution(double target, double weight_exponent) {

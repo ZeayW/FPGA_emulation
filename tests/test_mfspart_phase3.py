@@ -300,8 +300,6 @@ class MFSPartPhase3Test(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=8,
-            comb_segment_budget_slots=1,
-            frame_slots=32,
             static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         )
         cluster_for = {
@@ -359,8 +357,6 @@ class MFSPartPhase3Test(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=3,
-            comb_segment_budget_slots=3,
-            frame_slots=32,
             static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         )
         node_index = {

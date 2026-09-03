@@ -491,7 +491,7 @@ def prepare_logic_segment_query_inputs(
     if path_database.get("schema") != STA_PATH_DATABASE_SCHEMA:
         raise ValidationError("logic segment STA database schema is invalid")
 
-    exact_contract = schedule.get("semantic_contract")
+    exact_contract = assignment.get("semantic_contract")
     exact_contract_sha256 = None
     exact_segment_by_key: Dict[Any, str] = {}
     exact_captures: Dict[str, Mapping[str, Any]] = {}
@@ -501,7 +501,12 @@ def prepare_logic_segment_query_inputs(
         from .combinational_cut import semantic_contract_sha256
 
         exact_contract_sha256 = semantic_contract_sha256(exact_contract)
-        if schedule.get("semantic_contract_sha256") != exact_contract_sha256:
+        if (
+            schedule.get("semantic_contract_schema")
+            != exact_contract.get("schema")
+            or schedule.get("semantic_contract_sha256")
+            != exact_contract_sha256
+        ):
             raise ValidationError("logic segment exact contract digest disagrees")
         exact_captures = {
             item["id"]: item

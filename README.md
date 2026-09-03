@@ -399,10 +399,10 @@ local fan-in on its source FPGA; only a transported net entering the current
 FPGA stops the local launch-cone walk. This prevents a locally originated
 register or memory launch from disappearing merely because another partition
 also consumes that net. This is
-also reflected at the one-command CLI boundary: exact mode defaults slot
-refinement to zero, while an explicit nonzero request remains fail-closed until
-that optimizer is dependency-qualified. This is
-implemented qualification machinery. Small real-RTL physical acceptance
+also reflected at the one-command CLI boundary: exact mode uses the same
+timing-DAG ratio, lane, and slot-refinement providers as register-only mode.
+Sampled-wire readiness and capture deadlines are additional constraints in
+that unified schedule, not a separate dispatch. Small real-RTL physical acceptance
 exercises the exact-cut path. A scalable open-physical acceptance now also
 exists on the naturally connected DLA design and a four-FPGA academic
 BoardDB: the unconstrained partition selected five real combinational cuts
@@ -437,15 +437,15 @@ legacy `potential-frontier-depth-v1` policy, v2 does not confuse a net's depth
 in the graph of *possible* boundaries with its depth after the partitioner has
 selected actual transported boundaries.  It releases every structurally legal
 candidate, rebuilds the selected dependency DAG from the final assignment,
-and supports any positive configured depth.  Phase 3 rejects an assignment if
-that selected DAG is cyclic, exceeds the configured safety cap, has no board
-path, or cannot meet the virtual-frame commit even under an uncongested
-minimum-latency lower bound.  TritonPart seed selection includes this
-certificate and uses timing-weighted cut cost, lower-bound capture slack,
-selected depth, and cut count as deterministic ranking evidence.  Phase 4 and
-the exact Phase 5 list scheduler then bind the concrete routes, link latency,
-lane capacity, relay readiness, and capture deadline; Phase 6/7 retain the same
-macro-cycle-equivalence and routed physical-segment gates.
+and supports any positive configured depth. Phase 3 rejects an assignment only
+for partition-owned structural illegality: a cyclic selected DAG, an exceeded
+dependency safety cap, capacity/fixed-group violations, or unreachable BoardDB
+endpoints. Frame, lane, slot, settle, and commit feasibility belong exclusively
+to Phase 5. TritonPart may rank structural depth and cut count as provider-neutral
+risk estimates, but it does not run or consume a scheduler certificate. Phase 4
+binds concrete multicast branches; unified Phase 5 then solves link latency,
+lane capacity, ratio, relay readiness, and capture deadlines. Phase 6/7 retain
+the macro-cycle-equivalence and routed physical-segment gates.
 
 The legacy policy remains readable for controlled A/B comparison, but it is
 never inferred from omitted arguments. A legacy rerun must explicitly select
@@ -1581,10 +1581,10 @@ V13 adds the missing scalable semantic guard.  It incrementally counts the
 partition transitions along each TimingPathDB path, uses that count in place
 of the older repeated-part-only `snaking` tie-break, and rejects every direct,
 ejection, corridor, legalization, permutation, and tail-repair candidate whose
-total path-transition count exceeds the frozen initial assignment.  It does
-not run the exact scheduler inside the Phase 3 move loop: Phase 4 still
-materializes routes and Phase 5 remains the authoritative deterministic exact
-dependency/slot scheduler.  The native implementation and independent Python
+total path-transition count exceeds the frozen initial assignment. It does
+not run a scheduler inside the Phase 3 move loop: Phase 4 still materializes
+routes and unified Phase 5 remains the authoritative TDM ratio/lane/slot solver
+with sampled-wire dependency constraints. The native implementation and independent Python
 endpoint/transition reconstruction are versioned as PATRON v13 and are
 available with `--patron-algorithm-version 13` only for generalized Static
 Exact.  Compact qualification is complete.  The large-design cut-contract gate
@@ -1944,15 +1944,14 @@ quantum/frame bound, and each independent validator rechecks that chain.
 Canonical timing-enabled experiments explicitly bind Phase 4 to
 `timing-aware-global-candidate-v1` and Phase 5 to
 `aspdac26-timing-dag-lagrangian-v1`; they do not rely on mutable CLI defaults.
-An opt-in canonical config with
-`"cut_mode": "static-exact-combinational"` instead binds the Phase 3 cut
-policy (including `max_cross_fpga_dependency_depth` and
-`comb_segment_budget_slots`), native route-tree timing annotation, and the
-dependency-aware exact Phase 5 scheduler into the Experiment v2 task keys and
-independent validators.  That qualification DAG intentionally emits only the
-unmodified baseline Phase 6 transport and the configured physical seeds: placement-aware
-and Chimew rescheduling are not permitted to rewrite an exact dependency
-schedule, and no inapplicable ratio-plan artifact is claimed.
+A canonical config with `"cut_mode": "static-exact-combinational"` binds the
+Phase 3 structural cut policy (including
+`max_cross_fpga_dependency_depth`) and the provider-neutral contract into the
+Experiment v2 task keys and independent validators. Phase 4/5 retain the normal
+timing-aware routing and timing-DAG ratio/lane/slot providers; sampled-wire
+readiness and capture deadlines are additional constraints in the same TDM
+model. Phase 6 providers consume the resulting immutable schedule and may not
+rewrite it.
 For a controlled exact-cut exercise, an optional
 `"partition_constraints": "/absolute/path/to/constraints.json"` is a
 byte-sealed Phase 3 input: the canonical compiler passes it to both the

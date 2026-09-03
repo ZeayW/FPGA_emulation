@@ -12,9 +12,9 @@ from unittest.mock import patch
 
 from emuflow.cli import main
 from emuflow.combinational_cut import (
-    GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+    STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
     _build_combinational_cut_candidate_index,
     build_static_exact_semantic_contract,
     characterize_combinational_cuts,
@@ -49,12 +49,16 @@ from emuflow.routing import (
     validate_system_routes,
 )
 from emuflow.tdm import (
-    TDM_STATIC_EXACT_CERTIFICATE_SCHEMA,
-    TDM_STATIC_EXACT_PROVIDER,
+    TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER,
+    TDM_BASELINE_PROVIDER,
+    SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
     build_tdm_schedule,
     validate_tdm_schedule,
 )
+from emuflow.tdm_ratio import build_tdm_ratio_plan
+from emuflow.tdm_slot import refine_tdm_schedule_native
 from emuflow.timing_routing import route_system_native
+from tests.native_build import tdm_ratio_optimizer, tdm_slot_optimizer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -655,8 +659,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=dependency_depth,
-            comb_segment_budget_slots=1,
-            frame_slots=frame_slots,
             static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         )
         cluster_for = {
@@ -815,7 +817,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         contract = assignment["semantic_contract"]
         self.assertEqual(
             contract["qualification"],
-            "partition-legality-only-provisional",
+            "structural-partition-legality",
         )
         self.assertEqual(contract["metrics"]["combinational_cut_nets"], 1)
         self.assertTrue(contract["capture_requirements"])
@@ -825,7 +827,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         self.assertEqual(validation["status"], "pass")
         self.assertEqual(
             validation["qualification"],
-            "partition-legality-only-provisional",
+            "structural-partition-legality",
         )
 
     def test_exact_contract_preserves_reached_memory_capture_pin(self):
@@ -954,8 +956,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 },
             ],
             max_dependency_depth=2,
-            comb_segment_budget_slots=1,
-            frame_slots=16,
             candidate_selection_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         )
         captures = {
@@ -968,7 +968,9 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
     def test_contract_tamper_is_rejected(self):
         clusters, assignment = self._exact_artifacts()
         tampered = copy.deepcopy(assignment)
-        tampered["semantic_contract"]["commit_slot"] -= 1
+        tampered["semantic_contract"]["cut_nodes"][0][
+            "dependency_level"
+        ] += 1
         with self.assertRaisesRegex(ValidationError, "semantic_contract"):
             validate_partition_artifacts(
                 self.ir, self.platform, clusters, tampered
@@ -1074,8 +1076,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=1,
-            comb_segment_budget_slots=1,
-            frame_slots=16,
             static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         )
         self.assertEqual(
@@ -1115,7 +1115,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         contract = assignment["semantic_contract"]
         self.assertEqual(
             contract["schema"],
-            GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+            STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
         )
         self.assertEqual(contract["metrics"]["combinational_cut_nets"], 1)
         self.assertEqual(
@@ -1134,15 +1134,13 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             "pass",
         )
         tampered = copy.deepcopy(assignment)
-        del tampered["semantic_contract"][
-            "uncongested_schedule_lower_bound"
-        ]
+        del tampered["semantic_contract"]["candidate_selection_policy"]
         with self.assertRaisesRegex(ValidationError, "certificate is incomplete"):
             demands_from_assignment(tampered, self.platform)
         routes = self._exact_routes(assignment)
         tampered_routes = copy.deepcopy(routes)
         del tampered_routes["semantic_contract"][
-            "uncongested_schedule_lower_bound"
+            "candidate_selection_policy"
         ]
         tampered_routes["semantic_contract_sha256"] = semantic_contract_sha256(
             tampered_routes["semantic_contract"]
@@ -1192,8 +1190,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=3,
-            comb_segment_budget_slots=1,
-            frame_slots=24,
             static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         )
         cluster_for = {
@@ -1237,29 +1233,21 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             ],
             ["n0", "n1", "n2"],
         )
-        lower_bound = contract["uncongested_schedule_lower_bound"]
-        self.assertEqual(
-            lower_bound["provider"],
-            "board-minimum-latency-dag-lower-bound-v1",
+        self.assertNotIn("uncongested_schedule_lower_bound", contract)
+        # Phase 3 records structural legality only.  A frame that is too short
+        # is rejected later by the concrete Phase 4/5 route and TDM schedule,
+        # not speculatively by partitioning.
+        short_frame_contract = build_static_exact_semantic_contract(
+            self.ir,
+            self.platform.to_dict(),
+            assignment["instance_assignment"],
+            assignment["cut_nets"],
+            max_dependency_depth=3,
+            candidate_selection_policy=(STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2),
         )
-        self.assertGreaterEqual(
-            lower_bound["minimum_capture_slack_slots"], 0
+        self.assertNotIn(
+            "uncongested_schedule_lower_bound", short_frame_contract
         )
-        with self.assertRaisesRegex(
-            ValidationError, "uncongested minimum-latency"
-        ):
-            build_static_exact_semantic_contract(
-                self.ir,
-                self.platform.to_dict(),
-                assignment["instance_assignment"],
-                assignment["cut_nets"],
-                max_dependency_depth=3,
-                comb_segment_budget_slots=1,
-                frame_slots=8,
-                candidate_selection_policy=(
-                    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
-                ),
-            )
         routes = self._exact_routes(assignment, frame_slots=24)
         schedule = build_tdm_schedule(routes, self.platform)
         self.assertEqual(
@@ -1307,8 +1295,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=2,
-            comb_segment_budget_slots=1,
-            frame_slots=16,
             static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         )
         cluster_for = {
@@ -1402,8 +1388,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=1,
-            comb_segment_budget_slots=1,
-            frame_slots=16,
             static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         )
         cluster_for = {
@@ -1469,8 +1453,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=1,
-            comb_segment_budget_slots=1,
-            frame_slots=16,
         )
         cluster_for = {
             instance: cluster["id"]
@@ -1576,8 +1558,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=2,
-            comb_segment_budget_slots=1,
-            frame_slots=16,
         )
         cluster_for = {
             instance: cluster["id"]
@@ -1640,7 +1620,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             ir,
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
-            frame_slots=16,
         )
         self.assertEqual(
             max(len(item["instances"]) for item in safe_clusters["clusters"]),
@@ -1704,7 +1683,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             )
             self.assertEqual(
                 report["qualification"],
-                "partition-legality-only-provisional",
+                "structural-partition-legality",
             )
             self.assertEqual(
                 report["validation"]["cut_mode"],
@@ -1717,7 +1696,9 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         validation = validate_system_routes(assignment, self.platform, routes)
         self.assertEqual(validation["status"], "pass")
         tampered = copy.deepcopy(routes)
-        tampered["semantic_contract"]["commit_slot"] -= 1
+        tampered["semantic_contract"]["cut_nodes"][0][
+            "dependency_level"
+        ] += 1
         with self.assertRaisesRegex(ValidationError, "semantic_contract"):
             validate_system_routes(assignment, self.platform, tampered)
 
@@ -1725,10 +1706,10 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         _, assignment = self._exact_artifacts(dependent_return=True)
         routes = self._exact_routes(assignment)
         schedule = build_tdm_schedule(routes, self.platform)
-        self.assertEqual(schedule["provider"], TDM_STATIC_EXACT_PROVIDER)
+        self.assertEqual(schedule["provider"], TDM_BASELINE_PROVIDER)
         self.assertEqual(
             schedule["schedule_dependency_certificate"]["schema"],
-            TDM_STATIC_EXACT_CERTIFICATE_SCHEMA,
+            SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
         )
         validation = validate_tdm_schedule(
             routes, self.platform, schedule
@@ -1752,12 +1733,16 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         tampered = copy.deepcopy(schedule)
         entry = next(item for item in tampered["entries"] if item["net"] == "d")
         entry["ready_slot"] -= 1
-        with self.assertRaisesRegex(ValidationError, "inconsistent"):
+        with self.assertRaisesRegex(
+            ValidationError, "ready-slot mismatch|inconsistent"
+        ):
             validate_tdm_schedule(routes, self.platform, tampered)
 
         tampered = copy.deepcopy(schedule)
         tampered["entries"][0]["arrival_slot"] += 1
-        with self.assertRaisesRegex(ValidationError, "inconsistent"):
+        with self.assertRaisesRegex(
+            ValidationError, "arrival_slot|inconsistent"
+        ):
             validate_tdm_schedule(routes, self.platform, tampered)
 
         tampered = copy.deepcopy(schedule)
@@ -1767,6 +1752,66 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "certificate"):
             validate_tdm_schedule(routes, self.platform, tampered)
 
+    def test_static_exact_uses_the_same_ratio_aware_tdm_solver(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        routes = self._exact_routes(assignment)
+        routes["timing"] = {
+            "schema": "emuflow.sta-paths/v1",
+            "normalization": {
+                "positive_slack_scale_ns": 100.0,
+                "negative_slack_scale_ns": 100.0,
+                "max_clock_period_ns": 100.0,
+            },
+            "compression": {"original_paths": 1, "compressed_paths": 1},
+            "paths": [
+                {
+                    "path": "cross-layer-path",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 100.0,
+                    "fixed_delay_ns": 1.0,
+                    "cut_nets": ["n0", "d"],
+                    "cut_transitions": [
+                        {"net": "n0", "from": "fpga0", "to": "fpga1"},
+                        {"net": "d", "from": "fpga1", "to": "fpga0"},
+                    ],
+                }
+            ],
+        }
+        plan = build_tdm_ratio_plan(
+            routes,
+            self.platform,
+            executable=str(tdm_ratio_optimizer()),
+            max_ratio=16,
+            post_refinement_iterations=0,
+        )
+        schedule = build_tdm_schedule(routes, self.platform, plan)
+        self.assertEqual(
+            schedule["provider"], TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER
+        )
+        self.assertEqual(
+            schedule["transport_semantics"], "sampled-virtual-wire"
+        )
+        self.assertEqual(
+            validate_tdm_schedule(routes, self.platform, schedule, plan)[
+                "qualification"
+            ],
+            "dependency-schedule-readiness-pass",
+        )
+        refined = refine_tdm_schedule_native(
+            routes,
+            self.platform,
+            plan,
+            schedule,
+            executable=str(tdm_slot_optimizer()),
+            max_iterations=8,
+        )
+        self.assertEqual(
+            validate_tdm_schedule(routes, self.platform, refined, plan)[
+                "qualification"
+            ],
+            "dependency-schedule-readiness-pass",
+        )
+
     def test_register_output_launch_reserves_configured_settle_budget(self):
         """A cross-FPGA FF output cannot be sampled by TX in slot zero."""
         clusters = build_clusters(
@@ -1774,8 +1819,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=1,
-            comb_segment_budget_slots=1,
-            frame_slots=16,
         )
         cluster_for = {
             instance: cluster["id"]
@@ -1809,7 +1852,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         }
         launch = segments[node["source_segment_ids"][0]]
         self.assertEqual(launch["kind"], "launch_to_tx")
-        self.assertEqual(launch["budget_slots"], 1)
+        self.assertNotIn("budget_slots", launch)
 
         routes = self._exact_routes(assignment)
         schedule = build_tdm_schedule(routes, self.platform)
@@ -1897,8 +1940,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 }
             ],
             max_dependency_depth=1,
-            comb_segment_budget_slots=1,
-            frame_slots=16,
             candidate_selection_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
         )
         launch = next(
@@ -1906,13 +1947,9 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             for item in contract["logic_segments"]
             if item["kind"] == "launch_to_tx"
         )
-        self.assertEqual(launch["budget_slots"], 0)
+        self.assertNotIn("budget_slots", launch)
         self.assertEqual(
             launch["source_semantics"], "configuration-stable-constant"
-        )
-        self.assertEqual(
-            launch["evidence"],
-            "structurally-proven-configuration-stable-constant",
         )
 
     def test_phase5_cli_writes_and_revalidates_exact_schedule(self):
