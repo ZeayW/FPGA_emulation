@@ -1585,12 +1585,11 @@ def compile_static_exact_ab_experiment_spec(
     repository_root: Path,
     output_path: Path,
     *,
-    legacy_max_depth: int = 2,
     generalized_max_depth: int = 8,
     minimum_combinational_cut_nets: int = 1,
     partition_seed: int | None = None,
 ) -> Dict[str, Any]:
-    """Compile one cache DAG with three Phase 3--7 cut-policy branches.
+    """Compile one cache DAG with paired Phase 3--7 cut-policy branches.
 
     The canonical frontend and complete TimingPathDB are emitted once.  Each
     policy then owns its assignment, routing, schedule, lookahead, split, and
@@ -1609,14 +1608,11 @@ def compile_static_exact_ab_experiment_spec(
             "use a single-arm canonical experiment for a precomputed solution"
         )
     for name, value in (
-        ("legacy_max_depth", legacy_max_depth),
         ("generalized_max_depth", generalized_max_depth),
         ("minimum_combinational_cut_nets", minimum_combinational_cut_nets),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValidationError(f"Static Exact A/B {name} must be positive")
-    if legacy_max_depth not in {1, 2}:
-        raise ValidationError("Static Exact legacy A/B depth must be 1 or 2")
     controlled_partition_seed = (
         config.get("partition_seed", 0)
         if partition_seed is None
@@ -1643,19 +1639,8 @@ def compile_static_exact_ab_experiment_spec(
         "seq": {
             "label": "sequential-only",
             "cut_mode": CUT_MODE_SEQUENTIAL_ONLY,
-            "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
             "max_cross_fpga_dependency_depth": 1,
-            "minimum_combinational_cut_nets": 0,
-        },
-        "v1": {
-            "label": "legacy-static-exact-v1",
-            "cut_mode": CUT_MODE_STATIC_EXACT,
-            "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_FRONTIER_V1,
-            "max_cross_fpga_dependency_depth": legacy_max_depth,
-            # Legacy v1 is a compatibility/negative-control arm. Its
-            # potential-frontier filter can legitimately release no selected
-            # combinational boundary, so only generalized v2 owns the positive
-            # exercise contract below.
             "minimum_combinational_cut_nets": 0,
         },
         "v2": {
@@ -1716,7 +1701,7 @@ def compile_static_exact_ab_experiment_spec(
         for node in compiled["seq"]["nodes"]
         if node["id"] in common_ids
     ]
-    for prefix in ("v1", "v2"):
+    for prefix in ("v2",):
         candidate_common = [
             node
             for node in compiled[prefix]["nodes"]
@@ -1727,7 +1712,7 @@ def compile_static_exact_ab_experiment_spec(
                 "Static Exact A/B frontend/timing branches are not identical"
             )
     nodes = copy.deepcopy(reference_common)
-    for prefix in ("seq", "v1", "v2"):
+    for prefix in ("seq", "v2"):
         arm_nodes = compiled[prefix]["nodes"]
         for raw in arm_nodes:
             if raw["id"] in common_ids:
@@ -1797,12 +1782,10 @@ def compile_static_exact_ab_experiment_spec(
             "configuration": {
                 "labels": [
                     arm_configs[prefix]["label"]
-                    for prefix in ("seq", "v1", "v2")
+                    for prefix in ("seq", "v2")
                 ],
                 "physical_seeds": physical_seeds,
-                "legacy_max_depth": legacy_max_depth,
                 "generalized_max_depth": generalized_max_depth,
-                "legacy_minimum_combinational_cut_nets": 0,
                 "generalized_minimum_combinational_cut_nets": (
                     minimum_combinational_cut_nets
                 ),
@@ -1821,7 +1804,7 @@ def compile_static_exact_ab_experiment_spec(
             "validator": validator,
             "validator_identity": _identity_argv(validator, bindings),
             "environment": {
-                "EMUFLOW_EXPERIMENT_POLICY": "static-exact-ab-v1"
+                "EMUFLOW_EXPERIMENT_POLICY": "static-exact-ab-v2"
             },
             "storage_estimate": {
                 "peak_bytes": 2 * 1024**3,
@@ -1847,7 +1830,7 @@ def compile_static_exact_ab_experiment_spec(
         "status": "pass",
         "experiment_id": spec["experiment_id"],
         "nodes": len(validated["nodes"]),
-        "physical_terminal_nodes": 3 * len(physical_seeds),
+        "physical_terminal_nodes": 2 * len(physical_seeds),
         "terminal_nodes": 1,
         "physical_seeds": physical_seeds,
         "output": str(output_path.resolve()),

@@ -134,13 +134,6 @@ class StaticExactQorTest(unittest.TestCase):
                 "depth": 0,
                 "offset": 0.0,
             },
-            "legacy-static-exact-v1": {
-                "mode": "static-exact-combinational",
-                "policy": "potential-frontier-depth-v1",
-                "cuts": 5,
-                "depth": 1,
-                "offset": 0.1,
-            },
             "generalized-static-exact-v2": {
                 "mode": "static-exact-combinational",
                 "policy": "assignment-derived-acyclic-v2",
@@ -294,7 +287,7 @@ class StaticExactQorTest(unittest.TestCase):
         "emuflow.static_exact_qor.validate_phase7_checkpoint",
         return_value={"status": "pass", "provider": "baseline"},
     )
-    def test_three_policy_comparison_is_replayable(self, _validate):
+    def test_paired_policy_comparison_is_replayable(self, _validate):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             platform, _, records = self._fixture(root)
@@ -302,7 +295,7 @@ class StaticExactQorTest(unittest.TestCase):
             report = run_static_exact_qor_comparison(
                 platform, arms, root / "comparison"
             )
-            self.assertEqual(len(report["arms"]), 3)
+            self.assertEqual(len(report["arms"]), 2)
             self.assertEqual(report["physical_seeds"], [1])
             self.assertEqual(report["partition_seed"], 2)
             self.assertEqual(report["partition_seed_attempts"], 1)
@@ -325,7 +318,7 @@ class StaticExactQorTest(unittest.TestCase):
                 validate_static_exact_qor_comparison(
                     root / "comparison", platform, arms
                 )["arms"],
-                3,
+                2,
             )
 
     @patch(
@@ -603,44 +596,12 @@ class StaticExactQorTest(unittest.TestCase):
         "emuflow.static_exact_qor.validate_phase7_checkpoint",
         return_value={"status": "pass", "provider": "baseline"},
     )
-    def test_vacuous_legacy_arm_is_an_explicit_negative_control(self, _validate):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            platform, roots, records = self._fixture(root)
-            partition_report_path = (
-                roots["legacy-static-exact-v1"][0]
-                / "partition/experiment-partition-report.json"
-            )
-            partition = read_json(partition_report_path)
-            partition["phase3"]["validation"]["combinational_cut_nets"] = 0
-            partition["phase3"]["validation"][
-                "maximum_combinational_dependency_depth"
-            ] = 0
-            partition["static_exact_combinational_cut_exercised"] = False
-            write_json(partition_report_path, partition)
-            report = build_static_exact_qor_comparison(
-                platform, parse_static_exact_qor_arms(records)
-            )
-            self.assertEqual(
-                report["exercise_evidence"]["legacy_v1_classification"],
-                "vacuous-negative-control",
-            )
-            self.assertTrue(
-                report["exercise_evidence"][
-                    "generalized_v2_exercised_real_combinational_cuts"
-                ]
-            )
-
-    @patch(
-        "emuflow.static_exact_qor.validate_phase7_checkpoint",
-        return_value={"status": "pass", "provider": "baseline"},
-    )
     def test_exercise_flag_must_match_selected_cut_count(self, _validate):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             platform, roots, records = self._fixture(root)
             partition_report_path = (
-                roots["legacy-static-exact-v1"][0]
+                roots["generalized-static-exact-v2"][0]
                 / "partition/experiment-partition-report.json"
             )
             partition = read_json(partition_report_path)

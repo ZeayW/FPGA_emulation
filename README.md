@@ -448,25 +448,17 @@ binds concrete multicast branches; unified Phase 5 then solves link latency,
 lane capacity, ratio, relay readiness, and capture deadlines. Phase 6/7 retain
 the macro-cycle-equivalence and routed physical-segment gates.
 
-The legacy policy remains readable for controlled A/B comparison, but it is
-never inferred from omitted arguments. A legacy rerun must explicitly select
-`--static-exact-candidate-policy potential-frontier-depth-v1`, a depth of one
-or two, and any other noncurrent objective parameters. In that
-three-arm comparison, the positive `--minimum-combinational-cut-nets` exercise
-gate applies to generalized v2 only. Legacy v1 runs the complete Phase 1--7
-chain with a zero minimum: if its potential-frontier filter selects no real
-combinational boundary, the final certificate labels it a
-`vacuous-negative-control` rather than failing the experiment or claiming that
-Static Exact was exercised. The sequential arm must still contain zero
-combinational cuts, while generalized v2 must satisfy the requested positive
-minimum. Promotion of v2 to the production default additionally requires a
-canonical real-RTL, contest-BoardDB Phase 1--7 comparison against
-`sequential-only` and legacy v1,
-with one physical seed by default and final whole-design target-clock WNS/TNS,
-virtual frequency, resource, runtime, and exact-cut evidence.  Small exhaustive
-tests establish semantics but are not QoR evidence.
+The historical potential-frontier policy is not part of the production or
+promotion path.  The canonical gate compares generalized Static Exact directly
+with the register-boundary (`sequential-only`) control.  The sequential arm
+must contain zero combinational cuts, while generalized v2 must satisfy the
+requested positive exercise minimum.  Promotion requires a canonical real-RTL,
+contest-BoardDB Phase 1--7 comparison with one physical seed by default and
+final whole-design target-clock WNS/TNS, virtual frequency, resource, runtime,
+and exact-cut evidence. Small exhaustive tests establish semantics but are not
+QoR evidence.
 
-The three policies have different assignments, routes, and schedules, so the
+The two policies have different assignments, routes, and schedules, so the
 ordinary Phase 6 provider comparator is intentionally not used for this gate.
 Compile one content-addressed DAG that shares only the byte-identical frontend
 and TimingPathDB, forks at Phase 3, and terminates in a dedicated cross-policy
@@ -474,13 +466,13 @@ certificate.  The comparison uses one explicit Phase 3 seed for every arm;
 it never lets each policy search a multi-seed portfolio and then compares
 unrelated winners.  Physical seed remains a separate paired axis.  For the
 canonical case6 exercise, seed 4 is the sealed controlled seed used by the
-completed three-arm comparison; it releases a non-vacuous generalized
+paired comparison; it releases a non-vacuous generalized
 boundary while every arm still receives exactly one partition attempt:
 
 ```bash
 emuflow benchmark-static-exact-ab-compile \
   --config "$CANONICAL_CASE_CONFIG" --repository-root "$SOURCE" \
-  --legacy-max-depth 2 --generalized-max-depth 8 \
+  --generalized-max-depth 8 \
   --partition-seed 4 \
   --minimum-combinational-cut-nets 1 \
   --out "$EXPERIMENT/static-exact-ab-spec.json"
@@ -492,13 +484,12 @@ The final DAG node is equivalent to this explicit checkpoint command:
 emuflow experiment-stage static-exact-qor-compare-run \
   --platform "$PLATFORM" \
   --arm sequential-only 1 "$SEQ_SHARED" "$SEQ_LOOKAHEAD" "$SEQ_PHASE6" "$SEQ_PHASE7" \
-  --arm legacy-static-exact-v1 1 "$V1_SHARED" "$V1_LOOKAHEAD" "$V1_PHASE6" "$V1_PHASE7" \
   --arm generalized-static-exact-v2 1 "$V2_SHARED" "$V2_LOOKAHEAD" "$V2_PHASE6" "$V2_PHASE7" \
   --out "$EVIDENCE/static-exact-qor"
 ```
 
 The compiler removes the unrelated placement-aware/Chimew Phase 6 arms from
-the sequential branch, so only three physical terminals are run per requested
+the sequential branch, so only two physical terminals are run per requested
 seed.  The independent replay requires byte-identical EmuIR, complete TimingPathDB,
 partition weights, BoardDB, constraints, timing model, and physical channel
 width across all arms.  It also replays each partition report and requires
@@ -515,8 +506,7 @@ farm state, so the final bundle can replay the runtime comparison without the
 original attempt directories.  Historical imported checkpoints without this
 field remain readable but cannot supply runtime evidence. The checker refuses
 default promotion if the generalized arm is vacuous or its target-clock WNS/TNS
-result is not improved. A vacuous legacy arm remains an honest compatibility
-negative control and is never presented as exercised Static Exact evidence.
+result is not improved.
 
 The completed controlled DLA + EDA 2023 case6 experiment gives the following
 single-physical-seed result. These are whole-original-design target-clock
@@ -528,7 +518,7 @@ metrics after complete open Phase 7/7C, not per-FPGA timing summaries:
 | legacy Static Exact v1 | 0 | 0 | -87.4214476040 | -488195.76014116284 | 8162 | 6 |
 | generalized Static Exact v2 | 102 | 3 | -187.85581036 | -548934.0510065886 | 9310 | 15 |
 
-All three arms routed with zero DRC violations, zero unrouted nets, and zero
+All three historical arms routed with zero DRC violations, zero unrouted nets, and zero
 per-FPGA physical TNS. Generalized v2 nevertheless increased the WNS deficit
 by 122.10% and the TNS deficit by 97.97% relative to sequential-only, while
 adding 2,717 scheduled bit-hops and 7,383 transport cells. The result proves
@@ -1972,8 +1962,8 @@ rehashes the external source before authorizing reuse.  This is intended for
 controlled partition-policy experiments whose upstream frontend and timing
 checkpoints are already frozen.  It does not make an unsealed manual result a
 canonical benchmark, and it is rejected for non-TritonPart providers.
-Because the sequential, legacy-v1, and generalized-v2 policies have different
-cluster orders, the three-arm Static Exact A/B compiler deliberately rejects a
+Because the sequential and generalized-v2 policies have different cluster
+orders, the paired Static Exact A/B compiler deliberately rejects a
 single shared precomputed solution; imported solutions belong in a separately
 sealed single-arm candidate DAG.
 They also bind `partition_seed_attempts` and the explicit

@@ -1302,8 +1302,8 @@ class CanonicalExperimentTest(unittest.TestCase):
             report = compile_static_exact_ab_experiment_spec(
                 self._config(root), REPOSITORY, output
             )
-            self.assertEqual(report["nodes"], 30)
-            self.assertEqual(report["physical_terminal_nodes"], 3)
+            self.assertEqual(report["nodes"], 21)
+            self.assertEqual(report["physical_terminal_nodes"], 2)
             self.assertEqual(report["physical_seeds"], [1])
             spec = validate_experiment_spec(json.loads(output.read_text()))
             nodes = {item["id"]: item for item in spec["nodes"]}
@@ -1319,18 +1319,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 nodes["seq-partition"]["configuration"]["cut_mode"],
                 "sequential-only",
             )
-            self.assertEqual(
-                nodes["v1-partition"]["configuration"][
-                    "static_exact_candidate_policy"
-                ],
-                "potential-frontier-depth-v1",
-            )
-            self.assertEqual(
-                nodes["v1-partition"]["configuration"][
-                    "minimum_combinational_cut_nets"
-                ],
-                0,
-            )
+            self.assertNotIn("v1-partition", nodes)
             self.assertEqual(
                 nodes["v2-partition"]["configuration"][
                     "static_exact_candidate_policy"
@@ -1343,7 +1332,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
                 1,
             )
-            for prefix in ("seq", "v1", "v2"):
+            for prefix in ("seq", "v2"):
                 self.assertEqual(
                     nodes[f"{prefix}-partition"]["configuration"]["seed"],
                     0,
@@ -1362,13 +1351,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "src/emuflow/static_exact_qor.py",
                 comparison["implementation"]["components"],
             )
-            self.assertEqual(comparison["command"].count("--arm"), 3)
-            self.assertEqual(
-                comparison["configuration"][
-                    "legacy_minimum_combinational_cut_nets"
-                ],
-                0,
-            )
+            self.assertEqual(comparison["command"].count("--arm"), 2)
             self.assertEqual(
                 comparison["configuration"][
                     "generalized_minimum_combinational_cut_nets"

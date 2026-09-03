@@ -1063,7 +1063,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     static_exact_qor_run = experiment_stage_subparsers.add_parser(
         "static-exact-qor-compare-run",
-        help="compare sequential, legacy-v1, and generalized-v2 Phase 1-7 arms",
+        help="compare sequential and generalized-v2 Phase 1-7 arms",
     )
     static_exact_qor_run.add_argument("--platform", type=Path, required=True)
     static_exact_qor_run.add_argument(
@@ -1086,7 +1086,7 @@ def _build_parser() -> argparse.ArgumentParser:
     static_exact_qor_run.add_argument("--out", type=Path, required=True)
     static_exact_qor_validate = experiment_stage_subparsers.add_parser(
         "static-exact-qor-compare-validate",
-        help="independently rebuild a three-policy Static Exact QoR comparison",
+        help="independently rebuild a paired Static Exact QoR comparison",
     )
     static_exact_qor_validate.add_argument("root", type=Path)
     static_exact_qor_validate.add_argument(
@@ -2419,7 +2419,7 @@ def _build_parser() -> argparse.ArgumentParser:
     static_exact_experiment = subparsers.add_parser(
         "benchmark-static-exact-ab-compile",
         help=(
-            "compile one content-addressed sequential/v1/v2 Static Exact "
+            "compile one content-addressed sequential/generalized Static Exact "
             "Phase 1-7 comparison DAG"
         ),
     )
@@ -2427,7 +2427,6 @@ def _build_parser() -> argparse.ArgumentParser:
     static_exact_experiment.add_argument(
         "--repository-root", type=Path, required=True
     )
-    static_exact_experiment.add_argument("--legacy-max-depth", type=int, default=2)
     static_exact_experiment.add_argument(
         "--generalized-max-depth", type=int, default=8
     )
@@ -4784,7 +4783,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             args.config,
             args.repository_root,
             args.out,
-            legacy_max_depth=args.legacy_max_depth,
             generalized_max_depth=args.generalized_max_depth,
             minimum_combinational_cut_nets=(
                 args.minimum_combinational_cut_nets

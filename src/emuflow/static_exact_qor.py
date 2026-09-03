@@ -26,10 +26,7 @@ from .canonical_qor import (
     _sha256,
     _write_json_sha256,
 )
-from .combinational_cut import (
-    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
-    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
-)
+from .combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
 from .errors import EmuFlowError, ValidationError
 from .experiment_stages import validate_phase7_checkpoint
 from .experiment_storage import validate_experiment_write_path
@@ -38,19 +35,14 @@ from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
 from .runtime import QOR_REPORT_SCHEMA
 
 
-STATIC_EXACT_QOR_COMPARISON_SCHEMA = "emuflow.static-exact-qor-comparison/v3"
+STATIC_EXACT_QOR_COMPARISON_SCHEMA = "emuflow.static-exact-qor-comparison/v4"
 EXPERIMENT_SHARED_SCHEMA = "emuflow.experiment-shared-phase1-5/v1"
 STATIC_EXACT_ARM_LABELS = (
     "sequential-only",
-    "legacy-static-exact-v1",
     "generalized-static-exact-v2",
 )
 _LABEL_CONTRACTS = {
     "sequential-only": (CUT_MODE_SEQUENTIAL_ONLY, None),
-    "legacy-static-exact-v1": (
-        CUT_MODE_STATIC_EXACT,
-        STATIC_EXACT_CANDIDATE_FRONTIER_V1,
-    ),
     "generalized-static-exact-v2": (
         CUT_MODE_STATIC_EXACT,
         STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
@@ -653,7 +645,7 @@ def _partition_evidence(label: str, shared_root: Path) -> Dict[str, Any]:
     expected_mode, expected_policy = _LABEL_CONTRACTS[label]
     mode = report.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
     policy = report.get(
-        "static_exact_candidate_policy", STATIC_EXACT_CANDIDATE_FRONTIER_V1
+        "static_exact_candidate_policy", STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
     )
     if mode != expected_mode or (
         expected_policy is not None and policy != expected_policy
@@ -1031,28 +1023,12 @@ def build_static_exact_qor_comparison(
             "Static Exact QoR runtime evidence is incomplete across arms"
         )
     comparisons = {
-        "legacy-v1-vs-sequential": _comparison(
-            "legacy-static-exact-v1", "sequential-only", by_key, seeds
-        ),
         "generalized-v2-vs-sequential": _comparison(
             "generalized-static-exact-v2", "sequential-only", by_key, seeds
-        ),
-        "generalized-v2-vs-legacy-v1": _comparison(
-            "generalized-static-exact-v2",
-            "legacy-static-exact-v1",
-            by_key,
-            seeds,
         ),
     }
     generalized_exercised = all(
         by_key[("generalized-static-exact-v2", seed)]["partition"][
-            "combinational_cut_nets"
-        ]
-        > 0
-        for seed in seeds
-    )
-    legacy_exercised = all(
-        by_key[("legacy-static-exact-v1", seed)]["partition"][
             "combinational_cut_nets"
         ]
         > 0
@@ -1081,14 +1057,9 @@ def build_static_exact_qor_comparison(
         "physical_route_channel_width": next(iter(channel_widths)),
         "claim_scope": (
             "whole-original-design target/runtime timing after complete open "
-            "physical Phase 7; per-FPGA timing is diagnostic; legacy v1 is "
-            "a compatibility negative control when its selected cut count is zero"
+            "physical Phase 7; per-FPGA timing is diagnostic"
         ),
         "exercise_evidence": {
-            "legacy_v1_exercised_real_combinational_cuts": legacy_exercised,
-            "legacy_v1_classification": (
-                "exercised" if legacy_exercised else "vacuous-negative-control"
-            ),
             "generalized_v2_exercised_real_combinational_cuts": (
                 generalized_exercised
             ),

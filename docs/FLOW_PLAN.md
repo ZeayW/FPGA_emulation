@@ -41,7 +41,7 @@ checks source-ready and final-capture deadlines. A real routed DLA complete-
 flow acceptance first exercised five naturally selected combinational cuts,
 covered all 157,811 semantic segments with endpoint-exact routed evidence, and
 independently reconstructed whole-design target-clock and virtual-runtime
-WNS/TNS over all 195,532 original timing paths. The later controlled three-arm
+WNS/TNS over all 195,532 original timing paths. A later historical three-arm
 DLA + EDA 2023 case6 experiment exercised 102 generalized cuts at dependency
 depth three and completed all physical/equivalence/deadline gates, but
 regressed global target-clock WNS/TNS from -84.5812926868 ns /

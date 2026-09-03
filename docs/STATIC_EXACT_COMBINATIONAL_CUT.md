@@ -187,15 +187,15 @@ or replacing the fixed-frame feasibility proof with an assumed benefit.
 
 ### Cross-policy Phase 7 promotion certificate
 
-Sequential-only, legacy Static Exact v1, and generalized Static Exact v2 do
-not share Phase 3--5 artifacts.  They must therefore be three branches from
+Sequential-only and generalized Static Exact v2 do not share Phase 3--5
+artifacts. They must therefore be paired branches from
 the same content-addressed frontend/timing inputs, not three Phase 6 providers
 under one shared assignment.  Compile that complete DAG with:
 
 ```bash
 emuflow benchmark-static-exact-ab-compile \
   --config "$CANONICAL_CASE_CONFIG" --repository-root "$SOURCE" \
-  --legacy-max-depth 2 --generalized-max-depth 8 \
+  --generalized-max-depth 8 \
   --minimum-combinational-cut-nets 1 \
   --out "$EXPERIMENT/static-exact-ab-spec.json"
 ```
@@ -208,19 +208,17 @@ the comparison as the sole terminal.  Its final producer/validator command is:
 emuflow experiment-stage static-exact-qor-compare-run \
   --platform "$PLATFORM" \
   --arm sequential-only 1 "$SEQ_SHARED" "$SEQ_LOOKAHEAD" "$SEQ_PHASE6" "$SEQ_PHASE7" \
-  --arm legacy-static-exact-v1 1 "$V1_SHARED" "$V1_LOOKAHEAD" "$V1_PHASE6" "$V1_PHASE7" \
   --arm generalized-static-exact-v2 1 "$V2_SHARED" "$V2_LOOKAHEAD" "$V2_PHASE6" "$V2_PHASE7" \
   --out "$EVIDENCE/static-exact-qor"
 
 emuflow experiment-stage static-exact-qor-compare-validate \
   "$EVIDENCE/static-exact-qor" --platform "$PLATFORM" \
   --arm sequential-only 1 "$SEQ_SHARED" "$SEQ_LOOKAHEAD" "$SEQ_PHASE6" "$SEQ_PHASE7" \
-  --arm legacy-static-exact-v1 1 "$V1_SHARED" "$V1_LOOKAHEAD" "$V1_PHASE6" "$V1_PHASE7" \
   --arm generalized-static-exact-v2 1 "$V2_SHARED" "$V2_LOOKAHEAD" "$V2_PHASE6" "$V2_PHASE7"
 ```
 
 The checker independently replays each complete terminal chain, binds the
-three arms to identical source/timing/platform inputs and physical settings,
+two arms to identical source/timing/platform inputs and physical settings,
 and compares whole-original-design target-clock and virtual-runtime WNS/TNS.
 It also records exact-cut count/depth, virtual frequency, transport and total
 physical cells, cut nets, scheduled bit-hops, frame size, and completion slot.
@@ -355,14 +353,11 @@ positive threshold is an explicit exercise contract, used by the small
 capacity-limited acceptance fixture; a zero-cut large run is compatible
 evidence, not an exercised exact-cut result.
 
-The canonical three-policy QoR experiment makes this distinction explicit.
-Its sequential arm requires zero combinational cuts, its legacy v1 arm uses a
-zero minimum and becomes a `vacuous-negative-control` when the historical
-potential-frontier filter releases no selected boundary, and its generalized
-v2 arm alone inherits the requested positive exercise threshold. All three
-arms still complete Phase 1--7 so compatibility, runtime, resources, and final
-whole-design WNS/TNS remain comparable. Only an exercised generalized-v2 arm
-can satisfy the default-promotion gate.
+The canonical paired QoR experiment makes this distinction explicit. Its
+sequential arm requires zero combinational cuts, while its generalized v2 arm
+inherits the requested positive exercise threshold. Both arms complete Phase
+1--7 so runtime, resources, and final whole-design WNS/TNS remain comparable.
+Only an exercised generalized-v2 arm can satisfy the default-promotion gate.
 
 `examples/rtl/static_exact_acceptance.v` is the small real-RTL acceptance
 source. Its 33-input next-state parity needs at least seven 6-input LUTs, while
