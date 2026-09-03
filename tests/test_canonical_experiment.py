@@ -547,6 +547,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             config = json.loads(config_path.read_text())
             config["patron_algorithm_version"] = 9
             config["patron_flow_refinement"] = True
+            config["patron_max_moves"] = 16
             config_path.write_text(json.dumps(config), encoding="utf-8")
             output = root / "patron-v9-spec.json"
             compile_canonical_experiment_spec(config_path, REPOSITORY, output)
@@ -557,6 +558,14 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertEqual(
                 partition["configuration"]["patron_algorithm_version"], 9
             )
+            self.assertEqual(
+                partition["configuration"]["patron_max_moves"], 16
+            )
+            for command in (partition["command"], partition["validator"]):
+                self.assertEqual(
+                    command[command.index("--patron-max-moves") + 1],
+                    "16",
+                )
             self.assertEqual(
                 partition["command"][
                     partition["command"].index(
@@ -627,6 +636,28 @@ class CanonicalExperimentTest(unittest.TestCase):
             ):
                 compile_canonical_experiment_spec(
                     config_path, REPOSITORY, root / "invalid-v12.json"
+                )
+
+    def test_patron_max_moves_is_positive_and_patron_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config["patron_max_moves"] = 0
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "patron_max_moves"):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "zero.json"
+                )
+
+            config["patron_max_moves"] = 16
+            config["partition_provider"] = "tritonpart"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "requires partition_provider 'patron'"
+            ):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "tritonpart.json"
                 )
 
     def test_physical_storage_peak_override_is_sealed_and_positive(self) -> None:

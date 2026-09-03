@@ -472,6 +472,16 @@ def compile_canonical_experiment_spec(
             "canonical patron_flow_refinement requires partition_provider "
             "'patron'"
         )
+    patron_max_moves_value = config.get("patron_max_moves")
+    patron_max_moves = (
+        _positive_integer(patron_max_moves_value, "patron_max_moves")
+        if patron_max_moves_value is not None
+        else None
+    )
+    if patron_max_moves is not None and partition_provider != "patron":
+        raise ValidationError(
+            "canonical patron_max_moves requires partition_provider 'patron'"
+        )
     patron_physical_feedback_scale = config.get(
         "patron_physical_feedback_scale", 0.0
     )
@@ -1148,6 +1158,11 @@ def compile_canonical_experiment_spec(
             "--patron-algorithm-version",
             str(patron_algorithm_version),
         ]
+        if patron_max_moves is not None:
+            partition_command[-2:-2] = [
+                "--patron-max-moves",
+                str(patron_max_moves),
+            ]
         if patron_physical_system_timing is not None:
             partition_command[-2:-2] = [
                 "--patron-physical-system-timing",
@@ -1177,6 +1192,10 @@ def compile_canonical_experiment_spec(
                 str(patron_algorithm_version),
             ]
         )
+        if patron_max_moves is not None:
+            partition_validator.extend(
+                ["--patron-max-moves", str(patron_max_moves)]
+            )
         if patron_physical_system_timing is not None:
             partition_validator.extend(
                 [
@@ -1217,6 +1236,7 @@ def compile_canonical_experiment_spec(
             "provider": partition_provider,
             "patron_flow_refinement": patron_flow_refinement,
             "patron_algorithm_version": patron_algorithm_version,
+            "patron_max_moves": patron_max_moves,
             "patron_initial_assignment_source": (
                 "external"
                 if patron_initial_assignment is not None
