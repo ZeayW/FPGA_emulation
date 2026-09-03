@@ -112,16 +112,15 @@ def _validate_repository_commit(repository_root: Path, expected: Any) -> str:
         raise ValidationError("partition qualification source_commit is invalid")
     try:
         actual = subprocess.run(
-            ("git", "-C", str(repository_root), "rev-parse", "HEAD"),
+            ("git", "rev-parse", "HEAD"),
             check=True,
             capture_output=True,
             text=True,
+            cwd=repository_root,
         ).stdout.strip()
         tracked_changes = subprocess.run(
             (
                 "git",
-                "-C",
-                str(repository_root),
                 "status",
                 "--porcelain",
                 "--untracked-files=no",
@@ -129,6 +128,7 @@ def _validate_repository_commit(repository_root: Path, expected: Any) -> str:
             check=True,
             capture_output=True,
             text=True,
+            cwd=repository_root,
         ).stdout
     except (OSError, subprocess.CalledProcessError) as error:
         raise ValidationError(

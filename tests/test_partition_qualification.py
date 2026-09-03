@@ -23,10 +23,11 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 
 def _repository_commit() -> str:
     return subprocess.run(
-        ("git", "-C", str(REPOSITORY), "rev-parse", "HEAD"),
+        ("git", "rev-parse", "HEAD"),
         check=True,
         capture_output=True,
         text=True,
+        cwd=REPOSITORY,
     ).stdout.strip()
 
 
