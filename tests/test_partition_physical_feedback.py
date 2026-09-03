@@ -410,10 +410,12 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
                     expected_seed=1,
                     patron_initial_assignment_path=initial_path,
                     expected_patron_flow_refinement=True,
+                    expected_patron_max_moves=8,
                     patron_physical_system_timing_path=system_timing_path,
                     expected_patron_physical_feedback_scale=0.25,
                 )
             self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["patron_max_moves"], 8)
             self.assertEqual(checked["status"], "pass")
             self.assertEqual(
                 checked["algorithm_validation"]["physical_feedback"][

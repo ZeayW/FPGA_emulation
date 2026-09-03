@@ -769,6 +769,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         choices=(6, 9, 10, 11, 12, 13, 14),
     )
+    partition_validate.add_argument("--patron-max-moves", type=int)
     partition_validate.add_argument("--seed", type=int)
     partition_validate.add_argument("--seed-attempts", type=int)
     partition_validate.add_argument(
@@ -3862,6 +3863,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_patron_algorithm_version=(
                     args.patron_algorithm_version
                 ),
+                expected_patron_max_moves=args.patron_max_moves,
                 patron_physical_system_timing_path=(
                     args.patron_physical_system_timing
                 ),

@@ -314,6 +314,7 @@ def run_partition_checkpoint(
         "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
         "patron_flow_refinement": patron_flow_refinement,
         "patron_algorithm_version": patron_algorithm_version,
+        "patron_max_moves": patron_max_moves,
         "patron_initial_clusters_reused": (
             patron_initial_clusters_path is not None
         ),
@@ -430,6 +431,7 @@ def run_partition_checkpoint(
             patron_initial_clusters_path=patron_initial_clusters_path,
             expected_patron_flow_refinement=patron_flow_refinement,
             expected_patron_algorithm_version=patron_algorithm_version,
+            expected_patron_max_moves=patron_max_moves,
             patron_physical_system_timing_path=(
                 patron_physical_system_timing_path
             ),
@@ -468,6 +470,7 @@ def validate_partition_checkpoint(
     patron_initial_clusters_path: Path | None = None,
     expected_patron_flow_refinement: bool | None = None,
     expected_patron_algorithm_version: int | None = None,
+    expected_patron_max_moves: int | None = None,
     patron_physical_system_timing_path: Path | None = None,
     expected_patron_physical_feedback_scale: float | None = None,
     expected_static_exact_candidate_policy: str | None = None,
@@ -674,6 +677,19 @@ def validate_partition_checkpoint(
         raise ValidationError(
             "partition PATRON algorithm-version contract disagrees"
         )
+    actual_patron_max_moves = report.get("patron_max_moves")
+    if actual_patron_max_moves is not None and (
+        isinstance(actual_patron_max_moves, bool)
+        or not isinstance(actual_patron_max_moves, int)
+        or actual_patron_max_moves <= 0
+        or report.get("provider") != "patron"
+    ):
+        raise ValidationError("partition PATRON max-moves contract is invalid")
+    if (
+        expected_patron_max_moves is not None
+        and actual_patron_max_moves != expected_patron_max_moves
+    ):
+        raise ValidationError("partition PATRON max-moves contract disagrees")
     expected_physical_timing_sha256 = (
         _sha256(patron_physical_system_timing_path.resolve())
         if patron_physical_system_timing_path is not None
