@@ -347,8 +347,8 @@ emuflow phase3 \
   --out build/phase3-exact
 ```
 
-That opt-in Phase 3 artifact is qualified only as
-`partition-legality-only-provisional`. Phase 4 binds that structural contract
+That Phase 3 artifact is qualified only as
+`structural-partition-legality`. Phase 4 binds that structural contract
 to concrete multicast branches, while the ordinary timing-aware router remains
 free to optimize those branches. Unified Phase 5 then assigns ratios, lanes,
 and slots with the same optimizers used by sequential-only mode and independently
@@ -385,7 +385,7 @@ Phase 7C now independently reconstructs every exact
 segment's routed settle window and refuses missing evidence or a late
 source/capture even when aggregate virtual-runtime slack is positive. This is
 sealed by the checked-in
-`schemas/static-exact-segment-deadlines-v1.schema.json` report contract. This is
+`schemas/static-exact-segment-deadlines-v2.schema.json` report contract. This is
 not limited to the representative paths retained by the original STA export:
 the physical query set also walks each cut-net fan-in cone, measures every
 local primary-input/state launch, every transported RX-to-TX dependency, and

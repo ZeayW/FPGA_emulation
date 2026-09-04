@@ -21,7 +21,7 @@
     "mode": {"const": "static-exact-combinational"},
     "qualification": {"const": "structural-partition-legality"},
     "candidate_selection_policy": {
-      "enum": ["potential-frontier-depth-v1", "assignment-derived-acyclic-v2"]
+      "const": "assignment-derived-acyclic-v2"
     },
     "max_cross_fpga_dependency_depth": {"type": "integer", "minimum": 1},
     "cut_nodes": {"type": "array", "items": {"type": "object"}},

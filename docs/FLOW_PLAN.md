@@ -311,11 +311,11 @@ emits an independently reconstructed
 ratio optimization, feedback, and slot refinement remain available; Static
 Exact does not select a separate Phase 5 provider.
 
-All exact-mode stages share the
-`fabric-rising-edge-current-slot/v1` convention: TX samples on the rising edge
-labelled by its current slot; RX shadow capture occurs on the rising edge
-labelled by `arrival_slot`; a budget `B` makes the value available at edge
-`arrival+B`; and virtual-DUT commit occurs on the `frame_slots-1` edge. The
+All sampled-virtual-wire stages share the
+`tx-sample-before-rx-shadow-update-v1` convention: TX samples the pre-update
+value on its assigned edge, RX shadow capture occurs on the edge labelled by
+`arrival_slot`, a budget `B` makes the value available at edge `arrival+B`, and
+virtual-DUT commit occurs on the `frame_slots-1` edge. The
 versioned semantic contract and staged acceptance plan are defined in
 `docs/STATIC_EXACT_COMBINATIONAL_CUT.md`. No exact-mode provider may be
 promoted until the implemented Phase 5 source-readiness/final-capture gate is
@@ -510,11 +510,11 @@ Acceptance:
 - every frame completes before the virtual clock-enable;
 - partitioned and unpartitioned designs are cycle-equivalent.
 
-The first three items also enforce sampled virtual-wire constraints. The legacy
-candidate policy is depth-1/depth-2; generalized v2 derives the actual
-dependency DAG from the selected assignment and accepts any positive safety
-cap. The unified TDM scheduler uses the shared
-`fabric-rising-edge-current-slot/v1` convention, computes launch-to-TX,
+The first three items also enforce sampled virtual-wire constraints. The sole
+production generalized policy derives the actual dependency DAG from the
+selected assignment and accepts any positive safety cap. The unified TDM
+scheduler uses the shared `tx-sample-before-rx-shadow-update-v1` convention,
+computes launch-to-TX,
 RX-to-TX, and RX-to-capture readiness from the Phase 3 contract, and stops
 with a precise fixed-frame infeasibility diagnostic when any arrival or
 capture cannot precede commit. The builder emits a versioned dependency

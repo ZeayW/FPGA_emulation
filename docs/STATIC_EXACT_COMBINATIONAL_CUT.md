@@ -32,12 +32,14 @@ constant remains invalid.
 
 ## Slot-edge convention
 
-All exact-mode artifacts use `fabric-rising-edge-current-slot/v1`:
+All sampled-virtual-wire artifacts use
+`tx-sample-before-rx-shadow-update-v1`:
 
 - A TX assigned slot `S` samples its source at the fabric rising edge for
   which the controller's pre-edge value is `S`.
 - An RX assigned arrival slot `A` updates its shadow register at the fabric
-  rising edge for which the pre-edge value is `A`.
+  rising edge for which the pre-edge value is `A`. A TX sampling on the same
+  edge observes the pre-update shadow value.
 - A value captured or architecturally launched at edge `E` with a declared
   combinational budget of `B` slots is first eligible for downstream sampling
   at edge `E+B`. Consequently a one-slot relay budget requires
@@ -124,15 +126,16 @@ feasibility, and physical segment deadlines.
 1. **Characterization (implemented, no behavior change).** Read-only SCC,
    eligibility, dependency-depth, and theoretical atomic-component report;
    independent exact replay; tamper tests.
-2. **Phase 3 legacy depth 1/2 plus generalized v2 (implemented, opt-in).** Explicit cut policy, assignment
-   semantic contract, provider-independent cluster/legality reconstruction,
-   and balance fixture. Its strongest qualification is
-   `partition-legality-only-provisional`.
+2. **Phase 3 generalized structural policy (implemented, production).** The
+   sole production policy releases every structurally eligible candidate,
+   reconstructs the selected dependency DAG after assignment, and emits the
+   provider-neutral v3 contract. Its strongest Phase 3 qualification is
+   structural partition legality, never schedule feasibility.
 3. **Unified Phase 4/5 arbitrary budgeted DAG depth (implemented).** Exact
    branch-level route binding, canonical contract digest binding, normal
    timing-DAG ratio/lane/slot optimization with dependency readiness constraints,
    source-ready/capture certificates, fixed-frame diagnostics, and tamper tests.
-4. **Phase 6 (implemented, opt-in).** Contract-bound exact boundaries,
+4. **Phase 6 (implemented).** Contract-bound sampled-virtual-wire boundaries,
    hidden-bypass rejection, deterministic shadow startup, event-driven
    macro-cycle simulation, complete small-model one-step enumeration, and
    representative Yosys formal one-macro-step miters for dependency depths
@@ -141,7 +144,7 @@ feasibility, and physical segment deadlines.
    Contract-bound routed `launch_to_tx`, `rx_to_tx`, and `rx_to_capture`
    evidence, independent causal deadline reconstruction, explicit missing-
    evidence incompleteness, and global target-clock/virtual-runtime WNS/TNS.
-   The public `schemas/static-exact-segment-deadlines-v1.schema.json` contract
+   The public `schemas/static-exact-segment-deadlines-v2.schema.json` contract
    fixes the complete routed-deadline report surface. The large acceptance
    selects five natural combinational cuts without fixed partition placement,
    covers all 157,811 contract segments with endpoint-exact routed evidence,

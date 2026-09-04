@@ -1,11 +1,10 @@
-"""Characterization and semantic contracts for static exact cuts.
+"""Characterization and structural contracts for combinational cuts.
 
 The read-only characterization path reconstructs the combinational instance
-graph from EmuIR and identifies a conservative potential-cut set.  The opt-in
-Phase 3 path additionally uses the same independent graph model to build the
-versioned depth-1/depth-2 semantic contract consumed by routing, scheduling,
-macro-cycle equivalence, and routed deadline qualification.  The production
-``sequential-only`` policy remains unchanged.
+graph from EmuIR and identifies a conservative potential-cut set. Phase 3 uses
+the same independent graph model to build the provider-neutral structural
+contract consumed by routing, unified TDM assignment, macro-cycle equivalence,
+and routed deadline qualification. It does not encode a scheduler decision.
 """
 
 from __future__ import annotations
@@ -42,14 +41,15 @@ SEQUENTIAL_LEGAL_CUT_CLASSES = {
 }
 REPLICATED_NET_CLASSES = {"clock", "reset", "primary_input"}
 SLOT_EDGE_CONVENTION = {
-    "id": "fabric-rising-edge-current-slot/v1",
+    "id": "tx-sample-before-rx-shadow-update-v1",
     "tx_sample": (
         "a TX assigned slot S samples its source at the fabric rising edge "
         "for which the pre-edge controller value is S"
     ),
     "rx_capture": (
         "an RX assigned arrival slot A updates its shadow register at the "
-        "fabric rising edge for which the pre-edge controller value is A"
+        "fabric rising edge for which the pre-edge controller value is A; "
+        "a TX sampling on that edge observes the pre-update shadow value"
     ),
     "settle_budget": (
         "a value captured or launched at edge E with budget B is first "
