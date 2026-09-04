@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import math
 import shutil
 import subprocess
@@ -777,6 +778,8 @@ def _repair_multi_resource_balance(
     estimated_cut_delta = 0.0
     move_total = 0
     paired_move_sequences = 0
+    ejection_chain_sequences = 0
+    max_ejection_chain_moves = 0
 
     def apply_move(vertex: int, source: int, target: int) -> float:
         """Apply and audit one deterministic repair move."""
@@ -1132,11 +1135,410 @@ def _repair_multi_resource_balance(
                         if best_pair is None or candidate < best_pair:
                             best_pair = candidate
             if best_pair is None:
-                raise ValidationError(
-                    "TritonPart balance repair found no legal direct or "
-                    "two-move augmenting path for "
-                    f"{fpga_order[source]!r}; overload={overload(source)}"
+                # A two-move exchange is still insufficient when the target
+                # must evict several complementary resource vectors, or when
+                # its blocker itself needs room made in another partition.
+                # Search a bounded deterministic ejection chain over the
+                # complete set of structurally relevant blockers.  The root
+                # move is evaluated atomically: intermediate states may exceed
+                # a capacity, but the committed sequence must reduce the
+                # selected source overload without worsening another existing
+                # violation.
+                movable_by_part_dimension: List[List[List[int]]] = [
+                    [[] for _ in range(num_dimensions)]
+                    for _ in range(num_parts)
+                ]
+                for part in range(num_parts):
+                    for candidate_vertex in vertices_by_part[part]:
+                        if labels[candidate_vertex] != part:
+                            continue
+                        candidate_id = cluster_order[candidate_vertex]
+                        if clusters[candidate_id]["fixed_fpga"] is not None:
+                            continue
+                        for dimension, weight in enumerate(
+                            vertex_weights[candidate_vertex]
+                        ):
+                            if weight:
+                                movable_by_part_dimension[part][
+                                    dimension
+                                ].append(candidate_vertex)
+                for part_indexes in movable_by_part_dimension:
+                    for index in part_indexes:
+                        index.sort(key=lambda item: cluster_order[item])
+
+                def exact_sequence_delta(
+                    overrides: Mapping[int, int],
+                ) -> float:
+                    affected_edges = {
+                        edge_index
+                        for vertex in overrides
+                        for edge_index in incident_edges[vertex]
+                    }
+                    delta = 0.0
+                    for edge_index in affected_edges:
+                        before_cut = len(edge_part_counts[edge_index]) > 1
+                        after_parts = {
+                            overrides.get(vertex, labels[vertex])
+                            for vertex in edge_vertices[edge_index]
+                        }
+                        delta += (
+                            int(len(after_parts) > 1) - int(before_cut)
+                        ) * edge_weights[edge_index]
+                    return delta
+
+                def violation_key(
+                    state_loads: Sequence[Sequence[int]],
+                    limits: Sequence[Sequence[int]],
+                ) -> Tuple[int, float, float, int]:
+                    violations = []
+                    absolute = 0
+                    for part in range(num_parts):
+                        for dimension in range(num_dimensions):
+                            excess = max(
+                                0,
+                                state_loads[part][dimension]
+                                - limits[part][dimension],
+                            )
+                            if not excess:
+                                continue
+                            normalized = excess / max(
+                                1, allowed[part][dimension]
+                            )
+                            violations.append(normalized)
+                            absolute += excess
+                    return (
+                        len(violations),
+                        sum(violations),
+                        max(violations, default=0.0),
+                        absolute,
+                    )
+
+                # This is a fallback for rare, nearly legal provider outputs.
+                # Its limits scale with the number of bins and resource
+                # dimensions, not with a benchmark identity.  Beam pruning is
+                # deterministic and prioritizes capacity progress before cut
+                # cost; the final assignment is always checked by the ordinary
+                # independent balance validator.
+                max_chain_moves = max(
+                    3, min(16, num_parts * 2 + num_dimensions)
                 )
+                beam_width = max(64, min(512, num_parts * 64))
+                transition_width = max(64, min(256, num_parts * 64))
+
+                def find_ejection_chain(
+                    root_vertex: int,
+                    root_target: int,
+                ) -> Optional[Tuple[Tuple[int, int, int], ...]]:
+                    root_weights = vertex_weights[root_vertex]
+                    limits = [
+                        [
+                            max(
+                                allowed[part][dimension],
+                                loads[part][dimension],
+                            )
+                            for dimension in range(num_dimensions)
+                        ]
+                        for part in range(num_parts)
+                    ]
+                    source_after = [
+                        loads[source][dimension] - root_weights[dimension]
+                        for dimension in range(num_dimensions)
+                    ]
+                    limits[source] = [
+                        max(
+                            allowed[source][dimension],
+                            source_after[dimension],
+                        )
+                        for dimension in range(num_dimensions)
+                    ]
+                    state_loads = [list(item) for item in loads]
+                    for dimension, weight in enumerate(root_weights):
+                        state_loads[source][dimension] -= weight
+                        state_loads[root_target][dimension] += weight
+                    root_move = (root_vertex, source, root_target)
+                    root_overrides = ((root_vertex, root_target),)
+                    root_state = (
+                        tuple(tuple(item) for item in state_loads),
+                        root_overrides,
+                        (root_vertex,),
+                        (root_move,),
+                        cut_delta(root_vertex, source, root_target),
+                    )
+                    if violation_key(state_loads, limits)[0] == 0:
+                        return (root_move,)
+                    beam = [root_state]
+                    for _ in range(1, max_chain_moves):
+                        next_states = []
+                        goals = []
+                        seen = set()
+                        for (
+                            frozen_loads,
+                            frozen_overrides,
+                            frozen_moved,
+                            sequence,
+                            approximate_delta,
+                        ) in beam:
+                            state_loads = [
+                                list(item) for item in frozen_loads
+                            ]
+                            overrides = dict(frozen_overrides)
+                            moved = set(frozen_moved)
+                            exceeded = []
+                            for part in range(num_parts):
+                                dimensions_exceeded = [
+                                    dimension
+                                    for dimension in range(num_dimensions)
+                                    if state_loads[part][dimension]
+                                    > limits[part][dimension]
+                                ]
+                                if not dimensions_exceeded:
+                                    continue
+                                part_excess = max(
+                                    (
+                                        state_loads[part][dimension]
+                                        - limits[part][dimension]
+                                    )
+                                    / max(1, allowed[part][dimension])
+                                    for dimension in dimensions_exceeded
+                                )
+                                exceeded.append(
+                                    (-part_excess, part, dimensions_exceeded)
+                                )
+                            if not exceeded:
+                                goals.append(
+                                    (
+                                        exact_sequence_delta(overrides),
+                                        sequence,
+                                    )
+                                )
+                                continue
+                            _, blocked_part, dimensions_exceeded = min(
+                                exceeded
+                            )
+                            pivot = min(
+                                dimensions_exceeded,
+                                key=lambda dimension: (
+                                    len(
+                                        movable_by_part_dimension[
+                                            blocked_part
+                                        ][dimension]
+                                    ),
+                                    dimension,
+                                ),
+                            )
+                            deficits = [
+                                max(
+                                    0,
+                                    state_loads[blocked_part][dimension]
+                                    - limits[blocked_part][dimension],
+                                )
+                                for dimension in range(num_dimensions)
+                            ]
+                            transitions = []
+                            for blocker in movable_by_part_dimension[
+                                blocked_part
+                            ][pivot]:
+                                if blocker in moved:
+                                    continue
+                                if (
+                                    overrides.get(blocker, labels[blocker])
+                                    != blocked_part
+                                ):
+                                    continue
+                                blocker_weights = vertex_weights[blocker]
+                                relief = sum(
+                                    min(
+                                        blocker_weights[dimension],
+                                        deficits[dimension],
+                                    )
+                                    / max(
+                                        1,
+                                        allowed[blocked_part][dimension],
+                                    )
+                                    for dimension in range(num_dimensions)
+                                )
+                                if relief <= 0.0:
+                                    continue
+                                for destination in range(num_parts):
+                                    if destination == blocked_part:
+                                        continue
+                                    candidate_loads = [
+                                        list(item) for item in state_loads
+                                    ]
+                                    for dimension, weight in enumerate(
+                                        blocker_weights
+                                    ):
+                                        candidate_loads[blocked_part][
+                                            dimension
+                                        ] -= weight
+                                        candidate_loads[destination][
+                                            dimension
+                                        ] += weight
+                                    move_delta = cut_delta(
+                                        blocker,
+                                        blocked_part,
+                                        destination,
+                                    )
+                                    move = (
+                                        blocker,
+                                        blocked_part,
+                                        destination,
+                                    )
+                                    transitions.append(
+                                        (
+                                            violation_key(
+                                                candidate_loads, limits
+                                            ),
+                                            move_delta / relief,
+                                            move_delta,
+                                            cluster_order[blocker],
+                                            destination,
+                                            candidate_loads,
+                                            move,
+                                        )
+                                    )
+                            for transition in heapq.nsmallest(
+                                transition_width, transitions
+                            ):
+                                (
+                                    key,
+                                    _,
+                                    move_delta,
+                                    _,
+                                    destination,
+                                    candidate_loads,
+                                    move,
+                                ) = transition
+                                blocker = move[0]
+                                candidate_overrides = dict(overrides)
+                                candidate_overrides[blocker] = destination
+                                candidate_sequence = sequence + (move,)
+                                candidate_moved = tuple(
+                                    sorted((*moved, blocker))
+                                )
+                                frozen_candidate_loads = tuple(
+                                    tuple(item) for item in candidate_loads
+                                )
+                                state_identity = (
+                                    frozen_candidate_loads,
+                                    tuple(
+                                        sorted(candidate_overrides.items())
+                                    ),
+                                )
+                                if state_identity in seen:
+                                    continue
+                                seen.add(state_identity)
+                                if key[0] == 0:
+                                    goals.append(
+                                        (
+                                            exact_sequence_delta(
+                                                candidate_overrides
+                                            ),
+                                            candidate_sequence,
+                                        )
+                                    )
+                                    continue
+                                next_states.append(
+                                    (
+                                        key,
+                                        approximate_delta + move_delta,
+                                        tuple(
+                                            (
+                                                cluster_order[move_vertex],
+                                                move_source,
+                                                move_target,
+                                            )
+                                            for (
+                                                move_vertex,
+                                                move_source,
+                                                move_target,
+                                            ) in candidate_sequence
+                                        ),
+                                        frozen_candidate_loads,
+                                        tuple(
+                                            sorted(
+                                                candidate_overrides.items()
+                                            )
+                                        ),
+                                        candidate_moved,
+                                        candidate_sequence,
+                                    )
+                                )
+                        if goals:
+                            return min(goals)[1]
+                        next_states.sort(key=lambda item: item[:3])
+                        beam = [
+                            (
+                                item[3],
+                                item[4],
+                                item[5],
+                                item[6],
+                                item[1],
+                            )
+                            for item in next_states[:beam_width]
+                        ]
+                        if not beam:
+                            break
+                    return None
+
+                best_chain = None
+                for (
+                    source_without_score,
+                    cluster_id,
+                    vertex,
+                    relief,
+                ) in source_candidates:
+                    for target in range(num_parts):
+                        if target == source:
+                            continue
+                        chain = find_ejection_chain(vertex, target)
+                        if chain is None:
+                            continue
+                        overrides = {
+                            moved_vertex: destination
+                            for moved_vertex, _, destination in chain
+                        }
+                        chain_delta = exact_sequence_delta(overrides)
+                        candidate = (
+                            len(chain),
+                            source_without_score,
+                            chain_delta / relief,
+                            chain_delta,
+                            cluster_id,
+                            tuple(
+                                (
+                                    cluster_order[moved_vertex],
+                                    move_source,
+                                    destination,
+                                )
+                                for (
+                                    moved_vertex,
+                                    move_source,
+                                    destination,
+                                ) in chain
+                            ),
+                            chain,
+                        )
+                        if best_chain is None or candidate < best_chain:
+                            best_chain = candidate
+                    if best_chain is not None and best_chain[0] == 3:
+                        # Direct and two-move solutions were already proven
+                        # absent, so three moves is globally minimal.
+                        break
+                if best_chain is None:
+                    raise ValidationError(
+                        "TritonPart balance repair found no legal direct, "
+                        "two-move, or bounded ejection-chain repair for "
+                        f"{fpga_order[source]!r}; overload={overload(source)}"
+                    )
+                chain = best_chain[-1]
+                for vertex, move_source, destination in chain:
+                    apply_move(vertex, move_source, destination)
+                ejection_chain_sequences += 1
+                max_ejection_chain_moves = max(
+                    max_ejection_chain_moves, len(chain)
+                )
+                continue
             (
                 _,
                 _,
@@ -1163,6 +1565,8 @@ def _repair_multi_resource_balance(
     return assignment, {
         "moves": move_total,
         "paired_move_sequences": paired_move_sequences,
+        "ejection_chain_sequences": ejection_chain_sequences,
+        "max_ejection_chain_moves": max_ejection_chain_moves,
         "move_sha256": move_digest.hexdigest(),
         "move_counts": {
             f"{fpga_order[source]}->{fpga_order[target]}": count

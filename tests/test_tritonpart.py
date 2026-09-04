@@ -247,6 +247,79 @@ class TritonPartTest(unittest.TestCase):
         self.assertEqual(repaired["c0"], "fpga1")
         self.assertEqual(repaired["c1"], "fpga2")
 
+    def test_balance_repair_uses_three_part_ejection_chain(self) -> None:
+        platform = Platform.from_dict(
+            {
+                "schema": "emuflow.boarddb/v1",
+                "platform": {
+                    "name": "three-part-ejection-chain",
+                    "kind": "virtual",
+                },
+                "fpgas": [
+                    {
+                        "id": "fpga0",
+                        "part": "test-part",
+                        "utilization_limit": 1.0,
+                        "capacity": {"lut": 1, "ff": 1, "dsp": 3},
+                    },
+                    {
+                        "id": "fpga1",
+                        "part": "test-part",
+                        "utilization_limit": 1.0,
+                        "capacity": {"lut": 3, "ff": 1, "dsp": 1},
+                    },
+                    {
+                        "id": "fpga2",
+                        "part": "test-part",
+                        "utilization_limit": 1.0,
+                        "capacity": {"lut": 1, "ff": 3, "dsp": 1},
+                    },
+                ],
+                "links": [],
+            }
+        )
+        cluster_order = ["x", "y", "z"]
+        clusters = {
+            "clusters": [
+                {
+                    "id": cluster_id,
+                    "instances": [f"i{index}"],
+                    "resources": {},
+                    "fixed_fpga": None,
+                }
+                for index, cluster_id in enumerate(cluster_order)
+            ]
+        }
+        repaired, report = _repair_multi_resource_balance(
+            {"x": "fpga0", "y": "fpga1", "z": "fpga2"},
+            clusters,
+            platform,
+            {
+                "balance_tolerance": 2.0 / 3.0,
+                "balance_tolerance_by_dimension": {},
+            },
+            {
+                "cluster_order": cluster_order,
+                "fpga_order": ["fpga0", "fpga1", "fpga2"],
+                "vertex_dimensions": ["cells", "lut", "ff", "dsp"],
+                "vertex_weights": [
+                    [1, 3, 0, 0],
+                    [1, 0, 3, 0],
+                    [1, 0, 0, 3],
+                ],
+                "effective_balance_percent": 200.0 / 3.0,
+                "hyperedges": [],
+            },
+        )
+        self.assertEqual(
+            repaired,
+            {"x": "fpga1", "y": "fpga2", "z": "fpga0"},
+        )
+        self.assertEqual(report["paired_move_sequences"], 0)
+        self.assertEqual(report["ejection_chain_sequences"], 1)
+        self.assertEqual(report["max_ejection_chain_moves"], 3)
+        self.assertEqual(report["moves"], 3)
+
     def test_export_translates_relative_tolerance_to_ubfactor_points(
         self,
     ) -> None:

@@ -1313,10 +1313,12 @@ TritonPart assignments are legalized against the independently checked
 cells/LUT/FF/BRAM/DSP balance bounds by default; pass
 `--no-partition-repair-balance` only for an explicit raw-partitioner study.
 The deterministic legalizer commits the target selected by its cut/relief
-ranking.  When multidimensional capacity can be repaired only by a two-move
-exchange, it uses resource-weight indexes and cached deficit queries instead
-of scanning the Cartesian product of all source clusters, blockers, and FPGA
-destinations.
+ranking.  It uses resource-weight indexes and cached deficit queries for
+two-move exchanges instead of scanning the Cartesian product of all source
+clusters, blockers, and FPGA destinations.  When several complementary
+blockers or partitions must move atomically, it falls back to a bounded
+multi-resource ejection chain.  Every committed result still passes the
+ordinary independent multi-resource balance validator.
 For a design that naturally collapses into one zero-cut partition, pass
 `--partition-repair-min-used-fpgas`; every repair move remains explicit in the
 partition artifact and is checked independently.
