@@ -132,7 +132,7 @@ resources, the mapped logical netlist, placements, pin mappings, and routing.
 It does not represent multi-FPGA topology or TDM and is therefore not the
 system-level IR.
 
-## 4. Build DAG and cache boundaries
+## 4. Transient full-flow artifact order
 
 ```text
 global/design.emuir.json
@@ -150,9 +150,10 @@ global/design.emuir.json
   -> optional/fpga_N/design.bit
 ```
 
-Every artifact records a schema version and upstream inputs. A later runner
-will hash inputs so selecting a real board only invalidates topology-dependent
-stages; global synthesis and logical analysis remain reusable.
+These artifacts form the execution order inside one isolated complete run.
+They are not a persistent checkpoint DAG: after Phase 7/7C validation, retain
+only the compact terminal result summary and delete the Phase 1--7 payloads and
+physical work trees. A new experiment starts a fresh complete run.
 
 ## 5. Implementation phases
 

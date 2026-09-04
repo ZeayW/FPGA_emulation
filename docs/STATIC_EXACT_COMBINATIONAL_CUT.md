@@ -190,43 +190,17 @@ or replacing the fixed-frame feasibility proof with an assumed benefit.
 ### Cross-policy Phase 7 promotion certificate
 
 Sequential-only and generalized Static Exact v2 do not share Phase 3--5
-artifacts. They must therefore be paired branches from
-the same content-addressed frontend/timing inputs, not three Phase 6 providers
-under one shared assignment.  Compile that complete DAG with:
-
-```bash
-emuflow benchmark-static-exact-ab-compile \
-  --config "$CANONICAL_CASE_CONFIG" --repository-root "$SOURCE" \
-  --generalized-max-depth 8 \
-  --minimum-combinational-cut-nets 1 \
-  --out "$EXPERIMENT/static-exact-ab-spec.json"
-```
-
-The compiler retains one frontend and one complete TimingPathDB node, forks
-the partition/route/TDM/lookahead/split/physical nodes by cut policy, and adds
-the comparison as the sole terminal.  Its final producer/validator command is:
-
-```bash
-emuflow experiment-stage static-exact-qor-compare-run \
-  --platform "$PLATFORM" \
-  --arm sequential-only 1 "$SEQ_SHARED" "$SEQ_LOOKAHEAD" "$SEQ_PHASE6" "$SEQ_PHASE7" \
-  --arm generalized-static-exact-v2 1 "$V2_SHARED" "$V2_LOOKAHEAD" "$V2_PHASE6" "$V2_PHASE7" \
-  --out "$EVIDENCE/static-exact-qor"
-
-emuflow experiment-stage static-exact-qor-compare-validate \
-  "$EVIDENCE/static-exact-qor" --platform "$PLATFORM" \
-  --arm sequential-only 1 "$SEQ_SHARED" "$SEQ_LOOKAHEAD" "$SEQ_PHASE6" "$SEQ_PHASE7" \
-  --arm generalized-static-exact-v2 1 "$V2_SHARED" "$V2_LOOKAHEAD" "$V2_PHASE6" "$V2_PHASE7"
-```
-
-The checker independently replays each complete terminal chain, binds the
-two arms to identical source/timing/platform inputs and physical settings,
-and compares whole-original-design target-clock and virtual-runtime WNS/TNS.
-It also records exact-cut count/depth, virtual frequency, transport and total
-physical cells, cut nets, scheduled bit-hops, frame size, and completion slot.
-Each one-shot arm records partition, routing, TDM, Phase 6, physical, and total
-wall time in its terminal report. The comparator reads those final reports; it
-does not retain per-stage checkpoint manifests after the comparison finishes.
+artifacts. Run two independent one-shot `multi-fpga compile --physical`
+commands from the same immutable RTL, BoardDB, architecture, constraints, tool
+installation, partition seed, and physical seed. Select `sequential-only` for
+the control and `static-exact-combinational` for generalized v2. Do not publish
+or retain their Phase 1--6 products as checkpoints. The terminal comparator
+reads only the two compact final reports and compares whole-original-design
+target-clock and virtual-runtime WNS/TNS. It also records exact-cut
+count/depth, virtual frequency, transport and total physical cells, cut nets,
+scheduled bit-hops, frame size, completion slot, DRC/unrouted counts, and total
+wall time. Delete both complete work directories after the terminal summary is
+written and checked.
 The generated promotion gate is false unless v2 exercises at least one real
 combinational cut and improves the paired target-clock result over
 sequential-only.  A single physical seed is the routine gate; more seeds are

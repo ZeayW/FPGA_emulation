@@ -45,10 +45,11 @@ These requirements apply to all work in this repository.
   requires an old invocation contract, expose a separately named versioned
   command/config schema rather than making the current command guess intent.
 
-## Default experiment lifecycle: ephemeral intermediates
+## Only permitted experiment lifecycle: ephemeral intermediates
 
-These rules supersede the opt-in cache rules below for ordinary validation and
-QoR experiments.
+This is the only permitted lifecycle for validation and QoR experiments. Do
+not introduce a persistent checkpoint/cache exception to avoid rerunning a
+phase, even when a run is expensive or an earlier result appears reusable.
 
 - Run a complete requested validation in one isolated experiment directory.
   Intermediate Phase 1--7 files may exist while that run is active, but they
@@ -70,17 +71,23 @@ QoR experiments.
 - On cancellation or failure, first prove that the recorded process tree is no
   longer running, then remove the attempt's scratch and intermediate outputs.
   Preserve only a compact failure summary when it contains actionable evidence.
-- Existing final evidence bundles remain immutable. Existing intermediate
-  caches may be removed when they are not referenced by another live task;
-  never delete another task's active input or final evidence.
+- Retain only compact terminal result summaries. A directory called
+  `evidence`, `archive`, or `checkpoint` does not qualify for retention when it
+  contains Phase 1--7 payloads, placement/routing work trees, split netlists,
+  duplicated reports, or other replay material. Remove those payloads after
+  confirming that no live task uses them; never delete another task's active
+  input or source tree.
 
-## Explicit opt-in checkpoint lifecycle
+## Historical checkpoint design (documentation only; never execute)
 
-The content-addressed DAG and checkpoint rules in this section apply only when
-the user explicitly requests persistent checkpoint reuse for a particular
-experiment. They are not the default execution policy.
+The remainder of this section records the old checkpoint system so legacy code
+and tests can be understood while it is retired. It does **not** authorize any
+new cache, checkpoint DAG, stage publication, evidence replay bundle, farm
+state, GC inventory, or archived run. Do not follow its operational steps,
+even if a user asks for faster iteration; use a fresh isolated one-shot full
+flow and retain only its compact terminal summary.
 
-When explicitly enabled, these rules cover the complete selected experiment:
+Historically, the retired design covered the complete selected experiment:
 correctness and determinism validation, benchmark qualification, algorithm A/B
 and ablation studies, scalability and performance measurements, public-contest
 evaluation, synthesis and partitioning runs, routing and scheduling studies,
@@ -246,16 +253,14 @@ policy.
   or temporary artifacts, even as a quota workaround or performance
   optimization.  Set `TMPDIR` and tool-specific scratch variables to a unique
   directory under the required `/research` root when needed.
-- Never silently fall back to another filesystem.  Before launching an
-  expensive DAG frontier, check the user quota and estimate the frontier's
-  peak retained plus temporary footprint.  If the available quota is
-  insufficient, keep the frontier blocked, report the storage requirement,
-  and reclaim space only through the validated archive/retention process.
-- Storage cleanup must remain evidence-aware.  Preserve sealed final reports,
-  manifests, hashes, placement/route artifacts required for replay, and the
-  minimal valid checkpoints.  Classify and obtain an explicit safe cleanup
-  set before removing regenerable physical scratch, duplicated ancestors,
-  obsolete failed staging, or redundant captures; never delete unrelated
+- Never silently fall back to another filesystem. Before launching an
+  expensive one-shot full flow, check the user quota and estimate its peak
+  temporary footprint. If the available quota is insufficient, report the
+  requirement and remove obsolete EmuFlow scratch after confirming that no
+  live task uses it; do not create a cache as a quota workaround.
+- Storage cleanup must remain process-aware. Preserve compact terminal result
+  summaries, then remove placement/routing work trees, phase payloads, failed
+  attempts, duplicated ancestors, and other scratch. Never delete unrelated
   tasks or unvalidated evidence merely to make a run fit.
 
 ## Managed-flow hot paths must stay compact
@@ -498,12 +503,11 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   multiplier, gradient, and step-size calculations.  An empty active
   placement subspace is a no-op/termination condition, not a reason to divide
   a zero gradient or to hide NaN with a broad epsilon clamp.
-- Do not register ordinary validation outputs in `experiment-cache`, and do not
-  create a new persistent checkpoint graph to avoid rerunning a baseline. Keep
-  only terminal evidence from the current comparison. The import/re-plan rules
-  in the explicit opt-in checkpoint section apply only when the user requests
-  persistent replay checkpoints. A changed Phase 6 option requires a fresh
-  complete arm; a changed RTL or BoardDB defines a different experiment.
+- Do not register validation outputs in `experiment-cache`, and do not create
+  a persistent checkpoint graph to avoid rerunning a baseline. Keep only the
+  compact terminal summary from the current comparison. A changed Phase 6
+  option requires a fresh complete arm; a changed RTL or BoardDB defines a
+  different experiment.
 - Independent A/B runs may and should use different HPC nodes concurrently.
   Each run must use an isolated output directory and the same immutable source
   commit and versioned tool installation.

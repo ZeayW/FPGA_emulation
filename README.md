@@ -378,9 +378,9 @@ schedule with three event-driven macro-cycle traces. Small models additionally
 enumerate every architectural state and non-reset primary input for one
 macro-step. The report distinguishes randomized validation from exhaustive
 small-model proof. A normal validation performs one independent Phase 6 replay
-inside its isolated full-flow run. Persistent checkpoint reuse is available
-only when a user explicitly requests a checkpoint study; it is not part of the
-default validation lifecycle.
+inside its isolated full-flow run. EmuFlow validation does not persist or reuse
+phase checkpoints: after the terminal Phase 7/7C checks, it retains only a
+compact result summary and removes the complete working directory.
 Phase 7C now independently reconstructs every exact
 segment's routed settle window and refuses missing evidence or a late
 source/capture even when aggregate virtual-runtime slack is positive. This is
@@ -461,54 +461,26 @@ QoR evidence.
 
 The two policies have different assignments, routes, and schedules, so the
 ordinary Phase 6 provider comparator is intentionally not used for this gate.
-Run the two arms in isolated one-shot full-flow directories and terminate in a
-dedicated cross-policy certificate. They may share immutable source inputs but
-must not retain a persistent intermediate DAG. The comparison uses one explicit
-Phase 3 seed for every arm;
+Run the two arms as independent `multi-fpga compile --physical` commands in
+isolated one-shot full-flow directories, then compare their compact terminal
+reports. They may share immutable RTL/platform/tool inputs but no phase output.
+The comparison uses one explicit Phase 3 seed for every arm;
 it never lets each policy search a multi-seed portfolio and then compares
 unrelated winners.  Physical seed remains a separate paired axis.  For the
 canonical case6 exercise, seed 4 is the sealed controlled seed used by the
 paired comparison; it releases a non-vacuous generalized
 boundary while every arm still receives exactly one partition attempt:
 
-```bash
-emuflow benchmark-static-exact-ab-compile \
-  --config "$CANONICAL_CASE_CONFIG" --repository-root "$SOURCE" \
-  --generalized-max-depth 8 \
-  --partition-seed 4 \
-  --minimum-combinational-cut-nets 1 \
-  --out "$EXPERIMENT/static-exact-ab-spec.json"
-```
-
-The final DAG node is equivalent to this explicit checkpoint command:
-
-```bash
-emuflow experiment-stage static-exact-qor-compare-run \
-  --platform "$PLATFORM" \
-  --arm sequential-only 1 "$SEQ_SHARED" "$SEQ_LOOKAHEAD" "$SEQ_PHASE6" "$SEQ_PHASE7" \
-  --arm generalized-static-exact-v2 1 "$V2_SHARED" "$V2_LOOKAHEAD" "$V2_PHASE6" "$V2_PHASE7" \
-  --out "$EVIDENCE/static-exact-qor"
-```
-
-The compiler removes the unrelated placement-aware/Chimew Phase 6 arms from
-the sequential branch, so only two physical terminals are run per requested
-seed.  The independent replay requires byte-identical EmuIR, complete TimingPathDB,
-partition weights, BoardDB, constraints, timing model, and physical channel
-width across all arms.  It also replays each partition report and requires
-`seed_attempts == 1`, requested seed equal to selected seed, and the same
-selected partition seed across all arms.  A comparison with different selected
-partition seeds fails closed and cannot provide promotion evidence.  It
-permits only the intended Phase 3--6 differences,
-revalidates each complete Phase 7 chain, reports whole-design target/runtime
-WNS and TNS, per-FPGA diagnostics, virtual frequency, transport/physical cell
-counts, cut count, scheduled bit-hops, frame size, completion slot, and sealed
-wall-clock times for Phase 3--7 and the physical lookahead/Phase 7 pair.  Node
-wall time is stored in the immutable checkpoint manifest rather than mutable
-farm state, so the final bundle can replay the runtime comparison without the
-original attempt directories.  Historical imported checkpoints without this
-field remain readable but cannot supply runtime evidence. The checker refuses
-default promotion if the generalized arm is vacuous or its target-clock WNS/TNS
-result is not improved.
+Use `--seed 4`, `--partition-seed-attempts 1`, and `--physical-seed 1` on
+both commands. Select `--cut-mode sequential-only` for the control. Select
+`--cut-mode static-exact-combinational`,
+`--max-cross-fpga-dependency-depth 8`, and
+`--minimum-combinational-cut-nets 1` for generalized v2. Both commands use the
+same ordinary Phase 4/5 algorithms and baseline Phase 6 provider. A compact
+comparison records whole-design target/runtime WNS and TNS, per-FPGA
+diagnostics, virtual frequency, transport/physical cell counts, cut count,
+scheduled bit-hops, frame size, completion slot, DRC/unrouted counts, and total
+wall time. After that summary passes, delete both complete run directories.
 
 The completed controlled DLA + EDA 2023 case6 experiment gives the following
 single-physical-seed result. These are whole-original-design target-clock
@@ -1246,8 +1218,8 @@ two used FPGAs to exercise routing and TDM.  If Phase 3 reports
 functional integration only and is not fair partitioning QoR evidence.  Any
 benchmark or algorithm claim must use a terminally validated complete flow with
 a naturally capacity-constrained design and a feasible frozen balance contract.
-Persistent content-addressed checkpoint reuse is optional and requires an
-explicit request.
+Persistent content-addressed checkpoint reuse is deprecated and must not be
+used for project validation.
 
 The two-core setup intentionally does not attempt TritonPart/OpenROAD or the
 Phase 2/7 physical stack.  Those are separate opt-in builds after the
@@ -1589,9 +1561,16 @@ evidence in the Phase 3 report.
 V13 remains an experimental explicit option and has no claimed end-to-end QoR
 improvement.
 
-### Automatic validation archives
+### Legacy validation archives
 
-A successful full-flow run can be archived as part of the same command. The
+The archive commands below remain readable for old artifacts, but current
+validation must not use them to retain replay trees. Run a complete flow in an
+isolated directory, write a compact terminal result summary, and delete the
+working directory. In particular, do not retain Phase 1--6 payloads, split
+netlists, placement/routing work trees, or duplicated timing databases under
+an `archive` or `evidence` name.
+
+A legacy full-flow run can be archived as part of the same command. The
 archive is written outside the run directory, validated before the command
 returns, and can optionally gate deletion of the large working directory:
 
@@ -1639,14 +1618,10 @@ archive/run layout blocks deletion. Any hash-only file also blocks cleanup, so
 the historical 64 MiB default cannot delete a run whose large EmuIR,
 placement, route, checkpoint, or tool artifact may be needed for replay.
 Successful cleanup leaves a hash-bound `cleanup-receipt.json` in the archive.
-This one-shot archive-and-cleanup path is the default experiment lifecycle.
-Retain the compact terminal flow report, final assignment/route/schedule
-identities, Phase 7/7C timing and legality summaries, configuration and tool
-identity, and their terminal seal. Remove full placement/routing work trees,
-duplicated payloads, failed attempts, and other intermediate products. If full
-replay checkpoints are explicitly requested, raise `--archive-max-copy-bytes`
-enough for every required artifact or use the optional role-aware checkpoint
-workflow below. Validation archives are experiment outputs and remain outside
+Current validation retains only the compact terminal flow result: source and
+configuration identity, final Phase 7/7C global WNS/TNS, DRC and unrouted-net
+counts, runtime, the small legality summary, and a terminal seal. Full replay
+archives are intentionally not produced. Validation summaries remain outside
 this source repository.
 
 ### Parallel validation farm
@@ -1701,17 +1676,15 @@ argv arrays rather than shell fragments. This farm-level concurrency is
 orthogonal to `--physical-workers N`, which parallelizes the FPGA partitions
 inside one Phase-7 task.
 
-### Optional content-addressed experiment DAG and checkpoint reuse
+### Deprecated content-addressed experiment DAG and checkpoint reuse
 
-The validation farm schedules tasks; `experiment-cache` decides which tasks
-still need to exist when persistent checkpoint reuse has been explicitly
-requested. This workflow is not the repository default. Ordinary correctness,
-benchmark, A/B, scalability, contest, and complete-flow validation uses one
-isolated run directory per arm, validates the terminal result, publishes a
-compact final evidence bundle, and removes intermediates. Do not create,
-inventory, rehash, garbage-collect, or preserve a content-addressed DAG merely
-to avoid rerunning a stage. The remainder of this section documents the
-explicit opt-in checkpoint workflow only.
+The `experiment-cache` and `experiment-stage` interfaces remain documented so
+historical artifacts and compatibility tests can be understood while the old
+implementation is retired. They must not be used for new correctness,
+benchmark, A/B, scalability, contest, or complete-flow validation. Do not
+create, inventory, rehash, garbage-collect, archive, or preserve a
+content-addressed DAG to avoid rerunning a stage. The remainder of this section
+is historical design documentation, not an executable workflow.
 
 On the project validation servers, every EmuFlow-controlled writable path must
 reside below `/research/d4/gds/ziyiwang21`.  Run roots, cache objects, staging,
