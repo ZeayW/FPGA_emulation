@@ -142,6 +142,48 @@ class TritonPartTest(unittest.TestCase):
             12.0025,
         )
 
+    def test_balance_repair_uses_two_move_exchange_when_parts_are_full(self) -> None:
+        clusters = {
+            "clusters": [
+                {
+                    "id": cluster_id,
+                    "instances": [f"i{index}"],
+                    "resources": {"lut": lut},
+                    "fixed_fpga": None,
+                }
+                for index, (cluster_id, lut) in enumerate(
+                    (("c0", 2), ("c1", 4), ("c2", 1), ("c3", 3))
+                )
+            ]
+        }
+        assignment = {
+            "c0": "fpga0",
+            "c1": "fpga0",
+            "c2": "fpga1",
+            "c3": "fpga1",
+        }
+        repaired, report = _repair_multi_resource_balance(
+            assignment,
+            clusters,
+            self.platform,
+            {
+                "balance_tolerance": 0.0,
+                "balance_tolerance_by_dimension": {},
+            },
+            {
+                "cluster_order": ["c0", "c1", "c2", "c3"],
+                "fpga_order": ["fpga0", "fpga1"],
+                "vertex_dimensions": ["cells", "lut"],
+                "vertex_weights": [[1, 2], [1, 4], [1, 1], [1, 3]],
+                "effective_balance_percent": 0.0,
+                "hyperedges": [],
+            },
+        )
+        self.assertEqual(report["paired_move_sequences"], 1)
+        self.assertEqual(report["moves"], 2)
+        self.assertEqual(repaired["c0"], "fpga1")
+        self.assertEqual(repaired["c2"], "fpga0")
+
     def test_export_translates_relative_tolerance_to_ubfactor_points(
         self,
     ) -> None:

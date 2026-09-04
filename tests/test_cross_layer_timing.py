@@ -57,7 +57,7 @@ def _routes(*, exact=False):
         from emuflow.combinational_cut import semantic_contract_sha256
 
         semantic = {
-            "schema": "emuflow.static-exact-combinational-cut/v2",
+            "schema": "emuflow.static-exact-combinational-cut/v3",
             "mode": "static-exact-combinational",
             "logic_segments": [],
         }
@@ -238,7 +238,7 @@ class CrossLayerTimingContractTest(unittest.TestCase):
         )
         self.assertEqual(
             contract["semantic_binding"]["schema"],
-            "emuflow.static-exact-combinational-cut/v2",
+            "emuflow.static-exact-combinational-cut/v3",
         )
 
     def test_configuration_stable_source_needs_no_physical_logic_record(self):

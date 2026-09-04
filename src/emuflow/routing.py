@@ -7,8 +7,6 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from .errors import ValidationError
 from .combinational_cut import (
-    GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
-    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_CANDIDATE_POLICIES,
     STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS,
     STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
@@ -41,13 +39,6 @@ def static_exact_contract_from_assignment(
         raise ValidationError(
             "assignment.semantic_contract is not a supported exact-cut contract"
         )
-    if contract.get("schema") == GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA:
-        if contract.get("candidate_selection_policy") != (
-            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
-        ):
-            raise ValidationError(
-                "assignment generalized exact-cut certificate is incomplete"
-            )
     if (
         contract.get("schema") == STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA
         and contract.get("candidate_selection_policy")

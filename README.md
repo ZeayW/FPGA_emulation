@@ -433,10 +433,9 @@ eight, and path beta zero. PATRON's endpoint-exact objective derives its
 transported classes from this cluster policy, so combinational candidates are
 modeled rather than discarded as non-sequential traffic. The physical-feedback
 PATRON refinement remains opt-in because it requires a prior physical timing
-artifact. Unlike the
-legacy `potential-frontier-depth-v1` policy, v2 does not confuse a net's depth
-in the graph of *possible* boundaries with its depth after the partitioner has
-selected actual transported boundaries.  It releases every structurally legal
+artifact. The production policy does not confuse a net's depth in the graph of
+*possible* boundaries with its depth after the partitioner has selected actual
+transported boundaries. It releases every structurally legal
 candidate, rebuilds the selected dependency DAG from the final assignment,
 and supports any positive configured depth. Phase 3 rejects an assignment only
 for partition-owned structural illegality: a cyclic selected DAG, an exceeded

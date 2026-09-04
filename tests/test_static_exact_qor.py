@@ -129,7 +129,7 @@ class StaticExactQorTest(unittest.TestCase):
         labels = {
             "sequential-only": {
                 "mode": "sequential-only",
-                "policy": "potential-frontier-depth-v1",
+                "policy": "assignment-derived-acyclic-v2",
                 "cuts": 0,
                 "depth": 0,
                 "offset": 0.0,
@@ -560,7 +560,7 @@ class StaticExactQorTest(unittest.TestCase):
             )
             partition = read_json(partition_report_path)
             partition["static_exact_candidate_policy"] = (
-                "potential-frontier-depth-v1"
+                "removed-legacy-policy"
             )
             write_json(partition_report_path, partition)
             with self.assertRaisesRegex(ValidationError, "cut contract"):

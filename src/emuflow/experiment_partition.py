@@ -29,7 +29,6 @@ from .partition_physical_feedback import (
     validate_partition_physical_feedback,
 )
 from .combinational_cut import (
-    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
@@ -539,7 +538,7 @@ def validate_partition_checkpoint(
     legacy_cut_defaults = {
         "cut_mode": CUT_MODE_SEQUENTIAL_ONLY,
         "max_cross_fpga_dependency_depth": 1,
-        "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+        "static_exact_candidate_policy": STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
         "minimum_combinational_cut_nets": 0,
     }
     for field, expected in (
@@ -976,7 +975,7 @@ def validate_partition_checkpoint(
                 ],
                 "static_exact_candidate_policy": cut_policy.get(
                     "candidate_selection_policy",
-                    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+                    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
                 ),
             }
         )

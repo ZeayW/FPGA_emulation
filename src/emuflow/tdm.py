@@ -95,8 +95,6 @@ def _static_exact_contract_from_routes(
             "routes exact semantic contract binding is incomplete"
         )
     from .combinational_cut import (
-        GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
-        STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         STATIC_EXACT_CANDIDATE_POLICIES,
         STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS,
         STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
@@ -111,13 +109,6 @@ def _static_exact_contract_from_routes(
         or semantic_contract_sha256(contract) != digest
     ):
         raise ValidationError("routes exact semantic contract binding is invalid")
-    if contract.get("schema") == GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA:
-        if contract.get("candidate_selection_policy") != (
-            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
-        ):
-            raise ValidationError(
-                "routes generalized exact-cut certificate is incomplete"
-            )
     if (
         contract.get("schema") == STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA
         and contract.get("candidate_selection_policy")

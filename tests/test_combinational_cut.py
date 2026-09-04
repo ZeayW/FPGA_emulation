@@ -13,7 +13,6 @@ from unittest.mock import patch
 from emuflow.cli import main
 from emuflow.combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
-    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
     _build_combinational_cut_candidate_index,
     build_static_exact_semantic_contract,
@@ -642,24 +641,20 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
     def _exact_artifacts(
         self, frame_slots=16, dependent_return=False, dependency_depth=1
     ):
-        constraints = (
-            normalize_partition_constraints(
-                {
-                    "schema": "emuflow.partition-constraints/v1",
-                    "balance_tolerance": 1.0,
-                },
-                self.ir,
-                self.platform,
-            )
-            if dependent_return or dependency_depth == 2
-            else self.constraints
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_tolerance": 1.0,
+            },
+            self.ir,
+            self.platform,
         )
         clusters = build_clusters(
             self.ir,
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=dependency_depth,
-            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         )
         cluster_for = {
             instance: cluster["id"]
@@ -696,6 +691,17 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             seed=0,
         )
         return clusters, assignment
+
+    def test_removed_legacy_candidate_policy_is_rejected(self):
+        with self.assertRaisesRegex(
+            ValidationError, "unknown static exact candidate policy"
+        ):
+            build_clusters(
+                self.ir,
+                self.constraints,
+                cut_mode=CUT_MODE_STATIC_EXACT,
+                static_exact_candidate_policy="potential-frontier-depth-v1",
+            )
 
     def _exact_routes(self, assignment, frame_slots=16):
         demands = demands_from_assignment(assignment, self.platform)
@@ -956,7 +962,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 },
             ],
             max_dependency_depth=2,
-            candidate_selection_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            candidate_selection_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         )
         captures = {
             (item["cut_net"], item["fpga"], item["endpoint"])
@@ -1045,16 +1051,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         )
         self.assertEqual(exhaustive["status"], "pass")
 
-    def test_depth_above_two_is_rejected(self):
-        with self.assertRaisesRegex(ValidationError, "1 or 2"):
-            build_clusters(
-                self.ir,
-                self.constraints,
-                cut_mode=CUT_MODE_STATIC_EXACT,
-                max_cross_fpga_dependency_depth=3,
-                static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
-            )
-
     def test_v2_releases_deep_potential_candidate_with_actual_depth_one(self):
         constraints = normalize_partition_constraints(
             {
@@ -1064,22 +1060,12 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        legacy = build_clusters(
-            self.ir,
-            constraints,
-            cut_mode=CUT_MODE_STATIC_EXACT,
-            max_cross_fpga_dependency_depth=1,
-            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
-        )
         generalized = build_clusters(
             self.ir,
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=1,
             static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
-        )
-        self.assertEqual(
-            legacy["policy"]["eligible_combinational_cut_nets"], ["n0"]
         )
         self.assertEqual(
             generalized["policy"]["eligible_combinational_cut_nets"],
@@ -1295,7 +1281,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=2,
-            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         )
         cluster_for = {
             instance: cluster["id"]
@@ -1388,7 +1374,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=1,
-            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         )
         cluster_for = {
             instance: cluster["id"]
@@ -1399,6 +1385,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             cluster_for["q0"]: "fpga0",
             cluster_for["l0"]: "fpga0",
             cluster_for["l1"]: "fpga2",
+            cluster_for["l2"]: "fpga2",
             cluster_for["q1"]: "fpga2",
         }
         assignment = build_partition_assignment(
@@ -1670,9 +1657,9 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                         "--cut-mode",
                         "static-exact-combinational",
                         "--max-cross-fpga-dependency-depth",
-                        "1",
-                        "--static-exact-candidate-policy",
-                        "potential-frontier-depth-v1",
+                        "2",
+                        "--balance-tolerance",
+                        "1.0",
                         "--out",
                         str(output),
                     ]
@@ -1940,7 +1927,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 }
             ],
             max_dependency_depth=1,
-            candidate_selection_policy=STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+            candidate_selection_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         )
         launch = next(
             item

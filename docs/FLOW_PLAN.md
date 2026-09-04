@@ -290,18 +290,18 @@ presents an automatically relaxed result as a strictly balanced one.
 Multilevel partitioning cannot
 recover freedom that semantic clustering removed.
 
-The first milestone for that extension is the EmuIR-semantic-bound
+The EmuIR-semantic-bound
 `emuflow.combinational-cut-characterization/v1` report. It reconstructs the
 complete EmuIR combinational graph, detects SCCs/self-loops, permits only a
 conservative single-driver LUT-only potential-cut set, retains reconvergent
 predecessors, and reports depth-1/depth-2 theoretical component splitting.
-Its independent validator regenerates the whole report. An opt-in
-`--cut-mode static-exact-combinational` Phase 3 path now releases only depth-1
-or depth-2 eligible nets, as explicitly configured, emits
-`emuflow.static-exact-combinational-cut/v1`, and
-independently reconstructs both clusters and contract. Its qualification is
-only `partition-legality-only-provisional`; production defaults and safe-mode
-Phase 4--7 behavior are unchanged. Phase 4 uses the ordinary multicast router
+Its independent validator regenerates the whole report. The production
+`--cut-mode static-exact-combinational` Phase 3 path releases all structurally
+eligible nets, reconstructs the selected acyclic dependency graph after
+partitioning, enforces the configured positive safety cap, emits
+`emuflow.static-exact-combinational-cut/v3`, and independently reconstructs
+both clusters and contract. Its qualification is structural partition
+legality, not schedule feasibility. Phase 4 uses the ordinary multicast router
 and binds every original timing path to an ordered sink branch, cut identity,
 demand, and routed hop. Phase 5 uses the ordinary timing-DAG ratio/lane/slot
 pipeline. For sampled virtual wires it adds source readiness, predecessor

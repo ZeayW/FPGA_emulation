@@ -775,6 +775,47 @@ def _repair_multi_resource_balance(
     move_digest = hashlib.sha256()
     estimated_cut_delta = 0.0
     move_total = 0
+    paired_move_sequences = 0
+
+    def apply_move(vertex: int, source: int, target: int) -> float:
+        """Apply and audit one deterministic repair move."""
+
+        nonlocal estimated_cut_delta, move_total
+        delta = cut_delta(vertex, source, target)
+        apply_edge_move(vertex, source, target)
+        labels[vertex] = target
+        weights = vertex_weights[vertex]
+        for dimension, weight in enumerate(weights):
+            loads[source][dimension] -= weight
+            loads[target][dimension] += weight
+        vertices_by_part[target].append(vertex)
+        transition = (source, target)
+        move_counts[transition] += 1
+        if transition not in moved_weights:
+            moved_weights[transition] = [0] * num_dimensions
+        for dimension, weight in enumerate(weights):
+            moved_weights[transition][dimension] += weight
+        cluster_id = cluster_order[vertex]
+        assignment[cluster_id] = fpga_order[target]
+        move_digest.update(
+            (
+                f"{cluster_id}:{fpga_order[source]}"
+                f"->{fpga_order[target]}\n"
+            ).encode("utf-8")
+        )
+        estimated_cut_delta += delta
+        move_total += 1
+        return delta
+
+    def overload_score(
+        part: int, projected: Optional[Sequence[int]] = None
+    ) -> float:
+        candidate_load = loads[part] if projected is None else projected
+        return sum(
+            max(0, candidate_load[dimension] - allowed[part][dimension])
+            / max(1, allowed[part][dimension])
+            for dimension in range(num_dimensions)
+        )
 
     while True:
         overloaded_parts = [
@@ -861,34 +902,131 @@ def _repair_multi_resource_balance(
                 choices.append((delta, projected_peak, target))
             if not choices:
                 continue
-            delta, _, target = min(choices)
-            apply_edge_move(vertex, source, target)
-            labels[vertex] = target
-            for dimension, weight in enumerate(weights):
-                loads[source][dimension] -= weight
-                loads[target][dimension] += weight
-            transition = (source, target)
-            move_counts[transition] += 1
-            if transition not in moved_weights:
-                moved_weights[transition] = [0] * num_dimensions
-            for dimension, weight in enumerate(weights):
-                moved_weights[transition][dimension] += weight
-            cluster_id = cluster_order[vertex]
-            assignment[cluster_id] = fpga_order[target]
-            move_digest.update(
-                (
-                    f"{cluster_id}:{fpga_order[source]}"
-                    f"->{fpga_order[target]}\n"
-                ).encode("utf-8")
-            )
-            estimated_cut_delta += delta
-            move_total += 1
+            apply_move(vertex, source, target)
             moved_from_source += 1
         if not moved_from_source:
-            raise ValidationError(
-                "TritonPart balance repair found no legal move for "
-                f"{fpga_order[source]!r}; overload={overload(source)}"
-            )
+            # A legal multidimensional assignment may require an exchange:
+            # every destination can be full in a resource unrelated to the
+            # source overload even though moving one blocker away makes room.
+            # Search a deterministic two-move augmenting path
+            #   target -> destination, source -> target
+            # and commit both moves atomically from the repair perspective.
+            best_pair = None
+            before_source_score = overload_score(source)
+            for vertex in vertices_by_part[source]:
+                if labels[vertex] != source:
+                    continue
+                weights = vertex_weights[vertex]
+                cluster_id = cluster_order[vertex]
+                if clusters[cluster_id]["fixed_fpga"] is not None:
+                    continue
+                relief = sum(
+                    min(weights[dimension], source_overload[dimension])
+                    / max(1, allowed[source][dimension])
+                    for dimension in range(num_dimensions)
+                )
+                if relief <= 0.0:
+                    continue
+                for target in range(num_parts):
+                    if target == source:
+                        continue
+                    source_delta = cut_delta(vertex, source, target)
+                    target_after_vertex = [
+                        loads[target][dimension] + weights[dimension]
+                        for dimension in range(num_dimensions)
+                    ]
+                    if all(
+                        target_after_vertex[dimension]
+                        <= allowed[target][dimension]
+                        for dimension in range(num_dimensions)
+                    ):
+                        continue
+                    for blocker in vertices_by_part[target]:
+                        if labels[blocker] != target:
+                            continue
+                        blocker_id = cluster_order[blocker]
+                        if clusters[blocker_id]["fixed_fpga"] is not None:
+                            continue
+                        blocker_weights = vertex_weights[blocker]
+                        if not all(
+                            target_after_vertex[dimension]
+                            - blocker_weights[dimension]
+                            <= allowed[target][dimension]
+                            for dimension in range(num_dimensions)
+                        ):
+                            continue
+                        for destination in range(num_parts):
+                            if destination == target:
+                                continue
+                            if destination == source:
+                                destination_after = [
+                                    loads[source][dimension]
+                                    - weights[dimension]
+                                    + blocker_weights[dimension]
+                                    for dimension in range(num_dimensions)
+                                ]
+                                after_source_score = overload_score(
+                                    source, destination_after
+                                )
+                                if after_source_score >= before_source_score:
+                                    continue
+                            else:
+                                destination_after = [
+                                    loads[destination][dimension]
+                                    + blocker_weights[dimension]
+                                    for dimension in range(num_dimensions)
+                                ]
+                                if any(
+                                    destination_after[dimension]
+                                    > allowed[destination][dimension]
+                                    for dimension in range(num_dimensions)
+                                ):
+                                    continue
+                                after_source_score = overload_score(
+                                    source,
+                                    [
+                                        loads[source][dimension]
+                                        - weights[dimension]
+                                        for dimension in range(num_dimensions)
+                                    ],
+                                )
+                            pair_delta = (
+                                cut_delta(blocker, target, destination)
+                                + source_delta
+                            )
+                            candidate = (
+                                after_source_score,
+                                pair_delta / relief,
+                                pair_delta,
+                                cluster_id,
+                                blocker_id,
+                                target,
+                                destination,
+                                vertex,
+                                blocker,
+                            )
+                            if best_pair is None or candidate < best_pair:
+                                best_pair = candidate
+            if best_pair is None:
+                raise ValidationError(
+                    "TritonPart balance repair found no legal direct or "
+                    "two-move augmenting path for "
+                    f"{fpga_order[source]!r}; overload={overload(source)}"
+                )
+            (
+                _,
+                _,
+                _,
+                _,
+                _,
+                target,
+                destination,
+                vertex,
+                blocker,
+            ) = best_pair
+            apply_move(blocker, target, destination)
+            apply_move(vertex, source, target)
+            paired_move_sequences += 1
 
     final_cut_edges, final_cut_weight = cut_summary()
     validate_cluster_assignment_balance(
@@ -900,6 +1038,7 @@ def _repair_multi_resource_balance(
     )
     return assignment, {
         "moves": move_total,
+        "paired_move_sequences": paired_move_sequences,
         "move_sha256": move_digest.hexdigest(),
         "move_counts": {
             f"{fpga_order[source]}->{fpga_order[target]}": count

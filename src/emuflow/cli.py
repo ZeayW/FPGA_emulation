@@ -120,7 +120,6 @@ from .static_exact_qor import (
 from .mfspart_refine import DEFAULT_TIMING_PATH_BETA
 from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
-    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
     characterize_combinational_cuts,
@@ -704,10 +703,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     partition_run.add_argument(
         "--static-exact-candidate-policy",
-        choices=(
-            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
-            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
-        ),
+        choices=(STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,),
         default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     )
     partition_run.add_argument(
@@ -783,10 +779,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     partition_validate.add_argument(
         "--static-exact-candidate-policy",
-        choices=(
-            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
-            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
-        ),
+        choices=(STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,),
     )
     partition_validate.add_argument(
         "--minimum-combinational-cut-nets", type=int
@@ -1913,10 +1906,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument(
         "--static-exact-candidate-policy",
-        choices=(
-            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
-            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
-        ),
+        choices=(STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,),
         default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     )
     multi_fpga_compile.add_argument(
@@ -2679,10 +2669,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase3.add_argument(
         "--static-exact-candidate-policy",
-        choices=(
-            STATIC_EXACT_CANDIDATE_FRONTIER_V1,
-            STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
-        ),
+        choices=(STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,),
         default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     )
     phase3.add_argument("--min-used-fpgas", type=int)

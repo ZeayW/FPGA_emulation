@@ -36,7 +36,6 @@ from .sta import validate_sta_path_database
 from .tritonpart import load_partition_net_weights, run_tritonpart
 from .routing import load_route_constraints
 from .combinational_cut import (
-    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
@@ -228,7 +227,7 @@ def _validate_reused_patron_clusters(
         for field, value in expected.items():
             actual = policy.get(field)
             if field == "candidate_selection_policy" and actual is None:
-                actual = STATIC_EXACT_CANDIDATE_FRONTIER_V1
+                actual = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY
             if actual != value:
                 raise ValidationError(
                     f"PATRON initial clusters {field} disagrees"

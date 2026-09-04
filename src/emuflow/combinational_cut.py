@@ -23,26 +23,16 @@ from .resources import RESOURCE_FIELDS
 COMBINATIONAL_CUT_CHARACTERIZATION_SCHEMA = (
     "emuflow.combinational-cut-characterization/v1"
 )
-STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA = (
-    "emuflow.static-exact-combinational-cut/v1"
-)
-GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA = (
-    "emuflow.static-exact-combinational-cut/v2"
-)
 STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA = (
     "emuflow.static-exact-combinational-cut/v3"
 )
 STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS = {
-    STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
-    GENERALIZED_STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
     STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
 }
-STATIC_EXACT_CANDIDATE_FRONTIER_V1 = "potential-frontier-depth-v1"
 STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2 = "assignment-derived-acyclic-v2"
 STATIC_EXACT_DEFAULT_CANDIDATE_POLICY = STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
 STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH = 8
 STATIC_EXACT_CANDIDATE_POLICIES = {
-    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
 }
 SEQUENTIAL_TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
@@ -634,13 +624,7 @@ def build_static_exact_semantic_contract(
         isinstance(max_dependency_depth, bool)
         or not isinstance(max_dependency_depth, int)
         or max_dependency_depth <= 0
-        or (
-            candidate_selection_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1
-            and max_dependency_depth not in {1, 2}
-        )
     ):
-        if candidate_selection_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1:
-            raise ValidationError("legacy exact combinational-cut depth must be 1 or 2")
         raise ValidationError("exact combinational-cut depth must be positive")
     candidate_index = _build_combinational_cut_candidate_index(
         ir,

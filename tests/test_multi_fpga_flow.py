@@ -85,9 +85,9 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 frame_slots=32,
                 equivalence_cycles=2,
                 cut_mode="static-exact-combinational",
-                max_cross_fpga_dependency_depth=1,
+                max_cross_fpga_dependency_depth=2,
                 static_exact_candidate_policy=(
-                    "potential-frontier-depth-v1"
+                    "assignment-derived-acyclic-v2"
                 ),
             )
             self.assertEqual(report["status"], "pass")
@@ -120,7 +120,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 root, minimum_combinational_cut_nets=1
             )
             self.assertEqual(validation["status"], "pass")
-            self.assertEqual(validation["observed_combinational_cut_nets"], 1)
+            self.assertEqual(validation["observed_combinational_cut_nets"], 2)
             with self.assertRaisesRegex(
                 ValidationError, "no completed physical Phase 7"
             ):

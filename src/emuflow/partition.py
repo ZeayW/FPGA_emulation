@@ -14,7 +14,6 @@ from .platform import Platform
 from .resources import RESOURCE_FIELDS, ResourceVector
 from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
-    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_CANDIDATE_POLICIES,
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
@@ -345,43 +344,21 @@ def build_clusters(
             isinstance(max_cross_fpga_dependency_depth, bool)
             or not isinstance(max_cross_fpga_dependency_depth, int)
             or max_cross_fpga_dependency_depth <= 0
-            or (
-                static_exact_candidate_policy
-                == STATIC_EXACT_CANDIDATE_FRONTIER_V1
-                and max_cross_fpga_dependency_depth not in {1, 2}
-            )
         ):
-            if static_exact_candidate_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1:
-                raise ValidationError(
-                    "legacy static exact candidate policy requires "
-                    "max_cross_fpga_dependency_depth to be 1 or 2"
-                )
             raise ValidationError(
                 "max_cross_fpga_dependency_depth must be positive"
             )
         candidate_index = _build_combinational_cut_candidate_index(
             ir,
-            include_dependency_levels=(
-                static_exact_candidate_policy
-                == STATIC_EXACT_CANDIDATE_FRONTIER_V1
-            ),
+            include_dependency_levels=False,
             include_source_identity=True,
         )
-        if static_exact_candidate_policy == STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2:
-            # Candidate depth is not intrinsic to a net.  A net deep in the
-            # potential-cut DAG can still be the only transported boundary in
-            # its cone and therefore have actual dependency depth one.  V2
-            # releases every structurally legal candidate and reconstructs the
-            # depth only after the provider supplies an assignment.
-            released_combinational_nets = set(candidate_index["eligible_ids"])
-        else:
-            released_combinational_nets = {
-                net_id
-                for net_id, level in candidate_index[
-                    "dependency_levels"
-                ].items()
-                if level <= max_cross_fpga_dependency_depth
-            }
+        # Candidate depth is not intrinsic to a net.  A net deep in the
+        # potential-cut DAG can still be the only transported boundary in its
+        # cone and therefore have actual dependency depth one.  Release every
+        # structurally legal candidate and reconstruct actual depth only after
+        # the provider supplies an assignment.
+        released_combinational_nets = set(candidate_index["eligible_ids"])
     instances = {
         instance["id"]: instance for instance in ir.value["instances"]
     }
@@ -934,7 +911,7 @@ def build_partition_assignment(
             ],
             candidate_selection_policy=cut_policy.get(
                 "candidate_selection_policy",
-                STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+                STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
             ),
         )
         contract_nodes = {
@@ -1575,7 +1552,7 @@ def validate_partition_artifacts(
             ],
             static_exact_candidate_policy=cut_policy.get(
                 "candidate_selection_policy",
-                STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+                STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
             ),
         )
         if clusters_artifact != expected_clusters:
@@ -1719,7 +1696,7 @@ def validate_partition_artifacts(
             ],
             candidate_selection_policy=cut_policy.get(
                 "candidate_selection_policy",
-                STATIC_EXACT_CANDIDATE_FRONTIER_V1,
+                STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
             ),
         )
         contract_nodes = {

@@ -26,7 +26,6 @@ from .io import read_json, write_json
 from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
 from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
-    STATIC_EXACT_CANDIDATE_FRONTIER_V1,
     STATIC_EXACT_CANDIDATE_POLICIES,
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
@@ -741,15 +740,6 @@ def compile_canonical_experiment_spec(
         raise ValidationError(
             "canonical experiment minimum_combinational_cut_nets must be "
             "non-negative for static exact mode and zero otherwise"
-        )
-    if (
-        cut_mode == CUT_MODE_STATIC_EXACT
-        and static_exact_candidate_policy == STATIC_EXACT_CANDIDATE_FRONTIER_V1
-        and max_cross_fpga_dependency_depth not in {1, 2}
-    ):
-        raise ValidationError(
-            "canonical legacy static exact policy requires "
-            "max_cross_fpga_dependency_depth to be 1 or 2"
         )
     patron_initial_assignment = None
     patron_initial_clusters = None

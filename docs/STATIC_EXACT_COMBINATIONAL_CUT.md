@@ -2,11 +2,11 @@
 
 ## Status and claim boundary
 
-The production flow defaults to generalized Static Exact partitioning. The
-legacy depth-1/depth-2 policy remains an explicit comparison arm. Both it and
-the assignment-derived generalized path pass Phase 3
-partition legality, Phase 4 native-route contract propagation,
-and Phase 5 dependency/capture scheduling. Safe-mode Phase 3 transports
+The production flow defaults to generalized Static Exact partitioning through
+the sole production candidate policy, `assignment-derived-acyclic-v2`. It
+passes Phase 3 structural partition legality, Phase 4 native-route contract
+binding, and unified Phase 5 timing-aware TDM assignment. Sequential-only
+Phase 3 transports
 register outputs, transport-safe register inputs, and replicated primary
 inputs; other combinational connectivity remains atomic. The checked-in
 `combinational-cut characterize` command is read-only. It identifies a
@@ -15,11 +15,10 @@ cut dependencies, and atomic-component reductions. It does **not** change a
 partition, create a transport schedule, establish macro-cycle equivalence, or
 claim physical timing closure.
 
-The opt-in Phase 3 mode `static-exact-combinational` has two explicit candidate
-policies. `potential-frontier-depth-v1` preserves the historical depth-1/2
-behavior. `assignment-derived-acyclic-v2` releases every structurally legal
+The Phase 3 mode `static-exact-combinational` releases every structurally legal
 candidate, reconstructs dependency depth from the selected assignment, accepts
-any positive safety cap, and emits the v2 semantic contract. Phase 4 binds that
+any positive safety cap, and emits the provider-neutral v3 structural timing
+contract. Phase 4 binds that
 contract through native routing. Phase 5
 uses it to prove when downstream combinational values become available and
 when terminal captures are ready. Phase 6 now materializes contract-bound,
