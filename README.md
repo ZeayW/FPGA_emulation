@@ -377,11 +377,10 @@ identities, rejects hidden cross-FPGA bypasses, and validates each exact
 schedule with three event-driven macro-cycle traces. Small models additionally
 enumerate every architectural state and non-reset primary input for one
 macro-step. The report distinguishes randomized validation from exhaustive
-small-model proof. Canonical Experiment v2 publication performs one independent
-Phase 6 replay after generation; downstream lookahead and Phase 7 nodes reuse
-that evidence only from an immutable byte-sealed checkpoint carrying a valid
-independent-validation certificate, instead of repeating the same replay for
-each physical seed. Unsealed standalone inputs remain full-replay by default.
+small-model proof. A normal validation performs one independent Phase 6 replay
+inside its isolated full-flow run. Persistent checkpoint reuse is available
+only when a user explicitly requests a checkpoint study; it is not part of the
+default validation lifecycle.
 Phase 7C now independently reconstructs every exact
 segment's routed settle window and refuses missing evidence or a late
 source/capture even when aggregate virtual-runtime slack is positive. This is
@@ -462,9 +461,10 @@ QoR evidence.
 
 The two policies have different assignments, routes, and schedules, so the
 ordinary Phase 6 provider comparator is intentionally not used for this gate.
-Compile one content-addressed DAG that shares only the byte-identical frontend
-and TimingPathDB, forks at Phase 3, and terminates in a dedicated cross-policy
-certificate.  The comparison uses one explicit Phase 3 seed for every arm;
+Run the two arms in isolated one-shot full-flow directories and terminate in a
+dedicated cross-policy certificate. They may share immutable source inputs but
+must not retain a persistent intermediate DAG. The comparison uses one explicit
+Phase 3 seed for every arm;
 it never lets each policy search a multi-seed portfolio and then compares
 unrelated winners.  Physical seed remains a separate paired axis.  For the
 canonical case6 exercise, seed 4 is the sealed controlled seed used by the
@@ -1258,9 +1258,10 @@ control artifacts.  SERV fits on one virtual FPGA, so this diagnostic forces
 two used FPGAs to exercise routing and TDM.  If Phase 3 reports
 `balance_auto_relaxed`, the helper prints an explicit warning: that run proves
 functional integration only and is not fair partitioning QoR evidence.  Any
-benchmark or algorithm claim must use the repository's content-addressed
-experiment lifecycle with a naturally capacity-constrained design and a
-feasible frozen balance contract.
+benchmark or algorithm claim must use a terminally validated complete flow with
+a naturally capacity-constrained design and a feasible frozen balance contract.
+Persistent content-addressed checkpoint reuse is optional and requires an
+explicit request.
 
 The two-core setup intentionally does not attempt TritonPart/OpenROAD or the
 Phase 2/7 physical stack.  Those are separate opt-in builds after the
@@ -1302,13 +1303,10 @@ The command writes a hash-bound `multi-fpga-flow-report.json` only after
 partition, route, schedule, split, and cycle-equivalence checks pass. The
 default partition configuration is source-built endpoint-exact PATRON with
 generalized Static Exact v2. A standalone PATRON command creates a TritonPart
-initial assignment when none is supplied. The canonical managed DAG instead
-materializes that initializer as a separate content-addressed partition
-checkpoint and feeds its frozen assignment and validated cluster table to
-PATRON. All PATRON versions and
-physical-feedback descendants therefore reuse one validated initializer
-instead of rerunning the same TritonPart and hop-refinement work, after which
-PATRON refines and independently validates the complete result.
+initial assignment when none is supplied. A normal full-flow run keeps that
+initializer only as temporary in-run state, feeds its assignment and validated
+cluster table to PATRON, and removes it after terminal validation. PATRON then
+refines and independently validates the complete result.
 The default `--mapping-profile vtr-hard-blocks` retains public VTR RAM/DSP
 resources. `--mapping-profile generic-soft` is available for architecture-
 neutral LUT6/FF experiments, but may expand memory-heavy designs substantially.
@@ -1616,8 +1614,8 @@ emuflow multi-fpga compile design.v --top top \
   --clock clk --clock-period clk=10 \
   --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
   --physical --physical-backend open \
-  --out /scratch/runs/design-r1 \
-  --archive-out /data/emuflow-archives/design-r1 \
+  --out /research/d4/gds/ziyiwang21/emuflow/runs/design-r1 \
+  --archive-out /research/d4/gds/ziyiwang21/emuflow/evidence/design-r1 \
   --archive-run-id design-r1 \
   --archive-cleanup
 ```
@@ -1637,11 +1635,15 @@ with their original size and SHA-256 rather than silently disappearing.
 Archiving and cleanup may also be run separately:
 
 ```bash
-emuflow archive create --flow /scratch/runs/design-r1 \
-  --out /data/emuflow-archives/design-r1 --run-id design-r1
-emuflow archive validate /data/emuflow-archives/design-r1
-emuflow archive cleanup /data/emuflow-archives/design-r1 \
-  --flow /scratch/runs/design-r1
+emuflow archive create \
+  --flow /research/d4/gds/ziyiwang21/emuflow/runs/design-r1 \
+  --out /research/d4/gds/ziyiwang21/emuflow/evidence/design-r1 \
+  --run-id design-r1
+emuflow archive validate \
+  /research/d4/gds/ziyiwang21/emuflow/evidence/design-r1
+emuflow archive cleanup \
+  /research/d4/gds/ziyiwang21/emuflow/evidence/design-r1 \
+  --flow /research/d4/gds/ziyiwang21/emuflow/runs/design-r1
 ```
 
 `archive cleanup` revalidates the sealed manifest, every copied archive file,
@@ -1651,10 +1653,15 @@ archive/run layout blocks deletion. Any hash-only file also blocks cleanup, so
 the historical 64 MiB default cannot delete a run whose large EmuIR,
 placement, route, checkpoint, or tool artifact may be needed for replay.
 Successful cleanup leaves a hash-bound `cleanup-receipt.json` in the archive.
-New experiments should prefer the role-aware `experiment-cache
-evidence-create` bundle below: it retains every required replay artifact
-regardless of size and omits only explicitly prunable scratch. Validation archives are experiment
-outputs and remain outside this source repository.
+This one-shot archive-and-cleanup path is the default experiment lifecycle.
+Retain the compact terminal flow report, final assignment/route/schedule
+identities, Phase 7/7C timing and legality summaries, configuration and tool
+identity, and their terminal seal. Remove full placement/routing work trees,
+duplicated payloads, failed attempts, and other intermediate products. If full
+replay checkpoints are explicitly requested, raise `--archive-max-copy-bytes`
+enough for every required artifact or use the optional role-aware checkpoint
+workflow below. Validation archives are experiment outputs and remain outside
+this source repository.
 
 ### Parallel validation farm
 
@@ -1708,18 +1715,17 @@ argv arrays rather than shell fragments. This farm-level concurrency is
 orthogonal to `--physical-workers N`, which parallelizes the FPGA partitions
 inside one Phase-7 task.
 
-### Content-addressed experiment DAG and checkpoint reuse
+### Optional content-addressed experiment DAG and checkpoint reuse
 
 The validation farm schedules tasks; `experiment-cache` decides which tasks
-still need to exist.  This is the repository-wide execution policy for every
-repeated, multistage, expensive, or evidence-producing experiment, including
-correctness and determinism validation, benchmarks, A/B and ablation studies,
-scalability measurements, contest evaluation, synthesis, partitioning,
-routing, scheduling, physical implementation, and complete flows.  Before
-execution, inventory and validate prior artifacts, import compatible results,
-and run only the smallest missing DAG frontier.  Renaming an experiment,
-starting a new comparison, changing a report, or moving to another branch does
-not justify recomputing an unchanged checkpoint.
+still need to exist when persistent checkpoint reuse has been explicitly
+requested. This workflow is not the repository default. Ordinary correctness,
+benchmark, A/B, scalability, contest, and complete-flow validation uses one
+isolated run directory per arm, validates the terminal result, publishes a
+compact final evidence bundle, and removes intermediates. Do not create,
+inventory, rehash, garbage-collect, or preserve a content-addressed DAG merely
+to avoid rerunning a stage. The remainder of this section documents the
+explicit opt-in checkpoint workflow only.
 
 On the project validation servers, every EmuFlow-controlled writable path must
 reside below `/research/d4/gds/ziyiwang21`.  Run roots, cache objects, staging,

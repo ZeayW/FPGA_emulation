@@ -433,10 +433,11 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   `benchmarks/contest_validation_matrix.json`.  Passing fetch/import/evaluate
   for that matrix proves a communication-algorithm gate only; it never
   promotes an entry in the end-to-end matrix.
-- A matrix entry in `planned` or `blocked` state is not evidence.  `qualified`
-  requires a content-addressed replayable manifest for all required providers,
-  physical seeds, gates, hashes, global timing metrics, DRC, and unrouted-net
-  checks.  Repository configuration must never contain transient server paths.
+- A matrix entry in `planned` or `blocked` state is not evidence. `qualified`
+  requires a terminally sealed complete-flow manifest for all required
+  providers, physical seeds, gates, global timing metrics, DRC, and unrouted-net
+  checks. Persistent replay checkpoints are not required. Repository
+  configuration must never contain transient server paths.
 - Baseline, placement-aware, and Chimew Phase 6 arms must use identical frozen
   source, BoardDB, Phase 1/3/4/5 artifacts, physical backend/options, worker
   count, and physical seed.  The default acceptance seed is fixed to 1; seeds
@@ -451,8 +452,8 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
 - The primary final QoR is whole-design target-clock WNS and TNS after Phase
   7/7C.  Per-FPGA WNS/TNS, Phase 6 cost, crossings, RUDY, and congestion are
   diagnostics and must not be substituted for the primary metrics.
-- Canonical provider studies finish at the content-addressed `qor-comparison`
-  node, not at an individual Phase 7 arm. It depends on every
+- Canonical provider studies finish at a terminal `qor-comparison` certificate,
+  not at an individual Phase 7 arm. It compares every
   baseline/placement-aware/Chimew arm for the configured physical seed set,
   rechecks their common frozen Phase 1/3/4/5 hashes, and preserves paired
   target-clock WNS/TNS deltas and per-provider statistics in final evidence.
@@ -465,28 +466,23 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   benchmark-catalog entries or as evidence for provider promotion and final
   WNS/TNS claims. Use a naturally connected upstream RTL design for those
   decisions.
-- Applying the universal experiment policy to a provider comparison means a
-  reusable Phase 1→timing→Phase 3→Phase 4→Phase 5 chain, one Phase 6 checkpoint
-  per provider, and Phase 7 checkpoints keyed by provider and physical seed.
-  Baseline Phase 6 consumes Phase 5 directly.  The fixed physical lookahead
-  consumes baseline Phase 6; placement-aware and Chimew consume Phase 5 plus
-  that lookahead.  Reuse every valid ancestor; do not rerun Phase 1--5 merely
-  to reach Phase 7.  Never coerce an incompatible communication-only artifact
-  into a fake physical netlist.
-- Use the checked-in `experiment-stage` run/validate pairs for every canonical
-  boundary: `frontend`, `timing`, `partition`, `cut-timing`, `route`, `tdm`,
-  the hard-linked `shared` view, physical lookahead, Phase 6, and Phase 7.
-  Generate the provider/seed DAG with `benchmark-experiment-compile`; do not
-  hand-collapse Phase 1--5 into a monolithic command. The compiler must bind
-  its case to the checked-in end-to-end matrix and must verify the run-spec
+- A provider comparison runs each arm in an isolated one-shot directory and
+  removes its Phase 1→7 intermediates after terminal validation. Arms may share
+  immutable source inputs during the active comparison, but must not publish a
+  persistent intermediate DAG. Baseline Phase 6 consumes Phase 5 directly. The
+  fixed physical lookahead consumes baseline Phase 6; placement-aware and
+  Chimew consume Phase 5 plus that lookahead. Never coerce an incompatible
+  communication-only artifact into a fake physical netlist.
+- Run canonical validation through the one-command full-flow interface in an
+  isolated directory; do not decompose an ordinary run into published
+  `experiment-stage` checkpoints or a persistent provider/seed DAG. The run
+  must bind its case to the checked-in end-to-end matrix and verify the run-spec
   RTL/top/clocks plus the contest BoardDB and route-constraints materialization
   report. Route/hop/TDM limits from that report must feed and be independently
   checked at Phase 3, Phase 4, and Phase 5; an arbitrary platform or default
-  ratio quantum is not acceptable. Materialize physical
-  lookahead once at a declared
-  seed, derive both placement-aware and Chimew inputs from that same frozen
-  placement, and reuse the lookahead itself as baseline Phase 7 at the matching
-  seed.  Do not hide a fresh baseline physical run inside either candidate arm.
+  ratio quantum is not acceptable. For an A/B study, launch complete arms on
+  separate nodes with the same source, options, and seed, then compare only
+  their terminal evidence.
 - A post-partition OpenSTA directed query is complete only with sealed
   per-cut-net driver/query/emission evidence and an independently rebuilt
   EmuIR-plus-timing-model endpoint-reachability classification.  Never silence
@@ -502,18 +498,12 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   multiplier, gradient, and step-size calculations.  An empty active
   placement subspace is a no-op/termination condition, not a reason to divide
   a zero gradient or to hide NaN with a broad epsilon clamp.
-- Existing pre-cache results should be registered with `experiment-cache
-  import` only after the node's independent semantic validator passes and all
-  declared artifacts pass hash sealing.  New node executions use the same
-  validator before cache publication.
-  Imported artifacts remain externally stored and any later byte change must
-  break reuse.  Do not rerun a valid baseline merely to make its directory
-  layout resemble a newer candidate.
-- Re-plan after every completed DAG frontier.  Only `ready` cache misses may be
-  compiled into a validation farm; `reuse` nodes are skipped and `waiting`
-  nodes remain blocked on their exact dependency keys.  A changed Phase 6
-  option invalidates that provider and its Phase 7 descendants, while a changed
-  RTL or BoardDB hash invalidates the shared checkpoint and every descendant.
+- Do not register ordinary validation outputs in `experiment-cache`, and do not
+  create a new persistent checkpoint graph to avoid rerunning a baseline. Keep
+  only terminal evidence from the current comparison. The import/re-plan rules
+  in the explicit opt-in checkpoint section apply only when the user requests
+  persistent replay checkpoints. A changed Phase 6 option requires a fresh
+  complete arm; a changed RTL or BoardDB defines a different experiment.
 - Independent A/B runs may and should use different HPC nodes concurrently.
   Each run must use an isolated output directory and the same immutable source
   commit and versioned tool installation.
