@@ -403,7 +403,10 @@ also consumes that net. This is
 also reflected at the one-command CLI boundary: exact mode uses the same
 timing-DAG ratio, lane, and slot-refinement providers as register-only mode.
 Sampled-wire readiness and capture deadlines are additional constraints in
-that unified schedule, not a separate dispatch. Small real-RTL physical acceptance
+that unified schedule, not a separate dispatch. Representative Yosys formal
+one-macro-step miters cover sampled-wire dependency depths one, two, and three;
+they complement exhaustive small-model replay without claiming general-design
+formal closure. Small real-RTL physical acceptance
 exercises the exact-cut path. A scalable open-physical acceptance now also
 exists on the naturally connected DLA design and a four-FPGA academic
 BoardDB: the unconstrained partition selected five real combinational cuts

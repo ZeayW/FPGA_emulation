@@ -2171,30 +2171,33 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             )
 
     @unittest.skipUnless(shutil.which("yosys"), "yosys is not installed")
-    def test_phase6_canonical_macro_step_formal_miter(self):
+    def test_phase6_representative_depths_have_formal_macro_step_miters(self):
         fixture = (
             ROOT
             / "tests"
             / "fixtures"
             / "static_exact_macro_step_miter.sv"
         )
-        command = (
-            f"read_verilog -formal -sv {fixture}; "
-            "prep -top static_exact_macro_step_miter; "
-            "chformal -lower; "
-            "sat -verify -prove-asserts"
-        )
-        completed = subprocess.run(
-            [shutil.which("yosys"), "-q", "-p", command],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(
-            completed.returncode,
-            0,
-            msg=completed.stdout + completed.stderr,
-        )
+        for depth in (1, 2, 3):
+            with self.subTest(depth=depth):
+                command = (
+                    f"read_verilog -formal -sv {fixture}; "
+                    "prep -top "
+                    f"static_exact_macro_step_depth{depth}_miter; "
+                    "chformal -lower; "
+                    "sat -verify -prove-asserts"
+                )
+                completed = subprocess.run(
+                    [shutil.which("yosys"), "-q", "-p", command],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(
+                    completed.returncode,
+                    0,
+                    msg=completed.stdout + completed.stderr,
+                )
 
 
 if __name__ == "__main__":

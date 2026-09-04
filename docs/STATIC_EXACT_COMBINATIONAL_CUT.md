@@ -134,9 +134,9 @@ feasibility, and physical segment deadlines.
    source-ready/capture certificates, fixed-frame diagnostics, and tamper tests.
 4. **Phase 6 (implemented, opt-in).** Contract-bound exact boundaries,
    hidden-bypass rejection, deterministic shadow startup, event-driven
-   macro-cycle simulation, complete small-model one-step enumeration, and a
-   canonical Yosys formal miter fixture. General-design formal closure is not
-   claimed.
+   macro-cycle simulation, complete small-model one-step enumeration, and
+   representative Yosys formal one-macro-step miters for dependency depths
+   one, two, and three. General-design formal closure is not claimed.
 5. **Phase 7C (implemented and independently accepted on real routed DLA).**
    Contract-bound routed `launch_to_tx`, `rx_to_tx`, and `rx_to_capture`
    evidence, independent causal deadline reconstruction, explicit missing-
