@@ -224,12 +224,9 @@ two arms to identical source/timing/platform inputs and physical settings,
 and compares whole-original-design target-clock and virtual-runtime WNS/TNS.
 It also records exact-cut count/depth, virtual frequency, transport and total
 physical cells, cut nets, scheduled bit-hops, frame size, and completion slot.
-New managed checkpoints seal each node's measured wall time.  The comparison
-therefore also reports partition, routing, TDM, Phase 6, physical-lookahead,
-and Phase 7 wall times plus paired physical and Phase 3--7 totals.  These
-measurements come from immutable checkpoint manifests, not mutable farm task
-state; a historical imported checkpoint without runtime metadata remains
-valid but is not runtime-qualified.
+Each one-shot arm records partition, routing, TDM, Phase 6, physical, and total
+wall time in its terminal report. The comparator reads those final reports; it
+does not retain per-stage checkpoint manifests after the comparison finishes.
 The generated promotion gate is false unless v2 exercises at least one real
 combinational cut and improves the paired target-clock result over
 sequential-only.  A single physical seed is the routine gate; more seeds are
@@ -398,10 +395,6 @@ scan, while the independent Phase 5 validator builds and checks its own index.
 The Phase 6 producer performs one full-design reference evaluation per checked
 macro-cycle and settles each partition from that reference snapshot with an
 event-driven local cone update; initialization, source sampling, and commit do
-not replay the full design. The managed checkpoint is then replayed once by the
-independent Experiment v2 validator before publication. Lookahead and Phase 7
-consumers may reuse that result only when the Phase 6 directory is an immutable,
-byte-sealed managed checkpoint with an independent validation certificate.
-They recheck the checkpoint and split-artifact seals but do not rerun the same
-functional simulation for every downstream seed. Standalone or unsealed Phase
-6 directories continue to require the complete replay.
+not replay the full design. The one-shot flow performs the independent replay
+once before Phase 7, then discards the intermediate Phase 6 work tree after the
+terminal Phase 7/7C evidence has been extracted.

@@ -1017,8 +1017,8 @@ def validate_partition_artifacts_online(
 ) -> Dict[str, Any]:
     """Check the final Phase-3 assignment contract without optimizer replay.
 
-    Cluster construction and Static Exact schedule semantics are validated by
-    their owning stages.  This pass checks only assignment coverage, fixed and
+    Cluster construction and the Static Exact structural contract are validated
+    by their owning code. This pass checks only assignment coverage, fixed and
     group constraints, capacity, balance, and the internally materialized
     cluster mapping.  It consumes the already-resident objects once.
     """

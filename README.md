@@ -624,21 +624,12 @@ remaining eligibility shortage; the flow never forces additional cuts merely
 to increase an activity count. The full distribution and interpretation are
 documented in `docs/STATIC_EXACT_COMBINATIONAL_CUT.md`.
 
-The managed shared-Phase-1--5 view intentionally contains only consumer
-artifacts, not duplicate timing/partition evidence reports.  For that layout,
-the comparator follows the immutable shared checkpoint's dependency keys back
-to the original validated timing and partition checkpoints and rechecks their
-full reports, while separately rehashing every consumer artifact against the
-shared report.  Dependency lookup is by the sealed checkpoint stage, not by an
-experiment-local node label such as `seq-partition` or `v2-partition`, and it
-fails closed unless exactly one dependency provides each required stage.  An
-unmanaged historical view with neither evidence reports nor
-managed dependency metadata is accepted only at the explicitly lower
-`managed-shared-v1-core-source-seal` qualification and cannot satisfy a
-canonical default-promotion claim.
-`--reuse-validated-phase6-equivalence` is
-allowed only for immutable managed checkpoints carrying an independent
-validation certificate; standalone roots receive full replay.
+The default comparison runs each complete arm once in an isolated directory.
+It does not publish Phase 1--5 checkpoints, duplicate timing/partition reports,
+or retain a dependency DAG after terminal validation. The two arms use the
+same immutable RTL, platform, tool versions, options, partition seed, and
+physical seed; the terminal comparator checks those identities and compares
+their final Phase 7/7C evidence.
 
 ```bash
 emuflow phase6 \
@@ -662,25 +653,20 @@ emuflow multi-fpga compile design.v \
   --max-cross-fpga-dependency-depth 8 \
   --frame-slots 32 --physical --out build/exact-flow
 
-emuflow multi-fpga validate \
-  --flow build/exact-flow \
-  --minimum-combinational-cut-nets 1 \
-  --require-physical
 ```
-The validator rehashes every declared flow artifact, compares the live Phase
-3--6 reports with the sealed top-level report, independently reruns Phase 3--6
-legality/equivalence checks, reconstructs the runtime contract, replays Phase
-7C QoR, and rejects a physical acceptance claim when Phase 7 is absent.  It is
-the read-only validator for a monolithic full-flow Experiment v2 checkpoint;
-the minimum-cut gate prevents a vacuous exact-mode result.
+The compile command validates each stage while its in-memory result is live and
+returns only after Phase 7/7C passes. A separate `multi-fpga validate` is an
+explicit offline forensic audit; routine one-shot validation does not reread,
+rehash, and replay the just-completed flow. A non-vacuous promotion run still
+requires at least one real combinational cut in its terminal evidence.
 The shared slot-edge convention, semantic contract, fail-closed policy, and
 Phase 3--7 acceptance sequence are specified in
 [Static exact combinational-cut mode](docs/STATIC_EXACT_COMBINATIONAL_CUT.md).
 The production default is generalized Static Exact v2 plus PATRON. Static
 Exact remains fail-closed outside its declared single-clock, synchronous-reset,
 deterministic-schedule envelope; selecting it by default does not broaden that
-semantic scope. Legacy Static Exact v1 and sequential-only remain explicit
-comparison policies.
+semantic scope. The legacy Static Exact policies have been removed;
+`sequential-only` remains the explicit register-boundary comparison policy.
 Static-exact physical evidence preserves each reached state-capture input pin
 and bit through lowering; a VTR query rejects an endpoint that is absent from
 the emitted primitive contract before physical routing begins.
