@@ -45,14 +45,48 @@ These requirements apply to all work in this repository.
   requires an old invocation contract, expose a separately named versioned
   command/config schema rather than making the current command guess intent.
 
-## Universal experiment lifecycle and checkpoint reuse
+## Default experiment lifecycle: ephemeral intermediates
 
-These rules apply to every present and future EmuFlow experiment: correctness
-and determinism validation, benchmark qualification, algorithm A/B and
-ablation studies, scalability and performance measurements, public-contest
+These rules supersede the opt-in cache rules below for ordinary validation and
+QoR experiments.
+
+- Run a complete requested validation in one isolated experiment directory.
+  Intermediate Phase 1--7 files may exist while that run is active, but they
+  are scratch rather than durable experiment results.
+- After the terminal validator passes, retain only the compact final evidence:
+  the exact source/config/tool identities, final assignment/route/schedule
+  identities needed for audit, Phase 7 physical summary, DRC and unrouted-net
+  counts, global Phase 7C WNS/TNS, runtime summary, and the validation seal.
+  Remove full placement/routing work directories, duplicated JSON payloads,
+  temporary tool products, failed attempts, and other replay-only intermediates.
+- Do not build or retain a persistent content-addressed checkpoint DAG merely
+  to save time on a future run. Do not run whole-cache inventory, GC, or strong
+  rehash passes as part of the normal validation path. Hash each retained final
+  artifact once while producing its terminal seal.
+- A fair A/B run may share immutable input files inside the same active
+  experiment directory, but that sharing must not create a permanent cache of
+  every phase. Run only the requested physical seed unless the user explicitly
+  requests a variance study.
+- On cancellation or failure, first prove that the recorded process tree is no
+  longer running, then remove the attempt's scratch and intermediate outputs.
+  Preserve only a compact failure summary when it contains actionable evidence.
+- Existing final evidence bundles remain immutable. Existing intermediate
+  caches may be removed when they are not referenced by another live task;
+  never delete another task's active input or final evidence.
+
+## Explicit opt-in checkpoint lifecycle
+
+The content-addressed DAG and checkpoint rules in this section apply only when
+the user explicitly requests persistent checkpoint reuse for a particular
+experiment. They are not the default execution policy.
+
+When explicitly enabled, these rules cover the complete selected experiment:
+correctness and determinism validation, benchmark qualification, algorithm A/B
+and ablation studies, scalability and performance measurements, public-contest
 evaluation, synthesis and partitioning runs, routing and scheduling studies,
 Phase 6 provider comparisons, physical implementation, timing closure, and
-complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
+complete Phase 1--7 flows. Phase 6 is only one application of this opt-in
+policy.
 
 - Before starting any repeated, multistage, expensive, or evidence-producing
   run, express it as a content-addressed DAG through `experiment-cache`.  A
