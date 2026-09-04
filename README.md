@@ -1312,6 +1312,11 @@ neutral LUT6/FF experiments, but may expand memory-heavy designs substantially.
 TritonPart assignments are legalized against the independently checked
 cells/LUT/FF/BRAM/DSP balance bounds by default; pass
 `--no-partition-repair-balance` only for an explicit raw-partitioner study.
+The deterministic legalizer commits the target selected by its cut/relief
+ranking.  When multidimensional capacity can be repaired only by a two-move
+exchange, it uses resource-weight indexes and cached deficit queries instead
+of scanning the Cartesian product of all source clusters, blockers, and FPGA
+destinations.
 For a design that naturally collapses into one zero-cut partition, pass
 `--partition-repair-min-used-fpgas`; every repair move remains explicit in the
 partition artifact and is checked independently.

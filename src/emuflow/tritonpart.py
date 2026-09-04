@@ -4,6 +4,7 @@ import hashlib
 import math
 import shutil
 import subprocess
+from bisect import bisect_left
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -902,7 +903,8 @@ def _repair_multi_resource_balance(
                 choices.append((delta, projected_peak, target))
             if not choices:
                 continue
-            apply_move(vertex, source, target)
+            _, _, best_target = min(choices)
+            apply_move(vertex, source, best_target)
             moved_from_source += 1
         if not moved_from_source:
             # A legal multidimensional assignment may require an exchange:
@@ -913,6 +915,103 @@ def _repair_multi_resource_balance(
             # and commit both moves atomically from the repair perspective.
             best_pair = None
             before_source_score = overload_score(source)
+
+            # A naive exchange search is quadratic in the number of vertices:
+            # for every source vertex and target it scans every target vertex
+            # and every possible destination.  Real designs can have hundreds
+            # of thousands of clusters, even though the blocking resource is
+            # usually sparse (for example DSP or URAM).  Index blockers by
+            # resource weight and cache repeated deficit queries.  This keeps
+            # the search complete while restricting each query to vertices
+            # that can actually free the target's missing capacity.
+            blocker_indexes: Dict[
+                int, List[List[Tuple[int, int]]]
+            ] = {}
+            eligible_blocker_cache: Dict[
+                Tuple[int, Tuple[int, ...]], Tuple[int, ...]
+            ] = {}
+            destination_cache: Dict[
+                Tuple[int, int], Optional[Tuple[float, int]]
+            ] = {}
+
+            def blocker_index(target: int) -> List[List[Tuple[int, int]]]:
+                cached = blocker_indexes.get(target)
+                if cached is not None:
+                    return cached
+                indexes: List[List[Tuple[int, int]]] = [
+                    [] for _ in range(num_dimensions)
+                ]
+                for blocker in vertices_by_part[target]:
+                    if labels[blocker] != target:
+                        continue
+                    blocker_id = cluster_order[blocker]
+                    if clusters[blocker_id]["fixed_fpga"] is not None:
+                        continue
+                    for dimension, weight in enumerate(
+                        vertex_weights[blocker]
+                    ):
+                        indexes[dimension].append((weight, blocker))
+                for index in indexes:
+                    index.sort()
+                blocker_indexes[target] = indexes
+                return indexes
+
+            def eligible_blockers(
+                target: int, deficits: Sequence[int]
+            ) -> Tuple[int, ...]:
+                cache_key = (target, tuple(deficits))
+                cached = eligible_blocker_cache.get(cache_key)
+                if cached is not None:
+                    return cached
+                indexes = blocker_index(target)
+                pivots = []
+                for dimension, deficit in enumerate(deficits):
+                    if deficit <= 0:
+                        continue
+                    start = bisect_left(indexes[dimension], (deficit, -1))
+                    pivots.append(
+                        (len(indexes[dimension]) - start, dimension, start)
+                    )
+                if not pivots:
+                    eligible_blocker_cache[cache_key] = ()
+                    return ()
+                _, pivot_dimension, start = min(pivots)
+                candidates = []
+                for _, blocker in indexes[pivot_dimension][start:]:
+                    weights = vertex_weights[blocker]
+                    if all(
+                        weights[dimension] >= deficits[dimension]
+                        for dimension in range(num_dimensions)
+                    ):
+                        candidates.append(blocker)
+                result = tuple(candidates)
+                eligible_blocker_cache[cache_key] = result
+                return result
+
+            def best_non_source_destination(
+                blocker: int, target: int
+            ) -> Optional[Tuple[float, int]]:
+                cache_key = (blocker, target)
+                if cache_key in destination_cache:
+                    return destination_cache[cache_key]
+                choices = []
+                blocker_weights = vertex_weights[blocker]
+                for destination in range(num_parts):
+                    if destination in {source, target}:
+                        continue
+                    if not fits(blocker, destination):
+                        continue
+                    choices.append(
+                        (
+                            cut_delta(blocker, target, destination),
+                            destination,
+                        )
+                    )
+                result = min(choices) if choices else None
+                destination_cache[cache_key] = result
+                return result
+
+            source_candidates = []
             for vertex in vertices_by_part[source]:
                 if labels[vertex] != source:
                     continue
@@ -927,6 +1026,37 @@ def _repair_multi_resource_balance(
                 )
                 if relief <= 0.0:
                     continue
+                source_without_vertex = [
+                    loads[source][dimension] - weights[dimension]
+                    for dimension in range(num_dimensions)
+                ]
+                source_candidates.append(
+                    (
+                        overload_score(source, source_without_vertex),
+                        cluster_id,
+                        vertex,
+                        relief,
+                    )
+                )
+
+            # The first tuple field is a lower bound on every exchange using
+            # this source vertex: sending a blocker back to the source can
+            # only increase its post-move overload.  Once it exceeds the best
+            # complete candidate, later vertices cannot win the deterministic
+            # ranking and need not be inspected.
+            source_candidates.sort()
+            for (
+                source_without_score,
+                cluster_id,
+                vertex,
+                relief,
+            ) in source_candidates:
+                if (
+                    best_pair is not None
+                    and source_without_score > best_pair[0]
+                ):
+                    break
+                weights = vertex_weights[vertex]
                 for target in range(num_parts):
                     if target == source:
                         continue
@@ -941,61 +1071,25 @@ def _repair_multi_resource_balance(
                         for dimension in range(num_dimensions)
                     ):
                         continue
-                    for blocker in vertices_by_part[target]:
-                        if labels[blocker] != target:
-                            continue
-                        blocker_id = cluster_order[blocker]
-                        if clusters[blocker_id]["fixed_fpga"] is not None:
-                            continue
-                        blocker_weights = vertex_weights[blocker]
-                        if not all(
+                    deficits = [
+                        max(
+                            0,
                             target_after_vertex[dimension]
-                            - blocker_weights[dimension]
-                            <= allowed[target][dimension]
-                            for dimension in range(num_dimensions)
-                        ):
-                            continue
-                        for destination in range(num_parts):
-                            if destination == target:
-                                continue
-                            if destination == source:
-                                destination_after = [
-                                    loads[source][dimension]
-                                    - weights[dimension]
-                                    + blocker_weights[dimension]
-                                    for dimension in range(num_dimensions)
-                                ]
-                                after_source_score = overload_score(
-                                    source, destination_after
-                                )
-                                if after_source_score >= before_source_score:
-                                    continue
-                            else:
-                                destination_after = [
-                                    loads[destination][dimension]
-                                    + blocker_weights[dimension]
-                                    for dimension in range(num_dimensions)
-                                ]
-                                if any(
-                                    destination_after[dimension]
-                                    > allowed[destination][dimension]
-                                    for dimension in range(num_dimensions)
-                                ):
-                                    continue
-                                after_source_score = overload_score(
-                                    source,
-                                    [
-                                        loads[source][dimension]
-                                        - weights[dimension]
-                                        for dimension in range(num_dimensions)
-                                    ],
-                                )
-                            pair_delta = (
-                                cut_delta(blocker, target, destination)
-                                + source_delta
-                            )
+                            - allowed[target][dimension],
+                        )
+                        for dimension in range(num_dimensions)
+                    ]
+                    for blocker in eligible_blockers(target, deficits):
+                        blocker_id = cluster_order[blocker]
+                        blocker_weights = vertex_weights[blocker]
+                        non_source = best_non_source_destination(
+                            blocker, target
+                        )
+                        if non_source is not None:
+                            blocker_delta, destination = non_source
+                            pair_delta = blocker_delta + source_delta
                             candidate = (
-                                after_source_score,
+                                source_without_score,
                                 pair_delta / relief,
                                 pair_delta,
                                 cluster_id,
@@ -1007,6 +1101,36 @@ def _repair_multi_resource_balance(
                             )
                             if best_pair is None or candidate < best_pair:
                                 best_pair = candidate
+
+                        destination_after = [
+                            loads[source][dimension]
+                            - weights[dimension]
+                            + blocker_weights[dimension]
+                            for dimension in range(num_dimensions)
+                        ]
+                        after_source_score = overload_score(
+                            source, destination_after
+                        )
+                        if after_source_score >= before_source_score:
+                            continue
+                        destination = source
+                        pair_delta = (
+                            cut_delta(blocker, target, destination)
+                            + source_delta
+                        )
+                        candidate = (
+                            after_source_score,
+                            pair_delta / relief,
+                            pair_delta,
+                            cluster_id,
+                            blocker_id,
+                            target,
+                            destination,
+                            vertex,
+                            blocker,
+                        )
+                        if best_pair is None or candidate < best_pair:
+                            best_pair = candidate
             if best_pair is None:
                 raise ValidationError(
                     "TritonPart balance repair found no legal direct or "

@@ -184,6 +184,69 @@ class TritonPartTest(unittest.TestCase):
         self.assertEqual(repaired["c0"], "fpga1")
         self.assertEqual(repaired["c2"], "fpga0")
 
+    def test_balance_repair_applies_the_ranked_target(self) -> None:
+        platform = Platform.from_dict(
+            {
+                "schema": "emuflow.boarddb/v1",
+                "platform": {
+                    "name": "three-part-repair",
+                    "kind": "virtual",
+                },
+                "fpgas": [
+                    {
+                        "id": f"fpga{index}",
+                        "part": "test-part",
+                        "utilization_limit": 1.0,
+                        "capacity": {"lut": 100},
+                    }
+                    for index in range(3)
+                ],
+                "links": [],
+            }
+        )
+        cluster_order = [f"c{index}" for index in range(12)]
+        clusters = {
+            "clusters": [
+                {
+                    "id": cluster_id,
+                    "instances": [f"i{index}"],
+                    "resources": {},
+                    "fixed_fpga": None,
+                }
+                for index, cluster_id in enumerate(cluster_order)
+            ]
+        }
+        assignment = {
+            cluster_id: (
+                "fpga0" if index < 6 else "fpga1" if index < 9 else "fpga2"
+            )
+            for index, cluster_id in enumerate(cluster_order)
+        }
+        repaired, report = _repair_multi_resource_balance(
+            assignment,
+            clusters,
+            platform,
+            {
+                "balance_tolerance": 0.0,
+                "balance_tolerance_by_dimension": {},
+            },
+            {
+                "cluster_order": cluster_order,
+                "fpga_order": ["fpga0", "fpga1", "fpga2"],
+                "vertex_dimensions": ["cells"],
+                "vertex_weights": [[1] for _ in cluster_order],
+                "effective_balance_percent": 0.0,
+                "hyperedges": [
+                    {"vertices": [1, 7], "weight": 10.0},
+                    {"vertices": [2, 10], "weight": 9.0},
+                ],
+            },
+        )
+        self.assertEqual(report["moves"], 2)
+        self.assertEqual(report["paired_move_sequences"], 0)
+        self.assertEqual(repaired["c0"], "fpga1")
+        self.assertEqual(repaired["c1"], "fpga2")
+
     def test_export_translates_relative_tolerance_to_ubfactor_points(
         self,
     ) -> None:
