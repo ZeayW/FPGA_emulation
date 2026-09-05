@@ -1358,7 +1358,7 @@ def compile_canonical_experiment_spec(
         "phase6-baseline", "phase6", ["shared-phase1-5"], baseline_command,
         [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline", "--managed-dag-node"],
         [_artifact("split", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical")],
-        inputs=("platform", "tool.emuflow"), configuration={"provider": "baseline", "equivalence_cycles": 16}, peak_gib=12, retained_gib=4, provider="baseline",
+        inputs=("platform", "tool.emuflow"), configuration={"provider": "baseline", "equivalence_cycles": 1}, peak_gib=12, retained_gib=4, provider="baseline",
     )
     lookahead_command = [
         executable, "experiment-stage", "lookahead-run", "--shared", "{dependency:shared-phase1-5}",
@@ -1412,7 +1412,7 @@ def compile_canonical_experiment_spec(
             inputs=tuple(phase6_inputs),
             configuration={
                 "provider": provider,
-                "equivalence_cycles": 16,
+                "equivalence_cycles": 1,
                 "phase6_candidate_peak_gib": phase6_candidate_peak_gib,
             },
             peak_gib=phase6_candidate_peak_gib,

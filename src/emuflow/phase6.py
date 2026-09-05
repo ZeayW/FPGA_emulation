@@ -162,7 +162,7 @@ def run_phase6(
     schedule_path: Path,
     platform_path: Path,
     output_dir: Path,
-    equivalence_cycles: int = 16,
+    equivalence_cycles: int = 1,
     equivalence_seed: int = 20260727,
     pin_plan_path: Optional[Path] = None,
     position_hints_path: Optional[Path] = None,
@@ -377,7 +377,7 @@ def validate_phase6(
     position_hints_path: Optional[Path] = None,
     electrical_binding_path: Optional[Path] = None,
     *,
-    replay_equivalence: bool = True,
+    replay_equivalence: bool = False,
     reconstruct_artifacts: bool = True,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)

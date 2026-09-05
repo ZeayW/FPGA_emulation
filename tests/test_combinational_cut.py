@@ -2148,6 +2148,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 schedule_path,
                 PLATFORM_PATH,
                 output / "manifest.json",
+                replay_equivalence=True,
             )
             self.assertEqual(validation["status"], "pass")
             self.assertEqual(

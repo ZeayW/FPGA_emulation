@@ -33,6 +33,7 @@ from .multi_fpga_bsp_flow import (
     validate_multi_fpga_bsp_flow_report,
 )
 from .opensta import DEFAULT_TIMING_MODEL, run_opensta_path_database
+from .openparf import validate_openparf_runtime
 from .phase1 import run_phase1
 from .phase3 import promote_patron_baseline, run_phase3, validate_phase3
 from .phase4 import run_phase4, validate_phase4
@@ -1034,7 +1035,7 @@ def run_multi_fpga_flow(
     cross_stage_feedback_optimizer: Optional[str] = None,
     cross_stage_pair_pressure_weight: float = 1.0,
     simulation_frames: int = 16,
-    equivalence_cycles: int = 16,
+    equivalence_cycles: int = 1,
     equivalence_seed: int = 20260727,
     phase6_provider: str = "baseline",
     phase6_chimew_region_count: int = 4,
@@ -1183,6 +1184,16 @@ def run_multi_fpga_flow(
         raise EmuFlowError(
             "serial BSP continuation requires exactly one of "
             "--serial-bsp-vivado or --serial-bsp-yosys"
+        )
+
+    # Phase 7 runs after every board-independent stage, so validating its
+    # interpreter inside the physical-flow helper is much too late for a
+    # one-shot Phase 1--7 invocation.  Reject an unusable OpenPARF/PyTorch
+    # binding before creating any frontend artifact or doing synthesis.
+    if physical and physical_backend == "open":
+        validate_openparf_runtime(
+            install_root=physical_openparf_install,
+            python_executable=physical_openparf_python,
         )
 
     output_dir = output_dir.resolve()

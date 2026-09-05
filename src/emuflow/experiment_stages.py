@@ -1121,7 +1121,7 @@ def run_phase6_checkpoint(
     output_dir: Path,
     *,
     provider: str,
-    equivalence_cycles: int = 16,
+    equivalence_cycles: int = 1,
     equivalence_seed: int = 20260727,
     pin_planner: str | None = None,
     chimew_grouper: str | None = None,

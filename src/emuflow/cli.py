@@ -976,7 +976,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("baseline", "placement-aware", "chimew"),
         required=True,
     )
-    phase6_run.add_argument("--equivalence-cycles", type=int, default=16)
+    phase6_run.add_argument("--equivalence-cycles", type=int, default=1)
     phase6_run.add_argument("--equivalence-seed", type=int, default=20260727)
     phase6_run.add_argument("--pin-planner")
     phase6_run.add_argument("--chimew-grouper")
@@ -2082,7 +2082,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--cross-stage-pair-pressure-weight", type=float, default=1.0
     )
     multi_fpga_compile.add_argument("--simulation-frames", type=int, default=16)
-    multi_fpga_compile.add_argument("--equivalence-cycles", type=int, default=16)
+    multi_fpga_compile.add_argument("--equivalence-cycles", type=int, default=1)
     multi_fpga_compile.add_argument(
         "--equivalence-seed", type=int, default=20260727
     )
@@ -3515,7 +3515,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6.add_argument("--pin-plan", type=Path)
     phase6.add_argument("--position-hints", type=Path)
     phase6.add_argument("--electrical-binding", type=Path)
-    phase6.add_argument("--equivalence-cycles", type=int, default=16)
+    phase6.add_argument("--equivalence-cycles", type=int, default=1)
     phase6.add_argument("--equivalence-seed", type=int, default=20260727)
 
     phase6b = subparsers.add_parser(

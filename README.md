@@ -374,11 +374,15 @@ Those gates are qualified as `route-contract-propagation-pass` and
 `dependency-schedule-readiness-pass`; neither is a functional-equivalence or
 physical-timing claim. Phase 6 now materializes preserved TX/RX boundary
 identities, rejects hidden cross-FPGA bypasses, and validates each exact
-schedule with three event-driven macro-cycle traces. Small models additionally
-enumerate every architectural state and non-reset primary input for one
-macro-step. The report distinguishes randomized validation from exhaustive
-small-model proof. A normal validation performs one independent Phase 6 replay
-inside its isolated full-flow run. EmuFlow validation does not persist or reuse
+schedule with three event-driven macro-cycle traces. Production runs default
+to one macro-cycle per trace; an explicit `--equivalence-cycles N` raises that
+depth for qualification studies without changing generated transport RTL.
+Small models additionally enumerate every architectural state and non-reset
+primary input for one macro-step. The report distinguishes randomized
+validation from exhaustive small-model proof. A normal validation performs one
+bounded producer-side Phase 6 smoke replay inside its isolated full-flow run;
+the independent structural validator does not repeat it. Explicit qualification
+may request deeper replay. EmuFlow validation does not persist or reuse
 phase checkpoints: after the terminal Phase 7/7C checks, it retains only a
 compact result summary and removes the complete working directory.
 Phase 7C now independently reconstructs every exact

@@ -374,6 +374,10 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     side_effect=fake_physical,
                 ),
                 patch(
+                    "emuflow.multi_fpga_flow.validate_openparf_runtime",
+                    return_value={"status": "pass"},
+                ),
+                patch(
                     "emuflow.multi_fpga_flow.run_phase7c",
                     side_effect=fake_phase7c,
                 ),
@@ -405,6 +409,33 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             self.assertFalse(
                 (root / "flow/timing/partition-net-weights.json").exists()
             )
+
+    def test_open_physical_runtime_preflight_precedes_frontend(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "multi"
+            with patch(
+                "emuflow.multi_fpga_flow.validate_openparf_runtime",
+                side_effect=EmuFlowError("missing PyTorch runtime"),
+            ):
+                with self.assertRaisesRegex(
+                    EmuFlowError, "missing PyTorch runtime"
+                ):
+                    run_multi_fpga_flow(
+                        platform_path=PLATFORM,
+                        output_dir=root,
+                        yosys_json=ROOT / "examples/yosys/counter.json",
+                        top="counter",
+                        clocks=["clk"],
+                        partition_provider="greedy",
+                        cut_mode="sequential-only",
+                        timing_driven=False,
+                        clock_periods={"clk": 10.0},
+                        opensta=str(FAKE_OPENSTA),
+                        router=str(tlr_router()),
+                        frame_slots=32,
+                        physical=True,
+                    )
+            self.assertFalse(root.exists())
 
     def test_finalizes_checked_independent_physical_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
