@@ -1951,9 +1951,14 @@ per-resource bounds. Changing either policy invalidates Phase 3 and its
 descendants while leaving unchanged frontend and timing checkpoints reusable.
 Every Phase 3 invocation now uses the same compact production path. It builds
 the pressure model once, performs one in-memory linear legality pass on the
-selected assignment, writes no model or trace hashes, removes TritonPart and
-native-refiner scratch after consumption, and emits only the winner assignment
-plus compact reports. Lossless columnar JSON stores the cluster table and the
+selected assignment, writes no model or trace hashes, and invokes native
+PATRON with its summary-output protocol. That protocol emits only objective
+metrics, move/batch counts, and the final cluster assignment; it does not first
+write a multi-gigabyte per-move trace merely to discard it in Python. Detailed
+native move/batch records remain available only to explicit qualification
+runs. Production removes TritonPart and native-refiner scratch after
+consumption and emits only the winner assignment plus compact reports.
+Lossless columnar JSON stores the cluster table and the
 irreducible cluster-to-FPGA vector; `read_json` transparently reconstructs the
 unchanged `emuflow.clusters/v1` and `emuflow.partition-assignment/v1` logical
 objects for Phase 4--7. Full pressure-model reconstruction and move replay live

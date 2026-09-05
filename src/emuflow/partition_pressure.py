@@ -1808,6 +1808,7 @@ def _parse_patron_native_output(
     Dict[str, Any],
     Dict[str, Any],
     str,
+    Dict[str, Any],
 ]:
     lines = path.read_text(encoding="utf-8").splitlines()
     if not lines or lines[0] not in (
@@ -1842,6 +1843,7 @@ def _parse_patron_native_output(
     final_metrics = None
     initial_metrics = None
     mode = None
+    summary = None
     for line in lines[1:]:
         fields = line.split()
         if not fields:
@@ -1982,6 +1984,29 @@ def _parse_patron_native_output(
                 [float(item) for item in fields[1:]],
                 path_transition_objective=path_transition_objective,
             )
+        elif fields[0] == "SUMMARY" and len(fields) == 5:
+            if summary is not None:
+                raise ValidationError(
+                    "native PATRON returned duplicate SUMMARY"
+                )
+            move_count, batch_count, change_count, detail = map(
+                int, fields[1:]
+            )
+            if (
+                move_count < 0
+                or batch_count < 0
+                or change_count < 0
+                or detail not in (0, 1)
+            ):
+                raise ValidationError(
+                    "native PATRON output summary is invalid"
+                )
+            summary = {
+                "moves": move_count,
+                "batches": batch_count,
+                "changes": change_count,
+                "detail_retained": bool(detail),
+            }
         elif fields[0] == "ASSIGN" and len(fields) == 3:
             cluster, part = map(int, fields[1:])
             cluster_id = indexed("cluster", indexes["clusters"], cluster)
@@ -2002,9 +2027,39 @@ def _parse_patron_native_output(
             raise ValidationError(
                 "native PATRON batch change coverage is invalid"
             )
+    actual_changes = sum(len(batch["changes"]) for batch in batches)
+    if summary is None:
+        summary = {
+            "moves": len(moves),
+            "batches": len(batches),
+            "changes": actual_changes,
+            "detail_retained": True,
+        }
+    elif summary["detail_retained"]:
+        if summary != {
+            "moves": len(moves),
+            "batches": len(batches),
+            "changes": actual_changes,
+            "detail_retained": True,
+        }:
+            raise ValidationError(
+                "native PATRON detailed output does not match SUMMARY"
+            )
+    elif moves or batches:
+        raise ValidationError(
+            "native PATRON summary-only output contains trace records"
+        )
     if final_metrics is None or initial_metrics is None or mode is None:
         raise ValidationError("native PATRON output metadata is incomplete")
-    return assignment, moves, batches, initial_metrics, final_metrics, mode
+    return (
+        assignment,
+        moves,
+        batches,
+        initial_metrics,
+        final_metrics,
+        mode,
+        summary,
+    )
 
 
 def run_partition_pressure_native(
@@ -2099,8 +2154,12 @@ def run_partition_pressure_native(
         for name in tuple(environment):
             if name.startswith("EMUFLOW_PATRON_"):
                 del environment[name]
+        command = [resolved]
+        if not retain_trace_seals:
+            command.append("--summary-output")
+        command.extend((str(native_input), str(native_output)))
         completed = subprocess.run(
-            [resolved, str(native_input), str(native_output)],
+            command,
             capture_output=True,
             text=True,
             check=False,
@@ -2119,6 +2178,7 @@ def run_partition_pressure_native(
             initial_metrics,
             final_metrics,
             mode,
+            output_summary,
         ) = (
             _parse_patron_native_output(native_output, indexes)
         )
@@ -2248,13 +2308,21 @@ def run_partition_pressure_native(
             else {}
         ),
         "initial_metrics": initial_metrics,
-        "moves": moves,
-        "batches": batches,
+        "move_count": output_summary["moves"],
+        "batch_count": output_summary["batches"],
+        "change_count": output_summary["changes"],
+        "trace_storage": (
+            "retained"
+            if output_summary["detail_retained"]
+            else "summary-only"
+        ),
         "final_metrics": final_metrics,
     }
     if retain_trace_seals:
         trace.update(
             {
+                "moves": moves,
+                "batches": batches,
                 "model_sha256": model_sha256,
                 "initial_assignment_sha256": _canonical_digest(
                     initial_assignment

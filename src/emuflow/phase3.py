@@ -714,10 +714,22 @@ def run_phase3(
             candidate_validation = validate_partition_artifacts_online(
                 platform, clusters, assignment
             )
-            moves = patron_trace.get("moves")
-            batches = patron_trace.get("batches")
-            if not isinstance(moves, list) or not isinstance(batches, list):
-                raise ValidationError("managed PATRON trace shape is invalid")
+            move_count = patron_trace.get("move_count")
+            batch_count = patron_trace.get("batch_count")
+            change_count = patron_trace.get("change_count")
+            if (
+                isinstance(move_count, bool)
+                or not isinstance(move_count, int)
+                or move_count < 0
+                or isinstance(batch_count, bool)
+                or not isinstance(batch_count, int)
+                or batch_count < 0
+                or isinstance(change_count, bool)
+                or not isinstance(change_count, int)
+                or change_count < 0
+                or patron_trace.get("trace_storage") != "summary-only"
+            ):
+                raise ValidationError("production PATRON summary is invalid")
             patron_validation = {
                 "status": "pass",
                 "mode": patron_trace.get("mode"),
@@ -731,8 +743,9 @@ def run_phase3(
                     "paths": len(model.get("paths", [])),
                     "capacity_domains": len(model.get("capacities", [])),
                 },
-                "moves": len(moves),
-                "batches": len(batches),
+                "moves": move_count,
+                "batches": batch_count,
+                "batch_changes": change_count,
             }
         if patron_physical_feedback_validation is not None:
             patron_validation["physical_feedback"] = (

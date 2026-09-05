@@ -579,8 +579,10 @@ class PartitionPressureTest(unittest.TestCase):
                 initial_metrics,
                 final_metrics,
                 mode,
+                output_summary,
             ) = _parse_patron_native_output(native_output, indexes)
         self.assertEqual(mode, "endpoint-exact-critical-flow-v9")
+        self.assertTrue(output_summary["detail_retained"])
         final = build_partition_assignment(
             self.ir,
             self.platform,
@@ -1488,6 +1490,9 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(
                 production["algorithm_validation"]["qualification"],
                 "online-native-output-contract",
+            )
+            self.assertEqual(
+                production["algorithm_validation"]["batch_changes"], 0
             )
             self.assertEqual(
                 production["patron_diagnostics"]["storage"], "not-persisted"

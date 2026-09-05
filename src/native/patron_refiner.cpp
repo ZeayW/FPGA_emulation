@@ -2943,7 +2943,8 @@ void write_output(const std::string& output_path,
                   const std::vector<NativeMove>& moves,
                   const std::vector<int>& assignment,
                   const std::vector<NativeBatch>& batches = {},
-                  int flow_output_version = 0) {
+                  int flow_output_version = 0,
+                  bool emit_trace = true) {
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
   const char* header = "EMUFLOW_PATRON_OUTPUT_V6\n";
@@ -2969,32 +2970,40 @@ void write_output(const std::string& output_path,
   output << "INITIAL";
   write_vector(output, initial.objective);
   output << '\n';
-  for (const NativeMove& move : moves) {
-    output << "STEP " << move.index << ' ' << move.phase << ' '
-           << move.sweep << ' '
-           << move.cluster << ' '
-           << move.source << ' ' << move.target << ' '
-           << move.partner << ' ' << move.partner_source << ' '
-           << move.partner_target;
-    write_vector(output, move.before.objective);
-    write_vector(output, move.after.objective);
-    write_vector(output, move.after.ranked);
-    output << '\n';
+  long long changes = 0;
+  for (const NativeBatch& batch : batches) {
+    changes += static_cast<long long>(batch.changes.size());
   }
-  for (int batch = 0; batch < static_cast<int>(batches.size()); ++batch) {
-    const NativeBatch& record = batches[batch];
-    output << "BATCH " << batch << ' ' << record.changes.size();
-    write_vector(output, record.before.objective);
-    write_vector(output, record.after.objective);
-    write_vector(output, record.after.ranked);
-    output << '\n';
-    for (const auto& change : record.changes) {
-      output << "CHANGE " << batch << ' '
-             << std::get<0>(change) << ' '
-             << std::get<1>(change) << ' '
-             << std::get<2>(change) << '\n';
+  if (emit_trace) {
+    for (const NativeMove& move : moves) {
+      output << "STEP " << move.index << ' ' << move.phase << ' '
+             << move.sweep << ' '
+             << move.cluster << ' '
+             << move.source << ' ' << move.target << ' '
+             << move.partner << ' ' << move.partner_source << ' '
+             << move.partner_target;
+      write_vector(output, move.before.objective);
+      write_vector(output, move.after.objective);
+      write_vector(output, move.after.ranked);
+      output << '\n';
+    }
+    for (int batch = 0; batch < static_cast<int>(batches.size()); ++batch) {
+      const NativeBatch& record = batches[batch];
+      output << "BATCH " << batch << ' ' << record.changes.size();
+      write_vector(output, record.before.objective);
+      write_vector(output, record.after.objective);
+      write_vector(output, record.after.ranked);
+      output << '\n';
+      for (const auto& change : record.changes) {
+        output << "CHANGE " << batch << ' '
+               << std::get<0>(change) << ' '
+               << std::get<1>(change) << ' '
+               << std::get<2>(change) << '\n';
+      }
     }
   }
+  output << "SUMMARY " << moves.size() << ' ' << batches.size() << ' '
+         << changes << ' ' << (emit_trace ? 1 : 0) << '\n';
   output << "FINAL";
   write_vector(output, final.objective);
   output << '\n';
@@ -3004,7 +3013,9 @@ void write_output(const std::string& output_path,
   output << "END\n";
 }
 
-void run_exact(const Model& model, const std::string& output_path) {
+void run_exact(const Model& model,
+               const std::string& output_path,
+               bool emit_trace) {
   std::vector<int> assignment(model.clusters);
   for (int cluster = 0; cluster < model.clusters; ++cluster) {
     assignment[cluster] = model.cluster[cluster].part;
@@ -3142,10 +3153,15 @@ void run_exact(const Model& model, const std::string& output_path) {
                initial,
                current,
                moves,
-               assignment);
+               assignment,
+               {},
+               0,
+               emit_trace);
 }
 
-void run_scalable(const Model& model, const std::string& output_path) {
+void run_scalable(const Model& model,
+                  const std::string& output_path,
+                  bool emit_trace) {
   ProxyState state = build_proxy_state(model);
   const Evaluation initial = state.evaluation;
   const auto cluster_nets = build_cluster_nets(model);
@@ -4303,14 +4319,17 @@ void run_scalable(const Model& model, const std::string& output_path) {
                moves,
                state.assignment,
                batches,
-               model.flow_version);
+               model.flow_version,
+               emit_trace);
 }
 
-void run(const Model& model, const std::string& output_path) {
+void run(const Model& model,
+         const std::string& output_path,
+         bool emit_trace) {
   if (model.clusters <= 256 && !model.flow_refinement) {
-    run_exact(model, output_path);
+    run_exact(model, output_path, emit_trace);
   } else {
-    run_scalable(model, output_path);
+    run_scalable(model, output_path, emit_trace);
   }
 }
 
@@ -4318,16 +4337,20 @@ void run(const Model& model, const std::string& output_path) {
 
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "usage: emuflow_patron_refiner INPUT OUTPUT\n";
+    std::cout << "usage: emuflow_patron_refiner [--summary-output] INPUT OUTPUT\n";
     return 0;
   }
-  if (argc != 3) {
-    std::cerr << "usage: emuflow_patron_refiner INPUT OUTPUT\n";
+  const bool summary_output =
+      argc == 4 && std::string(argv[1]) == "--summary-output";
+  if (argc != 3 && !summary_output) {
+    std::cerr << "usage: emuflow_patron_refiner [--summary-output] INPUT OUTPUT\n";
     return 2;
   }
   try {
-    Model model = read_model(argv[1]);
-    run(model, argv[2]);
+    const int input_index = summary_output ? 2 : 1;
+    const int output_index = summary_output ? 3 : 2;
+    Model model = read_model(argv[input_index]);
+    run(model, argv[output_index], !summary_output);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "emuflow_patron_refiner: " << error.what() << '\n';

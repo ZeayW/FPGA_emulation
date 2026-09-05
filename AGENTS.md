@@ -70,6 +70,12 @@ phase, even when a run is expensive or an earlier result appears reusable.
   or the avoidance of duplicate hashing on a `managed`, `cached`, or similar
   execution flag. Expensive model reconstruction, full trace replay, and large
   diagnostic persistence belong only to explicitly named qualification tools.
+- A production native subprocess must use a compact result protocol when its
+  detailed search trace is not part of the retained terminal evidence. It is
+  forbidden to generate a full move/batch/event trace, write it to scratch,
+  parse it into Python objects, and then discard it. Production protocols emit
+  the final result plus constant-size counters/metrics; detailed records are an
+  explicit qualification mode.
 - A fair A/B run may share immutable input files inside the same active
   experiment directory, but that sharing must not create a permanent cache of
   every phase. Run only the requested physical seed unless the user explicitly
