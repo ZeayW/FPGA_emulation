@@ -193,7 +193,7 @@ def run_frame_length_search(
     simulation_frames: int = 16,
     ratio_max_iterations: int = 500,
     max_ratio: Optional[int] = None,
-    ratio_quantum: int = 8,
+    ratio_quantum: Optional[int] = None,
     post_refinement_iterations: int = 200,
     slot_refinement_iterations: int = 0,
     ratio_convergence: float = 1.0e-9,
@@ -319,6 +319,12 @@ def run_frame_length_search(
     selected_root = search_root / f"frame-{chosen:08d}"
     shutil.copytree(selected_root / "system-route", route_output_dir)
     shutil.copytree(selected_root / "tdm", tdm_output_dir)
+    selected_routes = read_json(route_output_dir / "routes.json")
+    resolved_ratio_quantum = (
+        ratio_quantum
+        if ratio_quantum is not None
+        else int(selected_routes["constraints"].get("tdm_ratio_quantum", 8))
+    )
     report = {
         "schema": FRAME_SEARCH_SCHEMA,
         "status": "pass",
@@ -331,7 +337,7 @@ def run_frame_length_search(
         "configuration": {
             "ratio_max_iterations": ratio_max_iterations,
             "max_ratio": max_ratio,
-            "ratio_quantum": ratio_quantum,
+            "ratio_quantum": resolved_ratio_quantum,
             "post_refinement_iterations": post_refinement_iterations,
             "slot_refinement_iterations": slot_refinement_iterations,
             "tdm_provider": tdm_provider,

@@ -142,6 +142,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             "build",
         ]
         self.assertTrue(_build_parser().parse_args(base).timing_driven)
+        self.assertIsNone(_build_parser().parse_args(base).ratio_quantum)
         self.assertFalse(
             _build_parser().parse_args(
                 [*base, "--no-timing-driven"]
@@ -219,6 +220,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             self.assertEqual(
                 run.call_args.kwargs["slot_refinement_iterations"], 200
             )
+            self.assertIsNone(run.call_args.kwargs["ratio_quantum"])
             self.assertEqual(
                 run.call_args.kwargs["static_exact_candidate_policy"],
                 "assignment-derived-acyclic-v2",
