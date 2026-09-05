@@ -485,7 +485,7 @@ def run_vivado_board_timing(
         physical_summary_path=feedback_summary_path,
         routes_path=required_flow_paths["routes"],
     )
-    system = phase7c["system_timing"]
+    system = read_json(phase7c_root / "qor_report.json")["timing"]
     system_summary = {
         "status": system["status"],
         "qualification": system["qualification"],
@@ -545,7 +545,7 @@ def run_vivado_board_timing(
         "artifacts": {
             "physical_summary": _artifact(feedback_summary_path),
             "phase7c_report": _artifact(phase7c_root / "phase7c_report.json"),
-            "system_timing": _artifact(phase7c_root / "system_timing.json"),
+            "qor_report": _artifact(phase7c_root / "qor_report.json"),
         },
     }
     report["summary"] = validate_vivado_board_timing_report(report)

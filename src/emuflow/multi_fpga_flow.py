@@ -75,6 +75,126 @@ PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v2"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
 
 
+_STAGE_SUMMARY_FIELDS = {
+    "frontend": ("schema", "phase", "status", "design", "platform", "synthesis"),
+    "partition": (
+        "schema",
+        "phase",
+        "status",
+        "design",
+        "platform",
+        "provider",
+        "qualification",
+        "cut_mode",
+        "static_exact_candidate_policy",
+        "validation",
+    ),
+    "system_route": (
+        "schema",
+        "phase",
+        "status",
+        "design",
+        "platform",
+        "provider",
+        "qualification",
+        "cut_mode",
+        "candidate_generation",
+        "validation",
+    ),
+    "tdm": (
+        "schema",
+        "phase",
+        "status",
+        "design",
+        "platform",
+        "provider",
+        "qualification",
+        "cut_mode",
+        "validation",
+        "timing_validation",
+        "cross_layer_timing_validation",
+    ),
+    "split": (
+        "schema",
+        "phase",
+        "status",
+        "design",
+        "platform",
+        "provider",
+        "validation",
+        "equivalence",
+        "board_binding",
+    ),
+}
+
+
+def _stage_summary(name: str, report: Dict[str, Any]) -> Dict[str, Any]:
+    """Project a canonical stage report to its bounded orchestration view."""
+
+    fields = _STAGE_SUMMARY_FIELDS[name]
+    return {field: report[field] for field in fields if field in report}
+
+
+def _timing_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Return timing orchestration metadata without canonical path payloads."""
+
+    return {
+        field: report[field]
+        for field in (
+            "status",
+            "mode",
+            "backend",
+            "sta",
+            "optimization_enabled",
+            "partition_weights",
+            "partition_weights_applied",
+            "partition_provider_weights_applied",
+            "hop_refinement_weights_applied",
+            "partition_weight_consumers",
+            "cut_path_projection",
+        )
+        if field in report
+    }
+
+
+def _physical_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a bounded physical-flow projection for the parent report."""
+
+    return {
+        field: report[field]
+        for field in (
+            "schema",
+            "status",
+            "provider",
+            "backend",
+            "design",
+            "platform",
+            "execution",
+            "expected_fpgas",
+            "physical_summary_ref",
+            "summary",
+        )
+        if field in report
+    }
+
+
+def _validate_physical_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the bounded parent projection without reparsing FPGA records."""
+
+    if (
+        report.get("schema") != "emuflow.multi-fpga-physical-flow/v1"
+        or report.get("status") != "pass"
+        or report.get("physical_summary_ref") != "physical-summary.json"
+        or not isinstance(report.get("backend"), dict)
+        or not isinstance(report.get("expected_fpgas"), list)
+        or not report["expected_fpgas"]
+        or not isinstance(report.get("summary"), dict)
+        or report["summary"].get("status") != "pass"
+    ):
+        raise ValidationError("multi-FPGA physical-flow summary is invalid")
+    return report["summary"]
+
+
 def _checked_flow_member(root: Path, path: Path, label: str) -> Path:
     """Return a regular, non-symlink file contained by a flow root."""
 
@@ -143,7 +263,7 @@ def finalize_multi_fpga_physical_checkpoint(
         for key, value in members.items()
     }
     stages = {
-        name: read_json(paths[name])
+        name: _stage_summary(name, read_json(paths[name]))
         for name in ("frontend", "partition", "system_route", "tdm", "split")
     }
     physical_report = read_json(physical_report_path)
@@ -180,7 +300,7 @@ def finalize_multi_fpga_physical_checkpoint(
         "provider": MULTI_FPGA_FLOW_PROVIDER,
         "architecture_policy": "provider-neutral",
         "runtime": runtime_report,
-        "physical": physical_report,
+        "physical": _physical_report_summary(physical_report),
         "stages": stages,
         "artifacts": {
             "platform": artifact(paths["platform"]),
@@ -257,7 +377,7 @@ def _phase6_physical_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _phase6_system_timing_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
-    timing = value.get("system_timing")
+    timing = value.get("system_timing_summary", value.get("system_timing"))
     if not isinstance(timing, dict) or timing.get("status") not in {
         "pass",
         "fail",
@@ -510,17 +630,26 @@ def validate_multi_fpga_flow_report(
                     "timing-evaluated Phase 3--5 baseline contract"
                 )
     runtime = report.get("runtime")
+    runtime_timing = (
+        runtime.get("runtime_timing_summary", runtime.get("runtime_timing", {}))
+        if isinstance(runtime, dict)
+        else {}
+    )
     if (
         not isinstance(runtime, dict)
         or runtime.get("design") != design
         or runtime.get("platform") != platform
         or runtime.get("validation", {}).get("status") != "pass"
-        or runtime.get("runtime_timing", {}).get("status") == "fail"
+        or runtime_timing.get("status") == "fail"
     ):
         raise ValidationError("multi-FPGA runtime contract did not pass")
     physical = report.get("physical")
     if physical is not None:
-        physical_validation = validate_multi_fpga_physical_report(physical)
+        physical_validation = (
+            validate_multi_fpga_physical_report(physical)
+            if "fpgas" in physical
+            else _validate_physical_report_summary(physical)
+        )
         if physical_validation["original_cells"] != partition_validation.get(
             "instances"
         ):
@@ -542,8 +671,14 @@ def validate_multi_fpga_flow_report(
             phase6_comparison
         )
         if (
-            phase6_comparison["chimew"]["physical"] != physical
-            or phase6_comparison["chimew"]["phase6"] != stages["split"]
+            _physical_report_summary(
+                phase6_comparison["chimew"]["physical"]
+            )
+            != _physical_report_summary(physical)
+            or _stage_summary(
+                "split", phase6_comparison["chimew"]["phase6"]
+            )
+            != stages["split"]
         ):
             raise ValidationError(
                 "Phase 6 A/B selected arm differs from canonical flow"
@@ -812,7 +947,7 @@ def validate_multi_fpga_flow_bundle(
         live = read_json(
             _checked_flow_member(flow_root, Path(relative), f"{stage} report")
         )
-        if live != report["stages"][stage]:
+        if _stage_summary(stage, live) != report["stages"][stage]:
             raise ValidationError(
                 f"multi-FPGA live {stage} report disagrees with the flow report"
             )
@@ -919,15 +1054,22 @@ def validate_multi_fpga_flow_bundle(
                 "physical flow report",
             )
         )
-        if live_physical != physical:
+        physical_matches = (
+            live_physical == physical
+            if "fpgas" in physical
+            else _physical_report_summary(live_physical) == physical
+        )
+        if not physical_matches:
             raise ValidationError(
                 "live physical report disagrees with the multi-FPGA flow report"
             )
-        validate_multi_fpga_physical_report(live_physical)
         physical_summary_path = _checked_flow_member(
             flow_root,
             Path("physical/physical-summary.json"),
             "physical summary",
+        )
+        validate_multi_fpga_physical_report(
+            live_physical, read_json(physical_summary_path)
         )
         candidate_link_timing = flow_root / "timing/board-link-timing.json"
         if candidate_link_timing.is_file():
@@ -2051,7 +2193,11 @@ def run_multi_fpga_flow(
         "status": "pass",
         "provider": MULTI_FPGA_FLOW_PROVIDER,
         "architecture_policy": "provider-neutral",
-        **({"timing": timing_report} if timing_report is not None else {}),
+        **(
+            {"timing": _timing_report_summary(timing_report)}
+            if timing_report is not None
+            else {}
+        ),
         **(
             {"board_link_timing": link_timing_report}
             if link_timing_report is not None
@@ -2069,7 +2215,7 @@ def run_multi_fpga_flow(
         ),
         "runtime": runtime_report,
         **(
-            {"physical": physical_report}
+            {"physical": _physical_report_summary(physical_report)}
             if physical_report is not None
             else {}
         ),
@@ -2079,11 +2225,11 @@ def run_multi_fpga_flow(
             else {}
         ),
         "stages": {
-            "frontend": frontend_report,
-            "partition": phase3_report,
-            "system_route": phase4_report,
-            "tdm": phase5_report,
-            "split": phase6_report,
+            "frontend": _stage_summary("frontend", frontend_report),
+            "partition": _stage_summary("partition", phase3_report),
+            "system_route": _stage_summary("system_route", phase4_report),
+            "tdm": _stage_summary("tdm", phase5_report),
+            "split": _stage_summary("split", phase6_report),
         },
         "artifacts": {
             "platform": {

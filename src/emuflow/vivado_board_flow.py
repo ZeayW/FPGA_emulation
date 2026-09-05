@@ -740,11 +740,32 @@ def run_vivado_board_flow(
         or bsp_validation["platform"] != platform.name
     ):
         raise ValidationError("Vivado board-flow source identities disagree")
-    physical = flow_report.get("physical")
-    if not isinstance(physical, dict):
+    physical_summary = flow_report.get("physical")
+    if not isinstance(physical_summary, dict):
         raise ValidationError(
             "Vivado board integration requires a completed physical flow"
         )
+    if isinstance(physical_summary.get("fpgas"), list):
+        physical = physical_summary
+    else:
+        artifact = flow_report.get("artifacts", {}).get(
+            "physical_flow_report"
+        )
+        if not isinstance(artifact, dict) or set(artifact) != {
+            "path",
+            "sha256",
+        }:
+            raise ValidationError(
+                "Vivado board integration physical artifact is missing"
+            )
+        physical_path = _safe_bundle_path(
+            flow_root, artifact["path"], "physical flow report"
+        )
+        if _sha256(physical_path) != artifact["sha256"]:
+            raise ValidationError(
+                "Vivado board integration physical artifact hash disagrees"
+            )
+        physical = read_json(physical_path)
     source_physical_backend = physical.get("backend", {}).get("id")
     if source_physical_backend not in {"open", "vivado"}:
         raise ValidationError("Vivado board-flow source backend is invalid")

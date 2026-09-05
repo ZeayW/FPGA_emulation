@@ -673,7 +673,6 @@ def run_physical_lookahead(
         seed=seed,
         route_channel_width=route_channel_width,
         workers=workers,
-        managed_storage=managed_dag_node,
         original_ir_path=(paths["ir"] if path_database else None),
         assignment_path=(paths["assignment"] if path_database else None),
         routes_path=(paths["routes"] if path_database else None),
@@ -1509,7 +1508,6 @@ def run_phase7_checkpoint(
             seed=seed,
             route_channel_width=route_channel_width,
             workers=workers,
-            managed_storage=managed_dag_node,
             original_ir_path=(paths["ir"] if path_database else None),
             assignment_path=(paths["assignment"] if path_database else None),
             routes_path=(paths["routes"] if path_database else None),
@@ -1528,7 +1526,6 @@ def run_phase7_checkpoint(
         physical_summary_path=output_dir / "physical/physical-summary.json",
         routes_path=paths["routes"],
         board_link_timing_path=_board_link_timing(shared_root),
-        materialize_physical_summary=False,
     )
     if runtime.get("status") != "pass":
         raise ValidationError("experiment Phase 7C did not reach physical closure")
@@ -1737,7 +1734,6 @@ def validate_phase7_checkpoint(
                 physical_summary_path=root / "physical/physical-summary.json",
                 routes_path=paths["routes"],
                 board_link_timing_path=_board_link_timing(shared_root),
-                materialize_physical_summary=False,
             )
             if (
                 replay.get("status") != "pass"

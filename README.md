@@ -2929,8 +2929,17 @@ neither arm meets the target period.
 Every multi-FPGA run also emits the Phase 7C pausible-clock runtime contract;
 its virtual DUT frequency is the fabric frequency divided by the selected
 frame length. Original-clock path slack and emulation runtime frequency are
-reported separately. Before physical implementation, timing is explicitly
-qualified as a pre-placement estimate. With `--physical`, Phase 7C replaces
+reported separately. The complete per-path system-timing payload has exactly
+one owner: `runtime/qor_report.json#/timing`. The Phase 7C report and the
+top-level flow report retain only bounded summaries and an artifact reference;
+they do not copy that payload into additional JSON files. Likewise,
+`physical/physical-summary.json` owns the runtime-facing physical summary,
+while `physical/multi-fpga-physical-flow-report.json` references it and the
+top-level report carries only a bounded physical-flow projection. Canonical
+Phase 1--6 reports remain in their stage directories; the top-level report
+contains compact orchestration summaries rather than complete copies. Before
+physical implementation, timing is explicitly qualified as a pre-placement
+estimate. With `--physical`, Phase 7C replaces
 that estimate with `system-timing/v2`: concrete link/TDM delay is combined per
 path with the chosen backend's post-route DUT and interface delays. Phase 6
 records every scheduled TX/RX endpoint in `boundary-identity/v1`. Vivado

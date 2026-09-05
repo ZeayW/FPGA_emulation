@@ -13,7 +13,7 @@ from .phase3 import PHASE3_REPORT_SCHEMA
 from .phase4 import PHASE4_REPORT_SCHEMA
 from .phase5 import PHASE5_REPORT_SCHEMA
 from .phase6 import PHASE6_REPORT_SCHEMA
-from .phase7c import PHASE7C_REPORT_SCHEMA
+from .phase7c import PHASE7C_REPORT_SCHEMA, system_timing_summary
 from .platform import Platform
 from .runtime import (
     PHYSICAL_SUMMARY_SCHEMA,
@@ -27,6 +27,7 @@ from .verilog import MAPPED_VERILOG_REPORT_SCHEMA
 
 RELEASE_MANIFEST_SCHEMA = "emuflow.release-manifest/v1"
 PHASE7D_REPORT_SCHEMA = "emuflow.phase7d-report/v1"
+LEGACY_PHASE7C_REPORT_SCHEMA = "emuflow.phase7c-report/v2"
 
 
 def _sha256(path: Path) -> str:
@@ -165,9 +166,18 @@ def build_release_manifest(
     _require_report(
         phase6, PHASE6_REPORT_SCHEMA, "Phase 6", design, platform.name
     )
-    _require_report(
-        phase7c, PHASE7C_REPORT_SCHEMA, "Phase 7C", design, platform.name
-    )
+    phase7c_schema = phase7c.get("schema")
+    if phase7c_schema not in {
+        LEGACY_PHASE7C_REPORT_SCHEMA,
+        PHASE7C_REPORT_SCHEMA,
+    }:
+        raise ValidationError("Phase 7C has the wrong schema")
+    if (
+        phase7c.get("status") != "pass"
+        or phase7c.get("design") != design
+        or phase7c.get("platform") != platform.name
+    ):
+        raise ValidationError("Phase 7C did not pass or has the wrong identity")
     if runtime.get("schema") != VIRTUAL_RUNTIME_SCHEMA:
         raise ValidationError("runtime contract has the wrong schema")
     if runtime.get("design") != design or runtime.get("platform") != platform.name:
@@ -179,14 +189,24 @@ def build_release_manifest(
     physical = validate_physical_summary(
         physical_summary, runtime, platform
     )
-    system_timing = phase7c.get("system_timing")
+    system_timing = qor.get("timing")
     if (
         not isinstance(system_timing, dict)
         or system_timing.get("schema") != SYSTEM_TIMING_SCHEMA
         or system_timing.get("status") != "pass"
     ):
         raise ValidationError("Phase 7C unified system timing did not pass")
-    if qor.get("timing") != system_timing:
+    phase7c_timing_matches = (
+        phase7c.get("system_timing") == system_timing
+        if phase7c_schema == LEGACY_PHASE7C_REPORT_SCHEMA
+        else (
+            phase7c.get("system_timing_ref")
+            == {"artifact": "qor_report", "json_pointer": "/timing"}
+            and phase7c.get("system_timing_summary")
+            == system_timing_summary(system_timing)
+        )
+    )
+    if not phase7c_timing_matches:
         raise ValidationError("Phase 7C/QoR system timing reports disagree")
 
     p3 = phase3["validation"]

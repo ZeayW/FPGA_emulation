@@ -116,6 +116,11 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 "exhaustive-small-model-proof-plus-random-traces",
             )
             self.assertEqual(report["runtime"]["status"], "generated")
+            self.assertNotIn("system_timing", report["runtime"])
+            self.assertEqual(
+                report["runtime"]["system_timing_ref"],
+                {"artifact": "qor_report", "json_pointer": "/timing"},
+            )
             validation = validate_multi_fpga_flow_bundle(
                 root, minimum_combinational_cut_nets=1
             )
@@ -415,9 +420,17 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 output = args[3]
                 output.mkdir(parents=True)
                 report = {
+                    "schema": "emuflow.multi-fpga-physical-flow/v1",
                     "status": "pass",
+                    "provider": "phase6-emuir+physical-backend-v1",
+                    "backend": {"id": "open"},
                     "design": "counter",
                     "platform": platform_name,
+                    "execution": {"requested_workers": 1},
+                    "expected_fpgas": ["fpga0"],
+                    "fpgas": [{"fpga": "fpga0"}],
+                    "physical_summary_ref": "physical-summary.json",
+                    "summary": {"status": "pass"},
                 }
                 write_json(
                     output / "multi-fpga-physical-flow-report.json", report
@@ -483,6 +496,18 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     equivalence_cycles=2,
                 )
             self.assertFalse(report["timing"]["optimization_enabled"])
+            self.assertNotIn("fpgas", report["physical"])
+            self.assertEqual(
+                report["physical"]["physical_summary_ref"],
+                "physical-summary.json",
+            )
+            self.assertIn(
+                "fpgas",
+                read_json(
+                    root
+                    / "flow/physical/multi-fpga-physical-flow-report.json"
+                ),
+            )
             self.assertTrue((root / "flow/timing/path-database.json").is_file())
             self.assertTrue((root / "flow/timing/cut-timing-paths.json").is_file())
             self.assertFalse(

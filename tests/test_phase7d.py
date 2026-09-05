@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
+from emuflow.phase7c import PHASE7C_REPORT_SCHEMA, system_timing_summary
 from emuflow.platform import Platform
 from emuflow.release import build_release_manifest, run_phase7d
 from emuflow.runtime import validate_physical_summary
@@ -189,22 +190,27 @@ class Phase7DTest(unittest.TestCase):
         physical = validate_physical_summary(
             physical_summary, runtime, platform
         )
+        system_timing = {
+            "schema": "emuflow.system-timing/v2",
+            "status": "pass",
+        }
         phase7c = {
-            "schema": "emuflow.phase7c-report/v2",
+            "schema": PHASE7C_REPORT_SCHEMA,
             "status": "pass",
             "design": "dut",
             "platform": platform.name,
             "physical": physical,
-            "system_timing": {
-                "schema": "emuflow.system-timing/v2",
-                "status": "pass",
+            "system_timing_summary": system_timing_summary(system_timing),
+            "system_timing_ref": {
+                "artifact": "qor_report",
+                "json_pointer": "/timing",
             },
         }
         qor = {
             "schema": "emuflow.qor-report/v4",
             "status": "pass",
             "physical": physical,
-            "timing": phase7c["system_timing"],
+            "timing": system_timing,
         }
         lowering = {
             "fpga0": {

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.errors import ValidationError
+from emuflow.io import read_json
 from emuflow.phase7c import run_phase7c
 from emuflow.platform import Platform
 from emuflow.local_path_timing import path_id_set_sha256
@@ -1004,7 +1005,7 @@ class Phase7CTest(unittest.TestCase):
                 root / "generated",
             )
             self.assertEqual(generated["status"], "generated")
-            self.assertIn("runtime_timing", generated)
+            self.assertIn("runtime_timing_summary", generated)
             self.assertNotIn("system_timing", generated)
             closed = run_phase7c(
                 paths["schedule"],
@@ -1019,15 +1020,23 @@ class Phase7CTest(unittest.TestCase):
                 board_link_timing_path=paths["link_timing"],
             )
             self.assertEqual(closed["status"], "incomplete")
-            self.assertIn("system_timing", closed)
+            self.assertNotIn("system_timing", closed)
+            self.assertIn("system_timing_summary", closed)
+            self.assertFalse((root / "closed/system_timing.json").exists())
+            self.assertFalse((root / "closed/physical_summary.json").exists())
+            closed_timing = read_json(root / "closed/qor_report.json")["timing"]
             self.assertEqual(
-                closed["system_timing"]["paths"][0][
+                closed_timing["paths"][0][
                     "scheduled_link_tdm_model"
                 ],
                 "board-link-timing-db",
             )
             for filename in closed["artifacts"].values():
                 self.assertTrue((root / "closed" / filename).is_file())
+            self.assertLess(
+                (root / "closed/phase7c_report.json").stat().st_size,
+                (root / "closed/qor_report.json").stat().st_size,
+            )
 
     def test_phase7c_binds_local_timing_to_compact_route_artifact(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1116,7 +1125,9 @@ class Phase7CTest(unittest.TestCase):
                 "incomplete",
             )
             self.assertEqual(
-                closed["system_timing"]["source_binding"]["routes_sha256"],
+                read_json(root / "closed/qor_report.json")["timing"][
+                    "source_binding"
+                ]["routes_sha256"],
                 source["routes_sha256"],
             )
 

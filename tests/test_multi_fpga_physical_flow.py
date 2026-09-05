@@ -461,17 +461,8 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     architecture=architecture,
                     workers=2,
                 )
-                managed_report = run_multi_fpga_physical_flow(
-                    split,
-                    PLATFORM,
-                    root / "schedule.json",
-                    root / "physical-managed",
-                    architecture=architecture,
-                    workers=2,
-                    managed_storage=True,
-                )
-                managed_summary = read_json(
-                    root / "physical-managed/physical-summary.json"
+                physical_summary = read_json(
+                    root / "physical/physical-summary.json"
                 )
                 self.assertEqual(
                     (root / "physical/architecture/vtr-flagship.xml").read_bytes(),
@@ -491,7 +482,8 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
         self.assertEqual(report["summary"]["fpgas"], 2)
         self.assertEqual(report["summary"]["original_cells"], 2)
         self.assertEqual(report["summary"]["transport_cells"], 2)
-        self.assertEqual(report["physical_summary"]["validation"]["status"], "pass")
+        self.assertNotIn("physical_summary", report)
+        self.assertEqual(report["physical_summary_ref"], "physical-summary.json")
         self.assertEqual(
             [item["fpga"] for item in report["fpgas"]],
             ["fpga0", "fpga1"],
@@ -500,14 +492,10 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
         self.assertEqual(report["execution"]["effective_workers"], 2)
         self.assertFalse(report["execution"]["pack_place_resume"])
         self.assertFalse(report["execution"]["route_resume"])
-        self.assertNotIn("physical_summary", managed_report)
-        self.assertEqual(
-            managed_report["physical_summary_ref"], "physical-summary.json"
-        )
         self.assertEqual(
             validate_multi_fpga_physical_report(
-                managed_report,
-                managed_summary,
+                report,
+                physical_summary,
             )["status"],
             "pass",
         )

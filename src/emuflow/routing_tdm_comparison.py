@@ -156,6 +156,22 @@ def _checked_artifact(root: Path, report: Dict[str, Any], key: str) -> str:
     return actual
 
 
+def _canonical_physical_report(
+    root: Path, report: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Load detailed physical evidence only from its canonical artifact."""
+
+    embedded = report.get("physical")
+    if isinstance(embedded, dict) and isinstance(embedded.get("fpgas"), list):
+        return embedded
+    _checked_artifact(root, report, "physical_flow_report")
+    artifact = report["artifacts"]["physical_flow_report"]
+    physical = read_json(root / artifact["path"])
+    if not isinstance(physical, dict):
+        raise ValidationError("routing/TDM A/B physical report is invalid")
+    return physical
+
+
 def _checked_frozen_artifact(
     root: Path, report: Dict[str, Any], key: str
 ) -> tuple[Path, str]:
@@ -474,7 +490,15 @@ def _tdm_metrics(stage: Dict[str, Any]) -> Dict[str, Any]:
 def _global_timing_metrics(
     root: Path, report: Dict[str, Any]
 ) -> Dict[str, Any]:
-    timing = report.get("runtime", {}).get("system_timing")
+    if "qor_report" in report.get("artifacts", {}):
+        _checked_artifact(root, report, "qor_report")
+        timing = read_json(
+            root / report["artifacts"]["qor_report"]["path"]
+        ).get("timing")
+    else:
+        # Explicit reader support for immutable pre-v3 flow reports.  New
+        # producers never embed this payload in the orchestration report.
+        timing = report.get("runtime", {}).get("system_timing")
     if not isinstance(timing, dict) or timing.get("status") not in {
         "pass", "fail"
     }:
@@ -863,6 +887,7 @@ def build_system_route_tdm_ab_comparison(
     if baseline_root == upgrade_root:
         raise ValidationError("routing/TDM A/B flow roots must be different")
     reports: Dict[str, Dict[str, Any]] = {}
+    physical_reports: Dict[str, Dict[str, Any]] = {}
     roots = {"baseline": baseline_root, "upgrade": upgrade_root}
     for label, root in roots.items():
         path = root / "multi-fpga-flow-report.json"
@@ -873,6 +898,7 @@ def build_system_route_tdm_ab_comparison(
         if report.get("physical") is None:
             raise ValidationError(f"routing/TDM A/B {label} did not complete Phase 7")
         reports[label] = report
+        physical_reports[label] = _canonical_physical_report(root, report)
 
     baseline = reports["baseline"]
     upgrade = reports["upgrade"]
@@ -921,9 +947,10 @@ def build_system_route_tdm_ab_comparison(
     for label, report in reports.items():
         root = roots[label]
         source_path = root / "multi-fpga-flow-report.json"
-        physical = _phase6_physical_metrics(report["physical"])
+        canonical_physical = physical_reports[label]
+        physical = _phase6_physical_metrics(canonical_physical)
         reproducibility_source = _physical_reproducibility_source(
-            report["physical"]
+            canonical_physical
         )
         reproducibility = _physical_reproducibility_configuration(
             reproducibility_source

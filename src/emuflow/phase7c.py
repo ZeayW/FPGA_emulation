@@ -23,7 +23,31 @@ from .runtime import (
 )
 
 
-PHASE7C_REPORT_SCHEMA = "emuflow.phase7c-report/v2"
+PHASE7C_REPORT_SCHEMA = "emuflow.phase7c-report/v3"
+
+
+def system_timing_summary(timing: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the bounded Phase 7C view used by orchestration reports.
+
+    ``qor_report.json#/timing`` is the sole owner of the complete per-path
+    system timing database.  Stage and top-level reports carry only this
+    bounded view so a caller asking for status or WNS/TNS never has to parse or
+    serialize the path population a second time.
+    """
+
+    fields = (
+        "schema",
+        "status",
+        "qualification",
+        "timing_scope",
+        "path_exactness",
+        "summary",
+        "target_clock",
+        "runtime_clock",
+        "source_binding",
+        "physical_evidence_completeness",
+    )
+    return {field: timing[field] for field in fields if field in timing}
 
 
 def _sha256(path: Path) -> str:
@@ -47,7 +71,6 @@ def run_phase7c(
     routes_path: Optional[Path] = None,
     board_link_timing_path: Optional[Path] = None,
     simulation_frames: int = 12,
-    materialize_physical_summary: bool = True,
 ) -> Dict[str, Any]:
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
@@ -146,13 +169,10 @@ def run_phase7c(
     write_json(output_dir / "runtime_contract.json", runtime)
     write_json(output_dir / "qor_report.json", qor)
     if physical_summary is not None:
-        write_json(output_dir / "system_timing.json", qor["timing"])
         write_json(
             output_dir / "cross_layer_physical_binding.json",
             physical_binding,
         )
-    if physical_summary is not None and materialize_physical_summary:
-        write_json(output_dir / "physical_summary.json", physical_summary)
     (output_dir / "virtual_runtime_controller.sv").write_text(
         virtual_runtime_controller_to_systemverilog(),
         encoding="utf-8",
@@ -232,7 +252,11 @@ def run_phase7c(
         },
     }
     if physical_summary is not None:
-        report["system_timing"] = qor["timing"]
+        report["system_timing_summary"] = system_timing_summary(qor["timing"])
+        report["system_timing_ref"] = {
+            "artifact": "qor_report",
+            "json_pointer": "/timing",
+        }
         report["physical_evidence_completeness"] = (
             physical_binding_validation
         )
@@ -248,13 +272,14 @@ def run_phase7c(
         report["virtual_runtime_tns_ns"] = qor["timing"]["runtime_clock"][
             "total_negative_slack_bound_ns"
         ]
-        if materialize_physical_summary:
-            report["artifacts"]["physical_summary"] = "physical_summary.json"
-        report["artifacts"]["system_timing"] = "system_timing.json"
         report["artifacts"]["cross_layer_physical_binding"] = (
             "cross_layer_physical_binding.json"
         )
     else:
-        report["runtime_timing"] = qor["timing"]
+        report["runtime_timing_summary"] = system_timing_summary(qor["timing"])
+        report["system_timing_ref"] = {
+            "artifact": "qor_report",
+            "json_pointer": "/timing",
+        }
     write_json(output_dir / "phase7c_report.json", report)
     return report

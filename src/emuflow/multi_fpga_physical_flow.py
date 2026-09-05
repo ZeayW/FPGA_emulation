@@ -431,15 +431,26 @@ def validate_multi_fpga_physical_report(
                 f"physical critical path for {fpga_id} is invalid"
             )
         worst_critical_path = max(worst_critical_path, float(critical_path))
-    summary = (
-        physical_summary
-        if physical_summary is not None
-        else report.get("physical_summary")
-    )
-    if not isinstance(summary, dict) or summary.get("status") != "pass":
-        raise ValidationError("multi-FPGA physical summary did not pass")
-    if sum(item["original_cells"] for item in summary["fpgas"]) != original_cells:
-        raise ValidationError("physical summary original cell coverage disagrees")
+    embedded_summary = report.get("physical_summary")
+    summary_ref = report.get("physical_summary_ref")
+    if embedded_summary is not None and summary_ref is not None:
+        raise ValidationError(
+            "multi-FPGA physical report duplicates its physical summary"
+        )
+    summary = physical_summary if physical_summary is not None else embedded_summary
+    if summary is None:
+        if summary_ref != "physical-summary.json":
+            raise ValidationError("multi-FPGA physical summary reference is invalid")
+    else:
+        if not isinstance(summary, dict) or summary.get("status") != "pass":
+            raise ValidationError("multi-FPGA physical summary did not pass")
+        if (
+            sum(item["original_cells"] for item in summary["fpgas"])
+            != original_cells
+        ):
+            raise ValidationError(
+                "physical summary original cell coverage disagrees"
+            )
     return {
         "status": "pass",
         "fpgas": len(expected),
@@ -480,7 +491,6 @@ def run_multi_fpga_physical_flow(
     path_database_path: Optional[Path] = None,
     logic_path_database_path: Optional[Path] = None,
     workers: int = 1,
-    managed_storage: bool = False,
     resume: bool = False,
 ) -> Dict[str, Any]:
     if workers < 1:
@@ -1261,10 +1271,7 @@ def run_multi_fpga_physical_flow(
         "expected_fpgas": expected_fpgas,
         "fpgas": records,
     }
-    if managed_storage:
-        report["physical_summary_ref"] = "physical-summary.json"
-    else:
-        report["physical_summary"] = physical_summary
+    report["physical_summary_ref"] = "physical-summary.json"
     report["summary"] = validate_multi_fpga_physical_report(
         report, physical_summary
     )
