@@ -717,6 +717,7 @@ def run_phase3(
             move_count = patron_trace.get("move_count")
             batch_count = patron_trace.get("batch_count")
             change_count = patron_trace.get("change_count")
+            native_output_bytes = patron_trace.get("native_output_bytes")
             if (
                 isinstance(move_count, bool)
                 or not isinstance(move_count, int)
@@ -727,6 +728,9 @@ def run_phase3(
                 or isinstance(change_count, bool)
                 or not isinstance(change_count, int)
                 or change_count < 0
+                or isinstance(native_output_bytes, bool)
+                or not isinstance(native_output_bytes, int)
+                or native_output_bytes <= 0
                 or patron_trace.get("trace_storage") != "summary-only"
             ):
                 raise ValidationError("production PATRON summary is invalid")
@@ -746,6 +750,7 @@ def run_phase3(
                 "moves": move_count,
                 "batches": batch_count,
                 "batch_changes": change_count,
+                "native_output_bytes": native_output_bytes,
             }
         if patron_physical_feedback_validation is not None:
             patron_validation["physical_feedback"] = (

@@ -2051,6 +2051,7 @@ def _parse_patron_native_output(
         )
     if final_metrics is None or initial_metrics is None or mode is None:
         raise ValidationError("native PATRON output metadata is incomplete")
+    summary["output_bytes"] = path.stat().st_size
     return (
         assignment,
         moves,
@@ -2311,6 +2312,7 @@ def run_partition_pressure_native(
         "move_count": output_summary["moves"],
         "batch_count": output_summary["batches"],
         "change_count": output_summary["changes"],
+        "native_output_bytes": output_summary["output_bytes"],
         "trace_storage": (
             "retained"
             if output_summary["detail_retained"]

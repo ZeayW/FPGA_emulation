@@ -1956,7 +1956,9 @@ PATRON with its summary-output protocol. That protocol emits only objective
 metrics, move/batch counts, and the final cluster assignment; it does not first
 write a multi-gigabyte per-move trace merely to discard it in Python. Detailed
 native move/batch records remain available only to explicit qualification
-runs. Production removes TritonPart and native-refiner scratch after
+runs. The compact Phase 3 validation summary records the consumed native-output
+byte count so production-scale regressions remain observable without retaining
+the scratch file. Production removes TritonPart and native-refiner scratch after
 consumption and emits only the winner assignment plus compact reports.
 Lossless columnar JSON stores the cluster table and the
 irreducible cluster-to-FPGA vector; `read_json` transparently reconstructs the
