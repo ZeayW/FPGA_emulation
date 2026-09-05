@@ -487,8 +487,9 @@ boundary while every arm still receives exactly one partition attempt:
 Use `--seed 4`, `--partition-seed-attempts 1`, and `--physical-seed 1` on
 both commands. Select `--cut-mode sequential-only` for the control. Select
 `--cut-mode static-exact-combinational`,
-`--max-cross-fpga-dependency-depth 8`, and
-`--minimum-combinational-cut-nets 1` for generalized v2. Both commands use the
+`--max-cross-fpga-dependency-depth 8` for generalized v2, then apply
+`--minimum-combinational-cut-nets 1` to its separate `multi-fpga validate`
+command. Both compile commands use the
 same ordinary Phase 4/5 algorithms and baseline Phase 6 provider. A compact
 comparison records whole-design target/runtime WNS and TNS, per-FPGA
 diagnostics, virtual frequency, transport/physical cell counts, cut count,
@@ -860,6 +861,10 @@ top-level validator requires the selected candidate's independent Phase 3/4/5
 results to match those consumed by all later stages. TritonPart seed-sweep,
 minimum-partition repair, and multi-resource balance-repair settings are
 propagated unchanged from the initial partition into every feedback trial.
+The Phase 3 cut mode, Static Exact candidate policy, and dependency-depth cap
+are likewise explicit cross-stage inputs and remain identical for the initial
+assignment, optional seed candidate, and every feedback Phase 3 rerun; the
+optimizer never falls back silently to sequential-only clustering.
 Candidate reports retain the literal FPGA-ID migration count and also report a
 symmetry-aligned count. The latter may remove a label permutation only when it
 is an exact automorphism of the BoardDB and normalized route constraints;

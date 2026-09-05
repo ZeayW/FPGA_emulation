@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.cross_stage import (
@@ -17,7 +18,11 @@ from emuflow.cross_stage import (
 )
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
-from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
+from emuflow.partition import (
+    CUT_MODE_SEQUENTIAL_ONLY,
+    CUT_MODE_STATIC_EXACT,
+    PARTITION_ASSIGNMENT_SCHEMA,
+)
 from emuflow.phase3 import run_phase3
 from emuflow.platform import Platform
 from emuflow.routing import load_route_constraints
@@ -31,6 +36,86 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CrossStageCandidateTest(unittest.TestCase):
+    def test_static_exact_assignment_keeps_its_cut_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir = import_yosys_json(
+                ROOT / "examples/yosys/static_exact_chain.json",
+                top="static_exact_chain",
+                clocks=["clk"],
+            )
+            ir_path = root / "ir.json"
+            database_path = root / "database.json"
+            phase3_root = root / "phase3"
+            output = root / "cross-stage"
+            platform_path = (
+                ROOT
+                / "platforms/virtual/static_exact_acceptance_2fpga.json"
+            )
+            write_json(ir_path, ir.value)
+            run_phase3(
+                ir_path,
+                platform_path,
+                phase3_root,
+                provider="greedy",
+                cut_mode=CUT_MODE_STATIC_EXACT,
+                max_cross_fpga_dependency_depth=2,
+                min_used_fpgas=2,
+                balance_tolerance=1.0,
+            )
+            write_json(
+                database_path,
+                {
+                    "schema": "emuflow.sta-path-database/v1",
+                    "design": "static_exact_chain",
+                    "source": {"provider": "fixture", "input": "fixture"},
+                    "normalization": {
+                        "positive_slack_scale_ns": 10.0,
+                        "negative_slack_scale_ns": 1.0,
+                        "max_clock_period_ns": 10.0,
+                    },
+                    "paths": [],
+                },
+            )
+            candidate = {
+                "iteration": 0,
+                "status": "pass",
+                "assignment": "iteration_000/phase3/assignment.json",
+                "candidate_id": "0" * 64,
+            }
+            with (
+                patch(
+                    "emuflow.cross_stage._run_candidate_flow",
+                    return_value=candidate,
+                ),
+                patch("emuflow.cross_stage.validate_cross_stage_report"),
+            ):
+                report = run_cross_stage_optimization(
+                    ir_path=ir_path,
+                    platform_path=platform_path,
+                    database_path=database_path,
+                    initial_assignment_path=(
+                        phase3_root / "assignment.json"
+                    ),
+                    phase3_constraints_path=(
+                        phase3_root / "constraints.normalized.json"
+                    ),
+                    output_dir=output,
+                    cut_mode=CUT_MODE_STATIC_EXACT,
+                    max_cross_fpga_dependency_depth=2,
+                    max_outer_iterations=0,
+                    min_used_fpgas=2,
+                    balance_tolerance=1.0,
+                )
+            self.assertEqual(
+                report["configuration"]["cut_mode"],
+                CUT_MODE_STATIC_EXACT,
+            )
+            self.assertEqual(
+                read_json(output / "iteration_000/phase3/clusters.json"),
+                read_json(phase3_root / "clusters.json"),
+            )
+
     def test_partition_migration_aligns_only_platform_automorphisms(
         self,
     ) -> None:
@@ -433,6 +518,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                     output_dir=output,
                     board_link_timing_path=board_link_timing_path,
                     phase3_provider="greedy",
+                    cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
                     max_outer_iterations=1,
                     min_used_fpgas=2,
                     balance_tolerance=1.0,
@@ -543,6 +629,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                 seed_candidate_phase3_root=initial_root,
                 output_dir=seed_output,
                 phase3_provider="greedy",
+                cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
                 max_outer_iterations=0,
                 min_used_fpgas=2,
                 balance_tolerance=1.0,
@@ -657,6 +744,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                 initial_assignment_path=initial_root / "assignment.json",
                 output_dir=optimized_root,
                 phase3_provider="greedy",
+                cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
                 max_outer_iterations=0,
                 min_used_fpgas=2,
                 balance_tolerance=1.0,

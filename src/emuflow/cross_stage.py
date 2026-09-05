@@ -23,10 +23,16 @@ from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import (
     CUT_MODE_SEQUENTIAL_ONLY,
+    CUT_MODE_STATIC_EXACT,
     PARTITION_ASSIGNMENT_SCHEMA,
     build_clusters,
     load_partition_constraints,
     validate_partition_artifacts,
+)
+from .combinational_cut import (
+    STATIC_EXACT_CANDIDATE_POLICIES,
+    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
 from .partition_feedback import (
     run_damped_partition_feedback,
@@ -35,6 +41,7 @@ from .partition_feedback import (
     validate_partition_feedback,
 )
 from .phase3 import run_phase3
+from .phase3_storage import pack_phase3_assignment, pack_phase3_clusters
 from .phase4 import run_phase4
 from .phase5 import run_phase5
 from .platform import Platform
@@ -42,6 +49,7 @@ from .routing import (
     SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
     load_route_constraints,
     route_link_delay_ns,
+    semantic_contract_for_routes,
     validate_system_routes,
 )
 from .runtime import build_virtual_runtime, validate_virtual_runtime
@@ -691,12 +699,20 @@ def build_cross_stage_candidate(
     ):
         raise ValidationError("cross-stage candidate design mismatch")
     validate_system_routes(assignment, platform, routes)
-    validate_tdm_ratio_plan(routes, platform, ratio_plan)
-    validate_tdm_schedule(routes, platform, schedule, ratio_plan)
+    semantic_contract = semantic_contract_for_routes(assignment, routes)
+    hydrated_routes = (
+        {**routes, "semantic_contract": semantic_contract}
+        if semantic_contract is not None
+        else routes
+    )
+    validate_tdm_ratio_plan(hydrated_routes, platform, ratio_plan)
+    validate_tdm_schedule(
+        hydrated_routes, platform, schedule, ratio_plan
+    )
     runtime = build_virtual_runtime(schedule, platform)
     runtime_validation = validate_virtual_runtime(runtime, schedule, platform)
     transport_delay = _scheduled_transport_delay_by_net(
-        routes, schedule, platform
+        hydrated_routes, schedule, platform
     )
     paths = _path_metrics(database, assignment, transport_delay)
     objective_metrics = _objective_metrics(
@@ -994,6 +1010,13 @@ def run_cross_stage_optimization(
     route_constraints_path: Optional[Path] = None,
     board_link_timing_path: Optional[Path] = None,
     phase3_provider: str = "repart-replication",
+    cut_mode: str = CUT_MODE_STATIC_EXACT,
+    max_cross_fpga_dependency_depth: int = (
+        STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
+    ),
+    static_exact_candidate_policy: str = (
+        STATIC_EXACT_DEFAULT_CANDIDATE_POLICY
+    ),
     max_outer_iterations: int = 1,
     seed: int = 0,
     min_used_fpgas: Optional[int] = None,
@@ -1092,7 +1115,13 @@ def run_cross_stage_optimization(
         min_used_fpgas=min_used_fpgas,
         balance_tolerance=balance_tolerance,
     )
-    clusters = build_clusters(ir, partition_constraints)
+    clusters = build_clusters(
+        ir,
+        partition_constraints,
+        cut_mode=cut_mode,
+        max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
+        static_exact_candidate_policy=static_exact_candidate_policy,
+    )
     initial_assignment = read_json(initial_assignment_path)
     initial_validation = validate_partition_artifacts(
         ir, platform, clusters, initial_assignment
@@ -1100,8 +1129,16 @@ def run_cross_stage_optimization(
     initial_root = output_dir / "iteration_000" / "phase3"
     initial_root.mkdir(parents=True, exist_ok=True)
     assignment_path = initial_root / "assignment.json"
-    write_json(assignment_path, initial_assignment)
-    write_json(initial_root / "clusters.json", clusters)
+    write_json(
+        assignment_path,
+        pack_phase3_assignment(initial_assignment, clusters),
+        compact=True,
+    )
+    write_json(
+        initial_root / "clusters.json",
+        pack_phase3_clusters(clusters),
+        compact=True,
+    )
     write_json(
         initial_root / "constraints.normalized.json",
         partition_constraints,
@@ -1366,7 +1403,13 @@ def run_cross_stage_optimization(
                     min_used_fpgas=min_used_fpgas,
                     balance_tolerance=balance_tolerance,
                     provider=phase3_provider,
-                    cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
+                    cut_mode=cut_mode,
+                    max_cross_fpga_dependency_depth=(
+                        max_cross_fpga_dependency_depth
+                    ),
+                    static_exact_candidate_policy=(
+                        static_exact_candidate_policy
+                    ),
                     openroad=openroad,
                     net_weights_path=feedback_path,
                     tritonpart_timeout_seconds=(
@@ -1536,6 +1579,13 @@ def run_cross_stage_optimization(
         "objective": CROSS_STAGE_OBJECTIVE,
         "configuration": {
             "phase3_provider": phase3_provider,
+            "cut_mode": cut_mode,
+            "max_cross_fpga_dependency_depth": (
+                max_cross_fpga_dependency_depth
+            ),
+            "static_exact_candidate_policy": (
+                static_exact_candidate_policy
+            ),
             "max_outer_iterations": max_outer_iterations,
             "seed": seed,
             "simulation_frames": simulation_frames,
@@ -1668,6 +1718,29 @@ def validate_cross_stage_report(
     if not isinstance(configuration, dict):
         raise ValidationError(
             "cross-stage report configuration is invalid"
+        )
+    cut_mode = configuration.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
+    if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
+        raise ValidationError("cross-stage report cut mode is invalid")
+    max_cross_fpga_dependency_depth = configuration.get(
+        "max_cross_fpga_dependency_depth",
+        STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+    )
+    static_exact_candidate_policy = configuration.get(
+        "static_exact_candidate_policy",
+        STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    )
+    if (
+        isinstance(max_cross_fpga_dependency_depth, bool)
+        or not isinstance(max_cross_fpga_dependency_depth, int)
+        or max_cross_fpga_dependency_depth <= 0
+    ):
+        raise ValidationError(
+            "cross-stage report dependency depth is invalid"
+        )
+    if static_exact_candidate_policy not in STATIC_EXACT_CANDIDATE_POLICIES:
+        raise ValidationError(
+            "cross-stage report Static Exact candidate policy is invalid"
         )
     has_seed_candidate = configuration.get("seed_candidate", False)
     if not isinstance(has_seed_candidate, bool):
@@ -1996,10 +2069,29 @@ def validate_cross_stage_report(
                 raise ValidationError(
                     "cross-stage partition migration mismatch"
                 )
+        candidate_clusters = read_json(clusters_path)
+        cluster_policy = candidate_clusters.get("policy", {})
+        candidate_cut_mode = cluster_policy.get(
+            "cut_mode", CUT_MODE_SEQUENTIAL_ONLY
+        )
+        if candidate_cut_mode != cut_mode:
+            raise ValidationError(
+                "cross-stage candidate cut mode disagrees with configuration"
+            )
+        if cut_mode == CUT_MODE_STATIC_EXACT and (
+            cluster_policy.get("max_cross_fpga_dependency_depth")
+            != max_cross_fpga_dependency_depth
+            or cluster_policy.get("candidate_selection_policy")
+            != static_exact_candidate_policy
+        ):
+            raise ValidationError(
+                "cross-stage candidate Static Exact policy disagrees with "
+                "configuration"
+            )
         phase3_validation = validate_partition_artifacts(
             ir,
             platform,
-            read_json(clusters_path),
+            candidate_clusters,
             read_json(assignment_path),
         )
         if candidate.get("phase3_validation") != phase3_validation:

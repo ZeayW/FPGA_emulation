@@ -1584,6 +1584,13 @@ def run_multi_fpga_flow(
             route_constraints_path=effective_route_constraints,
             board_link_timing_path=board_link_timing_db,
             phase3_provider=partition_provider,
+            cut_mode=cut_mode,
+            max_cross_fpga_dependency_depth=(
+                max_cross_fpga_dependency_depth
+            ),
+            static_exact_candidate_policy=(
+                static_exact_candidate_policy
+            ),
             max_outer_iterations=cross_stage_iterations,
             seed=seed,
             min_used_fpgas=min_used_fpgas,

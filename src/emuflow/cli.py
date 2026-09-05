@@ -3241,6 +3241,25 @@ def _build_parser() -> argparse.ArgumentParser:
         default="repart-replication",
     )
     cross_stage_optimize.add_argument(
+        "--cut-mode",
+        choices=("sequential-only", "static-exact-combinational"),
+        default="static-exact-combinational",
+        help=(
+            "partition boundary semantics used by the initial assignment and "
+            "every feedback Phase 3 candidate"
+        ),
+    )
+    cross_stage_optimize.add_argument(
+        "--max-cross-fpga-dependency-depth",
+        type=int,
+        default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+    )
+    cross_stage_optimize.add_argument(
+        "--static-exact-candidate-policy",
+        choices=(STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,),
+        default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    )
+    cross_stage_optimize.add_argument(
         "--max-outer-iterations", type=int, default=1
     )
     cross_stage_optimize.add_argument("--seed", type=int, default=0)
@@ -5486,6 +5505,13 @@ def _dispatch(args: argparse.Namespace) -> int:
                 route_constraints_path=args.route_constraints,
                 board_link_timing_path=args.board_link_timing_db,
                 phase3_provider=args.phase3_provider,
+                cut_mode=args.cut_mode,
+                max_cross_fpga_dependency_depth=(
+                    args.max_cross_fpga_dependency_depth
+                ),
+                static_exact_candidate_policy=(
+                    args.static_exact_candidate_policy
+                ),
                 max_outer_iterations=args.max_outer_iterations,
                 seed=args.seed,
                 min_used_fpgas=args.min_used_fpgas,

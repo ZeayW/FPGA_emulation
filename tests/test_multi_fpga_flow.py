@@ -131,6 +131,50 @@ class MultiFpgaFlowTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "SHA-256 disagrees"):
                 validate_multi_fpga_flow_bundle(root)
 
+    def test_static_exact_cross_stage_preserves_policy_in_feedback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "static-exact-cross-stage"
+            report = run_multi_fpga_flow(
+                platform_path=STATIC_EXACT_PLATFORM,
+                output_dir=root,
+                yosys_json=ROOT / "examples/yosys/static_exact_chain.json",
+                top="static_exact_chain",
+                clocks=["clk"],
+                partition_provider="greedy",
+                timing_driven=True,
+                clock_periods={"clk": 10.0},
+                opensta=str(FAKE_OPENSTA),
+                router=str(tlr_router()),
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                slot_optimizer=str(tdm_slot_optimizer()),
+                cross_stage_feedback_optimizer=str(
+                    tdm_partition_feedback()
+                ),
+                frame_slots=32,
+                cross_stage_iterations=1,
+                cut_mode="static-exact-combinational",
+                max_cross_fpga_dependency_depth=2,
+                equivalence_cycles=2,
+            )
+            self.assertEqual(
+                report["cross_stage"]["configuration"]["cut_mode"],
+                "static-exact-combinational",
+            )
+            successful = [
+                candidate
+                for candidate in report["cross_stage"]["candidates"]
+                if candidate["status"] == "pass"
+            ]
+            self.assertGreater(len(successful), 1)
+            self.assertTrue(
+                all(
+                    candidate["phase3_validation"]["cut_mode"]
+                    == "static-exact-combinational"
+                    for candidate in successful
+                )
+            )
+
     def test_cli_enables_timing_driven_by_default(self) -> None:
         base = [
             "multi-fpga",
@@ -193,6 +237,25 @@ class MultiFpgaFlowTest(unittest.TestCase):
         self.assertEqual(checkpoint.provider, "patron")
         self.assertEqual(
             checkpoint.cut_mode, "static-exact-combinational"
+        )
+        cross_stage = _build_parser().parse_args(
+            [
+                "cross-stage",
+                "optimize",
+                "--ir",
+                "design.emuir.json",
+                "--platform",
+                "platform.json",
+                "--database",
+                "paths.json",
+                "--initial-assignment",
+                "assignment.json",
+                "--out",
+                "cross-stage",
+            ]
+        )
+        self.assertEqual(
+            cross_stage.cut_mode, "static-exact-combinational"
         )
 
     def test_cli_exact_mode_inherits_unified_slot_refinement_default(self):
@@ -862,6 +925,10 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     "partition_seed_attempts"
                 ],
                 2,
+            )
+            self.assertEqual(
+                report["cross_stage"]["configuration"]["cut_mode"],
+                "sequential-only",
             )
             self.assertTrue(
                 report["cross_stage"]["configuration"][
