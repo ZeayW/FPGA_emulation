@@ -1964,6 +1964,10 @@ runs. The compact Phase 3 validation summary records the consumed native-output
 byte count so production-scale regressions remain observable without retaining
 the scratch file. Production removes TritonPart and native-refiner scratch after
 consumption and emits only the winner assignment plus compact reports.
+When the caller explicitly requests a Phase 3--5 cross-stage search, Phase 3
+also retains one compact packed TritonPart+hop baseline assignment because that
+is a direct consumer input and possible promoted result; it still removes the
+provider model, native trace, candidate copy, and other diagnostic scratch.
 Lossless columnar JSON stores the cluster table and the
 irreducible cluster-to-FPGA vector; `read_json` transparently reconstructs the
 unchanged `emuflow.clusters/v1` and `emuflow.partition-assignment/v1` logical

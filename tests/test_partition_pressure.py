@@ -1412,6 +1412,40 @@ class PartitionPressureTest(unittest.TestCase):
                     / "phase3-reused/patron/initial-hop-refinement"
                 ).exists()
             )
+            compact = run_phase3(
+                ir_path,
+                platform_path,
+                root / "phase3-compact",
+                constraints_path=None,
+                min_used_fpgas=2,
+                balance_tolerance=1.0,
+                provider="patron",
+                cut_mode="sequential-only",
+                tritonpart_solution=solution_path,
+                route_constraints_path=route_path,
+                timing_database_path=timing_path,
+                patron_refiner=str(patron_refiner()),
+                retain_diagnostics=False,
+                retain_patron_baseline=True,
+            )
+            self.assertEqual(compact["status"], "pass")
+            self.assertFalse((root / "phase3-compact/patron").exists())
+            self.assertTrue(
+                (root / "phase3-compact/patron-initial-assignment.json").is_file()
+            )
+            self.assertTrue(
+                (
+                    root
+                    / "phase3-compact/patron-initial-hop-refinement.json"
+                ).is_file()
+            )
+            compact_baseline = promote_patron_baseline(
+                ir_path, platform_path, root / "phase3-compact"
+            )
+            self.assertEqual(
+                compact_baseline["provider"],
+                "tritonpart-openroad-hypergraph-v1",
+            )
             legacy = copy.deepcopy(self.initial)
             legacy["cluster_assignment"] = {
                 f"legacy-{index}": fpga

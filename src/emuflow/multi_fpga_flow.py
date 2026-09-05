@@ -1484,8 +1484,21 @@ def run_multi_fpga_flow(
         mfspart_post_refinement_timing_path_beta=(
             mfspart_post_refinement_timing_path_beta
         ),
+        retain_patron_baseline=(
+            partition_provider == "patron" and bool(cross_stage_iterations)
+        ),
     )
     assignment_path = phase3_root / "assignment.json"
+    patron_initial_assignment_path = None
+    if partition_provider == "patron" and cross_stage_iterations:
+        initial_artifact = phase3_report.get("artifacts", {}).get(
+            "patron_initial_assignment"
+        )
+        if not isinstance(initial_artifact, str):
+            raise ValidationError(
+                "PATRON cross-stage baseline assignment is unavailable"
+            )
+        patron_initial_assignment_path = phase3_root / initial_artifact
 
     projected_timing_paths = timing_paths
     if internal_timing_database and not cross_stage_iterations:
@@ -1554,7 +1567,7 @@ def run_multi_fpga_flow(
             platform_path=platform_path,
             database_path=path_database_path,
             initial_assignment_path=(
-                phase3_root / "patron/initial_assignment.json"
+                patron_initial_assignment_path
                 if partition_provider == "patron"
                 else assignment_path
             ),

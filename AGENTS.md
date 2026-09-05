@@ -319,6 +319,10 @@ requirements, not optional micro-optimizations.
   exhaustive Python optimization, and complete candidate traces belong to
   small-graph algorithm qualification or explicitly requested offline studies,
   not to every managed large-design execution.
+- If a downstream optimization directly consumes a non-winning candidate,
+  retain only that candidate's compact consumer artifact behind an explicit
+  request. Do not retain or recreate the provider's model, trace, hashes, or
+  diagnostic directory merely to keep one alternative assignment available.
 - Production Phase 6 performs a bounded one-macro-cycle smoke replay for each
   deterministic trace seed. Deeper event-driven replay is an explicit
   `--equivalence-cycles` qualification choice; do not make a 16-cycle large-DLA

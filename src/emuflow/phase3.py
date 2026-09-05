@@ -410,6 +410,7 @@ def run_phase3(
     patron_physical_system_timing_path: Optional[Path] = None,
     patron_physical_feedback_scale: float = 0.0,
     retain_diagnostics: bool = False,
+    retain_patron_baseline: bool = False,
 ) -> Dict[str, Any]:
     if patron_initial_clusters_path is not None and (
         provider != "patron"
@@ -421,6 +422,12 @@ def run_phase3(
         )
     if not isinstance(retain_diagnostics, bool):
         raise ValidationError("Phase 3 retain_diagnostics flag is invalid")
+    if not isinstance(retain_patron_baseline, bool):
+        raise ValidationError("Phase 3 retain_patron_baseline flag is invalid")
+    if retain_patron_baseline and provider != "patron":
+        raise ValidationError(
+            "Phase 3 retain_patron_baseline requires provider='patron'"
+        )
     if not isinstance(patron_flow_refinement, bool):
         raise ValidationError("PATRON flow refinement flag is invalid")
     if (
@@ -903,6 +910,17 @@ def run_phase3(
                     ),
                 }
             )
+        elif retain_patron_baseline:
+            report["artifacts"].update(
+                {
+                    "patron_initial_assignment": (
+                        "patron-initial-assignment.json"
+                    ),
+                    "patron_initial_hop_refinement": (
+                        "patron-initial-hop-refinement.json"
+                    ),
+                }
+            )
         else:
             report["patron_diagnostics"] = {
                 "storage": "not-persisted",
@@ -958,6 +976,17 @@ def run_phase3(
     write_json(
         output_dir / "assignment.json", persisted_assignment, compact=True
     )
+    if provider == "patron" and retain_patron_baseline:
+        write_json(
+            output_dir / "patron-initial-assignment.json",
+            pack_phase3_assignment(initial, clusters),
+            compact=True,
+        )
+        write_json(
+            output_dir / "patron-initial-hop-refinement.json",
+            patron_initial_hop,
+            compact=True,
+        )
     if "replication" in assignment:
         write_json(output_dir / "replication.json", assignment["replication"])
     if hop_refinement["enabled"]:
@@ -980,12 +1009,19 @@ def promote_patron_baseline(
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
     clusters = read_json(phase3_root / "clusters.json")
-    initial = read_json(phase3_root / "patron/initial_assignment.json")
-    validation = validate_partition_artifacts(ir, platform, clusters, initial)
-    hop_refinement = read_json(
-        phase3_root / "patron/initial_hop_refinement.json"
-    )
     report = read_json(phase3_root / "phase3_report.json")
+    artifacts = report.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValidationError("PATRON Phase 3 artifact map is invalid")
+    initial_artifact = artifacts.get("patron_initial_assignment")
+    hop_artifact = artifacts.get("patron_initial_hop_refinement")
+    if not isinstance(initial_artifact, str) or not isinstance(
+        hop_artifact, str
+    ):
+        raise ValidationError("PATRON baseline artifacts are unavailable")
+    initial = read_json(phase3_root / initial_artifact)
+    validation = validate_partition_artifacts(ir, platform, clusters, initial)
+    hop_refinement = read_json(phase3_root / hop_artifact)
     report.update(
         {
             "provider": initial["provider"],
@@ -1009,11 +1045,7 @@ def promote_patron_baseline(
         "assignment": "assignment.json",
         "report": "phase3_report.json",
         **(
-            {
-                "hop_refinement": (
-                    "patron/initial_hop_refinement.json"
-                )
-            }
+            {"hop_refinement": hop_artifact}
             if hop_refinement["enabled"]
             else {}
         ),
@@ -1026,8 +1058,12 @@ def promote_patron_baseline(
             else {}
         ),
     }
-    write_json(phase3_root / "assignment.json", initial)
-    write_json(phase3_root / "phase3_report.json", report)
+    write_json(
+        phase3_root / "assignment.json",
+        pack_phase3_assignment(initial, clusters),
+        compact=True,
+    )
+    write_json(phase3_root / "phase3_report.json", report, compact=True)
     return report
 
 
