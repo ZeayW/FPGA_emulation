@@ -601,6 +601,7 @@ def run_phase3(
                 run_unweighted_baseline=(
                     tritonpart_run_unweighted_baseline
                 ),
+                defer_semantic_contract=True,
                 persist_input_manifest=retain_diagnostics,
             )
         else:
@@ -631,6 +632,7 @@ def run_phase3(
                 route_constraints_path=route_constraints_path,
                 net_weights_path=net_weights_path,
                 executable=hop_refiner,
+                defer_semantic_contract=True,
             )
         timing_database = read_json(timing_database_path)
         model = build_partition_pressure_model(

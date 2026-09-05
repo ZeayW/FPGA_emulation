@@ -602,22 +602,14 @@ def characterize_combinational_cuts(
     }
 
 
-def build_static_exact_semantic_contract(
+def _analyze_static_exact_dependencies(
     ir: EmuIR,
-    platform: Mapping[str, Any],
     instance_assignment: Mapping[str, str],
     cut_nets: Sequence[Mapping[str, Any]],
     *,
     max_dependency_depth: int,
     candidate_selection_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
 ) -> Dict[str, Any]:
-    """Build the provisional Phase-3 exact-cut semantic contract.
-
-    This establishes structural legality only.  Schedule readiness,
-    macro-cycle equivalence, and physical segment deadlines remain downstream
-    gates and are intentionally named as pending in the returned contract.
-    """
-
     if candidate_selection_policy not in STATIC_EXACT_CANDIDATE_POLICIES:
         raise ValidationError("unknown exact combinational-cut candidate policy")
     if (
@@ -751,6 +743,78 @@ def build_static_exact_semantic_contract(
             f"limit: net {critical!r} has depth {maximum_depth}, limit "
             f"{max_dependency_depth}"
         )
+    return {
+        "classes": classes,
+        "nets": nets,
+        "incoming_by_instance": incoming_by_instance,
+        "outgoing_by_instance": outgoing_by_instance,
+        "cut_by_net": cut_by_net,
+        "dependencies": dependencies,
+        "local_launches": local_launches,
+        "dependency_level": dependency_level,
+        "combinational_depth": combinational_depth,
+        "maximum_depth": maximum_depth,
+    }
+
+
+def evaluate_static_exact_partition_risk(
+    ir: EmuIR,
+    instance_assignment: Mapping[str, str],
+    cut_nets: Sequence[Mapping[str, Any]],
+    *,
+    max_dependency_depth: int,
+    candidate_selection_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+) -> Dict[str, int]:
+    """Validate exact-cut dependencies without materializing transport data."""
+
+    analysis = _analyze_static_exact_dependencies(
+        ir,
+        instance_assignment,
+        cut_nets,
+        max_dependency_depth=max_dependency_depth,
+        candidate_selection_policy=candidate_selection_policy,
+    )
+    return {
+        "combinational_cut_nets": sum(
+            analysis["nets"][net_id]["cut_class"] == "combinational"
+            for net_id in analysis["cut_by_net"]
+        ),
+        "maximum_combinational_dependency_depth": analysis["maximum_depth"],
+    }
+
+
+def build_static_exact_semantic_contract(
+    ir: EmuIR,
+    platform: Mapping[str, Any],
+    instance_assignment: Mapping[str, str],
+    cut_nets: Sequence[Mapping[str, Any]],
+    *,
+    max_dependency_depth: int,
+    candidate_selection_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+) -> Dict[str, Any]:
+    """Build the provisional Phase-3 exact-cut semantic contract.
+
+    This establishes structural legality only.  Schedule readiness,
+    macro-cycle equivalence, and physical segment deadlines remain downstream
+    gates and are intentionally named as pending in the returned contract.
+    """
+
+    analysis = _analyze_static_exact_dependencies(
+        ir,
+        instance_assignment,
+        cut_nets,
+        max_dependency_depth=max_dependency_depth,
+        candidate_selection_policy=candidate_selection_policy,
+    )
+    classes = analysis["classes"]
+    nets = analysis["nets"]
+    outgoing_by_instance = analysis["outgoing_by_instance"]
+    cut_by_net = analysis["cut_by_net"]
+    dependencies = analysis["dependencies"]
+    local_launches = analysis["local_launches"]
+    dependency_level = analysis["dependency_level"]
+    combinational_depth = analysis["combinational_depth"]
+    maximum_depth = analysis["maximum_depth"]
 
     capture_records: List[Dict[str, Any]] = []
     for net_id, cut in sorted(cut_by_net.items()):

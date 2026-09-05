@@ -10,6 +10,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from .combinational_cut import (
+    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    evaluate_static_exact_partition_risk,
+)
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
@@ -1633,6 +1637,7 @@ def run_tritonpart(
     repair_balance: bool = False,
     persist_input_manifest: bool = True,
     run_unweighted_baseline: bool = False,
+    defer_semantic_contract: bool = False,
 ) -> Dict[str, Any]:
     if seed_attempts <= 0:
         raise ValueError("TritonPart seed_attempts must be positive")
@@ -1926,6 +1931,7 @@ def run_tritonpart(
                     candidate,
                     provider=TRITONPART_PROVIDER,
                     seed=attempt_seed,
+                    _include_semantic_contract=False,
                 )
             except ValidationError as error:
                 attempt["accepted"] = False
@@ -1933,15 +1939,18 @@ def run_tritonpart(
                 attempt["error"] = str(error)
                 attempts.append(attempt)
                 continue
-            contract_metrics = preview["semantic_contract"]["metrics"]
-            exact_risk = {
-                "combinational_cut_nets": contract_metrics[
-                    "combinational_cut_nets"
+            exact_risk = evaluate_static_exact_partition_risk(
+                ir,
+                preview["instance_assignment"],
+                preview["cut_nets"],
+                max_dependency_depth=clusters_artifact["policy"][
+                    "max_cross_fpga_dependency_depth"
                 ],
-                "maximum_combinational_dependency_depth": contract_metrics[
-                    "maximum_combinational_dependency_depth"
-                ],
-            }
+                candidate_selection_policy=clusters_artifact["policy"].get(
+                    "candidate_selection_policy",
+                    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+                ),
+            )
             attempt["static_exact_risk"] = exact_risk
 
         attempt["accepted"] = True
@@ -2072,11 +2081,10 @@ def run_tritonpart(
             else {"retained": False}
         ),
     }
-    if selected_assignment_preview is not None:
-        # Static Exact candidate qualification already materialized this exact
-        # assignment and its semantic contract.  Reuse it instead of walking
-        # the complete instance/net graph a second time merely to attach
-        # provider metadata.
+    if selected_assignment_preview is not None and defer_semantic_contract:
+        # PATRON consumes only the cluster assignment and builds the complete
+        # Static Exact transport contract once, after refinement.  Keep its
+        # intermediate assignment lightweight.
         result = dict(selected_assignment_preview)
         result["provider_metadata"] = provider_metadata
         return result
@@ -2089,4 +2097,5 @@ def run_tritonpart(
         provider=TRITONPART_PROVIDER,
         seed=selected_seed,
         provider_metadata=provider_metadata,
+        _include_semantic_contract=not defer_semantic_contract,
     )

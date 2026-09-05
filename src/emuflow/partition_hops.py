@@ -386,6 +386,7 @@ def refine_partition_hops(
     route_constraints_path: Optional[Path] = None,
     net_weights_path: Optional[Path] = None,
     executable: Optional[str] = None,
+    defer_semantic_contract: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     route_constraints = load_route_constraints(
         route_constraints_path, platform
@@ -477,6 +478,7 @@ def refine_partition_hops(
             provider=assignment["provider"],
             seed=assignment["seed"],
             provider_metadata=metadata,
+            _include_semantic_contract=not defer_semantic_contract,
         )
     replicas = _replica_targets(assignment)
     if replicas:

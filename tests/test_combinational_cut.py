@@ -17,6 +17,7 @@ from emuflow.combinational_cut import (
     _build_combinational_cut_candidate_index,
     build_static_exact_semantic_contract,
     characterize_combinational_cuts,
+    evaluate_static_exact_partition_risk,
     semantic_contract_sha256,
     validate_combinational_cut_characterization,
 )
@@ -836,6 +837,27 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             "structural-partition-legality",
         )
         self.assertEqual(contract["metrics"]["combinational_cut_nets"], 1)
+        self.assertEqual(
+            evaluate_static_exact_partition_risk(
+                self.ir,
+                assignment["instance_assignment"],
+                assignment["cut_nets"],
+                max_dependency_depth=clusters["policy"][
+                    "max_cross_fpga_dependency_depth"
+                ],
+                candidate_selection_policy=clusters["policy"][
+                    "candidate_selection_policy"
+                ],
+            ),
+            {
+                "combinational_cut_nets": contract["metrics"][
+                    "combinational_cut_nets"
+                ],
+                "maximum_combinational_dependency_depth": contract[
+                    "metrics"
+                ]["maximum_combinational_dependency_depth"],
+            },
+        )
         self.assertTrue(contract["capture_requirements"])
         validation = validate_partition_artifacts(
             self.ir, self.platform, clusters, assignment
