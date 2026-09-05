@@ -281,7 +281,7 @@ def _flow_refinement_configuration(
             {
                 "cut_count_guard": "initial-total-non-regression-v1",
                 "static_exact_trust_region": (
-                    "componentwise-semantic-non-regression-v2"
+                    "structural-topology-cut-and-path-transition-guards-v3"
                 ),
             }
         )
@@ -2213,8 +2213,7 @@ def run_partition_pressure_native(
             {
                 "cut_count_guard": "initial-total-non-regression-v1",
                 "static_exact_selection": (
-                    "componentwise-semantic-non-regression-and-"
-                    "strict-timing-improvement-v2"
+                    "materialized-legality-and-strict-timing-improvement-v3"
                 ),
             }
         )

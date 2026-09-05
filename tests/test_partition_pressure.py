@@ -10,6 +10,7 @@ from unittest.mock import patch
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.partition import (
+    CUT_MODE_SEQUENTIAL_ONLY,
     CUT_MODE_STATIC_EXACT,
     build_clusters,
     build_partition_assignment,
@@ -400,6 +401,33 @@ class PartitionPressureTest(unittest.TestCase):
         self.assertEqual(report["selected"], "candidate")
         self.assertFalse(report["semantic_non_regression"])
         self.assertTrue(report["semantic_counts_are_diagnostics"])
+
+    def test_v14_does_not_require_deferred_semantic_contract(self) -> None:
+        initial = {
+            "provider": "strong-tritonpart",
+            "cluster_assignment": {"c0": "a", "c1": "b"},
+        }
+        candidate = {
+            "provider": "patron-v14",
+            "cluster_assignment": {"c0": "b", "c1": "a"},
+        }
+        trace = {
+            "initial_metrics": {
+                "objective_key": [84.0, 189000.0, 5000, 4, 100, 10, 20, 10]
+            },
+            "final_metrics": {
+                "objective_key": [83.0, 180000.0, 4900, 4, 100, 10, 20, 10]
+            },
+        }
+        selected, report = _select_patron_static_exact_assignment_v14(
+            initial, candidate, trace
+        )
+        self.assertIs(selected, candidate)
+        self.assertEqual(report["selected"], "candidate")
+        self.assertIsNone(report["semantic_non_regression"])
+        self.assertFalse(report["semantic_counts_available"])
+        self.assertIsNone(report["initial_objective"])
+        self.assertIsNone(report["candidate_objective"])
 
     def test_model_is_source_bound_and_tamper_evident(self) -> None:
         checked = validate_partition_pressure_model(
@@ -1600,6 +1628,9 @@ class PartitionPressureTest(unittest.TestCase):
             provider="fixture-static-exact-v2",
             seed=7,
         )
+        # Managed production inputs defer this large downstream payload until
+        # PATRON has selected the final assignment.
+        initial.pop("semantic_contract")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ir_path = root / "ir.json"
@@ -1657,6 +1688,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(
                 assignment["metrics"]["combinational_cut_nets"], 1
             )
+            self.assertIn("semantic_contract", assignment)
             self.assertEqual(
                 assignment["metrics"][
                     "maximum_combinational_dependency_depth"
@@ -1673,6 +1705,99 @@ class PartitionPressureTest(unittest.TestCase):
                 ]["provider"],
                 PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
             )
+
+    def test_phase3_v14_embeds_register_only_cold_start(self) -> None:
+        ir = _ir()
+        ir.value["nets"][0]["cut_class"] = "combinational"
+        ir.value["clocks"] = [
+            {
+                "id": "clk",
+                "name": "clk",
+                "source_port": "clk",
+                "period_ns": None,
+            }
+        ]
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "min_used_fpgas": 2,
+                "balance_tolerance": 1.0,
+            },
+            ir,
+            self.platform,
+        )
+        sequential_clusters = build_clusters(
+            ir, constraints, cut_mode=CUT_MODE_SEQUENTIAL_ONLY
+        )
+        sequential_map = {
+            cluster["id"]: ("a" if index % 2 == 0 else "b")
+            for index, cluster in enumerate(sequential_clusters["clusters"])
+        }
+        sequential = build_partition_assignment(
+            ir,
+            self.platform,
+            sequential_clusters,
+            constraints,
+            sequential_map,
+            provider="fixture-register-only",
+            seed=7,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            platform_path = root / "platform.json"
+            constraints_path = root / "constraints.json"
+            timing_path = root / "timing.json"
+            route_path = root / "routes.json"
+            solution_path = root / "register-only.part.2"
+            write_json(ir_path, ir.value)
+            write_json(platform_path, self.platform.to_dict())
+            write_json(constraints_path, constraints)
+            write_json(timing_path, self.timing)
+            write_json(
+                route_path,
+                {
+                    "schema": "emuflow.system-route-constraints/v1",
+                    "frame_slots": 8,
+                    "tdm_ratio_quantum": 1,
+                },
+            )
+            part = {"a": 0, "b": 1}
+            solution_path.write_text(
+                "\n".join(
+                    str(part[sequential_map[cluster_id]])
+                    for cluster_id in sorted(sequential_map)
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report = run_phase3(
+                ir_path,
+                platform_path,
+                root / "phase3",
+                constraints_path=constraints_path,
+                provider="patron",
+                tritonpart_solution=solution_path,
+                route_constraints_path=route_path,
+                timing_database_path=timing_path,
+                patron_refiner=str(patron_refiner()),
+                patron_algorithm_version=14,
+                cut_mode=CUT_MODE_STATIC_EXACT,
+                retain_diagnostics=False,
+            )
+            assignment = read_json(root / "phase3/assignment.json")
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(
+                report["patron_initialization"],
+                "embedded-register-only-tritonpart-seed-v1",
+            )
+            self.assertEqual(
+                report["algorithm_validation"]["initial_assignment"][
+                    "cut_nets"
+                ],
+                sequential["metrics"]["cut_nets"],
+            )
+            self.assertIn("semantic_contract", assignment)
 
     def test_scalable_native_sweep_improves_a_sparse_chain(self) -> None:
         ir = _chain_ir(300)

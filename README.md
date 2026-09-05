@@ -1399,6 +1399,13 @@ alias when no physical-feedback input is present.  A four-arm complete-flow
 gate for Static Exact v2 plus v6, v9, v6-to-v11, and v9-to-v11 is pending;
 until it completes, v6 is a code default rather than a claimed Phase 7 QoR
 promotion.
+Version 14 treats generalized Static Exact as a strict expansion of the
+register-only search space: it computes the ordinary TritonPart seed once,
+embeds that instance placement into the finer Static Exact clusters, and only
+accepts a structurally legal PATRON result with a strictly improved timing
+certificate.  The selected assignment alone materializes the downstream
+semantic contract.  This prevents a cold start on the fragmented graph from
+silently replacing the register-only control with a worse local optimum.
 Canonical experiment configs may set
 `partition_provider=patron`, reuse `patron_initial_assignment`, and restrict
 `phase6_providers` plus `physical_seeds` (for example Chimew/seed 1) so an A/B
@@ -2000,6 +2007,10 @@ A supplied frozen PATRON assignment is audited and consumed exactly rather
 than silently running the hop optimizer again. When its cluster identity
 already matches, the producer reuses that canonical assignment instead of
 rebuilding its instance map, cut nets, and Static Exact semantic contract.
+The frozen production assignment may therefore omit the deferred semantic
+contract: PATRON selection uses structural legality and its timing-objective
+certificate, while semantic counts are optional diagnostics materialized only
+for the selected final assignment. They are never a prerequisite for Phase 3.
 PATRON natively
 enforces route reachability and the maximum-hop constraint on every candidate,
 so its selected result receives an independent in-memory hop audit instead of

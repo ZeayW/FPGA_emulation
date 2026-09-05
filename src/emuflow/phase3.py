@@ -82,6 +82,23 @@ def _patron_static_exact_semantic_key(
     )
 
 
+def _optional_patron_static_exact_semantic_key(
+    assignment: Dict[str, Any],
+) -> Optional[tuple[int, int, int, int]]:
+    """Return diagnostic Static Exact counts when already materialized.
+
+    Production PATRON deliberately defers the large semantic contract until
+    the final Phase-3 assignment is selected.  Selection must therefore not
+    require the frozen initial assignment to carry that downstream payload.
+    """
+
+    contract = assignment.get("semantic_contract")
+    metrics = contract.get("metrics") if isinstance(contract, dict) else None
+    if not isinstance(metrics, dict):
+        return None
+    return _patron_static_exact_semantic_key(assignment)
+
+
 def _select_patron_static_exact_assignment(
     initial: Dict[str, Any],
     candidate: Dict[str, Any],
@@ -122,8 +139,8 @@ def _select_patron_static_exact_assignment_v14(
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """Accept a timing improvement only inside the exact semantic trust region."""
 
-    initial_key = _patron_static_exact_semantic_key(initial)
-    candidate_key = _patron_static_exact_semantic_key(candidate)
+    initial_key = _optional_patron_static_exact_semantic_key(initial)
+    candidate_key = _optional_patron_static_exact_semantic_key(candidate)
     initial_objective = patron_trace.get("initial_metrics", {}).get(
         "objective_key"
     )
@@ -151,9 +168,15 @@ def _select_patron_static_exact_assignment_v14(
         round(float(value) / 1.0e-9) if index < 2 else round(float(value))
         for index, value in enumerate(candidate_objective)
     )
-    semantic_non_regression = all(
-        candidate_value <= initial_value
-        for initial_value, candidate_value in zip(initial_key, candidate_key)
+    semantic_non_regression = (
+        all(
+            candidate_value <= initial_value
+            for initial_value, candidate_value in zip(
+                initial_key, candidate_key
+            )
+        )
+        if initial_key is not None and candidate_key is not None
+        else None
     )
     assignment_changed = candidate.get("cluster_assignment") != initial.get(
         "cluster_assignment"
@@ -180,12 +203,19 @@ def _select_patron_static_exact_assignment_v14(
             "transported_cut_nets",
             "dependency_edges",
         ],
-        "initial_objective": list(initial_key),
-        "candidate_objective": list(candidate_key),
+        "initial_objective": (
+            list(initial_key) if initial_key is not None else None
+        ),
+        "candidate_objective": (
+            list(candidate_key) if candidate_key is not None else None
+        ),
         "initial_timing_rank": list(initial_rank),
         "candidate_timing_rank": list(candidate_rank),
         "semantic_non_regression": semantic_non_regression,
         "semantic_counts_are_diagnostics": True,
+        "semantic_counts_available": (
+            initial_key is not None and candidate_key is not None
+        ),
         "assignment_changed": assignment_changed,
         "timing_improved": timing_improved,
         "selected": "candidate" if accepted else "initial",
@@ -240,6 +270,8 @@ def _rebase_patron_initial_assignment(
     clusters: Dict[str, Any],
     constraints: Dict[str, Any],
     frozen: Dict[str, Any],
+    *,
+    include_semantic_contract: bool = True,
 ) -> Dict[str, Any]:
     """Re-express a frozen instance placement using the current clusters."""
 
@@ -302,12 +334,17 @@ def _rebase_patron_initial_assignment(
         cluster_assignment,
         provider=str(frozen.get("provider", "frozen-partition-v1")),
         seed=int(frozen.get("seed", 0)),
+        provider_metadata=frozen.get("provider_metadata"),
+        _include_semantic_contract=include_semantic_contract,
     )
     if rebased["instance_assignment"] != raw:
         raise ValidationError(
             "PATRON frozen assignment rebase changed instance placement"
         )
-    validate_partition_artifacts(ir, platform, clusters, rebased)
+    if include_semantic_contract:
+        validate_partition_artifacts(ir, platform, clusters, rebased)
+    else:
+        validate_partition_artifacts_online(platform, clusters, rebased)
     return rebased
 
 
@@ -514,6 +551,7 @@ def run_phase3(
             static_exact_candidate_policy=static_exact_candidate_policy,
         )
     patron_validation = None
+    patron_initialization = None
     if provider == "greedy":
         assignment = assign_clusters(
             ir,
@@ -580,10 +618,30 @@ def run_phase3(
                 "PATRON Phase 3 requires a complete TimingPathDB"
             )
         if patron_initial_assignment_path is None:
-            initial = run_tritonpart(
+            initial_clusters = clusters
+            if (
+                cut_mode == CUT_MODE_STATIC_EXACT
+                and patron_algorithm_version == 14
+            ):
+                # Generalized Static Exact is an expanded search space, not a
+                # request to discard the register-only solution and restart
+                # from a different local optimum.  Build the ordinary
+                # register-only seed once, then embed its instance placement
+                # losslessly into the finer Static Exact cluster graph.
+                initial_clusters = build_clusters(
+                    ir,
+                    constraints,
+                    cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
+                )
+                patron_initialization = (
+                    "embedded-register-only-tritonpart-seed-v1"
+                )
+            else:
+                patron_initialization = "native-cut-mode-tritonpart-seed-v1"
+            tritonpart_initial = run_tritonpart(
                 ir,
                 platform,
-                clusters,
+                initial_clusters,
                 constraints,
                 output_dir / "patron" / "tritonpart",
                 seed=seed,
@@ -604,7 +662,19 @@ def run_phase3(
                 defer_semantic_contract=True,
                 persist_input_manifest=retain_diagnostics,
             )
+            if initial_clusters is clusters:
+                initial = tritonpart_initial
+            else:
+                initial = _rebase_patron_initial_assignment(
+                    ir,
+                    platform,
+                    clusters,
+                    constraints,
+                    tritonpart_initial,
+                    include_semantic_contract=False,
+                )
         else:
+            patron_initialization = "caller-supplied-frozen-assignment-v1"
             initial = _rebase_patron_initial_assignment(
                 ir,
                 platform,
@@ -792,6 +862,24 @@ def run_phase3(
             "expected 'repart-replication', 'repart', 'tritonpart', "
             "'mfspart', 'patron', or 'greedy'"
         )
+    if (
+        cut_mode == CUT_MODE_STATIC_EXACT
+        and assignment.get("semantic_contract") is None
+    ):
+        # The hot path may defer the large contract while PATRON compares
+        # candidates.  Materialize it exactly once for whichever assignment
+        # was selected so every downstream phase receives the canonical
+        # provider-neutral contract.
+        assignment = build_partition_assignment(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            assignment["cluster_assignment"],
+            provider=str(assignment["provider"]),
+            seed=int(assignment["seed"]),
+            provider_metadata=assignment.get("provider_metadata"),
+        )
     mfspart_post_refinement_report = None
     if mfspart_post_refinement:
         if provider != "tritonpart":
@@ -900,6 +988,7 @@ def run_phase3(
         report["artifacts"]["mfspart"] = "mfspart/hierarchy.json"
     elif provider == "patron":
         report["patron_algorithm_version"] = patron_algorithm_version
+        report["patron_initialization"] = patron_initialization
         report["algorithm_validation"] = patron_validation
         if retain_diagnostics:
             report["artifacts"].update(
