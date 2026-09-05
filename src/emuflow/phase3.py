@@ -681,6 +681,7 @@ def run_phase3(
                 clusters,
                 constraints,
                 read_json(patron_initial_assignment_path),
+                include_semantic_contract=(patron_algorithm_version != 14),
             )
         patron_feedback_source_assignment = initial
         if patron_initial_assignment_path is not None:
