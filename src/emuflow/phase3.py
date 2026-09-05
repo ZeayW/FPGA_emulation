@@ -552,6 +552,7 @@ def run_phase3(
         )
     patron_validation = None
     patron_initialization = None
+    patron_initial_hop_prepared = False
     if provider == "greedy":
         assignment = assign_clusters(
             ir,
@@ -665,6 +666,23 @@ def run_phase3(
             if initial_clusters is clusters:
                 initial = tritonpart_initial
             else:
+                # Make the register-only seed topology-feasible while its
+                # atomic combinational clusters are still intact.  Refining
+                # hops after embedding into the finer Static Exact graph could
+                # fragment that control solution before PATRON's trust-region
+                # guards see it.
+                tritonpart_initial, _ = refine_partition_hops(
+                    ir,
+                    platform,
+                    initial_clusters,
+                    constraints,
+                    tritonpart_initial,
+                    output_dir / "patron" / "initial-hop-refinement",
+                    route_constraints_path=route_constraints_path,
+                    net_weights_path=net_weights_path,
+                    executable=hop_refiner,
+                    defer_semantic_contract=True,
+                )
                 initial = _rebase_patron_initial_assignment(
                     ir,
                     platform,
@@ -673,6 +691,7 @@ def run_phase3(
                     tritonpart_initial,
                     include_semantic_contract=False,
                 )
+                patron_initial_hop_prepared = True
         else:
             patron_initialization = "caller-supplied-frozen-assignment-v1"
             initial = _rebase_patron_initial_assignment(
@@ -684,7 +703,10 @@ def run_phase3(
                 include_semantic_contract=(patron_algorithm_version != 14),
             )
         patron_feedback_source_assignment = initial
-        if patron_initial_assignment_path is not None:
+        if (
+            patron_initial_assignment_path is not None
+            or patron_initial_hop_prepared
+        ):
             # A frozen assignment is an exact PATRON input, not a request to
             # silently optimize it again. Fail closed if it is not already
             # hop-feasible. Every arm can therefore reuse the one validated
