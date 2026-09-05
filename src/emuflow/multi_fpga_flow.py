@@ -1118,16 +1118,6 @@ def run_multi_fpga_flow(
             "--partition-provider patron requires the internally generated "
             "complete TimingPathDB"
         )
-    if (
-        partition_provider == "patron"
-        and not exact_cut_mode
-        and cross_stage_iterations < 1
-    ):
-        raise EmuFlowError(
-            "--partition-provider patron requires --cross-stage-iterations "
-            "of at least 1 so the frozen TritonPart fallback and PATRON "
-            "candidate receive exact Phase 4/5 promotion"
-        )
     if timing_paths is not None and (
         timing_driven or architecture_timing_db is not None
     ):

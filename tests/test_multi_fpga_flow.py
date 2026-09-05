@@ -351,6 +351,22 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     slot_refinement_iterations=7,
                 )
 
+    def test_sequential_patron_does_not_require_cross_stage_search(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(
+                EmuFlowError, "requires at least one --clock-period"
+            ):
+                run_multi_fpga_flow(
+                    platform_path=PLATFORM,
+                    output_dir=Path(temporary_directory) / "patron-direct",
+                    yosys_json=ROOT / "examples/yosys/counter.json",
+                    top="counter",
+                    clocks=["clk"],
+                    partition_provider="patron",
+                    cut_mode="sequential-only",
+                    cross_stage_iterations=0,
+                )
+
     def test_physical_baseline_still_materializes_timing_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

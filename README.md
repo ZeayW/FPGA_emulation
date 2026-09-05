@@ -865,6 +865,13 @@ The Phase 3 cut mode, Static Exact candidate policy, and dependency-depth cap
 are likewise explicit cross-stage inputs and remain identical for the initial
 assignment, optional seed candidate, and every feedback Phase 3 rerun; the
 optimizer never falls back silently to sequential-only clustering.
+PATRON itself does not require this optional search: with
+`--cross-stage-iterations 0`, Phase 3's PATRON assignment proceeds directly
+through the ordinary Phase 4--7 flow in both sequential-only and Static Exact
+modes. Use the cross-stage option only when the experiment explicitly intends
+to compare and possibly replace that assignment with TritonPart or feedback
+candidates; one outer iteration may evaluate the baseline, the PATRON seed,
+and every configured line-search step.
 Candidate reports retain the literal FPGA-ID migration count and also report a
 symmetry-aligned count. The latter may remove a label permutation only when it
 is an exact automorphism of the BoardDB and normalized route constraints;
