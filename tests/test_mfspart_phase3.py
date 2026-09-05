@@ -98,6 +98,7 @@ class MFSPartPhase3Test(unittest.TestCase):
                 mfspart_refiner=self.executables["refiner"],
                 mfspart_refiner_checker=self.executables["refiner_checker"],
                 mfspart_legalizer=self.executables["legalizer"],
+                retain_diagnostics=True,
             )
             assignment = json.loads(
                 (root / "phase3/assignment.json").read_text(encoding="utf-8")
@@ -190,6 +191,7 @@ class MFSPartPhase3Test(unittest.TestCase):
                 mfspart_refiner=self.executables["refiner"],
                 mfspart_refiner_checker=self.executables["refiner_checker"],
                 mfspart_legalizer=self.executables["legalizer"],
+                retain_diagnostics=True,
             )
             assignment = json.loads(
                 (root / "phase3/assignment.json").read_text(encoding="utf-8")

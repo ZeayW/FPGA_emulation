@@ -559,6 +559,7 @@ class TritonPartTest(unittest.TestCase):
                     cut_mode="sequential-only",
                     openroad="/fake/openroad",
                     tritonpart_seed_attempts=2,
+                    retain_diagnostics=True,
                 )
 
             self.assertEqual(report["status"], "pass")
@@ -677,6 +678,7 @@ class TritonPartTest(unittest.TestCase):
                     cut_mode="sequential-only",
                     openroad="/fake/openroad",
                     net_weights_path=weights_path,
+                    retain_diagnostics=True,
                 )
             assignment = json.loads(
                 (output / "phase3" / "assignment.json").read_text()
@@ -753,6 +755,7 @@ class TritonPartTest(unittest.TestCase):
                     openroad="/fake/openroad",
                     tritonpart_seed_attempts=2,
                     tritonpart_repair_balance=True,
+                    retain_diagnostics=True,
                 )
 
             self.assertEqual(report["status"], "pass")
@@ -802,6 +805,7 @@ class TritonPartTest(unittest.TestCase):
                     cut_mode="sequential-only",
                     openroad="/fake/openroad",
                     tritonpart_repair_balance=True,
+                    retain_diagnostics=True,
                 )
 
             self.assertEqual(report["status"], "pass")

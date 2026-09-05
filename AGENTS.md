@@ -64,6 +64,12 @@ phase, even when a run is expensive or an earlier result appears reusable.
   to save time on a future run. Do not run whole-cache inventory, GC, or strong
   rehash passes as part of the normal validation path. Hash each retained final
   artifact once while producing its terminal seal.
+- Production hot paths must never become slower or more verbose merely because
+  they are running as a fresh one-shot flow rather than under a cache/DAG
+  wrapper. Do not gate compact storage, single-pass validation, scratch cleanup,
+  or the avoidance of duplicate hashing on a `managed`, `cached`, or similar
+  execution flag. Expensive model reconstruction, full trace replay, and large
+  diagnostic persistence belong only to explicitly named qualification tools.
 - A fair A/B run may share immutable input files inside the same active
   experiment directory, but that sharing must not create a permanent cache of
   every phase. Run only the requested physical seed unless the user explicitly

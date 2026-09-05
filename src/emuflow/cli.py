@@ -5203,7 +5203,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 )
             _print_json(result)
         else:
-            _print_json(report)
+            _print_json(report.get("summary", report))
         return 0 if report["status"] == "pass" else 2
 
     if args.command == "partition":

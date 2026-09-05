@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
+from emuflow.io import read_json
 from emuflow.partition import (
     _partition_hop_distances,
     build_clusters,
@@ -420,11 +421,7 @@ class HopPartitionRefinementTest(unittest.TestCase):
                 route_constraints_path=self._route_constraints(root),
                 hop_refiner=str(self.executable),
             )
-            assignment = json.loads(
-                (root / "phase3/assignment.json").read_text(
-                    encoding="utf-8"
-                )
-            )
+            assignment = read_json(root / "phase3/assignment.json")
         self.assertEqual(report["status"], "pass")
         self.assertTrue(report["hop_refinement"]["enabled"])
         self.assertEqual(

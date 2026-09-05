@@ -328,6 +328,7 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
                 patron_initial_assignment_path=initial_path,
                 patron_physical_system_timing_path=system_timing_path,
                 patron_physical_feedback_scale=0.25,
+                retain_diagnostics=True,
             )
             self.assertEqual(report["status"], "pass")
             self.assertEqual(

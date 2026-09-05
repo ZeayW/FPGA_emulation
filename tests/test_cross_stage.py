@@ -16,7 +16,7 @@ from emuflow.cross_stage import (
     validate_cross_stage_report,
 )
 from emuflow.errors import ValidationError
-from emuflow.io import write_json
+from emuflow.io import read_json, write_json
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.phase3 import run_phase3
 from emuflow.platform import Platform
@@ -351,9 +351,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                 min_used_fpgas=2,
                 balance_tolerance=1.0,
             )
-            assignment = json.loads(
-                (initial_root / "assignment.json").read_text()
-            )
+            assignment = read_json(initial_root / "assignment.json")
             link_timing = build_board_link_timing_model(
                 Platform.load(platform_path)
             )

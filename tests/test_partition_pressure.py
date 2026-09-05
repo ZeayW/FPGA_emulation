@@ -1354,6 +1354,7 @@ class PartitionPressureTest(unittest.TestCase):
                 route_constraints_path=route_path,
                 timing_database_path=timing_path,
                 patron_refiner=str(patron_refiner()),
+                retain_diagnostics=True,
             )
             trace = (root / "phase3/patron/refinement_trace.json")
             self.assertEqual(report["status"], "pass")
@@ -1389,6 +1390,7 @@ class PartitionPressureTest(unittest.TestCase):
                 timing_database_path=timing_path,
                 patron_refiner=str(patron_refiner()),
                 patron_initial_assignment_path=frozen_initial_path,
+                retain_diagnostics=True,
             )
             self.assertEqual(reused["status"], "pass")
             self.assertNotIn("tritonpart", reused["artifacts"])
@@ -1428,6 +1430,7 @@ class PartitionPressureTest(unittest.TestCase):
                 timing_database_path=timing_path,
                 patron_refiner=str(patron_refiner()),
                 patron_initial_assignment_path=legacy_path,
+                retain_diagnostics=True,
             )
             self.assertEqual(rebased["status"], "pass")
             rebased_initial = read_json(
@@ -1445,16 +1448,8 @@ class PartitionPressureTest(unittest.TestCase):
             with (
                 patch(
                     "emuflow.partition_pressure._canonical_digest",
-                    side_effect=lambda value: (
-                        (_ for _ in ()).throw(
-                            AssertionError(
-                                "managed producer hashed the pressure model"
-                            )
-                        )
-                        if isinstance(value, dict)
-                        and value.get("schema")
-                        == "emuflow.partition-pressure-model/v6"
-                        else _canonical_digest(value)
+                    side_effect=AssertionError(
+                        "production Phase 3 entered canonical JSON hashing"
                     ),
                 ),
                 patch(
@@ -1476,7 +1471,7 @@ class PartitionPressureTest(unittest.TestCase):
                     ),
                 ),
             ):
-                managed = run_phase3(
+                production = run_phase3(
                     ir_path,
                     platform_path,
                     root / "phase3-managed",
@@ -1488,15 +1483,14 @@ class PartitionPressureTest(unittest.TestCase):
                     route_constraints_path=route_path,
                     timing_database_path=timing_path,
                     patron_refiner=str(patron_refiner()),
-                    managed_dag_node=True,
                 )
-            self.assertEqual(managed["status"], "pass")
+            self.assertEqual(production["status"], "pass")
             self.assertEqual(
-                managed["algorithm_validation"]["qualification"],
-                "managed-native-output-contract",
+                production["algorithm_validation"]["qualification"],
+                "online-native-output-contract",
             )
             self.assertEqual(
-                managed["patron_diagnostics"]["storage"], "not-persisted"
+                production["patron_diagnostics"]["storage"], "not-persisted"
             )
             for relative in (
                 "pressure_model.json",
@@ -1609,7 +1603,7 @@ class PartitionPressureTest(unittest.TestCase):
                     static_exact_candidate_policy=(
                         STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
                     ),
-                    managed_dag_node=True,
+                    retain_diagnostics=False,
                 )
             assignment = read_json(root / "phase3/assignment.json")
             self.assertEqual(report["status"], "pass")

@@ -363,7 +363,6 @@ def create_validation_archive(
                 destination = temporary / "files" / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, destination)
-                _validate_json(destination)
                 if _sha256(destination) != digest:
                     raise ValidationError(
                         f"copied archive artifact changed: {relative.as_posix()}"
@@ -379,6 +378,15 @@ def create_validation_archive(
                     "roles": roles,
                 }
             )
+
+        # Validate only after every retained file has been copied.  Compact
+        # Phase 3 assignments intentionally reference their sibling
+        # clusters.json, so validating files one-at-a-time made archive
+        # correctness depend on lexical copy order.
+        for item in files:
+            archive_path = item.get("archive_path")
+            if isinstance(archive_path, str):
+                _validate_json(temporary / archive_path)
 
         revision = _git_revision()
         if source_commit is not None:

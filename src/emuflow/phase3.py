@@ -409,17 +409,18 @@ def run_phase3(
     patron_initial_clusters_path: Optional[Path] = None,
     patron_physical_system_timing_path: Optional[Path] = None,
     patron_physical_feedback_scale: float = 0.0,
-    managed_dag_node: bool = False,
+    retain_diagnostics: bool = False,
 ) -> Dict[str, Any]:
     if patron_initial_clusters_path is not None and (
         provider != "patron"
         or patron_initial_assignment_path is None
-        or not managed_dag_node
     ):
         raise ValidationError(
-            "PATRON initial clusters require a managed PATRON DAG node and "
-            "a frozen initial assignment"
+            "PATRON initial clusters require provider='patron' and a frozen "
+            "initial assignment"
         )
+    if not isinstance(retain_diagnostics, bool):
+        raise ValidationError("Phase 3 retain_diagnostics flag is invalid")
     if not isinstance(patron_flow_refinement, bool):
         raise ValidationError("PATRON flow refinement flag is invalid")
     if (
@@ -533,7 +534,7 @@ def run_phase3(
             ),
             repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
             repair_balance=tritonpart_repair_balance,
-            persist_input_manifest=not managed_dag_node,
+            persist_input_manifest=retain_diagnostics,
         )
     elif provider in {"repart", "repart-replication"}:
         assignment = run_repart(
@@ -588,7 +589,7 @@ def run_phase3(
                 ),
                 repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
                 repair_balance=tritonpart_repair_balance,
-                persist_input_manifest=not managed_dag_node,
+                persist_input_manifest=retain_diagnostics,
             )
         else:
             initial = _rebase_patron_initial_assignment(
@@ -627,7 +628,7 @@ def run_phase3(
             constraints,
             timing_database,
             route_constraints,
-            independent_validation=not managed_dag_node,
+            independent_validation=retain_diagnostics,
         )
         patron_physical_feedback = None
         patron_physical_feedback_validation = None
@@ -662,10 +663,10 @@ def run_phase3(
             algorithm_version=patron_algorithm_version,
             physical_feedback=patron_physical_feedback,
             physical_feedback_scale=patron_physical_feedback_scale,
-            output_validation=("caller" if managed_dag_node else "full"),
-            retain_trace_seals=not managed_dag_node,
+            output_validation=("full" if retain_diagnostics else "caller"),
+            retain_trace_seals=retain_diagnostics,
         )
-        if not managed_dag_node:
+        if retain_diagnostics:
             write_json(output_dir / "patron" / "pressure_model.json", model)
             write_json(
                 output_dir / "patron" / "refinement_trace.json", patron_trace
@@ -720,7 +721,7 @@ def run_phase3(
             patron_validation = {
                 "status": "pass",
                 "mode": patron_trace.get("mode"),
-                "qualification": "managed-native-output-contract",
+                "qualification": "online-native-output-contract",
                 "deep_replay": "deferred-to-offline-qualification",
                 "initial_assignment": initial_validation,
                 "candidate_assignment": candidate_validation,
@@ -765,7 +766,7 @@ def run_phase3(
             raise ValueError(
                 "MFSPart post-refinement requires provider='tritonpart'"
             )
-        if timing_path_database_path is not None and not managed_dag_node:
+        if timing_path_database_path is not None and retain_diagnostics:
             validate_sta_path_database(timing_path_database_path, ir_path)
         assignment, mfspart_post_refinement_report = refine_mfspart_partition(
             ir,
@@ -805,9 +806,9 @@ def run_phase3(
             executable=hop_refiner,
         )
     validation = (
-        validate_partition_artifacts_online(platform, clusters, assignment)
-        if managed_dag_node
-        else validate_partition_artifacts(ir, platform, clusters, assignment)
+        validate_partition_artifacts(ir, platform, clusters, assignment)
+        if retain_diagnostics or provider == "repart-replication"
+        else validate_partition_artifacts_online(platform, clusters, assignment)
     )
     persisted_hop_refinement = _hop_report_summary(hop_refinement)
     report: Dict[str, Any] = {
@@ -851,7 +852,7 @@ def run_phase3(
             "assignment.json#/semantic_contract"
         )
     if provider == "tritonpart":
-        if not managed_dag_node:
+        if retain_diagnostics:
             report["artifacts"]["tritonpart"] = (
                 "tritonpart/tritonpart_input.json"
             )
@@ -868,7 +869,7 @@ def run_phase3(
     elif provider == "patron":
         report["patron_algorithm_version"] = patron_algorithm_version
         report["algorithm_validation"] = patron_validation
-        if not managed_dag_node:
+        if retain_diagnostics:
             report["artifacts"].update(
                 {
                     "patron_model": "patron/pressure_model.json",
@@ -887,12 +888,14 @@ def run_phase3(
         else:
             report["patron_diagnostics"] = {
                 "storage": "not-persisted",
-                "reason": "managed-production-hot-path",
-                "offline_qualification": "available-via-standalone-phase3",
+                "reason": "production-hot-path",
+                "offline_qualification": (
+                    "available-via-partition-pressure-reference"
+                ),
             }
         if (
             patron_physical_system_timing_path is not None
-            and not managed_dag_node
+            and retain_diagnostics
         ):
             report["artifacts"]["patron_physical_feedback"] = (
                 "patron/physical_feedback.json"
@@ -900,7 +903,7 @@ def run_phase3(
             report["artifacts"][
                 "patron_physical_feedback_source_assignment"
             ] = "patron/physical_feedback_source_assignment.json"
-        if patron_initial_assignment_path is None and not managed_dag_node:
+        if patron_initial_assignment_path is None and retain_diagnostics:
             report["artifacts"]["tritonpart"] = (
                 "patron/tritonpart/tritonpart_input.json"
             )
@@ -908,7 +911,7 @@ def run_phase3(
         report["artifacts"]["hop_refinement"] = (
             "hop-refinement/hop_refinement.json"
         )
-    if managed_dag_node:
+    if not retain_diagnostics:
         report["artifact_storage"] = {
             "clusters": "emuflow.phase3-clusters-storage/v1",
             "assignment": "emuflow.phase3-assignment-storage/v1",
@@ -916,19 +919,19 @@ def run_phase3(
         }
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    if managed_dag_node and provider == "tritonpart":
+    if not retain_diagnostics and provider == "tritonpart":
         shutil.rmtree(output_dir / "tritonpart", ignore_errors=True)
-    if managed_dag_node and provider == "patron":
+    if not retain_diagnostics and provider == "patron":
         shutil.rmtree(output_dir / "patron", ignore_errors=True)
-    if managed_dag_node and hop_refinement["enabled"]:
+    if not retain_diagnostics and hop_refinement["enabled"]:
         shutil.rmtree(output_dir / "hop-refinement", ignore_errors=True)
     persisted_clusters = (
-        pack_phase3_clusters(clusters) if managed_dag_node else clusters
+        clusters if retain_diagnostics else pack_phase3_clusters(clusters)
     )
     persisted_assignment = (
-        pack_phase3_assignment(assignment, clusters)
-        if managed_dag_node
-        else assignment
+        assignment
+        if retain_diagnostics
+        else pack_phase3_assignment(assignment, clusters)
     )
     write_json(
         output_dir / "clusters.json", persisted_clusters, compact=True

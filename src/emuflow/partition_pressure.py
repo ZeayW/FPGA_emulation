@@ -406,6 +406,8 @@ def _reconstruct_partition_pressure_model(
     constraints: Mapping[str, Any],
     timing_database: Mapping[str, Any],
     route_constraints: Mapping[str, Any],
+    *,
+    include_source_seals: bool = True,
 ) -> Dict[str, Any]:
 
     if timing_database.get("design") != ir.value["design"]["name"]:
@@ -523,20 +525,11 @@ def _reconstruct_partition_pressure_model(
         }
         for cluster in clusters_artifact["clusters"]
     ]
-    return {
+    model = {
         "schema": PARTITION_PRESSURE_MODEL_SCHEMA,
         "design": ir.value["design"]["name"],
         "platform": platform.name,
         "provider": PARTITION_PRESSURE_PROVIDER,
-        "sources": {
-            "ir_sha256": _canonical_digest(ir.value),
-            "clusters_sha256": _canonical_digest(clusters_artifact),
-            "constraints_sha256": _canonical_digest(constraints),
-            "timing_database_sha256": _canonical_digest(timing_database),
-            "route_constraints_sha256": _canonical_digest(
-                route_constraints
-            ),
-        },
         "configuration": {
             "gain_quantum": GAIN_QUANTUM,
             "boundary_fanout_penalty": "scale*log2(1+remote_sink_clusters)",
@@ -574,6 +567,19 @@ def _reconstruct_partition_pressure_model(
         "nets": list(pressure_nets.values()),
         "paths": paths,
     }
+    if include_source_seals:
+        model["sources"] = {
+            "ir_sha256": _canonical_digest(ir.value),
+            "clusters_sha256": _canonical_digest(clusters_artifact),
+            "constraints_sha256": _canonical_digest(constraints),
+            "timing_database_sha256": _canonical_digest(timing_database),
+            "route_constraints_sha256": _canonical_digest(
+                route_constraints
+            ),
+        }
+    return model
+
+
 def build_partition_pressure_model(
     ir: EmuIR,
     platform: Platform,
@@ -593,6 +599,7 @@ def build_partition_pressure_model(
         constraints,
         timing_database,
         route_constraints,
+        include_source_seals=independent_validation,
     )
     if independent_validation:
         validate_partition_pressure_model(

@@ -1784,15 +1784,15 @@ its flow report and reuses the sealed TimingPathDB identity instead of hashing
 the full database again. Standalone commands still materialize their
 human-oriented diagnostics for interactive use.
 
-The canonical compiler enables this managed contract consistently for the
-frontend, timing, cut projection, Phase 3, system routing, TDM, physical
-lookahead, Phase 6, and Phase 7 runners and validators. Direct standalone CLI
-use keeps the conservative historical behavior: embedded artifact digests and
-producer self-checks remain enabled unless `--managed-dag-node` is explicitly
-selected inside an experiment-cache transaction. Algorithm-internal
-certificates (for example source-bound Chimew evidence) remain part of their
-algorithm's semantic validation; the optimization removes only redundant
-wrapper and checkpoint hashing/replay.
+The retired canonical experiment compiler used `--managed-dag-node` to select
+this contract. Current one-shot commands must not depend on that historical
+flag: production defaults are compact for both direct and orchestrated use.
+Algorithm-internal certificates (for example source-bound Chimew evidence)
+remain part of their algorithm's semantic validation; the optimization removes
+only redundant wrapper/checkpoint hashing and diagnostic replay. Deep Phase 3
+qualification is invoked explicitly through `partition-pressure-reference` or
+the dedicated qualification tests, never inferred from the absence of a cache
+flag.
 
 Large JSON interfaces are stored losslessly in a transparent managed envelope:
 Phase 3 uses the compact cluster/assignment representation, while Phase 4
@@ -1949,40 +1949,22 @@ moves only the atomic clusters required to remove provider balance violations;
 the ordinary independent Phase 3 validator still enforces the original
 per-resource bounds. Changing either policy invalidates Phase 3 and its
 descendants while leaving unchanged frontend and timing checkpoints reusable.
-The canonical partition node runs with `--managed-dag-node` and validates with
-`--online-validation`. In that mode the producer reuses already accepted
-frontend/timing dependencies, performs one in-memory linear legality pass on
-the final assignment, writes no Phase 3 content hashes, removes TritonPart and
-native-refiner scratch files after consuming them, and publishes only the
-winner assignment plus compact reports. For PATRON, the TritonPart initializer
-is its own reusable `patron-initial-partition` node; the version-specific
-partition node consumes only that frozen assignment and never retains the
-matching validated cluster table, rather than rebuilding the same clustering,
-and never retains the `patron/` diagnostic tree. The online MFSPart check records both
-optimizer and checker wall time and fails if checking takes longer than the
-optimizer. Full move-optimality replay is reserved for explicit qualification
-tests.
-Managed Phase 3 checkpoints also use lossless columnar JSON storage for the
-cluster table, store only the irreducible cluster-to-FPGA vector, and compress
-the large Static Exact semantic contract inside the assignment envelope. The
-ordinary `read_json` API transparently reconstructs
-the unchanged `emuflow.clusters/v1` and `emuflow.partition-assignment/v1`
-logical objects, including instance assignment and per-FPGA cluster lists, from
-the paired checkpoint files. Standalone, user-authored Phase 3 output retains
-the plain logical JSON form. This removes repeated JSON keys, repeated FPGA
-names, and the duplicate instance assignment from the managed checkpoint hot
-path without weakening the independent Phase 3 validator or changing Phase
-4--7 semantics.
-PATRON arms also reuse one frozen, independently validated TritonPart plus
-topology-hop initializer. In a managed DAG, the initializer's assignment and
-cluster table are passed as an explicit pair; the consumer checks their cheap
-configuration contract and relies on the initializer node's independent
-validation instead of reconstructing all clusters. A supplied frozen
-assignment is audited and consumed
-exactly rather than silently running the hop optimizer again. When its cluster
-identity already matches, the managed producer validates and reuses that
-canonical assignment instead of rebuilding its instance map, cut nets, and
-Static Exact semantic contract. PATRON natively
+Every Phase 3 invocation now uses the same compact production path. It builds
+the pressure model once, performs one in-memory linear legality pass on the
+selected assignment, writes no model or trace hashes, removes TritonPart and
+native-refiner scratch after consumption, and emits only the winner assignment
+plus compact reports. Lossless columnar JSON stores the cluster table and the
+irreducible cluster-to-FPGA vector; `read_json` transparently reconstructs the
+unchanged `emuflow.clusters/v1` and `emuflow.partition-assignment/v1` logical
+objects for Phase 4--7. Full pressure-model reconstruction and move replay live
+only in the explicit `partition-pressure-reference` command and qualification
+tests. They are never executed by a routine one-shot full flow.
+
+A supplied frozen PATRON assignment is audited and consumed exactly rather
+than silently running the hop optimizer again. When its cluster identity
+already matches, the producer reuses that canonical assignment instead of
+rebuilding its instance map, cut nets, and Static Exact semantic contract.
+PATRON natively
 enforces route reachability and the maximum-hop constraint on every candidate,
 so its selected result receives an independent in-memory hop audit instead of
 a second topology-FM optimization pass. This keeps Phase 3 attributable to the

@@ -283,7 +283,7 @@ def run_partition_checkpoint(
             patron_physical_system_timing_path
         ),
         patron_physical_feedback_scale=patron_physical_feedback_scale,
-        managed_dag_node=managed_dag_node,
+        retain_diagnostics=not managed_dag_node,
     )
     report = {
         "schema": EXPERIMENT_PARTITION_SCHEMA,
