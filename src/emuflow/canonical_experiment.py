@@ -268,6 +268,8 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
     "tdm": (
         "src/emuflow/experiment_upstream.py::run_tdm_checkpoint,validate_tdm_checkpoint",
         "src/emuflow/phase5.py",
+        "src/emuflow/cross_layer_timing.py",
+        "src/emuflow/routing.py",
         "src/emuflow/tdm.py",
         "src/emuflow/combinational_cut.py",
         "src/emuflow/tdm_ratio.py",
@@ -1308,7 +1310,8 @@ def compile_canonical_experiment_spec(
     tdm_provider = TDM_TIMING_DAG_RATIO_PROVIDER
     tdm_command = [
         executable, "experiment-stage", "tdm-run", "--route",
-        "{dependency:route}", "--platform", str(platform), "--provider",
+        "{dependency:route}", "--partition", "{dependency:partition}",
+        "--platform", str(platform), "--provider",
         tdm_provider,
         "--managed-storage",
         "--managed-dag-node",
@@ -1336,9 +1339,9 @@ def compile_canonical_experiment_spec(
     tdm_artifacts.insert(1, _artifact("ratio_plan.json", "consumer-checkpoint"))
     tdm_command.extend(("--out", "{output_dir}"))
     node(
-        "tdm", "tdm", ["route"],
+        "tdm", "tdm", ["route", "partition"],
         tdm_command,
-        [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", tdm_provider, "--managed-dag-node"],
+        [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--partition", "{dependency:partition}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", tdm_provider, "--managed-dag-node"],
         tdm_artifacts,
         inputs=tuple(tdm_inputs),
         configuration={"provider": tdm_provider, "simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": contract["route_constraints"]["tdm_ratio_quantum"], "max_ratio": contract["route_constraints"]["frame_slots"], "post_refinement_iterations": 200, "slot_refinement_iterations": 200, "cut_mode": cut_mode},

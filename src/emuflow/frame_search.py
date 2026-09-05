@@ -244,6 +244,7 @@ def run_frame_length_search(
                 route_root / "routes.json",
                 platform_path,
                 tdm_root,
+                assignment_path=assignment_path,
                 simulation_frames=simulation_frames,
                 provider=tdm_provider,
                 ratio_optimizer=ratio_optimizer,

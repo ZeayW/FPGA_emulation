@@ -192,7 +192,10 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             self.assertIn("--opensta", nodes["timing"]["command"])
             self.assertNotIn("--opensta", nodes["cut-timing"]["command"])
-            self.assertEqual(nodes["tdm"]["dependencies"], ["route"])
+            self.assertEqual(
+                nodes["tdm"]["dependencies"], ["route", "partition"]
+            )
+            self.assertIn("--partition", nodes["tdm"]["command"])
             self.assertIn("--route-constraints", nodes["partition"]["command"])
             self.assertEqual(
                 nodes["frontend"]["configuration"]["mapping_profile"],
@@ -1342,6 +1345,13 @@ class CanonicalExperimentTest(unittest.TestCase):
                         "seed_attempts"
                     ],
                     1,
+                )
+                tdm = nodes[f"{prefix}-tdm"]
+                self.assertIn(f"{prefix}-partition", tdm["dependencies"])
+                partition_option = tdm["command"].index("--partition")
+                self.assertEqual(
+                    tdm["command"][partition_option + 1],
+                    f"{{dependency:{prefix}-partition}}",
                 )
             comparison = nodes["static-exact-qor-comparison"]
             self.assertEqual(

@@ -34,10 +34,11 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         fixture.setUp()
         _, self.assignment = fixture._exact_artifacts(dependent_return=True)
         self.platform = fixture.platform
-        self.routes = fixture._exact_routes(self.assignment)
+        hydrated_routes = fixture._exact_routes(self.assignment)
         self.schedule = build_tdm_schedule(
-            self.routes, self.platform
+            hydrated_routes, self.platform
         )
+        self.routes = fixture._persisted_routes(hydrated_routes)
         digest = self.schedule["semantic_contract_sha256"]
         entry_by_net = {item["net"]: item for item in self.schedule["entries"]}
         records = {
@@ -217,7 +218,12 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             ],
         }
         timing = reconstruct_tdm_schedule_timing(
-            routes, self.platform, self.schedule
+            {
+                **routes,
+                "semantic_contract": self.assignment["semantic_contract"],
+            },
+            self.platform,
+            self.schedule,
         )
         return (
             build_virtual_runtime(self.schedule, self.platform),
@@ -257,7 +263,9 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             semantic_contract_sha256(self.assignment["semantic_contract"]),
         )
         contract = build_cross_layer_timing_contract(
-            self.routes, self.schedule
+            self.routes,
+            self.schedule,
+            self.assignment["semantic_contract"],
         )
         self.assertEqual(
             contract["metrics"]["logic_segments"],
@@ -278,7 +286,9 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         )
         physical["logic_segment_timing"]["fpga0"]["segments"].append(launch)
         contract = build_cross_layer_timing_contract(
-            self.routes, self.schedule
+            self.routes,
+            self.schedule,
+            self.assignment["semantic_contract"],
         )
         binding = build_cross_layer_physical_binding(
             contract, self.schedule, physical, self.platform
@@ -380,6 +390,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             phase5,
             physical,
             self.platform,
+            semantic_contract=self.assignment["semantic_contract"],
         )
         self.assertEqual(passing["status"], "pass")
         self.assertEqual(
@@ -412,6 +423,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             phase5,
             missing,
             self.platform,
+            semantic_contract=self.assignment["semantic_contract"],
         )
         self.assertEqual(incomplete["status"], "incomplete")
 
@@ -426,6 +438,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             phase5,
             late,
             self.platform,
+            semantic_contract=self.assignment["semantic_contract"],
         )
         self.assertEqual(failed["status"], "fail")
         self.assertGreater(
@@ -454,6 +467,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             phase5,
             physical,
             self.platform,
+            semantic_contract=self.assignment["semantic_contract"],
         )
         self.assertEqual(
             result["static_exact_segment_deadlines"]["status"], "pass"
@@ -565,6 +579,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             phase5,
             physical,
             self.platform,
+            semantic_contract=self.assignment["semantic_contract"],
         )
         self.assertEqual(passing["status"], "pass")
 
@@ -579,6 +594,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
                 phase5,
                 physical,
                 self.platform,
+                semantic_contract=self.assignment["semantic_contract"],
             )
 
     def test_configuration_stable_constant_needs_no_physical_launch(self):

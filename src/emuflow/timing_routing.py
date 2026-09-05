@@ -1246,12 +1246,14 @@ def route_system_native(
         )
     exact_contract = assignment.get("semantic_contract")
     if exact_contract is not None:
-        from .combinational_cut import semantic_contract_sha256
-
-        result["semantic_contract"] = dict(exact_contract)
-        result["semantic_contract_sha256"] = semantic_contract_sha256(
-            exact_contract
-        )
+        # Phase 3 is the sole owner of the structural semantic contract.
+        # Downstream route artifacts bind that contract by stable identity;
+        # copying the full (potentially tens-of-megabytes) document here makes
+        # every Phase 5/7 consumer parse the same information again.
+        result["semantic_contract_schema"] = exact_contract["schema"]
+        result["semantic_contract_sha256"] = assignment[
+            "semantic_contract_sha256"
+        ]
     return result
 
 

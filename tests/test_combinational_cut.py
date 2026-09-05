@@ -766,13 +766,24 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 "total_link_bit_hops": len(demands),
                 "iterations": 1,
             },
-            "semantic_contract": assignment["semantic_contract"],
-            "semantic_contract_sha256": semantic_contract_sha256(
-                assignment["semantic_contract"]
-            ),
+            "semantic_contract_schema": assignment["semantic_contract"][
+                "schema"
+            ],
+            "semantic_contract_sha256": assignment[
+                "semantic_contract_sha256"
+            ],
         }
         validate_system_routes(assignment, self.platform, routes)
-        return routes
+        # Low-level TDM tests exercise the solver directly with an in-memory
+        # view. Persisted Phase 4 artifacts retain only the schema/digest
+        # binding and are hydrated by run_phase5 from assignment.json.
+        return {**routes, "semantic_contract": assignment["semantic_contract"]}
+
+    @staticmethod
+    def _persisted_routes(routes):
+        persisted = copy.deepcopy(routes)
+        persisted.pop("semantic_contract", None)
+        return persisted
 
     def test_safe_default_is_identical_to_explicit_safe_mode(self):
         implicit = build_clusters(self.ir, self.constraints)
@@ -1435,6 +1446,10 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         routes = route_system_native(
             assignment, platform, route_constraints
         )
+        routes = {
+            **routes,
+            "semantic_contract": assignment["semantic_contract"],
+        }
         self.assertEqual(len(routes["routes"]), 1)
         self.assertEqual(len(routes["routes"][0]["tree_edges"]), 2)
         self.assertEqual(
@@ -1507,6 +1522,10 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         routes = route_system_native(
             assignment, platform, route_constraints
         )
+        routes = {
+            **routes,
+            "semantic_contract": assignment["semantic_contract"],
+        }
         self.assertEqual(len(routes["routes"]), 1)
         self.assertEqual(routes["routes"][0]["sinks"], ["fpga1", "fpga2"])
         self.assertEqual(len(routes["routes"][0]["tree_edges"]), 2)
@@ -1614,6 +1633,10 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             platform,
             normalize_route_constraints(None, platform, frame_slots=16),
         )
+        routes = {
+            **routes,
+            "semantic_contract": assignment["semantic_contract"],
+        }
         schedule = build_tdm_schedule(routes, platform)
         readiness = {
             item["net"]: item["source_ready_slot"]
@@ -1709,15 +1732,14 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 "static-exact-combinational",
             )
 
-    def test_phase4_propagates_exact_contract_without_mutation(self):
+    def test_phase4_binds_exact_contract_without_duplication(self):
         _, assignment = self._exact_artifacts()
-        routes = self._exact_routes(assignment)
+        routes = self._persisted_routes(self._exact_routes(assignment))
         validation = validate_system_routes(assignment, self.platform, routes)
         self.assertEqual(validation["status"], "pass")
+        self.assertNotIn("semantic_contract", routes)
         tampered = copy.deepcopy(routes)
-        tampered["semantic_contract"]["cut_nodes"][0][
-            "dependency_level"
-        ] += 1
+        tampered["semantic_contract_sha256"] = "0" * 64
         with self.assertRaisesRegex(ValidationError, "semantic_contract"):
             validate_system_routes(assignment, self.platform, tampered)
 
@@ -1973,12 +1995,16 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
 
     def test_phase5_cli_writes_and_revalidates_exact_schedule(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
-        routes = self._exact_routes(assignment)
+        routes = self._persisted_routes(self._exact_routes(assignment))
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             routes_path = root / "routes.json"
+            assignment_path = root / "assignment.json"
             output = root / "phase5"
             routes_path.write_text(json.dumps(routes), encoding="utf-8")
+            assignment_path.write_text(
+                json.dumps(assignment), encoding="utf-8"
+            )
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(
                     main(
@@ -1986,6 +2012,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                             "phase5",
                             "--routes",
                             str(routes_path),
+                            "--assignment",
+                            str(assignment_path),
                             "--platform",
                             str(PLATFORM_PATH),
                             "--out",
@@ -2002,6 +2030,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                             str(output / "schedule.json"),
                             "--routes",
                             str(routes_path),
+                            "--assignment",
+                            str(assignment_path),
                             "--platform",
                             str(PLATFORM_PATH),
                         ]
@@ -2019,7 +2049,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
 
     def test_phase4_rejects_exact_contract_digest_tamper(self):
         _, assignment = self._exact_artifacts()
-        routes = self._exact_routes(assignment)
+        routes = self._persisted_routes(self._exact_routes(assignment))
         tampered = copy.deepcopy(routes)
         tampered["semantic_contract_sha256"] = "0" * 64
         with self.assertRaisesRegex(ValidationError, "semantic_contract"):

@@ -101,6 +101,7 @@ def _route_path_to_sink(
 def _build_contract(
     routes: Mapping[str, Any],
     schedule: Optional[Mapping[str, Any]],
+    semantic_contract: Optional[Mapping[str, Any]],
 ) -> Dict[str, Any]:
     if routes.get("schema") != SYSTEM_ROUTES_SCHEMA:
         raise ValidationError("cross-layer contract requires system routes")
@@ -121,21 +122,25 @@ def _build_contract(
         route_by_demand[route["id"]] = route
         route_by_net[route["net"]] = route
 
-    semantic_contract = routes.get("semantic_contract")
     semantic_sha = routes.get("semantic_contract_sha256")
+    semantic_schema = routes.get("semantic_contract_schema")
+    if "semantic_contract" in routes:
+        raise ValidationError(
+            "cross-layer routes may not duplicate the Phase 3 semantic contract"
+        )
     logic_segment_bindings = []
     if semantic_contract is None:
-        if semantic_sha is not None:
+        if semantic_sha is not None or semantic_schema is not None:
             raise ValidationError("cross-layer semantic binding is incomplete")
         transport_semantics = REGISTERED_BOUNDARY
         semantic_binding = None
     else:
-        if not isinstance(semantic_contract, dict) or not isinstance(
-            semantic_sha, str
+        if (
+            not isinstance(semantic_contract, dict)
+            or not isinstance(semantic_sha, str)
+            or semantic_schema != semantic_contract.get("schema")
         ):
             raise ValidationError("cross-layer semantic binding is incomplete")
-        if _canonical_sha256(semantic_contract) != semantic_sha:
-            raise ValidationError("cross-layer semantic digest is invalid")
         transport_semantics = SAMPLED_VIRTUAL_WIRE
         semantic_binding = {
             "schema": semantic_contract.get("schema"),
@@ -374,20 +379,22 @@ def _build_contract(
 def build_cross_layer_timing_contract(
     routes: Mapping[str, Any],
     schedule: Optional[Mapping[str, Any]] = None,
+    semantic_contract: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a compact, provider-neutral route/schedule identity contract."""
 
-    return _build_contract(routes, schedule)
+    return _build_contract(routes, schedule, semantic_contract)
 
 
 def validate_cross_layer_timing_contract(
     routes: Mapping[str, Any],
     contract: Mapping[str, Any],
     schedule: Optional[Mapping[str, Any]] = None,
+    semantic_contract: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Independently rebuild and exactly compare a cross-layer contract."""
 
-    expected = _build_contract(routes, schedule)
+    expected = _build_contract(routes, schedule, semantic_contract)
     if contract != expected:
         raise ValidationError(
             "cross-layer timing contract does not match canonical inputs"

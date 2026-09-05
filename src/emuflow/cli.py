@@ -850,6 +850,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "tdm-run", help="run one reusable timing-aware Phase 5 checkpoint"
     )
     tdm_run.add_argument("--route", type=Path, required=True)
+    tdm_run.add_argument("--partition", type=Path, required=True)
     tdm_run.add_argument("--platform", type=Path, required=True)
     tdm_run.add_argument("--simulation-frames", type=int, default=16)
     tdm_run.add_argument("--provider")
@@ -876,6 +877,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     tdm_validate.add_argument("root", type=Path)
     tdm_validate.add_argument("--route", type=Path, required=True)
+    tdm_validate.add_argument("--partition", type=Path, required=True)
     tdm_validate.add_argument("--platform", type=Path, required=True)
     tdm_validate.add_argument("--constraints", type=Path)
     tdm_validate.add_argument("--provider")
@@ -3036,11 +3038,13 @@ def _build_parser() -> argparse.ArgumentParser:
     schedule_validate.add_argument("--routes", type=Path, required=True)
     schedule_validate.add_argument("--platform", type=Path, required=True)
     schedule_validate.add_argument("--ratio-plan", type=Path)
+    schedule_validate.add_argument("--assignment", type=Path)
 
     phase5 = subparsers.add_parser(
         "phase5", help="schedule routed bit-hops into TDM lanes and slots"
     )
     phase5.add_argument("--routes", type=Path, required=True)
+    phase5.add_argument("--assignment", type=Path)
     phase5.add_argument("--platform", type=Path, required=True)
     phase5.add_argument("--out", type=Path, required=True)
     phase5.add_argument("--simulation-frames", type=int, default=16)
@@ -3641,6 +3645,11 @@ def _build_parser() -> argparse.ArgumentParser:
     phase7c.add_argument("--phase4-report", type=Path, required=True)
     phase7c.add_argument("--phase5-report", type=Path, required=True)
     phase7c.add_argument("--phase6-report", type=Path, required=True)
+    phase7c.add_argument(
+        "--assignment",
+        type=Path,
+        help="Phase 3 assignment required for sampled virtual-wire timing",
+    )
     phase7c.add_argument("--physical-summary", type=Path)
     phase7c.add_argument(
         "--routes",
@@ -3910,6 +3919,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             with json_write_policy(durable=not args.managed_dag_node):
                 report = run_tdm_checkpoint(
                     args.route,
+                    args.partition,
                     args.platform,
                     args.out,
                     simulation_frames=args.simulation_frames,
@@ -3928,6 +3938,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         elif args.experiment_stage_command == "tdm-validate":
             report = validate_tdm_checkpoint(
                 args.route,
+                args.partition,
                 args.platform,
                 args.root,
                 constraints_path=args.constraints,
@@ -5380,6 +5391,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             platform_path=args.platform,
             schedule_path=args.schedule,
             ratio_plan_path=args.ratio_plan,
+            assignment_path=args.assignment,
         )
         _print_json(report)
         return 0
@@ -5389,6 +5401,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             routes_path=args.routes,
             platform_path=args.platform,
             output_dir=args.out,
+            assignment_path=args.assignment,
             simulation_frames=args.simulation_frames,
             provider=args.provider,
             ratio_optimizer=args.ratio_optimizer,
@@ -5794,6 +5807,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             phase4_report_path=args.phase4_report,
             phase5_report_path=args.phase5_report,
             phase6_report_path=args.phase6_report,
+            assignment_path=args.assignment,
             physical_summary_path=args.physical_summary,
             routes_path=args.routes,
             simulation_frames=args.simulation_frames,

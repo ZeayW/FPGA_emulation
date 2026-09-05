@@ -160,6 +160,7 @@ def finalize_multi_fpga_physical_checkpoint(
         paths["tdm"],
         paths["split"],
         runtime_root,
+        assignment_path=paths["assignment"],
         physical_summary_path=physical_summary_path,
         routes_path=paths["routes"],
     )
@@ -858,6 +859,7 @@ def validate_multi_fpga_flow_bundle(
         platform_path,
         schedule_path,
         ratio_plan_path=ratio_plan_path if ratio_plan_path.is_file() else None,
+        assignment_path=assignment_path,
     )
     timing_validation = phase5_validation.pop("timing", None)
     cross_layer_validation = phase5_validation.pop(
@@ -942,6 +944,7 @@ def validate_multi_fpga_flow_bundle(
             flow_root / "tdm/phase5_report.json",
             flow_root / "split/phase6_report.json",
             Path(temporary),
+            assignment_path=assignment_path,
             physical_summary_path=physical_summary_path,
             routes_path=routes_path if physical_summary_path is not None else None,
             board_link_timing_path=board_link_timing_path,
@@ -1714,6 +1717,7 @@ def run_multi_fpga_flow(
             phase4_root / "routes.json",
             platform_path,
             phase5_root,
+            assignment_path=assignment_path,
             simulation_frames=simulation_frames,
             provider=effective_tdm_provider,
             ratio_optimizer=ratio_optimizer,
@@ -1799,6 +1803,7 @@ def run_multi_fpga_flow(
             phase5_root / "phase5_report.json",
             baseline_split / "phase6_report.json",
             baseline_root / "runtime",
+            assignment_path=assignment_path,
             physical_summary_path=(
                 baseline_root / "physical/physical-summary.json"
             ),
@@ -2009,6 +2014,7 @@ def run_multi_fpga_flow(
         phase5_root / "phase5_report.json",
         phase6_root / "phase6_report.json",
         runtime_root,
+        assignment_path=assignment_path,
         physical_summary_path=physical_summary_path,
         routes_path=routes_path if physical_summary_path is not None else None,
         board_link_timing_path=(

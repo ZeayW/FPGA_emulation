@@ -934,6 +934,7 @@ def _run_candidate_flow(
             phase4_root / "routes.json",
             platform_path,
             phase5_root,
+            assignment_path=assignment_path,
             simulation_frames=simulation_frames,
             provider=tdm_provider or TDM_TIMING_DAG_RATIO_PROVIDER,
             ratio_optimizer=ratio_optimizer,

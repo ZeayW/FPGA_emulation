@@ -1220,6 +1220,7 @@ def build_system_route_tdm_scale_comparison(
             source_paths["platform"],
             schedule_path,
             ratio_path if ratio_path.is_file() and not ratio_path.is_symlink() else None,
+            assignment_path=source_paths["assignment"],
         )
         runtime = runtimes[label]
         if (

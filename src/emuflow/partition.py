@@ -896,7 +896,10 @@ def build_partition_assignment(
         cut_policy.get("cut_mode") == CUT_MODE_STATIC_EXACT
         and _include_semantic_contract
     ):
-        from .combinational_cut import build_static_exact_semantic_contract
+        from .combinational_cut import (
+            build_static_exact_semantic_contract,
+            semantic_contract_sha256,
+        )
 
         semantic_contract = build_static_exact_semantic_contract(
             ir,
@@ -1004,6 +1007,9 @@ def build_partition_assignment(
         result["provider_metadata"] = dict(provider_metadata)
     if semantic_contract is not None:
         result["semantic_contract"] = semantic_contract
+        result["semantic_contract_sha256"] = semantic_contract_sha256(
+            semantic_contract
+        )
     return result
 
 
@@ -1680,7 +1686,10 @@ def validate_partition_artifacts(
         expected_metrics = replication_validation["metrics"]
     expected_contract = None
     if cut_mode == CUT_MODE_STATIC_EXACT:
-        from .combinational_cut import build_static_exact_semantic_contract
+        from .combinational_cut import (
+            build_static_exact_semantic_contract,
+            semantic_contract_sha256,
+        )
 
         expected_contract = build_static_exact_semantic_contract(
             ir,
@@ -1730,7 +1739,17 @@ def validate_partition_artifacts(
                 "assignment.semantic_contract does not match independent "
                 "reconstruction"
             )
-    elif "semantic_contract" in assignment_artifact:
+        if assignment_artifact.get("semantic_contract_sha256") != (
+            semantic_contract_sha256(expected_contract)
+        ):
+            raise ValidationError(
+                "assignment.semantic_contract_sha256 does not match "
+                "independent reconstruction"
+            )
+    elif any(
+        key in assignment_artifact
+        for key in ("semantic_contract", "semantic_contract_sha256")
+    ):
         raise ValidationError(
             "sequential-only assignment may not contain a semantic contract"
         )

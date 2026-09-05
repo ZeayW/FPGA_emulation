@@ -481,6 +481,7 @@ def run_vivado_board_timing(
         flow_root / "tdm/phase5_report.json",
         flow_root / "split/phase6_report.json",
         phase7c_root,
+        assignment_path=flow_root / "partition/assignment.json",
         physical_summary_path=feedback_summary_path,
         routes_path=required_flow_paths["routes"],
     )

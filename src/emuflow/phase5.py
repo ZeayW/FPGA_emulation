@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from .cross_layer_timing import (
     build_cross_layer_timing_contract,
     validate_cross_layer_timing_contract,
 )
-from .errors import TDMScheduleInfeasibleError
+from .errors import TDMScheduleInfeasibleError, ValidationError
 from .io import read_json, write_json
 from .managed_json_storage import pack_managed_json
 from .platform import Platform
+from .routing import semantic_contract_for_routes
 from .tdm import (
     TDM_BASELINE_PROVIDER,
     build_tdm_schedule,
@@ -37,10 +38,37 @@ from .tdm_feedback import build_tdm_feedback, validate_tdm_feedback
 PHASE5_REPORT_SCHEMA = "emuflow.phase5-report/v1"
 
 
+def _load_phase3_semantics(
+    routes: Dict[str, Any], assignment_path: Optional[Path]
+) -> tuple[Dict[str, Any], Optional[Mapping[str, Any]]]:
+    """Hydrate Phase-3-owned semantics without persisting a second copy."""
+
+    if "semantic_contract" in routes:
+        raise ValidationError(
+            "Phase 4 routes may not duplicate the Phase 3 semantic contract"
+        )
+    schema = routes.get("semantic_contract_schema")
+    digest = routes.get("semantic_contract_sha256")
+    if schema is None and digest is None:
+        return routes, None
+    if not isinstance(schema, str) or not isinstance(digest, str):
+        raise ValidationError("Phase 4 semantic contract binding is incomplete")
+    if assignment_path is None:
+        raise ValidationError(
+            "sampled virtual-wire Phase 5 requires the Phase 3 assignment"
+        )
+    assignment = read_json(assignment_path)
+    contract = semantic_contract_for_routes(assignment, routes)
+    if contract is None:
+        raise ValidationError("Phase 3 semantic contract is missing")
+    return {**routes, "semantic_contract": contract}, contract
+
+
 def run_phase5(
     routes_path: Path,
     platform_path: Path,
     output_dir: Path,
+    assignment_path: Optional[Path] = None,
     simulation_frames: int = 16,
     provider: Optional[str] = None,
     ratio_optimizer: Optional[str] = None,
@@ -62,9 +90,12 @@ def run_phase5(
         raise ValueError(
             "slot_refinement_iterations must be a non-negative integer"
         )
-    routes = read_json(routes_path)
+    persisted_routes = read_json(routes_path)
+    routes, semantic_contract = _load_phase3_semantics(
+        persisted_routes, assignment_path
+    )
     platform = Platform.load(platform_path)
-    exact_mode = routes.get("semantic_contract") is not None
+    exact_mode = semantic_contract is not None
     if provider is None:
         provider = (
             TDM_TIMING_DAG_RATIO_PROVIDER
@@ -281,7 +312,9 @@ def run_phase5(
             if isinstance(routes.get("timing"), dict)
             else None
         )
-    cross_layer_timing = build_cross_layer_timing_contract(routes, schedule)
+    cross_layer_timing = build_cross_layer_timing_contract(
+        persisted_routes, schedule, semantic_contract
+    )
     # The canonical builder has already traversed and checked the complete
     # route/schedule relation.  Do not immediately rebuild the same large
     # contract in the producer hot path; validate_phase5() independently
@@ -423,8 +456,12 @@ def validate_phase5(
     platform_path: Path,
     schedule_path: Path,
     ratio_plan_path: Optional[Path] = None,
+    assignment_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    routes = read_json(routes_path)
+    persisted_routes = read_json(routes_path)
+    routes, semantic_contract = _load_phase3_semantics(
+        persisted_routes, assignment_path
+    )
     platform = Platform.load(platform_path)
     schedule = read_json(schedule_path)
     ratio_plan = (
@@ -457,9 +494,10 @@ def validate_phase5(
     if cross_layer_path.is_file():
         validation["cross_layer_timing"] = (
             validate_cross_layer_timing_contract(
-                routes,
+                persisted_routes,
                 read_json(cross_layer_path),
                 schedule,
+                semantic_contract,
             )
         )
     return validation

@@ -366,9 +366,18 @@ emuflow phase4 \
   --out build/phase4-exact
 emuflow phase5 \
   --routes build/phase4-exact/routes.json \
+  --assignment build/phase3-exact/assignment.json \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --out build/phase5-exact
 ```
+
+Phase 3 is the sole owner of the potentially large Static Exact structural
+contract. `routes.json` carries only its schema and digest; Phase 5 resolves
+that binding against the explicitly supplied assignment in memory and fails
+closed on a missing or mismatched contract. Phase 7C uses the same ownership
+rule. This avoids copying, reparsing, and repeatedly hashing tens of megabytes
+of identical dependency data in every downstream artifact while preserving
+an independently checkable cross-stage identity.
 
 Those gates are qualified as `route-contract-propagation-pass` and
 `dependency-schedule-readiness-pass`; neither is a functional-equivalence or

@@ -10,7 +10,6 @@ from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_POLICIES,
     STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS,
     STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
-    semantic_contract_sha256,
 )
 from .io import read_json
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
@@ -46,6 +45,11 @@ def static_exact_contract_from_assignment(
     ):
         raise ValidationError(
             "assignment structural exact-cut certificate is incomplete"
+        )
+    digest = assignment.get("semantic_contract_sha256")
+    if not isinstance(digest, str) or len(digest) != 64:
+        raise ValidationError(
+            "assignment semantic contract identity is incomplete"
         )
     raw_cuts = assignment.get("cut_nets")
     raw_nodes = contract.get("cut_nodes")
@@ -103,6 +107,42 @@ def static_exact_contract_from_assignment(
                         "does not match assignment"
                     )
     return contract
+
+
+def semantic_contract_for_routes(
+    assignment: Mapping[str, Any],
+    routes_artifact: Mapping[str, Any],
+) -> Optional[Mapping[str, Any]]:
+    """Resolve and validate the Phase-3-owned contract bound by Phase 4."""
+
+    exact_contract = static_exact_contract_from_assignment(assignment)
+    if exact_contract is None:
+        if any(
+            key in routes_artifact
+            for key in (
+                "semantic_contract",
+                "semantic_contract_schema",
+                "semantic_contract_sha256",
+            )
+        ):
+            raise ValidationError(
+                "safe routes may not contain an exact semantic contract"
+            )
+        return None
+    if "semantic_contract" in routes_artifact:
+        raise ValidationError(
+            "routes may not duplicate the Phase 3 semantic contract"
+        )
+    if (
+        routes_artifact.get("semantic_contract_schema")
+        != exact_contract["schema"]
+        or routes_artifact.get("semantic_contract_sha256")
+        != assignment["semantic_contract_sha256"]
+    ):
+        raise ValidationError(
+            "routes semantic_contract binding does not match assignment"
+        )
+    return exact_contract
 
 
 def normalize_route_constraints(
@@ -689,26 +729,7 @@ def validate_system_routes(
     expected_demands = demands_from_assignment(assignment, platform)
     if routes_artifact.get("demands") != expected_demands:
         raise ValidationError("routes.demands does not match partition cut nets")
-    exact_contract = static_exact_contract_from_assignment(assignment)
-    if exact_contract is None:
-        if any(
-            key in routes_artifact
-            for key in ("semantic_contract", "semantic_contract_sha256")
-        ):
-            raise ValidationError(
-                "safe routes may not contain an exact semantic contract"
-            )
-    else:
-        if routes_artifact.get("semantic_contract") != exact_contract:
-            raise ValidationError(
-                "routes.semantic_contract does not match assignment"
-            )
-        if routes_artifact.get("semantic_contract_sha256") != (
-            semantic_contract_sha256(exact_contract)
-        ):
-            raise ValidationError(
-                "routes.semantic_contract_sha256 does not match contract"
-            )
+    semantic_contract_for_routes(assignment, routes_artifact)
 
     adjacency, arcs, capacities = build_directed_graph(platform, constraints)
     del adjacency

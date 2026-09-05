@@ -456,6 +456,7 @@ def build_system_timing(
     platform: Platform,
     *,
     routes_artifact_sha256: str | None = None,
+    semantic_contract: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Compose P&R delay and concrete TDM/link delay on every STA path.
 
@@ -499,10 +500,9 @@ def build_system_timing(
     from .tdm import is_sampled_virtual_wire_schedule
 
     if is_sampled_virtual_wire_schedule(schedule):
-        semantic_contract = routes.get("semantic_contract")
         if not isinstance(semantic_contract, dict):
             raise ValidationError(
-                "sampled virtual-wire timing requires the routed semantic "
+                "sampled virtual-wire timing requires the Phase 3 semantic "
                 "contract"
             )
         exact_deadlines = build_static_exact_segment_deadlines(

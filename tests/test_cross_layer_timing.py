@@ -17,7 +17,15 @@ from emuflow.errors import ValidationError
 from emuflow.platform import Platform
 
 
-def _routes(*, exact=False):
+def _semantic_contract():
+    return {
+        "schema": "emuflow.static-exact-combinational-cut/v3",
+        "mode": "static-exact-combinational",
+        "logic_segments": [],
+    }
+
+
+def _routes(*, exact=False, semantic_contract=None):
     value = {
         "schema": "emuflow.system-routes/v1",
         "design": "cross-layer-fixture",
@@ -56,12 +64,8 @@ def _routes(*, exact=False):
     if exact:
         from emuflow.combinational_cut import semantic_contract_sha256
 
-        semantic = {
-            "schema": "emuflow.static-exact-combinational-cut/v3",
-            "mode": "static-exact-combinational",
-            "logic_segments": [],
-        }
-        value["semantic_contract"] = semantic
+        semantic = semantic_contract or _semantic_contract()
+        value["semantic_contract_schema"] = semantic["schema"]
         value["semantic_contract_sha256"] = semantic_contract_sha256(semantic)
     return value
 
@@ -231,8 +235,11 @@ class CrossLayerTimingContractTest(unittest.TestCase):
         )
 
     def test_static_exact_selects_sampled_virtual_wire_semantics(self):
-        routes = _routes(exact=True)
-        contract = build_cross_layer_timing_contract(routes, _schedule())
+        semantic = _semantic_contract()
+        routes = _routes(exact=True, semantic_contract=semantic)
+        contract = build_cross_layer_timing_contract(
+            routes, _schedule(), semantic
+        )
         self.assertEqual(
             contract["transport_semantics"], SAMPLED_VIRTUAL_WIRE
         )
@@ -242,8 +249,8 @@ class CrossLayerTimingContractTest(unittest.TestCase):
         )
 
     def test_configuration_stable_source_needs_no_physical_logic_record(self):
-        routes = _routes(exact=True)
-        routes["semantic_contract"]["logic_segments"] = [
+        semantic = _semantic_contract()
+        semantic["logic_segments"] = [
             {
                 "id": "constant-launch",
                 "kind": "launch_to_tx",
@@ -251,13 +258,11 @@ class CrossLayerTimingContractTest(unittest.TestCase):
                 "source_semantics": "configuration-stable-constant",
             }
         ]
-        from emuflow.combinational_cut import semantic_contract_sha256
-
-        routes["semantic_contract_sha256"] = semantic_contract_sha256(
-            routes["semantic_contract"]
-        )
+        routes = _routes(exact=True, semantic_contract=semantic)
         schedule = _schedule()
-        contract = build_cross_layer_timing_contract(routes, schedule)
+        contract = build_cross_layer_timing_contract(
+            routes, schedule, semantic
+        )
         physical = self._physical(schedule)
         binding = build_cross_layer_physical_binding(
             contract, schedule, physical, self._platform()
@@ -277,11 +282,12 @@ class CrossLayerTimingContractTest(unittest.TestCase):
         )
 
     def test_schedule_provider_is_not_semantic_dispatch(self):
-        routes = _routes(exact=True)
+        semantic = _semantic_contract()
+        routes = _routes(exact=True, semantic_contract=semantic)
         schedule = _schedule()
-        first = build_cross_layer_timing_contract(routes, schedule)
+        first = build_cross_layer_timing_contract(routes, schedule, semantic)
         schedule["provider"] = "different-legal-solver"
-        second = build_cross_layer_timing_contract(routes, schedule)
+        second = build_cross_layer_timing_contract(routes, schedule, semantic)
         self.assertEqual(
             first["transport_semantics"], second["transport_semantics"]
         )

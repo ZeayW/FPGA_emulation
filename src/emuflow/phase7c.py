@@ -12,6 +12,7 @@ from .cross_layer_timing import (
 from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import Platform
+from .routing import semantic_contract_for_routes
 from .runtime import (
     aggregate_qor,
     build_virtual_runtime,
@@ -41,6 +42,7 @@ def run_phase7c(
     phase5_report_path: Path,
     phase6_report_path: Path,
     output_dir: Path,
+    assignment_path: Optional[Path] = None,
     physical_summary_path: Optional[Path] = None,
     routes_path: Optional[Path] = None,
     board_link_timing_path: Optional[Path] = None,
@@ -69,6 +71,18 @@ def run_phase7c(
         physical_summary = dict(physical_summary)
         physical_summary["board_link_timing"] = board_link_timing
     routes = read_json(routes_path) if routes_path is not None else None
+    semantic_contract = None
+    if routes is not None and (
+        routes.get("semantic_contract_schema") is not None
+        or routes.get("semantic_contract_sha256") is not None
+    ):
+        if assignment_path is None:
+            raise ValidationError(
+                "sampled virtual-wire Phase 7C requires the Phase 3 assignment"
+            )
+        semantic_contract = semantic_contract_for_routes(
+            read_json(assignment_path), routes
+        )
     routes_artifact_sha256 = (
         _sha256(routes_path) if routes_path is not None else None
     )
@@ -87,11 +101,14 @@ def run_phase7c(
         if phase5_contract_path.is_file():
             cross_layer_contract = read_json(phase5_contract_path)
             validate_cross_layer_timing_contract(
-                routes, cross_layer_contract, schedule
+                routes,
+                cross_layer_contract,
+                schedule,
+                semantic_contract,
             )
         else:
             cross_layer_contract = build_cross_layer_timing_contract(
-                routes, schedule
+                routes, schedule, semantic_contract
             )
     if physical_summary is not None:
         assert cross_layer_contract is not None
@@ -113,6 +130,7 @@ def run_phase7c(
         routes=routes,
         schedule=schedule,
         routes_artifact_sha256=routes_artifact_sha256,
+        semantic_contract=semantic_contract,
     )
     if physical_binding_validation is not None:
         qor["physical_evidence_completeness"] = physical_binding_validation

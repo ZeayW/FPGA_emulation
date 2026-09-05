@@ -146,6 +146,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 )
                 tdm_report = run_tdm_checkpoint(
                     route,
+                    partition,
                     root / "platform.json",
                     tdm,
                     managed_storage=True,
@@ -599,13 +600,16 @@ class ExperimentUpstreamTest(unittest.TestCase):
         *,
         provider: str,
         optimization_provider: str | None = None,
-    ) -> tuple[Path, Path, Path]:
+    ) -> tuple[Path, Path, Path, Path]:
         route = root / "route"
+        partition = root / "partition"
         tdm = root / "tdm"
         platform = root / "platform.json"
         route.mkdir()
+        partition.mkdir()
         tdm.mkdir()
         (route / "routes.json").write_text("{}", encoding="utf-8")
+        (partition / "assignment.json").write_text("{}", encoding="utf-8")
         platform.write_text("{}", encoding="utf-8")
         (tdm / "schedule.json").write_text(
             json.dumps({"provider": provider}), encoding="utf-8"
@@ -640,7 +644,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
         (tdm / "experiment-tdm-report.json").write_text(
             json.dumps(report), encoding="utf-8"
         )
-        return route, platform, tdm
+        return route, partition, platform, tdm
 
     def _partition_fixture(self, root: Path) -> tuple[Path, Path, Path, Path]:
         frontend = root / "frontend"
@@ -962,13 +966,14 @@ class ExperimentUpstreamTest(unittest.TestCase):
     ) -> None:
         validate_phase5.return_value = {"status": "pass"}
         with tempfile.TemporaryDirectory() as temporary:
-            route, platform, tdm = self._tdm_fixture(
+            route, partition, platform, tdm = self._tdm_fixture(
                 Path(temporary),
                 provider="lagrangian-kkt-ratio-aware-list-schedule-v1",
                 optimization_provider="aspdac26-timing-dag-lagrangian-v1",
             )
             checked = validate_tdm_checkpoint(
                 route,
+                partition,
                 platform,
                 tdm,
                 expected_provider="aspdac26-timing-dag-lagrangian-v1",
@@ -979,6 +984,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
             ):
                 validate_tdm_checkpoint(
                     route,
+                    partition,
                     platform,
                     tdm,
                     expected_provider=(
@@ -996,11 +1002,12 @@ class ExperimentUpstreamTest(unittest.TestCase):
     ) -> None:
         validate_phase5.return_value = {"status": "pass"}
         with tempfile.TemporaryDirectory() as temporary:
-            route, platform, tdm = self._tdm_fixture(
+            route, partition, platform, tdm = self._tdm_fixture(
                 Path(temporary), provider="static-tdm-v2"
             )
             checked = validate_tdm_checkpoint(
                 route,
+                partition,
                 platform,
                 tdm,
                 expected_provider="static-tdm-v2",

@@ -585,6 +585,7 @@ def validate_shared_phase1_5(
         platform_path,
         paths["schedule"],
         ratio_plan_path=ratio_plan if ratio_plan.is_file() else None,
+        assignment_path=paths["assignment"],
     )
     ir = EmuIR.load(paths["ir"])
     platform = Platform.load(platform_path)
@@ -1523,6 +1524,7 @@ def run_phase7_checkpoint(
         paths["phase5_report"],
         phase6_root / "split/phase6_report.json",
         output_dir / "runtime",
+        assignment_path=paths["assignment"],
         physical_summary_path=output_dir / "physical/physical-summary.json",
         routes_path=paths["routes"],
         board_link_timing_path=_board_link_timing(shared_root),
@@ -1731,6 +1733,7 @@ def validate_phase7_checkpoint(
                 paths["phase5_report"],
                 phase6_root / "split/phase6_report.json",
                 Path(temporary),
+                assignment_path=paths["assignment"],
                 physical_summary_path=root / "physical/physical-summary.json",
                 routes_path=paths["routes"],
                 board_link_timing_path=_board_link_timing(shared_root),

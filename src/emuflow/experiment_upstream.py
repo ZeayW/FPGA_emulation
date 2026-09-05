@@ -40,7 +40,7 @@ from .phase1 import analyze_clock_topology, run_phase1
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .platform import Platform
-from .routing import load_route_constraints
+from .routing import load_route_constraints, semantic_contract_for_routes
 from .sta import (
     derive_partition_net_weights,
     derive_partition_net_weights_value,
@@ -889,6 +889,7 @@ def validate_route_checkpoint(
 
 def run_tdm_checkpoint(
     route_root: Path,
+    partition_root: Path,
     platform_path: Path,
     output_dir: Path,
     *,
@@ -906,11 +907,13 @@ def run_tdm_checkpoint(
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     routes = _require(route_root, "routes.json")
+    assignment = _require(partition_root, "assignment.json")
     output_dir = _prepare_empty_output(output_dir, "TDM checkpoint")
     phase5 = run_phase5(
         routes,
         platform_path,
         output_dir,
+        assignment_path=assignment,
         simulation_frames=simulation_frames,
         provider=provider,
         ratio_optimizer=ratio_optimizer,
@@ -949,12 +952,15 @@ def run_tdm_checkpoint(
         )
     write_json(output_dir / "experiment-tdm-report.json", report)
     if not managed_dag_node:
-        validate_tdm_checkpoint(route_root, platform_path, output_dir)
+        validate_tdm_checkpoint(
+            route_root, partition_root, platform_path, output_dir
+        )
     return report
 
 
 def validate_tdm_checkpoint(
     route_root: Path,
+    partition_root: Path,
     platform_path: Path,
     root: Path,
     *,
@@ -963,6 +969,7 @@ def validate_tdm_checkpoint(
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     routes = _require(route_root, "routes.json")
+    assignment = _require(partition_root, "assignment.json")
     schedule = _require(root, "schedule.json")
     cross_layer_timing = _require(root, "cross_layer_timing.json")
     ratio_plan = root / "ratio_plan.json"
@@ -979,7 +986,7 @@ def validate_tdm_checkpoint(
     route_document = read_json(routes)
     schedule_document = read_json(schedule)
     actual_provider = schedule_document.get("provider")
-    exact_mode = route_document.get("semantic_contract") is not None
+    exact_mode = route_document.get("semantic_contract_schema") is not None
     if exact_mode != is_sampled_virtual_wire_schedule(schedule_document):
         raise ValidationError(
             "TDM checkpoint exact-cut route/schedule contract disagrees"
@@ -992,6 +999,7 @@ def validate_tdm_checkpoint(
         route_document,
         read_json(cross_layer_timing),
         schedule_document,
+        semantic_contract_for_routes(read_json(assignment), route_document),
     )
     if constraints_path is not None:
         constraints = load_route_constraints(
@@ -1042,7 +1050,11 @@ def validate_tdm_checkpoint(
     if expected_provider is not None and actual_provider != expected_provider:
         raise ValidationError("TDM checkpoint provider contract disagrees")
     checked = validate_phase5(
-        routes, platform_path, schedule, ratio_plan_path=ratio_plan if ratio_plan.is_file() else None
+        routes,
+        platform_path,
+        schedule,
+        ratio_plan_path=ratio_plan if ratio_plan.is_file() else None,
+        assignment_path=assignment,
     )
     return {
         "status": "pass",
@@ -1109,7 +1121,9 @@ def materialize_shared_phase1_5(
         validate_route_checkpoint(
             partition_root, cut_timing_root, platform_path, route_root
         )
-        validate_tdm_checkpoint(route_root, platform_path, tdm_root)
+        validate_tdm_checkpoint(
+            route_root, partition_root, platform_path, tdm_root
+        )
     output_dir = _prepare_empty_output(output_dir, "shared Phase 1-5 checkpoint")
     mapping = {
         "frontend/phase1/design.emuir.json": (
