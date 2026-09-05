@@ -781,6 +781,16 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         self.assertEqual(implicit, explicit)
         self.assertNotIn("cut_mode", implicit["policy"])
 
+    def test_exact_cluster_hot_path_does_not_hash_the_complete_emuir(self):
+        clusters = build_clusters(
+            self.ir,
+            self.constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+        )
+        self.assertNotIn(
+            "characterization_source_sha256", clusters["policy"]
+        )
+
     def test_exact_mode_rejects_zero_or_multiple_virtual_clocks(self):
         for clocks in (
             [],

@@ -351,7 +351,7 @@ def build_clusters(
         candidate_index = _build_combinational_cut_candidate_index(
             ir,
             include_dependency_levels=False,
-            include_source_identity=True,
+            include_source_identity=False,
         )
         # Candidate depth is not intrinsic to a net.  A net deep in the
         # potential-cut DAG can still be the only transported boundary in its
@@ -457,9 +457,6 @@ def build_clusters(
                 "transported_cut_classes": sorted(
                     {*TRANSPORTED_CUT_CLASSES, "combinational"}
                 ),
-                "characterization_source_sha256": candidate_index[
-                    "canonical_emuir_sha256"
-                ],
                 "qualification": "structural-partition-legality",
             }
         )
@@ -1534,7 +1531,6 @@ def validate_partition_artifacts(
             "max_cross_fpga_dependency_depth",
             "eligible_combinational_cut_nets",
             "transported_cut_classes",
-            "characterization_source_sha256",
             "qualification",
         }
         missing_policy = sorted(required_policy - set(cut_policy))
