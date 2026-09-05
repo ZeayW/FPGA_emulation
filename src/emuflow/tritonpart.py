@@ -1632,6 +1632,7 @@ def run_tritonpart(
     repair_min_used_fpgas: bool = False,
     repair_balance: bool = False,
     persist_input_manifest: bool = True,
+    run_unweighted_baseline: bool = False,
 ) -> Dict[str, Any]:
     if seed_attempts <= 0:
         raise ValueError("TritonPart seed_attempts must be positive")
@@ -1692,7 +1693,8 @@ def run_tritonpart(
         "unweighted_baseline_hypergraph"
     ]
     if (
-        net_weights
+        run_unweighted_baseline
+        and net_weights
         and baseline_name is not None
         and solution_input is None
     ):

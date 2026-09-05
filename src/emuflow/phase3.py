@@ -380,6 +380,7 @@ def run_phase3(
     tritonpart_num_best_initial_solutions: int = 10,
     tritonpart_repair_min_used_fpgas: bool = False,
     tritonpart_repair_balance: bool = False,
+    tritonpart_run_unweighted_baseline: bool = False,
     repart: Optional[str] = None,
     repart_solution: Optional[Path] = None,
     repart_timeout_seconds: int = 3600,
@@ -541,6 +542,7 @@ def run_phase3(
             ),
             repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
             repair_balance=tritonpart_repair_balance,
+            run_unweighted_baseline=tritonpart_run_unweighted_baseline,
             persist_input_manifest=retain_diagnostics,
         )
     elif provider in {"repart", "repart-replication"}:
@@ -596,6 +598,9 @@ def run_phase3(
                 ),
                 repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
                 repair_balance=tritonpart_repair_balance,
+                run_unweighted_baseline=(
+                    tritonpart_run_unweighted_baseline
+                ),
                 persist_input_manifest=retain_diagnostics,
             )
         else:

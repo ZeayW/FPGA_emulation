@@ -672,7 +672,7 @@ class TritonPartTest(unittest.TestCase):
                 run_phase3(
                     ir_path=ir_path,
                     platform_path=PLATFORM_PATH,
-                    output_dir=output / "phase3",
+                    output_dir=output / "phase3-default",
                     seed=7,
                     provider="tritonpart",
                     cut_mode="sequential-only",
@@ -680,9 +680,37 @@ class TritonPartTest(unittest.TestCase):
                     net_weights_path=weights_path,
                     retain_diagnostics=True,
                 )
+                default_assignment = json.loads(
+                    (output / "phase3-default" / "assignment.json")
+                    .read_text()
+                )
+                default_hypergraphs = list(hypergraphs)
+                hypergraphs.clear()
+                run_phase3(
+                    ir_path=ir_path,
+                    platform_path=PLATFORM_PATH,
+                    output_dir=output / "phase3",
+                    seed=7,
+                    provider="tritonpart",
+                    cut_mode="sequential-only",
+                    openroad="/fake/openroad",
+                    net_weights_path=weights_path,
+                    tritonpart_run_unweighted_baseline=True,
+                    retain_diagnostics=True,
+                )
             assignment = json.loads(
                 (output / "phase3" / "assignment.json").read_text()
             )
+        self.assertEqual(default_hypergraphs, ["partition.hgr"])
+        self.assertEqual(
+            [
+                attempt["mode"]
+                for attempt in default_assignment["provider_metadata"][
+                    "seed_attempts"
+                ]
+            ],
+            ["timing_weighted"],
+        )
         self.assertEqual(
             hypergraphs,
             ["partition.hgr", "partition.unweighted.hgr"],
