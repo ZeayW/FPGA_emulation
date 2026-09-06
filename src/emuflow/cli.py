@@ -2748,10 +2748,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase3.add_argument(
         "--tritonpart-repair-balance",
-        action="store_true",
+        action=_BooleanOptionalAction,
+        default=True,
         help=(
             "legalize a best-effort TritonPart solution against EmuFlow's "
-            "independently checked multi-resource upper bounds"
+            "independently checked multi-resource upper bounds "
+            "(enabled by default)"
         ),
     )
     phase3.add_argument(

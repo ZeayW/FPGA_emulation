@@ -225,6 +225,20 @@ class MultiFpgaFlowTest(unittest.TestCase):
         self.assertEqual(
             phase3.cut_mode, "static-exact-combinational"
         )
+        self.assertTrue(phase3.tritonpart_repair_balance)
+        phase3_without_repair = _build_parser().parse_args(
+            [
+                "phase3",
+                "--ir",
+                "design.emuir.json",
+                "--platform",
+                "platform.json",
+                "--out",
+                "phase3",
+                "--no-tritonpart-repair-balance",
+            ]
+        )
+        self.assertFalse(phase3_without_repair.tritonpart_repair_balance)
         checkpoint = _build_parser().parse_args(
             [
                 "experiment-stage",
