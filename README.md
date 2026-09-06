@@ -1399,25 +1399,22 @@ alias when no physical-feedback input is present.  A four-arm complete-flow
 gate for Static Exact v2 plus v6, v9, v6-to-v11, and v9-to-v11 is pending;
 until it completes, v6 is a code default rather than a claimed Phase 7 QoR
 promotion.
-Version 14 treats generalized Static Exact as a strict expansion of the
-register-only search space: it computes the ordinary TritonPart seed once,
-embeds that instance placement into the finer Static Exact clusters, and only
-accepts a structurally legal PATRON result with a strictly improved timing
-certificate.  Because that projected seed can be a strict single-cluster
-local optimum on the finer graph, v14 also evaluates a bounded exact
-multi-cluster neighborhood on the critical timing-path frontier and commits
-the best improving relocation atomically.  This neighborhood is capped
-independently of total design size; it is what allows a short combinational
-logic block to move when every proper subset merely shifts the same boundary.
+Version 14 solves its initial TritonPart assignment directly on the
+generalized Static Exact cluster graph, then accepts only a structurally legal
+PATRON result with a strictly improved timing certificate.  A register-only
+assignment is a separate complete-flow control, not a cold start projected
+onto the finer graph: the pre-physical PATRON objective models cross-FPGA and
+TDM delay but cannot infer the downstream intra-FPGA physical benefit of
+opening a new combinational boundary from an all-local seed.
 Unlike the retired v12/v13 experiments, v14 does not freeze each
 architectural net's initial hop count, total path-transition count, or cut
 count.  Board reachability, the configured route-hop limit, capacity, fixed
 placement, and structural cut legality remain hard constraints; transition and
 cut counts are ordinary trailing costs behind predicted WNS/TNS.  The selected
-assignment alone materializes the downstream semantic contract.  This both
-prevents a cold start on the fragmented graph from silently replacing the
-register-only control with a worse local optimum and preserves the complete
-provider-neutral Phase 3 search domain required by Static Exact.
+assignment alone materializes the downstream semantic contract.  This
+preserves the complete provider-neutral Phase 3 search domain required by
+Static Exact; promotion against register-only remains a same-input, same-seed
+complete Phase 7 comparison.
 Canonical experiment configs may set
 `partition_provider=patron`, reuse `patron_initial_assignment`, and restrict
 `phase6_providers` plus `physical_seeds` (for example Chimew/seed 1) so an A/B

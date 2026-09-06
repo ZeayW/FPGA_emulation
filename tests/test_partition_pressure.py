@@ -1706,7 +1706,7 @@ class PartitionPressureTest(unittest.TestCase):
                 PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
             )
 
-    def test_phase3_v14_embeds_register_only_cold_start(self) -> None:
+    def test_phase3_v14_uses_native_static_exact_cold_start(self) -> None:
         ir = _ir()
         ir.value["nets"][0]["cut_class"] = "combinational"
         ir.value["clocks"] = [
@@ -1726,20 +1726,27 @@ class PartitionPressureTest(unittest.TestCase):
             ir,
             self.platform,
         )
-        sequential_clusters = build_clusters(
-            ir, constraints, cut_mode=CUT_MODE_SEQUENTIAL_ONLY
+        static_exact_clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            static_exact_candidate_policy=(
+                STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+            ),
         )
-        sequential_map = {
+        initial_map = {
             cluster["id"]: ("a" if index % 2 == 0 else "b")
-            for index, cluster in enumerate(sequential_clusters["clusters"])
+            for index, cluster in enumerate(
+                static_exact_clusters["clusters"]
+            )
         }
-        sequential = build_partition_assignment(
+        initial = build_partition_assignment(
             ir,
             self.platform,
-            sequential_clusters,
+            static_exact_clusters,
             constraints,
-            sequential_map,
-            provider="fixture-register-only",
+            initial_map,
+            provider="fixture-static-exact",
             seed=7,
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -1749,7 +1756,7 @@ class PartitionPressureTest(unittest.TestCase):
             constraints_path = root / "constraints.json"
             timing_path = root / "timing.json"
             route_path = root / "routes.json"
-            solution_path = root / "register-only.part.2"
+            solution_path = root / "static-exact.part.2"
             write_json(ir_path, ir.value)
             write_json(platform_path, self.platform.to_dict())
             write_json(constraints_path, constraints)
@@ -1765,8 +1772,8 @@ class PartitionPressureTest(unittest.TestCase):
             part = {"a": 0, "b": 1}
             solution_path.write_text(
                 "\n".join(
-                    str(part[sequential_map[cluster_id]])
-                    for cluster_id in sorted(sequential_map)
+                    str(part[initial_map[cluster_id]])
+                    for cluster_id in sorted(initial_map)
                 )
                 + "\n",
                 encoding="utf-8",
@@ -1789,13 +1796,13 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(report["status"], "pass")
             self.assertEqual(
                 report["patron_initialization"],
-                "embedded-register-only-tritonpart-seed-v1",
+                "native-cut-mode-tritonpart-seed-v1",
             )
             self.assertEqual(
                 report["algorithm_validation"]["initial_assignment"][
                     "cut_nets"
                 ],
-                sequential["metrics"]["cut_nets"],
+                initial["metrics"]["cut_nets"],
             )
             self.assertIn("semantic_contract", assignment)
 
@@ -2786,168 +2793,6 @@ class PartitionPressureTest(unittest.TestCase):
             transition_trace,
         )
         self.assertEqual(checked["status"], "pass")
-
-    def test_v14_critical_path_block_move_escapes_single_move_local_minimum(
-        self,
-    ) -> None:
-        ir = EmuIR(
-            {
-                "schema": "emuflow.emuir/v1",
-                "design": {
-                    "name": "pressure_static_exact_block",
-                    "top": "pressure_static_exact_block",
-                    "source_format": "fixture",
-                },
-                "ports": [],
-                "instances": [
-                    {
-                        "id": f"u{index}",
-                        "type": "LUT1",
-                        "resources": {"lut": 1},
-                    }
-                    for index in range(6)
-                ],
-                "nets": [
-                    {
-                        "id": f"n{index}",
-                        "cut_class": "combinational",
-                        "drivers": [_endpoint(f"u{index}", "O")],
-                        "sinks": [_endpoint(f"u{index + 1}", "I")],
-                    }
-                    for index in range(4)
-                ],
-                "clocks": [
-                    {
-                        "id": "clk",
-                        "name": "clk",
-                        "source_port": "clk",
-                        "period_ns": None,
-                    }
-                ],
-                "warnings": [],
-            }
-        )
-        platform = Platform.from_dict(
-            _platform_value(
-                "pressure_static_exact_block_platform",
-                ["a", "b"],
-                [_link("ab", "a", "b", lanes=8, latency=1)],
-            )
-        )
-        constraints = normalize_partition_constraints(
-            {
-                "schema": "emuflow.partition-constraints/v1",
-                "min_used_fpgas": 2,
-                "balance_tolerance": 10.0,
-                "fixed": [
-                    {"instance": "u0", "fpga": "a"},
-                    {"instance": "u4", "fpga": "a"},
-                    {"instance": "u5", "fpga": "b"},
-                ],
-            },
-            ir,
-            platform,
-        )
-        clusters = build_clusters(
-            ir,
-            constraints,
-            cut_mode=CUT_MODE_STATIC_EXACT,
-            static_exact_candidate_policy=(
-                STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
-            ),
-        )
-        by_instance = {
-            cluster["instances"][0]: cluster["id"]
-            for cluster in clusters["clusters"]
-        }
-        initial = build_partition_assignment(
-            ir,
-            platform,
-            clusters,
-            constraints,
-            {
-                by_instance["u0"]: "a",
-                by_instance["u1"]: "b",
-                by_instance["u2"]: "b",
-                by_instance["u3"]: "b",
-                by_instance["u4"]: "a",
-                by_instance["u5"]: "b",
-            },
-            provider="fixture",
-            seed=1,
-        )
-        routes = normalize_route_constraints(
-            {
-                "schema": "emuflow.system-route-constraints/v1",
-                "frame_slots": 64,
-                "tdm_ratio_quantum": 1,
-                "max_route_hops": 1,
-            },
-            platform,
-        )
-        timing = {
-            "schema": "emuflow.sta-path-database/v1",
-            "design": "pressure_static_exact_block",
-            "source": {"provider": "fixture", "input": "fixture"},
-            "normalization": {
-                "positive_slack_scale_ns": 20.0,
-                "negative_slack_scale_ns": 1.0,
-                "max_clock_period_ns": 20.0,
-            },
-            "paths": [
-                {
-                    "id": "p-critical",
-                    "startpoint": _endpoint("u0", "O"),
-                    "endpoint": _endpoint("u4", "I"),
-                    "clock_domain": "clk",
-                    "clock_period_ns": 10.0,
-                    "slack_ns": -1.0,
-                    "fixed_delay_ns": 11.0,
-                    "path_nets": [f"n{index}" for index in range(4)],
-                    "normalized_slack": -0.1,
-                }
-            ],
-        }
-        model = build_partition_pressure_model(
-            ir, platform, clusters, constraints, timing, routes
-        )
-        final, trace = run_partition_pressure_native(
-            ir,
-            platform,
-            clusters,
-            constraints,
-            routes,
-            model,
-            initial,
-            executable=str(patron_refiner()),
-            max_moves=8,
-            algorithm_version=14,
-        )
-        self.assertEqual(trace["moves"], [])
-        self.assertEqual(len(trace["batches"]), 1)
-        self.assertEqual(len(trace["batches"][0]["changes"]), 3)
-        for instance in ("u1", "u2", "u3"):
-            self.assertEqual(
-                final["cluster_assignment"][by_instance[instance]], "a"
-            )
-        self.assertLess(
-            trace["final_metrics"]["objective_key"],
-            trace["initial_metrics"]["objective_key"],
-        )
-        checked = validate_partition_pressure_native_bundle(
-            ir,
-            platform,
-            clusters,
-            constraints,
-            timing,
-            routes,
-            model,
-            initial,
-            final,
-            trace,
-        )
-        self.assertEqual(checked["status"], "pass")
-
 
 if __name__ == "__main__":
     unittest.main()

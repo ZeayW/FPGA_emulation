@@ -4183,22 +4183,7 @@ void run_scalable(const Model& model,
       std::cerr << '\n';
     }
   }
-  // A register-only seed can be a strict single-move local optimum after it
-  // is projected onto the finer generalized Static Exact cluster graph.  A
-  // useful combinational relocation may then require moving a short block of
-  // adjacent path clusters together: every proper subset merely moves the
-  // same boundary and has an identical objective.  Earlier v14 code left this
-  // search disabled (path_limit == 0) and only printed a candidate without
-  // ever applying it.  Search a bounded exact neighborhood on the critical
-  // path frontier and commit the best improving block as one atomic batch.
-  // The bounds keep this qualification independent of total design size.
-  const int path_limit = model.flow_version == 14
-                             ? std::min(16, std::min(
-                                                model.flow_max_frontier_paths,
-                                                model.paths))
-                             : 0;
-  constexpr std::size_t kPathCorridorClusterLimit = 8;
-  std::vector<std::pair<int, int>> best_corridor_changes;
+  const int path_limit = 0;
   for (int path_index = 0; path_index < path_limit; ++path_index) {
     const int path = current_paths[path_index];
     std::map<int, int> touch_count;
@@ -4215,23 +4200,27 @@ void run_scalable(const Model& model,
            right_part < model.parts;
            ++right_part) {
         std::vector<int> corridor;
+        bool has_left = false;
+        bool has_right = false;
         for (const auto& touched : touch_count) {
           const int cluster = touched.first;
           const int part = state.assignment[cluster];
           if ((part == left_part || part == right_part)
               && model.cluster[cluster].fixed < 0) {
             corridor.push_back(cluster);
+            has_left = has_left || part == left_part;
+            has_right = has_right || part == right_part;
           }
         }
-        if (corridor.size() < 2) {
+        if (!has_left || !has_right || corridor.size() < 2) {
           continue;
         }
         std::sort(corridor.begin(), corridor.end(), [&](int left, int right) {
           return std::tie(touch_count[right], exposure[right], left)
                  < std::tie(touch_count[left], exposure[left], right);
         });
-        if (corridor.size() > kPathCorridorClusterLimit) {
-          corridor.resize(kPathCorridorClusterLimit);
+        if (corridor.size() > 12) {
+          corridor.resize(12);
         }
         const std::uint64_t limit = std::uint64_t{1} << corridor.size();
         for (std::uint64_t mask = 1; mask < limit; ++mask) {
@@ -4288,7 +4277,6 @@ void run_scalable(const Model& model,
             found_corridor = true;
             best_corridor = std::move(candidate);
             best_corridor_clusters = std::move(selected);
-            best_corridor_changes = changes;
           }
         }
       }
@@ -4309,32 +4297,6 @@ void run_scalable(const Model& model,
     }
   }
   std::cerr << '\n';
-  if (found_corridor) {
-    std::vector<int> corridor_assignment = state.assignment;
-    NativeBatch batch;
-    batch.before = state.evaluation;
-    for (const auto& change : best_corridor_changes) {
-      const int cluster = change.first;
-      const int target = change.second;
-      batch.changes.emplace_back(
-          cluster, state.assignment[cluster], target);
-      corridor_assignment[cluster] = target;
-    }
-    ProxyState corridor_state = build_proxy_state(
-        model,
-        &corridor_assignment,
-        state.transition_limit,
-        state.cut_limit);
-    require(corridor_state.evaluation.ranked
-                == best_corridor.evaluation.ranked,
-            "critical path corridor incremental/full mismatch");
-    require(less_ranked(corridor_state.evaluation.ranked,
-                        state.evaluation.ranked),
-            "critical path corridor did not improve timing objective");
-    batch.after = corridor_state.evaluation;
-    batches.push_back(std::move(batch));
-    state = std::move(corridor_state);
-  }
   const ProxyState endpoint = build_proxy_state(
       model, &state.assignment, state.transition_limit, state.cut_limit);
   require(endpoint.evaluation.feasible,
