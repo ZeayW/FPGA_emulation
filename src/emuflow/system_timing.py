@@ -197,7 +197,7 @@ def _board_link_delay_database(
     }
 
 
-def _sampled_virtual_wire_path_delay(
+def _fixed_slot_transport_path_delay(
     record: Mapping[str, Any],
     member: str,
     segments: List[Mapping[str, Any]],
@@ -208,16 +208,23 @@ def _sampled_virtual_wire_path_delay(
     *,
     commit_slot: int,
     uncertainty_ns: float,
+    transport_semantics: str = "sampled-virtual-wire",
 ) -> Dict[str, Any]:
-    """Propagate one sampled path through its fixed physical schedule.
+    """Propagate one transported path through its fixed physical schedule.
 
-    A sampled virtual wire is not an additive ``logic + TDM`` path.  Each
-    first-hop TX samples at the concrete Phase-5 slot, so logic that becomes
-    ready earlier waits until that slot and logic that becomes ready later is
-    a physical timing failure.  Relay TX endpoints obey the same rule.  This
-    evaluator deliberately consumes the fixed schedule; it never reschedules
-    a path during Phase 7C.
+    Static TDM is not an additive ``logic + average TDM wait`` path.  Each
+    first-hop TX acts at the concrete Phase-5 slot.  A registered boundary may
+    wait safely because its value is stable, while a sampled virtual wire also
+    has explicit dependency readiness; in both cases that absolute wait is
+    part of target-clock latency.  This evaluator consumes the fixed schedule
+    and never reschedules a path during Phase 7C.
     """
+
+    if transport_semantics not in {
+        "registered-boundary",
+        "sampled-virtual-wire",
+    }:
+        raise ValidationError("fixed-slot transport semantics are invalid")
 
     ordered_segments = sorted(segments, key=lambda item: item["cut_index"])
     cut_nets = list(record["cut_nets"])
@@ -324,6 +331,7 @@ def _sampled_virtual_wire_path_delay(
     total_delay_ns = capture_ready_ns + uncertainty_ns
     physical_stage_ns = physical_logic_ns + physical_interface_ns
     return {
+        "transport_semantics": transport_semantics,
         "system_delay_bound_ns": total_delay_ns,
         "physical_logic_delay_bound_ns": physical_logic_ns,
         "physical_interface_delay_bound_ns": physical_interface_ns,
@@ -331,7 +339,7 @@ def _sampled_virtual_wire_path_delay(
         "scheduled_link_tdm_delay_ns": max(
             0.0, capture_ready_ns - physical_stage_ns
         ),
-        "sampled_event_timing_status": (
+        "fixed_slot_event_timing_status": (
             "pass" if causal_slack_ns >= -1.0e-9 else "fail"
         ),
         "minimum_tx_readiness_slack_ns": minimum_tx_slack_ns,
@@ -497,7 +505,10 @@ def build_system_timing(
         physical_summary, platform
     )
     exact_deadlines = None
-    from .tdm import is_sampled_virtual_wire_schedule
+    from .tdm import (
+        is_fixed_slot_transport_schedule,
+        is_sampled_virtual_wire_schedule,
+    )
 
     if is_sampled_virtual_wire_schedule(schedule):
         if not isinstance(semantic_contract, dict):
@@ -516,6 +527,15 @@ def build_system_timing(
             platform,
         )
     sampled_schedule = exact_deadlines is not None
+    fixed_slot_schedule = is_fixed_slot_transport_schedule(schedule)
+    transport_semantics = schedule.get("transport_semantics")
+    commit_slot = (
+        exact_deadlines["commit_slot"]
+        if exact_deadlines is not None
+        else int(schedule["route_constraints"]["frame_slots"]) - 1
+        if fixed_slot_schedule
+        else None
+    )
     sampled_uncertainty_ns = _finite_number(
         physical_summary.get("static_exact_clock_uncertainty_ns", 0.0),
         "sampled virtual-wire clock uncertainty",
@@ -546,6 +566,8 @@ def build_system_timing(
     measured_logic_paths = 0
     sampled_event_paths = 0
     sampled_event_failures = 0
+    fixed_slot_event_paths = 0
+    fixed_slot_event_failures = 0
     for record in records:
         transitions = record["cut_transitions"]
         partitions, discontinuities = _logic_partition_sequence(transitions)
@@ -719,10 +741,11 @@ def build_system_timing(
                     member_logic_model = "routed-staging-chain-exact"
                     logic_exact = True
                     exact_logic_paths += 1
-            sampled_event = None
-            if sampled_schedule and member_physical is not None:
+            fixed_slot_event = None
+            if fixed_slot_schedule and member_physical is not None:
                 assert endpoint_delays is not None
-                sampled_event = _sampled_virtual_wire_path_delay(
+                assert commit_slot is not None
+                fixed_slot_event = _fixed_slot_transport_path_delay(
                     record,
                     member,
                     measurement["segments"],
@@ -730,27 +753,37 @@ def build_system_timing(
                     board_link_delays,
                     schedule_entries,
                     routes_by_net,
-                    commit_slot=exact_deadlines["commit_slot"],
+                    commit_slot=commit_slot,
                     uncertainty_ns=sampled_uncertainty_ns,
+                    transport_semantics=str(transport_semantics),
                 )
-                member_local_delay = sampled_event[
+                member_local_delay = fixed_slot_event[
                     "physical_logic_delay_bound_ns"
                 ]
-                member_interface_delay = sampled_event[
+                member_interface_delay = fixed_slot_event[
                     "physical_interface_delay_bound_ns"
                 ]
-                member_physical_delay = sampled_event[
+                member_physical_delay = fixed_slot_event[
                     "physical_routed_stage_delay_bound_ns"
                 ]
-                transport_delay = sampled_event[
+                transport_delay = fixed_slot_event[
                     "scheduled_link_tdm_delay_ns"
                 ]
-                transport_model = "sampled-virtual-wire-event-propagation"
-                total_delay = sampled_event["system_delay_bound_ns"]
-                sampled_event_paths += 1
-                sampled_event_failures += int(
-                    sampled_event["sampled_event_timing_status"] == "fail"
+                transport_model = (
+                    "sampled-virtual-wire-event-propagation"
+                    if sampled_schedule
+                    else "registered-boundary-fixed-slot-event-propagation"
                 )
+                total_delay = fixed_slot_event["system_delay_bound_ns"]
+                fixed_slot_event_paths += 1
+                fixed_slot_event_failures += int(
+                    fixed_slot_event["fixed_slot_event_timing_status"] == "fail"
+                )
+                if sampled_schedule:
+                    sampled_event_paths += 1
+                    sampled_event_failures += int(
+                        fixed_slot_event["fixed_slot_event_timing_status"] == "fail"
+                    )
             else:
                 total_delay = member_physical_delay + transport_delay
             path_record = {
@@ -793,26 +826,30 @@ def build_system_timing(
                 "physical_logic_segments_exact": logic_exact,
                 "physical_logic_segments_cone_bound": cone_bound,
             }
-            if sampled_event is not None:
+            if fixed_slot_event is not None:
                 path_record.update(
                     {
-                        "sampled_event_timing_status": sampled_event[
-                            "sampled_event_timing_status"
+                        "fixed_slot_event_timing_status": fixed_slot_event[
+                            "fixed_slot_event_timing_status"
                         ],
-                        "minimum_tx_readiness_slack_ns": sampled_event[
+                        "minimum_tx_readiness_slack_ns": fixed_slot_event[
                             "minimum_tx_readiness_slack_ns"
                         ],
-                        "capture_commit_slack_ns": sampled_event[
+                        "capture_commit_slack_ns": fixed_slot_event[
                             "capture_commit_slack_ns"
                         ],
-                        "clock_uncertainty_ns": sampled_event[
+                        "clock_uncertainty_ns": fixed_slot_event[
                             "clock_uncertainty_ns"
                         ],
-                        "board_delay_bound_ns": sampled_event[
+                        "board_delay_bound_ns": fixed_slot_event[
                             "board_delay_bound_ns"
                         ],
                     }
                 )
+                if sampled_schedule:
+                    path_record["sampled_event_timing_status"] = (
+                        fixed_slot_event["fixed_slot_event_timing_status"]
+                    )
             cross_paths.append(path_record)
         discontinuous_paths += (discontinuities > 0) * len(member_ids)
 
@@ -877,6 +914,11 @@ def build_system_timing(
     )
     runtime_wns = runtime_worst["runtime_clock_slack_bound_ns"]
     status = "pass" if runtime_wns >= 0.0 else "fail"
+    if fixed_slot_schedule:
+        if fixed_slot_event_paths != len(cross_paths):
+            status = "incomplete"
+        elif fixed_slot_event_failures:
+            status = "fail"
     if exact_deadlines is not None:
         if exact_deadlines["status"] == "incomplete":
             status = "incomplete"
@@ -892,6 +934,22 @@ def build_system_timing(
         and whole_exact_logic_paths == whole_logic_paths
     ):
         qualification = "sampled-virtual-wire-event-propagated-physical"
+    elif (
+        fixed_slot_schedule
+        and not sampled_schedule
+        and fixed_slot_event_paths == len(cross_paths)
+        and whole_exact_logic_paths == whole_logic_paths
+    ):
+        qualification = "registered-boundary-event-propagated-physical"
+    elif (
+        fixed_slot_schedule
+        and not sampled_schedule
+        and fixed_slot_event_paths == len(cross_paths)
+        and whole_measured_logic_paths == whole_logic_paths
+    ):
+        qualification = (
+            "registered-boundary-event-propagated-physical-bounds"
+        )
     elif (
         sampled_schedule
         and sampled_event_paths == len(cross_paths)
@@ -933,6 +991,11 @@ def build_system_timing(
                 if sampled_schedule
                 else None
             ),
+            "registered_boundary_event_propagation": (
+                fixed_slot_event_paths == len(cross_paths)
+                if fixed_slot_schedule and not sampled_schedule
+                else None
+            ),
             "physical_boundary_endpoints": endpoint_delays is not None,
             "physical_logic_segments": (
                 whole_exact_logic_paths == whole_logic_paths
@@ -970,6 +1033,8 @@ def build_system_timing(
             "discontinuous_compressed_paths": discontinuous_paths,
             "sampled_event_paths": sampled_event_paths,
             "sampled_event_failures": sampled_event_failures,
+            "fixed_slot_event_paths": fixed_slot_event_paths,
+            "fixed_slot_event_failures": fixed_slot_event_failures,
         },
         "physical_source": {
             "provider": physical_summary.get("provider"),

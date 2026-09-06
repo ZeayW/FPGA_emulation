@@ -374,6 +374,12 @@ requirements, not optional micro-optimizations.
   For same-FPGA paths, it must use the corresponding post-route local path
   delay.  Together these two disjoint sets must cover every original
   TimingPathDB path exactly once.
+- Registered-boundary and sampled-virtual-wire comparison arms must both use
+  the same fixed-slot event propagation over the concrete Phase 5 schedule.
+  An additive average/ratio wait is diagnostic-only and must never be used as
+  terminal comparison evidence.  If a scheduled cross-FPGA segment lacks the
+  physical boundary/logic timing needed for that propagation, Phase 7C is
+  incomplete rather than permitted to fall back to an estimate.
 - `global WNS` is the minimum composed slack over all original design paths.
   `global TNS` is the sum of every negative composed path slack, counted once
   per original TimingPathDB path.  A timing-equivalent representative used by

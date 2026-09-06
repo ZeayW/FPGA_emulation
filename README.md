@@ -266,8 +266,13 @@ Phase 7C forms the exact union of every original TimingPathDB member. It uses
 the selected post-route path when its atom-pin chain is unambiguous, otherwise
 an explicitly labelled conservative endpoint-longest bound, and composes routed
 logic, TDM, and board-link delays for members that cross FPGAs in the
-pausible-clock system contract.  WNS/TNS over that complete, disjoint union are
-the primary final QoR metrics. A valid end-to-end comparison also reports the
+pausible-clock system contract. Both registered-boundary and
+sampled-virtual-wire transports are evaluated by propagating events through
+the concrete Phase 5 slots; the historical additive average/ratio wait is not
+valid terminal comparison evidence. Missing physical segment timing makes the
+system result incomplete instead of triggering an estimated fallback.
+WNS/TNS over that complete, disjoint union are the primary final QoR metrics. A
+valid end-to-end comparison also reports the
 labelled per-FPGA diagnostics, but never substitutes them for global timing.
 
 | Route | Current completion boundary |
@@ -612,6 +617,14 @@ nonzero path beta therefore remains optional. The same-input,
 same-partition-seed, same-physical-seed result promotes this guarded
 generalized configuration. It is now the default cut policy; explicit
 `--cut-mode sequential-only` remains the register-boundary comparison arm.
+
+The promotion numbers in the preceding historical paragraphs were generated
+before registered-boundary Phase 7C used the same fixed-slot event propagation
+as sampled-virtual-wire transport. They remain implementation-history records,
+but are not a fair cross-policy QoR comparison and must not be used to justify
+the current default. The replacement comparison uses identical inputs,
+partition/physical seeds, Phase 4/5 providers, baseline Phase 6, and the same
+fixed-slot Phase 7C evaluator in both arms.
 
 An audit of the identical sealed EmuIR explains why the accepted guarded run
 uses only two real combinational cuts. The 379,357-instance design contains

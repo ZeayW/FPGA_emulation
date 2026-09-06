@@ -70,12 +70,15 @@ def _routes(*, exact=False, semantic_contract=None):
     return value
 
 
-def _schedule():
+def _schedule(*, exact=False):
     return {
         "schema": "emuflow.tdm-schedule/v1",
         "design": "cross-layer-fixture",
         "platform": "three",
         "provider": "arbitrary-unified-provider",
+        "transport_semantics": (
+            SAMPLED_VIRTUAL_WIRE if exact else REGISTERED_BOUNDARY
+        ),
         "entries": [
             {
                 "id": "s000000",
@@ -238,7 +241,7 @@ class CrossLayerTimingContractTest(unittest.TestCase):
         semantic = _semantic_contract()
         routes = _routes(exact=True, semantic_contract=semantic)
         contract = build_cross_layer_timing_contract(
-            routes, _schedule(), semantic
+            routes, _schedule(exact=True), semantic
         )
         self.assertEqual(
             contract["transport_semantics"], SAMPLED_VIRTUAL_WIRE
@@ -259,7 +262,7 @@ class CrossLayerTimingContractTest(unittest.TestCase):
             }
         ]
         routes = _routes(exact=True, semantic_contract=semantic)
-        schedule = _schedule()
+        schedule = _schedule(exact=True)
         contract = build_cross_layer_timing_contract(
             routes, schedule, semantic
         )
@@ -284,7 +287,7 @@ class CrossLayerTimingContractTest(unittest.TestCase):
     def test_schedule_provider_is_not_semantic_dispatch(self):
         semantic = _semantic_contract()
         routes = _routes(exact=True, semantic_contract=semantic)
-        schedule = _schedule()
+        schedule = _schedule(exact=True)
         first = build_cross_layer_timing_contract(routes, schedule, semantic)
         schedule["provider"] = "different-legal-solver"
         second = build_cross_layer_timing_contract(routes, schedule, semantic)

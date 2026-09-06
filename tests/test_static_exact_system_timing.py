@@ -16,7 +16,7 @@ from emuflow.static_exact_timing import (
 )
 from emuflow.runtime import build_virtual_runtime
 from emuflow.system_timing import (
-    _sampled_virtual_wire_path_delay,
+    _fixed_slot_transport_path_delay,
     build_system_timing,
 )
 from emuflow.tdm import (
@@ -526,7 +526,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             for index in range(3)
             for endpoint in (f"tx{index}", f"rx{index}")
         }
-        result = _sampled_virtual_wire_path_delay(
+        result = _fixed_slot_transport_path_delay(
             record,
             "member0",
             segments,
@@ -537,14 +537,14 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             commit_slot=10,
             uncertainty_ns=0.5,
         )
-        self.assertEqual(result["sampled_event_timing_status"], "pass")
+        self.assertEqual(result["fixed_slot_event_timing_status"], "pass")
         self.assertAlmostEqual(result["system_delay_bound_ns"], 39.0)
         self.assertAlmostEqual(result["minimum_tx_readiness_slack_ns"], 0.5)
         self.assertAlmostEqual(result["capture_commit_slack_ns"], 1.0)
 
         late = copy.deepcopy(segments)
         late[1]["delay_ns"] = 4.0
-        failed = _sampled_virtual_wire_path_delay(
+        failed = _fixed_slot_transport_path_delay(
             record,
             "member0",
             late,
@@ -555,7 +555,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             commit_slot=10,
             uncertainty_ns=0.5,
         )
-        self.assertEqual(failed["sampled_event_timing_status"], "fail")
+        self.assertEqual(failed["fixed_slot_event_timing_status"], "fail")
         self.assertAlmostEqual(failed["minimum_tx_readiness_slack_ns"], -1.0)
 
     def test_clockless_partition_requires_complete_routed_logic_segments(self):

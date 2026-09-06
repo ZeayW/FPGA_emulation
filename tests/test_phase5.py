@@ -1965,9 +1965,18 @@ class Phase5Test(unittest.TestCase):
         validation = validate_tdm_schedule(routes, platform, schedule)
         simulation = simulate_tdm_schedule(routes, schedule, frames=9)
         self.assertEqual(validation["status"], "pass")
+        self.assertEqual(
+            schedule["transport_semantics"], "registered-boundary"
+        )
         self.assertEqual(validation["scheduled_bit_hops"], 3)
         self.assertEqual(validation["collisions"], 0)
         self.assertEqual(simulation["delivered_sink_values"], 27)
+        mismatched = copy.deepcopy(schedule)
+        mismatched["transport_semantics"] = "sampled-virtual-wire"
+        with self.assertRaisesRegex(
+            ValidationError, "transport_semantics"
+        ):
+            validate_tdm_schedule(routes, platform, mismatched)
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

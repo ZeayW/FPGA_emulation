@@ -366,6 +366,7 @@ def materialize_eda2023_contest_chimew_inputs(
         "design": design,
         "platform": platform.name,
         "provider": "eda2023-contest-derived-chimew-schedule-v1",
+        "transport_semantics": "registered-boundary",
         "claim_boundary": EDA2023_CONTEST_CHIMEW_QUALIFICATION,
         "entries": schedule_entries,
     }

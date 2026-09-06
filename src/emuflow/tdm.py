@@ -83,6 +83,24 @@ def is_sampled_virtual_wire_schedule(schedule: Mapping[str, Any]) -> bool:
     )
 
 
+def is_fixed_slot_transport_schedule(schedule: Mapping[str, Any]) -> bool:
+    """Return whether Phase 7 must honor the concrete TX slot in timing.
+
+    Both registered boundaries and sampled virtual wires are implemented by
+    the same static slot transport.  Their functional readiness rules differ,
+    but physical target-clock timing must use the absolute TX slot for both;
+    a registered source is stable while it waits, not teleported across that
+    wait.  Keeping this predicate separate from the sampled dependency
+    certificate prevents Phase 7 from comparing two transport semantics with
+    different delay models.
+    """
+
+    return schedule.get("transport_semantics") in {
+        "registered-boundary",
+        "sampled-virtual-wire",
+    }
+
+
 def _static_exact_contract_from_routes(
     routes: Mapping[str, Any],
 ) -> Optional[Mapping[str, Any]]:
@@ -874,6 +892,11 @@ def build_tdm_schedule(
             if ratio_plan is not None
             else TDM_BASELINE_PROVIDER
         ),
+        "transport_semantics": (
+            "sampled-virtual-wire"
+            if exact_contract is not None
+            else "registered-boundary"
+        ),
         **(
             {
                 "ratio_assignment": {
@@ -912,7 +935,6 @@ def build_tdm_schedule(
         result.update(
             {
                 "qualification": "dependency-schedule-readiness-pass",
-                "transport_semantics": "sampled-virtual-wire",
                 "timing_constraints": sampled_timing_constraints,
                 "semantic_contract_schema": exact_contract["schema"],
                 "semantic_contract_sha256": routes[
@@ -1162,6 +1184,16 @@ def validate_tdm_schedule(
         raise ValidationError(
             f"schedule.schema: expected {TDM_SCHEDULE_SCHEMA!r}, "
             f"got {schedule.get('schema')!r}"
+        )
+    expected_transport_semantics = (
+        "sampled-virtual-wire"
+        if exact_contract is not None
+        else "registered-boundary"
+    )
+    if schedule.get("transport_semantics") != expected_transport_semantics:
+        raise ValidationError(
+            "schedule.transport_semantics does not match the Phase 3 "
+            "timing contract"
         )
     constraints = normalize_route_constraints(
         schedule.get("route_constraints"),

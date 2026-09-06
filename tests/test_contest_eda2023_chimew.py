@@ -290,6 +290,12 @@ class Eda2023ContestChimewTest(unittest.TestCase):
                 read_json(root / "ab/chimew/pipeline_report.json")["provider"],
                 CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER,
             )
+            self.assertEqual(
+                read_json(root / "ab/materialized/schedule.json")[
+                    "transport_semantics"
+                ],
+                "registered-boundary",
+            )
             self.assertIn("synthetic package pins", report["claim_boundary"])
             self.assertTrue((root / "ab/baseline_pin_plan.json").is_file())
 

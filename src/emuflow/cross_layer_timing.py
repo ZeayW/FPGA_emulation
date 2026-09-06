@@ -295,6 +295,11 @@ def _build_contract(
             or schedule.get("platform") != routes.get("platform")
         ):
             raise ValidationError("cross-layer schedule identity is invalid")
+        if schedule.get("transport_semantics") != transport_semantics:
+            raise ValidationError(
+                "cross-layer schedule transport semantics disagree with "
+                "the Phase 3 contract"
+            )
         entries = schedule.get("entries")
         if not isinstance(entries, list):
             raise ValidationError("cross-layer schedule entries must be an array")

@@ -62,6 +62,8 @@ class Phase7CTest(unittest.TestCase):
             "schema": TDM_SCHEDULE_SCHEMA,
             "design": "dut",
             "platform": self.platform.name,
+            "transport_semantics": "registered-boundary",
+            "route_constraints": {"frame_slots": 32},
             "entries": [
                 {
                     "id": "s000000",
@@ -512,7 +514,7 @@ class Phase7CTest(unittest.TestCase):
             3.0 * timing["target_clock"]["worst_slack_bound_ns"],
         )
 
-    def test_whole_design_timing_combines_local_and_crossing_paths(self):
+    def test_whole_design_timing_requires_fixed_slot_crossing_segments(self):
         physical = self._physical_summary()
         path_ids = ["local-critical", "system-critical"]
         source = {
@@ -579,7 +581,7 @@ class Phase7CTest(unittest.TestCase):
             schedule=self.schedule,
             routes_artifact_sha256=source["routes_sha256"],
         )
-        self.assertEqual(qor["status"], "pass")
+        self.assertEqual(qor["status"], "incomplete")
         self.assertTrue(qor["whole_design_timing_complete"])
         timing = qor["timing"]
         self.assertEqual(timing["timing_scope"], "whole-original-design")
@@ -825,7 +827,7 @@ class Phase7CTest(unittest.TestCase):
         self.assertTrue(timing["path_exactness"]["physical_logic_segments"])
         self.assertEqual(
             timing["qualification"],
-            "staging-aware-physical-plus-concrete-link-tdm",
+            "registered-boundary-event-propagated-physical",
         )
         self.assertAlmostEqual(
             timing["paths"][0]["physical_logic_delay_bound_ns"],
@@ -838,6 +840,14 @@ class Phase7CTest(unittest.TestCase):
         self.assertAlmostEqual(
             timing["paths"][0]["physical_routed_stage_delay_bound_ns"],
             5.6,
+        )
+        self.assertAlmostEqual(
+            timing["paths"][0]["system_delay_bound_ns"],
+            27.6,
+        )
+        self.assertAlmostEqual(
+            timing["paths"][0]["scheduled_link_tdm_delay_ns"],
+            22.0,
         )
 
     def test_qor_accepts_cone_bound_chain_faster_than_replaced_tx_bound(self):
@@ -968,8 +978,13 @@ class Phase7CTest(unittest.TestCase):
         self.assertEqual(exactness["fallback_logic_paths"], 0)
         self.assertEqual(
             qor["timing"]["qualification"],
-            "staging-aware-routed-physical-bounds-plus-concrete-link-tdm",
+            "registered-boundary-event-propagated-physical-bounds",
         )
+        self.assertEqual(
+            path["scheduled_link_tdm_model"],
+            "registered-boundary-fixed-slot-event-propagation",
+        )
+        self.assertEqual(path["fixed_slot_event_timing_status"], "pass")
 
     def test_phase7c_writes_generated_then_physically_closed_report(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
