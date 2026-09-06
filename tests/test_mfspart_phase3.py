@@ -247,6 +247,92 @@ class MFSPartPhase3Test(unittest.TestCase):
             set(initial["cluster_assignment"]),
         )
 
+    def test_phase3_materializes_static_exact_contract_after_post_refinement(
+        self,
+    ) -> None:
+        ir = _chain_ir()
+        platform = Platform.load(PLATFORM)
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_tolerance": 1.0,
+                "fixed": [
+                    {"instance": "q0", "fpga": "fpga0"},
+                    {"instance": "q1", "fpga": "fpga1"},
+                ],
+            },
+            ir,
+            platform,
+        )
+        clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=8,
+            static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
+        )
+        cluster_for = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        initial = build_partition_assignment(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            {
+                cluster_for["q0"]: "fpga0",
+                cluster_for["l0"]: "fpga1",
+                cluster_for["l1"]: "fpga1",
+                cluster_for["l2"]: "fpga1",
+                cluster_for["q1"]: "fpga1",
+            },
+            provider="tritonpart-fixture",
+            seed=19,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "chain.emuir.json"
+            constraints_path = root / "constraints.json"
+            write_json(ir_path, ir.value)
+            write_json(constraints_path, constraints)
+            with patch(
+                "emuflow.phase3.run_tritonpart", return_value=initial
+            ):
+                report = run_phase3(
+                    ir_path,
+                    PLATFORM,
+                    root / "phase3",
+                    constraints_path=constraints_path,
+                    seed=19,
+                    provider="tritonpart",
+                    cut_mode=CUT_MODE_STATIC_EXACT,
+                    max_cross_fpga_dependency_depth=8,
+                    static_exact_candidate_policy=(
+                        STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+                    ),
+                    mfspart_post_refinement=True,
+                    mfspart_post_refinement_early_stop=3,
+                    mfspart_refiner=self.executables["refiner"],
+                    mfspart_refiner_checker=self.executables[
+                        "refiner_checker"
+                    ],
+                    retain_diagnostics=True,
+                )
+            refined = read_json(root / "phase3/assignment.json")
+        self.assertEqual(report["status"], "pass")
+        self.assertIn("semantic_contract", refined)
+        self.assertGreater(
+            refined["metrics"]["combinational_cut_nets"], 0
+        )
+        self.assertGreater(
+            refined["semantic_contract"]["metrics"]["logic_segments"], 0
+        )
+        self.assertGreater(
+            report["validation"]["semantic_contract"]["logic_segments"], 0
+        )
+
     def test_directional_graph_uses_emuir_driver_identity(self) -> None:
         ir = import_yosys_json(
             ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]

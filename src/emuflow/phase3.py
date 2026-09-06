@@ -839,24 +839,6 @@ def run_phase3(
             "expected 'repart-replication', 'repart', 'tritonpart', "
             "'mfspart', 'patron', or 'greedy'"
         )
-    if (
-        cut_mode == CUT_MODE_STATIC_EXACT
-        and assignment.get("semantic_contract") is None
-    ):
-        # The hot path may defer the large contract while PATRON compares
-        # candidates.  Materialize it exactly once for whichever assignment
-        # was selected so every downstream phase receives the canonical
-        # provider-neutral contract.
-        assignment = build_partition_assignment(
-            ir,
-            platform,
-            clusters,
-            constraints,
-            assignment["cluster_assignment"],
-            provider=str(assignment["provider"]),
-            seed=int(assignment["seed"]),
-            provider_metadata=assignment.get("provider_metadata"),
-        )
     mfspart_post_refinement_report = None
     if mfspart_post_refinement:
         if provider != "tritonpart":
@@ -901,6 +883,27 @@ def run_phase3(
             route_constraints_path=route_constraints_path,
             net_weights_path=net_weights_path,
             executable=hop_refiner,
+            defer_semantic_contract=True,
+        )
+    if (
+        cut_mode == CUT_MODE_STATIC_EXACT
+        and assignment.get("semantic_contract") is None
+    ):
+        # PATRON selection, optional MFSPart post-refinement, and hop repair
+        # can all change the cluster assignment.  Keep the large downstream
+        # contract out of those hot paths and materialize it exactly once from
+        # the final Phase-3 assignment.  Materializing before the last
+        # refinement silently left Static Exact cuts without dependency and
+        # logic-segment semantics in Phase 4/5.
+        assignment = build_partition_assignment(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            assignment["cluster_assignment"],
+            provider=str(assignment["provider"]),
+            seed=int(assignment["seed"]),
+            provider_metadata=assignment.get("provider_metadata"),
         )
     validation = (
         validate_partition_artifacts(ir, platform, clusters, assignment)
