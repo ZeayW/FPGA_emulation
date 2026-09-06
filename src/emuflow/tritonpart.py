@@ -221,6 +221,7 @@ def _legal_hyperedges(
         hyperedges.append(
             {
                 "net": net["id"],
+                "cut_class": net["cut_class"],
                 "weight": float(net_weights.get(net["id"], 1.0)),
                 "clusters": cluster_ids,
                 "vertices": [vertex_number[cluster_id] for cluster_id in cluster_ids],
@@ -711,8 +712,26 @@ def _repair_multi_resource_balance(
         [vertex - 1 for vertex in edge["vertices"]]
         for edge in tritonpart_input["hyperedges"]
     ]
-    edge_weights = [
-        float(edge["weight"]) for edge in tritonpart_input["hyperedges"]
+    hyperedges = list(tritonpart_input["hyperedges"])
+    edge_weights = [float(edge["weight"]) for edge in hyperedges]
+    combinational_edges = [
+        edge.get("cut_class") == "combinational" for edge in hyperedges
+    ]
+    # Balance repair is a legality fallback, not a second partition optimizer.
+    # In Static Exact mode, creating a new combinational boundary changes the
+    # cross-layer timing contract and can dominate the ordinary hypergraph cut
+    # delta.  Give each such transition a data-derived lexicographic penalty:
+    # one extra combinational cut outweighs every ordinary edge-weight change
+    # that any repair sequence can make.  Sequential-only inputs contain no
+    # marked edge and therefore retain the exact historical objective.
+    combinational_cut_penalty = (
+        math.fsum(abs(weight) for weight in edge_weights) + 1.0
+        if any(combinational_edges)
+        else 0.0
+    )
+    repair_edge_weights = [
+        weight + (combinational_cut_penalty if combinational else 0.0)
+        for weight, combinational in zip(edge_weights, combinational_edges)
     ]
     incident_edges: List[List[int]] = [
         [] for _ in range(len(cluster_order))
@@ -743,7 +762,12 @@ def _repair_multi_resource_balance(
             for dimension in range(num_dimensions)
         )
 
-    def cut_delta(vertex: int, source: int, target: int) -> float:
+    def edge_cut_delta(
+        vertex: int,
+        source: int,
+        target: int,
+        weights: Sequence[float],
+    ) -> float:
         delta = 0.0
         for edge_index in incident_edges[vertex]:
             counts = edge_part_counts[edge_index]
@@ -755,8 +779,14 @@ def _repair_multi_resource_balance(
                 after_parts += 1
             delta += (
                 int(after_parts > 1) - int(before_parts > 1)
-            ) * edge_weights[edge_index]
+            ) * weights[edge_index]
         return delta
+
+    def cut_delta(vertex: int, source: int, target: int) -> float:
+        return edge_cut_delta(vertex, source, target, edge_weights)
+
+    def repair_delta(vertex: int, source: int, target: int) -> float:
+        return edge_cut_delta(vertex, source, target, repair_edge_weights)
 
     def apply_edge_move(vertex: int, source: int, target: int) -> None:
         for edge_index in incident_edges[vertex]:
@@ -766,20 +796,29 @@ def _repair_multi_resource_balance(
                 del counts[source]
             counts[target] = counts.get(target, 0) + 1
 
-    def cut_summary() -> Tuple[int, float]:
+    def cut_summary() -> Tuple[int, float, int]:
         cut_edges = 0
         cut_weight = 0.0
-        for counts, weight in zip(edge_part_counts, edge_weights):
+        combinational_cut_edges = 0
+        for counts, weight, combinational in zip(
+            edge_part_counts, edge_weights, combinational_edges
+        ):
             if len(counts) > 1:
                 cut_edges += 1
                 cut_weight += weight
-        return cut_edges, cut_weight
+                combinational_cut_edges += int(combinational)
+        return cut_edges, cut_weight, combinational_cut_edges
 
-    initial_cut_edges, initial_cut_weight = cut_summary()
+    (
+        initial_cut_edges,
+        initial_cut_weight,
+        initial_combinational_cut_edges,
+    ) = cut_summary()
     move_counts: Dict[Tuple[int, int], int] = defaultdict(int)
     moved_weights: Dict[Tuple[int, int], List[int]] = {}
     move_digest = hashlib.sha256()
     estimated_cut_delta = 0.0
+    repair_objective_delta = 0.0
     move_total = 0
     paired_move_sequences = 0
     ejection_chain_sequences = 0
@@ -788,8 +827,9 @@ def _repair_multi_resource_balance(
     def apply_move(vertex: int, source: int, target: int) -> float:
         """Apply and audit one deterministic repair move."""
 
-        nonlocal estimated_cut_delta, move_total
+        nonlocal estimated_cut_delta, repair_objective_delta, move_total
         delta = cut_delta(vertex, source, target)
+        objective_delta = repair_delta(vertex, source, target)
         apply_edge_move(vertex, source, target)
         labels[vertex] = target
         weights = vertex_weights[vertex]
@@ -812,6 +852,7 @@ def _repair_multi_resource_balance(
             ).encode("utf-8")
         )
         estimated_cut_delta += delta
+        repair_objective_delta += objective_delta
         move_total += 1
         return delta
 
@@ -861,7 +902,7 @@ def _repair_multi_resource_balance(
             for target in range(num_parts):
                 if target == source or not fits(vertex, target):
                     continue
-                delta = cut_delta(vertex, source, target)
+                delta = repair_delta(vertex, source, target)
                 projected_peak = max(
                     (
                         loads[target][dimension] + weights[dimension]
@@ -899,7 +940,7 @@ def _repair_multi_resource_balance(
             for target in range(num_parts):
                 if target == source or not fits(vertex, target):
                     continue
-                delta = cut_delta(vertex, source, target)
+                delta = repair_delta(vertex, source, target)
                 projected_peak = max(
                     (
                         loads[target][dimension] + weights[dimension]
@@ -1010,7 +1051,7 @@ def _repair_multi_resource_balance(
                         continue
                     choices.append(
                         (
-                            cut_delta(blocker, target, destination),
+                            repair_delta(blocker, target, destination),
                             destination,
                         )
                     )
@@ -1067,7 +1108,7 @@ def _repair_multi_resource_balance(
                 for target in range(num_parts):
                     if target == source:
                         continue
-                    source_delta = cut_delta(vertex, source, target)
+                    source_delta = repair_delta(vertex, source, target)
                     target_after_vertex = [
                         loads[target][dimension] + weights[dimension]
                         for dimension in range(num_dimensions)
@@ -1122,7 +1163,7 @@ def _repair_multi_resource_balance(
                             continue
                         destination = source
                         pair_delta = (
-                            cut_delta(blocker, target, destination)
+                            repair_delta(blocker, target, destination)
                             + source_delta
                         )
                         candidate = (
@@ -1187,7 +1228,7 @@ def _repair_multi_resource_balance(
                         }
                         delta += (
                             int(len(after_parts) > 1) - int(before_cut)
-                        ) * edge_weights[edge_index]
+                        ) * repair_edge_weights[edge_index]
                     return delta
 
                 def violation_key(
@@ -1266,7 +1307,7 @@ def _repair_multi_resource_balance(
                         root_overrides,
                         (root_vertex,),
                         (root_move,),
-                        cut_delta(root_vertex, source, root_target),
+                        repair_delta(root_vertex, source, root_target),
                     )
                     if violation_key(state_loads, limits)[0] == 0:
                         return (root_move,)
@@ -1378,7 +1419,7 @@ def _repair_multi_resource_balance(
                                         candidate_loads[destination][
                                             dimension
                                         ] += weight
-                                    move_delta = cut_delta(
+                                    move_delta = repair_delta(
                                         blocker,
                                         blocked_part,
                                         destination,
@@ -1558,7 +1599,11 @@ def _repair_multi_resource_balance(
             apply_move(vertex, source, target)
             paired_move_sequences += 1
 
-    final_cut_edges, final_cut_weight = cut_summary()
+    (
+        final_cut_edges,
+        final_cut_weight,
+        final_combinational_cut_edges,
+    ) = cut_summary()
     validate_cluster_assignment_balance(
         platform,
         clusters_artifact["clusters"],
@@ -1613,9 +1658,17 @@ def _repair_multi_resource_balance(
         },
         "initial_cut_hyperedges": initial_cut_edges,
         "final_cut_hyperedges": final_cut_edges,
+        "initial_combinational_cut_hyperedges": (
+            initial_combinational_cut_edges
+        ),
+        "final_combinational_cut_hyperedges": (
+            final_combinational_cut_edges
+        ),
         "initial_cut_weight": initial_cut_weight,
         "final_cut_weight": final_cut_weight,
         "estimated_cut_delta": estimated_cut_delta,
+        "repair_objective_delta": repair_objective_delta,
+        "combinational_cut_penalty": combinational_cut_penalty,
     }
 
 

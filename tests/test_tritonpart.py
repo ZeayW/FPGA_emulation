@@ -65,6 +65,13 @@ class TritonPartTest(unittest.TestCase):
             self.assertIn("lut", artifact["vertex_dimensions"])
             self.assertIn("ff", artifact["vertex_dimensions"])
             self.assertGreater(len(artifact["hyperedges"]), 0)
+            self.assertTrue(
+                all(
+                    edge["cut_class"]
+                    in {"register_input", "register_output"}
+                    for edge in artifact["hyperedges"]
+                )
+            )
             self.assertEqual(
                 artifact["timing_weight_coverage"]["specified_nets"], 1
             )
@@ -246,6 +253,59 @@ class TritonPartTest(unittest.TestCase):
         self.assertEqual(report["paired_move_sequences"], 0)
         self.assertEqual(repaired["c0"], "fpga1")
         self.assertEqual(repaired["c1"], "fpga2")
+
+    def test_balance_repair_does_not_create_avoidable_combinational_cut(
+        self,
+    ) -> None:
+        cluster_order = [f"c{index}" for index in range(6)]
+        clusters = {
+            "clusters": [
+                {
+                    "id": cluster_id,
+                    "instances": [f"i{index}"],
+                    "resources": {},
+                    "fixed_fpga": None,
+                }
+                for index, cluster_id in enumerate(cluster_order)
+            ]
+        }
+        assignment = {
+            cluster_id: "fpga0" if index < 4 else "fpga1"
+            for index, cluster_id in enumerate(cluster_order)
+        }
+        repaired, report = _repair_multi_resource_balance(
+            assignment,
+            clusters,
+            self.platform,
+            {
+                "balance_tolerance": 0.0,
+                "balance_tolerance_by_dimension": {},
+            },
+            {
+                "cluster_order": cluster_order,
+                "fpga_order": ["fpga0", "fpga1"],
+                "vertex_dimensions": ["cells"],
+                "vertex_weights": [[1] for _ in cluster_order],
+                "effective_balance_percent": 0.0,
+                "hyperedges": [
+                    {
+                        "vertices": [1, 2],
+                        "weight": 1.0,
+                        "cut_class": "combinational",
+                    },
+                    {
+                        "vertices": [1, 5],
+                        "weight": 100.0,
+                        "cut_class": "register_input",
+                    },
+                ],
+            },
+        )
+        self.assertEqual(repaired["c0"], "fpga0")
+        self.assertEqual(repaired["c1"], "fpga0")
+        self.assertEqual(report["initial_combinational_cut_hyperedges"], 0)
+        self.assertEqual(report["final_combinational_cut_hyperedges"], 0)
+        self.assertGreater(report["combinational_cut_penalty"], 100.0)
 
     def test_balance_repair_uses_three_part_ejection_chain(self) -> None:
         platform = Platform.from_dict(
