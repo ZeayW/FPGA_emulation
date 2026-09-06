@@ -127,7 +127,7 @@ PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V13 = (
     "patron-static-exact-transition-guard-flow-native-v13"
 )
 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14 = (
-    "patron-static-exact-register-seeded-flow-native-v14"
+    "patron-static-exact-generalized-flow-native-v14"
 )
 GAIN_QUANTUM = 1.0e-9
 BOUNDARY_FANOUT_PENALTY_SCALE_NS = 0.0
@@ -2210,7 +2210,7 @@ def run_partition_pressure_native(
         provider_metadata.update(
             {
                 "static_exact_search_space": (
-                    "register-seeded-provider-neutral-generalized-v1"
+                    "native-provider-neutral-generalized-v2"
                 ),
                 "static_exact_selection": (
                     "materialized-legality-and-strict-timing-improvement-v3"
