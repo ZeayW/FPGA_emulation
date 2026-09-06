@@ -1403,7 +1403,13 @@ Version 14 treats generalized Static Exact as a strict expansion of the
 register-only search space: it computes the ordinary TritonPart seed once,
 embeds that instance placement into the finer Static Exact clusters, and only
 accepts a structurally legal PATRON result with a strictly improved timing
-certificate.  Unlike the retired v12/v13 experiments, v14 does not freeze each
+certificate.  Because that projected seed can be a strict single-cluster
+local optimum on the finer graph, v14 also evaluates a bounded exact
+multi-cluster neighborhood on the critical timing-path frontier and commits
+the best improving relocation atomically.  This neighborhood is capped
+independently of total design size; it is what allows a short combinational
+logic block to move when every proper subset merely shifts the same boundary.
+Unlike the retired v12/v13 experiments, v14 does not freeze each
 architectural net's initial hop count, total path-transition count, or cut
 count.  Board reachability, the configured route-hop limit, capacity, fixed
 placement, and structural cut legality remain hard constraints; transition and
