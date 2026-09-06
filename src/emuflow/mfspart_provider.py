@@ -71,7 +71,7 @@ def _timing_path_groups(
     database_path: Path,
     *,
     include_hash_evidence: bool = True,
-) -> tuple[list[dict[str, Any]], Dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[list[int]], Dict[str, Any]]:
     database = read_json(database_path)
     if (
         database.get("schema") != STA_PATH_DATABASE_SCHEMA
@@ -103,39 +103,84 @@ def _timing_path_groups(
         net_sink_clusters[net["id"]] = tuple(
             sorted(node_index[cluster_id] for cluster_id in sink_ids)
         )
-    grouped: Dict[tuple[int, ...], float] = {}
+    # Charge each adjacent logical transition independently.  The former
+    # path-set objective collapsed an entire path to one unordered pin set,
+    # so a path that already crossed one FPGA boundary paid no extra cost when
+    # refinement introduced a second (possibly combinational) boundary.  An
+    # ordered transition objective is provider-neutral, remains independent of
+    # the downstream router/scheduler, and gives timing-driven partitioning the
+    # information it actually needs: how many logical stages of a path cross
+    # the board fabric.
+    grouped: Dict[tuple[int, int], float] = {}
     eligible_paths = 0
     unmaterialized_paths = 0
+    materialized_transitions = 0
+    path_guard_chains: set[tuple[int, ...]] = set()
     for timing_path in database["paths"]:
-        pins = {
-            pin
-            for net in timing_path["path_nets"]
-            for pin in net_driver_clusters[net]
-        }
-        for endpoint_name in ("startpoint", "endpoint"):
-            endpoint = timing_path.get(endpoint_name)
-            if endpoint is not None and endpoint["instance"] in cluster_by_instance:
-                pins.add(node_index[cluster_by_instance[endpoint["instance"]]])
-        if "endpoint" not in timing_path:
-            pins.update(net_sink_clusters[timing_path["path_nets"][-1]])
-        if len(pins) < 2:
+        chain: list[int] = []
+
+        def append_pin(pin: int) -> None:
+            if not chain or chain[-1] != pin:
+                chain.append(pin)
+
+        startpoint = timing_path.get("startpoint")
+        if (
+            startpoint is not None
+            and startpoint["instance"] in cluster_by_instance
+        ):
+            append_pin(
+                node_index[cluster_by_instance[startpoint["instance"]]]
+            )
+        for net in timing_path["path_nets"]:
+            for pin in net_driver_clusters[net]:
+                append_pin(pin)
+        endpoint = timing_path.get("endpoint")
+        if endpoint is not None and endpoint["instance"] in cluster_by_instance:
+            append_pin(node_index[cluster_by_instance[endpoint["instance"]]])
+        else:
+            for pin in net_sink_clusters[timing_path["path_nets"][-1]]:
+                append_pin(pin)
+        transitions = [
+            tuple(sorted((source, target)))
+            for source, target in zip(chain, chain[1:])
+            if source != target
+        ]
+        if not transitions:
             unmaterialized_paths += 1
             continue
         eligible_paths += 1
-        key = tuple(sorted(pins))
-        grouped[key] = grouped.get(key, 0.0) + 1.0
+        materialized_transitions += len(transitions)
+        path_guard_chains.add(tuple(chain))
+        for transition in transitions:
+            grouped[transition] = grouped.get(transition, 0.0) + 1.0
     timing_paths = [
         {"weight": weight, "pins": list(pins)}
         for pins, weight in sorted(grouped.items())
     ]
+    ordered_path_guards = sorted(path_guard_chains)
+    guard_digest = hashlib.sha256()
+    for index, chain in enumerate(ordered_path_guards):
+        guard_digest.update(
+            (
+                "GUARD "
+                + " ".join(str(value) for value in (index, len(chain), *chain))
+                + "\n"
+            ).encode("utf-8")
+        )
     report = {
-        "schema": "emuflow.mfspart-timing-path-objective/v1",
+        "schema": "emuflow.mfspart-timing-path-objective/v2",
         "database_paths": len(database["paths"]),
         "eligible_paths": eligible_paths,
         "unmaterialized_paths": unmaterialized_paths,
+        "materialized_transitions": materialized_transitions,
         "compressed_groups": len(timing_paths),
         "compressed_pins": sum(len(path["pins"]) for path in timing_paths),
-        "weighting": "uniform-path-count-with-identical-pin-set-aggregation",
+        "path_guards": len(ordered_path_guards),
+        "path_guard_pins": sum(len(chain) for chain in ordered_path_guards),
+        "path_guard_sha256": guard_digest.hexdigest(),
+        "weighting": (
+            "uniform-path-count-with-identical-adjacent-transition-aggregation"
+        ),
     }
     if include_hash_evidence:
         report.update(
@@ -146,7 +191,11 @@ def _timing_path_groups(
                 ),
             }
         )
-    return timing_paths, report
+    return (
+        timing_paths,
+        [list(chain) for chain in ordered_path_guards],
+        report,
+    )
 
 
 def _platform_problem(
@@ -420,8 +469,9 @@ def refine_mfspart_partition(
         == CUT_MODE_STATIC_EXACT
     )
     timing_paths: list[dict[str, Any]] = []
+    timing_path_guards: list[list[int]] = []
     timing_path_objective: Dict[str, Any] = {
-        "schema": "emuflow.mfspart-timing-path-objective/v1",
+        "schema": "emuflow.mfspart-timing-path-objective/v2",
         "status": "disabled",
         "reason": (
             "non-static-exact-cut-mode"
@@ -431,7 +481,11 @@ def refine_mfspart_partition(
     }
     effective_timing_path_beta = 0.0
     if static_exact and timing_path_database_path is not None:
-        timing_paths, timing_path_objective = _timing_path_groups(
+        (
+            timing_paths,
+            timing_path_guards,
+            timing_path_objective,
+        ) = _timing_path_groups(
             ir,
             clusters_artifact,
             node_index,
@@ -445,12 +499,11 @@ def refine_mfspart_partition(
     for net in nets:
         source = node_index[net["source"]]
         sinks = [node_index[sink] for sink in net["sinks"]]
-        # A combinational boundary is the new degree of freedom.  Charge its
-        # ordinary timing-weighted cut/connectivity cost, but do not let the
-        # worst-sink guard make every initially local candidate impossible.
-        # Conversely, pre-existing architectural transport may improve but
-        # may never acquire a longer board path than in the sealed TritonPart
-        # assignment.  This makes the new cut useful rather than arbitrary.
+        # A combinational boundary is the new degree of freedom. Preserve the
+        # worst-hop limit of each already transported ordinary net. Initially
+        # local ordinary nets remain movable so a register-side boundary can
+        # migrate into combinational logic; the independent whole-path guard
+        # below prevents that freedom from adding a path-level zigzag.
         combinational = static_exact and net["cut_class"] == "combinational"
         initial_maximum_distance = max(
             distances[parts[initial[source]]][parts[initial[sink]]]
@@ -496,6 +549,7 @@ def refine_mfspart_partition(
         bottleneck_beta=bottleneck_beta,
         timing_paths=timing_paths,
         timing_path_beta=effective_timing_path_beta,
+        timing_path_guards=timing_path_guards,
         executable=refiner,
         checker=refiner_checker,
         online_validation=online_validation,
@@ -528,8 +582,9 @@ def refine_mfspart_partition(
         "bottleneck_beta": bottleneck_beta,
         "timing_path_beta": effective_timing_path_beta,
         "timing_path_objective": timing_path_objective,
+        "path_safe_selection": refinement.get("path_safe_selection"),
         "hmax": hmax,
-        "moves": len(refinement["moves"]),
+        "moves": int(refinement["metrics"]["attempted_moves"]),
         "best_prefix": int(refinement["metrics"]["best_prefix"]),
         "best_cumulative_gain": refinement["metrics"][
             "best_cumulative_gain"
@@ -590,6 +645,7 @@ def refine_mfspart_partition(
         "bottleneck_beta": bottleneck_beta,
         "timing_path_beta": effective_timing_path_beta,
         "timing_path_objective": timing_path_objective,
+        "path_safe_selection": refinement.get("path_safe_selection"),
         "topology_guard": (
             "non-combinational-net-worst-sink-distance-non-regression-v1"
             if static_exact

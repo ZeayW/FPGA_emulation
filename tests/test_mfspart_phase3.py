@@ -18,6 +18,7 @@ from emuflow.mfspart_provider import (
 )
 from emuflow.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
 from emuflow.partition import (
+    CUT_MODE_SEQUENTIAL_ONLY,
     CUT_MODE_STATIC_EXACT,
     build_clusters,
     build_partition_assignment,
@@ -271,22 +272,21 @@ class MFSPartPhase3Test(unittest.TestCase):
             max_cross_fpga_dependency_depth=8,
             static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         )
-        cluster_for = {
-            instance: cluster["id"]
-            for cluster in clusters["clusters"]
-            for instance in cluster["instances"]
-        }
-        initial = build_partition_assignment(
+        anchor_clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
+        )
+        anchor_assignment = build_partition_assignment(
             ir,
             platform,
-            clusters,
+            anchor_clusters,
             constraints,
             {
-                cluster_for["q0"]: "fpga0",
-                cluster_for["l0"]: "fpga1",
-                cluster_for["l1"]: "fpga1",
-                cluster_for["l2"]: "fpga1",
-                cluster_for["q1"]: "fpga1",
+                cluster["id"]: (
+                    "fpga0" if "q0" in cluster["instances"] else "fpga1"
+                )
+                for cluster in anchor_clusters["clusters"]
             },
             provider="tritonpart-fixture",
             seed=19,
@@ -298,8 +298,9 @@ class MFSPartPhase3Test(unittest.TestCase):
             write_json(ir_path, ir.value)
             write_json(constraints_path, constraints)
             with patch(
-                "emuflow.phase3.run_tritonpart", return_value=initial
-            ):
+                "emuflow.phase3.run_tritonpart",
+                return_value=anchor_assignment,
+            ) as mocked_tritonpart:
                 report = run_phase3(
                     ir_path,
                     PLATFORM,
@@ -320,6 +321,7 @@ class MFSPartPhase3Test(unittest.TestCase):
                     ],
                     retain_diagnostics=True,
                 )
+            tritonpart_clusters = mocked_tritonpart.call_args.args[2]
             refined = read_json(root / "phase3/assignment.json")
         self.assertEqual(report["status"], "pass")
         self.assertIn("semantic_contract", refined)
@@ -331,6 +333,18 @@ class MFSPartPhase3Test(unittest.TestCase):
         )
         self.assertGreater(
             report["validation"]["semantic_contract"]["logic_segments"], 0
+        )
+        self.assertEqual(
+            tritonpart_clusters["policy"].get(
+                "cut_mode", CUT_MODE_SEQUENTIAL_ONLY
+            ),
+            CUT_MODE_SEQUENTIAL_ONLY,
+        )
+        self.assertEqual(
+            refined["provider_metadata"]["static_exact_initialization"][
+                "provider"
+            ],
+            "sequential-boundary-tritonpart-anchor-v1",
         )
 
     def test_directional_graph_uses_emuir_driver_identity(self) -> None:
@@ -416,6 +430,38 @@ class MFSPartPhase3Test(unittest.TestCase):
         )
         self.assertEqual(initial["metrics"]["combinational_cut_nets"], 0)
         with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            timing_database = root / "timing-paths.json"
+            write_json(
+                timing_database,
+                {
+                    "schema": "emuflow.sta-path-database/v1",
+                    "design": ir.value["design"]["name"],
+                    "paths": [
+                        {
+                            "id": "p0",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 10.0,
+                            "slack_ns": 0.0,
+                            "fixed_delay_ns": 0.0,
+                            "path_nets": ["q", "n0", "n1", "d"],
+                            "normalized_slack": 0.0,
+                            "startpoint": {
+                                "object": "q0/Q",
+                                "instance": "q0",
+                                "port": "Q",
+                                "bit": 0,
+                            },
+                            "endpoint": {
+                                "object": "q1/D",
+                                "instance": "q1",
+                                "port": "D",
+                                "bit": 0,
+                            },
+                        }
+                    ],
+                },
+            )
             refined, report = refine_mfspart_partition(
                 ir,
                 platform,
@@ -423,11 +469,12 @@ class MFSPartPhase3Test(unittest.TestCase):
                 constraints,
                 load_route_constraints(None, platform, frame_slots=32),
                 initial,
-                Path(temporary_directory),
+                root,
                 net_weights={"q": 10.0},
                 early_stop=3,
                 refiner=self.executables["refiner"],
                 refiner_checker=self.executables["refiner_checker"],
+                timing_path_database_path=timing_database,
             )
         self.assertEqual(report["topology_guard"], (
             "non-combinational-net-worst-sink-distance-non-regression-v1"
@@ -435,6 +482,13 @@ class MFSPartPhase3Test(unittest.TestCase):
         self.assertGreater(report["guarded_nets"], 0)
         self.assertGreater(refined["metrics"]["combinational_cut_nets"], 0)
         self.assertEqual(refined["instance_assignment"]["l0"], "fpga0")
+        selection = report["refinement"]["path_safe_selection"]
+        self.assertEqual(selection["status"], "pass")
+        self.assertEqual(selection["maximum_path_hop_delta"], 0)
+        self.assertLessEqual(
+            selection["selected_total_path_hops"],
+            selection["initial_total_path_hops"],
+        )
 
     def test_timing_path_groups_follow_ordered_drivers_not_fanout_branches(self) -> None:
         ir = _chain_ir()
@@ -484,14 +538,18 @@ class MFSPartPhase3Test(unittest.TestCase):
                     "paths": [path, {**path, "id": "p1"}],
                 },
             )
-            groups, evidence = _timing_path_groups(
+            groups, guards, evidence = _timing_path_groups(
                 ir, clusters, node_index, database
             )
             with patch(
                 "emuflow.mfspart_provider._sha256",
                 side_effect=AssertionError("online path must not hash"),
             ):
-                online_groups, online_evidence = _timing_path_groups(
+                (
+                    online_groups,
+                    online_guards,
+                    online_evidence,
+                ) = _timing_path_groups(
                     ir,
                     clusters,
                     node_index,
@@ -506,13 +564,23 @@ class MFSPartPhase3Test(unittest.TestCase):
                 ir_path, clusters_path, database
             )
         self.assertEqual(evidence["eligible_paths"], 2)
-        self.assertEqual(evidence["compressed_groups"], 1)
-        self.assertEqual(groups[0]["weight"], 2.0)
-        self.assertEqual(len(groups[0]["pins"]), 5)
+        self.assertEqual(evidence["materialized_transitions"], 8)
+        self.assertEqual(evidence["compressed_groups"], 4)
+        self.assertEqual(evidence["path_guards"], 1)
+        self.assertEqual(evidence["path_guard_pins"], 5)
+        self.assertEqual(len(evidence["path_guard_sha256"]), 64)
+        self.assertTrue(all(group["weight"] == 2.0 for group in groups))
+        self.assertTrue(all(len(group["pins"]) == 2 for group in groups))
+        self.assertEqual(len(guards), 1)
+        self.assertEqual(len(guards[0]), 5)
         self.assertEqual(independently_rebuilt, evidence)
         self.assertEqual(online_groups, groups)
-        self.assertFalse(
-            any("sha256" in key for key in online_evidence)
+        self.assertEqual(online_guards, guards)
+        self.assertNotIn("database_sha256", online_evidence)
+        self.assertNotIn("objective_sha256", online_evidence)
+        self.assertEqual(
+            online_evidence["path_guard_sha256"],
+            evidence["path_guard_sha256"],
         )
 
     def test_counter_runs_affected_multi_fpga_flow_with_mfspart(self) -> None:

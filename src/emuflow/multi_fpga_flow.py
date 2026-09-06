@@ -1134,7 +1134,7 @@ def run_multi_fpga_flow(
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
-    patron_algorithm_version: int = 6,
+    patron_algorithm_version: int = 14,
     partition_timeout_seconds: int = 3600,
     partition_seed_attempts: int = 1,
     partition_num_initial_solutions: int = 50,
@@ -1146,6 +1146,7 @@ def run_multi_fpga_flow(
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    mfspart_post_refinement: bool = False,
     mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     timing_driven: bool = True,
     timing_backend: str = "opensta",
@@ -1610,9 +1611,7 @@ def run_multi_fpga_flow(
         patron_flow_refinement=patron_flow_refinement,
         patron_algorithm_version=patron_algorithm_version,
         static_exact_candidate_policy=static_exact_candidate_policy,
-        mfspart_post_refinement=(
-            exact_cut_mode and partition_provider == "tritonpart"
-        ),
+        mfspart_post_refinement=mfspart_post_refinement,
         timing_path_database_path=(
             path_database_path if exact_cut_mode else None
         ),

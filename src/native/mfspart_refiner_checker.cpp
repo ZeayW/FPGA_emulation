@@ -53,6 +53,10 @@ struct TimingPath {
   std::vector<int> pins;
 };
 
+struct TimingPathGuard {
+  std::vector<int> pins;
+};
+
 struct Input {
   int parts = 0;
   int dimensions = 0;
@@ -64,11 +68,13 @@ struct Input {
   double mu = 0.0;
   double bottleneck_beta = 0.0;
   double timing_path_beta = 0.0;
+  bool compact_output = false;
   std::vector<std::vector<int>> distances;
   std::vector<std::vector<long long>> capacities;
   std::vector<Node> nodes;
   std::vector<Net> nets;
   std::vector<TimingPath> timing_paths;
+  std::vector<TimingPathGuard> timing_path_guards;
   std::vector<int> assignment;
 };
 
@@ -100,6 +106,12 @@ struct Metrics {
   double weighted_crossed_timing_paths = 0.0;
 };
 
+struct GuardEdge {
+  int path = -1;
+  int other = -1;
+  bool moved_is_source = false;
+};
+
 template <typename Values>
 bool any_missing(const Values& values) {
   return std::any_of(values.begin(), values.end(),
@@ -111,7 +123,11 @@ Input read_input(const std::string& path) {
   if (!stream) throw std::runtime_error("cannot open checker input");
   std::string magic;
   std::getline(stream, magic);
-  const bool input_v4 = magic == "EMUFLOW_MFSPART_REFINER_INPUT_V4";
+  const bool input_v6 = magic == "EMUFLOW_MFSPART_REFINER_INPUT_V6";
+  const bool input_v5 =
+      input_v6 || magic == "EMUFLOW_MFSPART_REFINER_INPUT_V5";
+  const bool input_v4 =
+      input_v5 || magic == "EMUFLOW_MFSPART_REFINER_INPUT_V4";
   const bool input_v3 =
       input_v4 || magic == "EMUFLOW_MFSPART_REFINER_INPUT_V3";
   const bool input_v2 =
@@ -123,10 +139,12 @@ Input read_input(const std::string& path) {
   int node_count = -1;
   int net_count = -1;
   int timing_path_count = 0;
+  int timing_path_guard_count = 0;
   bool saw_param = false;
   std::vector<std::vector<bool>> saw_distance;
   std::vector<std::vector<bool>> saw_capacity;
-  std::vector<bool> saw_node, saw_net, saw_timing_path, saw_assignment;
+  std::vector<bool> saw_node, saw_net, saw_timing_path, saw_timing_path_guard,
+      saw_assignment;
   std::string kind;
   while (stream >> kind) {
     if (kind == "PARAM") {
@@ -136,6 +154,12 @@ Input read_input(const std::string& path) {
           input.lambda >> input.mu;
       if (input_v2) stream >> input.bottleneck_beta;
       if (input_v4) stream >> timing_path_count >> input.timing_path_beta;
+      if (input_v5) stream >> timing_path_guard_count;
+      int compact_output = 0;
+      if (input_v6) {
+        stream >> compact_output;
+        input.compact_output = compact_output != 0;
+      }
       if (input.parts <= 0 || node_count <= 0 || input.dimensions <= 0 ||
           net_count < 0 || input.hmax < 1 || input.move_distance < 1 ||
           input.early_stop < 1 || !std::isfinite(input.gamma) ||
@@ -143,6 +167,8 @@ Input read_input(const std::string& path) {
           !std::isfinite(input.bottleneck_beta) || input.gamma < 0.0 ||
           input.lambda < 0.0 || input.mu < 0.0 ||
           input.bottleneck_beta < 0.0 || timing_path_count < 0 ||
+          timing_path_guard_count < 0 ||
+          (input_v6 && compact_output != 0 && compact_output != 1) ||
           !std::isfinite(input.timing_path_beta) ||
           input.timing_path_beta < 0.0) {
         throw std::runtime_error("invalid PARAM");
@@ -153,6 +179,8 @@ Input read_input(const std::string& path) {
       input.nodes.assign(node_count, Node{});
       input.nets.assign(net_count, Net{});
       input.timing_paths.assign(timing_path_count, TimingPath{});
+      input.timing_path_guards.assign(timing_path_guard_count,
+                                      TimingPathGuard{});
       input.assignment.assign(node_count, -1);
       saw_distance.assign(input.parts, std::vector<bool>(input.parts, false));
       saw_capacity.assign(input.parts,
@@ -160,6 +188,7 @@ Input read_input(const std::string& path) {
       saw_node.assign(node_count, false);
       saw_net.assign(net_count, false);
       saw_timing_path.assign(timing_path_count, false);
+      saw_timing_path_guard.assign(timing_path_guard_count, false);
       saw_assignment.assign(node_count, false);
       saw_param = true;
     } else if (kind == "DIST") {
@@ -257,6 +286,26 @@ Input read_input(const std::string& path) {
       std::sort(timing_path.pins.begin(), timing_path.pins.end());
       input.timing_paths[index] = std::move(timing_path);
       saw_timing_path[index] = true;
+    } else if (kind == "GUARD") {
+      int index = -1, pin_count = -1;
+      TimingPathGuard guard;
+      stream >> index >> pin_count;
+      if (!saw_param || !input_v5 || index < 0 ||
+          index >= timing_path_guard_count || saw_timing_path_guard[index] ||
+          pin_count < 2) {
+        throw std::runtime_error("invalid GUARD");
+      }
+      guard.pins.resize(pin_count);
+      for (int pin_index = 0; pin_index < pin_count; ++pin_index) {
+        stream >> guard.pins[pin_index];
+        if (guard.pins[pin_index] < 0 || guard.pins[pin_index] >= node_count ||
+            (pin_index > 0 &&
+             guard.pins[pin_index] == guard.pins[pin_index - 1])) {
+          throw std::runtime_error("invalid GUARD pin");
+        }
+      }
+      input.timing_path_guards[index] = std::move(guard);
+      saw_timing_path_guard[index] = true;
     } else {
       throw std::runtime_error("unknown checker input record");
     }
@@ -264,6 +313,7 @@ Input read_input(const std::string& path) {
   }
   if (!saw_param || any_missing(saw_node) || any_missing(saw_net) ||
       any_missing(saw_timing_path) ||
+      any_missing(saw_timing_path_guard) ||
       any_missing(saw_assignment)) {
     throw std::runtime_error("incomplete checker input");
   }
@@ -594,6 +644,10 @@ void require_partition_metrics(const Output& output, const std::string& prefix,
 
 void check(const Input& input, const Output& output,
            const std::string& report_path) {
+  if (input.compact_output) {
+    throw std::runtime_error(
+        "global-best checker requires detailed qualification output");
+  }
   std::vector<int> assignment = input.assignment;
   auto current_loads = loads(input, assignment);
   const Metrics initial_metrics = metrics(input, assignment);
@@ -725,6 +779,39 @@ void check(const Input& input, const Output& output,
        path_index < static_cast<int>(input.timing_paths.size()); ++path_index) {
     update_timing_path_contribution(path_index, 1.0, nullptr);
   }
+  std::vector<std::vector<GuardEdge>> path_guard_incidence(
+      input.nodes.size());
+  std::vector<int> path_guard_hops(input.timing_path_guards.size(), 0);
+  std::vector<int> path_guard_crossings(input.timing_path_guards.size(), 0);
+  std::vector<int> path_guard_hop_budgets(input.timing_path_guards.size(), 1);
+  std::vector<int> path_guard_crossing_budgets(
+      input.timing_path_guards.size(), 1);
+  long long initial_total_path_hops = 0;
+  long long initial_total_path_crossings = 0;
+  for (int path_index = 0;
+       path_index < static_cast<int>(input.timing_path_guards.size());
+       ++path_index) {
+    const auto& pins = input.timing_path_guards[path_index].pins;
+    for (int edge = 0; edge + 1 < static_cast<int>(pins.size()); ++edge) {
+      const int source = pins[edge];
+      const int target = pins[edge + 1];
+      if (source == target) continue;
+      path_guard_incidence[source].push_back({path_index, target, true});
+      path_guard_incidence[target].push_back({path_index, source, false});
+      path_guard_hops[path_index] +=
+          input.distances[assignment[source]][assignment[target]];
+      path_guard_crossings[path_index] +=
+          assignment[source] != assignment[target];
+    }
+    path_guard_hop_budgets[path_index] =
+        std::max(1, path_guard_hops[path_index]);
+    path_guard_crossing_budgets[path_index] =
+        std::max(1, path_guard_crossings[path_index]);
+    initial_total_path_hops += path_guard_hops[path_index];
+    initial_total_path_crossings += path_guard_crossings[path_index];
+  }
+  int path_guard_violations = 0;
+  int path_guard_safe_prefixes = 1;
   std::vector<bool> locked(input.nodes.size(), false);
   long long objective_recomputations = 0;
 
@@ -827,7 +914,9 @@ void check(const Input& input, const Output& output,
   };
 
   double cumulative = 0.0;
+  double search_best_cumulative = 0.0;
   double best_cumulative = 0.0;
+  long long best_cumulative_rank = 0;
   int best_prefix = 0;
   int ineffective = 0;
   std::vector<int> marks(input.nodes.size(), 0);
@@ -850,9 +939,8 @@ void check(const Input& input, const Output& output,
     if (!close_number(actual.cumulative, cumulative)) {
       throw std::runtime_error("refiner cumulative gain mismatch");
     }
-    if (cumulative > best_cumulative) {
-      best_cumulative = cumulative;
-      best_prefix = index + 1;
+    if (cumulative > search_best_cumulative) {
+      search_best_cumulative = cumulative;
       ineffective = 0;
     } else {
       ++ineffective;
@@ -868,12 +956,49 @@ void check(const Input& input, const Output& output,
         throw std::runtime_error("refiner move exceeds capacity");
       }
     }
+    std::map<int, std::pair<int, int>> path_guard_deltas;
+    for (const GuardEdge& edge : path_guard_incidence[node]) {
+      const int other_part = assignment[edge.other];
+      const int old_hops = edge.moved_is_source
+                               ? input.distances[source][other_part]
+                               : input.distances[other_part][source];
+      const int new_hops = edge.moved_is_source
+                               ? input.distances[target][other_part]
+                               : input.distances[other_part][target];
+      auto& delta = path_guard_deltas[edge.path];
+      delta.first += new_hops - old_hops;
+      delta.second += (target != other_part) - (source != other_part);
+    }
+    for (const auto& [path_index, unused] : path_guard_deltas) {
+      (void)unused;
+      path_guard_violations -=
+          (path_guard_hops[path_index] > path_guard_hop_budgets[path_index] ||
+           path_guard_crossings[path_index] >
+               path_guard_crossing_budgets[path_index]);
+    }
     std::vector<int> timing_path_affected;
     for (const int path_index : timing_path_incidence[node]) {
       update_timing_path_contribution(path_index, -1.0,
                                       &timing_path_affected);
     }
     assignment[node] = target;
+    for (const auto& [path_index, delta] : path_guard_deltas) {
+      path_guard_hops[path_index] += delta.first;
+      path_guard_crossings[path_index] += delta.second;
+      path_guard_violations +=
+          (path_guard_hops[path_index] > path_guard_hop_budgets[path_index] ||
+           path_guard_crossings[path_index] >
+               path_guard_crossing_budgets[path_index]);
+    }
+    if (path_guard_violations == 0) {
+      ++path_guard_safe_prefixes;
+      const long long cumulative_rank = gain_rank(cumulative);
+      if (cumulative_rank > best_cumulative_rank) {
+        best_cumulative_rank = cumulative_rank;
+        best_cumulative = cumulative;
+        best_prefix = index + 1;
+      }
+    }
     for (const auto& [neighbor, weight] : pair_adjacency[node]) {
       neighbor_part_weights[neighbor][source] -= weight;
       neighbor_part_weights[neighbor][target] += weight;
@@ -940,10 +1065,55 @@ void check(const Input& input, const Output& output,
   if (output.assignment != final_assignment) {
     throw std::runtime_error("refiner rollback assignment mismatch");
   }
+  long long selected_total_path_hops = 0;
+  long long selected_total_path_crossings = 0;
+  int maximum_path_hop_delta = 0;
+  int maximum_path_crossing_delta = 0;
+  for (const TimingPathGuard& guard : input.timing_path_guards) {
+    int initial_hops = 0;
+    int initial_crossings = 0;
+    int final_hops = 0;
+    int final_crossings = 0;
+    for (int edge = 0; edge + 1 < static_cast<int>(guard.pins.size());
+         ++edge) {
+      const int source = guard.pins[edge];
+      const int target = guard.pins[edge + 1];
+      initial_hops += input.distances[input.assignment[source]]
+                                     [input.assignment[target]];
+      initial_crossings +=
+          input.assignment[source] != input.assignment[target];
+      final_hops +=
+          input.distances[final_assignment[source]][final_assignment[target]];
+      final_crossings +=
+          final_assignment[source] != final_assignment[target];
+    }
+    if (final_hops > std::max(1, initial_hops) ||
+        final_crossings > std::max(1, initial_crossings)) {
+      throw std::runtime_error("selected prefix violates timing path envelope");
+    }
+    selected_total_path_hops += final_hops;
+    selected_total_path_crossings += final_crossings;
+    maximum_path_hop_delta =
+        std::max(maximum_path_hop_delta, final_hops - initial_hops);
+    maximum_path_crossing_delta = std::max(
+        maximum_path_crossing_delta, final_crossings - initial_crossings);
+  }
   const Metrics final_metrics = metrics(input, final_assignment);
   require_metric(output, "attempted_moves", output.moves.size());
   require_metric(output, "best_prefix", best_prefix);
   require_metric(output, "best_cumulative_gain", best_cumulative);
+  require_metric(output, "path_guard_safe_prefixes",
+                 path_guard_safe_prefixes);
+  require_metric(output, "initial_total_path_hops", initial_total_path_hops);
+  require_metric(output, "selected_total_path_hops",
+                 selected_total_path_hops);
+  require_metric(output, "initial_total_path_crossings",
+                 initial_total_path_crossings);
+  require_metric(output, "selected_total_path_crossings",
+                 selected_total_path_crossings);
+  require_metric(output, "maximum_path_hop_delta", maximum_path_hop_delta);
+  require_metric(output, "maximum_path_crossing_delta",
+                 maximum_path_crossing_delta);
   require_partition_metrics(output, "initial", initial_metrics);
   require_partition_metrics(output, "final", final_metrics);
 
@@ -959,6 +1129,20 @@ void check(const Input& input, const Output& output,
          << '\n';
   report << "METRIC best_cumulative_gain " << std::setprecision(17)
          << best_cumulative << '\n';
+  report << "METRIC path_guard_safe_prefixes " << path_guard_safe_prefixes
+         << '\n';
+  report << "METRIC initial_total_path_hops " << initial_total_path_hops
+         << '\n';
+  report << "METRIC selected_total_path_hops " << selected_total_path_hops
+         << '\n';
+  report << "METRIC initial_total_path_crossings "
+         << initial_total_path_crossings << '\n';
+  report << "METRIC selected_total_path_crossings "
+         << selected_total_path_crossings << '\n';
+  report << "METRIC maximum_path_hop_delta " << maximum_path_hop_delta
+         << '\n';
+  report << "METRIC maximum_path_crossing_delta "
+         << maximum_path_crossing_delta << '\n';
 }
 
 }  // namespace

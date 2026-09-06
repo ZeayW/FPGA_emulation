@@ -375,7 +375,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 partition["configuration"]["provider"], "patron"
             )
             self.assertEqual(
-                partition["configuration"]["patron_algorithm_version"], 6
+                partition["configuration"]["patron_algorithm_version"], 14
             )
             self.assertEqual(
                 partition["configuration"]["cut_mode"],
@@ -467,6 +467,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             config["partition_provider"] = "patron"
             config["cut_mode"] = "sequential-only"
+            config["patron_algorithm_version"] = 11
             config["patron_flow_refinement"] = True
             config["patron_initial_assignment"] = str(initial)
             config["patron_initial_clusters"] = str(initial_clusters)
@@ -902,7 +903,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertIn("phase6-chimew", nodes)
             self.assertIn("qor-comparison", nodes)
             partition = nodes["partition"]
-            self.assertTrue(
+            self.assertFalse(
                 partition["configuration"]["mfspart_post_refinement"]
             )
             self.assertEqual(
@@ -911,17 +912,12 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
                 256.0,
             )
-            self.assertIn("--mfspart-post-refinement", partition["command"])
-            self.assertEqual(
-                partition["command"][
-                    partition["command"].index(
-                        "--mfspart-post-refinement-bottleneck-beta"
-                    )
-                    + 1
-                ],
-                "256",
+            self.assertIn("--no-mfspart-post-refinement", partition["command"])
+            self.assertNotIn(
+                "--mfspart-post-refinement-bottleneck-beta",
+                partition["command"],
             )
-            self.assertIn(
+            self.assertNotIn(
                 "mfspart-post-refinement",
                 {artifact["path"] for artifact in partition["artifacts"]},
             )
@@ -995,7 +991,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 partition["configuration"][
                     "mfspart_post_refinement_timing_path_beta"
                 ],
-                0.0,
+                1.0,
             )
 
     def test_generalized_static_exact_accepts_depth_beyond_two(self) -> None:
@@ -1149,6 +1145,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
 
             config["cut_mode"] = "sequential-only"
+            config["patron_algorithm_version"] = 6
             config["minimum_combinational_cut_nets"] = 1
             config_path.write_text(json.dumps(config), encoding="utf-8")
             with self.assertRaisesRegex(

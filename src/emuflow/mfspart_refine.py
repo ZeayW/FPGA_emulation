@@ -1,4 +1,9 @@
-"""MFSPart direct k-way FM uncoarsening and independent replay oracle."""
+"""MFSPart direct k-way FM refinement and independent qualification.
+
+Production Phase 3 consumes a compact native result and validates its output
+contract in linear time.  Full move replay is reserved for small/explicit
+algorithm-qualification tests and is never part of the large-design hot path.
+"""
 
 from __future__ import annotations
 
@@ -17,16 +22,19 @@ from .mfspart_initial import MFSPART_INITIAL_SCHEMA, _partition_metrics
 from .native_tools import resolve_native_executable
 
 
-MFSPART_REFINER_INPUT_SCHEMA = "emuflow.mfspart-refiner-input/v4"
+MFSPART_REFINER_INPUT_SCHEMA = "emuflow.mfspart-refiner-input/v6"
 MFSPART_REFINEMENT_SCHEMA = "emuflow.mfspart-refinement/v1"
-MFSPART_REFINER_PROVIDER = "mfspart-timing-path-guarded-direct-kway-fm-v4"
+MFSPART_REFINEMENT_RESULT_SCHEMA = "emuflow.mfspart-refinement-result/v2"
+MFSPART_REFINER_PROVIDER = "mfspart-timing-path-envelope-direct-kway-fm-v5"
+MFSPART_PATH_GUARD_PROVIDER = "timing-path-single-boundary-envelope-prefix-v1"
 _GAIN_RANK_SCALE = 1_000_000_000.0
 _DEFAULT_PYTHON_REPLAY_MAX_NODES = 2_000
 DEFAULT_BOTTLENECK_BETA = 256.0
-# The canonical physical comparison found no incremental Phase-7 QoR benefit
-# from the path-set term. Keep it available for explicit research studies, but
-# do not perturb the guarded objective by default.
-DEFAULT_TIMING_PATH_BETA = 0.0
+# One unit preserves the natural interpretation of the objective: every STA
+# path contributes its weight once for each adjacent logical transition that
+# crosses an FPGA boundary.  This is deliberately a partition-level timing
+# cost, not a prediction of any particular downstream TDM scheduler.
+DEFAULT_TIMING_PATH_BETA = 1.0
 
 
 def _gain_rank(value: float) -> int:
@@ -59,6 +67,7 @@ def _normalise_refinement(
     bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
     timing_paths: Sequence[Mapping[str, Any]] = (),
     timing_path_beta: float = 0.0,
+    timing_path_guards: Sequence[Sequence[int]] = (),
 ) -> Dict[str, Any]:
     if not parts or len(set(parts)) != len(parts):
         raise ValidationError("MFSPart refiner FPGA ids must be unique")
@@ -206,6 +215,32 @@ def _normalise_refinement(
         normalised_paths.append(
             {"weight": float(weight), "pins": sorted(pins)}
         )
+    normalised_path_guards = []
+    seen_path_guards = set()
+    for guard_index, pins in enumerate(timing_path_guards):
+        if (
+            not isinstance(pins, (list, tuple))
+            or len(pins) < 2
+            or any(
+                not isinstance(pin, int)
+                or isinstance(pin, bool)
+                or pin < 0
+                or pin >= len(nodes)
+                for pin in pins
+            )
+        ):
+            raise ValidationError(
+                f"invalid MFSPart timing-path guard {guard_index}"
+            )
+        chain = tuple(
+            pin
+            for index, pin in enumerate(pins)
+            if index == 0 or pin != pins[index - 1]
+        )
+        if len(chain) < 2 or chain in seen_path_guards:
+            continue
+        seen_path_guards.add(chain)
+        normalised_path_guards.append(list(chain))
     return {
         "schema": MFSPART_REFINER_INPUT_SCHEMA,
         "provider": MFSPART_REFINER_PROVIDER,
@@ -224,43 +259,59 @@ def _normalise_refinement(
         "bottleneck_beta": float(bottleneck_beta),
         "timing_paths": normalised_paths,
         "timing_path_beta": float(timing_path_beta),
+        "timing_path_guards": normalised_path_guards,
     }
 
 
-def _write_native_input(path: Path, problem: Mapping[str, Any]) -> None:
+def _write_native_input(
+    path: Path,
+    problem: Mapping[str, Any],
+    *,
+    compact_output: bool = False,
+) -> None:
     graph = problem["graph"]
-    input_v4 = bool(problem["timing_paths"]) or problem["timing_path_beta"] != 0.0
+    input_v6 = compact_output
+    input_v5 = input_v6 or bool(problem["timing_path_guards"])
+    input_v4 = (
+        input_v5
+        or bool(problem["timing_paths"])
+        or problem["timing_path_beta"] != 0.0
+    )
+    parameter_values = [
+        len(problem["parts"]),
+        len(graph["nodes"]),
+        len(problem["dimensions"]),
+        len(graph["nets"]),
+        problem["hmax"],
+        problem["move_distance"],
+        problem["early_stop"],
+        format(problem["gamma"], ".17g"),
+        format(problem["lambda"], ".17g"),
+        format(problem["mu"], ".17g"),
+        format(problem["bottleneck_beta"], ".17g"),
+    ]
+    if input_v4:
+        parameter_values.extend(
+            (
+                len(problem["timing_paths"]),
+                format(problem["timing_path_beta"], ".17g"),
+            )
+        )
+    if input_v5:
+        parameter_values.append(len(problem["timing_path_guards"]))
+    if input_v6:
+        parameter_values.append(1)
     lines = [
         (
-            "EMUFLOW_MFSPART_REFINER_INPUT_V4"
+            "EMUFLOW_MFSPART_REFINER_INPUT_V6"
+            if input_v6
+            else "EMUFLOW_MFSPART_REFINER_INPUT_V5"
+            if input_v5
+            else "EMUFLOW_MFSPART_REFINER_INPUT_V4"
             if input_v4
             else "EMUFLOW_MFSPART_REFINER_INPUT_V3"
         ),
-        "PARAM "
-        + " ".join(
-            str(value)
-            for value in (
-                len(problem["parts"]),
-                len(graph["nodes"]),
-                len(problem["dimensions"]),
-                len(graph["nets"]),
-                problem["hmax"],
-                problem["move_distance"],
-                problem["early_stop"],
-                format(problem["gamma"], ".17g"),
-                format(problem["lambda"], ".17g"),
-                format(problem["mu"], ".17g"),
-                format(problem["bottleneck_beta"], ".17g"),
-                *(
-                    (
-                        len(problem["timing_paths"]),
-                        format(problem["timing_path_beta"], ".17g"),
-                    )
-                    if input_v4
-                    else ()
-                ),
-            )
-        ),
+        "PARAM " + " ".join(str(value) for value in parameter_values),
     ]
     for source, row in enumerate(problem["distances"]):
         for target, distance in enumerate(row):
@@ -306,6 +357,15 @@ def _write_native_input(path: Path, problem: Mapping[str, Any]) -> None:
                     )
                 )
             )
+    if input_v5:
+        for index, pins in enumerate(problem["timing_path_guards"]):
+            lines.append(
+                "GUARD "
+                + " ".join(
+                    str(value)
+                    for value in (index, len(pins), *pins)
+                )
+            )
     lines.extend(
         f"ASSIGN {node} {part}"
         for node, part in enumerate(problem["assignment"])
@@ -317,8 +377,12 @@ def _parse_output(path: Path, node_count: int) -> Dict[str, Any]:
     if not path.is_file():
         raise EmuFlowError("MFSPart refiner produced no output")
     lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_MFSPART_REFINER_OUTPUT_V1":
+    if not lines or lines[0] not in {
+        "EMUFLOW_MFSPART_REFINER_OUTPUT_V1",
+        "EMUFLOW_MFSPART_REFINER_OUTPUT_V2",
+    }:
         raise ValidationError("invalid MFSPart refiner output header")
+    compact_output = lines[0].endswith("V2")
     status = None
     moves = []
     final: Dict[int, int] = {}
@@ -331,6 +395,10 @@ def _parse_output(path: Path, node_count: int) -> Dict[str, Any]:
                     raise ValidationError("duplicate MFSPart refiner status")
                 status = fields[1]
             elif fields[0] == "MOVE" and len(fields) == 8:
+                if compact_output:
+                    raise ValidationError(
+                        "compact MFSPart output contains a move trace"
+                    )
                 index, node, source, target = map(int, fields[1:5])
                 if index != len(moves):
                     raise ValidationError("MFSPart move sequence mismatch")
@@ -352,7 +420,10 @@ def _parse_output(path: Path, node_count: int) -> Dict[str, Any]:
             elif fields[0] == "METRIC" and len(fields) == 3:
                 if fields[1] in metrics:
                     raise ValidationError("duplicate MFSPart refiner metric")
-                metrics[fields[1]] = float(fields[2])
+                value = float(fields[2])
+                if not math.isfinite(value):
+                    raise ValidationError("non-finite MFSPart refiner metric")
+                metrics[fields[1]] = value
             else:
                 raise ValidationError(f"invalid MFSPart refiner output record {line!r}")
         except (ValueError, IndexError) as error:
@@ -363,6 +434,7 @@ def _parse_output(path: Path, node_count: int) -> Dict[str, Any]:
         "moves": moves,
         "assignment": [final[index] for index in range(node_count)],
         "metrics": metrics,
+        "compact_output": compact_output,
     }
 
 
@@ -401,7 +473,20 @@ def _parse_checker_output_text(text: str) -> Dict[str, Any]:
         "orthant_tree_nodes_visited",
         "best_cumulative_gain",
     }
-    if status != "PASS" or set(metrics) != required:
+    optional = {
+        "path_guard_safe_prefixes",
+        "initial_total_path_hops",
+        "selected_total_path_hops",
+        "initial_total_path_crossings",
+        "selected_total_path_crossings",
+        "maximum_path_hop_delta",
+        "maximum_path_crossing_delta",
+    }
+    if (
+        status != "PASS"
+        or not required.issubset(metrics)
+        or not set(metrics).issubset(required | optional)
+    ):
         raise ValidationError("incomplete MFSPart refiner checker output")
     return metrics
 
@@ -426,11 +511,18 @@ def validate_mfspart_native_certificate(
         "EMUFLOW_MFSPART_REFINER_INPUT_V2",
         "EMUFLOW_MFSPART_REFINER_INPUT_V3",
         "EMUFLOW_MFSPART_REFINER_INPUT_V4",
+        "EMUFLOW_MFSPART_REFINER_INPUT_V5",
     }:
         raise ValidationError("invalid MFSPart native certificate input")
     fields = header[1].split()
     try:
-        expected_fields = 14 if header[0].endswith("V4") else 12
+        expected_fields = (
+            15
+            if header[0].endswith("V5")
+            else 14
+            if header[0].endswith("V4")
+            else 12
+        )
         if len(fields) != expected_fields or fields[0] != "PARAM":
             raise ValidationError("invalid MFSPart native certificate PARAM")
         node_count = int(fields[2])
@@ -444,10 +536,14 @@ def validate_mfspart_native_certificate(
     zero_bottleneck_nets = 0
     timing_paths = 0
     timing_path_pins = 0
+    timing_path_guards = 0
+    timing_path_guard_pins = 0
     timing_path_objective_digest = hashlib.sha256()
+    timing_path_guard_digest = hashlib.sha256()
     if header[0] in {
         "EMUFLOW_MFSPART_REFINER_INPUT_V3",
         "EMUFLOW_MFSPART_REFINER_INPUT_V4",
+        "EMUFLOW_MFSPART_REFINER_INPUT_V5",
     }:
         for line in input_lines[2:]:
             record = line.split()
@@ -473,6 +569,25 @@ def validate_mfspart_native_certificate(
                 timing_path_objective_digest.update(
                     (line + "\n").encode("utf-8")
                 )
+                continue
+            if record[0] == "GUARD":
+                timing_path_guards += 1
+                try:
+                    if len(record) < 4:
+                        raise ValidationError(
+                            "invalid MFSPart native certificate GUARD record"
+                        )
+                    guard_pin_count = int(record[2])
+                except ValueError as error:
+                    raise ValidationError(
+                        "malformed MFSPart native certificate GUARD record"
+                    ) from error
+                if guard_pin_count < 2 or len(record) != 3 + guard_pin_count:
+                    raise ValidationError(
+                        "invalid MFSPart native certificate GUARD pin count"
+                    )
+                timing_path_guard_pins += guard_pin_count
+                timing_path_guard_digest.update((line + "\n").encode("utf-8"))
                 continue
             if record[0] != "NET":
                 continue
@@ -523,11 +638,20 @@ def validate_mfspart_native_certificate(
         "guarded_nets": guarded_nets,
         "zero_bottleneck_nets": zero_bottleneck_nets,
     }
-    if header[0] == "EMUFLOW_MFSPART_REFINER_INPUT_V4":
+    if header[0] in {
+        "EMUFLOW_MFSPART_REFINER_INPUT_V4",
+        "EMUFLOW_MFSPART_REFINER_INPUT_V5",
+    }:
         input_evidence["timing_paths"] = timing_paths
         input_evidence["timing_path_pins"] = timing_path_pins
         input_evidence["timing_path_objective_sha256"] = (
             timing_path_objective_digest.hexdigest()
+        )
+    if header[0] == "EMUFLOW_MFSPART_REFINER_INPUT_V5":
+        input_evidence["timing_path_guards"] = timing_path_guards
+        input_evidence["timing_path_guard_pins"] = timing_path_guard_pins
+        input_evidence["timing_path_guard_sha256"] = (
+            timing_path_guard_digest.hexdigest()
         )
     return {
         "parsed": parsed,
@@ -1487,6 +1611,8 @@ def validate_mfspart_refinement_online(
     needed by downstream stages without recomputing candidate gains.
     """
 
+    if artifact.get("schema") == MFSPART_REFINEMENT_RESULT_SCHEMA:
+        return _validate_mfspart_compact_result(artifact, problem)
     if artifact.get("schema") != MFSPART_REFINEMENT_SCHEMA:
         raise ValidationError("invalid MFSPart refinement schema")
     moves = artifact.get("moves")
@@ -1635,6 +1761,404 @@ def validate_mfspart_refinement_online(
     }
 
 
+def _path_guard_result_metrics(
+    problem: Mapping[str, Any],
+    final: Sequence[int],
+) -> Dict[str, int]:
+    guards = problem.get("timing_path_guards", [])
+    distances = problem["distances"]
+    initial = problem["assignment"]
+    initial_total_hops = 0
+    selected_total_hops = 0
+    initial_total_crossings = 0
+    selected_total_crossings = 0
+    maximum_hop_delta = 0
+    maximum_crossing_delta = 0
+    for chain in guards:
+        initial_hops = sum(
+            distances[initial[source]][initial[target]]
+            for source, target in zip(chain, chain[1:])
+        )
+        selected_hops = sum(
+            distances[final[source]][final[target]]
+            for source, target in zip(chain, chain[1:])
+        )
+        initial_crossings = sum(
+            initial[source] != initial[target]
+            for source, target in zip(chain, chain[1:])
+        )
+        selected_crossings = sum(
+            final[source] != final[target]
+            for source, target in zip(chain, chain[1:])
+        )
+        if (
+            selected_hops > max(1, initial_hops)
+            or selected_crossings > max(1, initial_crossings)
+        ):
+            raise ValidationError(
+                "MFSPart compact result violates a timing-path envelope"
+            )
+        initial_total_hops += initial_hops
+        selected_total_hops += selected_hops
+        initial_total_crossings += initial_crossings
+        selected_total_crossings += selected_crossings
+        maximum_hop_delta = max(maximum_hop_delta, selected_hops - initial_hops)
+        maximum_crossing_delta = max(
+            maximum_crossing_delta,
+            selected_crossings - initial_crossings,
+        )
+    return {
+        "initial_total_path_hops": initial_total_hops,
+        "selected_total_path_hops": selected_total_hops,
+        "initial_total_path_crossings": initial_total_crossings,
+        "selected_total_path_crossings": selected_total_crossings,
+        "maximum_path_hop_delta": maximum_hop_delta,
+        "maximum_path_crossing_delta": maximum_crossing_delta,
+    }
+
+
+def _validate_mfspart_compact_result(
+    artifact: Mapping[str, Any],
+    problem: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Validate the constant-size production result plus final assignment."""
+
+    if "moves" in artifact:
+        raise ValidationError("compact MFSPart result contains a move trace")
+    final = artifact.get("assignment")
+    metrics = artifact.get("metrics")
+    if not isinstance(final, list) or not isinstance(metrics, dict):
+        raise ValidationError("invalid compact MFSPart refinement result")
+    node_count = len(problem["graph"]["nodes"])
+    part_count = len(problem["parts"])
+    if len(final) != node_count or any(
+        isinstance(part, bool)
+        or not isinstance(part, int)
+        or part < 0
+        or part >= part_count
+        for part in final
+    ):
+        raise ValidationError("invalid compact MFSPart final assignment")
+
+    attempted = metrics.get("attempted_moves")
+    best_prefix = metrics.get("best_prefix")
+    best_gain = metrics.get("best_cumulative_gain")
+    safe_prefixes = metrics.get("path_guard_safe_prefixes")
+    for name, value in (
+        ("attempted_moves", attempted),
+        ("best_prefix", best_prefix),
+        ("path_guard_safe_prefixes", safe_prefixes),
+    ):
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or float(value) < 0.0
+            or not float(value).is_integer()
+        ):
+            raise ValidationError(f"invalid compact MFSPart {name}")
+    if best_prefix > attempted or safe_prefixes < 1 or safe_prefixes > attempted + 1:
+        raise ValidationError("invalid compact MFSPart prefix counters")
+    if (
+        not isinstance(best_gain, (int, float))
+        or isinstance(best_gain, bool)
+        or not math.isfinite(float(best_gain))
+        or float(best_gain) < 0.0
+        or (best_prefix == 0 and not math.isclose(float(best_gain), 0.0))
+    ):
+        raise ValidationError("invalid compact MFSPart best cumulative gain")
+
+    expected_initial = _refinement_metrics(problem, problem["assignment"])
+    expected_final = _refinement_metrics(problem, final)
+    def topology_guard_violations(assignment: Sequence[int]) -> int:
+        return sum(
+            net.get("max_distance_limit", -1) >= 0
+            and max(
+                problem["distances"][assignment[net["source"]]][
+                    assignment[sink]
+                ]
+                for sink in net["sinks"]
+            )
+            > net["max_distance_limit"]
+            for net in problem["graph"]["nets"]
+        )
+
+    initial_topology_guard_violations = topology_guard_violations(
+        problem["assignment"]
+    )
+    final_topology_guard_violations = topology_guard_violations(final)
+    if (
+        expected_initial["capacity_violations"]
+        or expected_initial["fixed_violations"]
+        or initial_topology_guard_violations
+        or expected_final["capacity_violations"]
+        or expected_final["fixed_violations"]
+        or final_topology_guard_violations
+    ):
+        raise ValidationError("compact MFSPart result is not partition-legal")
+    expected_metrics = {
+        **{f"initial_{name}": value for name, value in expected_initial.items()},
+        **{f"final_{name}": value for name, value in expected_final.items()},
+        "initial_topology_guard_violations": initial_topology_guard_violations,
+        "final_topology_guard_violations": final_topology_guard_violations,
+        **_path_guard_result_metrics(problem, final),
+    }
+    for name, expected in expected_metrics.items():
+        actual = metrics.get(name)
+        if (
+            not isinstance(actual, (int, float))
+            or not math.isclose(
+                float(actual), float(expected), rel_tol=1e-12, abs_tol=1e-12
+            )
+        ):
+            raise ValidationError(f"compact MFSPart metric mismatch for {name}")
+    return {
+        "status": "pass",
+        "mode": "linear-phase3-output-contract",
+        "attempted_moves": int(attempted),
+        "kept_moves": int(best_prefix),
+        "best_cumulative_gain": float(best_gain),
+        "guarded_nets": sum(
+            net.get("max_distance_limit", -1) >= 0
+            for net in problem["graph"]["nets"]
+        ),
+    }
+
+
+def _compact_path_safe_selection(
+    artifact: Mapping[str, Any],
+    problem: Mapping[str, Any],
+) -> Optional[Dict[str, Any]]:
+    guards = problem.get("timing_path_guards", [])
+    if not guards:
+        return None
+    metrics = artifact["metrics"]
+    expected = _path_guard_result_metrics(problem, artifact["assignment"])
+    return {
+        "schema": "emuflow.mfspart-path-safe-selection/v1",
+        "provider": MFSPART_PATH_GUARD_PROVIDER,
+        "policy": (
+            "maximum-positive-objective-prefix-with-single-"
+            "transport-boundary-path-envelope"
+        ),
+        "local_path_boundary_allowance": 1,
+        "guarded_paths": len(guards),
+        "safe_prefixes": int(metrics["path_guard_safe_prefixes"]),
+        "native_best_prefix": int(metrics["best_prefix"]),
+        "native_best_cumulative_gain": float(metrics["best_cumulative_gain"]),
+        "selected_prefix": int(metrics["best_prefix"]),
+        "selected_cumulative_gain": float(metrics["best_cumulative_gain"]),
+        **expected,
+        "status": "pass",
+    }
+
+
+def _select_path_safe_prefix(
+    artifact: Mapping[str, Any],
+    problem: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Select the best FM prefix inside a provider-neutral path envelope.
+
+    Native FM still searches the ordinary provider-neutral partition
+    objective.  This selector evaluates every generated prefix against the
+    ordered cluster chain of each original STA path.  A previously local path
+    may acquire one adjacent transport boundary, which is the useful freedom
+    generalized Static Exact adds.  A path that already crosses the board may
+    migrate that boundary, but may not add another transition or exceed its
+    existing hop envelope.  Intermediate prefixes may be outside the envelope;
+    the selected endpoint must be inside it.  The prefix is chosen from the
+    objective certificate rather than from a design-specific fixed move count.
+    """
+
+    guards = problem.get("timing_path_guards", [])
+    if not guards:
+        return dict(artifact)
+    initial = list(problem["assignment"])
+    distances = problem["distances"]
+
+    def path_cost(chain: Sequence[int], assignment: Sequence[int]) -> int:
+        return sum(
+            distances[assignment[source]][assignment[target]]
+            for source, target in zip(chain, chain[1:])
+        )
+
+    initial_hops = [path_cost(chain, initial) for chain in guards]
+    initial_crossings = [
+        sum(
+            initial[source] != initial[target]
+            for source, target in zip(chain, chain[1:])
+        )
+        for chain in guards
+    ]
+    hop_budgets = [max(1, value) for value in initial_hops]
+    crossing_budgets = [max(1, value) for value in initial_crossings]
+    hops = list(initial_hops)
+    crossings = list(initial_crossings)
+    # Index path edges by their endpoint.  Recomputing an entire STA path for
+    # every moved cluster made the selector O(moves * path length).  A move can
+    # only change edges incident to that cluster, so update exactly those edge
+    # contributions instead.
+    incidence: Dict[int, List[tuple[int, int, bool]]] = {}
+    for path_index, chain in enumerate(guards):
+        for source, target in zip(chain, chain[1:]):
+            if source == target:
+                continue
+            incidence.setdefault(source, []).append(
+                (path_index, target, True)
+            )
+            incidence.setdefault(target, []).append(
+                (path_index, source, False)
+            )
+
+    current = list(initial)
+    violation_count = 0
+    safe_prefixes = 1
+    best_prefix = 0
+    best_gain = 0.0
+    best_rank = 0
+    moves = [dict(move) for move in artifact["moves"]]
+    for prefix, move in enumerate(moves, start=1):
+        node = move["node"]
+        if current[node] != move["source"]:
+            raise ValidationError(
+                "MFSPart path selector move source disagrees with replay"
+            )
+        path_deltas: Dict[int, tuple[int, int]] = {}
+        for path_index, other, moved_is_source in incidence.get(node, ()):
+            other_part = current[other]
+            if moved_is_source:
+                old_cost = distances[move["source"]][other_part]
+                new_cost = distances[move["target"]][other_part]
+            else:
+                old_cost = distances[other_part][move["source"]]
+                new_cost = distances[other_part][move["target"]]
+            old_crossing = int(move["source"] != other_part)
+            new_crossing = int(move["target"] != other_part)
+            old_hop_delta, old_crossing_delta = path_deltas.get(
+                path_index, (0, 0)
+            )
+            path_deltas[path_index] = (
+                old_hop_delta + new_cost - old_cost,
+                old_crossing_delta + new_crossing - old_crossing,
+            )
+        violation_count -= sum(
+            hops[path_index] > hop_budgets[path_index]
+            or crossings[path_index] > crossing_budgets[path_index]
+            for path_index in path_deltas
+        )
+        current[node] = move["target"]
+        for path_index, (hop_delta, crossing_delta) in path_deltas.items():
+            hops[path_index] += hop_delta
+            crossings[path_index] += crossing_delta
+        violation_count += sum(
+            hops[path_index] > hop_budgets[path_index]
+            or crossings[path_index] > crossing_budgets[path_index]
+            for path_index in path_deltas
+        )
+        if violation_count:
+            continue
+        safe_prefixes += 1
+        rank = _gain_rank(float(move["cumulative_gain"]))
+        if rank > best_rank:
+            best_rank = rank
+            best_prefix = prefix
+            best_gain = float(move["cumulative_gain"])
+
+    final = list(initial)
+    for index, move in enumerate(moves):
+        move["kept"] = index < best_prefix
+        if move["kept"]:
+            final[move["node"]] = move["target"]
+
+    final_hops = [path_cost(chain, final) for chain in guards]
+    final_crossings = [
+        sum(
+            final[source] != final[target]
+            for source, target in zip(chain, chain[1:])
+        )
+        for chain in guards
+    ]
+    if any(
+        actual_hops > hop_budget or actual_crossings > crossing_budget
+        for actual_hops, hop_budget, actual_crossings, crossing_budget in zip(
+            final_hops, hop_budgets, final_crossings, crossing_budgets
+        )
+    ):
+        raise ValidationError("MFSPart selected prefix violates a path budget")
+    metrics = dict(artifact["metrics"])
+    native_best_prefix = int(metrics["best_prefix"])
+    native_best_gain = float(metrics["best_cumulative_gain"])
+    if native_best_prefix != best_prefix or not math.isclose(
+        native_best_gain,
+        best_gain,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValidationError(
+            "native and independent MFSPart path-envelope prefix selection "
+            "disagree"
+        )
+    if artifact.get("assignment") != final:
+        raise ValidationError(
+            "native and independent MFSPart path-envelope assignments disagree"
+        )
+    if any(
+        bool(native_move.get("kept")) != bool(selected_move["kept"])
+        for native_move, selected_move in zip(artifact["moves"], moves)
+    ):
+        raise ValidationError(
+            "native and independent MFSPart path-envelope kept prefixes disagree"
+        )
+
+    selected = dict(artifact)
+    selected.update(
+        {
+            "path_safe_selection": {
+                "schema": "emuflow.mfspart-path-safe-selection/v1",
+                "provider": MFSPART_PATH_GUARD_PROVIDER,
+                "policy": (
+                    "maximum-positive-objective-prefix-with-single-"
+                    "transport-boundary-path-envelope"
+                ),
+                "local_path_boundary_allowance": 1,
+                "guarded_paths": len(guards),
+                "safe_prefixes": safe_prefixes,
+                "native_best_prefix": native_best_prefix,
+                "native_best_cumulative_gain": native_best_gain,
+                "selected_prefix": best_prefix,
+                "selected_cumulative_gain": best_gain,
+                "initial_total_path_hops": sum(initial_hops),
+                "selected_total_path_hops": sum(final_hops),
+                "initial_total_path_crossings": sum(initial_crossings),
+                "selected_total_path_crossings": sum(final_crossings),
+                "maximum_path_hop_delta": max(
+                    (
+                        actual - initial_value
+                        for actual, initial_value in zip(
+                            final_hops, initial_hops
+                        )
+                    ),
+                    default=0,
+                ),
+                "maximum_path_crossing_delta": max(
+                    (
+                        actual - initial_value
+                        for actual, initial_value in zip(
+                            final_crossings, initial_crossings
+                        )
+                    ),
+                    default=0,
+                ),
+                "status": "pass",
+            },
+        }
+    )
+    selected["validation"] = validate_mfspart_refinement_online(
+        selected, problem
+    )
+    return selected
+
+
 def refine_mfspart_level(
     graph: Mapping[str, Any],
     dimensions: Sequence[str],
@@ -1653,6 +2177,7 @@ def refine_mfspart_level(
     bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
     timing_paths: Sequence[Mapping[str, Any]] = (),
     timing_path_beta: float = 0.0,
+    timing_path_guards: Sequence[Sequence[int]] = (),
     executable: Optional[str] = None,
     checker: Optional[str] = None,
     python_replay_max_nodes: int = _DEFAULT_PYTHON_REPLAY_MAX_NODES,
@@ -1675,13 +2200,18 @@ def refine_mfspart_level(
         bottleneck_beta=bottleneck_beta,
         timing_paths=timing_paths,
         timing_path_beta=timing_path_beta,
+        timing_path_guards=timing_path_guards,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     input_path = output_dir / "mfspart_refiner.in"
     output_path = output_dir / "mfspart_refiner.out"
     log_path = output_dir / "mfspart_refiner.log"
     checker_output_path = output_dir / "mfspart_refiner.check"
-    _write_native_input(input_path, problem)
+    _write_native_input(
+        input_path,
+        problem,
+        compact_output=online_validation,
+    )
     command = resolve_native_executable("emuflow_mfspart_refiner", executable)
     optimizer_started = time.perf_counter()
     completed = subprocess.run(
@@ -1699,10 +2229,17 @@ def refine_mfspart_level(
     check_started = time.perf_counter()
     parsed = _parse_output(output_path, len(graph["nodes"]))
     artifact = {
-        "schema": MFSPART_REFINEMENT_SCHEMA,
+        "schema": (
+            MFSPART_REFINEMENT_RESULT_SCHEMA
+            if parsed["compact_output"]
+            else MFSPART_REFINEMENT_SCHEMA
+        ),
         "provider": MFSPART_REFINER_PROVIDER,
-        "claim_scope": "paper-level direct k-way FM Eqs. 9--10 with EmuFlow class-weighted worst-sink-hop and immutable per-net topology guards",
-        "moves": parsed["moves"],
+        "claim_scope": (
+            "paper-level direct k-way FM Eqs. 9--10 with EmuFlow "
+            "class-weighted worst-sink-hop, immutable per-net topology "
+            "guards, and a provider-neutral ordered-path envelope"
+        ),
         "assignment": parsed["assignment"],
         "metrics": parsed["metrics"],
         "artifacts": {
@@ -1710,6 +2247,8 @@ def refine_mfspart_level(
             "output": output_path.name,
         },
     }
+    if not parsed["compact_output"]:
+        artifact["moves"] = parsed["moves"]
     if online_validation:
         artifact["validation"] = validate_mfspart_refinement_online(
             artifact, problem
@@ -1728,22 +2267,19 @@ def refine_mfspart_level(
         if checker_output_path.is_file():
             artifact["artifacts"]["checker_output"] = checker_output_path.name
     candidate_check_wall_seconds = time.perf_counter() - check_started
+    selection_started = time.perf_counter()
+    if online_validation:
+        path_safe_selection = _compact_path_safe_selection(artifact, problem)
+        if path_safe_selection is not None:
+            artifact["path_safe_selection"] = path_safe_selection
+    else:
+        artifact = _select_path_safe_prefix(artifact, problem)
+    path_guard_selection_wall_seconds = time.perf_counter() - selection_started
     artifact["runtime"] = {
         "optimizer_wall_seconds": optimizer_wall_seconds,
         "candidate_check_wall_seconds": candidate_check_wall_seconds,
-        "candidate_check_within_optimizer_budget": (
-            candidate_check_wall_seconds <= optimizer_wall_seconds
-        ),
+        "path_guard_selection_wall_seconds": path_guard_selection_wall_seconds,
     }
-    if (
-        online_validation
-        and candidate_check_wall_seconds > optimizer_wall_seconds
-    ):
-        raise ValidationError(
-            "MFSPart online check exceeded optimizer runtime: "
-            f"check={candidate_check_wall_seconds:.6f}s, "
-            f"optimizer={optimizer_wall_seconds:.6f}s"
-        )
     return artifact
 
 

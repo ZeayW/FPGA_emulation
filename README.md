@@ -462,6 +462,21 @@ binds concrete multicast branches; unified Phase 5 then solves link latency,
 lane capacity, ratio, relay readiness, and capture deadlines. Phase 6/7 retain
 the macro-cycle-equivalence and routed physical-segment gates.
 
+The explicitly enabled TritonPart-to-MFSPart follow-up is likewise
+scheduler-neutral; it is not run merely because TritonPart and generalized
+Static Exact were selected. It
+charges each adjacent logical transition of an STA path, rather than collapsing
+the complete path to an unordered cluster set, and selects a positive-gain FM
+prefix inside an ordered-path envelope. A path that was local may acquire one
+transport boundary; a path that already crossed the board may move its existing
+boundary but may not add another crossing or exceed its initial hop envelope.
+This is a partition-level proxy for avoiding zigzags, not a prediction of Phase
+5 slots. Production Phase 3 exchanges only the final assignment and constant-
+size refinement metrics with the native optimizer, then independently checks
+capacity, fixed-group, topology, and path-envelope legality in linear time.
+Per-move traces and full FM replay are explicit small-design/qualification
+facilities and are not part of a large-design flow.
+
 The historical potential-frontier policy is not part of the production or
 promotion path.  The canonical gate compares generalized Static Exact directly
 with the register-boundary (`sequential-only`) control.  The sequential arm
@@ -1388,17 +1403,14 @@ scalable sweep remains a deterministic heuristic and is not claimed globally
 optimal.  The former TritonPart/sequential baseline remains available only by
 explicitly selecting `--partition-provider tritonpart --cut-mode
 sequential-only`; it is not an implicit fallback for omitted options.
-The cold-start producer records an explicit algorithm version.  Version 6 is
-selected by the current omitted-option default, while the previously measured
-ranked-frontier version 9 is reproducible with
-`--patron-algorithm-version 9`.  Version 11 must name both a frozen initial
-assignment and a matching prior complete-global `system-timing/v2` artifact;
-it is never inferred from cache presence.  The older
-`--patron-flow-refinement` spelling remains an explicit version-10 producer
-alias when no physical-feedback input is present.  A four-arm complete-flow
-gate for Static Exact v2 plus v6, v9, v6-to-v11, and v9-to-v11 is pending;
-until it completes, v6 is a code default rather than a claimed Phase 7 QoR
-promotion.
+The cold-start producer records an explicit algorithm version. Version 14 is
+the uniform omitted-option default for the generalized Static Exact flow.
+Versions 6 and 9 remain explicit research profiles, and a register-only PATRON
+control must name version 6 rather than inheriting a historical default.
+Version 11 must name both a frozen initial assignment and a matching prior
+complete-global `system-timing/v2` artifact; it is never inferred from cache
+presence. The older `--patron-flow-refinement` spelling remains an explicit
+version-10 producer alias when no physical-feedback input is present.
 Version 14 solves its initial TritonPart assignment directly on the
 generalized Static Exact cluster graph, then accepts only a structurally legal
 PATRON result with a strictly improved timing certificate.  A register-only
@@ -1557,9 +1569,11 @@ declared two-metric promotion gate, while the very small WNS margin is reported
 explicitly rather than presented as a broad topology-independent result.
 The V11 physical-feedback refinement remains opt-in because it consumes a
 prior physical timing artifact and therefore cannot be the clean first-run
-default.  A clean run may explicitly select endpoint-exact PATRON v6 or the
-ranked-frontier v9 profile; the resulting complete-global Phase 7 timing is a
-valid sealed input to a matching v11 iteration.  Case7/case9 topology
+default. A clean generalized flow defaults to PATRON v14; v6 or the
+ranked-frontier v9 profile may be selected explicitly when reproducing their
+experiments. A resulting complete-global Phase 7 timing artifact can be a
+matching v11 input only when v11 and the frozen assignment are also selected
+explicitly. Case7/case9 topology
 replication remains additional QoR evidence after the primary case6 gate.  The
 complete design, literature basis, and gate are documented in
 [the timing/TDM partitioning upgrade plan](docs/PARTITIONING_TIMING_TDM_UPGRADE.md).

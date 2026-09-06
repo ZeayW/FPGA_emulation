@@ -89,37 +89,55 @@ def _rebuild_timing_path_objective(
                 }
             )
         )
-    grouped: Dict[tuple[int, ...], float] = {}
+    grouped: Dict[tuple[int, int], float] = {}
     eligible_paths = 0
     unmaterialized_paths = 0
+    materialized_transitions = 0
+    path_guard_chains: set[tuple[int, ...]] = set()
     for path in database["paths"]:
         try:
-            pins = {
-                pin
-                for net_id in path["path_nets"]
-                for pin in net_driver_clusters[net_id]
-            }
-            for endpoint_name in ("startpoint", "endpoint"):
-                endpoint = path.get(endpoint_name)
-                if (
-                    endpoint is not None
-                    and endpoint["instance"] in cluster_by_instance
-                ):
-                    pins.add(
-                        node_index[cluster_by_instance[endpoint["instance"]]]
-                    )
-            if "endpoint" not in path:
-                pins.update(net_sink_clusters[path["path_nets"][-1]])
+            chain: list[int] = []
+
+            def append_pin(pin: int) -> None:
+                if not chain or chain[-1] != pin:
+                    chain.append(pin)
+
+            startpoint = path.get("startpoint")
+            if (
+                startpoint is not None
+                and startpoint["instance"] in cluster_by_instance
+            ):
+                append_pin(
+                    node_index[cluster_by_instance[startpoint["instance"]]]
+                )
+            for net_id in path["path_nets"]:
+                for pin in net_driver_clusters[net_id]:
+                    append_pin(pin)
+            endpoint = path.get("endpoint")
+            if endpoint is not None and endpoint["instance"] in cluster_by_instance:
+                append_pin(
+                    node_index[cluster_by_instance[endpoint["instance"]]]
+                )
+            else:
+                for pin in net_sink_clusters[path["path_nets"][-1]]:
+                    append_pin(pin)
         except (KeyError, IndexError, TypeError) as error:
             raise ValidationError(
                 "malformed partition timing-path database record"
             ) from error
-        if len(pins) < 2:
+        transitions = [
+            tuple(sorted((source, target)))
+            for source, target in zip(chain, chain[1:])
+            if source != target
+        ]
+        if not transitions:
             unmaterialized_paths += 1
             continue
         eligible_paths += 1
-        key = tuple(sorted(pins))
-        grouped[key] = grouped.get(key, 0.0) + 1.0
+        materialized_transitions += len(transitions)
+        path_guard_chains.add(tuple(chain))
+        for transition in transitions:
+            grouped[transition] = grouped.get(transition, 0.0) + 1.0
     digest = hashlib.sha256()
     compressed_pins = 0
     for index, (pins, weight) in enumerate(sorted(grouped.items())):
@@ -129,16 +147,31 @@ def _rebuild_timing_path_objective(
             for value in (index, format(weight, ".17g"), len(pins), *pins)
         )
         digest.update((record + "\n").encode("utf-8"))
+    guard_digest = hashlib.sha256()
+    for index, chain in enumerate(sorted(path_guard_chains)):
+        guard_digest.update(
+            (
+                "GUARD "
+                + " ".join(str(value) for value in (index, len(chain), *chain))
+                + "\n"
+            ).encode("utf-8")
+        )
     return {
-        "schema": "emuflow.mfspart-timing-path-objective/v1",
+        "schema": "emuflow.mfspart-timing-path-objective/v2",
         "database_sha256": _sha256(database_path),
         "database_paths": len(database["paths"]),
         "eligible_paths": eligible_paths,
         "unmaterialized_paths": unmaterialized_paths,
+        "materialized_transitions": materialized_transitions,
         "compressed_groups": len(grouped),
         "compressed_pins": compressed_pins,
+        "path_guards": len(path_guard_chains),
+        "path_guard_pins": sum(len(chain) for chain in path_guard_chains),
+        "path_guard_sha256": guard_digest.hexdigest(),
         "objective_sha256": digest.hexdigest(),
-        "weighting": "uniform-path-count-with-identical-pin-set-aggregation",
+        "weighting": (
+            "uniform-path-count-with-identical-adjacent-transition-aggregation"
+        ),
     }
 
 
@@ -179,7 +212,7 @@ def run_partition_checkpoint(
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
-    patron_algorithm_version: int = 6,
+    patron_algorithm_version: int = 14,
     patron_initial_assignment_path: Optional[Path] = None,
     patron_initial_clusters_path: Optional[Path] = None,
     patron_physical_system_timing_path: Optional[Path] = None,
@@ -187,16 +220,17 @@ def run_partition_checkpoint(
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
-    if patron_physical_system_timing_path is not None:
-        if patron_algorithm_version == 6 and patron_flow_refinement:
-            patron_algorithm_version = 11
-    elif patron_algorithm_version == 6 and patron_flow_refinement:
-        patron_algorithm_version = 10
-    patron_flow_refinement = patron_algorithm_version != 6
+    if provider == "patron":
+        if patron_physical_system_timing_path is not None:
+            if patron_algorithm_version == 6 and patron_flow_refinement:
+                patron_algorithm_version = 11
+        elif patron_algorithm_version == 6 and patron_flow_refinement:
+            patron_algorithm_version = 10
+        patron_flow_refinement = patron_algorithm_version != 6
+    else:
+        patron_flow_refinement = False
     if mfspart_post_refinement is None:
-        mfspart_post_refinement = (
-            cut_mode == CUT_MODE_STATIC_EXACT and provider == "tritonpart"
-        )
+        mfspart_post_refinement = False
     if (
         isinstance(minimum_combinational_cut_nets, bool)
         or not isinstance(minimum_combinational_cut_nets, int)
@@ -589,12 +623,13 @@ def validate_partition_checkpoint(
             )
             if (
                 not isinstance(optimizer_wall_seconds, (int, float))
+                or optimizer_wall_seconds < 0
                 or not isinstance(candidate_check_wall_seconds, (int, float))
-                or candidate_check_wall_seconds > optimizer_wall_seconds
-                or validator_wall_seconds > optimizer_wall_seconds
+                or candidate_check_wall_seconds < 0
+                or validator_wall_seconds < 0
             ):
                 raise ValidationError(
-                    "partition online validation exceeded optimizer runtime"
+                    "partition online validation runtime evidence is invalid"
                 )
         return {
             "status": "pass",

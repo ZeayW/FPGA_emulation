@@ -642,7 +642,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--patron-algorithm-version",
         type=int,
         choices=(6, 9, 10, 11, 12, 13, 14),
-        default=6,
+        default=14,
     )
     partition_run.add_argument("--patron-initial-assignment", type=Path)
     partition_run.add_argument("--patron-initial-clusters", type=Path)
@@ -1868,7 +1868,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--patron-algorithm-version",
         type=int,
         choices=(6, 9, 10, 11, 12, 13, 14),
-        default=6,
+        default=14,
     )
     multi_fpga_compile.add_argument(
         "--partition-timeout-seconds", type=int, default=3600
@@ -1919,12 +1919,21 @@ def _build_parser() -> argparse.ArgumentParser:
         default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     )
     multi_fpga_compile.add_argument(
+        "--mfspart-post-refinement",
+        action=_BooleanOptionalAction,
+        default=False,
+        help=(
+            "explicitly run the experimental MFSPart follow-up after a "
+            "TritonPart assignment (disabled by default)"
+        ),
+    )
+    multi_fpga_compile.add_argument(
         "--mfspart-post-refinement-timing-path-beta",
         type=float,
         default=DEFAULT_TIMING_PATH_BETA,
         help=(
-            "weight of each distinct pre-partition timing path crossed by "
-            "Static Exact Phase 3; identical cluster paths are aggregated"
+            "weight of adjacent logical transitions from pre-partition "
+            "timing paths in an explicitly enabled MFSPart follow-up"
         ),
     )
     multi_fpga_compile.add_argument(
@@ -2800,7 +2809,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--patron-algorithm-version",
         type=int,
         choices=(6, 9, 10, 11, 12, 13, 14),
-        default=6,
+        default=14,
     )
     phase3.add_argument("--patron-initial-assignment", type=Path)
     phase3.add_argument("--patron-initial-clusters", type=Path)
@@ -3280,7 +3289,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--patron-algorithm-version",
         type=int,
         choices=(6, 9, 10, 11, 12, 13, 14),
-        default=6,
+        default=14,
     )
     cross_stage_optimize.add_argument(
         "--partition-timeout-seconds", type=int, default=3600
@@ -5116,6 +5125,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             static_exact_candidate_policy=(
                 args.static_exact_candidate_policy
             ),
+            mfspart_post_refinement=args.mfspart_post_refinement,
             mfspart_post_refinement_timing_path_beta=(
                 args.mfspart_post_refinement_timing_path_beta
             ),

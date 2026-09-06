@@ -314,7 +314,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 run.call_args.kwargs[
                     "mfspart_post_refinement_timing_path_beta"
                 ],
-                0.0,
+                1.0,
             )
             run.reset_mock()
             self.assertEqual(_dispatch(safe), 0)
@@ -323,6 +323,12 @@ class MultiFpgaFlowTest(unittest.TestCase):
             )
             self.assertEqual(
                 run.call_args.kwargs["partition_provider"], "patron"
+            )
+            self.assertEqual(
+                run.call_args.kwargs["patron_algorithm_version"], 14
+            )
+            self.assertFalse(
+                run.call_args.kwargs["mfspart_post_refinement"]
             )
             self.assertEqual(
                 run.call_args.kwargs["cut_mode"],
@@ -383,6 +389,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     clocks=["clk"],
                     partition_provider="patron",
                     cut_mode="sequential-only",
+                    patron_algorithm_version=6,
                     cross_stage_iterations=0,
                 )
 

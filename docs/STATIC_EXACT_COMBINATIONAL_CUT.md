@@ -157,6 +157,17 @@ feasibility, and physical segment deadlines.
    readiness and capture constraints directly; there is no dedicated Static
    Exact scheduler or Phase 3 scheduler-feasibility gate.
 
+The TritonPart-to-MFSPart path is an explicit research option, not an implicit
+generalized-Static-Exact default. It uses only provider-neutral Phase 3 evidence. Its
+timing term counts crossings of adjacent logical transitions in each STA path,
+and its ordered-path envelope permits one boundary on an initially local path
+while preventing an already crossing path from gaining another crossing or a
+larger hop sum. It does not read routes, ratios, lanes, slots, release times, or
+commit slots. The native optimizer selects the legal best prefix itself.
+Production output contains the final assignment plus constant-size metrics and
+is checked in linear time; detailed move traces and an independent full replay
+remain available only for explicit algorithm qualification on small inputs.
+
 ## Canonical search-space audit
 
 The generalized policy was audited on one immutable canonical DLA + EDA 2023

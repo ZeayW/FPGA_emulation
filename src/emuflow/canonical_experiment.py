@@ -439,14 +439,8 @@ def compile_canonical_experiment_spec(
         raise ValidationError(
             "canonical patron_flow_refinement must be a boolean"
         )
-    patron_algorithm_version = config.get("patron_algorithm_version")
-    patron_algorithm_version_explicit = patron_algorithm_version is not None
-    if patron_algorithm_version is None:
-        patron_algorithm_version = (
-            11
-            if config.get("patron_physical_system_timing") is not None
-            else (10 if patron_flow_refinement else 6)
-        )
+    patron_algorithm_version = config.get("patron_algorithm_version", 14)
+    patron_algorithm_version_explicit = "patron_algorithm_version" in config
     if (
         isinstance(patron_algorithm_version, bool)
         or not isinstance(patron_algorithm_version, int)
@@ -456,9 +450,12 @@ def compile_canonical_experiment_spec(
             "canonical patron_algorithm_version must be 6, 9, 10, 11, 12, "
             "13, or 14"
         )
-    patron_flow_refinement = patron_algorithm_version != 6
+    patron_flow_refinement = (
+        partition_provider == "patron" and patron_algorithm_version != 6
+    )
     if (
-        patron_algorithm_version_explicit
+        partition_provider == "patron"
+        and patron_algorithm_version_explicit
         and "patron_flow_refinement" in config
         and config["patron_flow_refinement"]
         is not patron_flow_refinement
@@ -558,7 +555,8 @@ def compile_canonical_experiment_spec(
         raise ValidationError("canonical experiment clocks/periods are invalid")
     cut_mode = config.get("cut_mode", CUT_MODE_STATIC_EXACT)
     if (
-        patron_algorithm_version in {12, 13, 14}
+        partition_provider == "patron"
+        and patron_algorithm_version in {12, 13, 14}
         and cut_mode != CUT_MODE_STATIC_EXACT
     ):
         raise ValidationError(
@@ -653,13 +651,7 @@ def compile_canonical_experiment_spec(
         raise ValidationError(
             "canonical experiment partition_repair_balance must be boolean"
         )
-    mfspart_post_refinement = config.get(
-        "mfspart_post_refinement",
-        (
-            cut_mode == CUT_MODE_STATIC_EXACT
-            and partition_provider == "tritonpart"
-        ),
-    )
+    mfspart_post_refinement = config.get("mfspart_post_refinement", False)
     if not isinstance(mfspart_post_refinement, bool):
         raise ValidationError(
             "canonical experiment mfspart_post_refinement must be boolean"
@@ -1632,6 +1624,7 @@ def compile_static_exact_ab_experiment_spec(
         "seq": {
             "label": "sequential-only",
             "cut_mode": CUT_MODE_SEQUENTIAL_ONLY,
+            "patron_algorithm_version": 6,
             "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
             "max_cross_fpga_dependency_depth": 1,
             "minimum_combinational_cut_nets": 0,
@@ -1639,6 +1632,7 @@ def compile_static_exact_ab_experiment_spec(
         "v2": {
             "label": "generalized-static-exact-v2",
             "cut_mode": CUT_MODE_STATIC_EXACT,
+            "patron_algorithm_version": 14,
             "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
             "max_cross_fpga_dependency_depth": generalized_max_depth,
             "minimum_combinational_cut_nets": minimum_combinational_cut_nets,

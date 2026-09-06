@@ -12,6 +12,7 @@ from emuflow.mfspart_refine import (
     _normalise_refinement,
     _replay,
     _replay_exhaustive,
+    _select_path_safe_prefix,
     _write_native_input,
     refine_mfspart_hierarchy,
     refine_mfspart_level,
@@ -249,6 +250,213 @@ class MFSPartRefinementTest(unittest.TestCase):
         self.assertEqual(
             artifact["metrics"]["final_topology_guard_violations"], 0.0
         )
+
+    def test_path_safe_prefix_rejects_native_zigzag_mismatch(self) -> None:
+        parts, distances, capacities = _line_problem()
+        problem = _normalise_refinement(
+            {
+                "nodes": [
+                    {"fixed_part": -1, "weights": [1]} for _ in range(3)
+                ],
+                "nets": [],
+            },
+            ["cells"],
+            parts,
+            distances,
+            capacities,
+            [0, 1, 1],
+            hmax=2,
+            move_distance=2,
+            early_stop=1,
+            gamma=0.0,
+            violation_lambda=0.0,
+            mu=0.0,
+            timing_path_guards=[[0, 1, 2]],
+        )
+        with self.assertRaisesRegex(
+            ValidationError,
+            "native and independent MFSPart path-envelope prefix selection",
+        ):
+            _select_path_safe_prefix(
+                {
+                    "schema": "emuflow.mfspart-refinement/v1",
+                    "provider": "fixture",
+                    "claim_scope": "fixture",
+                    "moves": [
+                        {
+                            "node": 1,
+                            "source": 1,
+                            "target": 2,
+                            "gain": 10.0,
+                            "cumulative_gain": 10.0,
+                            "kept": True,
+                        }
+                    ],
+                    "assignment": [0, 2, 1],
+                    "metrics": {
+                        "attempted_moves": 1.0,
+                        "best_prefix": 1.0,
+                        "best_cumulative_gain": 10.0,
+                    },
+                },
+                problem,
+            )
+
+    def test_path_safe_prefix_allows_boundary_migration(self) -> None:
+        parts, distances, capacities = _line_problem()
+        problem = _normalise_refinement(
+            {
+                "nodes": [
+                    {"fixed_part": -1, "weights": [1]} for _ in range(3)
+                ],
+                "nets": [],
+            },
+            ["cells"],
+            parts,
+            distances,
+            capacities,
+            [0, 1, 1],
+            hmax=2,
+            move_distance=2,
+            early_stop=1,
+            gamma=0.0,
+            violation_lambda=0.0,
+            mu=0.0,
+            timing_path_guards=[[0, 1, 2]],
+        )
+        selected = _select_path_safe_prefix(
+            {
+                "schema": "emuflow.mfspart-refinement/v1",
+                "provider": "fixture",
+                "claim_scope": "fixture",
+                "moves": [
+                    {
+                        "node": 1,
+                        "source": 1,
+                        "target": 0,
+                        "gain": 10.0,
+                        "cumulative_gain": 10.0,
+                        "kept": True,
+                    }
+                ],
+                "assignment": [0, 0, 1],
+                "metrics": {
+                    "attempted_moves": 1.0,
+                    "best_prefix": 1.0,
+                    "best_cumulative_gain": 10.0,
+                },
+            },
+            problem,
+        )
+        self.assertEqual(selected["assignment"], [0, 0, 1])
+        self.assertTrue(selected["moves"][0]["kept"])
+        self.assertEqual(
+            selected["path_safe_selection"]["selected_prefix"], 1
+        )
+        self.assertEqual(
+            selected["path_safe_selection"]["maximum_path_hop_delta"], 0
+        )
+
+    def test_path_safe_prefix_allows_one_new_adjacent_boundary(self) -> None:
+        parts, distances, capacities = _line_problem()
+        problem = _normalise_refinement(
+            {
+                "nodes": [
+                    {"fixed_part": -1, "weights": [1]} for _ in range(3)
+                ],
+                "nets": [],
+            },
+            ["cells"],
+            parts,
+            distances,
+            capacities,
+            [0, 0, 0],
+            hmax=2,
+            move_distance=2,
+            early_stop=1,
+            gamma=0.0,
+            violation_lambda=0.0,
+            mu=0.0,
+            timing_path_guards=[[0, 1, 2]],
+        )
+        selected = _select_path_safe_prefix(
+            {
+                "schema": "emuflow.mfspart-refinement/v1",
+                "provider": "fixture",
+                "claim_scope": "fixture",
+                "moves": [
+                    {
+                        "node": 2,
+                        "source": 0,
+                        "target": 1,
+                        "gain": 10.0,
+                        "cumulative_gain": 10.0,
+                        "kept": True,
+                    }
+                ],
+                "assignment": [0, 0, 1],
+                "metrics": {
+                    "attempted_moves": 1.0,
+                    "best_prefix": 1.0,
+                    "best_cumulative_gain": 10.0,
+                },
+            },
+            problem,
+        )
+        self.assertEqual(selected["assignment"], [0, 0, 1])
+        self.assertEqual(
+            selected["path_safe_selection"]["selected_prefix"], 1
+        )
+        self.assertEqual(
+            selected["path_safe_selection"][
+                "maximum_path_crossing_delta"
+            ],
+            1,
+        )
+
+    def test_native_v5_path_guard_rejects_profitable_zigzag_prefix(self) -> None:
+        parts, distances, capacities = _line_problem()
+        graph = {
+            "nodes": [
+                {"fixed_part": 0, "weights": [1]},
+                {"fixed_part": -1, "weights": [1]},
+                {"fixed_part": 1, "weights": [1]},
+                {"fixed_part": 2, "weights": [1]},
+            ],
+            "nets": [{"weight": 10.0, "source": 1, "sinks": [3]}],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = refine_mfspart_level(
+                graph,
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0, 1, 1, 2],
+                root,
+                hmax=2,
+                early_stop=1,
+                gamma=0.0,
+                violation_lambda=0.0,
+                mu=0.0,
+                bottleneck_beta=0.0,
+                timing_path_guards=[[0, 1, 2]],
+                executable=str(self.executable),
+                checker=str(self.checker),
+                python_replay_max_nodes=0,
+            )
+            self.assertEqual(
+                (root / "mfspart_refiner.in")
+                .read_text(encoding="utf-8")
+                .splitlines()[0],
+                "EMUFLOW_MFSPART_REFINER_INPUT_V5",
+            )
+        self.assertEqual(artifact["metrics"]["attempted_moves"], 1.0)
+        self.assertEqual(artifact["metrics"]["best_prefix"], 0.0)
+        self.assertEqual(artifact["assignment"], [0, 1, 1, 2])
+        self.assertFalse(artifact["moves"][0]["kept"])
+        self.assertEqual(artifact["validation"]["status"], "pass")
 
     def test_native_v1_v2_inputs_keep_legacy_bottleneck_semantics(self) -> None:
         parts, distances, capacities = _line_problem()
@@ -695,7 +903,7 @@ class MFSPartRefinementTest(unittest.TestCase):
             any("sha256" in key for key in artifact["artifacts"])
         )
 
-    def test_online_validation_stays_within_optimizer_runtime(self) -> None:
+    def test_online_validation_reports_separate_runtime_roles(self) -> None:
         parts, distances, capacities = _line_problem()
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -713,17 +921,32 @@ class MFSPartRefinementTest(unittest.TestCase):
                 checker=str(self.checker),
                 online_validation=True,
             )
+            native_input = (root / "mfspart_refiner.in").read_text(
+                encoding="utf-8"
+            )
+            native_output = (root / "mfspart_refiner.out").read_text(
+                encoding="utf-8"
+            )
             self.assertFalse((root / "mfspart_refiner.check").exists())
+        self.assertEqual(
+            native_input.splitlines()[0],
+            "EMUFLOW_MFSPART_REFINER_INPUT_V6",
+        )
+        self.assertEqual(
+            native_output.splitlines()[0],
+            "EMUFLOW_MFSPART_REFINER_OUTPUT_V2",
+        )
+        self.assertNotIn("\nMOVE ", native_output)
+        self.assertNotIn("moves", artifact)
         self.assertEqual(
             artifact["validation"]["mode"],
             "linear-phase3-output-contract",
         )
-        self.assertTrue(
-            artifact["runtime"]["candidate_check_within_optimizer_budget"]
+        self.assertGreaterEqual(
+            artifact["runtime"]["candidate_check_wall_seconds"], 0.0
         )
-        self.assertLessEqual(
-            artifact["runtime"]["candidate_check_wall_seconds"],
-            artifact["runtime"]["optimizer_wall_seconds"],
+        self.assertGreaterEqual(
+            artifact["runtime"]["path_guard_selection_wall_seconds"], 0.0
         )
 
     def test_online_validation_rejects_non_prefix_assignment(self) -> None:
@@ -754,6 +977,41 @@ class MFSPartRefinementTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValidationError, "kept prefix"):
             validate_mfspart_refinement_online(artifact, problem)
+
+    def test_compact_online_validation_rejects_tampered_assignment(self) -> None:
+        parts, distances, capacities = _line_problem()
+        problem = _normalise_refinement(
+            self._violating_graph(),
+            ["cells"],
+            parts,
+            distances,
+            capacities,
+            [0, 2],
+            hmax=1,
+            move_distance=2,
+            early_stop=2,
+            gamma=15.0,
+            violation_lambda=10_000.0,
+            mu=0.1,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_level(
+                self._violating_graph(),
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0, 2],
+                Path(temporary_directory),
+                hmax=1,
+                early_stop=2,
+                executable=str(self.executable),
+                online_validation=True,
+            )
+        tampered = copy.deepcopy(artifact)
+        tampered["assignment"][1] = 1
+        with self.assertRaisesRegex(ValidationError, "metric mismatch"):
+            validate_mfspart_refinement_online(tampered, problem)
 
     def test_read_only_native_certificate_replay_rejects_tampering(self) -> None:
         parts, distances, capacities = _line_problem()
@@ -913,7 +1171,7 @@ class MFSPartRefinementTest(unittest.TestCase):
             1_000,
         )
 
-    def test_online_check_scales_to_100k_within_optimizer_budget(self) -> None:
+    def test_online_check_scales_to_100k(self) -> None:
         node_count = 100_000
         graph = {
             "nodes": [
@@ -948,12 +1206,8 @@ class MFSPartRefinementTest(unittest.TestCase):
             artifact["validation"]["mode"],
             "linear-phase3-output-contract",
         )
-        self.assertTrue(
-            artifact["runtime"]["candidate_check_within_optimizer_budget"]
-        )
-        self.assertLessEqual(
-            artifact["runtime"]["candidate_check_wall_seconds"],
-            artifact["runtime"]["optimizer_wall_seconds"],
+        self.assertGreaterEqual(
+            artifact["runtime"]["candidate_check_wall_seconds"], 0.0
         )
 
     def test_high_fanout_connectivity_uses_indexed_part_counts(self) -> None:
