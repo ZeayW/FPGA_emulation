@@ -1403,9 +1403,15 @@ Version 14 treats generalized Static Exact as a strict expansion of the
 register-only search space: it computes the ordinary TritonPart seed once,
 embeds that instance placement into the finer Static Exact clusters, and only
 accepts a structurally legal PATRON result with a strictly improved timing
-certificate.  The selected assignment alone materializes the downstream
-semantic contract.  This prevents a cold start on the fragmented graph from
-silently replacing the register-only control with a worse local optimum.
+certificate.  Unlike the retired v12/v13 experiments, v14 does not freeze each
+architectural net's initial hop count, total path-transition count, or cut
+count.  Board reachability, the configured route-hop limit, capacity, fixed
+placement, and structural cut legality remain hard constraints; transition and
+cut counts are ordinary trailing costs behind predicted WNS/TNS.  The selected
+assignment alone materializes the downstream semantic contract.  This both
+prevents a cold start on the fragmented graph from silently replacing the
+register-only control with a worse local optimum and preserves the complete
+provider-neutral Phase 3 search domain required by Static Exact.
 Canonical experiment configs may set
 `partition_provider=patron`, reuse `patron_initial_assignment`, and restrict
 `phase6_providers` plus `physical_seeds` (for example Chimew/seed 1) so an A/B

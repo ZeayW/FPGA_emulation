@@ -2720,13 +2720,12 @@ class PartitionPressureTest(unittest.TestCase):
         self.assertEqual(
             trust_trace["mode"], "endpoint-exact-critical-flow-v14"
         )
-        self.assertLessEqual(
-            trust_trace["final_metrics"]["total_path_partition_transitions"],
-            trust_trace["initial_metrics"]["total_path_partition_transitions"],
+        self.assertLess(
+            trust_trace["final_metrics"]["objective_key"],
+            trust_trace["initial_metrics"]["objective_key"],
         )
-        self.assertLessEqual(
-            trust_trace["final_metrics"]["cut_bits"],
-            trust_trace["initial_metrics"]["cut_bits"],
+        self.assertEqual(
+            trust_region["cluster_assignment"][by_instance["u1"]], "c"
         )
         checked = validate_partition_pressure_native_bundle(
             ir,

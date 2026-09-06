@@ -147,6 +147,7 @@ struct ProxyState {
   long long transitions = 0;
   long long transition_limit = std::numeric_limits<long long>::max();
   bool transition_objective = false;
+  bool transition_guard = false;
   long long cut_limit = std::numeric_limits<long long>::max();
   bool cut_guard = false;
   long long hops = 0;
@@ -1011,7 +1012,7 @@ Evaluation proxy_evaluation(const ProxyState& state) {
       state.hops,
       state.cuts,
   };
-  result.feasible = (!state.transition_objective
+  result.feasible = (!state.transition_guard
                      || state.transitions <= state.transition_limit)
                     && (!state.cut_guard || state.cuts <= state.cut_limit);
   if (!result.feasible) {
@@ -1030,7 +1031,13 @@ ProxyState build_proxy_state(
         = std::numeric_limits<long long>::max()) {
   ProxyState state;
   state.transition_objective = model.flow_version >= 13;
-  state.cut_guard = model.flow_version >= 14;
+  // v13 was an experimental hard transition trust region.  Generalized
+  // Static Exact (v14) must remain an expanded partition search space:
+  // transition and cut counts are trailing optimization terms, not Phase-3
+  // feasibility constraints.  The provider-neutral structural contract is
+  // materialized after selection; slot feasibility belongs to Phase 5.
+  state.transition_guard = model.flow_version == 13;
+  state.cut_guard = false;
   state.assignment.resize(model.clusters);
   state.resource_load.assign(
       model.parts, std::vector<double>(model.dimensions, 0.0));
@@ -1089,7 +1096,7 @@ ProxyState build_proxy_state(
     state.snaking += state.path[path].snaking;
     state.transitions += state.path[path].transitions;
   }
-  state.transition_limit = state.transition_objective
+  state.transition_limit = state.transition_guard
                                && transition_limit_override
                                       != std::numeric_limits<long long>::max()
                                ? transition_limit_override
@@ -2719,7 +2726,7 @@ ProxyDelta evaluate_proxy_changes(
     candidate_snaking += replacement.snaking - old.snaking;
     candidate_transitions += replacement.transitions - old.transitions;
   }
-  if (state.transition_objective
+  if (state.transition_guard
       && candidate_transitions > state.transition_limit) {
     return delta;
   }

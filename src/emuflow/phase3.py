@@ -137,7 +137,7 @@ def _select_patron_static_exact_assignment_v14(
     candidate: Dict[str, Any],
     patron_trace: Dict[str, Any],
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    """Accept a timing improvement only inside the exact semantic trust region."""
+    """Accept a structurally legal generalized assignment with better timing."""
 
     initial_key = _optional_patron_static_exact_semantic_key(initial)
     candidate_key = _optional_patron_static_exact_semantic_key(candidate)
@@ -669,8 +669,7 @@ def run_phase3(
                 # Make the register-only seed topology-feasible while its
                 # atomic combinational clusters are still intact.  Refining
                 # hops after embedding into the finer Static Exact graph could
-                # fragment that control solution before PATRON's trust-region
-                # guards see it.
+                # fragment that control solution before PATRON sees it.
                 tritonpart_initial, _ = refine_partition_hops(
                     ir,
                     platform,

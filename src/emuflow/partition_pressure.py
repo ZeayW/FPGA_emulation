@@ -89,7 +89,7 @@ PATRON_FLOW_REFINEMENT_ALGORITHM_V7 = (
     "flowcutter-ranked-frontier-static-exact-transition-guard-v7"
 )
 PATRON_FLOW_REFINEMENT_ALGORITHM_V8 = (
-    "flowcutter-ranked-frontier-static-exact-trust-region-v8"
+    "flowcutter-ranked-frontier-provider-neutral-static-exact-v8"
 )
 PATRON_FLOW_REFINEMENT_ALGORITHM_V3 = (
     "flowcutter-bidirectional-piercing-ranked-frontier-closure-v3"
@@ -127,7 +127,7 @@ PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V13 = (
     "patron-static-exact-transition-guard-flow-native-v13"
 )
 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14 = (
-    "patron-static-exact-trust-region-flow-native-v14"
+    "patron-static-exact-register-seeded-flow-native-v14"
 )
 GAIN_QUANTUM = 1.0e-9
 BOUNDARY_FANOUT_PENALTY_SCALE_NS = 0.0
@@ -1594,7 +1594,7 @@ def _write_patron_native_input(
         _static_exact_topology_guard_limits(
             clusters_artifact, model, initial_assignment
         )
-        if flow_version in {12, 13, 14}
+        if flow_version in {12, 13}
         else {net["net"]: -1 for net in nets}
     )
 
@@ -1824,12 +1824,10 @@ def _parse_patron_native_output(
     ):
         raise ValidationError("native PATRON output header is invalid")
     output_version = lines[0]
-    path_transition_objective = (
-        output_version in {
-            "EMUFLOW_PATRON_OUTPUT_V13",
-            "EMUFLOW_PATRON_OUTPUT_V14",
-        }
-    )
+    path_transition_objective = output_version in {
+        "EMUFLOW_PATRON_OUTPUT_V13",
+        "EMUFLOW_PATRON_OUTPUT_V14",
+    }
     def indexed(label: str, values: List[str], index: int) -> str:
         if index < 0 or index >= len(values):
             raise ValidationError(
@@ -2183,7 +2181,7 @@ def run_partition_pressure_native(
         ) = (
             _parse_patron_native_output(native_output, indexes)
         )
-    if algorithm_version in {12, 13, 14}:
+    if algorithm_version in {12, 13}:
         _check_static_exact_topology_guard(
             model,
             cluster_assignment,
@@ -2192,12 +2190,12 @@ def run_partition_pressure_native(
     provider_metadata = {
         "initial_provider": initial_assignment.get("provider"),
     }
-    if algorithm_version in {12, 13, 14}:
+    if algorithm_version in {12, 13}:
         provider_metadata["static_exact_topology_guard"] = (
             "initial-transported-non-combinational-"
             "worst-hop-non-regression-v1"
         )
-    if algorithm_version in {13, 14}:
+    if algorithm_version == 13:
         provider_metadata.update(
             {
                 "path_transition_objective": (
@@ -2211,7 +2209,9 @@ def run_partition_pressure_native(
     if algorithm_version == 14:
         provider_metadata.update(
             {
-                "cut_count_guard": "initial-total-non-regression-v1",
+                "static_exact_search_space": (
+                    "register-seeded-provider-neutral-generalized-v1"
+                ),
                 "static_exact_selection": (
                     "materialized-legality-and-strict-timing-improvement-v3"
                 ),
@@ -2725,7 +2725,7 @@ def validate_partition_pressure_native_bundle(
         _static_exact_topology_guard_limits(
             clusters_artifact, model, initial_assignment
         )
-        if flow_version in {6, 7, 8}
+        if flow_version in {6, 7}
         else None
     )
     cluster_ids = {
