@@ -275,9 +275,11 @@ Acceptance:
 
 Generalized Static Exact v2 plus endpoint-exact PATRON is the default Phase 3
 configuration. EmuFlow exports each legality-preserving cluster as a
-multi-resource hypergraph vertex, obtains a TritonPart initial assignment, and
-then lets PATRON refine it using timing endpoints, BoardDB topology, routing
-pressure, and the transported classes declared by the Static Exact policy.
+multi-resource hypergraph vertex, obtains a same-seed TritonPart assignment on
+the ordinary register-boundary graph, lifts it deterministically onto the
+generalized clusters, and then lets PATRON refine it using timing endpoints,
+BoardDB topology, routing pressure, and the transported classes declared by
+the Static Exact policy.
 The common assignment builder and independent checker reconstruct the selected
 dependency DAG after refinement. TritonPart-only, sequential-only, and greedy
 providers remain explicit A/B policies.

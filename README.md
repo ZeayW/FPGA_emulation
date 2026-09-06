@@ -1301,10 +1301,15 @@ The command writes a hash-bound `multi-fpga-flow-report.json` only after
 partition, route, schedule, split, and cycle-equivalence checks pass. The
 default partition configuration is source-built endpoint-exact PATRON with
 generalized Static Exact v2. A standalone PATRON command creates a TritonPart
-initial assignment when none is supplied. A normal full-flow run keeps that
-initializer only as temporary in-run state, feeds its assignment and validated
-cluster table to PATRON, and removes it after terminal validation. PATRON then
-refines and independently validates the complete result.
+initial assignment when none is supplied. For generalized v14, that initializer
+solves the ordinary register-boundary graph with the same seed and then
+deterministically lifts the instance assignment onto the finer Static Exact
+clusters. Static Exact therefore adds legal local degrees of freedom without
+silently replacing the system-level partition used by the register-only
+control. A normal full-flow run keeps that initializer only as temporary
+in-run state, feeds the lifted assignment and validated cluster table to
+PATRON, and removes it after terminal validation. PATRON then refines and
+independently validates the complete result.
 The default `--mapping-profile vtr-hard-blocks` retains public VTR RAM/DSP
 resources. `--mapping-profile generic-soft` is available for architecture-
 neutral LUT6/FF experiments, but may expand memory-heavy designs substantially.
@@ -1411,13 +1416,14 @@ Version 11 must name both a frozen initial assignment and a matching prior
 complete-global `system-timing/v2` artifact; it is never inferred from cache
 presence. The older `--patron-flow-refinement` spelling remains an explicit
 version-10 producer alias when no physical-feedback input is present.
-Version 14 solves its initial TritonPart assignment directly on the
-generalized Static Exact cluster graph, then accepts only a structurally legal
-PATRON result with a strictly improved timing certificate.  A register-only
-assignment is a separate complete-flow control, not a cold start projected
-onto the finer graph: the pre-physical PATRON objective models cross-FPGA and
-TDM delay but cannot infer the downstream intra-FPGA physical benefit of
-opening a new combinational boundary from an all-local seed.
+Version 14 solves its initial TritonPart assignment on the ordinary
+register-boundary graph, deterministically projects that same-seed assignment
+onto the generalized Static Exact graph, then accepts only a structurally
+legal PATRON result with a strictly improved provider-neutral timing
+certificate. This keeps the strong system-level partition as the anchor and
+makes generalized cuts an incremental refinement rather than a second global
+partitioning problem. An explicitly supplied generalized TritonPart solution
+remains a named research cold start; it is never inferred by the default.
 Unlike the retired v12/v13 experiments, v14 does not freeze each
 architectural net's initial hop count, total path-transition count, or cut
 count.  Board reachability, the configured route-hop limit, capacity, fixed
@@ -1573,7 +1579,9 @@ default. A clean generalized flow defaults to PATRON v14; v6 or the
 ranked-frontier v9 profile may be selected explicitly when reproducing their
 experiments. A resulting complete-global Phase 7 timing artifact can be a
 matching v11 input only when v11 and the frozen assignment are also selected
-explicitly. Case7/case9 topology
+explicitly. The projected-anchor v14 revision is undergoing a fresh complete
+Phase 7/7C qualification; pre-projection v14 results do not qualify the new
+default behavior. Case7/case9 topology
 replication remains additional QoR evidence after the primary case6 gate.  The
 complete design, literature basis, and gate are documented in
 [the timing/TDM partitioning upgrade plan](docs/PARTITIONING_TIMING_TDM_UPGRADE.md).

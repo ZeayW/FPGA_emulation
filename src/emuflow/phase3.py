@@ -706,17 +706,36 @@ def run_phase3(
                 "PATRON Phase 3 requires a complete TimingPathDB"
             )
         if patron_initial_assignment_path is None:
-            # The initial partition must be solved on the same cluster graph
-            # that PATRON is allowed to optimize.  Projecting a register-only
-            # assignment onto generalized Static Exact clusters traps every
-            # combinational boundary at zero transport: PATRON's pre-physical
-            # objective can then only see the added board delay of opening a
-            # cut, not the downstream intra-FPGA placement/routing benefit.
-            patron_initialization = "native-cut-mode-tritonpart-seed-v1"
-            initial = run_tritonpart(
+            # Generalized Static Exact refines the legal cut search space; it
+            # must not silently replace the partitioner's system-level
+            # solution.  Solve the ordinary register-boundary graph with the
+            # same seed, then lift that assignment onto the finer clusters.
+            # PATRON can subsequently move every legal generalized cluster,
+            # but every accepted result is now an incremental change from the
+            # same strong anchor used by the register-only control arm.
+            use_static_exact_anchor = (
+                patron_algorithm_version == 14
+                and cut_mode == CUT_MODE_STATIC_EXACT
+                and tritonpart_solution is None
+            )
+            tritonpart_clusters = (
+                build_clusters(
+                    ir,
+                    constraints,
+                    cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
+                )
+                if use_static_exact_anchor
+                else clusters
+            )
+            patron_initialization = (
+                STATIC_EXACT_SEQUENTIAL_ANCHOR_PROVIDER
+                if use_static_exact_anchor
+                else "native-cut-mode-tritonpart-seed-v1"
+            )
+            tritonpart_initial = run_tritonpart(
                 ir,
                 platform,
-                clusters,
+                tritonpart_clusters,
                 constraints,
                 output_dir / "patron" / "tritonpart",
                 seed=seed,
@@ -736,6 +755,17 @@ def run_phase3(
                 ),
                 defer_semantic_contract=True,
                 persist_input_manifest=retain_diagnostics,
+            )
+            initial = (
+                _lift_static_exact_sequential_anchor(
+                    ir,
+                    platform,
+                    clusters,
+                    constraints,
+                    tritonpart_initial,
+                )
+                if use_static_exact_anchor
+                else tritonpart_initial
             )
         else:
             patron_initialization = "caller-supplied-frozen-assignment-v1"

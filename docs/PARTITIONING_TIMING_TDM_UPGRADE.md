@@ -150,6 +150,14 @@ Static Exact dependency contract, and the independent checker revalidates that
 contract together with the native transition trace and complete metrics.  The
 legacy sequential policy remains an explicit comparison mode.
 
+The generalized search is initialized by solving the ordinary
+register-boundary graph with the same seed and lifting that instance assignment
+onto the finer Static Exact clusters. This preserves the partitioner's global
+communication solution and lets PATRON use combinational boundaries only as an
+incremental refinement. Running a second unrelated TritonPart solve directly
+on the finer graph is available only through an explicitly supplied research
+solution and is not the default producer contract.
+
 For each valid assignment, a deterministic direct K-way pass evaluates a move
 of cluster `v` from partition `a` to `b` with a lexicographic objective:
 

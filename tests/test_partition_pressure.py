@@ -41,6 +41,7 @@ from emuflow.phase3 import promote_patron_baseline, run_phase3
 from emuflow.phase3 import (
     PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER,
     PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
+    STATIC_EXACT_SEQUENTIAL_ANCHOR_PROVIDER,
     _rebase_patron_initial_assignment,
     _select_patron_static_exact_assignment,
     _select_patron_static_exact_assignment_v14,
@@ -1711,7 +1712,116 @@ class PartitionPressureTest(unittest.TestCase):
                 PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
             )
 
-    def test_phase3_v14_uses_native_static_exact_cold_start(self) -> None:
+    def test_phase3_patron_v14_lifts_sequential_anchor_by_default(
+        self,
+    ) -> None:
+        ir = _ir()
+        ir.value["nets"][0]["cut_class"] = "combinational"
+        ir.value["clocks"] = [
+            {
+                "id": "clk",
+                "name": "clk",
+                "source_port": "clk",
+                "period_ns": None,
+            }
+        ]
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "min_used_fpgas": 2,
+                "balance_tolerance": 1.0,
+            },
+            ir,
+            self.platform,
+        )
+        sequential_clusters = build_clusters(
+            ir, constraints, cut_mode=CUT_MODE_SEQUENTIAL_ONLY
+        )
+        sequential_map = {
+            cluster["id"]: (
+                "a" if "u0" in cluster["instances"]
+                else "b"
+            )
+            for cluster in sequential_clusters["clusters"]
+        }
+        sequential = build_partition_assignment(
+            ir,
+            self.platform,
+            sequential_clusters,
+            constraints,
+            sequential_map,
+            provider="fixture-sequential-tritonpart",
+            seed=7,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            platform_path = root / "platform.json"
+            constraints_path = root / "constraints.json"
+            timing_path = root / "timing.json"
+            route_path = root / "routes.json"
+            write_json(ir_path, ir.value)
+            write_json(platform_path, self.platform.to_dict())
+            write_json(constraints_path, constraints)
+            write_json(timing_path, self.timing)
+            write_json(
+                route_path,
+                {
+                    "schema": "emuflow.system-route-constraints/v1",
+                    "frame_slots": 8,
+                    "tdm_ratio_quantum": 1,
+                },
+            )
+            with patch(
+                "emuflow.phase3.run_tritonpart", return_value=sequential
+            ) as tritonpart_run:
+                report = run_phase3(
+                    ir_path,
+                    platform_path,
+                    root / "phase3",
+                    constraints_path=constraints_path,
+                    provider="patron",
+                    route_constraints_path=route_path,
+                    timing_database_path=timing_path,
+                    patron_refiner=str(patron_refiner()),
+                    patron_algorithm_version=14,
+                    cut_mode=CUT_MODE_STATIC_EXACT,
+                    retain_diagnostics=False,
+                    patron_max_moves=0,
+                )
+            assignment = read_json(root / "phase3/assignment.json")
+            self.assertEqual(
+                report["patron_initialization"],
+                STATIC_EXACT_SEQUENTIAL_ANCHOR_PROVIDER,
+            )
+            self.assertEqual(
+                tritonpart_run.call_args.args[2]["policy"].get(
+                    "cut_mode", CUT_MODE_SEQUENTIAL_ONLY
+                ),
+                CUT_MODE_SEQUENTIAL_ONLY,
+            )
+            self.assertEqual(
+                assignment["instance_assignment"],
+                sequential["instance_assignment"],
+            )
+            self.assertEqual(
+                assignment["metrics"][
+                    "maximum_combinational_dependency_depth"
+                ],
+                0,
+            )
+            self.assertEqual(
+                report["algorithm_validation"]["status"], "pass"
+            )
+            self.assertEqual(report["patron_algorithm_version"], 14)
+            self.assertEqual(
+                report["algorithm_validation"][
+                    "static_exact_semantic_selection"
+                ]["provider"],
+                PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
+            )
+
+    def test_phase3_v14_explicit_solution_uses_static_exact_cold_start(self) -> None:
         ir = _ir()
         ir.value["nets"][0]["cut_class"] = "combinational"
         ir.value["clocks"] = [
