@@ -14,7 +14,7 @@ from .native_tools import resolve_native_executable
 from .platform import Platform
 
 
-TDM_SLOT_OPTIMIZER_PROVIDER = "fixed-slot-event-guided-lns-v3"
+TDM_SLOT_OPTIMIZER_PROVIDER = "fixed-slot-event-guided-lns-v4"
 HopKey = Tuple[str, str, str, str]
 
 

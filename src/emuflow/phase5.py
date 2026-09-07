@@ -210,6 +210,10 @@ def run_phase5(
             )
             score = (
                 candidate_timing["worst_normalized_slack"],
+                candidate_timing[
+                    "total_negative_normalized_slack"
+                ],
+                -candidate_timing["negative_slack_paths"],
                 candidate_timing["p01_normalized_slack"],
                 candidate_timing["median_normalized_slack"],
                 -candidate_schedule["metrics"]["completion_slot"],
@@ -246,7 +250,8 @@ def run_phase5(
         timing_validation = selected["timing_validation"]
         candidate_selection = {
             "objective": (
-                "lexicographic realized worst, p01, and median normalized "
+                "lexicographic realized worst and total negative normalized "
+                "slack; negative path count; p01 and median normalized "
                 "slack; completion slot; analytical discrete slack"
             ),
             "selected": selected["strategy"],
@@ -261,6 +266,12 @@ def run_phase5(
                     "realized_worst_normalized_slack": candidate[
                         "timing_validation"
                     ]["worst_normalized_slack"],
+                    "realized_total_negative_normalized_slack": candidate[
+                        "timing_validation"
+                    ]["total_negative_normalized_slack"],
+                    "realized_negative_slack_paths": candidate[
+                        "timing_validation"
+                    ]["negative_slack_paths"],
                     "realized_p01_normalized_slack": candidate[
                         "timing_validation"
                     ]["p01_normalized_slack"],

@@ -41,7 +41,6 @@ from emuflow.phase3 import promote_patron_baseline, run_phase3
 from emuflow.phase3 import (
     PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER,
     PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
-    STATIC_EXACT_SEQUENTIAL_ANCHOR_PROVIDER,
     _rebase_patron_initial_assignment,
     _select_patron_static_exact_assignment,
     _select_patron_static_exact_assignment_v14,
@@ -1712,7 +1711,7 @@ class PartitionPressureTest(unittest.TestCase):
                 PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
             )
 
-    def test_phase3_patron_v14_lifts_sequential_anchor_by_default(
+    def test_phase3_patron_v14_initializes_on_generalized_graph_by_default(
         self,
     ) -> None:
         ir = _ir()
@@ -1734,23 +1733,28 @@ class PartitionPressureTest(unittest.TestCase):
             ir,
             self.platform,
         )
-        sequential_clusters = build_clusters(
-            ir, constraints, cut_mode=CUT_MODE_SEQUENTIAL_ONLY
+        generalized_clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            static_exact_candidate_policy=(
+                STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+            ),
         )
-        sequential_map = {
+        generalized_map = {
             cluster["id"]: (
                 "a" if "u0" in cluster["instances"]
                 else "b"
             )
-            for cluster in sequential_clusters["clusters"]
+            for cluster in generalized_clusters["clusters"]
         }
-        sequential = build_partition_assignment(
+        generalized = build_partition_assignment(
             ir,
             self.platform,
-            sequential_clusters,
+            generalized_clusters,
             constraints,
-            sequential_map,
-            provider="fixture-sequential-tritonpart",
+            generalized_map,
+            provider="fixture-generalized-tritonpart",
             seed=7,
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -1773,7 +1777,7 @@ class PartitionPressureTest(unittest.TestCase):
                 },
             )
             with patch(
-                "emuflow.phase3.run_tritonpart", return_value=sequential
+                "emuflow.phase3.run_tritonpart", return_value=generalized
             ) as tritonpart_run:
                 report = run_phase3(
                     ir_path,
@@ -1792,23 +1796,20 @@ class PartitionPressureTest(unittest.TestCase):
             assignment = read_json(root / "phase3/assignment.json")
             self.assertEqual(
                 report["patron_initialization"],
-                STATIC_EXACT_SEQUENTIAL_ANCHOR_PROVIDER,
+                "native-cut-mode-tritonpart-seed-v2",
             )
             self.assertEqual(
                 tritonpart_run.call_args.args[2]["policy"].get(
                     "cut_mode", CUT_MODE_SEQUENTIAL_ONLY
                 ),
-                CUT_MODE_SEQUENTIAL_ONLY,
+                CUT_MODE_STATIC_EXACT,
             )
             self.assertEqual(
                 assignment["instance_assignment"],
-                sequential["instance_assignment"],
+                generalized["instance_assignment"],
             )
-            self.assertEqual(
-                assignment["metrics"][
-                    "maximum_combinational_dependency_depth"
-                ],
-                0,
+            self.assertGreater(
+                assignment["metrics"]["combinational_cut_nets"], 0
             )
             self.assertEqual(
                 report["algorithm_validation"]["status"], "pass"
@@ -1911,7 +1912,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(report["status"], "pass")
             self.assertEqual(
                 report["patron_initialization"],
-                "native-cut-mode-tritonpart-seed-v1",
+                "native-cut-mode-tritonpart-seed-v2",
             )
             self.assertEqual(
                 report["algorithm_validation"]["initial_assignment"][

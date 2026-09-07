@@ -45,6 +45,20 @@ These requirements apply to all work in this repository.
   requires an old invocation contract, expose a separately named versioned
   command/config schema rather than making the current command guess intent.
 
+## Static Exact qualification must exercise the feature
+
+- A generalized Static Exact producer may use TritonPart as its initializer,
+  but the initializer and subsequent refiner must solve the same generalized
+  cluster graph. Never initialize a generalized run by silently solving a
+  register-only graph and projecting that assignment onto finer clusters.
+- A medium or real-design Static Exact qualification must explicitly require
+  at least one algorithm-selected combinational cut and independently verify
+  the observed count. A zero-cut end-to-end run is useful compatibility
+  evidence only; it cannot qualify, promote, or claim QoR for Static Exact.
+- Do not create combinational-cut evidence by fixing an assignment or forcing
+  selected instances onto different FPGAs. Qualification cuts must arise from
+  the normal algorithm under the declared capacity, topology, and seed.
+
 ## Only permitted experiment lifecycle: ephemeral intermediates
 
 This is the only permitted lifecycle for validation and QoR experiments. Do

@@ -170,6 +170,8 @@ def _candidate_fallback_patches(schedule_side_effect):
     }
     timing = {
         "worst_normalized_slack": 0.0,
+        "total_negative_normalized_slack": 0.0,
+        "negative_slack_paths": 0,
         "p01_normalized_slack": 0.0,
         "median_normalized_slack": 0.0,
     }
@@ -1778,7 +1780,108 @@ class Phase5Test(unittest.TestCase):
         )
         self.assertEqual(
             refined["slot_optimization"]["provider"],
-            "fixed-slot-event-guided-lns-v3",
+            "fixed-slot-event-guided-lns-v4",
+        )
+
+    def test_native_slot_refinement_skips_immutable_local_worst_path(
+        self,
+    ) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "immutable_local_worst",
+                ["a", "b", "c"],
+                [
+                    _link("ab", "a", "b", lanes=1, latency=1),
+                    _link("ac", "a", "c", lanes=1, latency=1),
+                ],
+            )
+        )
+        routes = _routes(
+            platform,
+            [
+                ("fixed", "a", ["c"]),
+                ("n0", "a", ["b"]),
+                ("n1", "a", ["b"]),
+            ],
+            frame_slots=8,
+        )
+        routes["timing"] = {
+            "schema": "emuflow.sta-paths/v1",
+            "normalization": {
+                "positive_slack_scale_ns": 100.0,
+                "negative_slack_scale_ns": 100.0,
+                "max_clock_period_ns": 100.0,
+            },
+            "compression": {
+                "original_paths": 3,
+                "compressed_paths": 3,
+            },
+            "paths": [
+                {
+                    "path": "immutable-local-worst",
+                    "clock_domain": "fast",
+                    "clock_period_ns": 10.0,
+                    "fixed_delay_ns": 40.0,
+                    "cut_nets": ["fixed"],
+                },
+                {
+                    "path": "relaxed",
+                    "clock_domain": "slow",
+                    "clock_period_ns": 100.0,
+                    "fixed_delay_ns": 0.0,
+                    "cut_nets": ["n0"],
+                },
+                {
+                    "path": "movable-critical",
+                    "clock_domain": "fast",
+                    "clock_period_ns": 20.0,
+                    "fixed_delay_ns": 24.0,
+                    "cut_nets": ["n1"],
+                },
+            ],
+        }
+        plan = build_tdm_ratio_plan(
+            routes,
+            platform,
+            executable=str(tdm_ratio_optimizer()),
+            max_ratio=2,
+            ratio_quantum=1,
+            post_refinement_iterations=0,
+        )
+        baseline = build_tdm_schedule(routes, platform, plan)
+        baseline_timing = reconstruct_tdm_schedule_timing(
+            routes, platform, baseline
+        )
+        refined = refine_tdm_schedule_native(
+            routes,
+            platform,
+            plan,
+            baseline,
+            executable=str(tdm_slot_optimizer()),
+            max_iterations=10,
+        )
+        refined_timing = reconstruct_tdm_schedule_timing(
+            routes, platform, refined
+        )
+        refined_by_net = {
+            entry["net"]: entry for entry in refined["entries"]
+        }
+        self.assertEqual(refined_by_net["n1"]["slot"], 0)
+        self.assertEqual(
+            refined_timing["worst_normalized_slack"],
+            baseline_timing["worst_normalized_slack"],
+        )
+        self.assertGreater(
+            refined_timing["total_negative_normalized_slack"],
+            baseline_timing["total_negative_normalized_slack"],
+        )
+        self.assertGreater(
+            refined["slot_optimization"]["metrics"]["evaluated_moves"],
+            0,
+        )
+        self.assertGreater(
+            refined["slot_optimization"]["metrics"]["accepted_moves"],
+            0,
         )
 
     def test_exact_multi_round_slot_oracle_models_global_barrier(self) -> None:

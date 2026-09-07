@@ -328,14 +328,14 @@ Phase 5 model, so ratio and slot refinement remain enabled and independently
 checked. The compiler produces one independently sealed physical Phase 7
 terminal per provider at seed 1 by default. Seeds 2 and 3 remain an explicit
 statistical-robustness opt-in rather than a routine completion gate. Canonical
-static-exact runs default
+static-exact runs may default
 `minimum_combinational_cut_nets` to zero because some real, legal partitions
 need no combinational boundary. The producer records the selected threshold,
 the separately invoked Phase 3 validator reconstructs the actual count, and
 the report records whether a combinational cut was actually exercised. A
-positive threshold is an explicit exercise contract, used by the small
-capacity-limited acceptance fixture; a zero-cut large run is compatible
-evidence, not an exercised exact-cut result.
+positive threshold is mandatory for medium/real Static Exact qualification;
+a zero-cut large run is only compatibility evidence and cannot promote or
+validate the feature.
 
 The canonical paired QoR experiment makes this distinction explicit. Its
 sequential arm requires zero combinational cuts, while its generalized v2 arm

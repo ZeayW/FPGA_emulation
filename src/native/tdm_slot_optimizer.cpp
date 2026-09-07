@@ -75,6 +75,9 @@ struct Schedule {
   std::vector<int> route_completion;
   double worst_normalized_slack = -std::numeric_limits<double>::infinity();
   int worst_path = -1;
+  int worst_movable_path = -1;
+  double total_negative_normalized_slack = 0.0;
+  long long negative_paths = 0;
   int completion_slot = std::numeric_limits<int>::max();
   long long total_wait_slots = std::numeric_limits<long long>::max();
 };
@@ -359,6 +362,17 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
   }
 
   result.worst_normalized_slack = std::numeric_limits<double>::infinity();
+  double worst_movable_normalized_slack =
+      std::numeric_limits<double>::infinity();
+  std::map<std::pair<int, int>, int> first_slot_by_round_lane;
+  for (const auto& hop : model.hops) {
+    const auto key = std::make_pair(hop.round, hop.lane_resource);
+    const auto found = first_slot_by_round_lane.find(key);
+    if (found == first_slot_by_round_lane.end()
+        || result.slots[hop.index] < found->second) {
+      first_slot_by_round_lane[key] = result.slots[hop.index];
+    }
+  }
   for (const auto& path : model.paths) {
     double transport_arrival = 0.0;
     for (int index : path.hops) {
@@ -373,6 +387,20 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
       result.worst_normalized_slack = normalized;
       result.worst_path = path.index;
     }
+    const bool has_preceding_blocker = std::any_of(
+        path.hops.begin(), path.hops.end(), [&](int index) {
+          const auto& hop = model.hops[index];
+          return result.slots[index]
+                 > first_slot_by_round_lane.at(
+                       {hop.round, hop.lane_resource});
+        });
+    if (has_preceding_blocker
+        && normalized < worst_movable_normalized_slack) {
+      worst_movable_normalized_slack = normalized;
+      result.worst_movable_path = path.index;
+    }
+    result.total_negative_normalized_slack += std::min(0.0, normalized);
+    if (normalized < 0.0) ++result.negative_paths;
   }
   result.completion_slot = *std::max_element(result.route_completion.begin(),
                                               result.route_completion.end());
@@ -393,6 +421,17 @@ bool better(const Schedule& left, const Schedule& right) {
   if (left.worst_normalized_slack + epsilon <
       right.worst_normalized_slack) {
     return false;
+  }
+  if (left.total_negative_normalized_slack >
+      right.total_negative_normalized_slack + epsilon) {
+    return true;
+  }
+  if (left.total_negative_normalized_slack + epsilon <
+      right.total_negative_normalized_slack) {
+    return false;
+  }
+  if (left.negative_paths != right.negative_paths) {
+    return left.negative_paths < right.negative_paths;
   }
   if (left.completion_slot != right.completion_slot) {
     return left.completion_slot < right.completion_slot;
@@ -422,9 +461,14 @@ OptimizationResult optimize(const Model& model) {
   }
   for (int iteration = 0; iteration < model.max_iterations; ++iteration) {
     result.iterations = iteration + 1;
-    if (result.schedule.worst_path < 0) break;
+    // The absolute worst path may be entirely local to one FPGA. Such a path
+    // is a valid WNS bound but contains no slot decision, so stopping on it
+    // makes the optimizer a no-op for every transported path. Search the
+    // worst schedule-sensitive path instead; global WNS remains the first
+    // comparison key and projected TNS decides when that immutable bound ties.
+    if (result.schedule.worst_movable_path < 0) break;
     std::set<std::pair<int, int>> candidates;
-    const auto& worst = model.paths[result.schedule.worst_path];
+    const auto& worst = model.paths[result.schedule.worst_movable_path];
     for (int critical : worst.hops) {
       const auto& critical_hop = model.hops[critical];
       int nearest = -1;

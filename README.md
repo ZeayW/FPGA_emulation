@@ -1324,15 +1324,14 @@ The command writes a hash-bound `multi-fpga-flow-report.json` only after
 partition, route, schedule, split, and cycle-equivalence checks pass. The
 default partition configuration is source-built endpoint-exact PATRON with
 generalized Static Exact v2. A standalone PATRON command creates a TritonPart
-initial assignment when none is supplied. For generalized v14, that initializer
-solves the ordinary register-boundary graph with the same seed and then
-deterministically lifts the instance assignment onto the finer Static Exact
-clusters. Static Exact therefore adds legal local degrees of freedom without
-silently replacing the system-level partition used by the register-only
-control. A normal full-flow run keeps that initializer only as temporary
-in-run state, feeds the lifted assignment and validated cluster table to
-PATRON, and removes it after terminal validation. PATRON then refines and
-independently validates the complete result.
+initial assignment when none is supplied. The initializer solves the same
+generalized hypergraph that PATRON will refine; it never solves a hidden
+register-only graph and projects that result into the generalized search
+space. Register-only remains an explicit comparison arm. A normal full-flow
+run keeps the initializer only as temporary in-run state, feeds its validated
+assignment and cluster table to PATRON, and removes it after terminal
+validation. PATRON then refines and independently validates the complete
+result.
 The default `--mapping-profile vtr-hard-blocks` retains public VTR RAM/DSP
 resources. `--mapping-profile generic-soft` is available for architecture-
 neutral LUT6/FF experiments, but may expand memory-heavy designs substantially.
@@ -1439,14 +1438,12 @@ Version 11 must name both a frozen initial assignment and a matching prior
 complete-global `system-timing/v2` artifact; it is never inferred from cache
 presence. The older `--patron-flow-refinement` spelling remains an explicit
 version-10 producer alias when no physical-feedback input is present.
-Version 14 solves its initial TritonPart assignment on the ordinary
-register-boundary graph, deterministically projects that same-seed assignment
-onto the generalized Static Exact graph, then accepts only a structurally
-legal PATRON result with a strictly improved provider-neutral timing
-certificate. This keeps the strong system-level partition as the anchor and
-makes generalized cuts an incremental refinement rather than a second global
-partitioning problem. An explicitly supplied generalized TritonPart solution
-remains a named research cold start; it is never inferred by the default.
+Version 14 solves its initial TritonPart assignment directly on the selected
+cut graph, then accepts only a structurally legal PATRON result with a strictly
+improved provider-neutral timing certificate. In generalized Static Exact
+mode, both initialization and refinement therefore see the same generalized
+clusters. An explicitly supplied generalized TritonPart solution remains a
+named research cold start; it is never inferred by the default.
 Unlike the retired v12/v13 experiments, v14 does not freeze each
 architectural net's initial hop count, total path-transition count, or cut
 count.  Board reachability, the configured route-hop limit, capacity, fixed
@@ -3703,13 +3700,18 @@ continues over the finite legal ratio set. This matters when asymmetric
 round traffic moves the feasible boundary far from the frame midpoint. The
 resulting lane assignment is still independently checked against both round
 windows and the concrete slot schedule.
-The native `fixed-slot-event-guided-lns-v3` concrete-slot optimizer ranks
-schedules by projected absolute TX-event timing, then completion slot and
-total relative wait. It searches blockers on the critical path even when the
-critical transfer has zero relative wait, because an entry can be late in the
-frame while satisfying `slot == ready_slot`. It compacts only lane resources
-that actually occur and stores occupied `(resource, slot)` cells in a
-deterministic sparse table whose memory is proportional to scheduled hops.
+The native `fixed-slot-event-guided-lns-v4` concrete-slot optimizer ranks
+schedules lexicographically by projected absolute TX-event WNS, total negative
+normalized slack, negative-path count, completion slot, and total relative
+wait. If the absolute worst path is locally immutable, the search continues
+from the worst path that has an earlier same-resource blocker instead of
+terminating with zero evaluated moves. This lets Phase 5 improve TNS without
+claiming that an unrelated immutable path became movable. It still searches
+blockers on a critical transfer with zero relative wait, because an entry can
+be late in the frame while satisfying `slot == ready_slot`. It compacts only
+lane resources that actually occur and stores occupied `(resource, slot)`
+cells in a deterministic sparse table whose memory is proportional to
+scheduled hops.
 Sparse external lane IDs and long frames therefore cannot create a `max-ID x
 frame` or `resource-count x frame` allocation during repeated LNS schedule
 rebuilds.

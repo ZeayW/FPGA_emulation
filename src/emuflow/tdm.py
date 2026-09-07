@@ -1631,6 +1631,7 @@ def validate_tdm_schedule(
                 "timing-path-guided-local-search-v1",
                 "timing-path-guided-lns-v2",
                 "fixed-slot-event-guided-lns-v3",
+                "fixed-slot-event-guided-lns-v4",
             }
         ):
             raise ValidationError(
@@ -1664,6 +1665,7 @@ def validate_tdm_schedule(
         if optimization_provider in {
             "timing-path-guided-lns-v2",
             "fixed-slot-event-guided-lns-v3",
+            "fixed-slot-event-guided-lns-v4",
         }:
             expected_metric_keys.update(
                 {"lns_neighborhoods", "lns_evaluated_orders"}
@@ -1680,6 +1682,7 @@ def validate_tdm_schedule(
         if optimization_provider in {
             "timing-path-guided-lns-v2",
             "fixed-slot-event-guided-lns-v3",
+            "fixed-slot-event-guided-lns-v4",
         }:
             count_keys.extend(
                 ["lns_neighborhoods", "lns_evaluated_orders"]
@@ -1815,6 +1818,12 @@ def reconstruct_tdm_schedule_timing(
         "worst_normalized_slack": worst["normalized_slack"],
         "negative_slack_paths": sum(
             record["slack_ns"] < 0.0 for record in records
+        ),
+        "total_negative_slack_ns": sum(
+            min(0.0, record["slack_ns"]) for record in records
+        ),
+        "total_negative_normalized_slack": sum(
+            min(0.0, record["normalized_slack"]) for record in records
         ),
         "p01_normalized_slack": normalized[len(normalized) // 100],
         "median_normalized_slack": normalized[len(normalized) // 2],

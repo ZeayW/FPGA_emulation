@@ -272,21 +272,21 @@ class MFSPartPhase3Test(unittest.TestCase):
             max_cross_fpga_dependency_depth=8,
             static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         )
-        anchor_clusters = build_clusters(
-            ir,
-            constraints,
-            cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
-        )
-        anchor_assignment = build_partition_assignment(
+        initial_assignment = build_partition_assignment(
             ir,
             platform,
-            anchor_clusters,
+            clusters,
             constraints,
             {
                 cluster["id"]: (
-                    "fpga0" if "q0" in cluster["instances"] else "fpga1"
+                    "fpga0"
+                    if any(
+                        instance in {"q0", "l0"}
+                        for instance in cluster["instances"]
+                    )
+                    else "fpga1"
                 )
-                for cluster in anchor_clusters["clusters"]
+                for cluster in clusters["clusters"]
             },
             provider="tritonpart-fixture",
             seed=19,
@@ -299,7 +299,7 @@ class MFSPartPhase3Test(unittest.TestCase):
             write_json(constraints_path, constraints)
             with patch(
                 "emuflow.phase3.run_tritonpart",
-                return_value=anchor_assignment,
+                return_value=initial_assignment,
             ) as mocked_tritonpart:
                 report = run_phase3(
                     ir_path,
@@ -338,13 +338,7 @@ class MFSPartPhase3Test(unittest.TestCase):
             tritonpart_clusters["policy"].get(
                 "cut_mode", CUT_MODE_SEQUENTIAL_ONLY
             ),
-            CUT_MODE_SEQUENTIAL_ONLY,
-        )
-        self.assertEqual(
-            refined["provider_metadata"]["static_exact_initialization"][
-                "provider"
-            ],
-            "sequential-boundary-tritonpart-anchor-v1",
+            CUT_MODE_STATIC_EXACT,
         )
 
     def test_directional_graph_uses_emuir_driver_identity(self) -> None:

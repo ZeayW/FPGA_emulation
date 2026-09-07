@@ -49,68 +49,6 @@ PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER = (
 PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER = (
     "patron-static-exact-legality-timing-gate-v3"
 )
-STATIC_EXACT_SEQUENTIAL_ANCHOR_PROVIDER = (
-    "sequential-boundary-tritonpart-anchor-v1"
-)
-
-
-def _lift_static_exact_sequential_anchor(
-    ir: EmuIR,
-    platform: Platform,
-    generalized_clusters: Dict[str, Any],
-    constraints: Dict[str, Any],
-    anchor_assignment: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Lift a coarse sequential-boundary assignment onto generalized clusters.
-
-    Generalized Static Exact clusters are a refinement of the ordinary
-    register-boundary clusters. Starting the fine-grained optimizer from the
-    coarse assignment preserves the partitioner's system-level communication
-    solution; the subsequent MFSPart pass may still move every structurally
-    legal generalized cluster. This avoids accidentally treating the larger
-    generalized search graph as a request to replace the global partition.
-    """
-
-    instance_assignment = anchor_assignment.get("instance_assignment")
-    if not isinstance(instance_assignment, dict):
-        raise ValidationError(
-            "Static Exact sequential anchor lacks an instance assignment"
-        )
-    generalized_assignment: Dict[str, str] = {}
-    for cluster in generalized_clusters["clusters"]:
-        targets = {
-            instance_assignment.get(instance_id)
-            for instance_id in cluster["instances"]
-        }
-        if None in targets or len(targets) != 1:
-            raise ValidationError(
-                "generalized Static Exact cluster is not contained in one "
-                f"sequential anchor partition: {cluster['id']!r}"
-            )
-        generalized_assignment[cluster["id"]] = targets.pop()
-
-    provider_metadata = dict(
-        anchor_assignment.get("provider_metadata", {})
-    )
-    provider_metadata["static_exact_initialization"] = {
-        "provider": STATIC_EXACT_SEQUENTIAL_ANCHOR_PROVIDER,
-        "anchor_provider": anchor_assignment["provider"],
-        "anchor_clusters": anchor_assignment["metrics"]["clusters"],
-        "anchor_cut_nets": anchor_assignment["metrics"]["cut_nets"],
-        "generalized_clusters": len(generalized_clusters["clusters"]),
-        "status": "pass",
-    }
-    return build_partition_assignment(
-        ir,
-        platform,
-        generalized_clusters,
-        constraints,
-        generalized_assignment,
-        provider=str(anchor_assignment["provider"]),
-        seed=int(anchor_assignment["seed"]),
-        provider_metadata=provider_metadata,
-        _include_semantic_contract=False,
-    )
 
 
 def _patron_static_exact_semantic_key(
@@ -627,22 +565,10 @@ def run_phase3(
             route_constraints=route_constraints,
         )
     elif provider == "tritonpart":
-        tritonpart_clusters = clusters
-        use_static_exact_anchor = (
-            cut_mode == CUT_MODE_STATIC_EXACT
-            and mfspart_post_refinement
-            and tritonpart_solution is None
-        )
-        if use_static_exact_anchor:
-            tritonpart_clusters = build_clusters(
-                ir,
-                constraints,
-                cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
-            )
         tritonpart_assignment = run_tritonpart(
             ir,
             platform,
-            tritonpart_clusters,
+            clusters,
             constraints,
             output_dir / "tritonpart",
             seed=seed,
@@ -660,17 +586,7 @@ def run_phase3(
             run_unweighted_baseline=tritonpart_run_unweighted_baseline,
             persist_input_manifest=retain_diagnostics,
         )
-        assignment = (
-            _lift_static_exact_sequential_anchor(
-                ir,
-                platform,
-                clusters,
-                constraints,
-                tritonpart_assignment,
-            )
-            if use_static_exact_anchor
-            else tritonpart_assignment
-        )
+        assignment = tritonpart_assignment
     elif provider in {"repart", "repart-replication"}:
         assignment = run_repart(
             ir,
@@ -706,36 +622,15 @@ def run_phase3(
                 "PATRON Phase 3 requires a complete TimingPathDB"
             )
         if patron_initial_assignment_path is None:
-            # Generalized Static Exact refines the legal cut search space; it
-            # must not silently replace the partitioner's system-level
-            # solution.  Solve the ordinary register-boundary graph with the
-            # same seed, then lift that assignment onto the finer clusters.
-            # PATRON can subsequently move every legal generalized cluster,
-            # but every accepted result is now an incremental change from the
-            # same strong anchor used by the register-only control arm.
-            use_static_exact_anchor = (
-                patron_algorithm_version == 14
-                and cut_mode == CUT_MODE_STATIC_EXACT
-                and tritonpart_solution is None
-            )
-            tritonpart_clusters = (
-                build_clusters(
-                    ir,
-                    constraints,
-                    cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
-                )
-                if use_static_exact_anchor
-                else clusters
-            )
-            patron_initialization = (
-                STATIC_EXACT_SEQUENTIAL_ANCHOR_PROVIDER
-                if use_static_exact_anchor
-                else "native-cut-mode-tritonpart-seed-v1"
-            )
+            # The initializer must solve the same native cut graph that
+            # PATRON refines.  Projecting a register-only solution onto the
+            # generalized graph creates a hidden legacy bias and can leave a
+            # nominal Static Exact run with no combinational cuts at all.
+            patron_initialization = "native-cut-mode-tritonpart-seed-v2"
             tritonpart_initial = run_tritonpart(
                 ir,
                 platform,
-                tritonpart_clusters,
+                clusters,
                 constraints,
                 output_dir / "patron" / "tritonpart",
                 seed=seed,
@@ -756,17 +651,7 @@ def run_phase3(
                 defer_semantic_contract=True,
                 persist_input_manifest=retain_diagnostics,
             )
-            initial = (
-                _lift_static_exact_sequential_anchor(
-                    ir,
-                    platform,
-                    clusters,
-                    constraints,
-                    tritonpart_initial,
-                )
-                if use_static_exact_anchor
-                else tritonpart_initial
-            )
+            initial = tritonpart_initial
         else:
             patron_initialization = "caller-supplied-frozen-assignment-v1"
             initial = _rebase_patron_initial_assignment(
