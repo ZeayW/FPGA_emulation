@@ -757,32 +757,6 @@ def _analyze_static_exact_dependencies(
     }
 
 
-def evaluate_static_exact_partition_risk(
-    ir: EmuIR,
-    instance_assignment: Mapping[str, str],
-    cut_nets: Sequence[Mapping[str, Any]],
-    *,
-    max_dependency_depth: int,
-    candidate_selection_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
-) -> Dict[str, int]:
-    """Validate exact-cut dependencies without materializing transport data."""
-
-    analysis = _analyze_static_exact_dependencies(
-        ir,
-        instance_assignment,
-        cut_nets,
-        max_dependency_depth=max_dependency_depth,
-        candidate_selection_policy=candidate_selection_policy,
-    )
-    return {
-        "combinational_cut_nets": sum(
-            analysis["nets"][net_id]["cut_class"] == "combinational"
-            for net_id in analysis["cut_by_net"]
-        ),
-        "maximum_combinational_dependency_depth": analysis["maximum_depth"],
-    }
-
-
 def build_static_exact_semantic_contract(
     ir: EmuIR,
     platform: Mapping[str, Any],

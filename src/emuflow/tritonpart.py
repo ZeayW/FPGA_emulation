@@ -10,16 +10,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from .combinational_cut import (
-    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
-    evaluate_static_exact_partition_risk,
-)
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .partition import (
-    CUT_MODE_STATIC_EXACT,
     build_partition_assignment,
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
@@ -1802,7 +1797,6 @@ def run_tritonpart(
     selected_solution_path: Optional[Path] = None
     selected_repair_moves: List[Dict[str, Any]] = []
     selected_balance_repair: Optional[Dict[str, Any]] = None
-    selected_assignment_preview: Optional[Dict[str, Any]] = None
     selected_objective: Optional[Tuple[Any, ...]] = None
     selected_attempt_mode: Optional[str] = None
     attempts = []
@@ -2041,39 +2035,6 @@ def run_tritonpart(
             attempts.append(attempt)
             continue
 
-        exact_risk = None
-        if clusters_artifact.get("policy", {}).get("cut_mode") == CUT_MODE_STATIC_EXACT:
-            try:
-                preview = build_partition_assignment(
-                    ir,
-                    platform,
-                    clusters_artifact,
-                    constraints,
-                    candidate,
-                    provider=TRITONPART_PROVIDER,
-                    seed=attempt_seed,
-                    _include_semantic_contract=False,
-                )
-            except ValidationError as error:
-                attempt["accepted"] = False
-                attempt["rejection"] = "static_exact_contract"
-                attempt["error"] = str(error)
-                attempts.append(attempt)
-                continue
-            exact_risk = evaluate_static_exact_partition_risk(
-                ir,
-                preview["instance_assignment"],
-                preview["cut_nets"],
-                max_dependency_depth=clusters_artifact["policy"][
-                    "max_cross_fpga_dependency_depth"
-                ],
-                candidate_selection_policy=clusters_artifact["policy"].get(
-                    "candidate_selection_policy",
-                    STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
-                ),
-            )
-            attempt["static_exact_risk"] = exact_risk
-
         attempt["accepted"] = True
         cut_edges = [
             edge
@@ -2093,18 +2054,6 @@ def run_tritonpart(
         attempts.append(attempt)
         objective = (
             float(attempt["cut_weight"]),
-            *(
-                (
-                    int(
-                        exact_risk[
-                            "maximum_combinational_dependency_depth"
-                        ]
-                    ),
-                    int(exact_risk["combinational_cut_nets"]),
-                )
-                if exact_risk is not None
-                else ()
-            ),
             int(attempt["cut_hyperedges"]),
             attempt_seed,
         )
@@ -2125,7 +2074,6 @@ def run_tritonpart(
             )
             selected_repair_moves = repair_moves
             selected_balance_repair = balance_repair
-            selected_assignment_preview = preview if exact_risk is not None else None
 
     if cluster_assignment is None:
         raise ValidationError(
@@ -2204,13 +2152,6 @@ def run_tritonpart(
             else {"retained": False}
         ),
     }
-    if selected_assignment_preview is not None and defer_semantic_contract:
-        # PATRON consumes only the cluster assignment and builds the complete
-        # Static Exact transport contract once, after refinement.  Keep its
-        # intermediate assignment lightweight.
-        result = dict(selected_assignment_preview)
-        result["provider_metadata"] = provider_metadata
-        return result
     return build_partition_assignment(
         ir,
         platform,

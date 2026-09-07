@@ -1,3 +1,4 @@
+import copy
 import json
 import subprocess
 import tempfile
@@ -8,6 +9,7 @@ from unittest import mock
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.partition import (
+    CUT_MODE_STATIC_EXACT,
     build_clusters,
     normalize_partition_constraints,
 )
@@ -159,6 +161,40 @@ class TritonPartTest(unittest.TestCase):
                 assignment["provider_metadata"]["artifacts"],
                 {"retained": False},
             )
+
+    def test_deferred_contract_keeps_intermediate_assignment_lightweight(
+        self,
+    ) -> None:
+        clusters = copy.deepcopy(self.clusters)
+        clusters.setdefault("policy", {}).update(
+            {
+                "cut_mode": CUT_MODE_STATIC_EXACT,
+                "max_cross_fpga_dependency_depth": 8,
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            solution = root / "solution.txt"
+            solution.write_text(
+                "\n".join(
+                    str(index % 2)
+                    for index, _ in enumerate(clusters["clusters"])
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            assignment = run_tritonpart(
+                self.ir,
+                self.platform,
+                clusters,
+                self.constraints,
+                root / "run",
+                seed=1,
+                solution_input=solution,
+                defer_semantic_contract=True,
+                persist_input_manifest=False,
+            )
+            self.assertNotIn("semantic_contract", assignment)
 
     def test_atomic_balance_relaxation_is_relative_to_target_block(self) -> None:
         requested, effective = _effective_balance_percent(

@@ -1331,10 +1331,14 @@ space. The generalized TritonPart encoding minimizes both cut nets and the
 driver-cluster-to-sink-cluster transport demands that Phase 4 must route, so
 the initial solution does not underprice a fragmented high-fanout net.
 Register-only remains an explicit comparison arm. A normal full-flow
-run keeps the initializer only as temporary in-run state, feeds its validated
-assignment and cluster table to PATRON, and removes it after terminal
-validation. PATRON then refines and independently validates the complete
-result.
+run keeps the initializer only as temporary in-run state, checks its capacity
+and balance contract, and feeds the assignment and cluster table to PATRON.
+Partition candidates are ranked only by the provider-neutral partition
+objective; no early Static Exact dependency-risk heuristic is applied. PATRON
+then refines the assignment, after which EmuFlow constructs and independently
+validates the complete dependency contract once for the terminal result and
+removes the temporary initializer state. Standalone TritonPart constructs that
+same contract once for its own terminal assignment.
 The default `--mapping-profile vtr-hard-blocks` retains public VTR RAM/DSP
 resources. `--mapping-profile generic-soft` is available for architecture-
 neutral LUT6/FF experiments, but may expand memory-heavy designs substantially.

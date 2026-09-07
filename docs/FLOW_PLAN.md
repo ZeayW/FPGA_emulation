@@ -285,9 +285,13 @@ and one two-vertex edge for every distinct driver-cluster-to-sink-cluster
 transport demand. This is the topology-neutral pre-routing quantity that
 Phase 4 later materializes; no case-specific penalty or PATRON trace prefix is
 used.
-The common assignment builder and independent checker reconstruct the selected
-dependency DAG after refinement. TritonPart-only, sequential-only, and greedy
-providers remain explicit A/B policies.
+Partition candidates are selected solely by the provider-neutral partition
+objective; no early Static Exact dependency-risk heuristic participates in
+Phase 3 selection. The common assignment builder and independent checker
+reconstruct the selected dependency DAG exactly once for the terminal
+assignment (after PATRON refinement, or directly after a standalone
+TritonPart run). TritonPart-only, sequential-only, and greedy providers remain
+explicit A/B policies.
 
 The production cycle-correct runtime contract transports register boundaries
 and dependency-qualified generalized Static Exact combinational boundaries.
