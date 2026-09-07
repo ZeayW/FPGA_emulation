@@ -393,12 +393,14 @@ def _reconstruct_slot_oracle_result(
 
     worst = float("inf")
     for path in ratio_plan["timing_paths"]:
-        delay = path["fixed_delay_ns"]
+        transport_arrival = 0.0
         for index in path["hops"]:
             hop = hop_by_index[index]
-            delay += hop["base_delay_ns"] + hop["beta_ns"] * (
-                slots[index] - ready_by_hop[index]
-            )
+            transport_arrival = max(
+                transport_arrival,
+                hop["beta_ns"] * slots[index],
+            ) + hop["base_delay_ns"]
+        delay = path["fixed_delay_ns"] + transport_arrival
         slack = path.get("required_time_ns", path["clock_period_ns"]) - delay
         worst = min(
             worst,

@@ -1630,6 +1630,7 @@ def validate_tdm_schedule(
             not in {
                 "timing-path-guided-local-search-v1",
                 "timing-path-guided-lns-v2",
+                "fixed-slot-event-guided-lns-v3",
             }
         ):
             raise ValidationError(
@@ -1660,7 +1661,10 @@ def validate_tdm_schedule(
             "total_wait_slots",
             "baseline_worst_normalized_slack",
         }
-        if optimization_provider == "timing-path-guided-lns-v2":
+        if optimization_provider in {
+            "timing-path-guided-lns-v2",
+            "fixed-slot-event-guided-lns-v3",
+        }:
             expected_metric_keys.update(
                 {"lns_neighborhoods", "lns_evaluated_orders"}
             )
@@ -1673,7 +1677,10 @@ def validate_tdm_schedule(
             "accepted_moves",
             "evaluated_moves",
         ]
-        if optimization_provider == "timing-path-guided-lns-v2":
+        if optimization_provider in {
+            "timing-path-guided-lns-v2",
+            "fixed-slot-event-guided-lns-v3",
+        }:
             count_keys.extend(
                 ["lns_neighborhoods", "lns_evaluated_orders"]
             )
@@ -1750,11 +1757,17 @@ def reconstruct_tdm_schedule_timing(
     *,
     model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Reconstruct scheduled transport delay on every imported STA path.
+    """Reconstruct projected fixed-slot delay on every imported STA path.
 
-    This deliberately uses the concrete slot assignment rather than a TDM
-    ratio bound, so baseline and academic schedules are evaluated with the
-    same timing model.
+    A concrete static-TDM schedule is an event schedule: transmitting in
+    slot 7 is one slot later than transmitting in slot 6 even when both
+    entries have ``slot == ready_slot``.  The old Phase-5 objective charged
+    only ``slot - ready_slot`` and therefore could not distinguish those two
+    schedules, while Phase 7C correctly charged the absolute transmit event.
+    This pre-physical projection mirrors that event semantics for both
+    registered and sampled transports.  Phase 7C remains the sign-off model
+    because it replaces the projected logic/interface delays with routed
+    measurements.
     """
     if model is None:
         records = reconstruct_tdm_schedule_timing_paths_from_routes(
@@ -1794,6 +1807,7 @@ def reconstruct_tdm_schedule_timing(
     )
     return {
         "status": "pass",
+        "timing_model": "projected-fixed-slot-event-v1",
         "timing_paths": len(records),
         "worst_path": worst["path"],
         "worst_delay_ns": worst["delay_ns"],
@@ -1837,11 +1851,11 @@ def reconstruct_tdm_schedule_timing_paths(
 
     records: List[Dict[str, Any]] = []
     for timing_path in model["timing_paths"]:
-        delay_ns = timing_path["fixed_delay_ns"]
+        fixed_delay_ns = timing_path["fixed_delay_ns"]
         required_time_ns = timing_path.get(
             "required_time_ns", timing_path["clock_period_ns"]
         )
-        transport_delay_ns = 0.0
+        transport_arrival_ns = 0.0
         scheduled_hops = []
         for hop_index in timing_path["hops"]:
             hop = model["hops"][hop_index]
@@ -1867,8 +1881,15 @@ def reconstruct_tdm_schedule_timing_paths(
                 hop["base_delay_ns"]
                 + hop["beta_ns"] * wait_slots
             )
-            delay_ns += hop_delay_ns
-            transport_delay_ns += hop_delay_ns
+            tx_time_ns = float(entry["slot"]) * hop["beta_ns"]
+            # A route hop cannot consume a value before the preceding hop
+            # has delivered it.  The max is normally the concrete TX event;
+            # it also makes a cross-domain/model-latency inconsistency a
+            # conservative delay penalty instead of silently time-travelling.
+            transport_arrival_ns = (
+                max(transport_arrival_ns, tx_time_ns)
+                + hop["base_delay_ns"]
+            )
             scheduled_hops.append(
                 {
                     "schedule_entry": entry["id"],
@@ -1882,8 +1903,12 @@ def reconstruct_tdm_schedule_timing_paths(
                     "tdm_wait_slots": wait_slots,
                     "tdm_slot_ns": hop["beta_ns"],
                     "link_tdm_delay_ns": hop_delay_ns,
+                    "fixed_slot_tx_time_ns": tx_time_ns,
+                    "projected_arrival_ns": transport_arrival_ns,
                 }
             )
+        transport_delay_ns = transport_arrival_ns
+        delay_ns = fixed_delay_ns + transport_delay_ns
         slack_ns = required_time_ns - delay_ns
         normalized_slack = _normalized_slack(
             timing_path["clock_period_ns"],
@@ -1896,9 +1921,7 @@ def reconstruct_tdm_schedule_timing_paths(
                 "clock_domain": timing_path["clock_domain"],
                 "clock_period_ns": timing_path["clock_period_ns"],
                 "required_time_ns": required_time_ns,
-                "preplacement_fixed_delay_ns": timing_path[
-                    "fixed_delay_ns"
-                ],
+                "preplacement_fixed_delay_ns": fixed_delay_ns,
                 "transport_delay_ns": transport_delay_ns,
                 "delay_ns": delay_ns,
                 "slack_ns": slack_ns,
@@ -2062,8 +2085,7 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
             raise ValidationError(
                 f"routes.timing.paths[{index}]: invalid timing values"
             )
-        delay_ns = float(fixed)
-        transport_delay_ns = 0.0
+        transport_arrival_ns = 0.0
         scheduled_hops = []
         seen_hops = set()
         for net, transition in zip(cut_nets, transitions):
@@ -2112,8 +2134,10 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
                 )
                 beta_ns = 1000.0 / link.fabric_clock_mhz
                 hop_delay = base_delay + beta_ns * wait_slots
-                delay_ns += hop_delay
-                transport_delay_ns += hop_delay
+                tx_time_ns = float(entry["slot"]) * beta_ns
+                transport_arrival_ns = (
+                    max(transport_arrival_ns, tx_time_ns) + base_delay
+                )
                 scheduled_hops.append(
                     {
                         "schedule_entry": entry["id"],
@@ -2127,8 +2151,12 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
                         "tdm_wait_slots": wait_slots,
                         "tdm_slot_ns": beta_ns,
                         "link_tdm_delay_ns": hop_delay,
+                        "fixed_slot_tx_time_ns": tx_time_ns,
+                        "projected_arrival_ns": transport_arrival_ns,
                     }
                 )
+        transport_delay_ns = transport_arrival_ns
+        delay_ns = float(fixed) + transport_delay_ns
         period = float(period)
         required = float(required)
         slack = required - delay_ns

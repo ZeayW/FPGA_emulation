@@ -380,6 +380,13 @@ requirements, not optional micro-optimizations.
   terminal comparison evidence.  If a scheduled cross-FPGA segment lacks the
   physical boundary/logic timing needed for that propagation, Phase 7C is
   incomplete rather than permitted to fall back to an estimate.
+- Phase 5's pre-physical concrete-schedule objective must also rank paths by
+  absolute fixed-slot TX events. `slot - ready_slot` is only a legal-window
+  and capacity diagnostic: it must never be used as the target-clock latency
+  objective, because delaying both readiness and TX by one slot would then
+  appear free. The native optimizer, independent reconstruction, and small
+  exhaustive oracle must share this event definition, including a regression
+  where two zero-relative-wait schedules differ by one absolute slot.
 - `global WNS` is the minimum composed slack over all original design paths.
   `global TNS` is the sum of every negative composed path slack, counted once
   per original TimingPathDB path.  A timing-equivalent representative used by

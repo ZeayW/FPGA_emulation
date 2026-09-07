@@ -271,6 +271,13 @@ sampled-virtual-wire transports are evaluated by propagating events through
 the concrete Phase 5 slots; the historical additive average/ratio wait is not
 valid terminal comparison evidence. Missing physical segment timing makes the
 system result incomplete instead of triggering an estimated fallback.
+Phase 5 uses the same ordering signal before physical implementation: its
+projected schedule objective charges the absolute fixed-slot TX event and
+board-link model delay. It does not treat ``slot - ready_slot`` as target-clock
+latency. Relative wait remains a capacity/window diagnostic only. Consequently
+moving a critical transfer from slot 6 to slot 7 changes the projected path by
+one slot even if its readiness also moves from 6 to 7; the native slot search
+and the independent Python reconstruction enforce the same model.
 WNS/TNS over that complete, disjoint union are the primary final QoR metrics. A
 valid end-to-end comparison also reports the
 labelled per-FPGA diagnostics, but never substitutes them for global timing.
@@ -3696,11 +3703,16 @@ continues over the finite legal ratio set. This matters when asymmetric
 round traffic moves the feasible boundary far from the frame midpoint. The
 resulting lane assignment is still independently checked against both round
 windows and the concrete slot schedule.
-The native concrete-slot optimizer compacts only lane resources that actually
-occur and stores occupied `(resource, slot)` cells in a deterministic sparse
-table whose memory is proportional to scheduled hops.  Sparse external lane
-IDs and long frames therefore cannot create a `max-ID x frame` or
-`resource-count x frame` allocation during repeated LNS schedule rebuilds.
+The native `fixed-slot-event-guided-lns-v3` concrete-slot optimizer ranks
+schedules by projected absolute TX-event timing, then completion slot and
+total relative wait. It searches blockers on the critical path even when the
+critical transfer has zero relative wait, because an entry can be late in the
+frame while satisfying `slot == ready_slot`. It compacts only lane resources
+that actually occur and stores occupied `(resource, slot)` cells in a
+deterministic sparse table whose memory is proportional to scheduled hops.
+Sparse external lane IDs and long frames therefore cannot create a `max-ID x
+frame` or `resource-count x frame` allocation during repeated LNS schedule
+rebuilds.
 Standalone Phase 5 validation rebuilds the canonical academic timing model
 once and shares it across ratio, native-slot-certificate, and final timing
 checks; the route-streaming reconstruction remains the baseline-only scale
@@ -3778,9 +3790,10 @@ Its multi-round legalizer evaluates the exact capacity boundary through
 monotone quotient intervals and scores ratio promotions from incremental
 domain and affected-path deltas, avoiding frame-slot-by-bucket and
 candidate-by-full-path rescans on large routed designs.
-For an apples-to-apples QoR comparison, it additionally reconstructs path
-delay from each concrete scheduled wait for both the baseline and academic
-providers; ratio-based slack is reported separately as a conservative bound.
+For an apples-to-apples QoR comparison, it additionally reconstructs projected
+path delay from each absolute concrete TX event for both the baseline and
+academic providers; readiness-relative wait remains diagnostic and
+ratio-based slack is reported separately as a conservative capacity bound.
 
 Phase 6A uses the same source boundary. The C++17 planner at
 `src/native/placement_aware_pin_planner.cpp` forms the minimum feasible number

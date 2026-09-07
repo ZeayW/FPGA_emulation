@@ -1229,13 +1229,20 @@ class Phase5Test(unittest.TestCase):
             self.assertEqual(
                 timing_validation["worst_path"], "critical"
             )
-            self.assertAlmostEqual(
-                timing_validation["worst_delay_ns"], 16.0
+            self.assertEqual(
+                timing_validation["timing_model"],
+                "projected-fixed-slot-event-v1",
             )
             self.assertAlmostEqual(
-                timing_validation["worst_slack_ns"], 4.0
+                timing_validation["worst_delay_ns"], 52.0
             )
-            self.assertGreater(
+            self.assertAlmostEqual(
+                timing_validation["worst_slack_ns"], -32.0
+            )
+            # The academic ratio assignment changes the relative wait from
+            # four slots to zero, but leaves the critical TX in absolute slot
+            # 9.  A fixed-slot objective must not claim a timing improvement.
+            self.assertAlmostEqual(
                 timing_validation["worst_normalized_slack"],
                 baseline_timing["worst_normalized_slack"],
             )
@@ -1673,7 +1680,7 @@ class Phase5Test(unittest.TestCase):
             ],
             "pass",
         )
-        self.assertGreater(
+        self.assertGreaterEqual(
             refined_timing["worst_normalized_slack"],
             baseline_timing["worst_normalized_slack"],
         )
@@ -1688,6 +1695,90 @@ class Phase5Test(unittest.TestCase):
         self.assertGreater(
             refined["slot_optimization"]["metrics"]["accepted_moves"],
             0,
+        )
+
+    def test_native_slot_refinement_prioritizes_absolute_tx_event(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "absolute_slot_event",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=1, latency=1)],
+            )
+        )
+        routes = _routes(
+            platform,
+            [("n0", "a", ["b"]), ("n1", "a", ["b"])],
+            frame_slots=8,
+        )
+        routes["timing"] = {
+            "schema": "emuflow.sta-paths/v1",
+            "normalization": {
+                "positive_slack_scale_ns": 100.0,
+                "negative_slack_scale_ns": 100.0,
+                "max_clock_period_ns": 100.0,
+            },
+            "compression": {
+                "original_paths": 2,
+                "compressed_paths": 2,
+            },
+            "paths": [
+                {
+                    "path": "relaxed",
+                    "clock_domain": "slow",
+                    "clock_period_ns": 100.0,
+                    "fixed_delay_ns": 0.0,
+                    "cut_nets": ["n0"],
+                },
+                {
+                    "path": "critical",
+                    "clock_domain": "fast",
+                    "clock_period_ns": 20.0,
+                    "fixed_delay_ns": 8.0,
+                    "cut_nets": ["n1"],
+                },
+            ],
+        }
+        plan = build_tdm_ratio_plan(
+            routes,
+            platform,
+            executable=str(tdm_ratio_optimizer()),
+            max_ratio=2,
+            ratio_quantum=1,
+            post_refinement_iterations=0,
+        )
+        baseline = build_tdm_schedule(routes, platform, plan)
+        baseline_timing = reconstruct_tdm_schedule_timing(
+            routes, platform, baseline
+        )
+        baseline_by_net = {
+            entry["net"]: entry for entry in baseline["entries"]
+        }
+        self.assertEqual(baseline_by_net["n1"]["slot"], 1)
+        self.assertEqual(baseline_by_net["n1"]["ready_slot"], 0)
+
+        refined = refine_tdm_schedule_native(
+            routes,
+            platform,
+            plan,
+            baseline,
+            executable=str(tdm_slot_optimizer()),
+            max_iterations=10,
+        )
+        refined_timing = reconstruct_tdm_schedule_timing(
+            routes, platform, refined
+        )
+        refined_by_net = {
+            entry["net"]: entry for entry in refined["entries"]
+        }
+        self.assertEqual(refined_by_net["n1"]["slot"], 0)
+        self.assertEqual(refined_by_net["n1"]["ready_slot"], 0)
+        self.assertGreater(
+            refined_timing["worst_normalized_slack"],
+            baseline_timing["worst_normalized_slack"],
+        )
+        self.assertEqual(
+            refined["slot_optimization"]["provider"],
+            "fixed-slot-event-guided-lns-v3",
         )
 
     def test_exact_multi_round_slot_oracle_models_global_barrier(self) -> None:

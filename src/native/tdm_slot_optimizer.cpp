@@ -96,7 +96,7 @@ Model read_model(const std::string& path) {
   if (!input) throw std::runtime_error("cannot open input");
   std::string header;
   std::getline(input, header);
-  if (header != "EMUFLOW_TDM_SLOT_INPUT_V3") {
+  if (header != "EMUFLOW_TDM_SLOT_INPUT_V4") {
     throw std::runtime_error("invalid input header");
   }
   Model model;
@@ -360,12 +360,13 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
 
   result.worst_normalized_slack = std::numeric_limits<double>::infinity();
   for (const auto& path : model.paths) {
-    double delay = path.fixed_ns;
+    double transport_arrival = 0.0;
     for (int index : path.hops) {
       const auto& hop = model.hops[index];
-      delay += hop.base_ns +
-               hop.beta_ns * (result.slots[index] - result.ready[index]);
+      const double tx_time = hop.beta_ns * result.slots[index];
+      transport_arrival = std::max(transport_arrival, tx_time) + hop.base_ns;
     }
+    const double delay = path.fixed_ns + transport_arrival;
     const double slack = path.required_time_ns - delay;
     const double normalized = normalized_slack(model, path.period_ns, slack);
     if (normalized < result.worst_normalized_slack) {
@@ -425,9 +426,6 @@ OptimizationResult optimize(const Model& model) {
     std::set<std::pair<int, int>> candidates;
     const auto& worst = model.paths[result.schedule.worst_path];
     for (int critical : worst.hops) {
-      if (result.schedule.slots[critical] <= result.schedule.ready[critical]) {
-        continue;
-      }
       const auto& critical_hop = model.hops[critical];
       int nearest = -1;
       int nearest_slot = -1;
@@ -464,9 +462,6 @@ OptimizationResult optimize(const Model& model) {
     // remains fixed, so the neighborhood is bounded by 4! orders even on
     // million-hop inputs.
     for (int critical : worst.hops) {
-      if (result.schedule.slots[critical] <= result.schedule.ready[critical]) {
-        continue;
-      }
       const auto& critical_hop = model.hops[critical];
       std::vector<std::pair<int, int>> blockers;
       for (const auto& other : model.hops) {

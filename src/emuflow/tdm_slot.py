@@ -14,7 +14,7 @@ from .native_tools import resolve_native_executable
 from .platform import Platform
 
 
-TDM_SLOT_OPTIMIZER_PROVIDER = "timing-path-guided-lns-v2"
+TDM_SLOT_OPTIMIZER_PROVIDER = "fixed-slot-event-guided-lns-v3"
 HopKey = Tuple[str, str, str, str]
 
 
@@ -159,7 +159,7 @@ def _write_native_input(
         )
     planned_ready = realization.get("source_ready_slot")
     lines = [
-        "EMUFLOW_TDM_SLOT_INPUT_V3",
+        "EMUFLOW_TDM_SLOT_INPUT_V4",
         (
             f"PARAM {frame_slots} {RUNTIME_BARRIER_SLOTS} "
             f"{COMBINATIONAL_SETTLE_SLOTS} {max_iterations} "

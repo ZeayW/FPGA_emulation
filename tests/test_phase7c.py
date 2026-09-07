@@ -706,7 +706,10 @@ class Phase7CTest(unittest.TestCase):
             schedule=self.schedule,
         )
         path = qor["timing"]["paths"][0]
-        self.assertEqual(path["scheduled_link_tdm_model_delay_ns"], 8.0)
+        # The pre-physical Phase-5 model includes the concrete absolute TX
+        # event (slot 2 at 10 ns) plus the 4 ns model link delay.  Phase 7C
+        # replaces that model component with the characterized 12 ns bound.
+        self.assertEqual(path["scheduled_link_tdm_model_delay_ns"], 24.0)
         self.assertEqual(path["scheduled_link_tdm_delay_ns"], 12.0)
         self.assertEqual(
             path["scheduled_link_tdm_model"], "board-link-timing-db"
