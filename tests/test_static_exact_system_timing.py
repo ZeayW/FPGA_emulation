@@ -558,6 +558,74 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         self.assertEqual(failed["fixed_slot_event_timing_status"], "fail")
         self.assertAlmostEqual(failed["minimum_tx_readiness_slack_ns"], -1.0)
 
+    def test_registered_slot_zero_source_is_stable_before_frame(self):
+        entries = {"e0": {"id": "e0", "slot": 0}}
+        record = {
+            "path": "registered-slot-zero",
+            "cut_nets": ["n0"],
+            "scheduled_hops": [
+                {
+                    "schedule_entry": "e0",
+                    "demand": "d0",
+                    "link": "link_0_1",
+                    "from": "fpga0",
+                    "to": "fpga1",
+                    "tx_endpoint": "tx0",
+                    "rx_endpoint": "rx0",
+                    "base_link_delay_ns": 2.0,
+                    "tdm_wait_slots": 0,
+                    "tdm_slot_ns": 20.0,
+                    "link_tdm_delay_ns": 2.0,
+                }
+            ],
+        }
+        segments = [
+            {
+                "kind": "launch",
+                "cut_index": 0,
+                "delay_ns": 8.8,
+                "replace_tx_endpoint": "tx0",
+            },
+            {
+                "kind": "capture",
+                "cut_index": 1,
+                "delay_ns": 1.0,
+                "replace_tx_endpoint": None,
+            },
+        ]
+        common = (
+            record,
+            "member0",
+            segments,
+            {"tx0": 0.4, "rx0": 0.5},
+            None,
+            entries,
+            {"n0": {"id": "d0"}},
+        )
+        registered = _fixed_slot_transport_path_delay(
+            *common,
+            commit_slot=10,
+            uncertainty_ns=0.1,
+            transport_semantics="registered-boundary",
+        )
+        self.assertEqual(
+            registered["fixed_slot_event_timing_status"], "pass"
+        )
+        self.assertAlmostEqual(
+            registered["minimum_tx_readiness_slack_ns"], 0.0
+        )
+
+        sampled = _fixed_slot_transport_path_delay(
+            *common,
+            commit_slot=10,
+            uncertainty_ns=0.1,
+            transport_semantics="sampled-virtual-wire",
+        )
+        self.assertEqual(sampled["fixed_slot_event_timing_status"], "fail")
+        self.assertAlmostEqual(
+            sampled["minimum_tx_readiness_slack_ns"], -8.9
+        )
+
     def test_clockless_partition_requires_complete_routed_logic_segments(self):
         runtime, routes, phase5 = self._system_inputs()
         physical = self._system_physical()

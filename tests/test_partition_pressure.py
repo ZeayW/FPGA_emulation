@@ -1796,13 +1796,34 @@ class PartitionPressureTest(unittest.TestCase):
             assignment = read_json(root / "phase3/assignment.json")
             self.assertEqual(
                 report["patron_initialization"],
-                "native-cut-mode-tritonpart-seed-v2",
+                "native-cut-mode-tritonpart-register-hierarchy-v3",
             )
             self.assertEqual(
                 tritonpart_run.call_args.args[2]["policy"].get(
                     "cut_mode", CUT_MODE_SEQUENTIAL_ONLY
                 ),
                 CUT_MODE_STATIC_EXACT,
+            )
+            communities = tritonpart_run.call_args.kwargs[
+                "community_by_cluster"
+            ]
+            self.assertEqual(set(communities), set(generalized_map))
+            cluster_for_instance = {
+                instance: cluster["id"]
+                for cluster in generalized_clusters["clusters"]
+                for instance in cluster["instances"]
+            }
+            self.assertEqual(
+                communities[cluster_for_instance["u0"]],
+                communities[cluster_for_instance["u1"]],
+            )
+            self.assertNotEqual(
+                communities[cluster_for_instance["u0"]],
+                communities[cluster_for_instance["u2"]],
+            )
+            self.assertEqual(
+                communities[cluster_for_instance["u2"]],
+                communities[cluster_for_instance["u3"]],
             )
             self.assertEqual(
                 assignment["instance_assignment"],
@@ -1912,7 +1933,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(report["status"], "pass")
             self.assertEqual(
                 report["patron_initialization"],
-                "native-cut-mode-tritonpart-seed-v2",
+                "caller-supplied-generalized-tritonpart-solution-v1",
             )
             self.assertEqual(
                 report["algorithm_validation"]["initial_assignment"][

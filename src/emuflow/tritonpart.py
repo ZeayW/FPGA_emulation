@@ -237,6 +237,7 @@ def export_tritonpart_inputs(
     constraints: Mapping[str, Any],
     output_dir: Path,
     net_weights: Optional[Mapping[str, float]] = None,
+    community_by_cluster: Optional[Mapping[str, int]] = None,
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
     write_manifest: bool = True,
@@ -308,6 +309,23 @@ def export_tritonpart_inputs(
     vertex_number = {
         cluster["id"]: index for index, cluster in enumerate(clusters, start=1)
     }
+    community_values: Optional[List[int]] = None
+    if community_by_cluster is not None:
+        expected_clusters = set(vertex_number)
+        if set(community_by_cluster) != expected_clusters:
+            raise ValidationError(
+                "TritonPart community hierarchy must cover every cluster "
+                "exactly"
+            )
+        community_values = []
+        for cluster in clusters:
+            value = community_by_cluster[cluster["id"]]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValidationError(
+                    "TritonPart community identifiers must be non-negative "
+                    "integers"
+                )
+            community_values.append(value)
     cluster_by_instance = {
         instance_id: cluster["id"]
         for cluster in clusters
@@ -351,6 +369,7 @@ def export_tritonpart_inputs(
     hypergraph_path = output_dir / "partition.hgr"
     baseline_hypergraph_path = output_dir / "partition.unweighted.hgr"
     fixed_path = output_dir / "partition.fix"
+    community_path = output_dir / "partition.community"
     tcl_path = output_dir / "run_tritonpart.tcl"
     solution_path = output_dir / f"partition.hgr.part.{len(fpga_ids)}"
 
@@ -387,6 +406,11 @@ def export_tritonpart_inputs(
         ),
         encoding="utf-8",
     )
+    if community_values is not None:
+        community_path.write_text(
+            "".join(f"{value}\n" for value in community_values),
+            encoding="utf-8",
+        )
 
     def tcl_list(values: Sequence[Any]) -> str:
         return "{ " + " ".join(str(value) for value in values) + " }"
@@ -395,6 +419,11 @@ def export_tritonpart_inputs(
         "triton_part_hypergraph \\",
         f"  -hypergraph_file {{{hypergraph_path.resolve()}}} \\",
         f"  -fixed_file {{{fixed_path.resolve()}}} \\",
+        *(
+            [f"  -community_file {{{community_path.resolve()}}} \\"]
+            if community_values is not None
+            else []
+        ),
         f"  -num_parts {len(fpga_ids)} \\",
         f"  -balance_constraint {tritonpart_ubfactor:.9g} \\",
         f"  -base_balance {tcl_list([f'{value:.12g}' for value in base_balance])} \\",
@@ -433,6 +462,19 @@ def export_tritonpart_inputs(
             "num_initial_solutions": num_initial_solutions,
             "num_best_initial_solutions": num_best_initial_solutions,
         },
+        "community_hierarchy": {
+            "enabled": community_values is not None,
+            "communities": (
+                len(set(community_values))
+                if community_values is not None
+                else 0
+            ),
+            "vertices": (
+                len(community_values)
+                if community_values is not None
+                else 0
+            ),
+        },
         "files": {
             "hypergraph": hypergraph_path.name,
             "unweighted_baseline_hypergraph": (
@@ -441,6 +483,11 @@ def export_tritonpart_inputs(
                 else None
             ),
             "fixed": fixed_path.name,
+            "community": (
+                community_path.name
+                if community_values is not None
+                else None
+            ),
             "tcl": tcl_path.name,
             "solution": solution_path.name,
         },
@@ -1682,6 +1729,7 @@ def run_tritonpart(
     executable: Optional[str] = None,
     solution_input: Optional[Path] = None,
     net_weights: Optional[Mapping[str, float]] = None,
+    community_by_cluster: Optional[Mapping[str, int]] = None,
     timeout_seconds: int = 3600,
     seed_attempts: int = 1,
     num_initial_solutions: int = 50,
@@ -1705,6 +1753,7 @@ def run_tritonpart(
         constraints,
         output_dir,
         net_weights=net_weights,
+        community_by_cluster=community_by_cluster,
         num_initial_solutions=num_initial_solutions,
         num_best_initial_solutions=num_best_initial_solutions,
         write_manifest=False,
@@ -2112,6 +2161,7 @@ def run_tritonpart(
         "balance_auto_relaxed": tritonpart_input["balance_auto_relaxed"],
         "seed_attempts": attempts,
         "search_effort": tritonpart_input["search_effort"],
+        "community_hierarchy": tritonpart_input["community_hierarchy"],
         "min_used_fpgas_repair": {
             "enabled": repair_min_used_fpgas,
             "moves": selected_repair_moves,

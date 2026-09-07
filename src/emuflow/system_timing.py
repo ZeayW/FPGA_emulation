@@ -293,7 +293,17 @@ def _fixed_slot_transport_path_delay(
                 relay_tx_delay = endpoint_delays[hop["tx_endpoint"]]
                 ready_ns = arrival_ns + relay_tx_delay
                 physical_interface_ns += relay_tx_delay
-            tx_slack_ns = tx_time_ns - uncertainty_ns - ready_ns
+            if transport_semantics == "registered-boundary" and not hop_index:
+                # A registered boundary is the value transported during this
+                # frame, and the Phase-6 contract guarantees that it is stable
+                # for the complete frame.  Its first-hop TX therefore has no
+                # same-frame launch dependency.  Charging the measured
+                # register-to-TX cone as if it were launched at slot zero made
+                # every legal slot-zero transfer fail after physical binding.
+                # Relays still depend on their current-frame RX event below.
+                tx_slack_ns = tx_time_ns
+            else:
+                tx_slack_ns = tx_time_ns - uncertainty_ns - ready_ns
             minimum_tx_slack_ns = min(minimum_tx_slack_ns, tx_slack_ns)
             key = (hop["link"], hop["from"], hop["to"])
             link_delay_ns = (

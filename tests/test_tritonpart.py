@@ -97,6 +97,43 @@ class TritonPartTest(unittest.TestCase):
                 vertex_count,
             )
 
+    def test_export_accepts_soft_community_hierarchy(self) -> None:
+        communities = {
+            cluster["id"]: index // 2
+            for index, cluster in enumerate(self.clusters["clusters"])
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            artifact = export_tritonpart_inputs(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                output,
+                community_by_cluster=communities,
+            )
+            ordered = [
+                communities[cluster_id]
+                for cluster_id in artifact["cluster_order"]
+            ]
+            self.assertEqual(
+                [int(value) for value in
+                 (output / "partition.community").read_text().splitlines()],
+                ordered,
+            )
+            self.assertIn(
+                "-community_file",
+                (output / "run_tritonpart.tcl").read_text(),
+            )
+            self.assertEqual(
+                artifact["community_hierarchy"],
+                {
+                    "enabled": True,
+                    "communities": len(set(ordered)),
+                    "vertices": len(ordered),
+                },
+            )
+
     def test_managed_run_does_not_serialize_duplicate_input_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
