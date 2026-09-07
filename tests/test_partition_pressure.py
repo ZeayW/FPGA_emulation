@@ -1796,7 +1796,11 @@ class PartitionPressureTest(unittest.TestCase):
             assignment = read_json(root / "phase3/assignment.json")
             self.assertEqual(
                 report["patron_initialization"],
-                "native-generalized-tritonpart-seed-v3",
+                "native-generalized-tritonpart-transport-demand-v4",
+            )
+            self.assertEqual(
+                tritonpart_run.call_args.kwargs["objective_encoding"],
+                "net-cut-plus-driver-sink-cluster-demand-v1",
             )
             self.assertEqual(
                 tritonpart_run.call_args.args[2]["policy"].get(

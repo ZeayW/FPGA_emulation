@@ -15,6 +15,7 @@ from emuflow.phase3 import run_phase3
 from emuflow.platform import Platform
 from emuflow.tritonpart import (
     TRITONPART_INPUT_SCHEMA,
+    TRITONPART_OBJECTIVE_TRANSPORT_DEMAND,
     _effective_balance_percent,
     _repair_min_used_fpgas,
     _repair_multi_resource_balance,
@@ -96,6 +97,39 @@ class TritonPartTest(unittest.TestCase):
                 len((output / "partition.fix").read_text().splitlines()),
                 vertex_count,
             )
+
+    def test_transport_demand_objective_adds_driver_sink_pair_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            artifact = export_tritonpart_inputs(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                output,
+                objective_encoding=TRITONPART_OBJECTIVE_TRANSPORT_DEMAND,
+            )
+            components = artifact["objective_components"]
+            self.assertGreater(components["net_cut_hyperedges"], 0)
+            self.assertGreater(
+                components["driver_sink_cluster_demand_hyperedges"], 0
+            )
+            self.assertEqual(
+                len(artifact["hyperedges"]),
+                components["net_cut_hyperedges"]
+                + components["driver_sink_cluster_demand_hyperedges"],
+            )
+            self.assertTrue(
+                all(
+                    len(edge["clusters"]) == 2
+                    for edge in artifact["hyperedges"]
+                    if edge["objective_component"]
+                    == "driver-sink-cluster-demand"
+                )
+            )
+            header = (output / "partition.hgr").read_text().splitlines()[0]
+            header_edges = int(header.split()[0])
+            self.assertEqual(header_edges, len(artifact["hyperedges"]))
 
     def test_managed_run_does_not_serialize_duplicate_input_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

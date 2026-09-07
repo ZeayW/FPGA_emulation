@@ -1327,7 +1327,10 @@ generalized Static Exact v2. A standalone PATRON command creates a TritonPart
 initial assignment when none is supplied. The initializer solves the same
 generalized hypergraph that PATRON will refine; it never solves a hidden
 register-only graph and projects that result into the generalized search
-space. Register-only remains an explicit comparison arm. A normal full-flow
+space. The generalized TritonPart encoding minimizes both cut nets and the
+driver-cluster-to-sink-cluster transport demands that Phase 4 must route, so
+the initial solution does not underprice a fragmented high-fanout net.
+Register-only remains an explicit comparison arm. A normal full-flow
 run keeps the initializer only as temporary in-run state, feeds its validated
 assignment and cluster table to PATRON, and removes it after terminal
 validation. PATRON then refines and independently validates the complete

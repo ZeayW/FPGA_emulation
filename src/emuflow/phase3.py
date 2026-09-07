@@ -33,7 +33,12 @@ from .repart import run_repart
 from .mfspart_provider import refine_mfspart_partition, run_mfspart
 from .mfspart_refine import DEFAULT_BOTTLENECK_BETA, DEFAULT_TIMING_PATH_BETA
 from .sta import validate_sta_path_database
-from .tritonpart import load_partition_net_weights, run_tritonpart
+from .tritonpart import (
+    TRITONPART_OBJECTIVE_NET_CUT,
+    TRITONPART_OBJECTIVE_TRANSPORT_DEMAND,
+    load_partition_net_weights,
+    run_tritonpart,
+)
 from .routing import load_route_constraints
 from .combinational_cut import (
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
@@ -628,7 +633,7 @@ def run_phase3(
             # nominal Static Exact run with no combinational cuts at all.
             if tritonpart_solution is None:
                 patron_initialization = (
-                    "native-generalized-tritonpart-seed-v3"
+                    "native-generalized-tritonpart-transport-demand-v4"
                 )
             else:
                 patron_initialization = (
@@ -644,6 +649,11 @@ def run_phase3(
                 executable=openroad,
                 solution_input=tritonpart_solution,
                 net_weights=load_partition_net_weights(net_weights_path),
+                objective_encoding=(
+                    TRITONPART_OBJECTIVE_TRANSPORT_DEMAND
+                    if tritonpart_solution is None
+                    else TRITONPART_OBJECTIVE_NET_CUT
+                ),
                 timeout_seconds=tritonpart_timeout_seconds,
                 seed_attempts=tritonpart_seed_attempts,
                 num_initial_solutions=tritonpart_num_initial_solutions,

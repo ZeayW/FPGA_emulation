@@ -31,6 +31,10 @@ from .resources import RESOURCE_FIELDS
 TRITONPART_INPUT_SCHEMA = "emuflow.tritonpart-input/v1"
 PARTITION_NET_WEIGHTS_SCHEMA = "emuflow.partition-net-weights/v1"
 TRITONPART_PROVIDER = "tritonpart-openroad-hypergraph-v1"
+TRITONPART_OBJECTIVE_NET_CUT = "net-cut-v1"
+TRITONPART_OBJECTIVE_TRANSPORT_DEMAND = (
+    "net-cut-plus-driver-sink-cluster-demand-v1"
+)
 
 
 def load_partition_net_weights(path: Optional[Path]) -> Dict[str, float]:
@@ -196,7 +200,16 @@ def _legal_hyperedges(
     vertex_number: Mapping[str, int],
     net_weights: Mapping[str, float],
     transported_cut_classes: set[str],
+    objective_encoding: str,
 ) -> List[Dict[str, Any]]:
+    if objective_encoding not in {
+        TRITONPART_OBJECTIVE_NET_CUT,
+        TRITONPART_OBJECTIVE_TRANSPORT_DEMAND,
+    }:
+        raise ValueError(
+            "unsupported TritonPart objective encoding "
+            f"{objective_encoding!r}"
+        )
     known_nets = {net["id"] for net in ir.value["nets"]}
     unknown_weights = sorted(set(net_weights) - known_nets)
     if unknown_weights:
@@ -208,25 +221,58 @@ def _legal_hyperedges(
     for net in ir.value["nets"]:
         if net["cut_class"] not in transported_cut_classes:
             continue
-        cluster_ids = sorted(
+        drivers = sorted(
             {
                 cluster_by_instance[endpoint["instance"]]
-                for collection in ("drivers", "sinks")
-                for endpoint in net[collection]
+                for endpoint in net["drivers"]
                 if endpoint["instance"] is not None
             }
         )
+        sinks = sorted(
+            {
+                cluster_by_instance[endpoint["instance"]]
+                for endpoint in net["sinks"]
+                if endpoint["instance"] is not None
+            }
+        )
+        cluster_ids = sorted(set(drivers) | set(sinks))
         if len(cluster_ids) < 2:
             continue
+        weight = float(net_weights.get(net["id"], 1.0))
         hyperedges.append(
             {
                 "net": net["id"],
                 "cut_class": net["cut_class"],
-                "weight": float(net_weights.get(net["id"], 1.0)),
+                "objective_component": "net-cut",
+                "weight": weight,
                 "clusters": cluster_ids,
-                "vertices": [vertex_number[cluster_id] for cluster_id in cluster_ids],
+                "vertices": [
+                    vertex_number[cluster_id]
+                    for cluster_id in cluster_ids
+                ],
             }
         )
+        if objective_encoding == TRITONPART_OBJECTIVE_TRANSPORT_DEMAND:
+            for driver in drivers:
+                for sink in sinks:
+                    if driver == sink:
+                        continue
+                    pair = sorted((driver, sink))
+                    hyperedges.append(
+                        {
+                            "net": net["id"],
+                            "cut_class": net["cut_class"],
+                            "objective_component": "driver-sink-cluster-demand",
+                            "driver": driver,
+                            "sink": sink,
+                            "weight": weight,
+                            "clusters": pair,
+                            "vertices": [
+                                vertex_number[cluster_id]
+                                for cluster_id in pair
+                            ],
+                        }
+                    )
     return hyperedges
 
 
@@ -237,6 +283,7 @@ def export_tritonpart_inputs(
     constraints: Mapping[str, Any],
     output_dir: Path,
     net_weights: Optional[Mapping[str, float]] = None,
+    objective_encoding: str = TRITONPART_OBJECTIVE_NET_CUT,
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
     write_manifest: bool = True,
@@ -319,6 +366,7 @@ def export_tritonpart_inputs(
         vertex_number,
         net_weights or {},
         transported_cut_classes_for_clusters(clusters_artifact),
+        objective_encoding,
     )
     if not hyperedges:
         raise ValidationError(
@@ -327,15 +375,22 @@ def export_tritonpart_inputs(
             "use the greedy provider for disconnected designs"
         )
     specified_weights = net_weights or {}
+    net_cut_hyperedges = [
+        edge
+        for edge in hyperedges
+        if edge["objective_component"] == "net-cut"
+    ]
     timed_hyperedges = [
-        edge for edge in hyperedges if edge["net"] in specified_weights
+        edge
+        for edge in net_cut_hyperedges
+        if edge["net"] in specified_weights
     ]
     timing_weight_coverage = {
         "specified_nets": len(specified_weights),
-        "legal_hyperedges": len(hyperedges),
+        "legal_hyperedges": len(net_cut_hyperedges),
         "timed_legal_hyperedges": len(timed_hyperedges),
         "timed_legal_hyperedge_fraction": (
-            len(timed_hyperedges) / len(hyperedges)
+            len(timed_hyperedges) / len(net_cut_hyperedges)
         ),
         "minimum_timed_weight": min(
             (edge["weight"] for edge in timed_hyperedges),
@@ -387,6 +442,7 @@ def export_tritonpart_inputs(
         ),
         encoding="utf-8",
     )
+
     def tcl_list(values: Sequence[Any]) -> str:
         return "{ " + " ".join(str(value) for value in values) + " }"
 
@@ -415,6 +471,15 @@ def export_tritonpart_inputs(
 
     artifact: Dict[str, Any] = {
         "schema": TRITONPART_INPUT_SCHEMA,
+        "objective_encoding": objective_encoding,
+        "objective_components": {
+            "net_cut_hyperedges": len(net_cut_hyperedges),
+            "driver_sink_cluster_demand_hyperedges": sum(
+                edge["objective_component"]
+                == "driver-sink-cluster-demand"
+                for edge in hyperedges
+            ),
+        },
         "design": ir.value["design"]["name"],
         "platform": platform.name,
         "fpga_order": fpga_ids,
@@ -532,7 +597,9 @@ def _repair_min_used_fpgas(
                 after_parts -= 1
             if counts.get(target, 0) == 0:
                 after_parts += 1
-            delta += (after_parts - before_parts) * edge_weights[edge_index]
+            delta += (
+                int(after_parts > 1) - int(before_parts > 1)
+            ) * edge_weights[edge_index]
         return delta
 
     def apply_edge_move(cluster_id: str, source: str, target: str) -> None:
@@ -1681,6 +1748,7 @@ def run_tritonpart(
     executable: Optional[str] = None,
     solution_input: Optional[Path] = None,
     net_weights: Optional[Mapping[str, float]] = None,
+    objective_encoding: str = TRITONPART_OBJECTIVE_NET_CUT,
     timeout_seconds: int = 3600,
     seed_attempts: int = 1,
     num_initial_solutions: int = 50,
@@ -1704,6 +1772,7 @@ def run_tritonpart(
         constraints,
         output_dir,
         net_weights=net_weights,
+        objective_encoding=objective_encoding,
         num_initial_solutions=num_initial_solutions,
         num_best_initial_solutions=num_best_initial_solutions,
         write_manifest=False,
@@ -2111,6 +2180,8 @@ def run_tritonpart(
         "balance_auto_relaxed": tritonpart_input["balance_auto_relaxed"],
         "seed_attempts": attempts,
         "search_effort": tritonpart_input["search_effort"],
+        "objective_encoding": tritonpart_input["objective_encoding"],
+        "objective_components": tritonpart_input["objective_components"],
         "min_used_fpgas_repair": {
             "enabled": repair_min_used_fpgas,
             "moves": selected_repair_moves,
