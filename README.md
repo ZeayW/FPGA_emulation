@@ -899,7 +899,10 @@ through the ordinary Phase 4--7 flow in both sequential-only and Static Exact
 modes. Use the cross-stage option only when the experiment explicitly intends
 to compare and possibly replace that assignment with TritonPart or feedback
 candidates; one outer iteration may evaluate the baseline, the PATRON seed,
-and every configured line-search step.
+and every configured line-search step. The default line search has four steps
+(`1.0`, `0.5`, `0.25`, and `0.125`), and each feasible step launches a fresh
+Phase 3; therefore `--cross-stage-iterations 1` can add four partition runs and
+must not be used merely to request one PATRON execution.
 Candidate reports retain the literal FPGA-ID migration count and also report a
 symmetry-aligned count. The latter may remove a label permutation only when it
 is an exact automorphism of the BoardDB and normalized route constraints;

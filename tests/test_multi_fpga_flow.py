@@ -393,6 +393,23 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     cross_stage_iterations=0,
                 )
 
+    def test_sequential_patron_rejects_static_exact_only_version_up_front(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(
+                EmuFlowError,
+                "v12/v13/v14 requires generalized Static Exact",
+            ):
+                run_multi_fpga_flow(
+                    platform_path=PLATFORM,
+                    output_dir=Path(temporary_directory) / "invalid-patron",
+                    yosys_json=ROOT / "examples/yosys/counter.json",
+                    top="counter",
+                    clocks=["clk"],
+                    partition_provider="patron",
+                    cut_mode="sequential-only",
+                    patron_algorithm_version=14,
+                )
+
     def test_physical_baseline_still_materializes_timing_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

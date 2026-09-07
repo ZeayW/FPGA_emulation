@@ -1232,6 +1232,14 @@ def run_multi_fpga_flow(
     if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
         raise EmuFlowError("unsupported combinational cut mode")
     exact_cut_mode = cut_mode == CUT_MODE_STATIC_EXACT
+    if (
+        partition_provider == "patron"
+        and patron_algorithm_version in {12, 13, 14}
+        and not exact_cut_mode
+    ):
+        raise EmuFlowError(
+            "PATRON v12/v13/v14 requires generalized Static Exact mode"
+        )
     if not 2 <= phase6_chimew_region_count <= 31:
         raise EmuFlowError("--phase6-chimew-region-count must be in [2, 31]")
     if phase6_provider == "chimew" and (

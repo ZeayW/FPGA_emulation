@@ -2085,7 +2085,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=0,
         help=(
             "run checked Phase 3--5 TDM-feedback optimization and continue "
-            "its selected candidate through split, physical, and runtime"
+            "its selected candidate through split, physical, and runtime; "
+            "each outer iteration may rerun Phase 3 once per feedback line-"
+            "search step (four steps by default), so 1 does not mean one "
+            "additional partition invocation"
         ),
     )
     multi_fpga_compile.add_argument("--cross-stage-feedback-optimizer")
