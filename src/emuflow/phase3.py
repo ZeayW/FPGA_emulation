@@ -51,70 +51,6 @@ PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER = (
 )
 
 
-def _register_boundary_communities(
-    ir: EmuIR,
-    constraints: Dict[str, Any],
-    generalized_clusters: Dict[str, Any],
-) -> Dict[str, int]:
-    """Build a soft TritonPart hierarchy without changing the solved graph.
-
-    Static Exact exposes a finer generalized cluster graph so PATRON can move
-    combinational logic across FPGA boundaries.  Feeding that graph to a flat
-    coarsener discards the useful register-boundary hierarchy and can fragment
-    large cones before timing refinement starts.  TritonPart community
-    attributes constrain only multilevel coarsening; its uncoarsening/FM
-    stages and PATRON still optimize every vertex of the same generalized
-    graph.  This is therefore a hierarchy hint, not a projected assignment or
-    a second partitioning problem.
-
-    Only register-boundary clusters that were actually split by the
-    generalized policy receive distinct communities.  Every unaffected
-    one-to-one cluster shares community zero.  Giving all register clusters a
-    distinct identifier would leave hundreds of thousands of singleton
-    communities on a large design and would defeat multilevel coarsening.
-    """
-
-    register_clusters = build_clusters(
-        ir,
-        constraints,
-        cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
-    )
-    register_by_instance = {
-        instance: cluster["id"]
-        for cluster in register_clusters["clusters"]
-        for instance in cluster["instances"]
-    }
-    register_by_generalized: Dict[str, str] = {}
-    generalized_per_register: Dict[str, int] = {}
-    for cluster in generalized_clusters["clusters"]:
-        communities = {
-            register_by_instance[instance]
-            for instance in cluster["instances"]
-        }
-        if len(communities) != 1:
-            raise ValidationError(
-                "generalized cluster crosses a register-boundary hierarchy"
-            )
-        register_id = communities.pop()
-        register_by_generalized[cluster["id"]] = register_id
-        generalized_per_register[register_id] = (
-            generalized_per_register.get(register_id, 0) + 1
-        )
-    split_register_ids = sorted(
-        register_id
-        for register_id, count in generalized_per_register.items()
-        if count > 1
-    )
-    community_number = {
-        register_id: index
-        for index, register_id in enumerate(split_register_ids, start=1)
-    }
-    return {
-        generalized_id: community_number.get(register_id, 0)
-        for generalized_id, register_id in register_by_generalized.items()
-    }
-
-
 def _patron_static_exact_semantic_key(
     assignment: Dict[str, Any],
 ) -> tuple[int, int, int, int]:
@@ -692,16 +628,12 @@ def run_phase3(
             # nominal Static Exact run with no combinational cuts at all.
             if tritonpart_solution is None:
                 patron_initialization = (
-                    "native-cut-mode-tritonpart-register-hierarchy-v3"
-                )
-                community_by_cluster = _register_boundary_communities(
-                    ir, constraints, clusters
+                    "native-generalized-tritonpart-seed-v3"
                 )
             else:
                 patron_initialization = (
                     "caller-supplied-generalized-tritonpart-solution-v1"
                 )
-                community_by_cluster = None
             tritonpart_initial = run_tritonpart(
                 ir,
                 platform,
@@ -712,7 +644,6 @@ def run_phase3(
                 executable=openroad,
                 solution_input=tritonpart_solution,
                 net_weights=load_partition_net_weights(net_weights_path),
-                community_by_cluster=community_by_cluster,
                 timeout_seconds=tritonpart_timeout_seconds,
                 seed_attempts=tritonpart_seed_attempts,
                 num_initial_solutions=tritonpart_num_initial_solutions,
