@@ -37,19 +37,17 @@ driven macro-cycle equivalence are implemented. Small LUT/FF models receive
 complete one-step state/input enumeration, while larger models are honestly
 qualified as multi-seed trace validation rather than proof. Phase 7C now binds
 physical logic-segment evidence to the semantic contract and independently
-checks source-ready and final-capture deadlines. A real routed DLA complete-
-flow acceptance first exercised five naturally selected combinational cuts,
-covered all 157,811 semantic segments with endpoint-exact routed evidence, and
-independently reconstructed whole-design target-clock and virtual-runtime
-WNS/TNS over all 195,532 original timing paths. A later historical three-arm
-DLA + EDA 2023 case6 experiment exercised 102 generalized cuts at dependency
-depth three and completed all physical/equivalence/deadline gates, but
-regressed global target-clock WNS/TNS from -84.5812926868 ns /
--277276.1497366623 ns in sequential-only mode to -187.85581036 ns /
--548934.0510065886 ns. This proves complete accounting and causal correctness,
-not timing-QoR improvement. The production default therefore remains
-sequential-only; generalized v2 stays opt-in until a later cost model passes
-the canonical no-regression promotion gate. Both exact policies retain the
+checks source-ready and final-capture deadlines. The current paired routed DLA
++ EDA 2023 case6 acceptance uses one identical partition seed and physical
+seed, baseline Phase 6, and the same Phase 7C evaluator. Generalized v2 selects
+ten natural combinational cuts, covers all 123,803 physical logic segments,
+and passes equivalence, schedule, DRC, and routing gates. Its whole-design
+WNS/TNS (-235.0976235638 ns / -388770.1608932732 ns) nevertheless regress
+against sequential-only (-159.204440449 ns / -135678.81164142085 ns).
+This proves complete accounting and causal correctness, not timing-QoR
+improvement. The production default therefore remains sequential-only with
+PATRON v6; generalized v2 + PATRON v14 stays explicit until a later cost model
+passes the complete Phase 7/7C promotion gate. Both policies retain the
 explicit single-clock and fail-closed semantic scope.
 Canonical Experiment v2 exact-mode evidence additionally requires at least one
 independently reconstructed selected combinational cut. A legal zero-cut run
@@ -268,13 +266,15 @@ Acceptance:
 - every primitive belongs to exactly one partition;
 - all group and fixed constraints hold;
 - every selected combinational cut satisfies the sealed Static Exact
-  dependency and segment-deadline contract;
+  structural dependency contract; concrete segment deadlines are established
+  only after Phase 4 routing and Phase 5 TDM assignment;
 - every FPGA satisfies its effective resource capacities;
 - every routed cut endpoint satisfies `max_route_hops` before Phase 4;
 - cut and timing metrics are reproducible for a fixed seed.
 
-Generalized Static Exact v2 plus endpoint-exact PATRON is the default Phase 3
-configuration. EmuFlow exports each legality-preserving cluster as a
+The production default is sequential-only plus PATRON v6. Generalized Static
+Exact v2 plus endpoint-exact PATRON v14 is an explicit research configuration.
+In that mode EmuFlow exports each legality-preserving cluster as a
 multi-resource generalized-hypergraph vertex, obtains a same-seed TritonPart
 assignment on that exact graph, and then lets PATRON refine the same vertices
 using timing endpoints, BoardDB topology, routing pressure, and the
@@ -522,9 +522,9 @@ Acceptance:
 - every frame completes before the virtual clock-enable;
 - partitioned and unpartitioned designs are cycle-equivalent.
 
-The first three items also enforce sampled virtual-wire constraints. The sole
-production generalized policy derives the actual dependency DAG from the
-selected assignment and accepts any positive safety cap. The unified TDM
+The first three items also enforce sampled virtual-wire constraints. The
+generalized research policy derives the actual dependency DAG from the selected
+assignment and accepts any positive safety cap. The unified TDM
 scheduler uses the shared `tx-sample-before-rx-shadow-update-v1` convention,
 computes launch-to-TX,
 RX-to-TX, and RX-to-capture readiness from the Phase 3 contract, and stops

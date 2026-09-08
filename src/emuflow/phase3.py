@@ -333,7 +333,7 @@ def run_phase3(
     mfspart_post_refinement_bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
     timing_path_database_path: Optional[Path] = None,
     mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
-    cut_mode: str = CUT_MODE_STATIC_EXACT,
+    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
@@ -342,7 +342,7 @@ def run_phase3(
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
-    patron_algorithm_version: int = 14,
+    patron_algorithm_version: int = 6,
     patron_initial_assignment_path: Optional[Path] = None,
     patron_initial_clusters_path: Optional[Path] = None,
     patron_physical_system_timing_path: Optional[Path] = None,

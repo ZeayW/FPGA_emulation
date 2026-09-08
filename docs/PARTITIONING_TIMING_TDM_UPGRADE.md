@@ -142,21 +142,23 @@ PATRON means **Path-Aware Topology and Routing-pressure Optimized Network
 partitioning**.  It is an EmuFlow algorithm inspired by the papers above, not
 a claimed reproduction of any one of them.
 
-The current default combines PATRON with generalized Static Exact v2.  PATRON
-derives transported net classes from the sealed cluster policy, which includes
-real combinational cut nets in the endpoint-exact path and routing-pressure
-model.  After refinement the common assignment builder reconstructs the
-Static Exact dependency contract, and the independent checker revalidates that
-contract together with the native transition trace and complete metrics.  The
-legacy sequential policy remains an explicit comparison mode.
+The production default combines PATRON v6 with the sequential-only boundary
+policy. Generalized Static Exact v2 with PATRON v14 is an explicit research
+mode. In that mode PATRON derives transported net classes from the sealed
+cluster policy, which includes real combinational cut nets in the endpoint-
+exact path and routing-pressure model. After refinement the common assignment
+builder reconstructs the Static Exact dependency contract, and the independent
+checker revalidates that contract together with the native transition trace
+and complete metrics. The generalized mode remains explicit because its
+current same-input complete Phase 7 QoR is worse than the sequential control.
 
-The generalized search is initialized by solving the ordinary
-register-boundary graph with the same seed and lifting that instance assignment
-onto the finer Static Exact clusters. This preserves the partitioner's global
-communication solution and lets PATRON use combinational boundaries only as an
-incremental refinement. Running a second unrelated TritonPart solve directly
-on the finer graph is available only through an explicitly supplied research
-solution and is not the default producer contract.
+The generalized search is initialized by running ordinary TritonPart on the
+same generalized cluster graph and legal net-cut hypergraph that PATRON will
+refine. TritonPart therefore supplies a normal balanced cut solution without
+Static Exact risk or scheduling logic, while PATRON improves that solution with
+its provider-neutral predictive timing objective. The flow never solves a
+register-only graph and projects that assignment onto a different cluster
+space.
 
 For each valid assignment, a deterministic direct K-way pass evaluates a move
 of cluster `v` from partition `a` to `b` with a lexicographic objective:
@@ -353,8 +355,10 @@ candidate key:
 6. maximum TDM ratio and completion slot;
 7. link bit-hops, cut bits, and replica LUTs.
 
-This makes the new Phase 3 optimizer route- and schedule-aware without copying
-Phase 4/5 logic into an approximate partitioner.
+This exact ranking belongs to the Phase 4/5 candidate-evaluation boundary, not
+to the Phase 3 heuristic. Phase 3 uses only a provider-neutral predictive
+timing objective; the real router and TDM optimizer remain authoritative and
+are not copied into partitioning.
 
 ## Artifacts and independent validation
 

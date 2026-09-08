@@ -222,9 +222,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             ]
         )
         self.assertEqual(phase3.provider, "patron")
-        self.assertEqual(
-            phase3.cut_mode, "static-exact-combinational"
-        )
+        self.assertEqual(phase3.cut_mode, "sequential-only")
         self.assertTrue(phase3.tritonpart_repair_balance)
         phase3_without_repair = _build_parser().parse_args(
             [
@@ -254,9 +252,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             ]
         )
         self.assertEqual(checkpoint.provider, "patron")
-        self.assertEqual(
-            checkpoint.cut_mode, "static-exact-combinational"
-        )
+        self.assertEqual(checkpoint.cut_mode, "sequential-only")
         cross_stage = _build_parser().parse_args(
             [
                 "cross-stage",
@@ -273,9 +269,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 "cross-stage",
             ]
         )
-        self.assertEqual(
-            cross_stage.cut_mode, "static-exact-combinational"
-        )
+        self.assertEqual(cross_stage.cut_mode, "sequential-only")
 
     def test_cli_exact_mode_inherits_unified_slot_refinement_default(self):
         base = [
@@ -316,6 +310,9 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 ],
                 1.0,
             )
+            self.assertEqual(
+                run.call_args.kwargs["patron_algorithm_version"], 14
+            )
             run.reset_mock()
             self.assertEqual(_dispatch(safe), 0)
             self.assertEqual(
@@ -325,14 +322,14 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 run.call_args.kwargs["partition_provider"], "patron"
             )
             self.assertEqual(
-                run.call_args.kwargs["patron_algorithm_version"], 14
+                run.call_args.kwargs["patron_algorithm_version"], 6
             )
             self.assertFalse(
                 run.call_args.kwargs["mfspart_post_refinement"]
             )
             self.assertEqual(
                 run.call_args.kwargs["cut_mode"],
-                "static-exact-combinational",
+                "sequential-only",
             )
             self.assertEqual(
                 run.call_args.kwargs["static_exact_candidate_policy"],

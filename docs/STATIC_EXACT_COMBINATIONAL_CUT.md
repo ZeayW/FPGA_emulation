@@ -2,11 +2,13 @@
 
 ## Status and claim boundary
 
-The production flow defaults to generalized Static Exact partitioning through
-the sole production candidate policy, `assignment-derived-acyclic-v2`. It
-passes Phase 3 structural partition legality, Phase 4 native-route contract
-binding, and unified Phase 5 timing-aware TDM assignment. Sequential-only
-Phase 3 transports
+The production flow defaults to sequential-only partitioning with PATRON v6.
+Generalized Static Exact partitioning through
+`assignment-derived-acyclic-v2` and PATRON v14 is an explicit research mode.
+That mode passes Phase 3 structural partition legality, Phase 4 native-route
+contract binding, and unified Phase 5 timing-aware TDM assignment, but its
+current same-input complete Phase 7 QoR does not pass the promotion gate.
+Sequential-only Phase 3 transports
 register outputs, transport-safe register inputs, and replicated primary
 inputs; other combinational connectivity remains atomic. The checked-in
 `combinational-cut characterize` command is read-only. It identifies a
@@ -126,8 +128,8 @@ feasibility, and physical segment deadlines.
 1. **Characterization (implemented, no behavior change).** Read-only SCC,
    eligibility, dependency-depth, and theoretical atomic-component report;
    independent exact replay; tamper tests.
-2. **Phase 3 generalized structural policy (implemented, production).** The
-   sole production policy releases every structurally eligible candidate,
+2. **Phase 3 generalized structural policy (implemented, research-qualified).**
+   The single supported generalized policy releases every structurally eligible candidate,
    reconstructs the selected dependency DAG after assignment, and emits the
    provider-neutral v3 contract. Its strongest Phase 3 qualification is
    structural partition legality, never schedule feasibility.
@@ -145,10 +147,11 @@ feasibility, and physical segment deadlines.
    evidence, independent causal deadline reconstruction, explicit missing-
    evidence incompleteness, and global target-clock/virtual-runtime WNS/TNS.
    The public `schemas/static-exact-segment-deadlines-v2.schema.json` contract
-   fixes the complete routed-deadline report surface. The large acceptance
-   selects five natural combinational cuts without fixed partition placement,
-   covers all 157,811 contract segments with endpoint-exact routed evidence,
-   and replays all 195,532 original timing paths. Its negative 10 ns
+   fixes the complete routed-deadline report surface. The current same-input
+   large acceptance selects ten natural combinational cuts without fixed
+   partition placement, covers all 123,803 contract segments with endpoint-
+   exact routed evidence, and replays all 195,532 original timing paths. Its
+   negative 10 ns
    target-clock WNS/TNS is reported honestly; the gate proves complete timing
    evidence and positive causal segment deadlines, not target-clock closure.
 6. **Optimizer integration.** Partition providers screen candidate assignments
@@ -171,32 +174,22 @@ remain available only for explicit algorithm qualification on small inputs.
 ## Canonical search-space audit
 
 The generalized policy was audited on one immutable canonical DLA + EDA 2023
-case6 frontend. Sequential-only, legacy v1, and guarded generalized v2 used the
-same EmuIR bytes and the same physical seed; no arm was reconstructed from a
-different synthesis result. The original design has 379,357 instances and
-73,767 combinational nets. The resulting Phase 3 search spaces are:
+case6 frontend. The original design has 379,357 instances and 73,767
+combinational nets. The resulting structural Phase 3 search spaces are:
 
-| policy | clusters | released combinational candidates | largest cluster | clusters above 100 instances | selected real combinational cuts |
-|---|---:|---:|---:|---:|---:|
-| sequential-only | 246,387 | 0 | 724 | 197 | 0 |
-| legacy potential-frontier v1 | 304,300 | 16,251 | 154 | 84 | 0 |
-| assignment-derived v2 with guarded refinement | 367,129 | 49,695 | 52 | 0 | 2 |
+| policy | clusters | released combinational candidates | largest cluster | clusters above 100 instances |
+|---|---:|---:|---:|---:|
+| sequential-only | 246,387 | 0 | 724 | 197 |
+| legacy potential-frontier v1 | 304,300 | 16,251 | 154 | 84 |
+| assignment-derived v2 | 367,129 | 49,695 | 52 | 0 |
 
 V2 therefore adds 33,444 structurally legal candidate boundaries over v1 and
 removes the large atomic-cluster tail: sequential-only has 72 clusters above
-500 instances, whereas v2 has none above 100. The current canonical result is
-not candidate-starved. Its two selected cuts are the optimizer's cost-aware
-choice from the larger legal space, and both survive the unified TDM schedule,
-shadow-transport, equivalence, and routed segment-deadline gates.
-Forcing a larger cut count would optimize an activity metric rather than final
-timing QoR and is not part of the default policy.
-
-The accepted v2 assignment reaches actual dependency depth two, so the
-configured depth-eight safety cap is not active on this case. Likewise, the
-unified Phase 5 scheduler accepts arbitrary acyclic depth subject to
-the fixed frame, routed latency, lane capacity, relay readiness, and capture
-deadline. These measurements do not justify weakening either fail-closed gate
-or replacing the fixed-frame feasibility proof with an assumed benefit.
+500 instances, whereas v2 has none above 100. Selection is not candidate-
+starved, and the flow never forces extra cuts merely to increase an activity
+count. The configured depth-eight safety cap is structural; the unified Phase
+5 optimizer accepts any selected acyclic depth that satisfies the real fixed
+frame, routed latency, lane capacity, relay readiness, and capture constraints.
 
 ### Cross-policy Phase 7 promotion certificate
 
@@ -217,33 +210,18 @@ combinational cut and improves the paired target-clock result over
 sequential-only.  A single physical seed is the routine gate; more seeds are
 an explicit robustness study.
 
-The current canonical DLA + EDA 2023 case6 run exercised 102 generalized cuts
-at maximum dependency depth three. It completed Phase 7/7C with zero DRC
-violations, zero unrouted nets, and zero per-FPGA physical TNS, but its global
-target-clock WNS/TNS were -187.85581036 ns / -548934.0510065886 ns versus
--84.5812926868 ns / -277276.1497366623 ns for sequential-only. Completion
-moved from slot 8 to slot 15. This is a valid negative algorithm result, not a
-validation failure: generalized semantics and physical deadlines were
-exercised, while final system-level QoR regressed. Consequently that unguarded
-configuration was rejected. The later guarded generalized policy improved the
-paired register-only control and is now the default together with PATRON;
-sequential-only remains an explicit comparison arm. This historical negative
-result is not evidence for or against the newer combined default.
-
-The automatic Phase 3 follow-up uses directional MFSPart FM after the sealed
-TritonPart assignment. Its Static Exact objective treats existing
-non-combinational transport and newly available combinational boundaries as
-different classes: an immutable per-net guard forbids increasing the initial
-worst-sink board distance of the former, while the latter pay the ordinary
-timing-weighted cut/connectivity/hop objective without inheriting an
-impossible zero-distance guard. Both the optimizer and the independent native
-checker reconstruct and enforce this rule. Legacy V1/V2 native refiner inputs
-remain readable with their original unguarded bottleneck semantics. A
-diagnostic 62-move prefix completed full Phase 7/7C at -84.913220755 ns WNS
-and -159994.95141046078 ns TNS, preserving most of the TNS benefit while
-cutting the earlier WNS regression to 0.332 ns. Because that prefix was chosen
-diagnostically, it calibrates the automatic objective but does not itself pass
-the promotion gate.
+The current paired run uses identical synthesis digests, 195,532 timing-path
+identities, board, architecture, Phase 4/5 algorithms, baseline Phase 6,
+partition seed 4, and physical seed 1. Sequential-only + PATRON v6 reaches
+WNS/TNS -159.204440449 ns / -135678.81164142085 ns. Generalized v2 + PATRON
+v14 naturally selects ten combinational cuts at maximum dependency depth one
+and reaches -235.0976235638 ns / -388770.1608932732 ns. Both arms pass complete
+Phase 1--7 validation with zero DRC violations and zero unrouted nets; the
+generalized arm also passes shadow transport, macro-cycle equivalence, and all
+123,803 physical logic-segment obligations. This proves the generalized flow
+is implemented correctly, but its WNS and TNS both regress, so it fails the
+promotion gate and remains explicit. Sequential-only + PATRON v6 is the
+production default.
 
 ## Commands
 
@@ -341,7 +319,8 @@ The canonical paired QoR experiment makes this distinction explicit. Its
 sequential arm requires zero combinational cuts, while its generalized v2 arm
 inherits the requested positive exercise threshold. Both arms complete Phase
 1--7 so runtime, resources, and final whole-design WNS/TNS remain comparable.
-Only an exercised generalized-v2 arm can satisfy the default-promotion gate.
+Only an exercised generalized-v2 arm can satisfy a future default-promotion
+gate.
 
 `examples/rtl/static_exact_acceptance.v` is the small real-RTL acceptance
 source. Its 33-input next-state parity needs at least seven 6-input LUTs, while
@@ -368,7 +347,7 @@ replays event-driven macro-steps; its report keeps random, exhaustive, and
 formal evidence types distinct. Physical qualification requires a complete
 physical run with all routed source-ready/capture segment evidence plus exact
 deadlines and whole-design global target/virtual-runtime WNS/TNS. The real DLA
-acceptance now satisfies that evidence contract: all 157,811 segments are
+acceptance now satisfies that evidence contract: all 123,803 segments are
 endpoint-exact with no missing or failed deadline, and all 195,532 original
 paths are included once. This is open academic software-flow qualification;
 it does not claim 10 ns target-clock closure or hardware bring-up.

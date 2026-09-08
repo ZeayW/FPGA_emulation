@@ -431,18 +431,17 @@ that unified schedule, not a separate dispatch. Representative Yosys formal
 one-macro-step miters cover sampled-wire dependency depths one, two, and three;
 they complement exhaustive small-model replay without claiming general-design
 formal closure. Small real-RTL physical acceptance
-exercises the exact-cut path. A scalable open-physical acceptance now also
-exists on the naturally connected DLA design and a four-FPGA academic
-BoardDB: the unconstrained partition selected five real combinational cuts
-among 6,069 transported cuts, and the independent Phase 7 replay covered all
-157,811 exact source/capture segments with endpoint-exact routed evidence,
-zero missing segments, and zero failed segment deadlines. The same replay
-covered all 195,532 original timing paths exactly once and reported
-whole-design target-clock WNS/TNS of -181.086692873 ns and
--681,968.5909773472 ns, with 8,700 negative paths; virtual-runtime WNS/TNS
-were 14,566,048.913307127 ns and 0 ns. These numbers prove complete timing
-accounting and the static-exact causal deadlines, not 10 ns target-clock
-closure or a QoR improvement over sequential-only mode.
+exercises the exact-cut path. A scalable open-physical acceptance also exists
+on the naturally connected DLA design and a four-FPGA academic BoardDB: the
+unconstrained partition selected ten real combinational cuts among 4,761 cut
+nets, and the independent Phase 7 replay covered all 123,803 exact
+source/capture segments with endpoint-exact routed evidence, zero missing
+segments, and zero failed segment deadlines. The same replay covered all
+195,532 original timing paths exactly once and reported whole-design
+target-clock WNS/TNS of -235.0976235638 ns and -388770.1608932732 ns, with
+8,789 negative paths. These numbers prove complete timing accounting and the
+static-exact causal deadlines, not 10 ns target-clock closure or a QoR
+improvement over sequential-only mode.
 
 Canonical Experiment v2 defaults the static-exact combinational-cut threshold
 to zero. This permits a real design to complete the full flow when the legal
@@ -454,25 +453,22 @@ The checked-in `static_exact_acceptance` RTL and
 functional/physical fixture for that gate; they are not a QoR benchmark and
 must not be mixed into benchmark-comparison tables.
 
-The production-wide default is generalized Static Exact v2
-(`assignment-derived-acyclic-v2`) with PATRON, a dependency-depth safety cap of
-eight, and path beta zero. PATRON's endpoint-exact objective derives its
-transported classes from this cluster policy, so combinational candidates are
-modeled rather than discarded as non-sequential traffic. The physical-feedback
+The production-wide default remains the validated sequential-only boundary
+policy with PATRON v6. Generalized Static Exact v2
+(`assignment-derived-acyclic-v2`) with PATRON v14 is an explicit research mode:
+it releases structurally legal combinational candidates, rebuilds the selected
+dependency DAG from the final assignment, and supports any positive configured
+depth. Phase 3 rejects an assignment only for partition-owned structural
+illegality: a cyclic selected DAG, an exceeded dependency safety cap,
+capacity/fixed-group violations, or unreachable BoardDB endpoints. Frame,
+lane, slot, settle, and commit feasibility belong exclusively to Phase 5.
+TritonPart ranks only its ordinary weighted net-cut objective; it does not
+estimate Static Exact risk or run or consume a scheduler certificate. Phase 4
+binds concrete multicast branches; unified Phase 5 then solves link latency,
+lane capacity, ratio, relay readiness, and capture deadlines. Phase 6/7 retain
+the macro-cycle-equivalence and routed physical-segment gates. Physical-feedback
 PATRON refinement remains opt-in because it requires a prior physical timing
-artifact. The production policy does not confuse a net's depth in the graph of
-*possible* boundaries with its depth after the partitioner has selected actual
-transported boundaries. It releases every structurally legal
-candidate, rebuilds the selected dependency DAG from the final assignment,
-and supports any positive configured depth. Phase 3 rejects an assignment only
-for partition-owned structural illegality: a cyclic selected DAG, an exceeded
-dependency safety cap, capacity/fixed-group violations, or unreachable BoardDB
-endpoints. Frame, lane, slot, settle, and commit feasibility belong exclusively
-to Phase 5. TritonPart ranks only its ordinary weighted net-cut objective; it
-does not estimate Static Exact risk or run or consume a scheduler certificate.
-Phase 4 binds concrete multicast branches; unified Phase 5 then solves link
-latency, lane capacity, ratio, relay readiness, and capture deadlines. Phase
-6/7 retain the macro-cycle-equivalence and routed physical-segment gates.
+artifact.
 
 The explicitly enabled TritonPart-to-MFSPart follow-up is likewise
 scheduler-neutral; it is not run merely because TritonPart and generalized
@@ -523,127 +519,36 @@ diagnostics, virtual frequency, transport/physical cell counts, cut count,
 scheduled bit-hops, frame size, completion slot, DRC/unrouted counts, and total
 wall time. After that summary passes, delete both complete run directories.
 
-The completed controlled DLA + EDA 2023 case6 experiment gives the following
-single-physical-seed result. These are whole-original-design target-clock
-metrics after complete open Phase 7/7C, not per-FPGA timing summaries:
+The current controlled DLA + EDA 2023 case6 experiment uses one partition seed
+(4), one physical seed (1), eight physical workers, baseline Phase 6, and the
+same fixed-slot Phase 7C evaluator in both arms. These are whole-original-
+design target-clock metrics after complete open Phase 7/7C, not per-FPGA timing
+summaries:
 
-| cut policy | real combinational cuts | maximum dependency depth | global WNS (ns) | global TNS (ns) | failing paths | completion slot |
-|---|---:|---:|---:|---:|---:|---:|
-| sequential-only | 0 | 0 | -84.5812926868 | -277276.1497366623 | 7360 | 8 |
-| legacy Static Exact v1 | 0 | 0 | -87.4214476040 | -488195.76014116284 | 8162 | 6 |
-| generalized Static Exact v2 | 102 | 3 | -187.85581036 | -548934.0510065886 | 9310 | 15 |
+| cut policy and partitioner | real combinational cuts | maximum dependency depth | global WNS (ns) | global TNS (ns) | failing paths | completion slot | cut nets | scheduled bit-hops | transport cells |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| sequential-only + PATRON v6 | 0 | 0 | -159.204440449 | -135678.81164142085 | 5756 | 8 | 3348 | 3580 | 10881 |
+| generalized v2 + PATRON v14 | 10 | 1 | -235.0976235638 | -388770.1608932732 | 8789 | 12 | 4761 | 6239 | 17757 |
 
-All three historical arms routed with zero DRC violations, zero unrouted nets, and zero
-per-FPGA physical TNS. Generalized v2 nevertheless increased the WNS deficit
-by 122.10% and the TNS deficit by 97.97% relative to sequential-only, while
-adding 2,717 scheduled bit-hops and 7,383 transport cells. The result proves
-that generalized dependency handling, shadow transport, macro-cycle
-equivalence, and routed segment deadlines work on real depth-three cuts; it
-also proves that this candidate selection is not a timing-QoR improvement on
-the canonical case. That unguarded generalized configuration was therefore
-not promoted. The later guarded model described below passed the physical
-comparison and is the generalized policy now selected by default. The current
-PATRON combination is a distinct implementation choice; this historical table
-must not be read as a new PATRON-plus-Static-Exact QoR claim.
+Both arms use identical synthesized EBLIF and Yosys JSON digests, the same
+195,532 original timing-path identities, the same board, architecture, timing
+model, Phase 4/5 algorithms, and physical seed. Both independently pass Phase
+1--7 validation with zero DRC violations, zero unrouted nets, complete timing-
+path coverage, legal schedules, and functional equivalence. The generalized
+arm additionally covers all 123,803 required logic segments and exercises ten
+naturally selected combinational cuts.
 
-The earlier guarded follow-up cost model kept TritonPart as the partition
-provider and applied one optional, direction-aware MFSPart FM post-refinement to its
-sealed assignment. It reconstructs driver/sink identity from EmuIR (never from
-TritonPart's undirected hypergraph) and combines aggregate
-cut/connectivity/hop gain with a class-weighted worst-sink-hop term. In Static
-Exact mode, every initially transported non-combinational net receives an
-immutable worst-sink-distance non-regression guard. Combinational candidates
-remain movable and pay their ordinary timing-weighted cut/connectivity/hop
-cost, but are not rejected merely because they were local in the TritonPart
-assignment. The guard is enforced by the native optimizer and rechecked on the
-final assignment by the linear Phase 3 output-contract validator.
-Sequential-only mode retains the legacy objective. Managed production runs do
-not hash the refiner input/output and do not replay the global-best search.
-The complete C++ global-best/best-prefix checker remains an explicit algorithm
-qualification test for small graphs and selected offline studies; it is not on
-the Phase 3 runtime path.
-Use `--mfspart-post-refinement`,
-`--mfspart-post-refinement-early-stop`, and
-`--mfspart-post-refinement-bottleneck-beta` on the reusable Phase 3 stage for
-controlled studies. A frozen 367,129-cluster diagnostic passed the native
-checker and kept the previously identified worst-path driver on its nearer
-FPGA at weights 192 and 256 while still reducing aggregate cut and weighted
-hop cost. A controlled 62-move prefix then completed full Phase 7/7C with
-global WNS/TNS of -84.913220755 ns / -159994.95141046078 ns and 4,218 failing
-paths, versus -84.5812926868 ns / -277276.1497366623 ns and 7,360 paths for
-sequential-only. Thus the prefix preserved a 42.30% TNS-deficit reduction
-while reducing the earlier full-prefix WNS regression from 1.054 ns to 0.332
-ns. This is useful cost-model evidence, but it is not a default-promotion
-result because the prefix was selected diagnostically rather than by the
-sealed automatic Phase 3 policy. The guarded class-weighted policy is the
-automatic successor under validation.
-
-The next cost-model revision adds a path-level objective to that guarded FM
-step. Net weights alone add the cost of every crossed net and therefore do not
-model the Boolean question that determines whole-path timing: whether an
-original timing path crosses *any* FPGA boundary. In refiner input v4, each
-original TimingPathDB path is mapped to the ordered net-driver clusters plus
-its structured launch/capture clusters; paths with the same cluster set are
-aggregated by count. The FM gain charges each distinct path once while it is
-split and removes that charge only when all of its clusters become local. It
-deliberately does not add every sink of every high-fanout net, which would turn
-an ordered timing path into unrelated fanout branches and inflate the
-objective. `--mfspart-post-refinement-timing-path-beta` controls this term
-(default `0.0`; nonzero values are explicit research options). Direct Static
-Exact flows using TritonPart enable the guarded
-post-refinement and bind it to the generated TimingPathDB; non-Static-Exact
-flows retain the prior behavior.
-
-The native optimizer maintains per-path part counts. Production Phase 3 checks
-the emitted move sequence, cumulative gains, kept prefix, final assignment,
-capacity/fixed constraints, and topology guards in one linear pass. It does
-not recompute every candidate gain or prove the global-best choice. The latter
-remains covered by the exhaustive Python oracle and independent C++ checker in
-the algorithm test suite. Offline deep qualification can separately
-rematerialize the compressed objective from
-the sealed EmuIR, clusters, and original TimingPathDB and compares the exact
-PATH-record digest, group count, and pin count. Small exhaustive and full
-repository tests pass. Canonical DLA + EDA 2023 case6 screening is now complete
-at partition seed 4 and physical seed 1 with eight physical workers. Both the
-path-objective-disabled control and the `beta=1.0` candidate selected two real
-combinational cuts with maximum dependency depth two, routed with zero DRC
-violations and zero unrouted nets, and covered the same 195,532 original timing
-paths. Their complete Phase 7/7C global result was identical: WNS
--83.890257153 ns, TNS -189,339.41826577744 ns, and 5,069 negative paths. The
-path-level term changed the partition assignment but not the routed Phase 4/5
-schedule, Phase 6 split, or final timing QoR on this case, so it provides no
-incremental promotion evidence and remains a research option.
-
-The guarded automatic generalized policy itself is nevertheless better than
-the register-only control on this canonical run. Relative to register-only WNS
--84.5812926868 ns, TNS -277,276.1497366623 ns, and 7,360 negative paths, it
-improves WNS by 0.6910355338 ns, reduces the TNS deficit by
-87,936.73147088484 ns (31.71%), and removes 2,291 negative paths. This evidence
-supports the guarded cost model, not the additional path-level beta term; a
-nonzero path beta therefore remains optional. The same-input,
-same-partition-seed, same-physical-seed result promotes this guarded
-generalized configuration. It is now the default cut policy; explicit
-`--cut-mode sequential-only` remains the register-boundary comparison arm.
-
-The promotion numbers in the preceding historical paragraphs were generated
-before registered-boundary Phase 7C used the same fixed-slot event propagation
-as sampled-virtual-wire transport. They remain implementation-history records,
-but are not a fair cross-policy QoR comparison and must not be used to justify
-the current default. The replacement comparison uses identical inputs,
-partition/physical seeds, Phase 4/5 providers, baseline Phase 6, and the same
-fixed-slot Phase 7C evaluator in both arms.
-
-An audit of the identical sealed EmuIR explains why the accepted guarded run
-uses only two real combinational cuts. The 379,357-instance design contains
-73,767 combinational nets. Sequential-only forms 246,387 clusters with a
-724-instance maximum; legacy v1 releases 16,251 combinational candidates and
-forms 304,300 clusters with a 154-instance maximum; generalized v2 releases
-49,695 candidates and forms 367,129 clusters with a 52-instance maximum. V2
-therefore removes candidate-space and large-atomic-cluster bias. Selecting two
-cuts from that enlarged space is the guarded objective's QoR decision, not a
-remaining eligibility shortage; the flow never forces additional cuts merely
-to increase an activity count. The full distribution and interpretation are
-documented in `docs/STATIC_EXACT_COMBINATIONAL_CUT.md`.
+The feature is therefore functionally and causally implemented, but this
+PATRON v14 candidate is not a QoR promotion. Relative to sequential-only, its
+WNS deficit is 47.67% larger and its TNS deficit is 186.54% larger; it also adds
+1,413 cut nets, 2,659 scheduled bit-hops, and 6,876 transport cells. The
+production default remains sequential-only with PATRON v6. Generalized Static
+Exact v2 with PATRON v14 is an explicit research/qualification mode until a
+same-input complete Phase 7/7C comparison improves both target-clock metrics.
+There is no early Static Exact risk gate in Phase 3: TritonPart produces a
+normal balanced solution directly on the selected cluster graph, PATRON uses
+only provider-neutral predictive timing costs, and downstream legality and QoR
+remain authoritative in Phases 4--7.
 
 The default comparison runs each complete arm once in an isolated directory.
 It does not publish Phase 1--5 checkpoints, duplicate timing/partition reports,
@@ -683,11 +588,10 @@ requires at least one real combinational cut in its terminal evidence.
 The shared slot-edge convention, semantic contract, fail-closed policy, and
 Phase 3--7 acceptance sequence are specified in
 [Static exact combinational-cut mode](docs/STATIC_EXACT_COMBINATIONAL_CUT.md).
-The production default is generalized Static Exact v2 plus PATRON. Static
-Exact remains fail-closed outside its declared single-clock, synchronous-reset,
-deterministic-schedule envelope; selecting it by default does not broaden that
-semantic scope. The legacy Static Exact policies have been removed;
-`sequential-only` remains the explicit register-boundary comparison policy.
+The production default is sequential-only plus PATRON v6. Generalized Static
+Exact v2 plus PATRON v14 is selected explicitly and remains fail-closed outside
+its declared single-clock, synchronous-reset, deterministic-schedule envelope.
+The legacy Static Exact policies have been removed.
 Static-exact physical evidence preserves each reached state-capture input pin
 and bit through lowering; a VTR query rejects an endpoint that is absent from
 the emitted primitive contract before physical routing begins.
@@ -1426,22 +1330,19 @@ maximum-flow implementation.  Compact mode exhaustively enumerates both
 direct moves and all legal two-vertex ejections; the scaled independent replay
 checks the complete selected schedule, while the production checker
 reconstructs every transition and endpoint without rerunning the heuristic.
-The default Phase 3 combination is now `--partition-provider patron` with the
-generalized Static Exact v2 boundary policy.  PATRON derives the transported
-net classes from the sealed cluster policy, so real combinational cut nets are
-included in its endpoint-exact timing-path and routing-pressure objective
-instead of being filtered as sequential-only traffic.  The common Phase 3
-assignment builder reconstructs the Static Exact dependency contract after
-refinement, and independent validation rechecks that contract, the complete
-transition chain, assignment legality, and initial/final metrics.  The
-scalable sweep remains a deterministic heuristic and is not claimed globally
-optimal.  The former TritonPart/sequential baseline remains available only by
-explicitly selecting `--partition-provider tritonpart --cut-mode
-sequential-only`; it is not an implicit fallback for omitted options.
-The cold-start producer records an explicit algorithm version. Version 14 is
-the uniform omitted-option default for the generalized Static Exact flow.
-Versions 6 and 9 remain explicit research profiles, and a register-only PATRON
-control must name version 6 rather than inheriting a historical default.
+The default Phase 3 combination is `--partition-provider patron` with the
+sequential-only boundary policy and PATRON v6. Selecting
+`--cut-mode static-exact-combinational` explicitly chooses generalized Static
+Exact v2 and, unless another version is named, PATRON v14. In that research
+mode, PATRON derives transported net classes from the sealed cluster policy so
+real combinational cut nets enter its endpoint-exact timing-path and
+routing-pressure objective. The common Phase 3 assignment builder reconstructs
+the Static Exact dependency contract after refinement, and independent
+validation rechecks that contract, the complete transition chain, assignment
+legality, and initial/final metrics. The scalable sweep remains a deterministic
+heuristic and is not claimed globally optimal. The cold-start producer records
+the effective algorithm version. Version 9 remains an explicit research
+profile.
 Version 11 must name both a frozen initial assignment and a matching prior
 complete-global `system-timing/v2` artifact; it is never inferred from cache
 presence. The older `--patron-flow-refinement` spelling remains an explicit
@@ -1603,13 +1504,14 @@ declared two-metric promotion gate, while the very small WNS margin is reported
 explicitly rather than presented as a broad topology-independent result.
 The V11 physical-feedback refinement remains opt-in because it consumes a
 prior physical timing artifact and therefore cannot be the clean first-run
-default. A clean generalized flow defaults to PATRON v14; v6 or the
-ranked-frontier v9 profile may be selected explicitly when reproducing their
-experiments. A resulting complete-global Phase 7 timing artifact can be a
+default. An explicitly selected generalized flow uses PATRON v14 unless an
+algorithm version is named; the ranked-frontier v9 profile remains available
+for explicit research reproduction. A resulting complete-global Phase 7 timing
+artifact can be a
 matching v11 input only when v11 and the frozen assignment are also selected
-explicitly. The projected-anchor v14 revision is undergoing a fresh complete
-Phase 7/7C qualification; pre-projection v14 results do not qualify the new
-default behavior. Case7/case9 topology
+explicitly. The current generalized v14 revision has completed the case6 DLA
+Phase 7/7C qualification reported above but failed its two-metric QoR promotion
+gate. Case7/case9 topology
 replication remains additional QoR evidence after the primary case6 gate.  The
 complete design, literature basis, and gate are documented in
 [the timing/TDM partitioning upgrade plan](docs/PARTITIONING_TIMING_TDM_UPGRADE.md).

@@ -1134,14 +1134,14 @@ def run_multi_fpga_flow(
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
-    patron_algorithm_version: int = 14,
+    patron_algorithm_version: int = 6,
     partition_timeout_seconds: int = 3600,
     partition_seed_attempts: int = 1,
     partition_num_initial_solutions: int = 50,
     partition_num_best_initial_solutions: int = 10,
     partition_repair_min_used_fpgas: bool = False,
     partition_repair_balance: bool = False,
-    cut_mode: str = CUT_MODE_STATIC_EXACT,
+    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),

@@ -204,7 +204,7 @@ def run_partition_checkpoint(
     repair_balance: bool = False,
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
-    cut_mode: str = CUT_MODE_STATIC_EXACT,
+    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
@@ -212,7 +212,7 @@ def run_partition_checkpoint(
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
-    patron_algorithm_version: int = 14,
+    patron_algorithm_version: int = 6,
     patron_initial_assignment_path: Optional[Path] = None,
     patron_initial_clusters_path: Optional[Path] = None,
     patron_physical_system_timing_path: Optional[Path] = None,

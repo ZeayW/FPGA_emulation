@@ -439,7 +439,11 @@ def compile_canonical_experiment_spec(
         raise ValidationError(
             "canonical patron_flow_refinement must be a boolean"
         )
-    patron_algorithm_version = config.get("patron_algorithm_version", 14)
+    requested_cut_mode = config.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
+    patron_algorithm_version = config.get(
+        "patron_algorithm_version",
+        14 if requested_cut_mode == CUT_MODE_STATIC_EXACT else 6,
+    )
     patron_algorithm_version_explicit = "patron_algorithm_version" in config
     if (
         isinstance(patron_algorithm_version, bool)
@@ -552,7 +556,7 @@ def compile_canonical_experiment_spec(
         )
     ):
         raise ValidationError("canonical experiment clocks/periods are invalid")
-    cut_mode = config.get("cut_mode", CUT_MODE_STATIC_EXACT)
+    cut_mode = requested_cut_mode
     if (
         partition_provider == "patron"
         and patron_algorithm_version == 14

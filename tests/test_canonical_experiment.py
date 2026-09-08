@@ -356,7 +356,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 )
             )
 
-    def test_compiler_defaults_to_generalized_static_exact_patron(self) -> None:
+    def test_compiler_defaults_to_sequential_patron(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / "spec.json"
@@ -370,16 +370,16 @@ class CanonicalExperimentTest(unittest.TestCase):
                 )["nodes"]
             }
             partition = nodes["partition"]
-            self.assertEqual(report["cut_mode"], "static-exact-combinational")
+            self.assertEqual(report["cut_mode"], "sequential-only")
             self.assertEqual(
                 partition["configuration"]["provider"], "patron"
             )
             self.assertEqual(
-                partition["configuration"]["patron_algorithm_version"], 14
+                partition["configuration"]["patron_algorithm_version"], 6
             )
             self.assertEqual(
                 partition["configuration"]["cut_mode"],
-                "static-exact-combinational",
+                "sequential-only",
             )
             self.assertEqual(
                 partition["configuration"]["static_exact_candidate_policy"],
@@ -938,7 +938,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             route = nodes["route"]
 
-    def test_static_exact_omitted_knobs_select_promoted_generalized_defaults(
+    def test_explicit_static_exact_selects_generalized_research_defaults(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
