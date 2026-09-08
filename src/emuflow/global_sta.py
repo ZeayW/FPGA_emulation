@@ -1,0 +1,287 @@
+"""Fixed-event timing binding for an external OpenSTA engine.
+
+This is a timing abstraction, not a synthesizable transport implementation.
+An event cutpoint has an absolute launch time, a chain of measured arcs, and
+an explicit capture deadline. OpenSTA propagates the arcs and checks the
+deadline. TX readiness checks MUST accompany terminal path observations:
+observing the last TX alone cannot prove that it transported the current value.
+No Python-computed arrival, slack, or TDM wait enters the exported circuit.
+"""
+
+from __future__ import annotations
+
+import math
+import subprocess
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+from .errors import ValidationError
+from .native_tools import resolve_native_executable
+from .opensta import render_opensta_liberty
+
+
+@dataclass(frozen=True)
+class EventCheck:
+    path: str
+    role: str
+    event: str
+    launch_ns: float
+    arcs_ns: tuple[float, ...]
+    required_ns: float
+
+
+def validate_checks(checks: Iterable[EventCheck]) -> list[EventCheck]:
+    rows = list(checks)
+    seen = set()
+    for row in rows:
+        key = (row.path, row.role, row.event)
+        if key in seen or not row.path or not row.event:
+            raise ValidationError("global STA has duplicate/empty check identity")
+        seen.add(key)
+        if row.role not in {"target", "runtime", "tx", "commit"}:
+            raise ValidationError("global STA has an unsupported check role")
+        for value in (row.launch_ns, row.required_ns, *row.arcs_ns):
+            if isinstance(value, bool) or not math.isfinite(value):
+                raise ValidationError("global STA times must be finite numbers")
+        if row.launch_ns < 0 or any(x < 0 for x in row.arcs_ns):
+            raise ValidationError("global STA launch/arc delay must be nonnegative")
+    if not rows:
+        raise ValidationError("global STA has no timing checks")
+    target = {r.path for r in rows if r.role == "target"}
+    runtime = {r.path for r in rows if r.role == "runtime"}
+    if target != runtime or not target:
+        raise ValidationError("global STA target/runtime population disagrees")
+    counts = Counter((r.path, r.role) for r in rows)
+    if any(counts[p, role] != 1
+           for p in target for role in ("target", "runtime")):
+        raise ValidationError("global STA must observe each original path once")
+    return rows
+
+
+def export_event_checks(checks: Iterable[EventCheck], directory: Path) -> list[EventCheck]:
+    """Export Verilog/Liberty/SDC and one batch query; names never contain user text.
+
+Fixed-edge register cutpoints lower to SDC input launch times and output
+deadlines relative to one epoch clock. Unlike periodic generated clocks this
+cannot silently wrap a missed slot into the following frame. The measured arc
+chain remains explicit; a scalar Liberty cell is shared for each unique delay.
+"""
+    rows = validate_checks(checks)
+    directory.mkdir(parents=True, exist_ok=True)
+    delays = sorted({0.0, *(v for r in rows for v in r.arcs_ns)})
+    cells = {v: f"D{i}" for i, v in enumerate(delays)}
+    model = {"name": "emuflow_event_arcs", "cells": {
+        name: {"kind": "combinational", "inputs": ["A"], "output": "Y",
+               "delay_ns": value} for value, name in cells.items()}}
+    (directory / "global_timing.lib").write_text(render_opensta_liberty(model))
+    # A larger epoch than any source/capture edge avoids automatic edge wrap.
+    epoch = max(1.0, *(r.launch_ns for r in rows), *(r.required_ns for r in rows)) + 1.0
+    with (directory / "global_timing.v").open("w") as v, (directory / "global_timing.sdc").open("w") as s:
+        v.write("module global_timing(\n" + ",\n".join(
+            f"input i{i}, output o{i}" for i in range(len(rows))) + ");\n")
+        s.write(f"create_clock -name epoch -period {epoch:.17g}\n")
+        for i, row in enumerate(rows):
+            chain = row.arcs_ns or (0.0,)
+            prev = f"i{i}"
+            for j, value in enumerate(chain):
+                net = f"o{i}" if j == len(chain) - 1 else f"n{i}_{j}"
+                if net != f"o{i}":
+                    v.write(f"wire {net};\n")
+                v.write(f"{cells[value]} a{i}_{j} (.A({prev}), .Y({net}));\n")
+                prev = net
+            s.write(f"set_input_delay -clock epoch -max {row.launch_ns:.17g} [get_ports i{i}]\n")
+            s.write(f"set_output_delay -clock epoch -max {epoch-row.required_ns:.17g} [get_ports o{i}]\n")
+        v.write("endmodule\n")
+    (directory / "analyze.tcl").write_text(f'''proc analyze {{}} {{
+  read_liberty global_timing.lib
+  read_verilog global_timing.v
+  link_design global_timing
+  read_sdc global_timing.sdc
+  set out [open measurements.tsv w]
+  puts $out "endpoint\\tarrival_ns\\trequired_ns\\tslack_ns"
+  set paths [find_timing_paths -path_delay max -group_path_count {len(rows)} -endpoint_path_count 1]
+  foreach p $paths {{
+    set points [get_property $p points]
+    set arrival [get_property [lindex $points end] arrival]
+    set slack [get_property $p slack]
+    set endpoint [get_property [get_property $p endpoint] full_name]
+    puts $out "$endpoint\\t$arrival\\t[expr {{$arrival+$slack}}]\\t$slack"
+  }}
+  close $out
+}}
+if {{[catch {{analyze}} message]}} {{ puts stderr $message; exit 2 }}
+exit 0
+''')
+    return rows
+
+
+def read_measurements(path: Path, rows: list[EventCheck]) -> list[dict]:
+    values = {}
+    with path.open() as stream:
+        if next(stream, "").strip() != "endpoint\tarrival_ns\trequired_ns\tslack_ns":
+            raise ValidationError("invalid global STA measurements header")
+        for line in stream:
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) != 4 or fields[0] in values:
+                raise ValidationError("duplicate/malformed global STA endpoint")
+            try:
+                numbers = tuple(float(v) for v in fields[1:])
+            except ValueError as exc:
+                raise ValidationError("invalid global STA measurement") from exc
+            if not all(math.isfinite(x) for x in numbers):
+                raise ValidationError("nonfinite global STA measurement")
+            values[fields[0]] = numbers
+    if set(values) != {f"o{i}" for i in range(len(rows))}:
+        raise ValidationError("global STA missing/extra/unconstrained endpoints")
+    return [{"path": r.path, "role": r.role, "event": r.event,
+             "arrival_ns": values[f"o{i}"][0],
+             "required_ns": values[f"o{i}"][1],
+             "slack_ns": values[f"o{i}"][2]} for i, r in enumerate(rows)]
+
+
+def run_event_checks(checks: Iterable[EventCheck], directory: Path,
+                     executable: str | None = None) -> list[dict]:
+    rows = export_event_checks(checks, directory)
+    tool = resolve_native_executable("sta", executable)
+    output = directory / "measurements.tsv"
+    output.unlink(missing_ok=True)
+    with (directory / "opensta.log").open("w") as log:
+        result = subprocess.run([tool, "-exit", "analyze.tcl"], cwd=directory,
+                                stdout=log, stderr=subprocess.STDOUT, check=False)
+    if result.returncode or not output.is_file():
+        raise ValidationError("global OpenSTA failed; see opensta.log")
+    return read_measurements(output, rows)
+
+
+def bind_physical_checks(runtime, routes, schedule, physical, platform):
+    """Bind canonical measurements to event checks without composing delays.
+
+Shared database readers validate identities only. This exporter does not call
+the Python event propagator or consume its per-path numerical results.
+"""
+    from .system_timing import (
+        _board_link_delay_database, _endpoint_delay_database,
+        _logic_segment_database,
+    )
+    from .tdm import is_fixed_slot_transport_schedule, reconstruct_tdm_schedule_timing_paths
+
+    if not is_fixed_slot_transport_schedule(schedule):
+        raise ValidationError("global OpenSTA requires fixed-slot transport")
+    endpoints = _endpoint_delay_database(physical)
+    segments = _logic_segment_database(physical)
+    links = _board_link_delay_database(physical, platform)
+    if endpoints is None or segments is None or links is None:
+        raise ValidationError("global OpenSTA requires logic, endpoint and BoardLinkTimingDB measurements")
+    entries = {e["id"]: e for e in schedule["entries"]}
+    demand_by_net = {r["net"]: r["id"] for r in routes["routes"]}
+    uncertainty = float(physical.get("static_exact_clock_uncertainty_ns", 0.0))
+    if uncertainty < 0 or not math.isfinite(uncertainty):
+        raise ValidationError("invalid global STA uncertainty")
+    virtual = float(runtime["virtual_dut_clock"]["nominal_period_ns"])
+    result = []
+    for record in reconstruct_tdm_schedule_timing_paths(routes, platform, schedule):
+        by_demand = {}
+        for hop in record["scheduled_hops"]:
+            by_demand.setdefault(hop["demand"], []).append(hop)
+        members = record.get("compressed_path_ids", [record["path"]])
+        for member in members:
+            chain = sorted(segments.get(record["path"], {}).get(member, []),
+                           key=lambda s: s["cut_index"])
+            if [s["cut_index"] for s in chain] != list(range(len(record["cut_nets"])+1)):
+                raise ValidationError("global STA missing original-member logic segments")
+            origin = 0.0
+            trailing = ()
+            periods = set()
+            seen_entries = set()
+            for k, net in enumerate(record["cut_nets"]):
+                hops = by_demand.get(demand_by_net[net], [])
+                if not hops or chain[k]["replace_tx_endpoint"] != hops[0]["tx_endpoint"]:
+                    raise ValidationError("global STA cut/segment binding disagrees")
+                for j, hop in enumerate(hops):
+                    eid = hop["schedule_entry"]
+                    if eid in seen_entries:
+                        raise ValidationError("global STA reused a scheduled event")
+                    seen_entries.add(eid)
+                    entry = entries[eid]
+                    for field in ("link", "from", "to"):
+                        if entry[field] != hop[field]:
+                            raise ValidationError("global STA hop/event identity disagrees")
+                    period = float(hop["tdm_slot_ns"])
+                    periods.add(period)
+                    tx = entry["slot"] * period
+                    arcs = trailing + (float(chain[k]["delay_ns"]) if not j else
+                                       endpoints[hop["tx_endpoint"]],)
+                    # Previous-frame registered values are stable at first TX.
+                    # Only that check is exempt; relays retain current-frame causality.
+                    if not (schedule["transport_semantics"] == "registered-boundary" and not j):
+                        result.append(EventCheck(member, "tx", eid, origin, arcs, tx-uncertainty))
+                    origin = tx
+                    trailing = (links[hop["link"], hop["from"], hop["to"]],
+                                endpoints[hop["rx_endpoint"]])
+            if len(periods) != 1 or len(seen_entries) != len(record["scheduled_hops"]):
+                raise ValidationError("global STA incomplete event coverage or mixed slot periods")
+            if chain[-1]["kind"] != "capture" or chain[-1]["replace_tx_endpoint"] is not None:
+                raise ValidationError("global STA final segment is not capture")
+            final_arcs = trailing + (float(chain[-1]["delay_ns"]), uncertainty)
+            required = float(record.get("required_time_ns", record["clock_period_ns"]))
+            commit = (schedule["route_constraints"]["frame_slots"]-1)*periods.pop()
+            for role, deadline in (("target", required),
+                                   ("runtime", virtual-(record["clock_period_ns"]-required)),
+                                   ("commit", commit)):
+                result.append(EventCheck(member, role, "capture", origin, final_arcs, deadline))
+    for database in physical.get("local_path_timing", {}).values():
+        for path in database["paths"]:
+            required = float(path.get("required_time_ns", path["clock_period_ns"]))
+            for role, deadline in (("target", required),
+                                   ("runtime", virtual-(path["clock_period_ns"]-required))):
+                result.append(EventCheck(path["id"], role, "capture", 0.0,
+                                         (float(path["delay_ns"]),), deadline))
+    return validate_checks(result)
+
+
+def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
+    """Compare every original path, not merely extrema; return a compact gate.
+
+OpenSTA uses float-based timing internally. Absolute 1 ps is the declared
+model tolerance; it is not scaled by a very long virtual frame.
+"""
+    if tolerance_ns <= 0 or not math.isfinite(tolerance_ns):
+        raise ValidationError("invalid global STA comparison tolerance")
+    expected = {p["path"]: p for p in reference["paths"]}
+    observed = {}
+    max_error = 0.0
+    failures = 0
+    for row in measurements:
+        role = row["role"]
+        if role in {"tx", "commit"}:
+            failures += row["slack_ns"] < -tolerance_ns
+            continue
+        key = (row["path"], role)
+        if key in observed or row["path"] not in expected:
+            raise ValidationError("global OpenSTA original-path population mismatch")
+        observed[key] = row
+        old = expected[row["path"]]
+        for actual, value in ((row["arrival_ns"], old["system_delay_bound_ns"]),
+                              (row["required_ns"], old[f"{role}_required_time_ns"]),
+                              (row["slack_ns"], old[f"{role}_clock_slack_bound_ns"])):
+            error = abs(actual-value)
+            max_error = max(max_error, error)
+            if error > tolerance_ns:
+                raise ValidationError(f"global OpenSTA disagrees at {key}: error {error} ns")
+    if set(observed) != {(p, r) for p in expected for r in ("target", "runtime")}:
+        raise ValidationError("global OpenSTA original-path coverage is incomplete")
+    summary = {}
+    for role in ("target", "runtime"):
+        slacks = [row["slack_ns"] for row in measurements if row["role"] == role]
+        summary[role] = {"wns_ns": min(slacks),
+                         "original_path_tns_ns": math.fsum(min(0.0, s) for s in slacks),
+                         "negative_paths": sum(s < 0 for s in slacks)}
+    return {"schema": "emuflow.global-opensta-check/v1", "status": "fail" if failures else "pass",
+            "authority": "qualification-only-pending-full-flow-validation",
+            "timing_scope": reference["timing_scope"], "original_paths": len(expected),
+            "event_failures": failures, "checks": len(measurements),
+            "tolerance_ns": tolerance_ns, "maximum_difference_ns": max_error,
+            "metrics": summary,
+            "tns_definition": "sum-negative-slack-once-per-original-TimingPathDB-path"}

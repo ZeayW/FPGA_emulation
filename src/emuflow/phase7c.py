@@ -71,6 +71,7 @@ def run_phase7c(
     routes_path: Optional[Path] = None,
     board_link_timing_path: Optional[Path] = None,
     simulation_frames: int = 12,
+    global_sta_executable: Optional[str] = None,
 ) -> Dict[str, Any]:
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
@@ -166,6 +167,20 @@ def run_phase7c(
         ):
             qor["status"] = "incomplete"
     output_dir.mkdir(parents=True, exist_ok=True)
+    if global_sta_executable is not None:
+        if physical_summary is None or routes is None:
+            raise ValidationError("global OpenSTA requires physical Phase 7 inputs")
+        from .global_sta import (
+            bind_physical_checks, compare_system_timing, run_event_checks,
+        )
+        checks = bind_physical_checks(runtime, routes, schedule, physical_summary, platform)
+        measurements = run_event_checks(checks, output_dir / "global-opensta", global_sta_executable)
+        sta_check = compare_system_timing(measurements, qor["timing"])
+        # One compact owner. Per-check tool products remain scratch, not a
+        # second JSON copy of the original timing-path population.
+        qor["timing"]["global_opensta"] = sta_check
+        if sta_check["status"] != "pass":
+            qor["status"] = "fail"
     write_json(output_dir / "runtime_contract.json", runtime)
     write_json(output_dir / "qor_report.json", qor)
     if physical_summary is not None:

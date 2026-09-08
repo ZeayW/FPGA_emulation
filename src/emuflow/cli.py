@@ -3698,6 +3698,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Phase 4 routes.json required for unified physical timing",
     )
     phase7c.add_argument("--simulation-frames", type=int, default=12)
+    phase7c.add_argument("--global-sta-executable", help="qualify physical timing with an explicit OpenSTA executable")
     phase7c.add_argument("--out", type=Path, required=True)
 
     phase7d = subparsers.add_parser(
@@ -5872,6 +5873,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             physical_summary_path=args.physical_summary,
             routes_path=args.routes,
             simulation_frames=args.simulation_frames,
+            global_sta_executable=args.global_sta_executable,
             output_dir=args.out,
         )
         _print_json(report)

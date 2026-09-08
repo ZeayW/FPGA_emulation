@@ -749,6 +749,35 @@ The original refinement artifact is retained and hash-bound; this lane
 coalescing is explicitly reported as an EmuFlow timing-preservation extension,
 not attributed to Chimew.
 
+### Experimental global OpenSTA timing qualification
+
+`phase7c --global-sta-executable /absolute/path/to/sta` additionally exports
+a measured-arc timing abstraction and independently checks every original
+path's arrival, required time and slack against the Python Phase 7C model.
+The exporter consumes logic-segment, boundary and directed BoardLinkTimingDB
+inputs, not Python-computed path delays. Missing or unconstrained observations
+and numerical disagreement fail the check. This option is initially a
+qualification interface, **not yet the production timing authority**; real
+OpenSTA model qualification and complete-flow acceptance are pending.
+
+The exported Verilog/Liberty/SDC uses fixed-event cutpoints: launch times are
+absolute TX edges, and readiness/relay/commit deadlines are explicit. These
+are a timing abstraction of transport registers, not synthesizable RTL.
+Checking a terminal observation alone cannot establish causality; all preceding
+TX checks must also pass. Periodic clocks must not silently move a missed event
+to a following frame. No average TDM wait or precomputed global delay becomes
+a Liberty arc. Scalar physical bounds are retained as bounds, not re-labelled
+characterized silicon timing. Hold/min-delay and unconstrained CDC signoff are
+outside this first max-delay model.
+
+The project metric remains **original-path TNS** (one negative slack per
+original TimingPathDB member), not conventional unique-register-endpoint TNS.
+There is one explicit target and runtime observation per original path, with
+separate transport legality checks. Generated tool inputs and per-check TSV
+are ephemeral scratch; `qor_report.json#/timing/global_opensta` is the compact
+qualification result. A 1 ps absolute numerical tolerance is used initially;
+large-frame precision must be qualified before production promotion.
+
 ### Phase 6 provider promotion and Phase 7 timing acceptance
 
 A Phase 6 legality check, pin-plan comparison, or contest-scale result is an
@@ -4108,3 +4137,35 @@ kept behind independent artifact checkers and deterministic promotion gates.
 The current campaign evaluates their checked Phase 3--5 outer feedback loop;
 cross-stage behavior is promoted only after small, medium, and large
 real-design comparisons against the frozen single-stage flow.
+# Target-FPGA loading diagnostics
+
+Final QoR reports include `resource_loading`: separate Phase 3 DUT and Phase 7
+resource usage, per FPGA and capacity-weighted platform totals (including idle
+FPGAs). `utilization` divides by raw BoardDB capacity; `effective_utilization`
+divides by capacity after the BoardDB reserve. Neither is partition balance.
+Requested/effective balance and automatic relaxation are retained alongside it.
+
+The default experimental policy uses the maximum platform-wide LUT/FF/DSP/BRAM
+utilization: below 40% is `low-load`, 60--80% is `target`; intervening and higher
+loads are explicitly classified. This is configurable experimental qualification,
+not a physical law or a partition legality restriction. A low-load run remains
+valid functional evidence, but alone is insufficient for high-load QoR claims.
+
+```sh
+PYTHONPATH=src python -m emuflow.utilization \
+  --platform board.json --phase3-report phase3_report.json \
+  --physical-summary physical-summary.json --output loading.json
+```
+
+Optional `--policy policy.json` accepts `minimum`, `target_min`, `target_max`
+(fractions) and `principal_resources`. `--compare baseline-loading.json` rejects
+different FPGA capacities/reserves, requested balance or loading policies and
+reports whether effective balance differs. It checks loading fairness only;
+the normal source/tool/seed and complete Phase 7 timing comparison still apply.
+
+The open physical backend measures occupied built-in LUT/FF primitives from
+VPR's packed netlist, including transport. Architecture-specific hard-block
+units remain **unknown**, not estimated from bit-slice atoms or total cells.
+Historical summaries without resource measurements also remain unknown.
+BoardDB-relative loading does not certify physical-device capacity equivalence;
+do not shrink an academic BoardDB and describe it as a smaller physical device.
