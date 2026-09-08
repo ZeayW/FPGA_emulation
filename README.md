@@ -760,7 +760,9 @@ The exporter consumes logic-segment, boundary and directed BoardLinkTimingDB
 inputs, not Python-computed path delays. Missing or unconstrained observations
 and numerical disagreement fail the check. This option is initially a
 qualification interface, **not yet the production timing authority**; real
-OpenSTA model qualification and complete-flow acceptance are pending.
+OpenSTA complete-flow acceptance is pending. Initial hand-computed two-cut
+checks and 201 randomized/long-frame checks executed successfully on OpenSTA
+2.6.0; this is model evidence, not a complete physical-flow qualification.
 
 The exported Verilog/Liberty/SDC uses fixed-event cutpoints: launch times are
 absolute TX edges, and readiness/relay/commit deadlines are explicit. These
@@ -777,8 +779,12 @@ original TimingPathDB member), not conventional unique-register-endpoint TNS.
 There is one explicit target and runtime observation per original path, with
 separate transport legality checks. Generated tool inputs and per-check TSV
 are ephemeral scratch; `qor_report.json#/timing/global_opensta` is the compact
-qualification result. A 1 ps absolute numerical tolerance is used initially;
-large-frame precision must be qualified before production promotion.
+qualification result. Comparison uses a 1 ps floor plus four float32 relative
+epsilons on each compared value, not on the global frame period. Near-zero
+slacks retain the strict floor. A 447,632 ns runtime-period probe observed
+about 0.047 ns slack roundoff; per-check launch-relative coordinates avoid
+charging this long-frame cancellation to short target/TX checks. Reports
+include the largest observed difference and permitted tolerance.
 
 ### Phase 6 provider promotion and Phase 7 timing acceptance
 

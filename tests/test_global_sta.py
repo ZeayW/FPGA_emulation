@@ -27,6 +27,8 @@ def test_exports_raw_arc_chain_and_absolute_events(tmp_path):
     assert "31.5" not in (tmp_path / "global_timing.lib").read_text()
     assert "find_timing_paths" in (tmp_path / "analyze.tcl").read_text()
     assert "-group_count 5" in (tmp_path / "analyze.tcl").read_text()
+    assert "data_arrival_time" in (tmp_path / "analyze.tcl").read_text()
+    assert "get_property $p points" not in (tmp_path / "analyze.tcl").read_text()
 
 
 def test_reject_incomplete_duplicate_and_nan():

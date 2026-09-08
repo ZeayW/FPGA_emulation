@@ -252,14 +252,16 @@ the Python event propagator or consume its per-path numerical results.
 def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
     """Compare every original path, not merely extrema; return a compact gate.
 
-OpenSTA uses float-based timing internally. Absolute 1 ps is the declared
-model tolerance; it is not scaled by a very long virtual frame.
+    OpenSTA uses float-based timing internally. The floor is 1 ps, with four
+    float32 relative epsilons on the specific compared value (not the global
+    frame). A near-zero slack retains the strict floor even in a huge frame.
 """
     if tolerance_ns <= 0 or not math.isfinite(tolerance_ns):
         raise ValidationError("invalid global STA comparison tolerance")
     expected = {p["path"]: p for p in reference["paths"]}
     observed = {}
     max_error = 0.0
+    max_tolerance = tolerance_ns
     failures = 0
     for row in measurements:
         role = row["role"]
@@ -276,7 +278,9 @@ model tolerance; it is not scaled by a very long virtual frame.
                               (row["slack_ns"], old[f"{role}_clock_slack_bound_ns"])):
             error = abs(actual-value)
             max_error = max(max_error, error)
-            if error > tolerance_ns:
+            allowance = max(tolerance_ns, 4 * 2**-23 * abs(value))
+            max_tolerance = max(max_tolerance, allowance)
+            if error > allowance:
                 raise ValidationError(f"global OpenSTA disagrees at {key}: error {error} ns")
     if set(observed) != {(p, r) for p in expected for r in ("target", "runtime")}:
         raise ValidationError("global OpenSTA original-path coverage is incomplete")
@@ -291,5 +295,7 @@ model tolerance; it is not scaled by a very long virtual frame.
             "timing_scope": reference["timing_scope"], "original_paths": len(expected),
             "event_failures": failures, "checks": len(measurements),
             "tolerance_ns": tolerance_ns, "maximum_difference_ns": max_error,
+            "maximum_comparison_tolerance_ns": max_tolerance,
+            "relative_float32_epsilons": 4,
             "metrics": summary,
             "tns_definition": "sum-negative-slack-once-per-original-TimingPathDB-path"}
