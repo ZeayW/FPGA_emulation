@@ -5,6 +5,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 from .errors import ValidationError
 from .platform import Platform
+from .utilization import build_utilization_report
 from .system_timing import build_system_timing
 from .tdm import RUNTIME_BARRIER_SLOTS, TDM_SCHEDULE_SCHEMA
 
@@ -719,6 +720,9 @@ def aggregate_qor(
         "design": runtime["design"],
         "platform": platform.name,
         "whole_design_timing_complete": whole_design_timing_complete,
+        "resource_loading": build_utilization_report(
+            platform, phase3_report, physical_summary
+        ),
         "partition": {
             "instances": partition["instances"],
             "used_fpgas": partition["used_fpgas"],

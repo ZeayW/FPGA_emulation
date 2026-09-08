@@ -969,7 +969,11 @@ def run_multi_fpga_physical_flow(
             endpoint_metrics = route_report["metrics"]
             endpoint_wns = float(endpoint_metrics["setup_worst_slack_ns"])
             endpoint_tns = float(endpoint_metrics["setup_tns_ns"])
+            from .utilization import packed_logic_resources
+
             physical_result = {
+                "resources": packed_logic_resources(architecture_path, packed_netlist),
+                "resource_measurement": "occupied-vpr-builtin-lut-ff; hard-block-units-unmeasured",
                 "schema": PHYSICAL_PARTITION_RESULT_SCHEMA,
                 "status": "pass",
                 "identity": {

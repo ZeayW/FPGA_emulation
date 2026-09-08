@@ -486,6 +486,26 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
 
 ## Benchmark and execution policy
 
+- Every new full-flow result must retain compact target-FPGA resource loading,
+  separately for Phase 3 DUT and measured Phase 7 final logic including transport.
+  Use capacity-weighted platform totals including unused FPGAs, plus per-FPGA
+  LUT/FF/DSP/BRAM dimensions; never average unlike resources or substitute total
+  cell count for physical occupancy. Missing measurements are unknown, not zero.
+- Report raw and effective BoardDB capacity separately, including utilization
+  reserve, requested/effective balance and automatic relaxation. Balance is not
+  a minimum-utilization guarantee. BoardDB capacity is not proof of agreement
+  with the physical device's capacity or of hardware closure.
+- Default experimental loading policy targets 60--80% of raw BoardDB capacity
+  in the most utilized principal resource; below 40% is low-load functional
+  evidence, not sufficient by itself for large-design partition QoR claims.
+  Thresholds and principal resource units are configurable experiment policy,
+  not universal FPGA limits and not new Phase 3 correctness constraints.
+- A/B arms must have identical FPGA identities/counts, capacities/reserves,
+  requested balance and loading policy. Report effective balance differences.
+  Do not resize capacity per arm or force cuts to manufacture coverage. Use a
+  documented compatible physical device, FPGA count or larger natural DUT;
+  explicitly label any academic capacity model.
+
 - `benchmarks/end_to_end_validation_matrix.json` is the sole registry for
   provider comparisons and complete Phase 1--7 WNS/TNS claims.  Ad-hoc runs
   may diagnose a bug, but they must not be reported as benchmark evidence.

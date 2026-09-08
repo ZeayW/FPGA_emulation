@@ -845,6 +845,7 @@ def _arm_record(
         "design": qor.get("design"),
         "platform": qor.get("platform"),
         "common_source": source,
+        "resource_loading": qor.get("resource_loading"),
         "partition": partition,
         "phase7_configuration": {
             "workers": report.get("workers"),
@@ -1001,6 +1002,15 @@ def build_static_exact_qor_comparison(
         )
     design, platform = next(iter(design_platform))
     common_source = records[0]["common_source"]
+    from .utilization import compare_loading
+
+    loading_records = [record.get("resource_loading") for record in records]
+    loading_comparison = (
+        compare_loading(loading_records)
+        if all(loading_records)
+        else {"status": "incomplete", "load_floor_met": False,
+              "reason": "historical arm lacks resource-loading evidence"}
+    )
     common_source_qualified = (
         common_source.get("qualification")
         != "managed-shared-v1-core-source-seal"
@@ -1052,6 +1062,7 @@ def build_static_exact_qor_comparison(
         "partition_seed": partition_seed,
         "partition_seed_attempts": partition_seed_attempts,
         "physical_seeds": list(seeds),
+        "resource_loading_comparison": loading_comparison,
         "common_source": common_source,
         "platform_file_sha256": _sha256(platform_path),
         "physical_route_channel_width": next(iter(channel_widths)),

@@ -4166,6 +4166,9 @@ the normal source/tool/seed and complete Phase 7 timing comparison still apply.
 The open physical backend measures occupied built-in LUT/FF primitives from
 VPR's packed netlist, including transport. Architecture-specific hard-block
 units remain **unknown**, not estimated from bit-slice atoms or total cells.
+Static Exact A/B terminal reports expose `resource_loading_comparison`; older
+arms without these measurements are explicitly loading-incomplete even when
+their historical timing validation passed.
 Historical summaries without resource measurements also remain unknown.
 BoardDB-relative loading does not certify physical-device capacity equivalence;
 do not shrink an academic BoardDB and describe it as a smaller physical device.
