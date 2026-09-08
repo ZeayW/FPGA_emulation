@@ -27,9 +27,6 @@ TRITONPART_INPUT_SCHEMA = "emuflow.tritonpart-input/v1"
 PARTITION_NET_WEIGHTS_SCHEMA = "emuflow.partition-net-weights/v1"
 TRITONPART_PROVIDER = "tritonpart-openroad-hypergraph-v1"
 TRITONPART_OBJECTIVE_NET_CUT = "net-cut-v1"
-TRITONPART_OBJECTIVE_TRANSPORT_DEMAND = (
-    "net-cut-plus-driver-sink-cluster-demand-v1"
-)
 
 
 def load_partition_net_weights(path: Optional[Path]) -> Dict[str, float]:
@@ -195,16 +192,7 @@ def _legal_hyperedges(
     vertex_number: Mapping[str, int],
     net_weights: Mapping[str, float],
     transported_cut_classes: set[str],
-    objective_encoding: str,
 ) -> List[Dict[str, Any]]:
-    if objective_encoding not in {
-        TRITONPART_OBJECTIVE_NET_CUT,
-        TRITONPART_OBJECTIVE_TRANSPORT_DEMAND,
-    }:
-        raise ValueError(
-            "unsupported TritonPart objective encoding "
-            f"{objective_encoding!r}"
-        )
     known_nets = {net["id"] for net in ir.value["nets"]}
     unknown_weights = sorted(set(net_weights) - known_nets)
     if unknown_weights:
@@ -247,27 +235,6 @@ def _legal_hyperedges(
                 ],
             }
         )
-        if objective_encoding == TRITONPART_OBJECTIVE_TRANSPORT_DEMAND:
-            for driver in drivers:
-                for sink in sinks:
-                    if driver == sink:
-                        continue
-                    pair = sorted((driver, sink))
-                    hyperedges.append(
-                        {
-                            "net": net["id"],
-                            "cut_class": net["cut_class"],
-                            "objective_component": "driver-sink-cluster-demand",
-                            "driver": driver,
-                            "sink": sink,
-                            "weight": weight,
-                            "clusters": pair,
-                            "vertices": [
-                                vertex_number[cluster_id]
-                                for cluster_id in pair
-                            ],
-                        }
-                    )
     return hyperedges
 
 
@@ -278,7 +245,6 @@ def export_tritonpart_inputs(
     constraints: Mapping[str, Any],
     output_dir: Path,
     net_weights: Optional[Mapping[str, float]] = None,
-    objective_encoding: str = TRITONPART_OBJECTIVE_NET_CUT,
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
     write_manifest: bool = True,
@@ -361,7 +327,6 @@ def export_tritonpart_inputs(
         vertex_number,
         net_weights or {},
         transported_cut_classes_for_clusters(clusters_artifact),
-        objective_encoding,
     )
     if not hyperedges:
         raise ValidationError(
@@ -466,14 +431,9 @@ def export_tritonpart_inputs(
 
     artifact: Dict[str, Any] = {
         "schema": TRITONPART_INPUT_SCHEMA,
-        "objective_encoding": objective_encoding,
+        "objective_encoding": TRITONPART_OBJECTIVE_NET_CUT,
         "objective_components": {
             "net_cut_hyperedges": len(net_cut_hyperedges),
-            "driver_sink_cluster_demand_hyperedges": sum(
-                edge["objective_component"]
-                == "driver-sink-cluster-demand"
-                for edge in hyperedges
-            ),
         },
         "design": ir.value["design"]["name"],
         "platform": platform.name,
@@ -1743,7 +1703,6 @@ def run_tritonpart(
     executable: Optional[str] = None,
     solution_input: Optional[Path] = None,
     net_weights: Optional[Mapping[str, float]] = None,
-    objective_encoding: str = TRITONPART_OBJECTIVE_NET_CUT,
     timeout_seconds: int = 3600,
     seed_attempts: int = 1,
     num_initial_solutions: int = 50,
@@ -1767,7 +1726,6 @@ def run_tritonpart(
         constraints,
         output_dir,
         net_weights=net_weights,
-        objective_encoding=objective_encoding,
         num_initial_solutions=num_initial_solutions,
         num_best_initial_solutions=num_best_initial_solutions,
         write_manifest=False,

@@ -34,8 +34,6 @@ from .mfspart_provider import refine_mfspart_partition, run_mfspart
 from .mfspart_refine import DEFAULT_BOTTLENECK_BETA, DEFAULT_TIMING_PATH_BETA
 from .sta import validate_sta_path_database
 from .tritonpart import (
-    TRITONPART_OBJECTIVE_NET_CUT,
-    TRITONPART_OBJECTIVE_TRANSPORT_DEMAND,
     load_partition_net_weights,
     run_tritonpart,
 )
@@ -627,13 +625,14 @@ def run_phase3(
                 "PATRON Phase 3 requires a complete TimingPathDB"
             )
         if patron_initial_assignment_path is None:
-            # The initializer must solve the same native cut graph that
-            # PATRON refines.  Projecting a register-only solution onto the
-            # generalized graph creates a hidden legacy bias and can leave a
-            # nominal Static Exact run with no combinational cuts at all.
+            # Start PATRON from an ordinary balanced TritonPart solution on
+            # the same generalized clusters and legal net-cut hypergraph.
+            # Transport and timing are PATRON objectives; duplicating every
+            # driver-sink pair into the initializer hypergraph distorts the
+            # native partitioner and can destroy multidimensional balance.
             if tritonpart_solution is None:
                 patron_initialization = (
-                    "native-generalized-tritonpart-transport-demand-v4"
+                    "native-generalized-tritonpart-net-cut-v5"
                 )
             else:
                 patron_initialization = (
@@ -649,11 +648,6 @@ def run_phase3(
                 executable=openroad,
                 solution_input=tritonpart_solution,
                 net_weights=load_partition_net_weights(net_weights_path),
-                objective_encoding=(
-                    TRITONPART_OBJECTIVE_TRANSPORT_DEMAND
-                    if tritonpart_solution is None
-                    else TRITONPART_OBJECTIVE_NET_CUT
-                ),
                 timeout_seconds=tritonpart_timeout_seconds,
                 seed_attempts=tritonpart_seed_attempts,
                 num_initial_solutions=tritonpart_num_initial_solutions,

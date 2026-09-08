@@ -468,11 +468,11 @@ and supports any positive configured depth. Phase 3 rejects an assignment only
 for partition-owned structural illegality: a cyclic selected DAG, an exceeded
 dependency safety cap, capacity/fixed-group violations, or unreachable BoardDB
 endpoints. Frame, lane, slot, settle, and commit feasibility belong exclusively
-to Phase 5. TritonPart may rank structural depth and cut count as provider-neutral
-risk estimates, but it does not run or consume a scheduler certificate. Phase 4
-binds concrete multicast branches; unified Phase 5 then solves link latency,
-lane capacity, ratio, relay readiness, and capture deadlines. Phase 6/7 retain
-the macro-cycle-equivalence and routed physical-segment gates.
+to Phase 5. TritonPart ranks only its ordinary weighted net-cut objective; it
+does not estimate Static Exact risk or run or consume a scheduler certificate.
+Phase 4 binds concrete multicast branches; unified Phase 5 then solves link
+latency, lane capacity, ratio, relay readiness, and capture deadlines. Phase
+6/7 retain the macro-cycle-equivalence and routed physical-segment gates.
 
 The explicitly enabled TritonPart-to-MFSPart follow-up is likewise
 scheduler-neutral; it is not run merely because TritonPart and generalized
@@ -1327,9 +1327,10 @@ generalized Static Exact v2. A standalone PATRON command creates a TritonPart
 initial assignment when none is supplied. The initializer solves the same
 generalized hypergraph that PATRON will refine; it never solves a hidden
 register-only graph and projects that result into the generalized search
-space. The generalized TritonPart encoding minimizes both cut nets and the
-driver-cluster-to-sink-cluster transport demands that Phase 4 must route, so
-the initial solution does not underprice a fragmented high-fanout net.
+space. TritonPart uses its ordinary weighted net-cut objective. PATRON, not the
+initializer, owns endpoint transport, topology, and timing refinement;
+expanding each driver-to-sink pair into another early hyperedge both duplicates
+a net's information and can distort the native multidimensional balance search.
 Register-only remains an explicit comparison arm. A normal full-flow
 run keeps the initializer only as temporary in-run state, checks its capacity
 and balance contract, and feeds the assignment and cluster table to PATRON.

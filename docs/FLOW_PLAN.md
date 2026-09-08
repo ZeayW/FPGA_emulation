@@ -280,11 +280,11 @@ assignment on that exact graph, and then lets PATRON refine the same vertices
 using timing endpoints, BoardDB topology, routing pressure, and the
 transported classes declared by the Static Exact policy. Register-boundary
 structure is not projected in as a separate solution.
-The TritonPart hypergraph contains one edge for each cut-net objective term
-and one two-vertex edge for every distinct driver-cluster-to-sink-cluster
-transport demand. This is the topology-neutral pre-routing quantity that
-Phase 4 later materializes; no case-specific penalty or PATRON trace prefix is
-used.
+The TritonPart hypergraph contains exactly one edge for each legal weighted
+cut-net objective term. Endpoint transport, topology, and timing refinement
+belong to PATRON and later stages; TritonPart does not duplicate every
+driver-to-sink pair as another early hyperedge. No case-specific penalty or
+PATRON trace prefix is used.
 Partition candidates are selected solely by the provider-neutral partition
 objective; no early Static Exact dependency-risk heuristic participates in
 Phase 3 selection. The common assignment builder and independent checker

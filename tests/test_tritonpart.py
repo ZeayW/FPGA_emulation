@@ -17,7 +17,6 @@ from emuflow.phase3 import run_phase3
 from emuflow.platform import Platform
 from emuflow.tritonpart import (
     TRITONPART_INPUT_SCHEMA,
-    TRITONPART_OBJECTIVE_TRANSPORT_DEMAND,
     _effective_balance_percent,
     _repair_min_used_fpgas,
     _repair_multi_resource_balance,
@@ -63,6 +62,11 @@ class TritonPartTest(unittest.TestCase):
                 net_weights={timed_net: 7.0},
             )
             self.assertEqual(artifact["schema"], TRITONPART_INPUT_SCHEMA)
+            self.assertEqual(artifact["objective_encoding"], "net-cut-v1")
+            self.assertEqual(
+                artifact["objective_components"],
+                {"net_cut_hyperedges": len(artifact["hyperedges"])},
+            )
             self.assertEqual(artifact["fpga_order"], ["fpga0", "fpga1"])
             self.assertEqual(artifact["vertex_dimensions"][0], "cells")
             self.assertIn("lut", artifact["vertex_dimensions"])
@@ -70,7 +74,8 @@ class TritonPartTest(unittest.TestCase):
             self.assertGreater(len(artifact["hyperedges"]), 0)
             self.assertTrue(
                 all(
-                    edge["cut_class"]
+                    edge["objective_component"] == "net-cut"
+                    and edge["cut_class"]
                     in {"register_input", "register_output"}
                     for edge in artifact["hyperedges"]
                 )
@@ -99,39 +104,6 @@ class TritonPartTest(unittest.TestCase):
                 len((output / "partition.fix").read_text().splitlines()),
                 vertex_count,
             )
-
-    def test_transport_demand_objective_adds_driver_sink_pair_edges(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            output = Path(temporary_directory)
-            artifact = export_tritonpart_inputs(
-                self.ir,
-                self.platform,
-                self.clusters,
-                self.constraints,
-                output,
-                objective_encoding=TRITONPART_OBJECTIVE_TRANSPORT_DEMAND,
-            )
-            components = artifact["objective_components"]
-            self.assertGreater(components["net_cut_hyperedges"], 0)
-            self.assertGreater(
-                components["driver_sink_cluster_demand_hyperedges"], 0
-            )
-            self.assertEqual(
-                len(artifact["hyperedges"]),
-                components["net_cut_hyperedges"]
-                + components["driver_sink_cluster_demand_hyperedges"],
-            )
-            self.assertTrue(
-                all(
-                    len(edge["clusters"]) == 2
-                    for edge in artifact["hyperedges"]
-                    if edge["objective_component"]
-                    == "driver-sink-cluster-demand"
-                )
-            )
-            header = (output / "partition.hgr").read_text().splitlines()[0]
-            header_edges = int(header.split()[0])
-            self.assertEqual(header_edges, len(artifact["hyperedges"]))
 
     def test_managed_run_does_not_serialize_duplicate_input_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
