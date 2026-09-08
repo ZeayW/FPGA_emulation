@@ -1636,7 +1636,7 @@ class PartitionPressureTest(unittest.TestCase):
                 PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER,
             )
 
-    def test_phase3_patron_v14_initializes_on_generalized_graph_by_default(
+    def test_phase3_patron_v14_initializes_on_selected_generalized_graph(
         self,
     ) -> None:
         ir = _ir()
