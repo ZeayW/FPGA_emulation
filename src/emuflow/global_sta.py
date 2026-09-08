@@ -109,11 +109,13 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
   set paths [find_timing_paths -path_delay max -group_count {len(rows)} -endpoint_count 1]
   puts "global STA: serialize checks"
   foreach p $paths {{
-    set points [get_property $p points]
-    set arrival [get_property [lindex $points end] arrival]
-    set slack [get_property $p slack]
+    # PathEnd scalar APIs use seconds. Do not expand/copy every PathRef point
+    # merely to obtain the endpoint arrival; the scalar API is sufficient.
+    set arrival [expr {{[$p data_arrival_time] * 1.0e9}}]
+    set required [expr {{[$p data_required_time] * 1.0e9}}]
+    set slack [expr {{[$p slack] * 1.0e9}}]
     set endpoint [get_property [get_property $p endpoint] full_name]
-    puts $out "$endpoint\\t$arrival\\t[expr {{$arrival+$slack}}]\\t$slack"
+    puts $out "$endpoint\\t$arrival\\t$required\\t$slack"
   }}
   close $out
 }}
