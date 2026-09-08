@@ -101,7 +101,7 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
   read_sdc global_timing.sdc
   set out [open measurements.tsv w]
   puts $out "endpoint\\tarrival_ns\\trequired_ns\\tslack_ns"
-  set paths [find_timing_paths -path_delay max -group_path_count {len(rows)} -endpoint_path_count 1]
+  set paths [find_timing_paths -path_delay max -group_count {len(rows)} -endpoint_count 1]
   foreach p $paths {{
     set points [get_property $p points]
     set arrival [get_property [lindex $points end] arrival]

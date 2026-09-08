@@ -1,6 +1,4 @@
 import os
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -27,7 +25,7 @@ def test_exports_raw_arc_chain_and_absolute_events(tmp_path):
     assert "set_input_delay -clock epoch -max 16" in sdc
     assert "31.5" not in (tmp_path / "global_timing.lib").read_text()
     assert "find_timing_paths" in (tmp_path / "analyze.tcl").read_text()
-    assert "-group_path_count 5" in (tmp_path / "analyze.tcl").read_text()
+    assert "-group_count 5" in (tmp_path / "analyze.tcl").read_text()
 
 
 def test_reject_incomplete_duplicate_and_nan():
@@ -43,6 +41,29 @@ def test_measurement_requires_exact_endpoint_coverage(tmp_path):
     path.write_text("endpoint\tarrival_ns\trequired_ns\tslack_ns\no0\t3\t4\t1\n")
     with pytest.raises(ValidationError, match="endpoints"):
         read_measurements(path, example())
+
+
+def test_check_population_validation_is_linear():
+    # A quadratic original-member scan previously made global timing unusable.
+    rows = [EventCheck(str(i), role, "end", 0, (1,), 2)
+            for i in range(20000) for role in ("target", "runtime")]
+    assert len(validate_checks(rows)) == 40000
+
+
+def test_comparison_checks_each_path_and_event():
+    reference = {"timing_scope": "cross-fpga-subset", "paths": [{
+        "path": "p", "system_delay_bound_ns": 31.5,
+        "target_required_time_ns": 18, "runtime_required_time_ns": 100,
+        "target_clock_slack_bound_ns": -13.5, "runtime_clock_slack_bound_ns": 68.5}]}
+    values = [{"path": r.path, "role": r.role, "event": r.event,
+               "arrival_ns": r.launch_ns+sum(r.arcs_ns), "required_ns": r.required_ns,
+               "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in example()]
+    assert compare_system_timing(values, reference)["status"] == "pass"
+    values[0]["slack_ns"] = -.5
+    assert compare_system_timing(values, reference)["status"] == "fail"
+    values[2]["arrival_ns"] += 1
+    with pytest.raises(ValidationError, match="disagrees"):
+        compare_system_timing(values, reference)
 
 
 def test_physical_binding_uses_raw_measurements():
