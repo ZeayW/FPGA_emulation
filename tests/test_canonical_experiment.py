@@ -606,49 +606,28 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             config["patron_algorithm_version"] = 12
             config_path.write_text(json.dumps(config), encoding="utf-8")
-            guarded_output = root / "patron-v12-static-exact.json"
-            compile_canonical_experiment_spec(
-                config_path, REPOSITORY, guarded_output
-            )
-            guarded_nodes = {
-                node["id"]: node
-                for node in validate_experiment_spec(
-                    json.loads(guarded_output.read_text())
-                )["nodes"]
-            }
-            self.assertEqual(
-                guarded_nodes["partition"]["configuration"][
-                    "patron_algorithm_version"
-                ],
-                12,
-            )
-            config["patron_algorithm_version"] = 13
-            config_path.write_text(json.dumps(config), encoding="utf-8")
-            transition_guarded_output = (
-                root / "patron-v13-static-exact.json"
-            )
-            compile_canonical_experiment_spec(
-                config_path, REPOSITORY, transition_guarded_output
-            )
-            transition_guarded_nodes = {
-                node["id"]: node
-                for node in validate_experiment_spec(
-                    json.loads(transition_guarded_output.read_text())
-                )["nodes"]
-            }
-            self.assertEqual(
-                transition_guarded_nodes["partition"]["configuration"][
-                    "patron_algorithm_version"
-                ],
-                13,
-            )
-            config["cut_mode"] = "sequential-only"
-            config_path.write_text(json.dumps(config), encoding="utf-8")
             with self.assertRaisesRegex(
-                ValidationError, "v12/v13/v14 requires generalized Static Exact"
+                ValidationError, "must be 6, 9, 10, 11, or 14"
             ):
                 compile_canonical_experiment_spec(
                     config_path, REPOSITORY, root / "invalid-v12.json"
+                )
+            config["patron_algorithm_version"] = 13
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "must be 6, 9, 10, 11, or 14"
+            ):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "invalid-v13.json"
+                )
+            config["patron_algorithm_version"] = 14
+            config["cut_mode"] = "sequential-only"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "v14 requires generalized Static Exact"
+            ):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "invalid-v14.json"
                 )
 
     def test_patron_max_moves_is_positive_and_patron_only(self) -> None:

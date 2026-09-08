@@ -1452,15 +1452,15 @@ improved provider-neutral timing certificate. In generalized Static Exact
 mode, both initialization and refinement therefore see the same generalized
 clusters. An explicitly supplied generalized TritonPart solution remains a
 named research cold start; it is never inferred by the default.
-Unlike the retired v12/v13 experiments, v14 does not freeze each
-architectural net's initial hop count, total path-transition count, or cut
-count.  Board reachability, the configured route-hop limit, capacity, fixed
-placement, and structural cut legality remain hard constraints; transition and
-cut counts are ordinary trailing costs behind predicted WNS/TNS.  The selected
-assignment alone materializes the downstream semantic contract.  This
-preserves the complete provider-neutral Phase 3 search domain required by
-Static Exact; promotion against register-only remains a same-input, same-seed
-complete Phase 7 comparison.
+Version 14 does not evaluate Static Exact risk or freeze an initial
+architectural-net hop count, path-transition count, dependency count, or cut
+count in Phase 3. Board reachability, the configured route-hop limit,
+capacity, fixed placement, and structural cut legality remain hard
+constraints; predicted delay, TDM pressure, transitions, hops, and cut bits
+are ordinary provider-neutral costs. The selected assignment alone
+materializes the downstream dependency contract. Actual binding, TDM
+feasibility, physical delay, and global slack are authoritative only in the
+common Phase 4--7 pipeline.
 Canonical experiment configs may set
 `partition_provider=patron`, reuse `patron_initial_assignment`, and restrict
 `phase6_providers` plus `physical_seeds` (for example Chimew/seed 1) so an A/B
@@ -1614,43 +1614,10 @@ replication remains additional QoR evidence after the primary case6 gate.  The
 complete design, literature basis, and gate are documented in
 [the timing/TDM partitioning upgrade plan](docs/PARTITIONING_TIMING_TDM_UPGRADE.md).
 
-V12 is the explicit generalized-Static-Exact profile that prevents PATRON from
-increasing the routed-hop distance of any initially transported
-non-combinational net.  Its complete baseline-Phase-6, seed-1 gate reached
-`-91.259624603 ns` complete-global WNS and `-446,455.39933616295 ns` TNS.
-Although its internal timing proxy improved substantially, the materialized
-Static Exact contract increased capture requirements by 33.3% and logic
-segments by 30.1%; the final WNS also regressed by `0.064237394 ns` relative
-to the matching v6/v9 arm.  V12 is therefore retained as rejected diagnostic
-evidence rather than promoted.
-
-V13 adds the missing scalable semantic guard.  It incrementally counts the
-partition transitions along each TimingPathDB path, uses that count in place
-of the older repeated-part-only `snaking` tie-break, and rejects every direct,
-ejection, corridor, legalization, permutation, and tail-repair candidate whose
-total path-transition count exceeds the frozen initial assignment. It does
-not run a scheduler inside the Phase 3 move loop: Phase 4 still materializes
-routes and unified Phase 5 remains the authoritative TDM ratio/lane/slot solver
-with sampled-wire dependency constraints. The native implementation and independent Python
-endpoint/transition reconstruction are versioned as PATRON v13 and are
-available with `--patron-algorithm-version 13` only for generalized Static
-Exact.  Compact qualification is complete.  The large-design cut-contract gate
-found that the TimingPathDB transition guard alone was insufficient: relative
-to the frozen input, capture requirements still increased by 32.96% and logic
-segments by 29.79%.  That candidate was rejected before Phase 4 rather than
-wasting a physical run.
-
-Phase 3 therefore also applies an exact-contract promotion gate to v13.  It
-reuses the initial and candidate contracts that assignment construction has
-already materialized; it does not reread a large JSON file, recompute a hash,
-or run the scheduler in the optimizer loop.  A candidate is promoted only when
-the lexicographic tuple `(logic segments, capture requirements, transported
-cuts, dependency edges)` improves.  Otherwise the frozen legal assignment is
-selected without rewriting its artifact identity, so matching downstream DAG
-nodes remain reusable; the rejected candidate remains explicit diagnostic
-evidence in the Phase 3 report.
-V13 remains an experimental explicit option and has no claimed end-to-end QoR
-improvement.
+The former v12/v13 early Static Exact guard experiments have been removed from
+the executable API. Their rejected measurements remain in external experiment
+records; retaining dead compatibility paths would incorrectly suggest that
+downstream scheduling or physical risk is knowable during partitioning.
 
 ### Legacy validation archives
 

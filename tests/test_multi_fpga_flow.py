@@ -397,7 +397,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(
                 EmuFlowError,
-                "v12/v13/v14 requires generalized Static Exact",
+                "v14 requires generalized Static Exact",
             ):
                 run_multi_fpga_flow(
                     platform_path=PLATFORM,

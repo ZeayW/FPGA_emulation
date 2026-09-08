@@ -46,104 +46,23 @@ from .phase3_storage import pack_phase3_assignment, pack_phase3_clusters
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
-PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER = (
-    "patron-static-exact-semantic-gate-v1"
-)
-PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER = (
-    "patron-static-exact-legality-timing-gate-v3"
+PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER = (
+    "patron-predictive-timing-selection-v1"
 )
 
 
-def _patron_static_exact_semantic_key(
-    assignment: Dict[str, Any],
-) -> tuple[int, int, int, int]:
-    contract = assignment.get("semantic_contract")
-    metrics = contract.get("metrics") if isinstance(contract, dict) else None
-    if not isinstance(metrics, dict):
-        raise ValidationError(
-            "PATRON Static Exact semantic gate requires a contract"
-        )
-    fields = (
-        "logic_segments",
-        "capture_requirements",
-        "transported_cut_nets",
-        "dependency_edges",
-    )
-    values: Dict[str, int] = {}
-    for field in fields:
-        value = metrics.get(field)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValidationError(
-                f"PATRON Static Exact semantic metric {field!r} is invalid"
-            )
-        values[field] = value
-    return (
-        values["logic_segments"],
-        values["capture_requirements"],
-        values["transported_cut_nets"],
-        values["dependency_edges"],
-    )
-
-
-def _optional_patron_static_exact_semantic_key(
-    assignment: Dict[str, Any],
-) -> Optional[tuple[int, int, int, int]]:
-    """Return diagnostic Static Exact counts when already materialized.
-
-    Production PATRON deliberately defers the large semantic contract until
-    the final Phase-3 assignment is selected.  Selection must therefore not
-    require the frozen initial assignment to carry that downstream payload.
-    """
-
-    contract = assignment.get("semantic_contract")
-    metrics = contract.get("metrics") if isinstance(contract, dict) else None
-    if not isinstance(metrics, dict):
-        return None
-    return _patron_static_exact_semantic_key(assignment)
-
-
-def _select_patron_static_exact_assignment(
-    initial: Dict[str, Any],
-    candidate: Dict[str, Any],
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    """Choose a PATRON result using already-materialized exact contracts."""
-
-    initial_key = _patron_static_exact_semantic_key(initial)
-    candidate_key = _patron_static_exact_semantic_key(candidate)
-    accepted = candidate_key < initial_key
-    selection = {
-        "status": "pass",
-        "provider": PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER,
-        "policy": "exact-contract-lexicographic-non-regression-v1",
-        "objective_fields": [
-            "logic_segments",
-            "capture_requirements",
-            "transported_cut_nets",
-            "dependency_edges",
-        ],
-        "initial_objective": list(initial_key),
-        "candidate_objective": list(candidate_key),
-        "selected": "candidate" if accepted else "initial",
-        "candidate_provider": candidate.get("provider"),
-        "initial_provider": initial.get("provider"),
-    }
-    if accepted:
-        return candidate, selection
-    # Preserve the exact frozen artifact identity.  The selection evidence is
-    # stored in the Phase-3 report; rewriting provider metadata here would
-    # invalidate otherwise reusable downstream DAG nodes.
-    return initial, selection
-
-
-def _select_patron_static_exact_assignment_v14(
+def _select_patron_timing_assignment(
     initial: Dict[str, Any],
     candidate: Dict[str, Any],
     patron_trace: Dict[str, Any],
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    """Accept a structurally legal generalized assignment with better timing."""
+    """Select a legal PATRON candidate using only its generic timing proxy.
 
-    initial_key = _optional_patron_static_exact_semantic_key(initial)
-    candidate_key = _optional_patron_static_exact_semantic_key(candidate)
+    Exact cut dependencies, schedule readiness, and physical timing are not
+    knowable in Phase 3.  They are materialized and checked by the common
+    Phase 4--7 timing contract after the assignment has been selected.
+    """
+
     initial_objective = patron_trace.get("initial_metrics", {}).get(
         "objective_key"
     )
@@ -171,54 +90,31 @@ def _select_patron_static_exact_assignment_v14(
         round(float(value) / 1.0e-9) if index < 2 else round(float(value))
         for index, value in enumerate(candidate_objective)
     )
-    semantic_non_regression = (
-        all(
-            candidate_value <= initial_value
-            for initial_value, candidate_value in zip(
-                initial_key, candidate_key
-            )
-        )
-        if initial_key is not None and candidate_key is not None
-        else None
-    )
     assignment_changed = candidate.get("cluster_assignment") != initial.get(
         "cluster_assignment"
     )
     timing_improved = candidate_rank < initial_rank
-    # ``candidate`` was already materialized through
-    # ``build_partition_assignment``.  That construction is the authoritative
-    # scheduler-independent legality gate: it checks the cut DAG, SCC/stateful
-    # boundaries, dependency-depth policy, fixed constraints, capacity, and
-    # board reachability.  Frame/slot feasibility belongs to Phase 5.  Counts
-    # such as dependency edges and capture segments are downstream diagnostics,
-    # not correctness constraints and not reasons to reject a timing gain.
+    # Both assignments have already passed the scheduler-independent Phase 3
+    # legality gate.  PATRON may rank them with generic predicted delay, TDM
+    # pressure, path-transition, hop, and cut costs; no downstream exact
+    # dependency or schedule certificate participates in this choice.
     accepted = assignment_changed and timing_improved
     selection = {
         "status": "pass",
-        "provider": PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
-        "policy": (
-            "materialized-static-exact-legality-and-"
-            "strict-timing-improvement-v3"
-        ),
+        "provider": PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER,
+        "policy": "structural-legality-and-predictive-timing-v1",
         "objective_fields": [
-            "logic_segments",
-            "capture_requirements",
-            "transported_cut_nets",
-            "dependency_edges",
+            "negative_worst_normalized_slack",
+            "negative_total_negative_normalized_slack",
+            "negative_paths",
+            "maximum_predicted_tdm_ratio",
+            "maximum_capacity_domain_load",
+            "total_path_partition_transitions",
+            "total_bit_hops",
+            "cut_bits",
         ],
-        "initial_objective": (
-            list(initial_key) if initial_key is not None else None
-        ),
-        "candidate_objective": (
-            list(candidate_key) if candidate_key is not None else None
-        ),
         "initial_timing_rank": list(initial_rank),
         "candidate_timing_rank": list(candidate_rank),
-        "semantic_non_regression": semantic_non_regression,
-        "semantic_counts_are_diagnostics": True,
-        "semantic_counts_available": (
-            initial_key is not None and candidate_key is not None
-        ),
         "assignment_changed": assignment_changed,
         "timing_improved": timing_improved,
         "selected": "candidate" if accepted else "initial",
@@ -475,7 +371,7 @@ def run_phase3(
     if (
         isinstance(patron_algorithm_version, bool)
         or not isinstance(patron_algorithm_version, int)
-        or patron_algorithm_version not in {6, 9, 10, 11, 12, 13, 14}
+        or patron_algorithm_version not in {6, 9, 10, 11, 14}
     ):
         raise ValidationError("PATRON algorithm version is invalid")
     if provider == "patron":
@@ -489,11 +385,11 @@ def run_phase3(
         patron_flow_refinement = False
     if (
         provider == "patron"
-        and patron_algorithm_version in {12, 13, 14}
+        and patron_algorithm_version == 14
         and cut_mode != CUT_MODE_STATIC_EXACT
     ):
         raise ValidationError(
-            "PATRON v12/v13/v14 requires generalized Static Exact mode"
+            "PATRON v14 requires generalized Static Exact mode"
         )
     if patron_flow_refinement and provider != "patron":
         raise ValidationError(
@@ -831,22 +727,11 @@ def run_phase3(
             patron_validation["physical_feedback"] = (
                 patron_physical_feedback_validation
             )
-        if patron_algorithm_version == 13:
-            assignment, semantic_selection = (
-                _select_patron_static_exact_assignment(initial, assignment)
+        if patron_algorithm_version == 14:
+            assignment, candidate_selection = (
+                _select_patron_timing_assignment(initial, assignment, patron_trace)
             )
-            patron_validation["static_exact_semantic_selection"] = (
-                semantic_selection
-            )
-        elif patron_algorithm_version == 14:
-            assignment, semantic_selection = (
-                _select_patron_static_exact_assignment_v14(
-                    initial, assignment, patron_trace
-                )
-            )
-            patron_validation["static_exact_semantic_selection"] = (
-                semantic_selection
-            )
+            patron_validation["candidate_selection"] = candidate_selection
     else:
         raise ValueError(
             f"unknown Phase 3 provider {provider!r}; "

@@ -59,6 +59,27 @@ These requirements apply to all work in this repository.
   selected instances onto different FPGAs. Qualification cuts must arise from
   the normal algorithm under the declared capacity, topology, and seed.
 
+## Phase 3 must not predict downstream Static Exact correctness
+
+- Never evaluate, rank, reject, or constrain a Phase 3 assignment with a
+  `static_exact_partition_risk`, exact dependency count, schedule-readiness
+  estimate, slot/frame feasibility proxy, transport settle/commit model, or
+  physical segment deadline. Those facts do not exist authoritatively before
+  routing, TDM assignment, transport binding, and physical implementation.
+- Phase 3 hard constraints are provider-neutral structural constraints:
+  capacity, fixed placement, CDC/SCC/stateful/cascade legality, board
+  reachability, and the configured route-hop bound. Its optimization costs may
+  include clearly labelled predictions of path delay, congestion, TDM
+  pressure, partition transitions, hop count, and cut bits; these costs must
+  not be represented as Static Exact correctness certificates or hard guards.
+- Materialize and validate exact cross-FPGA dependencies in the common
+  cross-layer timing contract after partition selection. Phase 4 resolves
+  routes, Phase 5 assigns concrete TDM events, Phase 6 binds transport, and
+  Phase 7 plus global STA supplies the authoritative timing result.
+- Delete superseded early-risk producers and their CLI/API versions instead
+  of retaining hidden compatibility branches. Historical measurements belong
+  to immutable external result records, not the current producer search space.
+
 ## Only permitted experiment lifecycle: ephemeral intermediates
 
 This is the only permitted lifecycle for validation and QoR experiments. Do

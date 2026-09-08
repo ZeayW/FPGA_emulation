@@ -21,9 +21,7 @@ from emuflow.combinational_cut import (
 )
 from emuflow.partition_pressure import (
     _canonical_digest,
-    _check_static_exact_topology_guard,
     _flow_refinement_configuration,
-    _static_exact_topology_guard_limits,
     _parse_patron_native_output,
     _write_patron_native_input,
     build_partition_pressure_model,
@@ -39,11 +37,9 @@ from emuflow.partition_pressure import (
 )
 from emuflow.phase3 import promote_patron_baseline, run_phase3
 from emuflow.phase3 import (
-    PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER,
-    PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
+    PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER,
     _rebase_patron_initial_assignment,
-    _select_patron_static_exact_assignment,
-    _select_patron_static_exact_assignment_v14,
+    _select_patron_timing_assignment,
 )
 from emuflow.platform import Platform
 from emuflow.io import read_json, write_json
@@ -274,80 +270,10 @@ class PartitionPressureTest(unittest.TestCase):
             )
         self.assertEqual(rebased, self.initial)
 
-    def test_static_exact_semantic_gate_rejects_segment_expansion(self) -> None:
-        initial = {
-            "provider": "frozen",
-            "semantic_contract": {
-                "metrics": {
-                    "logic_segments": 100,
-                    "capture_requirements": 80,
-                    "transported_cut_nets": 10,
-                    "dependency_edges": 5,
-                }
-            },
-        }
-        candidate = {
-            "provider": "patron-v13",
-            "semantic_contract": {
-                "metrics": {
-                    "logic_segments": 101,
-                    "capture_requirements": 70,
-                    "transported_cut_nets": 9,
-                    "dependency_edges": 4,
-                }
-            },
-        }
-        selected, report = _select_patron_static_exact_assignment(
-            initial, candidate
-        )
-        self.assertEqual(report["selected"], "initial")
-        self.assertIs(selected, initial)
-        self.assertEqual(selected["provider"], "frozen")
-        self.assertEqual(
-            report["provider"],
-            PATRON_STATIC_EXACT_SEMANTIC_GATE_PROVIDER,
-        )
-        self.assertEqual(
-            selected["semantic_contract"], initial["semantic_contract"]
-        )
-
-    def test_static_exact_semantic_gate_accepts_segment_improvement(self) -> None:
-        initial = {
-            "provider": "frozen",
-            "semantic_contract": {
-                "metrics": {
-                    "logic_segments": 100,
-                    "capture_requirements": 80,
-                    "transported_cut_nets": 10,
-                    "dependency_edges": 5,
-                }
-            },
-        }
-        candidate = copy.deepcopy(initial)
-        candidate["provider"] = "patron-v13"
-        candidate["semantic_contract"]["metrics"]["logic_segments"] = 99
-        selected, report = _select_patron_static_exact_assignment(
-            initial, candidate
-        )
-        self.assertIs(selected, candidate)
-        self.assertEqual(report["selected"], "candidate")
-
-    def test_static_exact_semantic_gate_rejects_malformed_contract(self) -> None:
-        with self.assertRaisesRegex(ValidationError, "requires a contract"):
-            _select_patron_static_exact_assignment({}, {})
-
-    def test_v14_trust_region_accepts_equal_semantics_and_better_timing(self) -> None:
+    def test_v14_selects_changed_candidate_with_better_predictive_timing(self) -> None:
         initial = {
             "provider": "strong-tritonpart",
             "cluster_assignment": {"c0": "a", "c1": "b"},
-            "semantic_contract": {
-                "metrics": {
-                    "logic_segments": 100,
-                    "capture_requirements": 80,
-                    "transported_cut_nets": 10,
-                    "dependency_edges": 5,
-                }
-            },
         }
         candidate = copy.deepcopy(initial)
         candidate["provider"] = "patron-v14"
@@ -360,16 +286,16 @@ class PartitionPressureTest(unittest.TestCase):
                 "objective_key": [83.0, 180000.0, 4900, 4, 100, 10, 20, 10]
             },
         }
-        selected, report = _select_patron_static_exact_assignment_v14(
+        selected, report = _select_patron_timing_assignment(
             initial, candidate, trace
         )
         self.assertIs(selected, candidate)
         self.assertEqual(report["selected"], "candidate")
         self.assertEqual(
-            report["provider"], PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER
+            report["provider"], PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER
         )
 
-    def test_v14_accepts_timing_gain_despite_diagnostic_count_regression(self) -> None:
+    def test_v14_selection_ignores_downstream_semantic_diagnostics(self) -> None:
         initial = {
             "provider": "strong-tritonpart",
             "cluster_assignment": {"c0": "a", "c1": "b"},
@@ -394,13 +320,14 @@ class PartitionPressureTest(unittest.TestCase):
                 "objective_key": [83.0, 180000.0, 4900, 4, 100, 10, 20, 10]
             },
         }
-        selected, report = _select_patron_static_exact_assignment_v14(
+        selected, report = _select_patron_timing_assignment(
             initial, candidate, trace
         )
         self.assertIs(selected, candidate)
         self.assertEqual(report["selected"], "candidate")
-        self.assertFalse(report["semantic_non_regression"])
-        self.assertTrue(report["semantic_counts_are_diagnostics"])
+        self.assertNotIn("semantic_non_regression", report)
+        self.assertNotIn("initial_objective", report)
+        self.assertNotIn("candidate_objective", report)
 
     def test_v14_does_not_require_deferred_semantic_contract(self) -> None:
         initial = {
@@ -419,15 +346,13 @@ class PartitionPressureTest(unittest.TestCase):
                 "objective_key": [83.0, 180000.0, 4900, 4, 100, 10, 20, 10]
             },
         }
-        selected, report = _select_patron_static_exact_assignment_v14(
+        selected, report = _select_patron_timing_assignment(
             initial, candidate, trace
         )
         self.assertIs(selected, candidate)
         self.assertEqual(report["selected"], "candidate")
-        self.assertIsNone(report["semantic_non_regression"])
-        self.assertFalse(report["semantic_counts_available"])
-        self.assertIsNone(report["initial_objective"])
-        self.assertIsNone(report["candidate_objective"])
+        self.assertNotIn("semantic_non_regression", report)
+        self.assertNotIn("semantic_counts_available", report)
 
     def test_model_is_source_bound_and_tamper_evident(self) -> None:
         checked = validate_partition_pressure_model(
@@ -1706,9 +1631,9 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(report["patron_algorithm_version"], 14)
             self.assertEqual(
                 report["algorithm_validation"][
-                    "static_exact_semantic_selection"
+                    "candidate_selection"
                 ]["provider"],
-                PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
+                PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER,
             )
 
     def test_phase3_patron_v14_initializes_on_generalized_graph_by_default(
@@ -1820,9 +1745,9 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(report["patron_algorithm_version"], 14)
             self.assertEqual(
                 report["algorithm_validation"][
-                    "static_exact_semantic_selection"
+                    "candidate_selection"
                 ]["provider"],
-                PATRON_STATIC_EXACT_TRUST_REGION_PROVIDER,
+                PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER,
             )
 
     def test_phase3_v14_explicit_solution_uses_static_exact_cold_start(self) -> None:
@@ -2643,7 +2568,7 @@ class PartitionPressureTest(unittest.TestCase):
         )
         self.assertEqual(replay["status"], "pass")
 
-    def test_v12_preserves_initial_architectural_transport_distance(self) -> None:
+    def test_v14_does_not_freeze_initial_transport_or_transition_counts(self) -> None:
         ir = EmuIR(
             {
                 "schema": "emuflow.emuir/v1",
@@ -2777,15 +2702,6 @@ class PartitionPressureTest(unittest.TestCase):
         model = build_partition_pressure_model(
             ir, platform, clusters, constraints, timing, routes
         )
-        limits = _static_exact_topology_guard_limits(
-            clusters, model, initial
-        )
-        self.assertEqual(limits["architectural-relaxed"], 1)
-        trial = dict(initial["cluster_assignment"])
-        trial[by_instance["u1"]] = "c"
-        with self.assertRaisesRegex(ValidationError, "regressed net"):
-            _check_static_exact_topology_guard(model, trial, limits)
-
         unguarded, _ = run_partition_pressure_native(
             ir,
             platform,
@@ -2798,40 +2714,10 @@ class PartitionPressureTest(unittest.TestCase):
             max_moves=4,
             algorithm_version=9,
         )
-        guarded, trace = run_partition_pressure_native(
-            ir,
-            platform,
-            clusters,
-            constraints,
-            routes,
-            model,
-            initial,
-            executable=str(patron_refiner()),
-            max_moves=4,
-            algorithm_version=12,
-        )
         self.assertEqual(
             unguarded["cluster_assignment"][by_instance["u1"]], "c"
         )
-        self.assertNotEqual(
-            guarded["cluster_assignment"][by_instance["u1"]], "c"
-        )
-        self.assertEqual(trace["mode"], "endpoint-exact-critical-flow-v12")
-        checked = validate_partition_pressure_native_bundle(
-            ir,
-            platform,
-            clusters,
-            constraints,
-            timing,
-            routes,
-            model,
-            initial,
-            guarded,
-            trace,
-        )
-        self.assertEqual(checked["status"], "pass")
-
-        trust_region, trust_trace = run_partition_pressure_native(
+        predictive, predictive_trace = run_partition_pressure_native(
             ir,
             platform,
             clusters,
@@ -2844,60 +2730,18 @@ class PartitionPressureTest(unittest.TestCase):
             algorithm_version=14,
         )
         self.assertEqual(
-            trust_trace["mode"], "endpoint-exact-critical-flow-v14"
+            predictive_trace["mode"], "endpoint-exact-critical-flow-v14"
         )
         self.assertLess(
-            trust_trace["final_metrics"]["objective_key"],
-            trust_trace["initial_metrics"]["objective_key"],
+            predictive_trace["final_metrics"]["objective_key"],
+            predictive_trace["initial_metrics"]["objective_key"],
         )
         self.assertEqual(
-            trust_region["cluster_assignment"][by_instance["u1"]], "c"
-        )
-        checked = validate_partition_pressure_native_bundle(
-            ir,
-            platform,
-            clusters,
-            constraints,
-            timing,
-            routes,
-            model,
-            initial,
-            trust_region,
-            trust_trace,
-        )
-        self.assertEqual(checked["status"], "pass")
-
-        transition_guarded, transition_trace = run_partition_pressure_native(
-            ir,
-            platform,
-            clusters,
-            constraints,
-            routes,
-            model,
-            initial,
-            executable=str(patron_refiner()),
-            max_moves=4,
-            algorithm_version=13,
-        )
-        self.assertNotEqual(
-            transition_guarded["cluster_assignment"][by_instance["u1"]],
-            "c",
-        )
-        self.assertEqual(
-            transition_trace["mode"],
-            "endpoint-exact-critical-flow-v13",
+            predictive["cluster_assignment"][by_instance["u1"]], "c"
         )
         self.assertIn(
             "total_path_partition_transitions",
-            transition_trace["initial_metrics"],
-        )
-        self.assertLessEqual(
-            transition_trace["final_metrics"][
-                "total_path_partition_transitions"
-            ],
-            transition_trace["initial_metrics"][
-                "total_path_partition_transitions"
-            ],
+            predictive_trace["initial_metrics"],
         )
         checked = validate_partition_pressure_native_bundle(
             ir,
@@ -2908,8 +2752,8 @@ class PartitionPressureTest(unittest.TestCase):
             routes,
             model,
             initial,
-            transition_guarded,
-            transition_trace,
+            predictive,
+            predictive_trace,
         )
         self.assertEqual(checked["status"], "pass")
 
