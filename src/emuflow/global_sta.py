@@ -76,8 +76,10 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
         name: {"kind": "combinational", "inputs": ["A"], "output": "Y",
                "delay_ns": value} for value, name in cells.items()}}
     (directory / "global_timing.lib").write_text(render_opensta_liberty(model))
-    # A larger epoch than any source/capture edge avoids automatic edge wrap.
-    epoch = max(1.0, *(r.launch_ns for r in rows), *(r.required_ns for r in rows)) + 1.0
+    # Translate each independent check to its launch epoch. A global, very
+    # long frame clock loses precision when subtracted from short deadlines.
+    # Fixed I/O constraints allow negative output delays without edge wrap.
+    epoch = 1.0
     with (directory / "global_timing.v").open("w") as v, (directory / "global_timing.sdc").open("w") as s:
         v.write("module global_timing(\n" + ",\n".join(
             f"input i{i}, output o{i}" for i in range(len(rows))) + ");\n")
@@ -91,17 +93,21 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
                     v.write(f"wire {net};\n")
                 v.write(f"{cells[value]} a{i}_{j} (.A({prev}), .Y({net}));\n")
                 prev = net
-            s.write(f"set_input_delay -clock epoch -max {row.launch_ns:.17g} [get_ports i{i}]\n")
-            s.write(f"set_output_delay -clock epoch -max {epoch-row.required_ns:.17g} [get_ports o{i}]\n")
+            s.write(f"set_input_delay -clock epoch -max 0 [get_ports i{i}]\n")
+            s.write(f"set_output_delay -clock epoch -max {epoch-(row.required_ns-row.launch_ns):.17g} [get_ports o{i}]\n")
         v.write("endmodule\n")
     (directory / "analyze.tcl").write_text(f'''proc analyze {{}} {{
+  puts "global STA: read model"
   read_liberty global_timing.lib
   read_verilog global_timing.v
   link_design global_timing
+  puts "global STA: read constraints"
   read_sdc global_timing.sdc
   set out [open measurements.tsv w]
   puts $out "endpoint\\tarrival_ns\\trequired_ns\\tslack_ns"
+  puts "global STA: query checks"
   set paths [find_timing_paths -path_delay max -group_count {len(rows)} -endpoint_count 1]
+  puts "global STA: serialize checks"
   foreach p $paths {{
     set points [get_property $p points]
     set arrival [get_property [lindex $points end] arrival]
@@ -136,8 +142,8 @@ def read_measurements(path: Path, rows: list[EventCheck]) -> list[dict]:
     if set(values) != {f"o{i}" for i in range(len(rows))}:
         raise ValidationError("global STA missing/extra/unconstrained endpoints")
     return [{"path": r.path, "role": r.role, "event": r.event,
-             "arrival_ns": values[f"o{i}"][0],
-             "required_ns": values[f"o{i}"][1],
+             "arrival_ns": values[f"o{i}"][0] + r.launch_ns,
+             "required_ns": values[f"o{i}"][1] + r.launch_ns,
              "slack_ns": values[f"o{i}"][2]} for i, r in enumerate(rows)]
 
 
