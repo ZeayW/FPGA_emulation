@@ -1092,9 +1092,29 @@ def validate_multi_fpga_flow_bundle(
             board_link_timing_path=board_link_timing_path,
         )
         replay_qor = read_json(Path(temporary) / "qor_report.json")
-    if replay_qor != read_json(
+    stored_qor = read_json(
         _checked_flow_member(flow_root, Path("runtime/qor_report.json"), "QoR report")
-    ):
+    )
+    if "global_opensta" in stored_qor.get("timing", {}):
+        from .global_sta import bind_physical_checks, compare_system_timing, read_measurements
+        if physical_summary_path is None:
+            raise ValidationError("global OpenSTA qualification lacks physical inputs")
+        physical = read_json(physical_summary_path)
+        if board_link_timing_path is not None:
+            physical["board_link_timing"] = read_json(board_link_timing_path)
+        checks = bind_physical_checks(
+            read_json(flow_root / "runtime/runtime_contract.json"),
+            read_json(routes_path), read_json(schedule_path), physical,
+            Platform.load(platform_path),
+        )
+        # Explicit terminal validation reconstructs the binding and checks the
+        # raw engine scalars, without running the same external STA twice.
+        measurements = read_measurements(_checked_flow_member(
+            flow_root, Path("runtime/global-opensta/measurements.tsv"),
+            "global OpenSTA measurements"), checks)
+        replay_qor["timing"]["global_opensta"] = compare_system_timing(
+            measurements, replay_qor["timing"])
+    if replay_qor != stored_qor:
         raise ValidationError("independent Phase 7C QoR replay disagrees")
     if replay.get("status") != report["runtime"].get("status"):
         raise ValidationError("independent Phase 7C status replay disagrees")
@@ -1206,6 +1226,7 @@ def run_multi_fpga_flow(
     physical_vivado_place_directive: str = "Default",
     physical_vivado_route_directive: str = "Default",
     physical_workers: int = 1,
+    global_sta_executable: Optional[str] = None,
     serial_bsp_phy_provider: Optional[Path] = None,
     serial_bsp_runtime_sync_provider: Optional[Path] = None,
     serial_bsp_board_overlay: Optional[Path] = None,
@@ -1217,6 +1238,8 @@ def run_multi_fpga_flow(
 ) -> Dict[str, Any]:
     """Compile RTL/EmuIR through the checked board-independent split."""
 
+    if global_sta_executable is not None and not physical:
+        raise EmuFlowError("global OpenSTA qualification requires --physical")
     if mapping_profile not in MULTI_FPGA_MAPPING_PROFILES:
         raise EmuFlowError(
             "unsupported multi-FPGA mapping profile "
@@ -1955,6 +1978,7 @@ def run_multi_fpga_flow(
             ),
             routes_path=routes_path,
             board_link_timing_path=copied_link_timing_path,
+            global_sta_executable=global_sta_executable,
         )
         if effective_physical_architecture is None:
             fetched_architecture = (
@@ -2161,6 +2185,7 @@ def run_multi_fpga_flow(
         phase6_root / "phase6_report.json",
         runtime_root,
         assignment_path=assignment_path,
+        global_sta_executable=global_sta_executable,
         physical_summary_path=physical_summary_path,
         routes_path=routes_path if physical_summary_path is not None else None,
         board_link_timing_path=(

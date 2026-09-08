@@ -46,6 +46,7 @@ def system_timing_summary(timing: Dict[str, Any]) -> Dict[str, Any]:
         "runtime_clock",
         "source_binding",
         "physical_evidence_completeness",
+        "global_opensta",
     )
     return {field: timing[field] for field in fields if field in timing}
 
