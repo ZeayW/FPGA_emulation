@@ -751,6 +751,8 @@ not attributed to Chimew.
 
 ### Experimental global OpenSTA timing qualification
 
+The staged acceptance plan is in [global OpenSTA qualification](docs/global-opensta-qualification.md).
+
 `phase7c --global-sta-executable /absolute/path/to/sta` additionally exports
 a measured-arc timing abstraction and independently checks every original
 path's arrival, required time and slack against the Python Phase 7C model.
