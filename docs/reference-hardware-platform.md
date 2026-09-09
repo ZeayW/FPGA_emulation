@@ -63,6 +63,14 @@ explicitly marks license checkout, physical implementation and board wiring
 as unverified; database availability alone is not an acceptance result.
 The Tcl control-flow tests use stubs and are not vendor-tool evidence.
 
+The device-view query has now also been exercised with actual Vivado 2025.1
+(build 6140274): `xcvu13p-fhga2104-1-e` exposes 128 GTYE4 channels and 32
+commons; `xcvu9p-flga2104-2L-e` exposes 120 channels and 30 commons. These are
+device-site inventories, not counts of board-connected or usable link lanes.
+The probe must open a PinPlanning I/O design before querying sites; an empty
+project alone returns an empty site list. Implementation licensing and routed
+communication qualification remain pending.
+
 Public hardware facts, implementation choices, tool-derived properties and
 unmeasured assumptions must remain distinguishable. A structural validator
 passing is not proof of source accuracy. Vendor implementation validates the

@@ -14,6 +14,8 @@ if {[llength [get_parts -quiet $part]] != 1} {
     error "installed Vivado does not contain the exact requested device: $part"
 }
 create_project -in_memory -part $part reference_hardware_preflight
+set_property design_mode PinPlanning [current_fileset]
+open_io_design -name reference_hardware_io
 set channels [get_sites -quiet -filter {SITE_TYPE == GTYE4_CHANNEL}]
 set commons [get_sites -quiet -filter {SITE_TYPE == GTYE4_COMMON}]
 if {[llength $channels] == 0 || [llength $commons] == 0} {

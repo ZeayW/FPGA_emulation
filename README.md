@@ -3057,6 +3057,9 @@ even though its payload rate is below the serial line rate. This check does
 not establish oscillator tolerance margins, control-traffic capacity, or
 measured link latency.
 
+Actual Vivado 2025.1 device-view probes now confirm the exact MPS4 VU13P and
+VCU118 VU9P parts and their GTYE4 inventories. This is device-database evidence
+only, not implementation-license, communication-routing, or board qualification.
 The [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
