@@ -3049,6 +3049,20 @@ a separate validation requirement.
 
 ### Source-backed Arm MPS4 BoardDB
 
+The [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
+tracks the remaining source-binding, communication-endpoint and full-flow
+qualification gates. The current MPS4 model is not yet a qualified offline
+hardware platform. VCU118 is a documented fallback under evaluation, not a
+new supported or validated backend. Neither configuration claims measured
+board operation.
+
+The low-level `emuflow.board_vcu118` helpers now provide documented QSFP1
+endpoint pins and a clock/reset overlay. They reject mismatched parts, endpoint
+pins and incomplete site coverage. GT site identities must still be resolved
+and checked through the Vivado device database; these helpers do not infer
+cable connectivity, transport delay, module-control wiring, or a complete
+two-board platform. Their unit tests are structural evidence only.
+
 EmuFlow can materialize the three-board example documented in Arm's
 non-confidential MPS4 manual. The result is a hardware-kind BoardDB with three
 XCVU13P devices, a pairwise J48/J49 triangle, twelve full-duplex GTY lanes per
