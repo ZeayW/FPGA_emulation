@@ -62,7 +62,10 @@ One OpenSTA process queries all observations in a batch. Numerical model
 construction is linear in bound paths/arcs; no optimizer replay, artifact DAG,
 duplicated per-path JSON or repeated hashing is introduced. Verilog, Liberty,
 SDC and measurement TSV are active-run scratch. Only the compact terminal
-qualification report is retained after acceptance. A scalar Liberty arc carries
+qualification report is retained after acceptance. The measurement reader checks each
+event's arrival, deadline and slack against that binding in a single linear
+pass, including readiness observations outside the original-path TNS population.
+A corrupt positive event slack cannot conceal a missed deadline. A scalar Liberty arc carries
 the measured delay directly; a duplicate SDF carrying the same numbers is
 deliberately unnecessary.
 

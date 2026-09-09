@@ -57,6 +57,24 @@ def test_engine_identity_from_existing_banner(tmp_path):
         read_engine_identity(log)
 
 
+@pytest.mark.parametrize("field", [0, 1, 2])
+def test_measurement_rejects_corrupt_event_scalars(tmp_path, field):
+    rows = example()
+    values = [[sum(r.arcs_ns), r.required_ns-r.launch_ns,
+               r.required_ns-r.launch_ns-sum(r.arcs_ns)] for r in rows]
+    path = tmp_path / "out"
+    def write():
+        path.write_text("endpoint\tarrival_ns\trequired_ns\tslack_ns\n" +
+                        "".join(f"o{i}\t"+"\t".join(map(str, v))+"\n"
+                                for i, v in enumerate(values)))
+    write()
+    assert len(read_measurements(path, rows)) == len(rows)
+    values[0][field] += 2
+    write()
+    with pytest.raises(ValidationError, match="event binding"):
+        read_measurements(path, rows)
+
+
 def test_reject_orphan_events_and_divergent_observation_chains():
     with pytest.raises(ValidationError, match="no original-path"):
         validate_checks(example()+[EventCheck("orphan", "tx", "tx", 0, (1,), 2)])

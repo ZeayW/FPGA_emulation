@@ -156,6 +156,17 @@ def read_measurements(path: Path, rows: list[EventCheck]) -> list[dict]:
             values[fields[0]] = numbers
     if set(values) != {f"o{i}" for i in range(len(rows))}:
         raise ValidationError("global STA missing/extra/unconstrained endpoints")
+    # Validate the exported event binding, including TX/commit rows which do
+    # not belong to the original-path TNS population. A corrupt positive slack
+    # must not conceal a late event. This is a linear independent arc check,
+    # not an optimization replay or a second persisted timing population.
+    for i, row in enumerate(rows):
+        arrival = math.fsum(row.arcs_ns)
+        required = row.required_ns - row.launch_ns
+        for actual, expected in zip(values[f"o{i}"],
+                                    (arrival, required, required-arrival)):
+            if abs(actual-expected) > max(1e-3, 4 * 2**-23 * abs(expected)):
+                raise ValidationError(f"global STA event binding disagrees at o{i}")
     return [{"path": r.path, "role": r.role, "event": r.event,
              "arrival_ns": values[f"o{i}"][0] + r.launch_ns,
              "required_ns": values[f"o{i}"][1] + r.launch_ns,
