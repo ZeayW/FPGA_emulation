@@ -131,3 +131,24 @@ def test_real_opentimer_fixed_events(tmp_path, extra_paths):
         assert measured["required_ns"] == pytest.approx(row.required_ns, abs=1e-3)
         assert measured["slack_ns"] == pytest.approx(row.required_ns-arrival, abs=1e-3)
     assert result[0]["slack_ns"] < 0 < result[3]["slack_ns"]
+
+
+@pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENTIMER"), reason="OpenTimer driver not configured")
+def test_real_opentimer_from_physical_binding(tmp_path):
+    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
+    from emuflow.board_link_timing import build_board_link_timing_model
+    from emuflow.system_timing import build_system_timing
+    fixture = StaticExactSystemTimingTest()
+    fixture.setUp()
+    runtime, routes, phase5 = fixture._system_inputs()
+    physical = fixture._system_physical()
+    physical["board_link_timing"] = build_board_link_timing_model(fixture.platform)
+    checks = bind_physical_checks(runtime, routes, fixture.schedule, physical, fixture.platform)
+    export_event_checks(checks, tmp_path)
+    subprocess.run([os.environ["EMUFLOW_TEST_OPENTIMER"], str(len(checks))],
+                   cwd=tmp_path, check=True)
+    measured = read_measurements(tmp_path / "opentimer-measurements.tsv", checks)
+    reference = build_system_timing(runtime, routes, fixture.schedule, phase5, physical,
+                                    fixture.platform,
+                                    semantic_contract=fixture.assignment["semantic_contract"])
+    assert compare_system_timing(measured, reference)["status"] == "pass"
