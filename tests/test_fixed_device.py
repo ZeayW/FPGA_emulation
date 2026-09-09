@@ -8,6 +8,7 @@ from emuflow.fixed_device import device_contract, materialize_device, validate_p
 from emuflow.platform import Platform
 from emuflow.io import read_json, write_json
 from emuflow.vtr_architecture import run_vtr_architecture_import
+from emuflow.runtime import validate_physical_summary, PHYSICAL_SUMMARY_SCHEMA
 from tests.native_build import vtr_architecture_importer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,10 @@ class FixedDeviceTest(unittest.TestCase):
             self.assertTrue(all(f.capacity == contract["capacity"] for f in platform.fpgas))
             self.assertGreater(contract["capacity"]["lut"], 0)
             self.assertGreater(contract["capacity"]["bram"], 0)
+            # Hand-counted 10x12 interior: four 1x6 RAMs and three
+            # 1x4 multipliers leave 84 CLBs, each with 10 LUT6 / 20 FF.
+            self.assertEqual(contract["capacity"], {"lut": 840, "ff": 1680,
+                                                    "bram": 4, "dsp": 3, "io": 352})
             run_vtr_architecture_import(input_path=xml, architecture_output_path=root / "arch.json",
                 timing_output_path=root / "timing.json", architecture_id="test", width=12, height=14,
                 executable=str(vtr_architecture_importer()))
@@ -48,6 +53,17 @@ class FixedDeviceTest(unittest.TestCase):
             xml.write_text(xml.read_text() + "\n")
             with self.assertRaisesRegex(ValidationError, "identity"):
                 validate_platform_device(Platform.load(board), xml)
+
+    def test_terminal_validator_rejects_a_resized_grid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, board, contract = self.materialize(Path(tmp))
+            platform = Platform.load(board)
+            summary = {"schema": PHYSICAL_SUMMARY_SCHEMA, "status": "pass",
+                       "platform": platform.name, "design": "test", "physical_device": contract,
+                       "fpgas": [{"fpga": f.id, "device_grid": {"width": 13, "height": 14}}
+                                 for f in platform.fpgas]}
+            with self.assertRaisesRegex(ValidationError, "grid"):
+                validate_physical_summary(summary, {"design": "test"}, platform)
 
     def test_legacy_auto_capacity_is_not_a_fixed_device(self):
         with self.assertRaisesRegex(ValidationError, "fixed"):
