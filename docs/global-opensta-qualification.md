@@ -97,7 +97,14 @@ mismatches. Physical execution used seed 1 and baseline Phase 6. No assignments
 were forced to create cuts. The run used e16dd9cc for physical implementation
 and 299e3e8f for repaired Phase 7C model binding/constraint loading; this is not
 a claim that the later source revision reran synthesis or physical placement.
-The new authority-report projection is awaiting its final terminal check.
+The authority-report projection and terminal validator subsequently passed at
+`e90698cf`, without repeating physical implementation. The final regression
+suite passed 962 tests with three optional skips; source audit and diff checks
+also passed. Both the canonical path values and compact report aliases now
+come from OpenSTA. Terminal reconstruction checks the saved engine scalars
+against fresh physical binding and the independent Python composer, without
+launching another STA process. Only a compact terminal summary is retained;
+the completed run's intermediate models and physical work directories are removed.
 
 OpenSTA 2.6.0 checked 403,778 observations covering all 195,532 original paths,
 with zero transport-event failures. Target-clock original-path WNS/TNS were

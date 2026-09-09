@@ -768,7 +768,8 @@ checks and 201 randomized/long-frame checks executed successfully on OpenSTA
 2.6.0. Real Koios DLA medium / EDA2023 case6 physical-flow qualification has
 also passed terminal independent validation with 10 naturally selected
 combinational cuts, 195,532 original paths and 403,778 STA observations.
-The authority-report integration is undergoing its final real-design check.
+The authority-report integration also passed terminal independent validation
+at `e90698cf`; the final regression suite passed 962 tests (three optional skips).
 An offline OpenTimer driver also checks the exported raw model, including a
 late-TX counterexample and 256 mixed arc-chain paths. See the qualification
 document for the optional build/test interface; OpenTimer is not added to
