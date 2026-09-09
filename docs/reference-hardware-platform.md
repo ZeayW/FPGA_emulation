@@ -71,6 +71,16 @@ The probe must open a PinPlanning I/O design before querying sites; an empty
 project alone returns an empty site list. Implementation licensing and routed
 communication qualification remain pending.
 
+The checked-in 10G GT Wizard recipe has also generated both channel and
+common-owner IP products for the exact MPS4 part in Vivado 2025.1. Actual
+out-of-context synthesis was attempted but did not obtain a synthesis license;
+it is not a successful implementation result. In project mode use one
+`create_ip_run` call per XCI, then `launch_runs` and `wait_on_run`, checking
+each run's completion and expected checkpoint. A trailing Tcl success message
+after `synth_ip` is insufficient: the tool can report synthesis errors and
+return control without a successful design. License availability must be
+established before any full-flow hardware qualification run.
+
 Public hardware facts, implementation choices, tool-derived properties and
 unmeasured assumptions must remain distinguishable. A structural validator
 passing is not proof of source accuracy. Vendor implementation validates the
