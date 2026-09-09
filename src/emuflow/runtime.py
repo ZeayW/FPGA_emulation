@@ -653,6 +653,7 @@ def aggregate_qor(
     schedule: Optional[Mapping[str, Any]] = None,
     routes_artifact_sha256: Optional[str] = None,
     semantic_contract: Optional[Mapping[str, Any]] = None,
+    system_timing_result: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     for name, report in (
         ("phase3", phase3_report),
@@ -675,7 +676,11 @@ def aggregate_qor(
         if physical_summary is None
         else validate_physical_summary(physical_summary, runtime, platform)
     )
-    if physical_summary is None:
+    if system_timing_result is not None:
+        if physical_summary is None:
+            raise ValidationError("external system timing requires physical inputs")
+        runtime_timing = system_timing_result
+    elif physical_summary is None:
         runtime_timing = estimate_runtime_timing(runtime, phase5_report)
     else:
         if routes is None or schedule is None:

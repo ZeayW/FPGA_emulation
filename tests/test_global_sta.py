@@ -161,6 +161,70 @@ def test_authority_projection_updates_paths_and_every_scalar_alias(initial_statu
         assert reference["paths"][0][f"{role}_clock_slack_bound_ns"] == row["slack_ns"]
 
 
+def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch):
+    from tests.test_phase7c import Phase7CTest
+    from emuflow.cross_layer_timing import build_cross_layer_timing_contract
+    from emuflow.io import write_json, read_json
+    from emuflow.phase7c import run_phase7c
+    import emuflow.global_sta as sta
+    f = Phase7CTest(); f.setUp()
+    for name, value in {"schedule": f.schedule, "platform": f.platform.to_dict(),
+                        "physical": f._physical_summary(), "routes": f.routes, **f.reports}.items():
+        write_json(tmp_path / f"{name}.json", value)
+    write_json(tmp_path / "cross_layer_timing.json",
+               build_cross_layer_timing_contract(f.routes, f.schedule))
+    def forbidden(*args, **kwargs):
+        raise AssertionError("original Python timing calculator was called")
+    monkeypatch.setattr("emuflow.runtime.build_system_timing", forbidden)
+    monkeypatch.setattr(sta, "compare_system_timing", forbidden)
+    monkeypatch.setattr(sta, "adopt_opensta_results", forbidden)
+    def bind(*args, metadata, **kwargs):
+        metadata.update(paths={"p": {"path_scope": "cross-fpga",
+            "physical_logic_segments_cone_bound": False}}, source_binding=None,
+            compressed_representative_paths=1)
+        return example()
+    monkeypatch.setattr(sta, "bind_physical_checks", bind)
+    def engine(checks, directory, executable, *, verify_arcs):
+        assert not verify_arcs
+        return [{"path": r.path, "role": r.role, "event": r.event,
+                 "arrival_ns": r.launch_ns+sum(r.arcs_ns), "required_ns": r.required_ns,
+                 "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in checks]
+    monkeypatch.setattr(sta, "run_event_checks", engine)
+    monkeypatch.setattr(sta, "read_engine_identity", lambda p: {"name": "test-sta"})
+    run_phase7c(*(tmp_path / f"{n}.json" for n in
+                 ("schedule", "platform", "phase3", "phase4", "phase5", "phase6")),
+                tmp_path / "out", physical_summary_path=tmp_path / "physical.json",
+                routes_path=tmp_path / "routes.json", global_sta_executable="test-sta")
+    timing = read_json(tmp_path / "out/qor_report.json")["timing"]
+    assert timing["global_opensta"]["execution"] == "standalone"
+    assert "cross_checker" not in timing["global_opensta"]
+    assert timing["target_clock"]["worst_slack_bound_ns"] == -13.5
+    assert timing["runtime_clock"]["tns_bound_ns"] == 0
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_standalone_report_preserves_event_gate_without_comparison(late, monkeypatch):
+    import emuflow.global_sta as sta
+    def forbidden(*args, **kwargs):
+        raise AssertionError("comparison must not run")
+    monkeypatch.setattr(sta, "compare_system_timing", forbidden)
+    rows = [{"path": r.path, "role": r.role, "event": r.event,
+             "arrival_ns": r.launch_ns+sum(r.arcs_ns), "required_ns": r.required_ns,
+             "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in example()]
+    if late:
+        rows[0]["slack_ns"] = -1.0
+    metadata = {"paths": {"p": {"path_scope": "cross-fpga", "physical_logic_segments_cone_bound": True}},
+                "source_binding": None, "compressed_representative_paths": 1}
+    report = sta.build_opensta_timing({"virtual_dut_clock": {"nominal_period_ns": 100}}, metadata, rows)
+    assert report["status"] == ("fail" if late else "pass")
+    assert report["global_opensta"]["event_failures"] == int(late)
+    assert report["path_exactness"]["cone_bound_logic_paths"] == 1
+    assert report["target_clock"]["tns_bound_ns"] == -13.5
+    with pytest.raises(ValidationError):
+        sta.build_opensta_timing({"virtual_dut_clock": {"nominal_period_ns": 100}}, metadata,
+                                [r for r in rows if r["role"] != "runtime"])
+
+
 def test_physical_binding_uses_raw_measurements():
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow.board_link_timing import build_board_link_timing_model

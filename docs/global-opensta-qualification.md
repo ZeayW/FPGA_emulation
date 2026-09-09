@@ -7,7 +7,7 @@ model of the **existing** frozen transport protocol. Do not change partitioning,
 system routing, TDM assignment or transport RTL to make the model easier.
 
 The implementation is opt-in. With `--global-sta-executable`, OpenSTA owns the
-numeric results and Python independently cross-checks them. It does not claim
+numeric results and does not invoke the Python timing composer. It does not claim
 hardware signoff. The acceptance gates are:
 
 1. Export measured logic/interface/link arcs and fixed-event constraints from
@@ -23,11 +23,13 @@ hardware signoff. The acceptance gates are:
    composer as cross-check, and fail discrepancies. An independent OpenTimer
    spot-check remains a separate gate, not evidence supplied by OpenSTA itself.
 
-The tested `adopt_opensta_results` projection updates the canonical path values
-and every target/runtime scalar alias together and is enabled by the option.
-It preserves incomplete/failing
-upstream status and fails a missed transport event, even with legal final
-latency. Engine provenance comes from the existing process startup banner.
+Production builds the canonical report directly from raw binding metadata and
+OpenSTA scalars. The former `adopt_opensta_results`/Python comparison is used
+only for explicit qualification and historical artifact validation. Standalone
+terminal validation reconstructs raw binding and verifies saved engine scalars;
+it does not call the old system-timing composer or run STA again. Missing
+coverage, incomplete physical evidence and missed transport events still fail
+or remain incomplete. Engine provenance comes from the existing startup banner.
 
 ## Why two types of observation are necessary
 
@@ -101,10 +103,13 @@ The authority-report projection and terminal validator subsequently passed at
 `e90698cf`, without repeating physical implementation. The final regression
 suite passed 962 tests with three optional skips; source audit and diff checks
 also passed. Both the canonical path values and compact report aliases now
-come from OpenSTA. Terminal reconstruction checks the saved engine scalars
+come from OpenSTA. That historical dual-execution terminal reconstruction checked the saved engine scalars
 against fresh physical binding and the independent Python composer, without
 launching another STA process. Only a compact terminal summary is retained;
-the completed run's intermediate models and physical work directories are removed.
+the completed run's intermediate models and physical work directories were removed.
+The later standalone change removes that Python-composer dependency. Its new
+regressions forbid calls to both the old composer and the comparison projector;
+the historical DLA gate does not establish fresh standalone DLA runtime numbers.
 
 OpenSTA 2.6.0 checked 403,778 observations covering all 195,532 original paths,
 with zero transport-event failures. Target-clock original-path WNS/TNS were

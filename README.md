@@ -755,21 +755,24 @@ The staged acceptance plan is in [global OpenSTA qualification](docs/global-open
 
 `phase7c --global-sta-executable /absolute/path/to/sta` additionally exports
 a measured-arc timing abstraction and independently checks every original
-path's arrival, required time and slack against the Python Phase 7C model.
+path's arrival, required time and slack using OpenSTA alone.
 The exporter consumes logic-segment, boundary and directed BoardLinkTimingDB
 inputs, not Python-computed path delays. Without an explicit BoardLinkTimingDB,
 it uses the existing BoardDB cycle-latency model (model-only, not measured link
 timing). Missing physical logic/interface data, missing or unconstrained observations
 and numerical disagreement fail the check. With this option, OpenSTA supplies
-the canonical path values and target/runtime metrics; the Python composer is
-an independent cross-check, not the numeric authority. Without it, the existing
-Python timing engine remains selected. Initial hand-computed two-cut
+the canonical path values and target/runtime metrics. It does **not** run the
+Python timing composer, even to prebuild a report or check the result. The
+Python comparison belongs to explicit qualification tests only. Without the
+option, the Python timing engine remains selected. Initial hand-computed two-cut
 checks and 201 randomized/long-frame checks executed successfully on OpenSTA
 2.6.0. Real Koios DLA medium / EDA2023 case6 physical-flow qualification has
 also passed terminal independent validation with 10 naturally selected
 combinational cuts, 195,532 original paths and 403,778 STA observations.
-The authority-report integration also passed terminal independent validation
-at `e90698cf`; the final regression suite passed 962 tests (three optional skips).
+The earlier dual-execution authority integration passed terminal independent
+validation at `e90698cf` (962 tests, three optional skips). The subsequent
+standalone execution change has separate regression coverage; those historical
+DLA results are not claimed as a new standalone DLA run or runtime comparison.
 An offline OpenTimer driver also checks the exported raw model, including a
 late-TX counterexample and 256 mixed arc-chain paths. See the qualification
 document for the optional build/test interface; OpenTimer is not added to
@@ -777,9 +780,10 @@ the production hot path. Target/runtime observations must share an identical
 physical chain, and orphan transport-event observations are rejected.
 The scalar comparison gate also rejects nonfinite values, duplicate event
 identities and duplicate original-path references before computing metrics.
-Every measurement, including TX/commit events outside the TNS population,
-is checked against its raw arc chain and fixed deadline; corrupt event scalars
-cannot pass merely by reporting positive slack.
+Normal execution validates measurement identities, finite values and complete
+coverage, then aggregates OpenSTA slacks, including separate TX/commit failure
+checks. Explicit terminal validation additionally checks the saved scalars
+against raw arc chains and deadlines without invoking the old timing composer.
 The compact check records OpenSTA's version/revision from its existing startup
 log. Constraint binding uses indexed linked-cell port lookup: OpenSTA's ordinary
 `get_ports` scans the full port table even for an exact name, so invoking it per

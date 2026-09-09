@@ -1077,6 +1077,14 @@ def validate_multi_fpga_flow_bundle(
                 flow_root, candidate_link_timing, "board-link timing"
             )
 
+    stored_qor = read_json(
+        _checked_flow_member(flow_root, Path("runtime/qor_report.json"), "QoR report")
+    )
+    standalone_sta = stored_qor.get("timing", {}).get("global_opensta", {}).get("execution") == "standalone"
+    if standalone_sta:
+        for name in ("measurements.tsv", "opensta.log"):
+            _checked_flow_member(flow_root, Path("runtime/global-opensta") / name,
+                                 "standalone OpenSTA result")
     with tempfile.TemporaryDirectory(prefix="emuflow-flow-validate-") as temporary:
         replay = run_phase7c(
             schedule_path,
@@ -1090,12 +1098,10 @@ def validate_multi_fpga_flow_bundle(
             physical_summary_path=physical_summary_path,
             routes_path=routes_path if physical_summary_path is not None else None,
             board_link_timing_path=board_link_timing_path,
+            global_sta_results_dir=flow_root / "runtime/global-opensta" if standalone_sta else None,
         )
         replay_qor = read_json(Path(temporary) / "qor_report.json")
-    stored_qor = read_json(
-        _checked_flow_member(flow_root, Path("runtime/qor_report.json"), "QoR report")
-    )
-    if "global_opensta" in stored_qor.get("timing", {}):
+    if "global_opensta" in stored_qor.get("timing", {}) and not standalone_sta:
         from .global_sta import adopt_opensta_results, bind_physical_checks, compare_system_timing, read_engine_identity, read_measurements
         if physical_summary_path is None:
             raise ValidationError("global OpenSTA qualification lacks physical inputs")

@@ -2171,7 +2171,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument(
         "--global-sta-executable",
-        help="use OpenSTA as terminal timing authority with independent Python cross-check",
+        help="use standalone OpenSTA global timing instead of the Python timing composer",
     )
     multi_fpga_compile.add_argument(
         "--serial-bsp-phy-provider",
@@ -3702,7 +3702,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Phase 4 routes.json required for unified physical timing",
     )
     phase7c.add_argument("--simulation-frames", type=int, default=12)
-    phase7c.add_argument("--global-sta-executable", help="use OpenSTA as physical timing authority with independent Python cross-check")
+    phase7c.add_argument("--global-sta-executable", help="use standalone OpenSTA global timing instead of the Python timing composer")
     phase7c.add_argument("--out", type=Path, required=True)
 
     phase7d = subparsers.add_parser(
