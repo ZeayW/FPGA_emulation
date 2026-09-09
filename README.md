@@ -773,6 +773,9 @@ The earlier dual-execution authority integration passed terminal independent
 validation at `e90698cf` (962 tests, three optional skips). The subsequent
 standalone execution change has separate regression coverage; those historical
 DLA results are not claimed as a new standalone DLA run or runtime comparison.
+Standalone regression passed 55 tests (one optional skip). A real OpenSTA
+five-observation physical-binding smoke test also passed with calls to the old
+timing composer and comparison function explicitly forbidden.
 An offline OpenTimer driver also checks the exported raw model, including a
 late-TX counterexample and 256 mixed arc-chain paths. See the qualification
 document for the optional build/test interface; OpenTimer is not added to
