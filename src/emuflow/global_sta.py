@@ -366,9 +366,7 @@ def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
 def adopt_opensta_results(timing, measurements):
     """Project checked engine values into the canonical report, in place.
 
-    This projection is separate from qualification. The flow must not enable
-    it until its complete physical qualification gate has passed. Keep the
-    independent composer as the comparison input, not a second persisted path
+    Keep the independent composer as the comparison input, not a second persisted path
     population. All public scalar aliases are updated together.
     """
     gate = compare_system_timing(measurements, timing)

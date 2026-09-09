@@ -749,7 +749,7 @@ The original refinement artifact is retained and hash-bound; this lane
 coalescing is explicitly reported as an EmuFlow timing-preservation extension,
 not attributed to Chimew.
 
-### Experimental global OpenSTA timing qualification
+### Opt-in global OpenSTA timing authority
 
 The staged acceptance plan is in [global OpenSTA qualification](docs/global-opensta-qualification.md).
 
@@ -760,11 +760,15 @@ The exporter consumes logic-segment, boundary and directed BoardLinkTimingDB
 inputs, not Python-computed path delays. Without an explicit BoardLinkTimingDB,
 it uses the existing BoardDB cycle-latency model (model-only, not measured link
 timing). Missing physical logic/interface data, missing or unconstrained observations
-and numerical disagreement fail the check. This option is initially a
-qualification interface, **not yet the production timing authority**; real
-OpenSTA complete-flow acceptance is pending. Initial hand-computed two-cut
+and numerical disagreement fail the check. With this option, OpenSTA supplies
+the canonical path values and target/runtime metrics; the Python composer is
+an independent cross-check, not the numeric authority. Without it, the existing
+Python timing engine remains selected. Initial hand-computed two-cut
 checks and 201 randomized/long-frame checks executed successfully on OpenSTA
-2.6.0; this is model evidence, not a complete physical-flow qualification.
+2.6.0. Real Koios DLA medium / EDA2023 case6 physical-flow qualification has
+also passed terminal independent validation with 10 naturally selected
+combinational cuts, 195,532 original paths and 403,778 STA observations.
+The authority-report integration is undergoing its final real-design check.
 An offline OpenTimer driver also checks the exported raw model, including a
 late-TX counterexample and 256 mixed arc-chain paths. See the qualification
 document for the optional build/test interface; OpenTimer is not added to
@@ -800,7 +804,7 @@ original TimingPathDB member), not conventional unique-register-endpoint TNS.
 There is one explicit target and runtime observation per original path, with
 separate transport legality checks. Generated tool inputs and per-check TSV
 are ephemeral scratch; `qor_report.json#/timing/global_opensta` is the compact
-qualification result. Comparison uses a 1 ps floor plus four float32 relative
+authority/cross-check result. Comparison uses a 1 ps floor plus four float32 relative
 epsilons on each compared value, not on the global frame period. Near-zero
 slacks retain the strict floor. A 447,632 ns runtime-period probe observed
 about 0.047 ns slack roundoff; per-check launch-relative coordinates avoid

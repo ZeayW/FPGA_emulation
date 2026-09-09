@@ -6,8 +6,9 @@ Replace bespoke global timing arithmetic with an independently validated STA
 model of the **existing** frozen transport protocol. Do not change partitioning,
 system routing, TDM assignment or transport RTL to make the model easier.
 
-The initial implementation is opt-in and qualification-only. It must not claim
-signoff or become the default authority before the following gates pass.
+The implementation is opt-in. With `--global-sta-executable`, OpenSTA owns the
+numeric results and Python independently cross-checks them. It does not claim
+hardware signoff. The acceptance gates are:
 
 1. Export measured logic/interface/link arcs and fixed-event constraints from
    their canonical sources; do not export Python-composed delay/slack as arcs.
@@ -23,8 +24,8 @@ signoff or become the default authority before the following gates pass.
    spot-check remains a separate gate, not evidence supplied by OpenSTA itself.
 
 The tested `adopt_opensta_results` projection updates the canonical path values
-and every target/runtime scalar alias together. It is not yet enabled by the
-flow: the real-design gate remains pending. It preserves incomplete/failing
+and every target/runtime scalar alias together and is enabled by the option.
+It preserves incomplete/failing
 upstream status and fails a missed transport event, even with legal final
 latency. Engine provenance comes from the existing process startup banner.
 
@@ -86,3 +87,31 @@ an explicit zero input slew for portable constant-arc analysis.
 The tests include a deliberately missed TX with a legal final commit and a
 mixed 256-path arc-chain population. Passing these establishes model-level
 third-engine evidence only; it does not replace the real-design physical gate.
+
+## Real-design qualification
+
+Koios DLA medium / EDA2023 case6 completed physical Phase 1--7 and terminal
+independent validation: 379,357 instances, three used FPGAs, ten naturally
+selected combinational cut nets, 6,239 scheduled hops and zero equivalence
+mismatches. Physical execution used seed 1 and baseline Phase 6. No assignments
+were forced to create cuts. The run used e16dd9cc for physical implementation
+and 299e3e8f for repaired Phase 7C model binding/constraint loading; this is not
+a claim that the later source revision reran synthesis or physical placement.
+The new authority-report projection is awaiting its final terminal check.
+
+OpenSTA 2.6.0 checked 403,778 observations covering all 195,532 original paths,
+with zero transport-event failures. Target-clock original-path WNS/TNS were
+-235.0976160415 / -388,770.157286 ns (8,789 negative paths); runtime-clock
+WNS/TNS were 2,237,914.595753 / 0 ns. Thus the target does **not** close timing.
+This acceptance proves analysis consistency, not a QoR improvement.
+
+The largest scalar difference was 0.344801 ns in long-frame arithmetic, within
+the per-value float32 tolerance; short target/event observations retain their
+own tighter tolerance. OpenTimer 2.1 independently checked 64 real-design paths
+(32 crossing and 32 local; 224 observations), with zero event failures and
+maximum arrival difference 0.000003235 ns from the raw binding.
+
+The result includes 194,849 endpoint-exact paths and 683 cone-bound paths, with
+no fallback or discontinuous compressed paths. Routed staging-chain delays
+remain upper bounds, and all board hops use the declared model-only latency;
+none is measured board-link timing. These limitations preclude hardware signoff.

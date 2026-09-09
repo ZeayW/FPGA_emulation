@@ -172,16 +172,16 @@ def run_phase7c(
         if physical_summary is None or routes is None:
             raise ValidationError("global OpenSTA requires physical Phase 7 inputs")
         from .global_sta import (
-            bind_physical_checks, compare_system_timing, read_engine_identity, run_event_checks,
+            adopt_opensta_results, bind_physical_checks, read_engine_identity, run_event_checks,
         )
         checks = bind_physical_checks(runtime, routes, schedule, physical_summary, platform)
         measurements = run_event_checks(checks, output_dir / "global-opensta", global_sta_executable)
-        sta_check = compare_system_timing(measurements, qor["timing"])
+        sta_check = adopt_opensta_results(qor["timing"], measurements)
         sta_check["engine"] = read_engine_identity(output_dir / "global-opensta/opensta.log")
         # One compact owner. Per-check tool products remain scratch, not a
         # second JSON copy of the original timing-path population.
         qor["timing"]["global_opensta"] = sta_check
-        if sta_check["status"] != "pass":
+        if sta_check["status"] != "pass" or qor["timing"]["status"] == "fail":
             qor["status"] = "fail"
     write_json(output_dir / "runtime_contract.json", runtime)
     write_json(output_dir / "qor_report.json", qor)

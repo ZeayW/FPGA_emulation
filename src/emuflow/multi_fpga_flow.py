@@ -1096,7 +1096,7 @@ def validate_multi_fpga_flow_bundle(
         _checked_flow_member(flow_root, Path("runtime/qor_report.json"), "QoR report")
     )
     if "global_opensta" in stored_qor.get("timing", {}):
-        from .global_sta import bind_physical_checks, compare_system_timing, read_engine_identity, read_measurements
+        from .global_sta import adopt_opensta_results, bind_physical_checks, compare_system_timing, read_engine_identity, read_measurements
         if physical_summary_path is None:
             raise ValidationError("global OpenSTA qualification lacks physical inputs")
         physical = read_json(physical_summary_path)
@@ -1112,8 +1112,16 @@ def validate_multi_fpga_flow_bundle(
         measurements = read_measurements(_checked_flow_member(
             flow_root, Path("runtime/global-opensta/measurements.tsv"),
             "global OpenSTA measurements"), checks)
-        replay_qor["timing"]["global_opensta"] = compare_system_timing(
-            measurements, replay_qor["timing"])
+        if stored_qor["timing"]["global_opensta"].get("authority") == "opensta":
+            gate = adopt_opensta_results(replay_qor["timing"], measurements)
+        else:
+            # Read historical qualification artifacts without preserving an
+            # implicit old producer default.
+            gate = compare_system_timing(measurements, replay_qor["timing"])
+        replay_qor["timing"]["global_opensta"] = gate
+        if gate["status"] != "pass" or replay_qor["timing"]["status"] == "fail":
+            replay_qor["status"] = "fail"
+            replay["status"] = "fail"
         if "engine" in stored_qor["timing"]["global_opensta"]:
             replay_qor["timing"]["global_opensta"]["engine"] = read_engine_identity(
                 _checked_flow_member(flow_root, Path("runtime/global-opensta/opensta.log"),
