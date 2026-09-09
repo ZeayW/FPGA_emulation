@@ -4,12 +4,35 @@ import unittest
 from emuflow.board_vcu118 import (
     VCU118_PART, build_vcu118_qsfp1_overlay,
     vcu118_board_services, vcu118_qsfp1_endpoint,
+    build_vcu118_pair_boarddb,
 )
 from emuflow.errors import ValidationError
 from emuflow.platform import Platform
 
 
 class Vcu118BindingTest(unittest.TestCase):
+    def test_fixed_pair_and_explicit_unmeasured_latency(self):
+        document = build_vcu118_pair_boarddb(latency_cycles=12)
+        platform = Platform.from_dict(document)
+        self.assertEqual(len(platform.fpgas), 2)
+        self.assertEqual(len(platform.links), 1)
+        self.assertEqual(platform.links[0].transport_bits_per_cycle_per_direction, 256)
+        self.assertEqual(document["fpgas"][0]["capacity"]["lut"], 1_182_240)
+        self.assertEqual(document["fpgas"][0]["utilization_limit"], 0.75)
+        self.assertNotIn("io", document["fpgas"][0]["capacity"])
+        self.assertEqual(document["provenance"]["transport"]["latency_basis"],
+                         "caller_supplied_not_a_hardware_bound")
+        self.assertEqual(document["provenance"]["cable"]["model"], "QSFP-H40G-CU1M-BB")
+        document["fpgas"][0]["capacity"]["lut"] = 1
+        self.assertEqual(document["fpgas"][1]["capacity"]["lut"], 1_182_240)
+
+    def test_candidate_never_guesses_a_latency(self):
+        for value in (0, -1, True, 1.5, "12", None):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                build_vcu118_pair_boarddb(latency_cycles=value)
+        with self.assertRaises(TypeError):
+            build_vcu118_pair_boarddb()
+
     def setUp(self):
         # Connectivity/capacity here is a unit fixture, not a hardware claim.
         self.document = {

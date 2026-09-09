@@ -13,9 +13,60 @@ from .platform import Platform
 
 VCU118_PART = "xcvu9p-flga2104-2L-e"
 VCU118_MANUAL = "https://docs.amd.com/v/u/en-US/ug1224-vcu118-eval-bd"
+VCU118_CABLE_SOURCE = (
+    "https://cdn.blackbox.com/cms/docs/datasheets/"
+    "data_sheet-qsfp-40g-dac-networking.pdf"
+)
 # P/N pairs in FPGA lane order, independently matched to the reference XDC.
 _TX = (("V7", "V6"), ("T7", "T6"), ("P7", "P6"), ("M7", "M6"))
 _RX = (("Y2", "Y1"), ("W4", "W3"), ("V2", "V1"), ("U4", "U3"))
+
+
+def build_vcu118_pair_boarddb(*, latency_cycles: int) -> dict:
+    """Construct the fixed two-board reference candidate, not a qualified BSP.
+
+    Latency is explicitly supplied as a model assumption, never inferred from
+    cable length or line rate. The full-flow gate still needs implemented
+    transport, module controls, physical timing and a justified delay bound.
+    """
+    if type(latency_cycles) is not int or latency_cycles <= 0:
+        raise ValidationError("VCU118 candidate requires positive explicit latency_cycles")
+    ids = ("vcu118_1", "vcu118_2")
+    # DS890 v4.10 Table 15. No arbitrary external DUT I/O budget is exposed:
+    # package I/O count does not say which PCB pins are free for a user's DUT.
+    capacity = {"lut": 1_182_240, "ff": 2_364_480, "bram": 2_160,
+                "bram18k": 4_320, "uram288": 960, "dsp": 6_840, "dsp48": 6_840}
+    document = {
+        "schema": "emuflow.boarddb/v1",
+        "platform": {"name": "vcu118_pair_qsfp1", "kind": "hardware",
+                     "description": "Two VCU118 boards, one QSFP-H40G-CU1M-BB cable; unqualified reference candidate"},
+        "fpgas": [{"id": fpga, "part": VCU118_PART,
+                   "utilization_limit": 0.75, "capacity": dict(capacity)} for fpga in ids],
+        "links": [{"id": "qsfp1", "endpoints": list(ids),
+                   "direction": "full_duplex", "capacity_sharing": "per_direction",
+                   "mode": "serial", "data_lanes_per_direction": 4,
+                   "payload_bits_per_lane_per_cycle": 64, "fabric_clock_mhz": 50.0,
+                   "latency_cycles": latency_cycles,
+                   "endpoint_bindings": [vcu118_qsfp1_endpoint(fpga) for fpga in ids]}],
+        "board_services": vcu118_board_services(),
+        "provenance": {
+            "qualification": "source_backed_candidate_not_implemented",
+            "board_manual": VCU118_MANUAL,
+            "device_capacity": "https://docs.amd.com/v/u/en-US/ds890-ultrascale-overview",
+            "device_capacity_locator": "DS890 v4.10 Table 15, VU9P",
+            "cable": {"model": "QSFP-H40G-CU1M-BB", "length_m": 1,
+                      "source": VCU118_CABLE_SOURCE, "locator": "pages 3-4",
+                      "lane_mapping": "TXn to RXn in both directions, n=1..4, polarity preserved"},
+            "transport": {"qualification": "configured_unmeasured_model",
+                          "latency_cycles": latency_cycles,
+                          "latency_basis": "caller_supplied_not_a_hardware_bound",
+                          "line_rate_gbps": 10.3125,
+                          "pcs_clock_mhz": 156.25,
+                          "record_pcs_cycles": 3},
+        },
+    }
+    Platform.from_dict(document)
+    return document
 
 
 def vcu118_qsfp1_endpoint(fpga: str) -> dict:

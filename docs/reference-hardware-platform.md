@@ -137,11 +137,30 @@ false-path constraints into EmuFlow without validating the actual synchronizers.
 The reference's 25G operating configuration must not silently replace the
 existing EmuFlow 10G PCS configuration.
 
-Before selecting a two-board configuration, still establish the cable lane
-mapping, oscillator setup assumptions, GT configuration at the chosen line
-rate, module controls, and reset/clock-domain behavior. A pair of VCU118 boards
+The two-board candidate uses a Black Box QSFP-H40G-CU1M-BB passive cable
+between the two QSFP1 connectors. The manufacturer's page 3 X1/X2 pin tables
+map TX1..4 to RX1..4 in both directions with preserved differential polarity;
+page 4 identifies the one-meter model. Combined with UG1224 Table 3-22, this
+establishes lane-index-preserving FPGA-to-FPGA wiring. It does not establish
+cable propagation delay, BER, or GT equalization settings.
+
+`build_vcu118_pair_boarddb(latency_cycles=...)` constructs this fixed pair with
+DS890 Table 15 VU9P logic/memory capacities and a 75% utilization ceiling.
+The 64-bit/50 MHz user interface and 156.25 MHz PCS at 10.3125 Gb/s are selected
+transport settings, not values supplied by the cable datasheet. Latency has
+no default and is labelled an unmeasured caller assumption, not a verified
+bound. No arbitrary external DUT I/O budget is exposed. This candidate is for
+integration work and cannot qualify hardware or final timing by itself.
+
+The QSFP reference clock's documented power-on setting is 156.25 MHz; the
+setup contract requires cold power-on and no subsequent oscillator writes.
+The manual specifies 50 ppm tolerance, so separate boards must not be modeled
+as phase-locked. Module controls and reset/clock-domain behavior still need
+implementation and validation. A pair of VCU118 boards
 is an explicitly assembled reference setup, not an AMD-qualified complete
 multi-FPGA emulation product.
+
+Cable source: [Black Box QSFP-H40G-CUXM-BB datasheet, pages 3-4](https://cdn.blackbox.com/cms/docs/datasheets/data_sheet-qsfp-40g-dac-networking.pdf).
 
 Sources: [reference XDC](https://github.com/alexforencich/verilog-ethernet/blob/master/example/VCU118/fpga_25g/fpga.xdc),
 [reference RTL](https://github.com/alexforencich/verilog-ethernet/blob/master/example/VCU118/fpga_25g/rtl/fpga.v),

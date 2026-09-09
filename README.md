@@ -3071,8 +3071,13 @@ The low-level `emuflow.board_vcu118` helpers now provide documented QSFP1
 endpoint pins and a clock/reset overlay. They reject mismatched parts, endpoint
 pins and incomplete site coverage. GT site identities must still be resolved
 and checked through the Vivado device database; these helpers do not infer
-cable connectivity, transport delay, module-control wiring, or a complete
-two-board platform. Their unit tests are structural evidence only.
+cable connectivity or transport delay. The new low-level
+`build_vcu118_pair_boarddb(latency_cycles=...)` fixes a two-board QSFP1 candidate
+using manufacturer-documented Black Box QSFP-H40G-CU1M-BB wiring, VU9P capacities
+and a 75% utilization ceiling. It explicitly labels caller-supplied latency
+as unmeasured and is not a qualified full-flow BSP: module controls, physical
+communication and global timing validation remain pending. Its six unit tests
+are structural evidence only.
 
 EmuFlow can materialize the three-board example documented in Arm's
 non-confidential MPS4 manual. The result is a hardware-kind BoardDB with three
