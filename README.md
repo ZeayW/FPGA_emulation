@@ -763,6 +763,11 @@ qualification interface, **not yet the production timing authority**; real
 OpenSTA complete-flow acceptance is pending. Initial hand-computed two-cut
 checks and 201 randomized/long-frame checks executed successfully on OpenSTA
 2.6.0; this is model evidence, not a complete physical-flow qualification.
+An offline OpenTimer driver also checks the exported raw model, including a
+late-TX counterexample and 256 mixed arc-chain paths. See the qualification
+document for the optional build/test interface; OpenTimer is not added to
+the production hot path. Target/runtime observations must share an identical
+physical chain, and orphan transport-event observations are rejected.
 The same option is available on `multi-fpga compile` for a fresh complete
 physical flow. Its terminal validator reconstructs the binding and verifies
 the retained engine scalars; it does not invoke OpenSTA a second time.

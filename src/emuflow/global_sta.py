@@ -57,6 +57,15 @@ def validate_checks(checks: Iterable[EventCheck]) -> list[EventCheck]:
     if any(counts[p, role] != 1
            for p in target for role in ("target", "runtime")):
         raise ValidationError("global STA must observe each original path once")
+    observations = {(r.path, r.role): r for r in rows
+                    if r.role in {"target", "runtime"}}
+    for row in rows:
+        if row.path not in target:
+            raise ValidationError("global STA event has no original-path observation")
+    for path in target:
+        a, b = observations[path, "target"], observations[path, "runtime"]
+        if (a.launch_ns, a.arcs_ns) != (b.launch_ns, b.arcs_ns):
+            raise ValidationError("global STA target/runtime physical chains disagree")
     return rows
 
 
@@ -82,7 +91,9 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
     epoch = 1.0
     with (directory / "global_timing.v").open("w") as v, (directory / "global_timing.sdc").open("w") as s:
         v.write("module global_timing(\n" + ",\n".join(
-            f"input i{i}, output o{i}" for i in range(len(rows))) + ");\n")
+            f"i{i}, o{i}" for i in range(len(rows))) + ");\n")
+        for i in range(len(rows)):
+            v.write(f"input i{i};\noutput o{i};\n")
         s.write(f"create_clock -name epoch -period {epoch:.17g}\n")
         for i, row in enumerate(rows):
             chain = row.arcs_ns or (0.0,)
@@ -94,6 +105,7 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
                 v.write(f"{cells[value]} a{i}_{j} (.A({prev}), .Y({net}));\n")
                 prev = net
             s.write(f"set_input_delay -clock epoch -max 0 [get_ports i{i}]\n")
+            s.write(f"set_input_transition 0 [get_ports i{i}]\n")
             s.write(f"set_output_delay -clock epoch -max {epoch-(row.required_ns-row.launch_ns):.17g} [get_ports o{i}]\n")
         v.write("endmodule\n")
     (directory / "analyze.tcl").write_text(f'''proc analyze {{}} {{

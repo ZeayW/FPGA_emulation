@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 import pytest
 
@@ -44,6 +45,15 @@ def test_measurement_requires_exact_endpoint_coverage(tmp_path):
     path.write_text("endpoint\tarrival_ns\trequired_ns\tslack_ns\no0\t3\t4\t1\n")
     with pytest.raises(ValidationError, match="endpoints"):
         read_measurements(path, example())
+
+
+def test_reject_orphan_events_and_divergent_observation_chains():
+    with pytest.raises(ValidationError, match="no original-path"):
+        validate_checks(example()+[EventCheck("orphan", "tx", "tx", 0, (1,), 2)])
+    rows = example()
+    rows[3] = EventCheck("p", "runtime", "capture", 16, (1,), 100)
+    with pytest.raises(ValidationError, match="physical chains"):
+        validate_checks(rows)
 
 
 def test_check_population_validation_is_linear():
@@ -99,3 +109,25 @@ def test_real_opensta_fixed_events_and_late_tx(tmp_path):
     result = run_event_checks(late, tmp_path / "late", os.environ["EMUFLOW_TEST_OPENSTA"])
     assert result[0]["slack_ns"] == pytest.approx(-.5, abs=1e-3)
     assert result[3]["slack_ns"] > 0
+
+
+@pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENTIMER"), reason="OpenTimer driver not configured")
+@pytest.mark.parametrize("extra_paths", [0, 256])
+def test_real_opentimer_fixed_events(tmp_path, extra_paths):
+    rows = example()
+    rows[0] = EventCheck("p", "tx", "first", 0, (4.5,), 4)
+    for i in range(extra_paths):
+        # Mixed local/event observations, arc-chain lengths and target periods.
+        arcs = tuple((i+j+1)/37 for j in range(1+i % 5))
+        for role, deadline in (("target", 10+i % 7), ("runtime", 1000)):
+            rows.append(EventCheck(f"p{i}", role, "capture", i/8, arcs, deadline))
+    export_event_checks(rows, tmp_path)
+    subprocess.run([os.environ["EMUFLOW_TEST_OPENTIMER"], str(len(rows))],
+                   cwd=tmp_path, check=True)
+    result = read_measurements(tmp_path / "opentimer-measurements.tsv", rows)
+    for measured, row in zip(result, rows):
+        arrival = row.launch_ns+sum(row.arcs_ns)
+        assert measured["arrival_ns"] == pytest.approx(arrival, abs=1e-3)
+        assert measured["required_ns"] == pytest.approx(row.required_ns, abs=1e-3)
+        assert measured["slack_ns"] == pytest.approx(row.required_ns-arrival, abs=1e-3)
+    assert result[0]["slack_ns"] < 0 < result[3]["slack_ns"]

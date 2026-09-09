@@ -59,3 +59,18 @@ SDC and measurement TSV are active-run scratch. Only the compact terminal
 qualification report is retained after acceptance. A scalar Liberty arc carries
 the measured delay directly; a duplicate SDF carrying the same numbers is
 deliberately unnecessary.
+
+## Third-engine spot-check
+
+`scripts/opensta/opentimer_event_check.cpp` is an offline driver linked against
+upstream OpenTimer. It reads the same exported Liberty, Verilog and SDC, checks
+both transition polarities, and writes endpoint arrival/required/slack values.
+Compile it with C++17, the OpenTimer include root and `libOpenTimer.a`; set
+`EMUFLOW_TEST_OPENTIMER` to the resulting executable when running
+`tests/test_global_sta.py`. This is not a production dependency or a second
+large-design analysis pass. The exporter uses non-ANSI port declarations and
+an explicit zero input slew for portable constant-arc analysis.
+
+The tests include a deliberately missed TX with a legal final commit and a
+mixed 256-path arc-chain population. Passing these establishes model-level
+third-engine evidence only; it does not replace the real-design physical gate.
