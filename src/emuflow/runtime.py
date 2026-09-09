@@ -421,6 +421,13 @@ def validate_physical_summary(
     if summary.get("platform") != platform.name:
         raise ValidationError("physical summary platform does not match BoardDB")
     raw_fpgas = summary.get("fpgas")
+    if platform.physical_device is not None:
+        contract = platform.physical_device
+        if summary.get("physical_device") != contract:
+            raise ValidationError("physical summary device differs from BoardDB")
+        expected_grid = {k: contract[k] for k in ("width", "height")}
+        if not isinstance(raw_fpgas, list) or any(not isinstance(item, dict) or item.get("device_grid") != expected_grid for item in raw_fpgas):
+            raise ValidationError("physical FPGA grid differs from capacity contract")
     if not isinstance(raw_fpgas, list):
         raise ValidationError("physical summary fpgas must be an array")
     by_id = {

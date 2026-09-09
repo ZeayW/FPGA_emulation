@@ -8,6 +8,8 @@ from unittest.mock import patch
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
+from emuflow.fixed_device import materialize_device
+from tests.native_build import vtr_architecture_importer
 from emuflow.multi_fpga_physical_flow import (
     _partition_declares_dut_clock,
     _physical_clock_delays,
@@ -262,7 +264,10 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             write_json(split / "manifest.json", manifest)
             write_json(root / "schedule.json", {})
             architecture = root / "architecture.xml"
-            architecture.write_text("<architecture/>\n", encoding="utf-8")
+            bound_board = root / "board.json"
+            materialize_device(ROOT / "examples/architecture/vtr_k6_heterogeneous_fixture.xml",
+                               PLATFORM, architecture, bound_board, 12, 14,
+                               executable=str(vtr_architecture_importer()))
 
             runtime = {
                 "design": "design",
@@ -328,7 +333,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 placement = output_dir / "partition.place"
                 netlist.write_text("<block/>\n", encoding="utf-8")
                 placement.write_text(
-                    "Array size: 8 x 9 logic blocks\n", encoding="utf-8"
+                    "Array size: 12 x 14 logic blocks\n", encoding="utf-8"
                 )
                 return {
                     "status": "pass",
@@ -455,7 +460,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             ):
                 report = run_multi_fpga_physical_flow(
                     split,
-                    PLATFORM,
+                    bound_board,
                     root / "schedule.json",
                     root / "physical",
                     architecture=architecture,

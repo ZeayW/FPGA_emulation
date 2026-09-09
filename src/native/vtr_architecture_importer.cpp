@@ -213,15 +213,15 @@ void emit_layout(const pugi::xml_node& architecture) {
       if (
           rule_kind != "fill" && rule_kind != "perimeter" &&
           rule_kind != "corners" && rule_kind != "col" &&
-          rule_kind != "row") {
+          rule_kind != "row" && rule_kind != "single") {
         continue;
       }
       std::cout << "RULE\t" << hex_encode(attribute(candidate, "name", "default"))
                 << '\t' << hex_encode(rule_kind) << '\t'
                 << hex_encode(attribute(rule, "type")) << '\t'
                 << attribute(rule, "priority", "0") << '\t'
-                << attribute(rule, "startx", "-1") << '\t'
-                << attribute(rule, "starty", "-1") << '\t'
+                << attribute(rule, rule_kind == "single" ? "x" : "startx", "-1") << '\t'
+                << attribute(rule, rule_kind == "single" ? "y" : "starty", "-1") << '\t'
                 << attribute(rule, "repeatx", "0") << '\t'
                 << attribute(rule, "repeaty", "0") << '\n';
     }

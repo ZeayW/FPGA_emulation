@@ -477,6 +477,7 @@ int main() {
             ):
                 path.write_text(path.name, encoding="utf-8")
             boundary_query = root / "boundary-query.tsv"
+            architecture.write_text('<architecture><layout><fixed_layout name="fixed_test" width="8" height="9"/></layout></architecture>', encoding="utf-8")
             boundary_query.write_text(
                 "endpoint\tkind\tstart_pin\tend_pin\n", encoding="utf-8"
             )
@@ -493,6 +494,7 @@ int main() {
             local_output = root / "route" / "local-timing.tsv"
 
             def fake_run(arguments, **kwargs):
+                self.assertEqual(arguments[arguments.index("--device") + 1], "fixed_test")
                 self.assertEqual(
                     kwargs["env"]["EMUFLOW_VPR_BOUNDARY_QUERY"],
                     str(boundary_query.resolve()),
@@ -620,6 +622,7 @@ int main() {
                 path.write_text(path.name, encoding="utf-8")
             boundary_query = root / "boundary-query.tsv"
             logic_query = root / "logic-query.tsv"
+            architecture.write_text("<architecture/>", encoding="utf-8")
             local_query = root / "local-query.tsv"
             for path in (boundary_query, logic_query, local_query):
                 path.write_text(

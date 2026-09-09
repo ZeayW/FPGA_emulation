@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterable, Optional
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
+from .fixed_device import vpr_device_arguments
 from .route_artifact import validate_vpr_route_artifacts
 from .synthesis import _yosys_identifier, _yosys_quote
 
@@ -442,6 +443,7 @@ def run_vpr(
         "--route_chan_width",
         str(route_channel_width),
     ]
+    arguments.extend(vpr_device_arguments(architecture))
     completed = subprocess.run(
         arguments,
         cwd=output_dir,
@@ -538,6 +540,7 @@ def run_vpr_pack_place(
         "--seed",
         str(seed),
     ]
+    arguments.extend(vpr_device_arguments(architecture))
     completed = subprocess.run(
         arguments,
         cwd=output_dir,
@@ -1166,6 +1169,7 @@ def run_vpr_route_packed(
         "--write_timing_summary",
         str(timing_summary),
     ]
+    arguments.extend(vpr_device_arguments(inputs["architecture"]))
     if sdc_file is not None:
         arguments.extend(("--sdc_file", str(inputs["sdc_file"])))
     environment = os.environ.copy()

@@ -505,7 +505,9 @@ def _layout_grid(
         kind = rule["kind"]
         tile_type = rule["type"]
         priority = rule["priority"]
-        if kind == "fill":
+        if kind == "single":
+            place(rule["startx"], rule["starty"], tile_type, priority)
+        elif kind == "fill":
             for x in range(width):
                 for y in range(height):
                     place(x, y, tile_type, priority)

@@ -284,6 +284,7 @@ def physical_summary_item(result: Mapping[str, Any]) -> Dict[str, Any]:
     clocks = result["clocks"]
     return {
         "fpga": identity["fpga"],
+        **({"device_grid": result["device_grid"]} if "device_grid" in result else {}),
         **({"resources": dict(result["resources"]),
             "resource_measurement": result.get("resource_measurement")}
            if "resources" in result else {}),

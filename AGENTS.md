@@ -486,6 +486,18 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
 
 ## Benchmark and execution policy
 
+- Open full-flow experiments must bind BoardDB to one circuit-independent,
+  fixed physical VTR grid before synthesis/partitioning. Materialize its tile
+  locations and derive capacity from that exact XML; never pair template
+  capacities with VPR auto-sized devices. The same XML identity and dimensions
+  must reach Phase 7 and its independent summary validator. Failure to fit is
+  a failed experiment, never permission to grow the grid per partition/arm.
+- Resource capacities use documented units (LUT6-equivalent scalar bound,
+  FF, dedicated hard-block slots). Alternative packing modes are not additive;
+  scalar bounds do not establish simultaneous packing feasibility. Unsupported
+  layout expressions or overlapping tile footprints must be rejected rather
+  than silently approximated. VPR retains exact packing/routing checks.
+
 - Every new full-flow result must retain compact target-FPGA resource loading,
   separately for Phase 3 DUT and measured Phase 7 final logic including transport.
   Use capacity-weighted platform totals including unused FPGAs, plus per-FPGA

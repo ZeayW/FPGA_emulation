@@ -4139,6 +4139,47 @@ cross-stage behavior is promoted only after small, medium, and large
 real-design comparisons against the frozen single-stage flow.
 # Target-FPGA loading diagnostics
 
+## Fixed physical capacity (new open-flow requirement)
+
+Open `multi-fpga compile --physical` and `multi-fpga physical` now require an
+explicit fixed architecture and its bound BoardDB. They reject auto-sized or
+unbound platforms before expensive execution. Existing template BoardDB files
+remain topology inputs, not certified physical capacities.
+
+First choose one workload-independent width/height for all comparison arms:
+
+```sh
+PYTHONPATH=src python -m emuflow.fixed_device \
+  --architecture original-vtr.xml --board topology.json \
+  --width 120 --height 122 \
+  --output-xml fixed-vtr.xml --output-board fixed-board.json
+```
+
+Dimensions above illustrate syntax, not a recommended DLA size. Supply
+`fixed-board.json` as the flow platform and `fixed-vtr.xml` via
+`--physical-architecture` (or `--architecture` for the standalone physical
+command). Topology, links and utilization reserves are retained; capacity is
+replaced by the selected physical grid's resource bounds. No design is packed
+to choose that grid. Materialization requires the source-built
+`emuflow_vtr_arch_importer` (`--importer` can select its executable).
+
+The materializer supports one layout with literal fill/perimeter/corners,
+row/column and single rules. It emits an explicit, non-overlapping fixed tile
+map; unsupported expressions and partial tile footprints fail closed. Phase 3
+uses its bound capacities. VPR pack/place **and route** explicitly select the
+same named device; a dimension or architecture/capacity mismatch is rejected.
+Phase 7 summaries retain the fixed-device identity and observed grid dimensions.
+All FPGA nodes currently share one fixed device; heterogeneous devices are not
+yet supported by this command.
+
+Capacity counts are resource-specific scalar bounds: LUT6 capacity does not sum
+fractured LUT modes; dedicated RAM/multiplier sites are conservative macro
+slots, not bit-slice atom counts. Alternative resource maxima can share packing
+constraints. Passing scalar balance/capacity still requires VPR's exact packing
+and routing validation. The binding is an academic physical-device contract,
+not a vendor package-pin or hardware-closure claim. Historical auto-size runs
+are not retroactively fixed-device evidence.
+
 Final QoR reports include `resource_loading`: separate Phase 3 DUT and Phase 7
 resource usage, per FPGA and capacity-weighted platform totals (including idle
 FPGAs). `utilization` divides by raw BoardDB capacity; `effective_utilization`

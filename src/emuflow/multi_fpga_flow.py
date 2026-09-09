@@ -1335,10 +1335,15 @@ def run_multi_fpga_flow(
     # one-shot Phase 1--7 invocation.  Reject an unusable OpenPARF/PyTorch
     # binding before creating any frontend artifact or doing synthesis.
     if physical and physical_backend == "open":
+        from .fixed_device import validate_platform_device
+
         validate_openparf_runtime(
             install_root=physical_openparf_install,
             python_executable=physical_openparf_python,
         )
+        if physical_architecture is None:
+            raise ValidationError("open full flow requires an explicit fixed physical architecture and bound BoardDB")
+        validate_platform_device(Platform.load(platform_path), physical_architecture)
 
     output_dir = output_dir.resolve()
     if output_dir.exists():

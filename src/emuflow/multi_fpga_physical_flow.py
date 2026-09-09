@@ -584,6 +584,13 @@ def run_multi_fpga_physical_flow(
         raise EmuFlowError(
             f"multi-FPGA physical output must be an empty directory: {output_dir}"
         )
+    fixed_device = None
+    if backend == "open":
+        from .fixed_device import validate_platform_device
+
+        if architecture is None:
+            raise ValidationError("open physical flow requires a fixed architecture and bound BoardDB")
+        fixed_device = validate_platform_device(platform, architecture)
     output_dir.mkdir(parents=True, exist_ok=True)
     architecture_path = None
     if backend == "open":
@@ -722,6 +729,8 @@ def run_multi_fpga_physical_flow(
             width, height = read_vpr_placement_dimensions(
                 baseline_placement
             )
+            if fixed_device is not None and (width, height) != (fixed_device["width"], fixed_device["height"]):
+                raise ValidationError("VPR device dimensions differ from Phase 3 capacity contract")
             architecture_db = fpga_root / "architecture.json"
             timing_db = fpga_root / "timing.json"
             architecture_report = run_vtr_architecture_import(
@@ -973,6 +982,7 @@ def run_multi_fpga_physical_flow(
 
             physical_result = {
                 "resources": packed_logic_resources(architecture_path, packed_netlist),
+                "device_grid": {"width": width, "height": height},
                 "resource_measurement": "occupied-vpr-builtin-lut-ff; hard-block-units-unmeasured",
                 "schema": PHYSICAL_PARTITION_RESULT_SCHEMA,
                 "status": "pass",
@@ -1169,6 +1179,7 @@ def run_multi_fpga_physical_flow(
     physical_fpgas = [summary for _record, summary in partition_results]
 
     physical_summary = {
+        "physical_device": fixed_device,
         "schema": PHYSICAL_SUMMARY_SCHEMA,
         "status": "pass",
         "design": manifest["design"],

@@ -18,6 +18,8 @@ from emuflow.multi_fpga_flow import (
     validate_multi_fpga_flow_report,
 )
 from emuflow.platform import Platform
+from emuflow.fixed_device import materialize_device
+from tests.native_build import vtr_architecture_importer
 from emuflow.tdm import (
     TDM_BASELINE_PROVIDER,
     reconstruct_tdm_schedule_timing_paths,
@@ -446,6 +448,11 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             )
             fake_sta.chmod(fake_sta.stat().st_mode | stat.S_IXUSR)
             platform_name = Platform.load(PLATFORM).name
+            bound_arch = root / "fixed.xml"
+            bound_board = root / "board.json"
+            materialize_device(ROOT / "examples/architecture/vtr_k6_heterogeneous_fixture.xml",
+                               PLATFORM, bound_arch, bound_board, 12, 14,
+                               executable=str(vtr_architecture_importer()))
 
             def fake_physical(*args, **kwargs):
                 self.assertIsNotNone(kwargs["original_ir_path"])
@@ -514,7 +521,8 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 ),
             ):
                 report = run_multi_fpga_flow(
-                    platform_path=PLATFORM,
+                    platform_path=bound_board,
+                    physical_architecture=bound_arch,
                     output_dir=root / "flow",
                     yosys_json=ROOT / "examples/yosys/counter.json",
                     top="counter",

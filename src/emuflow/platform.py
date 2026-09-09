@@ -233,6 +233,7 @@ class Platform:
     links: Tuple[BoardLink, ...]
     clocks: Tuple[BoardClockContract, ...] = ()
     resets: Tuple[BoardResetContract, ...] = ()
+    physical_device: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "Platform":
@@ -688,6 +689,7 @@ class Platform:
             links=tuple(links),
             clocks=tuple(sorted(clocks, key=lambda item: item.id)),
             resets=tuple(sorted(resets, key=lambda item: item.id)),
+            physical_device=value.get("physical_device"),
         )
 
     @classmethod
@@ -710,6 +712,8 @@ class Platform:
                 "clocks": [clock.to_dict() for clock in self.clocks],
                 "resets": [reset.to_dict() for reset in self.resets],
             }
+        if self.physical_device is not None:
+            result["physical_device"] = self.physical_device
         return result
 
     def summary(self) -> Dict[str, Any]:

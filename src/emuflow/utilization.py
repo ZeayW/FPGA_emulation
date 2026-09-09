@@ -130,10 +130,13 @@ def build_utilization_report(platform: Platform, phase3: Mapping[str, Any],
     balance = {k: v for k, v in phase3.get("validation", {}).items()
                if k.startswith(("requested_balance", "effective_balance", "balance_auto", "balance_dimensions"))}
     return {"schema": "emuflow.resource-loading/v1", "platform": platform.name,
-            "capacity_scope": "BoardDB resource units; physical-device equivalence not certified",
+            "capacity_scope": ("fixed-physical-grid scalar bounds; exact packing checked by VPR"
+                               if platform.physical_device else
+                               "BoardDB resource units; physical-device equivalence not certified"),
             "policy": policy, "phase3_dut": dut, "phase7_final": final,
             "balance": balance,
             "comparison_contract": {"fpgas": [f.to_dict() for f in platform.fpgas],
+                                    "physical_device": platform.physical_device,
                                     "requested_balance": {k: v for k, v in balance.items() if k.startswith("requested_")},
                                     "policy": policy},
             "qualification": {"class": label, "principal_utilization": peak,
