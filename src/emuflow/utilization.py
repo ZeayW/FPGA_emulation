@@ -24,7 +24,22 @@ def packed_logic_resources(architecture: Path, packed_netlist: Path) -> dict:
     bit-slice atom counts. Leave those dimensions unmeasured.
     """
     models = {}
-    for _, element in ET.iterparse(architecture, events=("end",)):
+    arch_root = ET.parse(architecture).getroot()
+    envelopes = set()
+    layout = arch_root.find("layout")
+    if layout is not None and len(layout) == 1 and layout[0].tag == "fixed_layout":
+        from .fixed_device import _pb_resources
+
+        def mark_lut_envelopes(node):
+            if _pb_resources(node).get("lut") == 1:
+                envelopes.add(node.get("name"))
+            else:
+                for child in list(node.findall("pb_type")) + list(node.findall("mode/pb_type")):
+                    mark_lut_envelopes(child)
+
+        for pb in arch_root.findall("complexblocklist/pb_type"):
+            mark_lut_envelopes(pb)
+    for element in arch_root.iter():
         if element.tag == "pb_type" and element.get("blif_model"):
             name, model = element.get("name"), element.get("blif_model")
             if name in models and models[name] != model:
@@ -39,14 +54,27 @@ def packed_logic_resources(architecture: Path, packed_netlist: Path) -> dict:
         if event == "start":
             if stack:
                 stack[-1][1] = True
-            stack.append([element.get("name") != "open" and (not stack or stack[-1][0]), False])
+            stack.append([element.get("name") != "open" and (not stack or stack[-1][0]), False,
+                          element.get("instance", "").split("[", 1)[0] in envelopes, False])
         else:
-            active, has_children = stack.pop()
+            active, has_children, envelope, lut_used = stack.pop()
             if active and not has_children:
                 pb = element.get("instance", "").split("[", 1)[0]
                 field = {".names": "lut", ".latch": "ff"}.get(models.get(pb))
-                if field:
+                if field == "lut" and envelopes:
+                    if envelope:
+                        lut_used = True
+                    else:
+                        for parent in reversed(stack):
+                            if parent[2]:
+                                parent[3] = True
+                                break
+                        else:
+                            raise ValidationError("packed LUT lacks a bound LUT6 physical envelope")
+                elif field:
                     counts[field] += 1
+            if active and envelope and lut_used:
+                counts["lut"] += 1
             element.clear()
     return counts
 

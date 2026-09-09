@@ -4179,6 +4179,9 @@ constraints. Passing scalar balance/capacity still requires VPR's exact packing
 and routing validation. The binding is an academic physical-device contract,
 not a vendor package-pin or hardware-closure claim. Historical auto-size runs
 are not retroactively fixed-device evidence.
+For a bound device, final LUT usage counts occupied LUT6 physical envelopes:
+two packed LUT5 primitives sharing one fracturable envelope count once, not
+twice. FF usage still counts the actually occupied FF primitives.
 
 Final QoR reports include `resource_loading`: separate Phase 3 DUT and Phase 7
 resource usage, per FPGA and capacity-weighted platform totals (including idle

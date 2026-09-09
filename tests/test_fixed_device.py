@@ -9,6 +9,7 @@ from emuflow.platform import Platform
 from emuflow.io import read_json, write_json
 from emuflow.vtr_architecture import run_vtr_architecture_import
 from emuflow.runtime import validate_physical_summary, PHYSICAL_SUMMARY_SCHEMA
+from emuflow.utilization import packed_logic_resources
 from tests.native_build import vtr_architecture_importer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +65,20 @@ class FixedDeviceTest(unittest.TestCase):
                                  for f in platform.fpgas]}
             with self.assertRaisesRegex(ValidationError, "grid"):
                 validate_physical_summary(summary, {"design": "test"}, platform)
+
+    def test_fractured_luts_share_one_physical_capacity_unit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            xml, _, _ = self.materialize(root)
+            net = root / "packed.net"
+            net.write_text('<block name="top" instance="top[0]">'
+                           '<block name="logic" instance="fle[0]">'
+                           '<block name="a" instance="lut5[0]"/>'
+                           '<block name="b" instance="lut5[1]"/></block>'
+                           '<block name="ff_only" instance="fle[1]">'
+                           '<block name="open" instance="lut6[0]"/>'
+                           '<block name="q" instance="ff[0]"/></block></block>')
+            self.assertEqual(packed_logic_resources(xml, net), {"lut": 1, "ff": 1})
 
     def test_legacy_auto_capacity_is_not_a_fixed_device(self):
         with self.assertRaisesRegex(ValidationError, "fixed"):
