@@ -7,6 +7,8 @@ from emuflow.board_vcu118 import (
     build_vcu118_pair_boarddb,
 )
 from emuflow.errors import ValidationError
+from emuflow.board_support import validate_board_support_overlay
+from emuflow.serial_wrapper import serial_board_service_xdc
 from emuflow.platform import Platform
 
 
@@ -61,6 +63,24 @@ class Vcu118BindingTest(unittest.TestCase):
                          {"p": "W9", "n": "W8"})
         self.assertEqual(overlay["resets"][0]["polarity"], "active_high")
         self.assertEqual(overlay["resets"][0]["package_pin"], "L19")
+        self.assertEqual(len(overlay["static_outputs"]), 6)
+        self.assertEqual({item["package_pin"]: item["value"]
+                          for item in overlay["static_outputs"]},
+                         {"AM21": 0, "BA22": 1, "AN21": 0})
+        xdc = serial_board_service_xdc({"board_services": {
+            "reference_clocks": [], "resets": [],
+            "static_outputs": [item for item in overlay["static_outputs"] if item["fpga"] == "a"]}})
+        self.assertIn("PACKAGE_PIN BA22 [get_ports {board_static_a_qsfp1_resetl}]", xdc)
+        self.assertIn("IOSTANDARD LVCMOS18", xdc)
+
+    def test_static_control_rejects_pin_collision_and_invalid_values(self):
+        platform = Platform.from_dict(self.document)
+        for field, value in (("package_pin", "L19"), ("package_pin", "V7"),
+                             ("value", True), ("value", 2), ("id", "a;exit")):
+            overlay = build_vcu118_qsfp1_overlay(platform, self.sites)
+            overlay["static_outputs"][0][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValidationError):
+                validate_board_support_overlay(overlay, platform)
 
     def test_wrong_part_or_board_pin_rejected(self):
         for wrong_part in (True, False):

@@ -115,9 +115,16 @@ def build_vcu118_qsfp1_overlay(
     """
     if any(fpga.part != VCU118_PART for fpga in platform.fpgas):
         raise ValidationError("VCU118 overlay requires the exact VCU118 part")
-    clocks, resets, bindings = [], [], []
+    clocks, resets, bindings, controls = [], [], [], []
     expected = set()
     for fpga in platform.fpgas:
+        # UG1224 Table 3-22 plus the public VCU118 fpga_25g reference XDC/RTL.
+        # This fixed passive-DAC setup does not perform module management I2C.
+        for signal, pin, value in (("modsell", "AM21", 0),
+                                   ("resetl", "BA22", 1), ("lpmode", "AN21", 0)):
+            controls.append({"id": f"{fpga.id}_qsfp1_{signal}", "fpga": fpga.id,
+                             "package_pin": pin, "iostandard": "LVCMOS18",
+                             "value": value})
         clocks.append({
             "id": f"{fpga.id}_qsfp1_refclk", "fpga": fpga.id,
             "board_service": "qsfp1_refclk", "selected_signal": "QSFP_SI570_CLOCK",
@@ -163,7 +170,12 @@ def build_vcu118_qsfp1_overlay(
         "provenance": {"sources": [{
             "title": "AMD VCU118 UG1224 v1.5", "uri": VCU118_MANUAL,
             "locator": "Tables 3-7, 3-18, 3-22, 3-28; Programmable User Clock 2",
+        }, {
+            "title": "VCU118 fpga_25g reference control wiring and levels",
+            "uri": "https://github.com/alexforencich/verilog-ethernet/tree/master/example/VCU118/fpga_25g",
+            "locator": "fpga.xdc qsfp1 controls; rtl/fpga.v constant assignments",
         }]},
         "reference_clocks": clocks, "resets": resets, "transceiver_sites": bindings,
+        "static_outputs": controls,
     }
     return validate_board_support_overlay(overlay, platform)["normalized"]

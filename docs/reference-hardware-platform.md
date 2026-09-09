@@ -155,8 +155,17 @@ integration work and cannot qualify hardware or final timing by itself.
 The QSFP reference clock's documented power-on setting is 156.25 MHz; the
 setup contract requires cold power-on and no subsequent oscillator writes.
 The manual specifies 50 ppm tolerance, so separate boards must not be modeled
-as phase-locked. Module controls and reset/clock-domain behavior still need
-implementation and validation. A pair of VCU118 boards
+as phase-locked. The overlay now supplies MODSELL=0 (AM21), RESETL=1 (BA22),
+and LPMODE=0 (AN21), matching the public reference RTL/XDC's LVCMOS18 outputs.
+These constants are emitted in both the integration shell and the actual
+Vivado DUT+serial top, with package constraints. Optional overlay
+`static_outputs` owns these bindings; the wrapper manifest carries only the
+relevant FPGA's outputs. Validation rejects collisions with clock, reset and
+GT pins, duplicate IDs, unsafe identifiers and nonbinary values. This mechanism
+is for constant outputs only, not reset sequencing or a generic GPIO engine.
+Presence/interrupt monitoring, management I2C, and reset/clock-domain physical
+validation remain incomplete. No module-control false-path exceptions are
+copied from the upstream example. A pair of VCU118 boards
 is an explicitly assembled reference setup, not an AMD-qualified complete
 multi-FPGA emulation product.
 

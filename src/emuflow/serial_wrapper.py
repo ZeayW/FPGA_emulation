@@ -519,6 +519,14 @@ def serial_board_service_xdc(fpga_record: Mapping[str, Any]) -> str:
                 f"[get_ports {{{port}}}]",
             ]
         )
+    for output in services.get("static_outputs", []):
+        port = f"board_static_{output['id']}"
+        lines.extend([
+            f"set_property PACKAGE_PIN {output['package_pin']} [get_ports {{{port}}}]",
+            f"set_property IOSTANDARD {output['iostandard']} [get_ports {{{port}}}]",
+            f"set_property SLEW SLOW [get_ports {{{port}}}]",
+            f"set_property DRIVE 8 [get_ports {{{port}}}]",
+        ])
     return "\n".join(lines) + "\n"
 
 
@@ -1448,6 +1456,8 @@ def serial_integration_shell_rtl(
                 f"  {io} {record['ports'][polarity]}"
                 for polarity in ("p", "n")
             )
+    static_outputs = board_services.get("static_outputs", [])
+    ports.extend(f"  output wire board_static_{output['id']}" for output in static_outputs)
     lines = [
         "// Generated Phase 6 transport-to-serial-wrapper integration shell.",
         f"module emuflow_partition_shell_{_sv_name(fpga)} (",
@@ -1457,6 +1467,8 @@ def serial_integration_shell_rtl(
         "  wire local_links_ready;",
         "  wire links_ready;",
     ]
+    lines.extend(f"  assign board_static_{output['id']} = 1'b{output['value']};"
+                 for output in static_outputs)
     if runtime_sync_node is None or runtime_sync_embedded:
         lines.extend(["  assign links_ready = local_links_ready;", ""])
     else:
@@ -1720,6 +1732,9 @@ def build_serial_wrapper_manifest(
                 for reset_id in sorted({pair[1] for pair in service_pairs})
             ],
             "clock_reset_domains": domains,
+            **({"static_outputs": [item for item in overlay.get("static_outputs", [])
+                                    if item["fpga"] == fpga.id]}
+               if overlay is not None and overlay.get("static_outputs") else {}),
         }
         constraints_status = (
             "source_backed_emittable"

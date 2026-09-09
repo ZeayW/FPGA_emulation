@@ -116,6 +116,17 @@ def _phase6c_record(platform: Platform, fpga: str) -> dict:
 
 
 class VivadoBoardFlowTest(unittest.TestCase):
+    def test_static_board_controls_reach_actual_physical_top(self):
+        platform = Platform.load(PLATFORM)
+        fpga = platform.fpgas[0].id
+        record = _phase6c_record(platform, fpga)
+        record["board_services"] = {"static_outputs": [
+            {"id": "qsfp_resetl", "value": 1}]}
+        result = build_vivado_board_top(_placement_ir(platform, fpga), record)
+        self.assertIn("output wire board_static_qsfp_resetl", result)
+        self.assertIn("assign board_static_qsfp_resetl = 1'b1;", result)
+        self.assertNotIn(".board_static_qsfp_resetl(", result)
+
     def test_board_top_connects_mapped_partition_not_duplicate_transport(self):
         platform = Platform.load(PLATFORM)
         fpga = platform.fpgas[0].id

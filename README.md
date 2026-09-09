@@ -3075,9 +3075,12 @@ cable connectivity or transport delay. The new low-level
 `build_vcu118_pair_boarddb(latency_cycles=...)` fixes a two-board QSFP1 candidate
 using manufacturer-documented Black Box QSFP-H40G-CU1M-BB wiring, VU9P capacities
 and a 75% utilization ceiling. It explicitly labels caller-supplied latency
-as unmeasured and is not a qualified full-flow BSP: module controls, physical
-communication and global timing validation remain pending. Its six unit tests
-are structural evidence only.
+as unmeasured and is not a qualified full-flow BSP. The board overlay's optional
+`static_outputs` now emits the QSFP module-select/reset/low-power constants and
+pin constraints in the actual Vivado board top, with pin-collision validation.
+Module monitoring, clock/reset physical validation, communication routing and
+global timing qualification remain pending. Unit tests are structural evidence
+only.
 
 EmuFlow can materialize the three-board example documented in Arm's
 non-confidential MPS4 manual. The result is a hardware-kind BoardDB with three

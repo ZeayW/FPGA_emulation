@@ -545,6 +545,19 @@ endmodule
         self.assertIn(".tx_mps4_b2b_1_mps4_2(", shell)
         self.assertIn(".links_ready(links_ready)", shell)
 
+    def test_overlay_controls_survive_manifest_and_integration_shell(self):
+        overlay = copy.deepcopy(self.overlay)
+        overlay["static_outputs"] = [{"id": "qsfp_enable", "fpga": "mps4_1",
+            "package_pin": "ZZ99", "iostandard": "LVCMOS18", "value": 1}]
+        manifest = build_serial_wrapper_manifest(self.platform, self.binding,
+                                                  board_overlay=overlay)
+        source = next(item for item in manifest["fpgas"] if item["fpga"] == "mps4_1")
+        self.assertEqual(source["board_services"]["static_outputs"], overlay["static_outputs"])
+        shell = serial_integration_shell_rtl(self.platform, "mps4_1", source["sites"],
+            self.transports["mps4_1"], board_services=source["board_services"])
+        self.assertIn("output wire board_static_qsfp_enable", shell)
+        self.assertIn("assign board_static_qsfp_enable = 1'b1;", shell)
+
     def test_boarddb_pin_corruption_is_rejected(self) -> None:
         corrupted = copy.deepcopy(self.binding)
         corrupted["entries"][0]["source_package_pins"]["p"] = "WRONG"

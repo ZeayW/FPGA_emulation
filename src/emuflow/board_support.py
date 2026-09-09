@@ -242,6 +242,26 @@ def validate_board_support_overlay(
             }
         )
 
+    static_outputs = []
+    for raw in _records(overlay.get("static_outputs", []), "static_outputs"):
+        binding_id = _string(raw.get("id"), "static_outputs.id")
+        fpga = _string(raw.get("fpga"), "static_outputs.fpga")
+        pin = _string(raw.get("package_pin"), "static_outputs.package_pin")
+        standard = _string(raw.get("iostandard"), "static_outputs.iostandard")
+        value = raw.get("value")
+        if (not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", binding_id)
+                or not re.fullmatch(r"[A-Z]+[0-9]+", pin)
+                or not re.fullmatch(r"[A-Z][A-Z0-9_]*", standard)
+                or binding_id in used_ids or fpga not in fpga_ids
+                or (fpga, pin) in used_pins or type(value) is not int
+                or value not in (0, 1)):
+            raise ValidationError("invalid static board output or package-pin collision")
+        used_ids.add(binding_id)
+        used_pins.add((fpga, pin))
+        static_outputs.append({"id": binding_id, "fpga": fpga,
+                               "package_pin": pin, "iostandard": standard,
+                               "value": value})
+
     normalized = {
         "schema": BOARD_SUPPORT_OVERLAY_SCHEMA,
         "platform": platform.name,
@@ -249,6 +269,8 @@ def validate_board_support_overlay(
         "provenance": {"sources": [dict(item) for item in sources]},
         "reference_clocks": sorted(normalized_clocks, key=lambda item: item["id"]),
         "resets": sorted(normalized_resets, key=lambda item: item["id"]),
+        **({"static_outputs": sorted(static_outputs, key=lambda item: item["id"])}
+           if static_outputs else {}),
         "transceiver_sites": sorted(
             normalized_sites,
             key=lambda item: (item["fpga"], item["link"], item["physical_lane"]),

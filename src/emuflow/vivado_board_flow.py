@@ -194,7 +194,9 @@ def build_vivado_board_top(
             io_direction = "output" if direction == "tx" else "input"
             for polarity in ("p", "n"):
                 serial_ports.append((endpoint["ports"][polarity], io_direction))
-    serial_names = [name for name, _direction in serial_ports]
+    static_outputs = fpga_record.get("board_services", {}).get("static_outputs", [])
+    static_names = [f"board_static_{item['id']}" for item in static_outputs]
+    serial_names = [name for name, _direction in serial_ports] + static_names
     if (
         len(set(serial_names)) != len(serial_names)
         or external_names.intersection(serial_names)
@@ -208,6 +210,7 @@ def build_vivado_board_top(
         f"  {direction} wire {name}" for name, direction in serial_ports
     )
     declarations.append("  output wire links_ready_debug")
+    declarations.extend(f"  output wire {name}" for name in static_names)
     top = f"emuflow_board_top_{_sv_name(fpga)}"
     lines = [
         "// Generated board-integrated DUT+transport+serial top.",
@@ -216,6 +219,8 @@ def build_vivado_board_top(
         ");",
         "",
         "  wire board_links_ready;",
+        *(f"  assign {name} = 1'b{item['value']};"
+          for name, item in zip(static_names, static_outputs)),
         *link_wires,
         "  assign links_ready_debug = board_links_ready;",
         "",
