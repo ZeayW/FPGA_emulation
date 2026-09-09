@@ -79,6 +79,28 @@ def test_comparison_checks_each_path_and_event():
         compare_system_timing(values, reference)
 
 
+@pytest.mark.parametrize("damage", ["nan", "duplicate", "orphan", "bad-reference"])
+def test_comparison_rejects_corrupt_evidence(damage):
+    rows = example()
+    values = [{"path": r.path, "role": r.role, "event": r.event,
+               "arrival_ns": r.launch_ns+sum(r.arcs_ns), "required_ns": r.required_ns,
+               "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in rows]
+    reference = {"timing_scope": "cross-fpga-subset", "paths": [{
+        "path": "p", "system_delay_bound_ns": 31.5,
+        "target_required_time_ns": 18, "runtime_required_time_ns": 100,
+        "target_clock_slack_bound_ns": -13.5, "runtime_clock_slack_bound_ns": 68.5}]}
+    if damage == "nan":
+        values[0]["slack_ns"] = float("nan")
+    elif damage == "duplicate":
+        values.append(values[0])
+    elif damage == "orphan":
+        values[0]["path"] = "unknown"
+    else:
+        reference["paths"].append(reference["paths"][0])
+    with pytest.raises(ValidationError):
+        compare_system_timing(values, reference)
+
+
 def test_physical_binding_uses_raw_measurements():
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow.board_link_timing import build_board_link_timing_model

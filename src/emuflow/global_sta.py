@@ -271,12 +271,23 @@ def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
     if tolerance_ns <= 0 or not math.isfinite(tolerance_ns):
         raise ValidationError("invalid global STA comparison tolerance")
     expected = {p["path"]: p for p in reference["paths"]}
+    if not expected or len(expected) != len(reference["paths"]):
+        raise ValidationError("global STA reference has empty/duplicate original paths")
     observed = {}
+    identities = set()
     max_error = 0.0
     max_tolerance = tolerance_ns
     failures = 0
     for row in measurements:
         role = row["role"]
+        identity = (row["path"], role, row["event"])
+        if (role not in {"target", "runtime", "tx", "commit"}
+                or row["path"] not in expected or identity in identities):
+            raise ValidationError("global STA invalid/duplicate measurement identity")
+        identities.add(identity)
+        if any(isinstance(row[k], bool) or not math.isfinite(row[k])
+               for k in ("arrival_ns", "required_ns", "slack_ns")):
+            raise ValidationError("global STA nonfinite measurement")
         if role in {"tx", "commit"}:
             failures += row["slack_ns"] < -tolerance_ns
             continue
@@ -288,6 +299,8 @@ def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
         for actual, value in ((row["arrival_ns"], old["system_delay_bound_ns"]),
                               (row["required_ns"], old[f"{role}_required_time_ns"]),
                               (row["slack_ns"], old[f"{role}_clock_slack_bound_ns"])):
+            if isinstance(value, bool) or not math.isfinite(value):
+                raise ValidationError("global STA nonfinite reference")
             error = abs(actual-value)
             max_error = max(max_error, error)
             allowance = max(tolerance_ns, 4 * 2**-23 * abs(value))

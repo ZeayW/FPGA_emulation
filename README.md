@@ -768,6 +768,8 @@ late-TX counterexample and 256 mixed arc-chain paths. See the qualification
 document for the optional build/test interface; OpenTimer is not added to
 the production hot path. Target/runtime observations must share an identical
 physical chain, and orphan transport-event observations are rejected.
+The scalar comparison gate also rejects nonfinite values, duplicate event
+identities and duplicate original-path references before computing metrics.
 The same option is available on `multi-fpga compile` for a fresh complete
 physical flow. Its terminal validator reconstructs the binding and verifies
 the retained engine scalars; it does not invoke OpenSTA a second time.
