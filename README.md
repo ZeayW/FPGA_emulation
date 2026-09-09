@@ -770,6 +770,8 @@ the production hot path. Target/runtime observations must share an identical
 physical chain, and orphan transport-event observations are rejected.
 The scalar comparison gate also rejects nonfinite values, duplicate event
 identities and duplicate original-path references before computing metrics.
+The compact check records OpenSTA's version/revision from its existing startup
+log; terminal validation verifies that record without launching another STA.
 The same option is available on `multi-fpga compile` for a fresh complete
 physical flow. Its terminal validator reconstructs the binding and verifies
 the retained engine scalars; it does not invoke OpenSTA a second time.

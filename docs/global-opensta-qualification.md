@@ -22,6 +22,12 @@ signoff or become the default authority before the following gates pass.
    composer as cross-check, and fail discrepancies. An independent OpenTimer
    spot-check remains a separate gate, not evidence supplied by OpenSTA itself.
 
+The tested `adopt_opensta_results` projection updates the canonical path values
+and every target/runtime scalar alias together. It is not yet enabled by the
+flow: the real-design gate remains pending. It preserves incomplete/failing
+upstream status and fails a missed transport event, even with legal final
+latency. Engine provenance comes from the existing process startup banner.
+
 ## Why two types of observation are necessary
 
 An ordinary STA path stops at each transport register. Its register-to-register

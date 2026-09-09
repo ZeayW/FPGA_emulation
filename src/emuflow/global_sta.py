@@ -11,6 +11,7 @@ No Python-computed arrival, slack, or TDM wait enters the exported circuit.
 from __future__ import annotations
 
 import math
+import re
 import subprocess
 from collections import Counter
 from dataclasses import dataclass
@@ -175,6 +176,17 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
     return read_measurements(output, rows)
 
 
+def read_engine_identity(log_path: Path) -> dict:
+    """Read the existing process banner, without another tool invocation."""
+    with log_path.open() as stream:
+        for _ in range(16):
+            line = stream.readline(4096)
+            match = re.match(r"OpenSTA\s+(\S+)\s+([0-9a-f]{7,40})\b", line)
+            if match:
+                return {"name": "OpenSTA", "version": match[1], "revision": match[2]}
+    raise ValidationError("global OpenSTA log lacks engine version/revision")
+
+
 def bind_physical_checks(runtime, routes, schedule, physical, platform):
     """Bind canonical measurements to event checks without composing delays.
 
@@ -324,3 +336,44 @@ def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
             "relative_float32_epsilons": 4,
             "metrics": summary,
             "tns_definition": "sum-negative-slack-once-per-original-TimingPathDB-path"}
+
+
+def adopt_opensta_results(timing, measurements):
+    """Project checked engine values into the canonical report, in place.
+
+    This projection is separate from qualification. The flow must not enable
+    it until its complete physical qualification gate has passed. Keep the
+    independent composer as the comparison input, not a second persisted path
+    population. All public scalar aliases are updated together.
+    """
+    gate = compare_system_timing(measurements, timing)
+    observed = {(r["path"], r["role"]): r for r in measurements
+                if r["role"] in {"target", "runtime"}}
+    for path in timing["paths"]:
+        path["system_delay_bound_ns"] = observed[path["path"], "target"]["arrival_ns"]
+        for role in ("target", "runtime"):
+            row = observed[path["path"], role]
+            path[f"{role}_required_time_ns"] = row["required_ns"]
+            path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
+    for role in ("target", "runtime"):
+        worst = min(timing["paths"], key=lambda p: (
+            p[f"{role}_clock_slack_bound_ns"], p["path"]))
+        metrics = gate["metrics"][role]
+        timing[f"{role}_clock"].update({
+            "worst_path": worst["path"],
+            "worst_slack_bound_ns": metrics["wns_ns"],
+            "negative_slack_paths": metrics["negative_paths"],
+            "total_negative_slack_bound_ns": metrics["original_path_tns_ns"],
+            "tns_bound_ns": metrics["original_path_tns_ns"],
+        })
+    maximum = max(p["system_delay_bound_ns"] for p in timing["paths"])
+    timing["summary"]["maximum_system_delay_bound_ns"] = maximum
+    timing["runtime_clock"]["minimum_safe_period_bound_ns"] = maximum
+    timing["runtime_clock"]["maximum_safe_frequency_bound_mhz"] = (
+        1000.0 / maximum if maximum > 0 else None)
+    if gate["status"] != "pass" or gate["metrics"]["runtime"]["wns_ns"] < 0:
+        timing["status"] = "fail"
+    gate["authority"] = "opensta"
+    gate["cross_checker"] = "independent-python-event-composer"
+    timing["global_opensta"] = gate
+    return gate

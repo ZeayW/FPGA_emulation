@@ -5,8 +5,8 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.global_sta import (
-    EventCheck, bind_physical_checks, compare_system_timing, export_event_checks,
-    read_measurements, run_event_checks, validate_checks,
+    EventCheck, adopt_opensta_results, bind_physical_checks, compare_system_timing, export_event_checks,
+    read_engine_identity, read_measurements, run_event_checks, validate_checks,
 )
 
 
@@ -45,6 +45,16 @@ def test_measurement_requires_exact_endpoint_coverage(tmp_path):
     path.write_text("endpoint\tarrival_ns\trequired_ns\tslack_ns\no0\t3\t4\t1\n")
     with pytest.raises(ValidationError, match="endpoints"):
         read_measurements(path, example())
+
+
+def test_engine_identity_from_existing_banner(tmp_path):
+    log = tmp_path / "opensta.log"
+    log.write_text("startup warning\nOpenSTA 2.6.0 0c6421e022 Copyright (c) 2024\n")
+    assert read_engine_identity(log) == {
+        "name": "OpenSTA", "version": "2.6.0", "revision": "0c6421e022"}
+    log.write_text("unidentified engine\n")
+    with pytest.raises(ValidationError, match="engine version"):
+        read_engine_identity(log)
 
 
 def test_reject_orphan_events_and_divergent_observation_chains():
@@ -99,6 +109,36 @@ def test_comparison_rejects_corrupt_evidence(damage):
         reference["paths"].append(reference["paths"][0])
     with pytest.raises(ValidationError):
         compare_system_timing(values, reference)
+
+
+@pytest.mark.parametrize("initial_status,late", [("pass", False), ("incomplete", False),
+                                               ("fail", False), ("pass", True)])
+def test_authority_projection_updates_paths_and_every_scalar_alias(initial_status, late):
+    reference = {"status": initial_status, "timing_scope": "cross-fpga-subset",
+        "target_clock": {}, "runtime_clock": {}, "summary": {}, "paths": [{
+        "path": "p", "system_delay_bound_ns": 31.5,
+        "target_required_time_ns": 18, "runtime_required_time_ns": 100,
+        "target_clock_slack_bound_ns": -13.5, "runtime_clock_slack_bound_ns": 68.5}]}
+    measured = [{"path": r.path, "role": r.role, "event": r.event,
+                 "arrival_ns": r.launch_ns+sum(r.arcs_ns), "required_ns": r.required_ns,
+                 "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in example()]
+    for row in measured:
+        if row["role"] in {"target", "runtime"}:
+            row["arrival_ns"] += 1e-5
+            row["slack_ns"] -= 1e-5
+    if late:
+        measured[0]["slack_ns"] = -0.5
+    gate = adopt_opensta_results(reference, measured)
+    assert gate["authority"] == "opensta"
+    assert reference["status"] == ("fail" if late else initial_status)
+    assert reference["paths"][0]["system_delay_bound_ns"] == measured[2]["arrival_ns"]
+    assert reference["summary"]["maximum_system_delay_bound_ns"] == measured[2]["arrival_ns"]
+    for role, row in (("target", measured[2]), ("runtime", measured[3])):
+        group = reference[f"{role}_clock"]
+        assert group["worst_slack_bound_ns"] == row["slack_ns"]
+        assert group["tns_bound_ns"] == group["total_negative_slack_bound_ns"]
+        assert group["tns_bound_ns"] == min(0.0, row["slack_ns"])
+        assert reference["paths"][0][f"{role}_clock_slack_bound_ns"] == row["slack_ns"]
 
 
 def test_physical_binding_uses_raw_measurements():
