@@ -6,7 +6,7 @@ Replace bespoke global timing arithmetic with an independently validated STA
 model of the **existing** frozen transport protocol. Do not change partitioning,
 system routing, TDM assignment or transport RTL to make the model easier.
 
-The implementation is opt-in. With `--global-sta-executable`, OpenSTA owns the
+Physical flows default to `--global-timing-engine opensta`. OpenSTA owns the
 numeric results and does not invoke the Python timing composer. It does not claim
 hardware signoff. The acceptance gates are:
 

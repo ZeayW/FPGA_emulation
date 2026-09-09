@@ -74,7 +74,12 @@ def run_phase7c(
     simulation_frames: int = 12,
     global_sta_executable: Optional[str] = None,
     global_sta_results_dir: Optional[Path] = None,
+    global_timing_engine: str = "opensta",
 ) -> Dict[str, Any]:
+    if global_timing_engine not in {"opensta", "python"}:
+        raise ValidationError("unsupported global timing engine")
+    if global_timing_engine == "python" and (global_sta_executable is not None or global_sta_results_dir is not None):
+        raise ValidationError("Python timing cannot accept OpenSTA options")
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
     runtime = build_virtual_runtime(schedule, platform)
@@ -146,7 +151,8 @@ def run_phase7c(
             **physical_binding["metrics"],
         }
     sta_timing = None
-    if global_sta_executable is not None or global_sta_results_dir is not None:
+    if ((global_timing_engine == "opensta" and physical_summary is not None)
+            or global_sta_executable is not None or global_sta_results_dir is not None):
         if global_sta_executable is not None and global_sta_results_dir is not None:
             raise ValidationError("choose live OpenSTA or explicit saved-result validation")
         if physical_summary is None or routes is None:

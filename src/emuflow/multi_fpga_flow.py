@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import shutil
 import tempfile
 import time
@@ -1099,6 +1100,7 @@ def validate_multi_fpga_flow_bundle(
             routes_path=routes_path if physical_summary_path is not None else None,
             board_link_timing_path=board_link_timing_path,
             global_sta_results_dir=flow_root / "runtime/global-opensta" if standalone_sta else None,
+            global_timing_engine="opensta" if standalone_sta else "python",
         )
         replay_qor = read_json(Path(temporary) / "qor_report.json")
     if "global_opensta" in stored_qor.get("timing", {}) and not standalone_sta:
@@ -1245,6 +1247,7 @@ def run_multi_fpga_flow(
     physical_vivado_route_directive: str = "Default",
     physical_workers: int = 1,
     global_sta_executable: Optional[str] = None,
+    global_timing_engine: str = "opensta",
     serial_bsp_phy_provider: Optional[Path] = None,
     serial_bsp_runtime_sync_provider: Optional[Path] = None,
     serial_bsp_board_overlay: Optional[Path] = None,
@@ -1256,6 +1259,10 @@ def run_multi_fpga_flow(
 ) -> Dict[str, Any]:
     """Compile RTL/EmuIR through the checked board-independent split."""
 
+    if global_timing_engine not in {"opensta", "python"}:
+        raise EmuFlowError("unsupported global timing engine")
+    if global_timing_engine == "python" and global_sta_executable is not None:
+        raise EmuFlowError("Python timing cannot accept --global-sta-executable")
     if global_sta_executable is not None and not physical:
         raise EmuFlowError("global OpenSTA qualification requires --physical")
     if mapping_profile not in MULTI_FPGA_MAPPING_PROFILES:
@@ -1380,6 +1387,11 @@ def run_multi_fpga_flow(
             install_root=physical_openparf_install,
             python_executable=physical_openparf_python,
         )
+    if physical and global_timing_engine == "opensta":
+        from .native_tools import resolve_native_executable
+        global_sta_executable = resolve_native_executable("sta", global_sta_executable)
+        if not Path(global_sta_executable).is_file() or not os.access(global_sta_executable, os.X_OK):
+            raise EmuFlowError("global OpenSTA executable is unavailable or not executable")
 
     output_dir = output_dir.resolve()
     if output_dir.exists():
@@ -1997,6 +2009,7 @@ def run_multi_fpga_flow(
             routes_path=routes_path,
             board_link_timing_path=copied_link_timing_path,
             global_sta_executable=global_sta_executable,
+            global_timing_engine=global_timing_engine,
         )
         if effective_physical_architecture is None:
             fetched_architecture = (
@@ -2204,6 +2217,7 @@ def run_multi_fpga_flow(
         runtime_root,
         assignment_path=assignment_path,
         global_sta_executable=global_sta_executable,
+        global_timing_engine=global_timing_engine,
         physical_summary_path=physical_summary_path,
         routes_path=routes_path if physical_summary_path is not None else None,
         board_link_timing_path=(

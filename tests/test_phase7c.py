@@ -1034,6 +1034,7 @@ class Phase7CTest(unittest.TestCase):
                 paths["phase6"],
                 root / "closed",
                 physical_summary_path=paths["physical"],
+                global_timing_engine="python",
                 routes_path=paths["routes"],
                 board_link_timing_path=paths["link_timing"],
             )
@@ -1135,6 +1136,7 @@ class Phase7CTest(unittest.TestCase):
                 paths["phase6"],
                 root / "closed",
                 physical_summary_path=paths["physical"],
+                global_timing_engine="python",
                 routes_path=paths["routes"],
             )
             self.assertEqual(closed["status"], "incomplete")

@@ -524,6 +524,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     timing_driven=False,
                     clock_periods={"clk": 10.0},
                     opensta=str(fake_sta),
+                    global_sta_executable=str(fake_sta),
                     router=str(tlr_router()),
                     frame_slots=32,
                     phase6_provider="baseline",

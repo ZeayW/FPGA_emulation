@@ -749,22 +749,28 @@ The original refinement artifact is retained and hash-bound; this lane
 coalescing is explicitly reported as an EmuFlow timing-preservation extension,
 not attributed to Chimew.
 
-### Opt-in global OpenSTA timing authority
+### Default global OpenSTA timing authority
 
 The staged acceptance plan is in [global OpenSTA qualification](docs/global-opensta-qualification.md).
 
-`phase7c --global-sta-executable /absolute/path/to/sta` additionally exports
+Physical `phase7c` and `multi-fpga compile --physical` default to standalone
+OpenSTA (`--global-timing-engine opensta`). The default exports
 a measured-arc timing abstraction and independently checks every original
 path's arrival, required time and slack using OpenSTA alone.
 The exporter consumes logic-segment, boundary and directed BoardLinkTimingDB
 inputs, not Python-computed path delays. Without an explicit BoardLinkTimingDB,
 it uses the existing BoardDB cycle-latency model (model-only, not measured link
 timing). Missing physical logic/interface data, missing or unconstrained observations
-and numerical disagreement fail the check. With this option, OpenSTA supplies
+and invalid observations fail the check. OpenSTA supplies
 the canonical path values and target/runtime metrics. It does **not** run the
 Python timing composer, even to prebuild a report or check the result. The
-Python comparison belongs to explicit qualification tests only. Without the
-option, the Python timing engine remains selected. Initial hand-computed two-cut
+Python comparison belongs to explicit qualification tests only. Select the old
+engine explicitly with `--global-timing-engine python`. OpenSTA is located in
+the native installation (`EMUFLOW_NATIVE_ROOT` or the in-tree build); override
+its location with `--global-sta-executable /absolute/path/to/sta`. A missing
+OpenSTA installation fails the physical compile preflight, with no silent
+Python fallback. Non-physical generation still produces only pre-physical
+runtime estimates, not global physical STA. Initial hand-computed two-cut
 checks and 201 randomized/long-frame checks executed successfully on OpenSTA
 2.6.0. Real Koios DLA medium / EDA2023 case6 physical-flow qualification has
 also passed terminal independent validation with 10 naturally selected
@@ -773,7 +779,7 @@ The earlier dual-execution authority integration passed terminal independent
 validation at `e90698cf` (962 tests, three optional skips). The subsequent
 standalone execution change has separate regression coverage; those historical
 DLA results are not claimed as a new standalone DLA run or runtime comparison.
-Standalone regression passed 55 tests (one optional skip). A real OpenSTA
+Standalone/default-selection regression passed 56 tests (one optional skip). A real OpenSTA
 five-observation physical-binding smoke test also passed with calls to the old
 timing composer and comparison function explicitly forbidden.
 An offline OpenTimer driver also checks the exported raw model, including a
@@ -793,7 +799,7 @@ log. Constraint binding uses indexed linked-cell port lookup: OpenSTA's ordinary
 observation would make constraint loading quadratic. The portable OpenTimer SDC
 reader retains its symbolic port lookup. The
 terminal validator verifies the engine record without launching another STA.
-The same option is available on `multi-fpga compile` for a fresh complete
+The same engine/path options are available on `multi-fpga compile` for a fresh complete
 physical flow. Its terminal validator reconstructs the binding and verifies
 the retained engine scalars; it does not invoke OpenSTA a second time.
 

@@ -194,7 +194,7 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch):
     run_phase7c(*(tmp_path / f"{n}.json" for n in
                  ("schedule", "platform", "phase3", "phase4", "phase5", "phase6")),
                 tmp_path / "out", physical_summary_path=tmp_path / "physical.json",
-                routes_path=tmp_path / "routes.json", global_sta_executable="test-sta")
+                routes_path=tmp_path / "routes.json")
     timing = read_json(tmp_path / "out/qor_report.json")["timing"]
     assert timing["global_opensta"]["execution"] == "standalone"
     assert "cross_checker" not in timing["global_opensta"]
@@ -223,6 +223,22 @@ def test_standalone_report_preserves_event_gate_without_comparison(late, monkeyp
     with pytest.raises(ValidationError):
         sta.build_opensta_timing({"virtual_dut_clock": {"nominal_period_ns": 100}}, metadata,
                                 [r for r in rows if r["role"] != "runtime"])
+
+
+def test_engine_defaults_are_uniform_and_python_is_explicit():
+    import inspect
+    from emuflow.cli import _build_parser
+    from emuflow.phase7c import run_phase7c
+    from emuflow.multi_fpga_flow import run_multi_fpga_flow
+    for fn in (run_phase7c, run_multi_fpga_flow):
+        assert inspect.signature(fn).parameters["global_timing_engine"].default == "opensta"
+    parser = _build_parser()
+    commands = [["multi-fpga", "compile", "--out", "out", "--platform", "p"],
+                ["phase7c", "--out", "out", "--schedule", "s", "--platform", "p",
+                 "--phase3-report", "a", "--phase4-report", "b", "--phase5-report", "c", "--phase6-report", "d"]]
+    for cmd in commands:
+        assert parser.parse_args(cmd).global_timing_engine == "opensta"
+        assert parser.parse_args(cmd + ["--global-timing-engine", "python"]).global_timing_engine == "python"
 
 
 def test_physical_binding_uses_raw_measurements():
