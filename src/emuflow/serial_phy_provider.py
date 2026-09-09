@@ -313,6 +313,17 @@ def validate_serial_phy_provider(
             raise ValidationError(
                 "serial PHY v3 line rate must equal pcs_clock_mhz * 66 bits"
             )
+        # The selected in-tree framer accepts one 64-bit record every three
+        # PCS clocks (HEADER/BODY/TERM), not one record per 66-bit wire block.
+        # This necessary nominal-rate bound does not qualify CDC margins,
+        # control traffic, training, or board latency.
+        if normalized_protocol["payload_bits_per_lane_per_cycle"] != 64:
+            raise ValidationError("serial PHY v3 record payload must be 64 bits")
+        if (normalized_protocol["user_clock_mhz"] * 3.0
+                > normalized_protocol["pcs_clock_mhz"] + 1e-9):
+            raise ValidationError(
+                "serial PHY v3 user rate exceeds three-cycle PCS record capacity"
+            )
     payload_width = normalized_protocol["payload_bits_per_lane_per_cycle"]
     if (
         isinstance(payload_width, bool)

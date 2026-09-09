@@ -3049,6 +3049,14 @@ a separate validation requirement.
 
 ### Source-backed Arm MPS4 BoardDB
 
+The in-tree serial PHY v3 uses a three-PCS-cycle envelope per 64-bit record.
+Provider validation therefore requires a 64-bit payload and a nominal user
+clock no greater than one third of the PCS clock. At 156.25 MHz PCS clock,
+50 MHz user clock passes this necessary throughput bound; 100 MHz does not,
+even though its payload rate is below the serial line rate. This check does
+not establish oscillator tolerance margins, control-traffic capacity, or
+measured link latency.
+
 The [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

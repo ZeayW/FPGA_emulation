@@ -46,6 +46,14 @@ part of this platform task. Preserve the current main defaults.
 
 ## Evidence boundary
 
+The current record envelope is implemented in
+`rtl/pcs/emuflow_xgmii_record_framer.sv`: HEADER, BODY, TERM occupy three PCS
+clocks per 64-bit payload. Serial provider v3 validation now enforces this
+necessary nominal-rate bound. For 156.25 MHz PCS and 50 MHz user clocks the
+nominal service rate is 52.0833 million records/s versus 50 million arrivals/s.
+Do not treat the remaining margin as proof of CDC, oscillator tolerance or
+control-traffic feasibility; verify those separately for the selected endpoint.
+
 ### Vendor installation preflight
 
 Run `scripts/reference_hardware_preflight.tcl` from an isolated scratch directory

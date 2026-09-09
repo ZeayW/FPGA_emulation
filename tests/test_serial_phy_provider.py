@@ -324,6 +324,21 @@ class SerialPhyProviderTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "pcs_clock_mhz"):
             validate_serial_phy_provider(wrong_rate, self.manifest_path)
 
+        overloaded = copy.deepcopy(manifest)
+        overloaded["protocol"]["user_clock_mhz"] = 100.0
+        # 6.4 Gbps is below the 10.3125-Gbps line rate but exceeds the
+        # three-cycle record envelope's sustainable payload rate.
+        with self.assertRaisesRegex(ValidationError, "three-cycle PCS"):
+            validate_serial_phy_provider(overloaded, self.manifest_path)
+        boundary = copy.deepcopy(manifest)
+        boundary["protocol"]["user_clock_mhz"] = 156.25 / 3
+        self.assertEqual(validate_serial_phy_provider(
+            boundary, self.manifest_path)["status"], "pass")
+        wrong_width = copy.deepcopy(manifest)
+        wrong_width["protocol"]["payload_bits_per_lane_per_cycle"] = 128
+        with self.assertRaisesRegex(ValidationError, "record payload"):
+            validate_serial_phy_provider(wrong_width, self.manifest_path)
+
     def test_v2_hardware_requires_common_and_channel_hierarchy(self) -> None:
         source = self.root / "quad-hardware.sv"
         source.write_text(QUAD_PROVIDER_SOURCE, encoding="utf-8")
