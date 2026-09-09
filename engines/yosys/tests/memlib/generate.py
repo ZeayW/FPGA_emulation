@@ -91,6 +91,25 @@ TESTS += [
 ]
 
 ### initialization values testing
+
+# Exercise index lifetime across several independent emissions. Connectivity
+# may be constructed lazily, but must not be reused after a memory is mapped.
+MANY_INDEPENDENT = """
+module top(input clk, input [5:0] ra, wa, input [15:0] we,
+           input [127:0] wd, output reg [127:0] rd);
+genvar i;
+for (i = 0; i < 16; i = i + 1) begin: bank
+    (* ram_style="block" *) reg [7:0] mem [0:63];
+    always @(posedge clk) begin
+        if (we[i]) mem[wa] <= wd[8*i+:8];
+        rd[8*i+:8] <= mem[ra];
+    end
+end
+endmodule
+"""
+TESTS.append(Test("many_independent", MANY_INDEPENDENT, ["block_sdp"], [],
+                  {"RAM_BLOCK_SDP": 16}))
+
 LUT_INIT = """
 module top(clk, ra, wa, rd, wd, we);
 

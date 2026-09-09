@@ -1077,6 +1077,10 @@ timer and guide call sites additionally use explicit streamed views.
 The Yosys external build likewise binds its parser regeneration to the
 configured versioned Bison and Flex executables (including Flex's runtime
 header) instead of assuming those tools are installed in the host `PATH`.
+Its memory-library mapper builds full-module SAT connectivity only when a
+port-compatibility query needs it; it still invalidates that view after each
+mapped memory. This avoids unnecessary whole-module indexing for independent
+RAMs without changing mapping costs or dropping compatibility checks.
 The CUDD external build consumes the checked-in Autotools outputs directly and
 disables timestamp-triggered regeneration. A clean clone therefore does not
 silently depend on the historical `aclocal-1.14` executable or modify imported

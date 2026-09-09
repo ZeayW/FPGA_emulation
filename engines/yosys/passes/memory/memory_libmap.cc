@@ -131,12 +131,12 @@ typedef std::vector<MemConfig> MemConfigs;
 
 struct MapWorker {
 	Module *module;
-	ModWalker modwalker;
+	std::unique_ptr<ModWalker> modwalker;
 	SigMap sigmap;
 	SigMap sigmap_xmux;
 	FfInitVals initvals;
 
-	MapWorker(Module *module) : module(module), modwalker(module->design, module), sigmap(module), sigmap_xmux(module), initvals(&sigmap, module) {
+	MapWorker(Module *module) : module(module), sigmap(module), sigmap_xmux(module), initvals(&sigmap, module) {
 		for (auto cell : module->cells())
 		{
 			if (cell->type == ID($mux))
@@ -150,6 +150,15 @@ struct MapWorker {
 					sigmap_xmux.add(cell->getPort(ID::Y), sig_a);
 			}
 		}
+	}
+
+	ModWalker &get_modwalker() {
+		// Only SAT-based port compatibility needs full module connectivity.
+		// The worker is still replaced after emission, so this view can never
+		// survive a mutation of the module it describes.
+		if (!modwalker)
+			modwalker = std::make_unique<ModWalker>(module->design, module);
+		return *modwalker;
 	}
 };
 
@@ -170,7 +179,7 @@ struct Swizzle {
 
 struct MemMapping {
 	MapWorker &worker;
-	QuickConeSat qcsat;
+	std::unique_ptr<QuickConeSat> qcsat;
 	Mem &mem;
 	const Library &lib;
 	const PassOptions &opts;
@@ -185,7 +194,7 @@ struct MemMapping {
 	dict<std::pair<int, int>, bool> wr_excludes_srst_cache;
 	std::string rejected_cfg_debug_msgs;
 
-	MemMapping(MapWorker &worker, Mem &mem, const Library &lib, const PassOptions &opts) : worker(worker), qcsat(worker.modwalker), mem(mem), lib(lib), opts(opts) {
+	MemMapping(MapWorker &worker, Mem &mem, const Library &lib, const PassOptions &opts) : worker(worker), mem(mem), lib(lib), opts(opts) {
 		determine_style();
 		logic_ok = determine_logic_ok();
 		if (GetSize(mem.wr_ports) == 0)
@@ -243,10 +252,17 @@ struct MemMapping {
 		return worker.sigmap_xmux(raddr) == worker.sigmap_xmux(waddr);
 	}
 
+	QuickConeSat &get_qcsat() {
+		if (!qcsat)
+			qcsat = std::make_unique<QuickConeSat>(worker.get_modwalker());
+		return *qcsat;
+	}
+
 	int get_wr_en(int wpidx) {
 		auto it = wr_en_cache.find(wpidx);
 		if (it != wr_en_cache.end())
 			return it->second;
+		auto &qcsat = get_qcsat();
 		int res = qcsat.ez->expression(qcsat.ez->OpOr, qcsat.importSig(mem.wr_ports[wpidx].en));
 		wr_en_cache.insert({wpidx, res});
 		return res;
@@ -257,6 +273,7 @@ struct MemMapping {
 		auto it = wr_implies_rd_cache.find(key);
 		if (it != wr_implies_rd_cache.end())
 			return it->second;
+		auto &qcsat = get_qcsat();
 		int wr_en = get_wr_en(wpidx);
 		int rd_en = qcsat.importSigBit(mem.rd_ports[rpidx].en[0]);
 		qcsat.prepare();
@@ -270,6 +287,7 @@ struct MemMapping {
 		auto it = wr_excludes_rd_cache.find(key);
 		if (it != wr_excludes_rd_cache.end())
 			return it->second;
+		auto &qcsat = get_qcsat();
 		int wr_en = get_wr_en(wpidx);
 		int rd_en = qcsat.importSigBit(mem.rd_ports[rpidx].en[0]);
 		qcsat.prepare();
@@ -283,6 +301,7 @@ struct MemMapping {
 		auto it = wr_excludes_srst_cache.find(key);
 		if (it != wr_excludes_srst_cache.end())
 			return it->second;
+		auto &qcsat = get_qcsat();
 		int wr_en = get_wr_en(wpidx);
 		int srst = qcsat.importSigBit(mem.rd_ports[rpidx].srst);
 		if (mem.rd_ports[rpidx].ce_over_srst) {
