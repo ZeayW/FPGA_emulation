@@ -215,8 +215,14 @@ the Python event propagator or consume its per-path numerical results.
     endpoints = _endpoint_delay_database(physical)
     segments = _logic_segment_database(physical)
     links = _board_link_delay_database(physical, platform)
+    if links is None:
+        # Preserve the ordinary academic flow's declared BoardDB cycle latency,
+        # explicitly model-only, never guessed or supposedly measured timing.
+        from .board_link_timing import build_board_link_timing_model
+        links = _board_link_delay_database(
+            {"board_link_timing": build_board_link_timing_model(platform)}, platform)
     if endpoints is None or segments is None or links is None:
-        raise ValidationError("global OpenSTA requires logic, endpoint and BoardLinkTimingDB measurements")
+        raise ValidationError("global OpenSTA requires physical logic and endpoint measurements")
     entries = {e["id"]: e for e in schedule["entries"]}
     demand_by_net = {r["net"]: r["id"] for r in routes["routes"]}
     uncertainty = float(physical.get("static_exact_clock_uncertainty_ns", 0.0))

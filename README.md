@@ -757,7 +757,9 @@ The staged acceptance plan is in [global OpenSTA qualification](docs/global-open
 a measured-arc timing abstraction and independently checks every original
 path's arrival, required time and slack against the Python Phase 7C model.
 The exporter consumes logic-segment, boundary and directed BoardLinkTimingDB
-inputs, not Python-computed path delays. Missing or unconstrained observations
+inputs, not Python-computed path delays. Without an explicit BoardLinkTimingDB,
+it uses the existing BoardDB cycle-latency model (model-only, not measured link
+timing). Missing physical logic/interface data, missing or unconstrained observations
 and numerical disagreement fail the check. This option is initially a
 qualification interface, **not yet the production timing authority**; real
 OpenSTA complete-flow acceptance is pending. Initial hand-computed two-cut

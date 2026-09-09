@@ -173,6 +173,9 @@ def test_physical_binding_uses_raw_measurements():
     assert sum(c.role == "target" for c in checks) == 1
     assert sum(c.role == "tx" for c in checks) == len(fixture.schedule["entries"])
     assert next(c for c in checks if c.role == "target").arcs_ns[-2:] == (7.0, 0.0)
+    del physical["board_link_timing"]
+    assert bind_physical_checks(build_virtual_runtime(fixture.schedule, fixture.platform),
+                                routes, fixture.schedule, physical, fixture.platform) == checks
 
 
 @pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENSTA"), reason="real OpenSTA not configured")

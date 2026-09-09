@@ -44,6 +44,9 @@ arc. The physical arcs between cutpoints remain a Verilog/Liberty chain whose
 delay is propagated by OpenSTA.
 
 The observation view is an analysis abstraction, not new transport hardware.
+An explicit BoardLinkTimingDB takes precedence. In its absence, the declared
+BoardDB cycle latency is materialized as the existing model-only directed link
+database, matching the ordinary academic flow without inventing measurements.
 It does not claim to validate hold, metastability, clock-tree skew or silicon
 PVT corners without the necessary physical input data.
 
