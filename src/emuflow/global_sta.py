@@ -115,7 +115,15 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
   read_verilog global_timing.v
   link_design global_timing
   puts "global STA: read constraints"
-  read_sdc global_timing.sdc
+  # These generated constraints use only exact internal port names. OpenSTA's
+  # get_ports scans every port per call; bind through the indexed cell API.
+  # Stream the same portable SDC, without writing another constraint copy.
+  set ::emuflow_cell [[sta::top_instance] cell]
+  set constraints [open global_timing.sdc r]
+  while {{[gets $constraints line] >= 0}} {{
+    uplevel #0 [string map [list {{[get_ports }} {{[$::emuflow_cell find_port }}] $line]
+  }}
+  close $constraints
   set out [open measurements.tsv w]
   puts $out "endpoint\\tarrival_ns\\trequired_ns\\tslack_ns"
   puts "global STA: query checks"

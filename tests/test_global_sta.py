@@ -25,6 +25,8 @@ def test_exports_raw_arc_chain_and_absolute_events(tmp_path):
     sdc = (tmp_path / "global_timing.sdc").read_text()
     assert "set_input_delay -clock epoch -max 0" in sdc
     assert "set_output_delay -clock epoch -max -1 [get_ports o2]" in sdc
+    assert "find_port" in (tmp_path / "analyze.tcl").read_text()
+    assert "gets $constraints line" in (tmp_path / "analyze.tcl").read_text()
     assert "31.5" not in (tmp_path / "global_timing.lib").read_text()
     assert "find_timing_paths" in (tmp_path / "analyze.tcl").read_text()
     assert "-group_count 5" in (tmp_path / "analyze.tcl").read_text()

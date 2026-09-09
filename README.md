@@ -776,7 +776,11 @@ Every measurement, including TX/commit events outside the TNS population,
 is checked against its raw arc chain and fixed deadline; corrupt event scalars
 cannot pass merely by reporting positive slack.
 The compact check records OpenSTA's version/revision from its existing startup
-log; terminal validation verifies that record without launching another STA.
+log. Constraint binding uses indexed linked-cell port lookup: OpenSTA's ordinary
+`get_ports` scans the full port table even for an exact name, so invoking it per
+observation would make constraint loading quadratic. The portable OpenTimer SDC
+reader retains its symbolic port lookup. The
+terminal validator verifies the engine record without launching another STA.
 The same option is available on `multi-fpga compile` for a fresh complete
 physical flow. Its terminal validator reconstructs the binding and verifies
 the retained engine scalars; it does not invoke OpenSTA a second time.
