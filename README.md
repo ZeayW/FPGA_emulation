@@ -3603,6 +3603,14 @@ These are simulated protocol events under the testbench's declared clocks,
 not measured wire latency or a worst-case asynchronous timing guarantee.
 Physical-delay composition and complete original-path global timing remain
 pending; event collection alone does not qualify them.
+`bind_snapshot_protocol_events` consumes this explicit qualification stream
+once and checks complete epoch/round/word coverage, DATA-to-capture binding,
+receive ordering, next-round shadow causality and commits after complete
+reception. Missing, duplicate, malformed or incomplete traces fail. Its
+per-macrocycle transfer records are transient inputs for physical timing
+binding, not a persistent trace cache, and explicitly withhold physical/global
+timing qualification. One- and two-round actual UART RTL fixtures exercise the
+binder, with missing/duplicate/nonfinite-time/completion-negative cases.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the

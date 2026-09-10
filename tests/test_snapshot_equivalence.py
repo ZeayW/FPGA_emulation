@@ -8,6 +8,7 @@ import unittest
 from emuflow.errors import ValidationError
 from emuflow.snapshot_equivalence import build_snapshot_equivalence_testbench
 from emuflow.snapshot_pair import emit_snapshot_pair
+from emuflow.snapshot_protocol_events import bind_snapshot_protocol_events
 from test_snapshot_pair import host_fixture, generated_host_pair
 
 
@@ -59,6 +60,8 @@ class SnapshotEquivalenceTests(unittest.TestCase):
                 else:
                     self.assertEqual(result.returncode,0,result.stdout+result.stderr)
                     self.assertIn("PASS snapshot macrocycles=4 observed_ff=1",result.stdout)
+                    bound = bind_snapshot_protocol_events(result.stdout.splitlines(), pair, macrocycles=4)
+                    self.assertEqual(len(bound['cycles']), 4)
                     events=[x.split() for x in result.stdout.splitlines() if x.startswith('SNAPSHOT_EVENT ')]
                     for board in ('board0','board1'):
                         commits=[x for x in events if x[1]==board and x[3]=='commit']
@@ -102,6 +105,23 @@ class SnapshotEquivalenceTests(unittest.TestCase):
             run = subprocess.run([runtime, str(image)], capture_output=True, text=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         events = [line.split() for line in run.stdout.splitlines() if line.startswith("SNAPSHOT_EVENT ")]
+        bound = bind_snapshot_protocol_events(run.stdout.splitlines(), pair, macrocycles=2)
+        self.assertEqual(len(bound['cycles']), 2)
+        self.assertEqual(len(bound['cycles'][0]['transfers']), 4)
+        self.assertFalse(bound['global_timing_qualified'])
+        lines = run.stdout.splitlines()
+        event_index = next(i for i, line in enumerate(lines) if ' tx_data ' in line)
+        for broken in (lines[:event_index] + lines[event_index+1:],
+                       lines[:event_index] + [lines[event_index]] + lines[event_index:],
+                       [line for line in lines if not line.startswith('PASS snapshot ')]):
+            with self.assertRaises(ValidationError):
+                bind_snapshot_protocol_events(broken, pair, macrocycles=2)
+        for replacement in ('NaN', '-1', '0'):
+            fields = lines[event_index].split()
+            fields[2] = replacement
+            broken = lines[:event_index] + [' '.join(fields)] + lines[event_index+1:]
+            with self.assertRaises(ValidationError):
+                bind_snapshot_protocol_events(broken, pair, macrocycles=2)
         def selected(board, kind, epoch):
             return [row for row in events if row[1] == board and row[3] == kind and int(row[4]) == epoch]
         for board, peer in (("board0", "board1"), ("board1", "board0")):
