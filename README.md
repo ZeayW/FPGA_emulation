@@ -3818,6 +3818,11 @@ reliability guarantee. Local ideal-skew hold has no negative pairs (4,367 and
 17,257 queries, minimum 0.438 ns). Integrated acceptance and reset/CDC/external
 assumption qualification remain pending; full-flow/hardware promotion remains
 false. This is real-design integration evidence, not a registered QoR study.
+The physical reset gate now also requires annotated clock-to-Q, routed
+interstage wire, and both-edge setup/hold for the release synchronizer. It
+reports their min/max bounds without treating them as asynchronous
+recovery/removal or MTBF proof. Missing annotations fail explicitly; native
+integration of this additional gate is pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the

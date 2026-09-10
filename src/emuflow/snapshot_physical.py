@@ -9,7 +9,7 @@ from .ecp5_qualification import qualify_snapshot_clock_coverage
 from .ecp5_sdf import read_nextpnr_sdf
 from .ecp5_timing_coverage import qualify_ecp5_timing_coverage, qualify_ecp5_comb_arcs
 from .snapshot_cdc import qualify_snapshot_uart_cdc
-from .snapshot_reset import qualify_snapshot_reset_structure
+from .snapshot_reset import qualify_snapshot_reset_annotations
 from .snapshot_physical_binding import bind_snapshot_routed_identities, bind_snapshot_transport_storage
 from .errors import ValidationError
 
@@ -26,7 +26,7 @@ def qualify_snapshot_physical(output_dir, interface, physical_report, *, mapped_
     coverage=qualify_ecp5_timing_coverage(routed,delays)
     comb=qualify_ecp5_comb_arcs(routed,delays)
     uart=qualify_snapshot_uart_cdc(routed,mapped,delays,mapped_top=mapped_top,host_uart=host_uart)
-    reset=qualify_snapshot_reset_structure(routed)
+    reset=qualify_snapshot_reset_annotations(routed,delays)
     # Request original state only: optimized-away internal combinational aliases
     # are not made into a false original-path coverage obligation/certificate.
     state_source=dict(source,nets={})

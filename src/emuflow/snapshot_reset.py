@@ -6,6 +6,36 @@ reset pulse width are not certified by inspecting a routed connectivity graph.
 from .errors import ValidationError
 
 
+def qualify_snapshot_reset_annotations(routed, delays, *, top="top"):
+    """Require physical release-chain data timing without inventing recovery.
+
+    The asynchronous assertion pins intentionally do not receive setup/hold
+    constraints. Their recovery/removal and metastability behavior require a
+    separate device/external contract; data annotations cannot prove those.
+    """
+    structure = qualify_snapshot_reset_structure(routed, top=top)
+    if delays.get('delay_connectivity_checked') is not True:
+        raise ValidationError('reset annotation check requires connectivity-checked delays')
+    first, second = structure['first_cell'], structure['second_cell']
+    cell = routed['modules'][top]['cells'][second]
+    data = 'DI' if str(cell['parameters']['SD']).strip() == '1' else 'M'
+    wire = delays.get('interconnect', {}).get(((first, 'Q'), (second, data)))
+    cq = delays.get('cells', {}).get(first, {}).get('iopaths', {}).get(('CLK', 'Q'))
+    checks = delays.get('cells', {}).get(second, {}).get('setuphold', {})
+    setuphold = [checks.get(((edge, data), ('posedge', 'CLK')))
+                 for edge in ('posedge', 'negedge')]
+    if wire is None or cq is None or any(v is None for v in setuphold):
+        raise ValidationError('missing reset release interstage timing annotation')
+    return dict(structure, scope='physical_reset_structure_and_release_annotation',
+        interstage=dict(clock_to_q_min_ns=min(v[0] for v in cq),
+            clock_to_q_max_ns=max(v[2] for v in cq),
+            wire_min_ns=min(v[0] for v in wire), wire_max_ns=max(v[2] for v in wire),
+            setup_max_ns=max(v[0][2] for v in setuphold),
+            hold_max_ns=max(v[1][2] for v in setuphold)),
+        release_data_timing_qualified=False,
+        asynchronous_assertion_policy='no_fabricated_recovery_removal_constraint')
+
+
 def qualify_snapshot_reset_structure(routed, *, top="top"):
     module=routed.get("modules",{}).get(top)
     if not isinstance(module,dict): raise ValidationError("missing reset physical top")

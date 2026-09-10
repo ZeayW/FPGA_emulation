@@ -1,7 +1,7 @@
 import copy
 import unittest
 from emuflow.errors import ValidationError
-from emuflow.snapshot_reset import qualify_snapshot_reset_structure
+from emuflow.snapshot_reset import qualify_snapshot_reset_structure, qualify_snapshot_reset_annotations
 
 
 class SnapshotResetTests(unittest.TestCase):
@@ -22,6 +22,26 @@ class SnapshotResetTests(unittest.TestCase):
         self.assertEqual(result['first_cell'],'first')
         self.assertFalse(result['recovery_removal_qualified'])
         self.assertFalse(result['global_timing_qualified'])
+
+    def test_release_annotations_are_required_but_not_recovery_proof(self):
+        triple = ((.1,.2,.3),(.2,.3,.4))
+        delays = dict(delay_connectivity_checked=True,
+            interconnect={(('first','Q'),('second','M')):triple},
+            cells={'first':{'iopaths':{('CLK','Q'):triple}},
+                   'second':{'setuphold':{((edge,'M'),('posedge','CLK')):triple
+                              for edge in ('posedge','negedge')}}})
+        result = qualify_snapshot_reset_annotations(self.model(), delays)
+        self.assertEqual(result['interstage']['wire_max_ns'], .4)
+        self.assertFalse(result['release_data_timing_qualified'])
+        self.assertFalse(result['recovery_removal_qualified'])
+        for mutation in ('wire','cq','edge','unchecked'):
+            broken = copy.deepcopy(delays)
+            if mutation == 'wire': broken['interconnect'].clear()
+            if mutation == 'cq': broken['cells']['first']['iopaths'].clear()
+            if mutation == 'edge': del broken['cells']['second']['setuphold'][(('negedge','M'),('posedge','CLK'))]
+            if mutation == 'unchecked': broken['delay_connectivity_checked'] = False
+            with self.subTest(mutation=mutation), self.assertRaises(ValidationError):
+                qualify_snapshot_reset_annotations(self.model(), broken)
 
     def test_constant_lut_is_valid_and_nonconstant_is_not(self):
         r=self.model();c=r['modules']['top']['cells']
