@@ -205,7 +205,10 @@ def _execute(args, sources, vectors, tools, root, report):
         subprocess.run([str(tools/'iverilog'),'-g2012','-s','snapshot_equivalence_tb','-o',str(root/'simulation')]+
             list(map(str,transport))+[str(root/(b+'.sv')) for b in ('board0','board1')]+[str(root/'equivalence.sv')],
             stdout=log,stderr=subprocess.STDOUT,check=True)
-        subprocess.run([str(tools/'vvp'),str(root/'simulation')],stdout=log,stderr=subprocess.STDOUT,check=True)
+        # Qualification events must be observable while a long serial replay
+        # is active; -i changes stdout buffering, not RTL scheduling.
+        subprocess.run([str(tools/'vvp'),'-i',str(root/'simulation')],cwd=root,
+            stdout=log,stderr=subprocess.STDOUT,check=True)
     with (root/'equivalence.log').open() as log:
         protocol = bind_snapshot_protocol_events(log,pair,macrocycles=len(vectors))
     models,initial_ready = {},{}

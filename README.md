@@ -3849,6 +3849,10 @@ of jitter/metastability modeling, and finite-trace claim. The board profile
 owns the nominal local period used by simulation and synchronizer setup checks;
 no user DUT target is silently substituted. These recorded conditions are not
 evidence of measured cable delay or worst-case oscillator/PVT behavior.
+The qualification runner uses Icarus `vvp -i` so existing event records are
+visible without waiting for stdout's buffer to fill; it adds no new trace
+population and does not change RTL scheduling. The simulator's working
+directory is the active disposable scratch, not the login directory.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
