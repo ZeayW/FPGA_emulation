@@ -3309,7 +3309,23 @@ exact FF-count match. It rejects unknown state primitives, LUT RAM and nonzero
 hard-block usage until their clock adapters exist. Negative tests cover a
 second clock, inverted clock, gating, wrong pad and count mismatch. This is
 **FF clock connectivity coverage**, not setup/hold-path, CDC or global timing
-qualification; real routed qualification of this new checker is pending.
+qualification. The natural SERV dual-board run at `2d70fe6d` now passes this
+check for all 2,218 / 1,328 routed FFs, together with the finite four-macrocycle
+trace and transport-storage endpoint checks (338.48 seconds total).
+
+`read_nextpnr_sdf` consumes the non-CVC nextpnr SDF and checks its cell types,
+port identities and interconnect bit connectivity against the routed JSON.
+It preserves rise/fall min/typ/max values in ns and keeps setup and hold
+separate, including signed setup/hold values; missing delays never become
+zero. Unsupported formats, duplicate arcs, mismatched connectivity and missing
+primitive records fail. The format adapter follows
+[nextpnr's SDF writer](https://github.com/YosysHQ/nextpnr/blob/e47c2589/common/kernel/sdf.cc).
+On the same natural SERV physical outputs it reads 6,245 / 3,937 primitives,
+24,141 / 14,366 interconnect arcs, 20,705 / 12,435 primitive IOPATH arcs and
+13,146 / 7,876 edge-specific setup/hold records. These are checked delay
+annotations, **not** an STA result or a proof of complete timing-path coverage.
+CDC qualification, original-path physical-cone coverage and the conditional
+asynchronous global timing model remain pending; no global WNS/TNS is claimed.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
