@@ -3131,7 +3131,10 @@ FF controls; general stateful-primitive and full-flow support remain pending.
 The exchange controller now supports explicit multi-round shadow evaluation
 before DUT commit, and checks that both peers agree on the round count during
 session setup. This new protocol revision is pending RTL qualification;
-round-count derivation and physical settling validation are not yet complete.
+physical settling validation is not yet complete. The companion dependency
+walker derives rounds from the selected partition's longest combinational
+crossing chain, stopping at original state boundaries. It rejects combinational
+cycles and does not feed this result back into partition selection.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

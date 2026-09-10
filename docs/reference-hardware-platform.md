@@ -233,6 +233,14 @@ timing. Neither a configured round count nor a successful handshake proves
 whole-design timing. A three-crossing inverter chain tests the distinction
 between shadow propagation and original register commit; RTL results pending.
 
+`derive_snapshot_rounds` now computes the logical exchange count for supported
+LUT/FF netlists by a linear DAG traversal after partition selection. Edges
+carry zero for local connectivity and one for a board crossing; original FF
+outputs start a new launch path. External port ownership remains explicit.
+Pure combinational cycles have no finite propagation proof and are rejected,
+whereas feedback through an original FF is permitted. The result is a logical
+round count only, conditional on stable launch inputs and local settling.
+
 ## Historical vendor reference investigation
 
 ## Deliverable and current status
