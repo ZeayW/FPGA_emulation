@@ -19,6 +19,47 @@ from test_snapshot_pair import host_fixture, generated_host_pair
 
 
 class SnapshotEquivalenceTests(unittest.TestCase):
+    def test_physical_wrapper_generator_uses_serial_host_and_local_resets(self):
+        ir,assignment=host_fixture()
+        text,summary=build_snapshot_equivalence_testbench(ir,assignment,generated_host_pair(),
+            initial_state={'q':0},vectors=[{'in':0},{'in':1}],timing_events=True,
+            physical_session_id=0x789)
+        self.assertTrue(summary['physical_wrappers_simulated'])
+        self.assertIn('host_pair_board0_physical a',text)
+        self.assertIn('send(64\'h6001000000000789)',text)
+        self.assertIn('always @(negedge b.reset)',text)
+        self.assertIn('b.core.dut.state0',text)
+        self.assertNotIn('.host_inputs(host_input)',text)
+
+    def test_native_physical_host_wrapper_and_corrupted_state(self):
+        compiler=shutil.which(os.environ.get('IVERILOG','iverilog'))
+        runtime=shutil.which(os.environ.get('VVP','vvp'))
+        if not compiler or not runtime:self.skipTest('actual Icarus tools required')
+        root=Path(__file__).resolve().parents[1]
+        sources=list((root/'rtl/transport').glob('emuflow_gpio_*.sv'))+[root/'rtl/transport/emuflow_snapshot_host.sv']
+        ir,assignment=host_fixture()
+        for corrupt in (False,True):
+            with self.subTest(corrupt=corrupt),tempfile.TemporaryDirectory() as directory:
+                out=Path(directory);pair=generated_host_pair()
+                if corrupt:
+                    pair['boards']['board1']['rtl']=pair['boards']['board1']['rtl'].replace('else if(step) state0<=','else if(step) state0<=~')
+                files=[]
+                for name,board in pair['boards'].items():
+                    p=out/(name+'.sv');p.write_text(board['rtl']);files.append(p)
+                text,_=build_snapshot_equivalence_testbench(ir,assignment,pair,initial_state={'q':0},
+                    vectors=[{'in':0},{'in':1}],timing_events=True,physical_session_id=0x789)
+                p=out/'tb.sv';p.write_text(text);files.append(p)
+                image=out/'sim'
+                compiled=subprocess.run([compiler,'-g2012','-s','snapshot_equivalence_tb','-o',str(image),
+                    *map(str,sources+files)],capture_output=True,text=True,timeout=30)
+                self.assertEqual(compiled.returncode,0,compiled.stderr)
+                result=subprocess.run([runtime,str(image)],capture_output=True,text=True,timeout=60)
+                if corrupt:self.assertNotEqual(result.returncode,0)
+                else:
+                    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                    bound=bind_snapshot_protocol_events(result.stdout.splitlines(),pair,macrocycles=2)
+                    self.assertEqual(len(bound['cycles']),2)
+
     def generate(self, vectors=None, timing_events=False):
         ir, assignment = host_fixture()
         return build_snapshot_equivalence_testbench(ir, assignment, generated_host_pair(),

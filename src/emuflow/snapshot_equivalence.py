@@ -8,7 +8,11 @@ from .errors import ValidationError
 
 
 def build_snapshot_equivalence_testbench(ir, assignment, pair, *, initial_state,
-                                         vectors, max_board_cycles=20000000, timing_events=False):
+                                         vectors, max_board_cycles=20000000, timing_events=False,
+                                         physical_session_id=None):
+    physical = physical_session_id is not None
+    if physical and (type(physical_session_id) is not int or not 0 <= physical_session_id < 2**32):
+        raise ValidationError('physical host session must be an explicit uint32')
     if type(timing_events) is not bool:raise ValidationError('timing_events must be an explicit boolean')
     if type(max_board_cycles) is not int or max_board_cycles <= 0:
         raise ValidationError("RTL qualification requires a positive cycle timeout")
@@ -32,7 +36,7 @@ def build_snapshot_equivalence_testbench(ir, assignment, pair, *, initial_state,
         local = sorted(c["id"] for c in ir.value["instances"] if assignment[c["id"]] == board)
         for index, name in enumerate(local):
             if name in initial_state:
-                state_points[name] = f"{instance}.dut.state{index}"
+                state_points[name] = f"{instance}{'.core' if physical else ''}.dut.state{index}"
     if set(state_points) != set(model.ff_ids):
         raise ValidationError("RTL state observation coverage is incomplete")
     state = dict(initial_state)
@@ -52,20 +56,33 @@ def build_snapshot_equivalence_testbench(ir, assignment, pair, *, initial_state,
         _, next_state, expected = model.evaluate(state, cycle, 0, input_values=bit_values)
         packed_in = sum(bit_values[(v["port"], v["bit"])] << v["index"] for v in inputs)
         packed_out = sum(expected[f'{v["port"]}[{v["bit"]}]'] << v["index"] for v in outputs)
-        steps += ["@(negedge ac); while(!ready) @(negedge ac);",
+        if physical:
+            for word in range((ni+31)//32):
+                record=(0x70<<56)|(word<<48)|(cycle<<32)|((packed_in>>(32*word))&0xffffffff)
+                steps.append(f"send(64'h{record:016x});")
+            steps.append(f"send(64'h{(0x71<<56)|(cycle<<32):016x});")
+            for word in range((no+31)//32):
+                record=(0x72<<56)|(word<<48)|(cycle<<32)|((packed_out>>(32*word))&0xffffffff)
+                steps.append(f"receive(64'h{record:016x});")
+            steps.append(f"receive(64'h{(0x73<<56)|(cycle<<32):016x});")
+        else:
+            steps += ["@(negedge ac); while(!ready) @(negedge ac);",
                   f"host_input={ni}'h{packed_in:x}; request=1;",
                   "@(negedge ac); request=0; host_input=~host_input;",
                   "while(!valid) @(negedge ac);",
                   f'if(value!=={no}\'h{packed_out:x}) $fatal(1,"output mismatch cycle {cycle}");']
         for name in sorted(state_points):
             steps.append(f'if({state_points[name]}!==1\'b{next_state[name]}) $fatal(1,"state mismatch cycle {cycle}");')
-        steps += ["repeat(3) @(negedge ac);",
+        if not physical:
+            steps += ["repeat(3) @(negedge ac);",
                   f'if(!valid || ready || value!=={no}\'h{packed_out:x}) $fatal(1,"response hold mismatch");',
                   "ack=1; @(negedge ac); ack=0;"]
         state = next_state
     event_monitors=''
     if timing_events:
         for board,instance,clock in [('board0','a','ac'),('board1','b','bc')]:
+            reset_signal=instance+'.reset' if physical else 'reset'
+            if physical: instance += '.core'
             e=instance+'.exchange'
             def record(kind,epoch=None,round_=None,word="0"):
                 return (f'$display("SNAPSHOT_EVENT {board} %.3f {kind} %0d %0d %0d", '
@@ -73,8 +90,8 @@ def build_snapshot_equivalence_testbench(ir, assignment, pair, *, initial_state,
             # Observe the SAME pre-NBA guards as the source RTL. FINISH's
             # snapshot belongs to the next epoch/round assigned on this edge.
             event_monitors+=f'''
-always @(negedge reset) begin {record('reset_release',"0","0")} end
-always @(posedge {clock}) if(!reset && !{instance}.fault) begin
+always @(negedge {reset_signal}) begin {record('reset_release',"0","0")} end
+always @(posedge {clock}) if(!{reset_signal} && !{instance}.fault) begin
   if({instance}.request_valid && {instance}.request_ready) begin {record('host_latch')} end
   if({instance}.dut.step) begin {record('commit')} end
   if({e}.state=={e}.S_DATA && {e}.tx_valid && {e}.tx_ready) begin
@@ -94,7 +111,50 @@ always @(posedge {clock}) if(!reset && !{instance}.fault) begin
   end
 end
 '''
-    text = f'''`timescale 1ns/1ps
+    if physical:
+        from .board_ulx3s import ulx3s_pair_profile
+        divider=ulx3s_pair_profile()['host_interface']['clocks_per_bit']
+        text=f'''`timescale 1ns/1ps
+module snapshot_equivalence_tb;
+reg ac=0,bc=0,hc=0,reset_n=0,reset=1;
+always #20 ac=~ac;
+initial begin #7; forever #20.2 bc=~bc; end
+initial begin #3; forever #19.8 hc=~hc; end
+wire aw,bw,htx,hrx;
+wire [63:0] rx;
+reg [63:0] tx=0;
+reg tv=0,rr=0;
+wire tr,rv,hfault;
+{boards['board0']['physical_top']} a(.clk_25mhz(ac),.reset_n(reset_n),.link_rx(bw),.link_tx(aw),.host_rx(htx),.host_tx(hrx));
+{boards['board1']['physical_top']} b(.clk_25mhz(bc),.reset_n(reset_n),.link_rx(aw),.link_tx(bw));
+emuflow_gpio_endpoint #(.CLOCKS_PER_BIT({divider})) client(.clk(hc),.reset(reset),
+ .serial_rx(hrx),.serial_tx(htx),.tx_record(tx),.tx_valid(tv),.tx_ready(tr),
+ .rx_record(rx),.rx_valid(rv),.rx_ready(rr),.fault(hfault));
+task send(input [63:0] value);
+ begin @(negedge hc); while(!tr) @(negedge hc);
+ tx=value;tv=1;@(negedge hc);tv=0;end
+endtask
+task receive(input [63:0] value);
+ begin @(negedge hc);while(!rv) @(negedge hc);
+ if(rx!==value || hfault) $fatal(1,"physical host response mismatch");
+ rr=1;@(negedge hc);rr=0;end
+endtask
+always @(negedge ac) if(reset_n && (a.core_fault || b.core_fault || a.host_fault || hfault))
+ $fatal(1,"physical wrapper transport fault");
+{event_monitors}
+initial begin repeat({max_board_cycles}) @(posedge ac);$fatal(1,"macrocycle timeout");end
+initial begin
+ #300;reset_n=1;reset=0;
+ send(64'h{(0x6001<<48)|physical_session_id:016x});
+ receive(64'h{(0x6101<<48)|(ni<<16)|no:016x});
+{chr(10).join(steps)}
+ $display("PASS snapshot macrocycles={len(vectors)} observed_ff={len(state_points)} physical_host=1");
+ $finish;
+end
+endmodule
+'''
+    else:
+        text = f'''`timescale 1ns/1ps
 module snapshot_equivalence_tb;
 reg ac=0,bc=0,reset=1,request=0,ack=0;
 reg [{ni-1}:0] host_input=0;
@@ -120,6 +180,8 @@ end
 endmodule
 '''
     return text, {"macrocycles": len(vectors), "observed_ff": len(state_points),
+                  "physical_wrappers_simulated": physical,
+                  "host_drive": "serial_records" if physical else "internal_request_interface",
                   "observed_output_bits": len(outputs),
                   "timing_event_scope": "simulated_protocol_events_not_measured_link" if timing_events else None,
                   "scope": "declared-input-trace-and-initial-state", "physical_timing_proof": False}

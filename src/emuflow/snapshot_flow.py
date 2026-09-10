@@ -195,7 +195,7 @@ def _execute(args, sources, vectors, tools, root, report):
     for board, value in pair['boards'].items():
         (root/(board+'.sv')).write_text(value['rtl'])
     tb,report['macrocycle_equivalence'] = build_snapshot_equivalence_testbench(bound,assignment,pair,
-        initial_state=initial,vectors=vectors,timing_events=True)
+        initial_state=initial,vectors=vectors,timing_events=True,physical_session_id=17)
     (root/'equivalence.sv').write_text(tb)
     transport_dir = _runtime_data_path(Path('rtl/transport/emuflow_gpio_exchange.sv')).parent
     transport = sorted(transport_dir.glob('emuflow_gpio*.sv'))+[transport_dir/'emuflow_snapshot_host.sv']

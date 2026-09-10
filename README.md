@@ -3832,6 +3832,13 @@ guessed UART deadline. Negative interstage results fail the run. Asynchronous
 first-stage sampling, recovery/removal and analog metastability remain separate
 obligations; passing second-stage data timing does not waive them. Native
 integration of these new queries is pending.
+The canonical qualification simulation now drives serial host records through
+the actual generated physical wrappers, including each board's reset-release
+chain, rather than driving the core's internal request interface. It observes
+all original FFs and checks host responses against unsplit logic. Earlier SERV
+results used the internal request interface and do not qualify this expanded
+boundary. Native wrapper-mode regression and real-design execution are pending;
+the internal-interface test generator remains available for focused tests.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
