@@ -3499,6 +3499,16 @@ paths require a separate semantic classification, not silent removal. Tests
 include an 80-diamond graph (exponentially many paths) and missing/invalid
 bindings. This is a structural consumer interface: deriving and validating the
 complete original-design required-pair population remains pending.
+`build_snapshot_timing_population` now derives each board's conservative local
+boundary dependency population directly from the source EmuIR and selected
+partition: original FF state, imported/exported cut values and host I/O.
+Same-board paths are included; register boundaries stop combinational
+propagation, and constant captures do not invent launch paths. Dependencies
+are represented by transient masks and streamed pairs, not an expanded path
+database. Tests cover both boards, unsplit local paths, constant inputs and
+missing/reset bindings. Physical correspondence and optimization-equivalence
+classification for this source-owned population are still pending; this is not
+an original-path/global timing completion claim.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
