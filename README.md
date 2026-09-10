@@ -3453,7 +3453,11 @@ LOGIC/CCU2 IOPATH population against the
 This includes wide-LUT mux and carry arcs, not merely LUT A-to-F delays;
 missing/reversed/extra arcs and unsupported LUT-RAM modes fail explicitly.
 Delay values remain sourced from routed SDF, never from substitute constants.
-This extension has unit tests; integrated real-design validation is pending.
+This extension passed integrated real SERV validation: 18,486 / 11,106 arcs
+over 3,726 / 2,424 LOGIC cells and 294 / 180 CCU2 cells on the two boards.
+The fresh run completed in 342.42 seconds, including four declared macrocycles
+of finite-trace equivalence, physical implementation and bitstreams on both
+boards; it still is not whole-design/global-timing qualification.
 It does not establish original-path coverage or whole-design slack.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
