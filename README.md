@@ -3111,8 +3111,8 @@ inputs. This is tested tool integration, not merely mocked subprocess coverage.
 `emuflow.ulx3s_dut.build_ulx3s_snapshot_top` now binds an explicitly lowered
 clock-enable DUT to the open endpoint and commit controller, including unequal
 export/import widths and checked envelope padding. It is an initial integration
-interface, not automatic arbitrary-RTL partition lowering. Generated-binding
-RTL qualification and general combinational-cut evaluation remain pending.
+interface, not automatic arbitrary-RTL partition lowering. General
+combinational-cut evaluation and complete DUT acceptance remain pending.
 The companion snapshot boundary planner derives directional bit order from
 actual EmuIR connectivity and the selected assignment, without register-only
 cut filtering. External host-port ownership must be explicit; this is not a
