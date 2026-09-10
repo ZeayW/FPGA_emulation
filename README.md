@@ -3101,6 +3101,10 @@ Injected session/role/width/reset/epoch/order/timeout/fault tests also pass.
 Both controller roles, including the complete UART/CRC endpoint, now produce
 real routed ECP5 bitstreams and pass the 25 MHz local constraint and resource
 gate. Full DUT integration, global timing and board measurements remain pending.
+`emuflow.ecp5_backend.run_ulx3s_physical` is the reusable open-tool runner;
+the endpoint CLI delegates to it and accepts `--board board0|board1`. It keeps
+only resource/clock summaries in the terminal report, not detailed nextpnr
+path diagnostics. This low-level API is not yet a full-flow backend selection.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

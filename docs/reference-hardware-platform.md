@@ -151,6 +151,15 @@ about `translate_off`, boxed carry handling and combinational subnetworks.
 These results qualify the scoped physical fixture, not external CDC/MTBF,
 whole-design timing, complete EmuFlow or measured hardware operation.
 
+The tool runner now lives in `emuflow.ecp5_backend.run_ulx3s_physical` for
+subsequent DUT integration. The endpoint CLI is a thin adapter with an explicit
+`--board` identity. It validates inputs/tools before creating scratch, refuses
+to overwrite an output directory, stops on tool failure, rejects missing
+outputs and retains only resource/clock metrics rather than copying full
+nextpnr path diagnostics. Input RTL and generated constraints are identified
+once in the terminal summary. Fixed-slot Phase 7 does not silently select this
+runner: asynchronous DUT/transport and global timing binding remain required.
+
 ## Historical vendor reference investigation
 
 ## Deliverable and current status
