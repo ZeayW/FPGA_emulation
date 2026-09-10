@@ -3459,6 +3459,17 @@ The fresh run completed in 342.42 seconds, including four declared macrocycles
 of finite-trace equivalence, physical implementation and bitstreams on both
 boards; it still is not whole-design/global-timing qualification.
 It does not establish original-path coverage or whole-design slack.
+`build_ecp5_data_graph` now constructs a shared pin-level data DAG directly
+from these checked annotations, with register/I/O cutpoints and explicit
+constant, clock and asynchronous-reset boundaries. Unknown primitives,
+unclassified roots and combinational cycles fail. `export_ecp5_data_checks`
+exports the shared graph to OpenSTA, preserving separate routed arc delays
+and reconvergent fanin rather than calculating arrivals in Python or expanding
+every path. It uses a conservative rise/fall scalar-maximum abstraction and
+requires explicit launch epochs and capture deadlines for the complete dynamic
+boundary set. Zero-delay merge nodes only join timing graph fanin; they never
+replace missing physical delays. This adapter is under qualification, not the
+completed original-path/asynchronous protocol binding or final global QoR.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
