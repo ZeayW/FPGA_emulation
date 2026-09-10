@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -151,12 +152,19 @@ def build_generic_yosys_script(
     sources: Iterable[Path],
     top: str,
     output: Path,
-    *, lut_size: int = 6,
+    *, lut_size: int = 6, abc_executable: Optional[str] = None,
 ) -> str:
     """Build portable LUT/FF mapping; ECP5 consumers explicitly request LUT4."""
 
     if type(lut_size) is not int or lut_size not in (4, 6):
         raise EmuFlowError("generic mapping supports explicit LUT4 or LUT6")
+    abc_option = ""
+    if abc_executable is not None:
+        if (not isinstance(abc_executable, str) or not abc_executable
+                or not Path(abc_executable).is_absolute()
+                or any(c in abc_executable for c in '\n\r\"\'`$\\')):
+            raise EmuFlowError("ABC executable must be an absolute shell-safe path")
+        abc_option = f" -exe {_yosys_quote(abc_executable)}"
 
     source_list = list(sources)
     if not source_list:
@@ -174,7 +182,7 @@ def build_generic_yosys_script(
         "techmap",
         "opt",
         "dffunmap",
-        f"abc -lut {lut_size}",
+        f"abc{abc_option} -lut {lut_size}",
         "dffunmap",
         # Yosys 0.57+ may materialize debug-only hierarchy metadata as
         # $scopeinfo cells. They have no hardware behavior or pins and must
@@ -193,7 +201,7 @@ def run_generic_yosys(
     output: Path,
     executable: Optional[str] = None,
     log_path: Optional[Path] = None,
-    *, lut_size: int = 6,
+    *, lut_size: int = 6, abc_executable: Optional[str] = None,
 ) -> None:
     """Synthesize RTL to explicitly selected provider-neutral LUT4/6 and FF JSON."""
 
@@ -203,7 +211,11 @@ def run_generic_yosys(
             raise EmuFlowError(f"RTL source does not exist: {source}")
     command = resolve_native_executable("yosys", executable)
     output.parent.mkdir(parents=True, exist_ok=True)
-    script = build_generic_yosys_script(source_list, top, output, lut_size=lut_size)
+    script = build_generic_yosys_script(source_list, top, output, lut_size=lut_size,
+                                        abc_executable=abc_executable)
+    if abc_executable is not None and (not Path(abc_executable).is_file()
+                                      or not os.access(abc_executable, os.X_OK)):
+        raise EmuFlowError("explicit ABC executable is missing or not executable")
     returncode, output_tail = _run_logged_yosys([command, "-p", script], log_path)
     if returncode != 0:
         tail = "\n".join(output_tail.splitlines()[-20:])

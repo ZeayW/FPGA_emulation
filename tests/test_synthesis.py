@@ -6,6 +6,15 @@ from emuflow.synthesis import build_generic_yosys_script, build_yosys_script
 
 
 class SynthesisTest(unittest.TestCase):
+    def test_explicit_abc_path_preserved_without_script_changes(self):
+        kwargs=dict(sources=[Path("dut.v")],top="dut",output=Path("out.json"),lut_size=4)
+        default=build_generic_yosys_script(**kwargs)
+        explicit=build_generic_yosys_script(**kwargs,abc_executable="/tools/./yosys-abc")
+        self.assertEqual(explicit,default.replace("abc -lut",'abc -exe "/tools/./yosys-abc" -lut'))
+        for bad in (True,"", "relative-abc", "/bin/a$X", "/bin/a`x`", "/bin/a\n"):
+            with self.assertRaises(EmuFlowError):
+                build_generic_yosys_script(**kwargs,abc_executable=bad)
+
     def test_xcup_script_is_board_independent(self) -> None:
         script = build_yosys_script(
             [Path("rtl/counter.sv")],

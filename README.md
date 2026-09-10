@@ -3204,6 +3204,17 @@ running, instead of retaining the whole log in Python until completion. On
 failure only a bounded tail enters the exception. This enables live stage
 diagnosis without adding report payloads or changing synthesis algorithms;
 it does not itself resolve a waiting external tool process.
+Generic synthesis also accepts an explicit absolute `abc_executable` path,
+passed unchanged to Yosys `abc -exe`; the LUT size and ABC optimization script
+remain unchanged. This permits toolchain-specific batch invocation without a
+silent retry or algorithm fallback. In the open-suite Yosys 0.69+10 diagnostic,
+SERV mapping produced ABC output but stalled in the reused interactive process
+completion handshake; explicitly spelling the same executable through `/./`
+selected upstream's non-reused invocation and completed synthesis in 7.14 s.
+The pinned natural `serv_rf_top` frontend produced 2,528 LUT4 cells and 1,336
+FFs (3,864 cells / 3,966 nets), with `i_rst` still requiring explicit host data
+binding. This is frontend evidence only, not complete real-design physical or
+global-timing qualification.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
