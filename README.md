@@ -3530,7 +3530,15 @@ state/import/host launches remain shared unconstrained inputs, so a native SAT
 proof can distinguish a structurally present but functionally canceled
 dependency from a real missing connection. The exporter does not itself prove
 the claim or remove a pair from timing coverage; native real-design proof and
-integration of any resulting classification are pending.
+integration of any resulting classification were initially pending. Native
+Yosys SAT subsequently proved both unmatched SERV pairs independent, each
+over 13 unconstrained boundary inputs and a 20-net source cone. This explains
+the missing physical connections without declaring them zero-delay paths.
+`qualify_snapshot_source_correspondence` is an explicit bounded qualification
+entry point that runs this proof for otherwise unexplained pairs; a failed,
+missing or oversized proof set fails qualification. It never accepts an
+external pass flag. This is source boundary-influence correspondence, not
+sequential mapping equivalence or whole-design asynchronous WNS/TNS.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the

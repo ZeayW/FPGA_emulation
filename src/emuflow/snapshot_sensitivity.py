@@ -6,6 +6,8 @@ zero delay, modify the timing population, or prove mapped sequential equivalence
 from .errors import ValidationError
 from .equivalence import _lut_definition
 from .snapshot_timing_population import build_snapshot_timing_population, boundary_id
+from pathlib import Path
+import subprocess
 
 
 def export_snapshot_sensitivity_miter(ir, assignment, *, board, port_owners, launch, capture):
@@ -72,3 +74,39 @@ def export_snapshot_sensitivity_miter(ir, assignment, *, board, port_owners, lau
     return '\n'.join(lines)+'\n',{'launch':launch,'capture':capture,'cone_nets':len(order),
         'free_boundary_inputs':len(free),'scope':'source_boolean_sensitivity_miter',
         'global_timing_qualified':False}
+
+
+def qualify_snapshot_source_correspondence(ir, assignment, *, board, port_owners,
+        bindings, graph, output_dir, yosys, timeout_seconds=60):
+    """Explicit bounded qualification; never a production per-path SAT replay.
+
+    Structurally unexplained pairs require native proof on the ORIGINAL cone.
+    No caller-supplied pass flag or missing-connection exception is accepted.
+    This establishes boundary influence correspondence, not physical Boolean
+    equivalence, complete original path timing, or an asynchronous deadline.
+    """
+    from .snapshot_timing_binding import classify_snapshot_boundary_connections
+    population=build_snapshot_timing_population(ir,assignment,board=board,port_owners=port_owners)
+    result=classify_snapshot_boundary_connections(population,bindings,graph)
+    unresolved=result['classification']['unexplained']
+    pairs=result['unexplained_examples']
+    if unresolved!=len(pairs):
+        raise ValidationError('too many unexplained pairs for bounded sensitivity qualification')
+    root=Path(output_dir);root.mkdir(parents=True,exist_ok=True)
+    proofs=[]
+    for index,(launch,capture) in enumerate(pairs):
+        rtl,info=export_snapshot_sensitivity_miter(ir,assignment,board=board,port_owners=port_owners,
+            launch=launch,capture=capture)
+        directory=root/str(index);directory.mkdir(exist_ok=False)
+        (directory/'miter.v').write_text(rtl)
+        proc=subprocess.run([str(yosys),'-p',
+            'read_verilog miter.v; prep -top sensitivity; sat -verify -prove different 0 -show-inputs'],
+            cwd=directory,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=timeout_seconds)
+        (directory/'proof.log').write_text(proc.stdout)
+        if proc.returncode or 'SAT proof finished - no model found: SUCCESS!' not in proc.stdout:
+            raise ValidationError('source dependency independence not proven by native SAT')
+        proofs.append(dict(info,proven_independent=True))
+    result['classification']=dict(result['classification'],unexplained=0,boolean_independent=unresolved)
+    result.update(status='pass',sensitivity_proofs=proofs,scope='source_boundary_influence_correspondence')
+    result.pop('unexplained_examples')
+    return result
