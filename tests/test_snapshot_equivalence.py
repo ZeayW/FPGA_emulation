@@ -14,7 +14,6 @@ from emuflow.snapshot_timing_windows import iter_snapshot_timing_windows
 from emuflow.snapshot_path_binding import iter_snapshot_path_bindings
 from emuflow.snapshot_path_events import iter_snapshot_path_events
 from emuflow.snapshot_timing_population import boundary_id
-from test_snapshot_path_binding import database
 from test_snapshot_pair import host_fixture, generated_host_pair
 
 
@@ -121,6 +120,7 @@ class SnapshotEquivalenceTests(unittest.TestCase):
                             self.assertLess(float(updates[0][2]),float(commits[epoch][2]))
 
     def test_two_round_event_identity_and_overwritten_capture(self):
+        from test_snapshot_path_binding import database
         compiler = shutil.which(os.environ.get("IVERILOG", "iverilog"))
         runtime = shutil.which(os.environ.get("VVP", "vvp"))
         if not compiler or not runtime:
