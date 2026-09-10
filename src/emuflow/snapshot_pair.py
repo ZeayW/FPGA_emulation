@@ -59,7 +59,7 @@ def bind_snapshot_reset_inputs(ir, ports):
 
 
 def emit_snapshot_pair(ir, assignment, *, prefix, port_owners, initial_state,
-                       session_id, reset_data_ports=()):
+                       session_id, reset_data_ports=(), include_source_binding=False):
     """Emit both cores. Host data ports must explicitly belong to board0.
 
     A request samples the input vector once, then performs the derived number
@@ -79,7 +79,8 @@ def emit_snapshot_pair(ir, assignment, *, prefix, port_owners, initial_state,
     for board in ("board0", "board1"):
         dut = f"{prefix}_{board}_dut"
         rtl, interface = emit_snapshot_partition(ir, assignment, board=board,
-            module=dut, port_owners=port_owners, initial_state=initial_state)
+            module=dut, port_owners=port_owners, initial_state=initial_state,
+            include_source_binding=include_source_binding)
         ni, no = max(1, len(interface["host_inputs"])), max(1, len(interface["host_outputs"]))
         ne, nr = max(1, len(interface["exported_nets"])), max(1, len(interface["imported_nets"]))
         width = interface["words"] * 32

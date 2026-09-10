@@ -12,7 +12,7 @@ from .ulx3s_dut import build_snapshot_boundary_plan
 
 def emit_snapshot_partition(ir: EmuIR, assignment: dict, *, board: str,
                             module: str, port_owners: dict,
-                            initial_state: dict) -> tuple[str, dict]:
+                            initial_state: dict, include_source_binding: bool = False) -> tuple[str, dict]:
     """Emit local LUTs and positive-edge FFs; bind every consumed data bit.
 
     Host data ports remain explicit packed inputs/outputs; none are tied off.
@@ -21,6 +21,8 @@ def emit_snapshot_partition(ir: EmuIR, assignment: dict, *, board: str,
     """
     if board not in {"board0", "board1"} or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", module):
         raise ValidationError("invalid snapshot partition identity")
+    if type(include_source_binding) is not bool:
+        raise ValidationError("source binding must be an explicit boolean")
     plan = build_snapshot_boundary_plan(ir, assignment, port_owners=port_owners)
     instances = {i["id"]: i for i in ir.value["instances"]}
     ffs = {i for i,v in instances.items() if v["type"] in {"$_DFF_P_", "FDRE", "FDSE"}}
@@ -76,7 +78,7 @@ def emit_snapshot_partition(ir: EmuIR, assignment: dict, *, board: str,
         if key in constants: return constants[key]
         raise ValidationError(f"missing primitive pin {cell}.{port}[{bit}]")
 
-    registers=[]
+    registers=[]; source_registers={}
     for index,(cell_id,cell) in enumerate(sorted(local.items())):
         kind=cell["type"]
         if kind.startswith("LUT") or kind in {"$lut","$_LUT_"}:
@@ -91,6 +93,7 @@ def emit_snapshot_partition(ir: EmuIR, assignment: dict, *, board: str,
             if any(k.startswith("IS_") and str(v).strip("0") for k,v in parameters.items()):
                 raise ValidationError("inverted FF controls need explicit lowering")
             q=f"state{index}"; registers.append(q)
+            if include_source_binding: source_registers[cell_id]=q
             data=pin(cell_id,"D")
             if kind!="$_DFF_P_":
                 control=pin(cell_id,"R" if kind=="FDRE" else "S")
@@ -112,4 +115,10 @@ def emit_snapshot_partition(ir: EmuIR, assignment: dict, *, board: str,
             "host_inputs":[{"port":p,"bit":b,"index":i} for (p,b),i in host_in.items()],
             "host_outputs":[{"port":p,"bit":b,"index":i} for (p,b),i in host_out.items()],
             "local_instances":len(local),"global_timing_qualified":False}
+    if include_source_binding:
+        # A temporary timing consumer input, not a second serialized EmuIR.
+        # No keep/dont_touch attributes: valid physical optimizations remain
+        # enabled and the consumer must resolve aliases or reject missing ones.
+        report["source_binding"]={"schema":"emuflow.snapshot-source-binding/v1",
+            "nets":wires,"registers":source_registers}
     return text,report

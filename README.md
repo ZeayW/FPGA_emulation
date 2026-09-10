@@ -3263,6 +3263,16 @@ attempt took about 333 s, including simulation and parallel board P&R. Routed
 JSON/SDF generation passes, but source-path binding, intended timing-path/CDC
 coverage, conditional asynchronous global analysis and a complete Phase 1--7
 entry point are still unqualified. No measured board operation is claimed.
+For the pending timing consumer, snapshot emission accepts explicit
+`include_source_binding=True`, returning temporary source-net/state aliases
+without changing RTL or inserting optimization-blocking `keep` attributes.
+`bind_snapshot_routed_identities` resolves these exact hierarchical aliases in
+nextpnr's routed JSON and requires a unique `TRELLIS_FF.Q` driver for each
+nonconstant state bit. Merged state aliases and constant states remain explicit;
+missing/unknown aliases or ambiguous drivers fail. This is connectivity
+provenance only: it does not prove sequential optimization equivalence, SDF
+annotation coverage or global timing. Unit coverage passes; real routed
+source-identity coverage remains pending.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
