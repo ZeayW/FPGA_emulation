@@ -99,7 +99,7 @@ def bind_snapshot_routed_identities(source_binding, routed, *, hierarchy, top="t
             if not isinstance(local, str) or not local:
                 raise ValidationError("invalid source alias")
             full = hierarchy + "." + local
-            references=source_binding.get("net_ports",{}).get(original,[]) if category=="nets" else []
+            references=source_binding.get("net_ports" if category=="nets" else "register_ports",{}).get(original,[])
             bit = resolve(full,references)
             record = {"alias": full, "bit": bit}
             if category == "registers":
@@ -114,3 +114,48 @@ def bind_snapshot_routed_identities(source_binding, routed, *, hierarchy, top="t
         resolved[category] = records
     return {"schema":"emuflow.snapshot-routed-identities/v1", **resolved,
             "delay_annotation_qualified":False,"global_timing_qualified":False}
+
+
+def bind_snapshot_transport_storage(interface, routed, *, mapped, mapped_top,
+                                    hierarchy="core.exchange", top="top"):
+    """Bind cut values to the actual TX capture and RX shadow registers.
+
+    An optimized-away combinational wire is NOT the transport timing endpoint.
+    TX setup ends at snapshot's packed data input; RX launches from shadow.Q.
+    This identifies the endpoints only. The emitted protocol's capture/visibility
+    semantics, intervening logic delay and asynchronous link still need checking.
+    """
+    source={"schema":"emuflow.snapshot-source-binding/v1","nets":{},
+            "registers":{},"register_ports":{}}
+    roles={}
+    for role,field,port in (("tx","exported_nets","snapshot"),
+                            ("rx","imported_nets","remote_snapshot")):
+        names=interface.get(field)
+        if not isinstance(names,list) or any(not isinstance(n,str) for n in names) or len(set(names))!=len(names):
+            raise ValidationError("invalid snapshot transport net list")
+        for index,name in enumerate(names):
+            key=f"{role}:{name}"; roles[key]=(role,name)
+            source["registers"][key]=f"{port}[{index}]"
+            source["register_ports"][key]=[{"port":port,"bit":index}]
+    resolved=bind_snapshot_routed_identities(source,routed,hierarchy=hierarchy,
+        top=top,mapped=mapped,mapped_top=mapped_top)
+    result={"tx":{},"rx":{},"global_timing_qualified":False}
+    for key,record in resolved["registers"].items():
+        role,name=roles[key]
+        if role=="tx" and record["kind"]=="ff":
+            cell=routed["modules"][top]["cells"][record["cell"]]
+            # nextpnr ecp5/pack.cc::pack_ffs sets SD=1 for LUT-paired FFs;
+            # otherwise SD=0 and explicitly renames DI to M (general routing).
+            # Match that declared packing mode, not whichever port happens to exist.
+            mode=str(cell.get("parameters",{}).get("SD","")).strip()
+            if mode not in {"0","1"}:
+                raise ValidationError("unknown TX FF packing mode")
+            port="DI" if mode=="1" else "M"
+            data=cell.get("connections",{}).get(port,[])
+            if len(data)!=1 or not (type(data[0]) is int or data[0] in ("0","1")):
+                raise ValidationError("TX capture has no selected physical data endpoint")
+            record=dict(record,port=port,bit=data[0],role="capture")
+        else:
+            record=dict(record,role="launch" if role=="rx" else "constant")
+        result[role][name]=record
+    return result

@@ -3287,6 +3287,21 @@ resolver can follow these explicit connections through the mapped alias table
 when a child wire name was removed before packing. Out-of-range or unresolved
 bindings still fail, and the generated RTL is unchanged. This port bridge has
 unit coverage; its full real-design coverage is not yet qualified.
+`bind_snapshot_transport_storage` identifies the actual TX snapshot capture
+and RX shadow launch endpoints for every declared transport bit. It follows
+the generated storage vector's mapped aliases, rather than requiring an
+optimized combinational export wire to survive. TX uses the packed FF data
+input: `DI` for `SD=1`, `M` for `SD=0`, matching
+[nextpnr's ECP5 FF packer](https://github.com/YosysHQ/nextpnr/blob/e47c2589/ecp5/pack.cc#L216).
+Unknown packing modes or missing endpoints fail; RX uses `Q`. On actual routed
+SERV this resolves board0's 71 TX / 163 RX bits and board1's 163 TX / 71 RX bits.
+These include host-port transport as well as partition cuts, so they are not
+the 62 partition-cut-net statistic. This is storage-endpoint coverage, not full
+original-path or delay coverage. Some unused host-input aliases and optimized
+internal combinational aliases remain absent; the all-net diagnostic still
+fails and is not replaced with a false full-coverage claim. Extracting physical
+cones/delays between the resolved endpoints and validating CDC/global timing
+remain pending.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

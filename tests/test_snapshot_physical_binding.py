@@ -2,7 +2,7 @@ import copy
 import unittest
 from emuflow.errors import ValidationError
 from emuflow.snapshot_netlist import emit_snapshot_partition
-from emuflow.snapshot_physical_binding import bind_snapshot_routed_identities
+from emuflow.snapshot_physical_binding import bind_snapshot_routed_identities, bind_snapshot_transport_storage
 from test_snapshot_netlist import fixture
 
 
@@ -60,3 +60,20 @@ class SnapshotPhysicalBindingTests(unittest.TestCase):
         self.assertEqual(bind_snapshot_routed_identities(source,routed,**args)["nets"]["cut"]["bit"],100)
         source["net_ports"]["cut"][0]["bit"]=2
         with self.assertRaises(ValidationError): bind_snapshot_routed_identities(source,routed,**args)
+
+    def test_storage_binding_distinguishes_capture_from_launch(self):
+        mapped={"modules":{"device":{"netnames":{"core.exchange.snapshot":{"bits":[1]},"core.exchange.remote_snapshot":{"bits":[2]}}}}}
+        routed={"modules":{"top":{"netnames":{"core.exchange.snapshot[0]":{"bits":[10]},"core.exchange.remote_snapshot[0]":{"bits":[20]}},"cells":{"txff":{"type":"TRELLIS_FF","connections":{"Q":[10],"DI":[11]}},"rxff":{"type":"TRELLIS_FF","connections":{"Q":[20],"DI":[21]}}}}}}
+        interface={"exported_nets":["cut-a"],"imported_nets":["cut-b"]}
+        tx=routed["modules"]["top"]["cells"]["txff"]
+        tx["parameters"]={"SD":"1 "}
+        result=bind_snapshot_transport_storage(interface,routed,mapped=mapped,mapped_top="device")
+        self.assertEqual((result["tx"]["cut-a"]["port"],result["tx"]["cut-a"]["bit"]),("DI",11))
+        self.assertEqual((result["rx"]["cut-b"]["port"],result["rx"]["cut-b"]["bit"]),("Q",20))
+        tx["parameters"]["SD"]="0 "
+        tx["connections"]["M"]=tx["connections"].pop("DI")
+        result=bind_snapshot_transport_storage(interface,routed,mapped=mapped,mapped_top="device")
+        self.assertEqual(result["tx"]["cut-a"]["port"],"M")
+        del tx["connections"]["M"]
+        with self.assertRaises(ValidationError):
+            bind_snapshot_transport_storage(interface,routed,mapped=mapped,mapped_top="device")
