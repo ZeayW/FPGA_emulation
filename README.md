@@ -3060,7 +3060,15 @@ measured link latency.
 Actual Vivado 2025.1 device-view probes now confirm the exact MPS4 VU13P and
 VCU118 VU9P parts and their GTYE4 inventories. This is device-database evidence
 only, not implementation-license, communication-routing, or board qualification.
-The [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
+The active [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
+now targets a fully open ULX3S/ECP5 two-board assembly using Yosys,
+nextpnr-ecp5 and Project Trellis, with no Vivado, Diamond or proprietary
+communication IP dependency. `emuflow.board_ulx3s` provides pinned board facts,
+fixed GPIO wiring and LPF generation; its status is **unqualified candidate**,
+not a completed physical backend. Transport/CDC, ECP5 Phase 7 integration and
+complete global timing validation remain pending. Independent board clocks
+and unmeasured external delay are explicit; no fixed link latency is invented.
+The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
 hardware platform. VCU118 is a documented fallback under evaluation, not a

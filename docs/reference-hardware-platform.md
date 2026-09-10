@@ -1,5 +1,61 @@
 # Credible reference hardware platform
 
+## Active target: fully open ECP5 reference platform
+
+The active target supersedes the vendor-dependent plan below. Neither Vivado,
+Diamond, nor proprietary communication IP is an allowed dependency of this
+deliverable. The earlier MPS4/VCU118 work remains optional historical research,
+not an acceptance prerequisite for the open platform.
+
+The first fixed assembly is two ULX3S PCB 3.0.x boards populated with
+LFE5U-85F-6BG381C, connected through two crossed 3.3 V GPIO signals and common
+ground. This is an explicitly specified assembly of real open-hardware boards,
+not a manufacturer-qualified multi-FPGA system. Do not connect the power rails
+or attach 5 V signals. Cable construction, power sequencing/back-power risk and
+electrical delay still require qualification before recommending physical use.
+
+`board_ulx3s.py` owns the pinned source facts, fixed wiring profile and endpoint
+LPF generation. GP0 (B11) transmits to the other board's GN0 (C11); these are
+single-ended pins, not an LVDS pair. Both boards retain their independent
+25 MHz G2 oscillators. D6 is active-low reset. No phase-lock or fixed wire
+latency is assumed. These GPIOs avoid the documented ESP32/ADC shared pins.
+The generated LPF deliberately omits the upstream blanket asynchronous/reset
+timing exceptions. A pin file is not a complete timing constraint contract.
+
+Implementation sequence and completion gates:
+
+1. **Wiring profile (implemented, unit-tested).** Fixed two-board configuration,
+   pinned upstream manual/LPF, unique pins, TX-to-RX wiring, 75% resource policy,
+   no fabricated board latency. This is not yet a schedulable BoardDB: its
+   asynchronous transport cannot honestly be described by the existing fixed
+   link latency field.
+2. **Open physical endpoint (pending).** Yosys `synth_ecp5`, nextpnr-ecp5
+   `--85k --package CABGA381 --speed 6`, and Project Trellis `ecppack` must
+   produce a routed design and bitstream without commercial tools. Check the
+   package pin database and all clock/I/O constraints, not only process exit.
+3. **Transport (pending).** Implement portable framed GPIO communication with
+   CDC-safe receive, reset/recovery, integrity checks and backpressure. Verify
+   independent clocks and clock tolerance. Virtual design state must advance
+   only after all required transfers are complete; variable transport latency
+   must not be hidden behind an arbitrary fixed cycle count.
+4. **EmuFlow integration (pending).** Add an ECP5 physical backend, family-aware
+   LUT4/FF/RAM/DSP accounting including communication overhead, and physical
+   timing binding. Never reinterpret VTR or AMD resource counts as ECP5 counts.
+   Physical segment timing and protocol timing need explicit global analysis;
+   handshake progress and local Fmax are not whole-design WNS/TNS.
+5. **Acceptance (pending).** Real RTL through Phase 1--7, one physical seed,
+   complete original-path timing coverage, macro-cycle equivalence, checked
+   placement/routing and bitstream production. Keep only compact terminal
+   evidence. Offline success does not establish measured signal integrity,
+   BER, cable delay or reliable power-on behavior.
+
+Source revision: `emard/ulx3s` commit
+`6a92cec6b177191c5b0f80e260013a1f8ec147dd`; manual section “Connectors” and
+`doc/constraints/ulx3s_v20.lpf` (declared compatible with v3.0.x).
+The wiring profile explicitly rejects claims of full-flow qualification today.
+
+## Historical vendor reference investigation
+
 ## Deliverable and current status
 
 Deliver one source-backed hardware configuration that implements a real RTL
