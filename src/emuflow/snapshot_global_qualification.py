@@ -33,9 +33,9 @@ def _classify_members(paths, timed, non_timed):
             if reason == 'state_hold':
                 if (len(path['segments']) != 1 or segment['launch'] != segment['capture'] or
                         json.loads(segment['launch'])[0] != 'state'):
-                    raise ValidationError('retention is not an original same-register local member')
+                    raise ValidationError(f'retention is not an original same-register local member: {path["path"]}: {key!r}')
             elif reason != 'boolean_independent':
-                raise ValidationError('original member has an unqualified missing physical segment')
+                raise ValidationError(f'original member has an unqualified missing physical segment: {path["path"]}: {key!r}')
             reasons.add(reason)
         if reasons:
             classified[path['path']] = sorted(reasons)

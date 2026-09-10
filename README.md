@@ -3800,6 +3800,9 @@ selects the requested routed cone before invoking native min analysis; a
 regression includes unrelated roots/captures and checks exact constraint
 coverage. No constraints are invented for unrelated logic. The failed run
 retains compact physical/failure evidence only; global metrics remain pending.
+Missing/unsupported physical-member failures retain the offending original
+member and boundary identities in the compact error, so scratch cleanup does
+not erase the actionable binding location.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
