@@ -54,6 +54,24 @@ Source revision: `emard/ulx3s` commit
 `doc/constraints/ulx3s_v20.lpf` (declared compatible with v3.0.x).
 The wiring profile explicitly rejects claims of full-flow qualification today.
 
+### Open physical bring-up evidence
+
+`scripts/qualify_ulx3s_endpoint.py` runs real tools and produces an explicitly
+endpoint-only report. With OSS CAD Suite 2026-09-10 (Yosys 0.69+10,
+nextpnr 0.11.1-25-ge47c2589), the checked-in GPIO physical smoke fixture passed
+synthesis, placement/routing and bitstream generation on the exact 85k/CABGA381
+speed-6 target, seed 1. It used 18 TRELLIS_COMB, 13 TRELLIS_FF and four I/Os;
+the routed local clock check passed its 25 MHz constraint. This is not evidence
+for external I/O timing, a functioning communication protocol or global timing.
+In particular the reported local Fmax is not whole-design WNS/TNS.
+
+The smoke fixture is an explicitly synthetic tool test, not a benchmark entry.
+Run the script with its RTL, `--top ulx3s_gpio_physical_smoke`, `--tools` pointing
+to the OSS suite's `bin`, and a fresh `--out` directory. It sets HOME, TMPDIR and
+XDG directories within that output, avoiding tool-wrapper writes to a default
+home. Its `physical_outputs_generated` status deliberately does not say that
+the hardware platform or external clock-domain crossings are qualified.
+
 ## Historical vendor reference investigation
 
 ## Deliverable and current status

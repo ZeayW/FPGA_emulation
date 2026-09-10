@@ -3068,6 +3068,10 @@ fixed GPIO wiring and LPF generation; its status is **unqualified candidate**,
 not a completed physical backend. Transport/CDC, ECP5 Phase 7 integration and
 complete global timing validation remain pending. Independent board clocks
 and unmeasured external delay are explicit; no fixed link latency is invented.
+The GPIO physical smoke fixture has now completed actual Yosys ECP5 synthesis,
+nextpnr-ecp5 place/route and Trellis bitstream generation with OSS CAD Suite
+2026-09-10. This is an endpoint tool/pin bring-up result only, not cross-board
+communication, external timing closure or complete EmuFlow qualification.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
