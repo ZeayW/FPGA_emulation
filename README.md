@@ -3768,6 +3768,13 @@ classifications. It checks every TX/commit readiness result separately. This
 explicit finite-trace qualification entry still withholds global/full-flow
 promotion pending integrated validation and the remaining local hold,
 reset/CDC and physical acceptance gates; it is not measured link signoff.
+**Current acceptance:** the fully open dual-ULX3S reference implementation has
+passed finite-trace offline integration on natural SERV, including physical host
+UART, both routed bitstreams and complete structural source-path accounting.
+This is reference-platform integration evidence, not a contest-matrix algorithm
+comparison, target-frequency closure, universal proof or measured board signoff.
+The platform document's completion gates and repository policy use this scope.
+
 The dedicated Linux one-shot entry `emuflow ulx3s-qualify` now
 connects source RTL synthesis, natural TritonPart partitioning, complete source
 population, real transport macrocycle simulation, parallel dual-board physical

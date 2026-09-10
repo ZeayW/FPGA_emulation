@@ -37,11 +37,11 @@ Implementation sequence and completion gates:
    no fabricated board latency. This is not yet a schedulable BoardDB: its
    asynchronous transport cannot honestly be described by the existing fixed
    link latency field.
-2. **Open physical endpoint (partial: routed bitstreams pass).** Yosys `synth_ecp5`, nextpnr-ecp5
+2. **Open physical endpoint (offline implementation passed).** Yosys `synth_ecp5`, nextpnr-ecp5
    `--85k --package CABGA381 --speed 6`, and Project Trellis `ecppack` must
    produce a routed design and bitstream without commercial tools. Check the
    package pin database and all clock/I/O constraints, not only process exit.
-3. **Transport (implemented; qualification incomplete).** Portable framed
+3. **Transport (implemented; finite digital validation passed).** Portable framed
    GPIO RTL now includes synchronized receive, CRC/sequence checks,
    backpressure, multi-round exchange and logical commit. Independent-clock
    simulations and real routed implementations pass. Recovery remains
@@ -49,7 +49,7 @@ Implementation sequence and completion gates:
    Physical reset recovery/removal, metastability and external electrical
    assumptions are not established by those tests. Variable transport latency
    is not hidden behind an arbitrary fixed cycle count.
-4. **EmuFlow integration (partial).** The generalized TritonPart LUT4/FF
+4. **EmuFlow integration (scoped offline validation passed).** The generalized TritonPart LUT4/FF
    frontend, source-bound dual-board splitter, physical ECP5 backend and
    combined DUT/transport resource checks exist. Real SERV has passed
    four declared macrocycles, dual-board placement/routing and bitstreams.
@@ -59,15 +59,18 @@ Implementation sequence and completion gates:
    qualification now also covers all 102,211 SERV structural source paths:
    101,170 numerically timed members and 1,041 explicitly classified retention
    or Boolean-independent members. Native OpenSTA observed-event analysis has
-   no TX/commit readiness violations, runtime WNS +291,598.204058 ns and TNS 0;
-   at the original 40 ns target, WNS is -2,716,800.197959 ns. UART is therefore
+   no TX/commit readiness violations. The integrated physical-host run below
+   has runtime WNS +291,558.215395 ns and TNS 0; at the original 40 ns target,
+   WNS is -18,274,584.785104 ns. UART is therefore
    a slow functional emulation transport, not target-frequency execution.
    These are finite-trace, ideal-skew routed-cone bounds, not measured link or
-   universal timing guarantees. Reset/CDC and integrated acceptance remain
-   incomplete. Never reinterpret
+   universal timing guarantees. Reset/CDC structure and synchronous interstage
+   setup/hold passed; analog and asynchronous-reset obligations remain unverified.
+   Never reinterpret
    VTR or AMD resource counts as ECP5 counts; handshake progress and local
    Fmax are not whole-design WNS/TNS.
-5. **Acceptance (pending).** Real RTL through Phase 1--7, one physical seed,
+5. **Acceptance (finite-trace offline gate passed).** Real RTL through the
+   dedicated end-to-end reference-platform interface, one physical seed,
    complete original-path timing coverage, macro-cycle equivalence, checked
    placement/routing and bitstream production. Keep only compact terminal
    evidence. Offline success does not establish measured signal integrity,
@@ -76,7 +79,7 @@ Implementation sequence and completion gates:
 Source revision: `emard/ulx3s` commit
 `6a92cec6b177191c5b0f80e260013a1f8ec147dd`; manual section “Connectors” and
 `doc/constraints/ulx3s_v20.lpf` (declared compatible with v3.0.x).
-The wiring profile explicitly rejects claims of full-flow qualification today.
+The wiring profile alone cannot certify an executed full flow.
 Wiring alone is not run evidence. The unused always-raise qualification stub
 has been replaced by `snapshot_acceptance.validate_snapshot_offline_result`,
 which checks the completed run's compact gates and returns a finite offline
@@ -457,8 +460,9 @@ Its compact report explicitly retains pending recovery/removal, metastability,
 original-path delay coverage and asynchronous global timing obligations.
 The structural checks do not establish MTBF, external reset pulse width,
 electrical closure or complete global STA. Natural SERV has passed this
-integrated structural gate on both physical boards; full-flow qualification
-remains incomplete until those timing obligations are resolved.
+integrated structural gate and native synchronous interstage timing on both
+physical boards. Scoped offline acceptance passed as described above; analog
+and asynchronous-reset hardware qualification remains unverified.
 
 `derive_snapshot_rounds` now computes the logical exchange count for supported
 LUT/FF netlists by a linear DAG traversal after partition selection. Edges

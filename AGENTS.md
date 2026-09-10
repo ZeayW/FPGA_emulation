@@ -493,6 +493,15 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
 
 ## Benchmark and execution policy
 
+- Source-backed reference-hardware integration is distinct from the contest
+  provider-comparison matrix. The dedicated `ulx3s-qualify` interface may
+  validate a fixed real-board assembly with naturally connected RTL. Report
+  its finite-trace offline acceptance, original-path coverage and target/runtime
+  timing explicitly; do not label it a registered algorithm QoR comparison or
+  measured hardware closure. A wiring profile alone is never execution evidence.
+  Asynchronous handshaking must not be coerced into a fabricated constant-delay
+  contest link to satisfy the existing matrix schema.
+
 - `benchmarks/end_to_end_validation_matrix.json` is the sole registry for
   provider comparisons and complete Phase 1--7 WNS/TNS claims.  Ad-hoc runs
   may diagnose a bug, but they must not be reported as benchmark evidence.
