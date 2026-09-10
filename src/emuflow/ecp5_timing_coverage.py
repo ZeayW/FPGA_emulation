@@ -7,6 +7,55 @@ separate obligations. No absent physical delay is treated as zero.
 from .errors import ValidationError
 
 
+def qualify_ecp5_comb_arcs(routed, delays, *, top="top"):
+    """Check the connected LUT/carry arc population, not path slack.
+
+    Arc families follow nextpnr e47c2589 ecp5/trellis_import.py's split
+    timing-cell contract. Values come only from the checked routed SDF.
+    This deliberately retains the tool's conservative LUT arcs instead of
+    dropping paths by reinterpreting INITVAL. Stateful LUT RAM is unsupported.
+    """
+    if delays.get('delay_connectivity_checked') is not True:
+        raise ValidationError('combinational coverage requires checked SDF')
+    module = routed.get('modules', {}).get(top)
+    if not isinstance(module, dict):
+        raise ValidationError('missing combinational timing top')
+    counts = {'LOGIC': 0, 'CCU2': 0}; arc_count = 0
+    for name, cell in module.get('cells', {}).items():
+        if cell.get('type') != 'TRELLIS_COMB':
+            continue
+        mode = cell.get('parameters', {}).get('MODE', 'LOGIC')
+        connections = cell.get('connections', {})
+        if mode not in counts:
+            raise ValidationError(f'unsupported combinational timing mode: {name}/{mode}')
+        if any(connections.get(pin) for pin in ('WD', 'WAD0', 'WAD1', 'WAD2', 'WAD3', 'WRE', 'WCK')):
+            raise ValidationError('stateful LUT ports in combinational timing model')
+        if mode == 'LOGIC':
+            if connections.get('FCI') or connections.get('FCO'):
+                raise ValidationError('carry port in LOGIC timing model')
+            families = {'F': ('A', 'B', 'C', 'D'),
+                        'OFX': ('A', 'B', 'C', 'D', 'M', 'F1', 'FXA', 'FXB')}
+        else:
+            if any(connections.get(pin) for pin in ('OFX', 'M', 'F1', 'FXA', 'FXB')):
+                raise ValidationError('wide mux in carry timing model')
+            families = {pin: ('A', 'B', 'C', 'D', 'FCI') for pin in ('F', 'FCO')}
+        expected = {(source, sink) for sink, sources in families.items()
+                    if connections.get(sink) for source in sources if connections.get(source)}
+        for source, sink in expected:
+            if (len(connections[source]) != 1 or len(connections[sink]) != 1
+                    or cell.get('port_directions', {}).get(source) != 'input'
+                    or cell.get('port_directions', {}).get(sink) != 'output'):
+                raise ValidationError('invalid combinational timing port')
+        actual = set(delays.get('cells', {}).get(name, {}).get('iopaths', {}))
+        if actual != expected:
+            raise ValidationError(f'combinational arc coverage mismatch: {name}: '
+                                  f'missing={len(expected-actual)}, extra={len(actual-expected)}')
+        counts[mode] += 1; arc_count += len(expected)
+    return {'status': 'pass', 'scope': 'trellis_logic_carry_iopath_coverage',
+            'cells_by_mode': counts, 'checked_arcs': arc_count,
+            'original_path_coverage_qualified': False, 'global_timing_qualified': False}
+
+
 def qualify_ecp5_timing_coverage(routed, delays, *, top="top"):
     if delays.get('delay_connectivity_checked') is not True:
         raise ValidationError('timing coverage requires checked SDF connectivity')

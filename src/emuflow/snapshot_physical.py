@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from .ecp5_qualification import qualify_snapshot_clock_coverage
 from .ecp5_sdf import read_nextpnr_sdf
-from .ecp5_timing_coverage import qualify_ecp5_timing_coverage
+from .ecp5_timing_coverage import qualify_ecp5_timing_coverage, qualify_ecp5_comb_arcs
 from .snapshot_cdc import qualify_snapshot_uart_cdc
 from .snapshot_reset import qualify_snapshot_reset_structure
 from .snapshot_physical_binding import bind_snapshot_routed_identities, bind_snapshot_transport_storage
@@ -23,6 +23,7 @@ def qualify_snapshot_physical(output_dir, interface, physical_report, *, mapped_
     clocks=qualify_snapshot_clock_coverage(routed,physical_report)
     delays=read_nextpnr_sdf((root/'routed.sdf').read_text(),routed)
     coverage=qualify_ecp5_timing_coverage(routed,delays)
+    comb=qualify_ecp5_comb_arcs(routed,delays)
     uart=qualify_snapshot_uart_cdc(routed,mapped,delays,mapped_top=mapped_top,host_uart=host_uart)
     reset=qualify_snapshot_reset_structure(routed)
     # Request original state only: optimized-away internal combinational aliases
@@ -33,6 +34,7 @@ def qualify_snapshot_physical(output_dir, interface, physical_report, *, mapped_
     storage=bind_snapshot_transport_storage(interface,routed,mapped=mapped,mapped_top=mapped_top)
     return {'status':'physical_structure_qualified_global_timing_pending',
         'clock_coverage':clocks,'timing_annotation_coverage':coverage,
+        'combinational_arc_coverage':comb,
         'uart_data_cdc':uart,'reset_structure':reset,
         'original_state':{'source_registers':len(states),
             'constant_registers':sum(v['kind']=='constant' for v in states.values()),
@@ -42,5 +44,5 @@ def qualify_snapshot_physical(output_dir, interface, physical_report, *, mapped_
             'interconnect_arcs':len(delays['interconnect']),
             'primitive_iopaths':sum(len(v['iopaths']) for v in delays['cells'].values())},
         'full_flow_qualified':False,'global_wns_tns':None,
-        'pending':['primitive_combinational_arc_coverage','reset_recovery_removal','metastability_assumptions',
-                   'original_path_delay_coverage','asynchronous_global_timing']}
+        'pending':['original_path_delay_coverage','reset_recovery_removal','metastability_assumptions',
+                   'asynchronous_global_timing']}

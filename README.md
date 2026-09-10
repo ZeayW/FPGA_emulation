@@ -3447,6 +3447,14 @@ The correction was checked against that attempt's existing routed output,
 without rerunning synthesis or claiming an integrated full-flow pass.
 It is not a substitute for
 primitive combinational-arc completeness, original-path coverage or OpenSTA.
+The physical consumer now also checks the complete connected `TRELLIS_COMB`
+LOGIC/CCU2 IOPATH population against the
+[pinned nextpnr split timing-cell contract](https://github.com/YosysHQ/nextpnr/blob/e47c2589/ecp5/trellis_import.py#L302).
+This includes wide-LUT mux and carry arcs, not merely LUT A-to-F delays;
+missing/reversed/extra arcs and unsupported LUT-RAM modes fail explicitly.
+Delay values remain sourced from routed SDF, never from substitute constants.
+This extension has unit tests; integrated real-design validation is pending.
+It does not establish original-path coverage or whole-design slack.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
