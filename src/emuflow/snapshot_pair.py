@@ -7,6 +7,7 @@ import re
 from .errors import ValidationError
 from .snapshot_netlist import emit_snapshot_partition
 from .snapshot_rounds import derive_snapshot_rounds
+from .board_ulx3s import ulx3s_pair_profile
 
 
 def emit_snapshot_pair(ir, assignment, *, prefix, port_owners, initial_state,
@@ -85,7 +86,44 @@ module {core}(input wire clk,reset,link_rx,output wire link_tx,
         .rx_record(rx),.rx_valid(rv),.rx_ready(rr));
 endmodule
 '''
-        boards[board] = {"rtl": rtl, "top": core, "interface": interface}
+        physical_top = core+"_physical"
+        host_ports = ",input wire host_rx,output wire host_tx" if leader else ""
+        rtl += f'''
+module {physical_top}(input wire clk_25mhz,reset_n,link_rx,output wire link_tx{host_ports});
+    reg [1:0] reset_pipe=2'b11;
+    always @(posedge clk_25mhz or negedge reset_n)
+        if(!reset_n) reset_pipe<=2'b11;
+        else reset_pipe<={{reset_pipe[0],1'b0}};
+    wire reset=reset_pipe[1];
+    wire [{ni-1}:0] inputs;
+    wire [{no-1}:0] outputs;
+    wire request_valid,request_ready,response_valid,response_ready,core_fault;
+    {core} core(.clk(clk_25mhz),.reset(reset),.link_rx(link_rx),.link_tx(link_tx),
+        .host_inputs(inputs),.request_valid(request_valid),.request_ready(request_ready),
+        .host_outputs(outputs),.response_valid(response_valid),
+        .response_ready(response_ready),.fault(core_fault));
+'''
+        if leader:
+            divider = ulx3s_pair_profile()["host_interface"]["clocks_per_bit"]
+            rtl += f'''
+    wire [63:0] tx,rx;
+    wire tv,tr,rv,rr,host_link_fault,host_fault;
+    emuflow_gpio_endpoint #(.CLOCKS_PER_BIT({divider})) host_endpoint(
+        .clk(clk_25mhz),.reset(reset),.serial_rx(host_rx),.serial_tx(host_tx),
+        .tx_record(tx),.tx_valid(tv),.tx_ready(tr),.rx_record(rx),
+        .rx_valid(rv),.rx_ready(rr),.fault(host_link_fault));
+    emuflow_snapshot_host #(.INPUT_BITS({ni}),.OUTPUT_BITS({no}),.SESSION_ID(32'h{session_id:08x})) host(
+        .clk(clk_25mhz),.reset(reset),.link_fault(host_link_fault),.core_fault(core_fault),
+        .tx_record(tx),.tx_valid(tv),.tx_ready(tr),.rx_record(rx),.rx_valid(rv),.rx_ready(rr),
+        .host_inputs(inputs),.request_valid(request_valid),.request_ready(request_ready),
+        .host_outputs(outputs),.response_valid(response_valid),
+        .response_ready(response_ready),.fault(host_fault));
+'''
+        else:
+            rtl += "assign inputs=0; assign request_valid=0; assign response_ready=0;\n"
+        rtl += "endmodule\n"
+        boards[board] = {"rtl": rtl, "top": core, "physical_top": physical_top,
+                         "host_uart": bool(leader), "interface": interface}
     return {"boards": boards, "evaluation_rounds": rounds,
             "host_clock_domain": "board0", "output_sampling": "pre_dut_active_edge",
             "physical_host_binding_qualified": False}

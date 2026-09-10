@@ -49,3 +49,14 @@ class ULX3SBoardTests(unittest.TestCase):
         a["boards"][0]["pins"]["link_tx"]["site"] = "INVALID"
         self.assertEqual(a["boards"][1]["pins"]["link_tx"]["site"], "B11")
         self.assertEqual(ulx3s_pair_profile()["boards"][0]["pins"]["link_tx"]["site"], "B11")
+
+    def test_real_ftdi_host_binding(self):
+        p=ulx3s_pair_profile()["host_interface"]
+        self.assertEqual(p["pins"]["host_rx"]["site"],"M1")
+        self.assertEqual(p["pins"]["host_tx"]["site"],"L4")
+        self.assertLess(abs(p["actual_nominal_baud"]/p["host_baud"]-1),0.0001)
+        lpf=ulx3s_endpoint_lpf("board0",host_uart=True)
+        self.assertEqual(lpf.count("LOCATE COMP"),6)
+        self.assertIn('"host_rx" SITE "M1"',lpf)
+        self.assertNotIn("host_rx",ulx3s_endpoint_lpf("board0"))
+        with self.assertRaises(ValidationError): ulx3s_endpoint_lpf("board1",host_uart=True)

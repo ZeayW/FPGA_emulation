@@ -21,6 +21,7 @@ class ULX3SRTLTests(unittest.TestCase):
     def simulate(self, name, parameters=(), expected_failure=None, generated=()):
         sources = [ROOT / "rtl/transport" / ("emuflow_gpio_" + n + ".sv")
                    for n in ("uart", "record", "endpoint", "exchange")]
+        sources.append(ROOT / "rtl/transport/emuflow_snapshot_host.sv")
         with tempfile.TemporaryDirectory(prefix="ulx3s-rtl-") as scratch:
             output = Path(scratch) / "simulation"
             for index, content in enumerate(generated):
@@ -60,6 +61,14 @@ class ULX3SRTLTests(unittest.TestCase):
         from test_snapshot_pair import generated_host_pair
         pair = generated_host_pair()
         self.simulate("ulx3s_host_tb", generated=[b["rtl"] for b in pair["boards"].values()])
+
+    def test_host_record_protocol(self):
+        self.simulate("ulx3s_host_records_tb")
+
+    def test_physical_host_uart_composition(self):
+        from test_snapshot_pair import generated_host_pair
+        pair = generated_host_pair()
+        self.simulate("ulx3s_host_uart_tb", generated=[b["rtl"] for b in pair["boards"].values()])
 
     def test_automatically_lowered_three_crossing_partitions(self):
         from emuflow.ir import EmuIR

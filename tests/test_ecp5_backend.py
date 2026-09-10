@@ -73,3 +73,9 @@ class ECP5BackendTests(unittest.TestCase):
     def test_no_overwrite(self):
         self.out.mkdir()
         with self.assertRaises(FileExistsError): self.run_backend()
+
+    def test_host_pin_overlay_is_explicit(self):
+        with patch("emuflow.ecp5_backend.subprocess.run", side_effect=self.tool):
+            result=self.run_backend(host_uart=True)
+        self.assertTrue(result["host_uart"])
+        self.assertIn('"host_tx" SITE "L4"',(self.out/"endpoint.lpf").read_text())

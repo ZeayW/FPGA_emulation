@@ -3140,8 +3140,8 @@ and stale shadows against Boolean propagation. The composed UART protocol passes
 a three-crossing chain; the intentionally insufficient one-round run fails on
 stale data. Automatically lowered EmuIR partitions, generated board tops and
 the three-round protocol also agree with a synchronous reference for 16
-macrocycles across independent clocks. Seven RTL test methods cover these cases
-plus host I/O, clock offsets and integrity/error regressions (12 simulation runs).
+macrocycles across independent clocks. Nine RTL test methods cover these cases
+plus host I/O, clock offsets and integrity/error regressions (14 simulation runs).
 Run `PYTHONPATH=src python3 -m unittest discover -s tests -p test_ulx3s_rtl.py -v`
 with `iverilog`/`vvp` on PATH, or explicit `IVERILOG`/`VVP` paths. Missing tools
 produce an explicit skip, not qualification. Host I/O integration and
@@ -3159,7 +3159,16 @@ outputs represent the values just before the corresponding DUT active edge
 and remain stable under response backpressure. A 16-macrocycle RTL test checks
 changing live inputs during execution and delayed response consumption against
 a synchronous reference. Host port ownership must be explicit. This is a
-logical host adapter, not yet a physical USB/UART pin binding or full-flow CLI.
+logical host adapter, not yet a full-flow CLI.
+The pair emitter now also produces `physical_top` wrappers. Board0 binds the
+onboard FT231X USB serial pins (FPGA RX M1, TX L4) through the same checked
+record layer and a single-outstanding host command protocol. Use 115200 8N1,
+no hardware/software flow control; the 25 MHz divider is 217. The low-level
+physical runner's explicit `host_uart=True` / endpoint CLI `--host-uart`
+selects those two additional audited pins on board0 only. A serial-host RTL
+test passes eight reference macrocycles through both generated physical
+wrappers; protocol tests cover partial input, wrong index/session, padding and
+backpressure. Actual host-wrapper P&R and physical USB operation remain pending.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

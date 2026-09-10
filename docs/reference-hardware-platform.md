@@ -279,9 +279,55 @@ independent synchronous XOR-state reference. This brings the automated RTL
 suite to seven test methods / twelve simulations. Missing host ownership and
 invalid session/module contracts fail explicitly. The interface vectors retain
 their original port/bit mapping; no actual DUT input is silently tied off.
-Physical host communication, additional primitive support, full Phase 1–7 and
-global timing remain outstanding. A logical adapter alone is not a usable
-board-level host connection.
+Additional primitive support, full Phase 1–7 and global timing remain
+outstanding. A logical adapter alone is not a usable board-level host connection.
+
+### Onboard USB-serial host binding
+
+The pinned upstream LPF's USBSERIAL section binds `ftdi_txd` to M1 (FPGA input)
+and `ftdi_rxd` to L4 (FPGA output), with LVCMOS33 and pull-ups. The pinned manual
+identifies US1's onboard FT231X and its factory configuration. These are not
+the raw USB US2 pins: the existing USB bridge converts host USB to UART, so no
+FPGA USB core or proprietary IP is needed. Existing board EEPROM configuration
+is assumed; EmuFlow must not silently reprogram it or run a JTAG programmer
+concurrently with host UART use.
+
+`emit_snapshot_pair` now includes generated physical wrappers in each board's
+canonical RTL string, referenced by `physical_top`. Board0 adds `host_rx`/`host_tx`;
+board1 retains the four-pin interface. `run_ulx3s_physical(host_uart=True)` and
+`qualify_ulx3s_endpoint.py --host-uart` bind those extra pins on board0 only.
+The port is 115200 baud, 8N1, no hardware or software flow control. At nominal
+25 MHz, divider 217 yields 115207.37 baud (about +0.0064%). This is a divider
+calculation, not a measured USB/oscillator rate or transport-latency guarantee.
+
+`emuflow_snapshot_host` consumes CRC/sequence-checked 64-bit records. Each row
+below gives the payload fields in most-significant-first order:
+
+| Direction / operation | Payload fields |
+|---|---|
+| Host HELLO | `60`, version `01`, zero 16 bits, session ID 32 bits |
+| Device CONFIG | `61`, version `01`, zero 16 bits, input bits 16, output bits 16 |
+| Host INPUT (each ascending word) | `70`, index 8, epoch 16, data 32 |
+| Host EXECUTE | `71`, zero 8, epoch 16, zero 32 |
+| Device OUTPUT (each ascending word) | `72`, index 8, epoch 16, data 32 |
+| Device DONE | `73`, zero 8, epoch 16, zero 32 |
+
+Input/output vectors are limited to 256 words, little-word-first within the
+packed vector; each record itself uses the existing big-endian byte envelope.
+Unused high input bits must be zero. Width-one padding remains for a vector
+with no actual host bits; the interface's original port/bit map distinguishes
+padding from DUT data. Every request must supply all input words and EXECUTE.
+The host waits for all output words and matching DONE before the next request.
+Epoch starts at zero and exhaustion fails rather than wrapping. Missing/partial
+input never executes. Malformed session/index/epoch/padding or link/core faults
+stop the adapter; no automatic retry or rollback is promised. Software must
+use a bounded receive timeout and invalidate the run after a timeout.
+
+Actual RTL tests pass command backpressure/error cases and eight original-state
+macrocycles over the complete serial-host/generated-pair chain, with independent
+clocks. The RTL suite now has nine methods / fourteen simulations. Host-wrapper
+P&R, measured FTDI operation and whole-design timing are still pending; the
+older controller physical tests do not qualify this additional hardware.
 
 `derive_snapshot_rounds` now computes the logical exchange count for supported
 LUT/FF netlists by a linear DAG traversal after partition selection. Edges

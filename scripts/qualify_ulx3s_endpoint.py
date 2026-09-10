@@ -17,9 +17,11 @@ def main():
     parser.add_argument("--tools", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--board", choices=("board0", "board1"), default="board0")
+    parser.add_argument("--host-uart", action="store_true", help="bind board0 onboard FT231X UART pins")
     args = parser.parse_args()
     report = run_ulx3s_physical([args.rtl, *args.extra_rtl], top=args.top,
-                               tools=args.tools, output_dir=args.out, board=args.board)
+                               tools=args.tools, output_dir=args.out, board=args.board,
+                               host_uart=args.host_uart)
     print(json.dumps({"status": report["status"],
                       "summary": str(args.out.resolve() / "summary.json")}))
 

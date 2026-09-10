@@ -40,6 +40,15 @@ def ulx3s_pair_profile() -> dict:
         },
         "clocks": {"local_mhz": 25, "relationship": "asynchronous",
                    "external_delay_bound_ns": None},
+        "host_interface": {
+            "board": "board0", "bridge": "onboard FT231X USB serial (US1)",
+            "pins": {"host_rx": {"site": "M1", "direction": "input", "board_net": "ftdi_txd"},
+                     "host_tx": {"site": "L4", "direction": "output", "board_net": "ftdi_rxd"}},
+            "host_baud": 115200, "clocks_per_bit": 217, "format": "8N1",
+            "hardware_flow_control": False, "software_flow_control": False,
+            "actual_nominal_baud": 25000000/217,
+            "physical_operation_measured": False,
+        },
         "tools": {"synthesis": "yosys:synth_ecp5",
                   "place_route": "nextpnr-ecp5", "bitstream": "ecppack",
                   "device": "85k", "package": "CABGA381", "speed": "6",
@@ -54,16 +63,21 @@ def ulx3s_pair_profile() -> dict:
     }
 
 
-def ulx3s_endpoint_lpf(board: str) -> str:
+def ulx3s_endpoint_lpf(board: str, *, host_uart: bool = False) -> str:
     """Emit only audited bindings; do not copy blanket timing exceptions."""
     profile = ulx3s_pair_profile()
     record = next((b for b in profile["boards"] if b["id"] == board), None)
     if record is None:
         raise ValidationError(f"Unknown ULX3S board: {board}")
+    if type(host_uart) is not bool or (host_uart and board != "board0"):
+        raise ValidationError("host UART is an explicit board0-only binding")
+    pins = dict(record["pins"])
+    if host_uart:
+        pins.update(profile["host_interface"]["pins"])
     lines = ["# Source-backed pin bindings; external timing/CDC not qualified."]
-    for name, pin in record["pins"].items():
+    for name, pin in pins.items():
         lines.append(f'LOCATE COMP "{name}" SITE "{pin["site"]}";')
-        pull = "UP" if name == "reset_n" else "NONE"
+        pull = "UP" if name in {"reset_n", "host_rx", "host_tx"} else "NONE"
         drive = " DRIVE=4" if pin["direction"] == "output" else ""
         lines.append(f'IOBUF PORT "{name}" IO_TYPE=LVCMOS33 PULLMODE={pull}{drive};')
     lines.append('FREQUENCY PORT "clk_25mhz" 25 MHZ;')
