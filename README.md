@@ -3221,9 +3221,11 @@ structural clusters, normal balance/capacity checks and no fixed instance
 placement. Its resource-only view deliberately has no fixed-latency BoardDB
 serialization: both boards are reachable directly, but UART latency is not
 invented for Phase 3. DUT capacity is 75% of the fixed device; the later physical
-gate must separately fit DUT **plus** transport into that same limit. Unit
-coverage verifies this adapter contract; native real-RTL partition qualification
-and end-to-end asynchronous timing integration remain pending.
+gate must separately fit DUT **plus** transport into that same limit. Native
+qualification now passes on pinned natural SERV: 3,864 generalized clusters,
+1,949/1,915 cells on the two boards, 62 cut nets and zero balance or illegal-cut
+violations, without forced placement. End-to-end asynchronous timing integration
+remains pending.
 For actual mapped RTL, `mapped_snapshot_initial_state` preserves every declared
 Yosys `init` bit and rejects contradictory aliases. Undefined FF bits require an
 explicit seed, producing a reproducible **declared starting state**, never an
@@ -3241,6 +3243,26 @@ explicit; response backpressure is exercised. An Icarus positive test and an
 injected next-state corruption test pass, including detection before an output
 mismatch appears. This is finite-trace functional evidence, not a universal
 equivalence proof, host USB/UART test, or routed physical timing result.
+The natural SERV qualification (`serv_rf_top`, upstream commit
+`41e8aeedfd1e9ad5f95902c5b0dfc83d1c99e5d2`) now also passes four explicit
+macrocycles through the actual generated peer UART RTL, checking all 1,336 FFs
+and 168 output bits against the unsplit mapped model. The first two input
+vectors assert `i_rst`, the next two release it; other inputs are zero, and
+undefined initial FF values use explicit seed 1. This is a finite reset trace,
+not an executed-program or all-initial-states proof. Two evaluation rounds are
+derived from the naturally partitioned logic. Icarus simulation takes about
+232 s on this qualification; a 120 s wall timeout was insufficient, rather than
+evidence of a functional failure.
+Both generated SERV physical wrappers, including DUT, peer transport and the
+board0 serial host adapter, pass Yosys + nextpnr-ecp5 + ecppack with physical
+seed 1. Board0 uses 4,020 `TRELLIS_COMB`, 2,218 FFs and six I/Os; board1 uses
+2,604 `TRELLIS_COMB`, 1,328 FFs and four I/Os. Both pass the local 25 MHz and
+75% resource gates and generate bitstreams. Reported local Fmax is 77.33/85.89
+MHz; these numbers are **not global WNS/TNS**. The complete qualification
+attempt took about 333 s, including simulation and parallel board P&R. Routed
+JSON/SDF generation passes, but source-path binding, intended timing-path/CDC
+coverage, conditional asynchronous global analysis and a complete Phase 1--7
+entry point are still unqualified. No measured board operation is claimed.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
