@@ -78,6 +78,27 @@ Source revision: `emard/ulx3s` commit
 `doc/constraints/ulx3s_v20.lpf` (declared compatible with v3.0.x).
 The wiring profile explicitly rejects claims of full-flow qualification today.
 
+### Integrated physical-host evidence and remaining boundary
+
+The dedicated `emuflow ulx3s-qualify` command has completed a naturally connected
+SERV run through serial host records, the generated physical reset/host wrappers,
+dual-board transport, physical implementation and native global analysis.
+This is stronger than the earlier internal-request-interface simulation:
+all 1,336 FF states and 168 output bits matched for four declared macrocycles.
+The single-seed run completed in 1,844.03 seconds; all 102,211 structural paths
+were accounted for, with 101,170 numerical paths and explicit nonnumerical
+retention/Boolean-independence classes. Runtime WNS was +291,558.215395 ns,
+TNS zero; original-40-ns-target WNS was -18,274,584.785104 ns and path-summed
+TNS -1,043,072,220,003.8145 ns. Serial host waiting belongs to this timeline.
+
+Do not promote this finite digital execution to measured or worst-case hardware
+closure. The test has ideal digital interboard wires, fixed declared clock
+offsets, no jitter/metastability model, seeded initial state and only the declared
+input trace. Physical data timing uses exported SDF bounds and ideal clock skew;
+raw asynchronous reset recovery/removal and external electrical behavior remain
+unqualified. The integrated acceptance claim must retain those boundaries, not
+turn existing `False` qualification fields into unconditional pass flags.
+
 ### Open physical bring-up evidence
 
 `scripts/qualify_ulx3s_endpoint.py` runs real tools and produces an explicitly

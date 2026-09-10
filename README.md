@@ -3841,8 +3841,20 @@ all original FFs and checks host responses against unsplit logic. Earlier SERV
 results used the internal request interface and do not qualify this expanded
 boundary. Native Icarus wrapper-mode regression passed both correct-state and
 injected-corruption cases, including bound per-board reset/event traces;
-real-design execution of this expanded boundary remains pending. The
+real-design SERV execution of this expanded boundary has now completed. The
 internal-interface test generator remains available for focused tests.
+The physical-host SERV run took 1,844.03 seconds. Four macrocycles checked all
+1,336 original FFs and 168 output bits; both boards completed physical
+implementation and synchronizer setup/hold checks. Complete structural coverage
+remained 102,211 members (101,170 numerical), with zero TX/commit readiness
+violations. At the selected observed runtime macrocycle, WNS is
++291,558.215395 ns and TNS is zero. At the original 40 ns target, WNS is
+-18,274,584.785104 ns and path-summed TNS -1,043,072,220,003.8145 ns
+(58,674 negative members). Actual serial-host idle/transfer intervals are part
+of this event timeline: this result must not be compared as an algorithm-only
+delta against the earlier internal-request-interface run. It still does not
+establish universal reset behavior, analog CDC, measured link timing or
+hardware qualification. Only compact terminal evidence is retained.
 Terminal simulation summaries state their actual board/client periods and
 phase offsets, reset-release time, ideal zero-delay digital-wire model, absence
 of jitter/metastability modeling, and finite-trace claim. The board profile
