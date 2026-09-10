@@ -81,3 +81,18 @@ def test_vectors_allow_declared_unused_ports_but_never_guess_live_inputs():
         _connected_vectors(ir,'clk',[dict(data=1,typo=0)])
     with pytest.raises(ValidationError,match='out-of-range'):
         _connected_vectors(ir,'clk',[dict(data=1,unused=2)])
+
+
+def test_hold_query_uses_selected_cone_not_unconstrained_other_roots(tmp_path):
+    from emuflow.snapshot_flow import _measure_hold
+    q=('q','Q');other=('other','Q');d=('d','DI');unused=('unused','DI')
+    capture=dict(kind='ff',setuphold={e:((0,0,0),(0,0,.2)) for e in ('posedge','negedge')})
+    graph=dict(roots={q:{},other:{}},captures={d:capture,unused:capture},
+        dynamic_nodes={q,other,d,unused},order=[q,other,d,unused],edges=[(q,d,None),(other,unused,None)])
+    def query(cone,directory,**kwargs):
+        assert set(cone['roots'])==set(kwargs['launches_ns'])=={q}
+        assert set(cone['captures'])==set(kwargs['deadlines_ns'])=={d}
+        assert kwargs['analysis']=='min'
+        return {(q,d):dict(slack_ns=.3)}
+    with patch('emuflow.ecp5_sta.run_ecp5_pair_checks',side_effect=query):
+        assert _measure_hold(graph,{(q,d)},tmp_path,'sta')['minimum_slack_ns']==.3

@@ -3793,6 +3793,13 @@ never defaulted. The first native command run completed SERV synthesis and
 natural partitioning, but rejected an incorrectly named validation vector
 before simulation/physical execution. It is failure evidence, not a timing
 result; that attempt's internal scratch was removed.
+The corrected-vector native run subsequently completed both physical boards,
+but the command's local hold adapter supplied subset constraints to a full
+physical graph and was correctly rejected after 350 seconds. The adapter now
+selects the requested routed cone before invoking native min analysis; a
+regression includes unrelated roots/captures and checks exact constraint
+coverage. No constraints are invented for unrelated logic. The failed run
+retains compact physical/failure evidence only; global metrics remain pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the

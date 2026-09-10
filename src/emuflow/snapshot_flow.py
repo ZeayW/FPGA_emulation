@@ -108,6 +108,23 @@ def _connected_vectors(ir, clock, vectors):
     return result
 
 
+def _measure_hold(graph, pairs, directory, sta):
+    from .ecp5_data_graph import select_ecp5_data_cones
+    from .ecp5_sta import run_ecp5_pair_checks
+    if not pairs:
+        return dict(physical_pairs=0,minimum_slack_ns=None,negative_pairs=0,
+                    scope='same_edge_exported_sdf_ideal_skew')
+    launches = {q:0.0 for q,_ in pairs}
+    deadlines = {d:max(v[1][2] for v in graph['captures'][d]['setuphold'].values()) for _,d in pairs}
+    cone = select_ecp5_data_cones(graph,roots=set(launches),captures=set(deadlines))
+    rows = run_ecp5_pair_checks(cone,directory,pairs=pairs,launches_ns=launches,
+        deadlines_ns=deadlines,executable=sta,analysis='min')
+    if set(rows) != pairs:
+        raise ValidationError('incomplete local hold pair coverage')
+    return dict(physical_pairs=len(rows),minimum_slack_ns=min(v['slack_ns'] for v in rows.values()),
+        negative_pairs=sum(v['slack_ns']<0 for v in rows.values()),scope='same_edge_exported_sdf_ideal_skew')
+
+
 def _execute(args, sources, vectors, tools, root, report):
     from .synthesis import run_generic_yosys
     from .yosys import import_yosys_json
@@ -122,7 +139,6 @@ def _execute(args, sources, vectors, tools, root, report):
     from .ecp5_data_graph import build_ecp5_data_graph
     from .snapshot_timing_population import build_snapshot_timing_population
     from .snapshot_timing_binding import bind_snapshot_timing_boundaries, iter_bound_snapshot_connections
-    from .ecp5_sta import run_ecp5_pair_checks
     from .snapshot_global_qualification import qualify_snapshot_global_timing
     mapped_path = root/'mapped.json'
     run_generic_yosys(sources,args.top,mapped_path,executable=str(tools/'yosys'),
@@ -181,14 +197,7 @@ def _execute(args, sources, vectors, tools, root, report):
         initial_ready.update({key:protocol['reset_release_ns'][board] for key,record in population['launches'].items()
                               if record['kind']=='state'})
         pairs = {(q,d) for _,_,q,targets,_ in iter_bound_snapshot_connections(population,bindings,graph) for d in targets}
-        launches = {q:0.0 for q,_ in pairs}
-        deadlines = {d:max(v[1][2] for v in graph['captures'][d]['setuphold'].values()) for _,d in pairs}
-        rows = run_ecp5_pair_checks(graph,directory/'hold',pairs=pairs,launches_ns=launches,
-            deadlines_ns=deadlines,executable=str(args.sta.resolve()),analysis='min')
-        if set(rows) != pairs:
-            raise ValidationError('incomplete local hold pair coverage')
-        report['local_hold'][board] = dict(physical_pairs=len(rows),minimum_slack_ns=min((v['slack_ns'] for v in rows.values()),default=None),
-            negative_pairs=sum(v['slack_ns']<0 for v in rows.values()),scope='same_edge_exported_sdf_ideal_skew')
+        report['local_hold'][board] = _measure_hold(graph,pairs,directory/'hold',str(args.sta.resolve()))
     report['global_timing'] = qualify_snapshot_global_timing(database,bound,assignment,pair=pair,protocol=protocol,
         physical_models=models,port_owners=owners,initial_launch_ns=initial_ready,cycle=args.timing_cycle,
         setup_uncertainty_ns=args.setup_uncertainty_ns,output_dir=root/'global',yosys=tools/'yosys',sta=str(args.sta.resolve()))
