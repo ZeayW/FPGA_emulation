@@ -3215,6 +3215,15 @@ The pinned natural `serv_rf_top` frontend produced 2,528 LUT4 cells and 1,336
 FFs (3,864 cells / 3,966 nets), with `i_rst` still requiring explicit host data
 binding. This is frontend evidence only, not complete real-design physical or
 global-timing qualification.
+`snapshot_partition.partition_snapshot_pair` now connects LUT4/FF EmuIR to the
+existing native TritonPart provider on the fixed ULX3S pair. It uses generalized
+structural clusters, normal balance/capacity checks and no fixed instance
+placement. Its resource-only view deliberately has no fixed-latency BoardDB
+serialization: both boards are reachable directly, but UART latency is not
+invented for Phase 3. DUT capacity is 75% of the fixed device; the later physical
+gate must separately fit DUT **plus** transport into that same limit. Unit
+coverage verifies this adapter contract; native real-RTL partition qualification
+and end-to-end asynchronous timing integration remain pending.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
