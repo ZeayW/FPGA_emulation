@@ -3782,9 +3782,9 @@ full-flow promotion. Each invocation requires a new `--out` directory;
 The physical consumer hands already-parsed routed objects to timing binding
 inside the active run instead of making another routed JSON/SDF read pass.
 Control-plane tests cover preflight, environment restoration, duplicate-run
-rejection, failure and cleanup refusal. The new entry's actual native complete
-execution is still pending; it is an explicit qualification command, not yet
-a qualified default or a registered QoR benchmark.
+rejection, failure and cleanup refusal. Native integration results are recorded
+below; this remains an explicit qualification command, not yet a qualified
+default or a registered QoR benchmark.
 Host-vector validation now runs immediately after synthesis and identifies
 missing connected inputs, unknown names and out-of-range values before
 partitioning. Values for declared but optimized-unconnected input ports are
@@ -3799,10 +3799,25 @@ physical graph and was correctly rejected after 350 seconds. The adapter now
 selects the requested routed cone before invoking native min analysis; a
 regression includes unrelated roots/captures and checks exact constraint
 coverage. No constraints are invented for unrelated logic. The failed run
-retains compact physical/failure evidence only; global metrics remain pending.
+retains compact physical/failure evidence only; it produced no global metrics.
 Missing/unsupported physical-member failures retain the offending original
 member and boundary identities in the compact error, so scratch cleanup does
 not erase the actionable binding location.
+The corrected native one-command SERV run completed in 523.91 seconds with
+both physical boards, macrocycle simulation, local hold, source correspondence
+and complete-source native global analysis. All 102,211 structural members are
+accounted for: 101,170 have numerical timing, 529 are same-register retention,
+and 512 contain native-proven Boolean-independent relations; the latter two
+classes receive no fabricated slack. TX/commit readiness has zero violations.
+At the declared 40 ns target, WNS is -2,716,800.197959 ns and path-summed TNS
+is -135,028,815,329.65694 ns (58,674 negative members). At the observed runtime
+macrocycle, WNS is +291,598.204058 ns and TNS is zero. These are finite simulated
+event-epoch results using routed-cone upper bounds and zero declared setup
+uncertainty, not measured UART latency, target-frequency closure, or a hardware
+reliability guarantee. Local ideal-skew hold has no negative pairs (4,367 and
+17,257 queries, minimum 0.438 ns). Integrated acceptance and reset/CDC/external
+assumption qualification remain pending; full-flow/hardware promotion remains
+false. This is real-design integration evidence, not a registered QoR study.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
