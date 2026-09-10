@@ -120,8 +120,8 @@ commits first; the leader commits only after ACK. Neither may begin another
 transaction before the leader has completed that handshake. These are logical
 macrocycle barriers, not simultaneous oscillator edges. A DUT consumer must
 hold its exported snapshot through each transaction and use the commit pulse
-as a clock enable. General combinational-cut evaluation rounds and the actual
-split-netlist adapter are not implemented by this module.
+as a clock enable. The current multi-round extension is described below;
+complete physical settling and general split-netlist integration remain pending.
 
 Unexpected records, changed session IDs, transport errors or in-flight timeout
 invalidate the session. No auto-retry or independent-reset recovery is claimed;
@@ -214,7 +214,7 @@ emitted partitions now agrees with an independent synchronous reference for
 state updates. That test verifies netlist lowering only: its explicit snapshot
 transfer model is not physical link or whole-flow timing evidence.
 
-### Multi-round combinational evaluation (qualification pending)
+### Multi-round combinational evaluation (RTL qualified; physical gate pending)
 
 The exchange controller now performs `ROUNDS` acknowledged snapshot exchanges
 per DUT macrocycle. Intermediate exchanges update only remote shadows; DUT
@@ -230,8 +230,24 @@ This is a post-partition transport evaluation mechanism, not a Phase 3 guard
 or partitioning objective. The caller must derive adequate rounds from the
 actual combinational dependencies and validate local settling against physical
 timing. Neither a configured round count nor a successful handshake proves
-whole-design timing. A three-crossing inverter chain tests the distinction
-between shadow propagation and original register commit; RTL results pending.
+whole-design timing. Actual Icarus Verilog 13.0 tests pass the three-crossing
+inverter chain across independent clocks. The same circuit with only one round
+fails specifically on stale data, rather than merely timing out. Protocol
+round-count mismatch is rejected, and existing CRC/error/clock-offset regressions
+pass with the revised handshake.
+
+An additional composition test automatically lowers the EmuIR LUT/FF partitions,
+derives three rounds, generates both board tops and connects their actual UART
+signals. Both original registers agree with their synchronous reference for 16
+macrocycles. The closed fixture has no host data ports; only an unused padding
+port is tied to zero. This does not qualify arbitrary external host I/O, a real
+workload, physical timing, or complete Phase 1–7. The test command is
+`PYTHONPATH=src python3 -m unittest discover -s tests -p test_ulx3s_rtl.py -v`;
+both Icarus executables must be installed (`IVERILOG`/`VVP` override PATH).
+An explicit missing-tool skip is not a passing RTL gate. All six test methods
+(11 simulations including the required negative case) pass. The physical
+bitstreams recorded above predate this protocol revision and are not evidence
+for the changed controller.
 
 `derive_snapshot_rounds` now computes the logical exchange count for supported
 LUT/FF netlists by a linear DAG traversal after partition selection. Edges

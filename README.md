@@ -3130,15 +3130,23 @@ lowerer rejects unsupported memories, clock/reset transformations and inverted
 FF controls; general stateful-primitive and full-flow support remain pending.
 The exchange controller now supports explicit multi-round shadow evaluation
 before DUT commit, and checks that both peers agree on the round count during
-session setup. This new protocol revision is pending RTL qualification;
+session setup. This protocol revision has passed actual Icarus RTL qualification;
 physical settling validation is not yet complete. The companion dependency
 walker derives rounds from the selected partition's longest combinational
 crossing chain, stopping at original state boundaries. It rejects combinational
 cycles and does not feed this result back into partition selection.
 The round-count unit test independently enumerates placements, launch bits
-and stale shadows against Boolean propagation. Actual new-protocol RTL and
-physical validation remain pending; earlier endpoint bitstreams do not qualify
-this changed controller automatically.
+and stale shadows against Boolean propagation. The composed UART protocol passes
+a three-crossing chain; the intentionally insufficient one-round run fails on
+stale data. Automatically lowered EmuIR partitions, generated board tops and
+the three-round protocol also agree with a synchronous reference for 16
+macrocycles across independent clocks. Six RTL test methods cover these cases
+plus clock offsets and integrity/error regressions (11 simulation runs).
+Run `PYTHONPATH=src python3 -m unittest discover -s tests -p test_ulx3s_rtl.py -v`
+with `iverilog`/`vvp` on PATH, or explicit `IVERILOG`/`VVP` paths. Missing tools
+produce an explicit skip, not qualification. New-controller physical validation,
+host I/O integration and real-design Phase 1–7 remain pending; earlier endpoint
+bitstreams do not qualify this changed controller automatically.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
