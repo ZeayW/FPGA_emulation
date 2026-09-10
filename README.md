@@ -3097,6 +3097,10 @@ pass at both tested independent-clock offsets, and a disconnected transaction
 times out without committing. It is not wired into the full-flow provider.
 Commit edges are not physically simultaneous; a transport fault invalidates
 the run rather than promising rollback of a peer's already committed state.
+Injected session/role/width/reset/epoch/order/timeout/fault tests also pass.
+Both controller roles, including the complete UART/CRC endpoint, now produce
+real routed ECP5 bitstreams and pass the 25 MHz local constraint and resource
+gate. Full DUT integration, global timing and board measurements remain pending.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

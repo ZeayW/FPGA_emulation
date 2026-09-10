@@ -29,7 +29,7 @@ Implementation sequence and completion gates:
    no fabricated board latency. This is not yet a schedulable BoardDB: its
    asynchronous transport cannot honestly be described by the existing fixed
    link latency field.
-2. **Open physical endpoint (pending).** Yosys `synth_ecp5`, nextpnr-ecp5
+2. **Open physical endpoint (partial: routed bitstreams pass).** Yosys `synth_ecp5`, nextpnr-ecp5
    `--85k --package CABGA381 --speed 6`, and Project Trellis `ecppack` must
    produce a routed design and bitstream without commercial tools. Check the
    package pin database and all clock/I/O constraints, not only process exit.
@@ -132,7 +132,24 @@ does not claim fault-tolerant atomic rollback or physical hardware reliability.
 The composed UART/record/exchange simulation passes eight two-word transactions
 at both tested clock offsets and rejects a disconnected transaction by timeout
 without advancing either consumer. Additional injected protocol-error and
-controller physical fixtures are checked in; their qualification is pending.
+controller physical fixtures have now passed as well. The injected tests cover
+wrong session, same role, width mismatch, peer silence, unexpected restart,
+changed session, word order, epoch mismatch and an ACK coincident with PHY fault.
+
+Both fixed-role physical tops include UART, CRC records, exchange controller
+and a small stateful consumer (a synthetic qualification fixture, not a DUT
+benchmark). With the same open toolchain and physical seed 1:
+
+| Role | TRELLIS_COMB | TRELLIS_FF | I/O | Local constraint | Synthesis / P&R / pack |
+|---|---:|---:|---:|---|---|
+| Leader | 1,254 | 605 | 4 | 25 MHz passed | 7.05 / 12.77 / 2.06 s |
+| Follower | 1,278 | 605 | 4 | 25 MHz passed | 7.66 / 14.81 / 1.89 s |
+
+Device inventory and 75% resource checks pass for both. P&R and packing logs
+have no warnings/errors; synthesis includes Yosys/ABC informational warnings
+about `translate_off`, boxed carry handling and combinational subnetworks.
+These results qualify the scoped physical fixture, not external CDC/MTBF,
+whole-design timing, complete EmuFlow or measured hardware operation.
 
 ## Historical vendor reference investigation
 
