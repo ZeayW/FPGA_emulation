@@ -3477,6 +3477,15 @@ The executable reported `GITDIR-NOT`; its exact binary digest, rather than an
 invented Git revision, is recorded in external qualification evidence. This
 proves the adapter's native propagation on that fixture only; real snapshot
 path binding and conditional asynchronous timing remain pending.
+The same adapter also ran on fresh real SERV routed graphs: 40,406 / 24,141
+data arcs and exactly 6,571 / 3,935 dynamic physical capture endpoints were
+analyzed, with two constant captures on each board kept distinct. The entire
+run took 358.32 seconds including finite-trace equivalence and both physical
+implementations. With explicitly assumed 40 ns local periods, zero external
+input arrival, 40 ns external output deadlines and ideal clock skew, the
+minimum physical-endpoint slacks were 27.068 / 28.357 ns. These are **conditional
+physical endpoint diagnostics**, not original-design global WNS/TNS or a
+qualified asynchronous link-delay bound.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
