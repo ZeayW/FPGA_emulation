@@ -3709,6 +3709,20 @@ an early TX miss from a legal final runtime window. Native snapshot-global
 fixture execution, complete upstream path extraction/physical-bound production
 and real-design global timing qualification remain pending; this exporter
 alone cannot promote supplied bounds or a partial path population.
+Native OpenSTA 2.6.0 subsequently executed the snapshot-global fixture:
+the early TX reported approximately -7 ns, target observation -53 ns and
+runtime observation +6 ns. Thus a legal final runtime window does not hide
+an earlier readiness violation. Missing physical segment input was rejected;
+execution took 4.53 seconds and scratch was removed. These intentionally
+constructed fixture margins are not real-design QoR.
+`measure_snapshot_segment_bounds` now produces source-keyed physical segment
+inputs via native root-to-capture pair queries at zero launch epoch. It keeps
+all reachable D/CE/synchronous-LSR targets and labels independently maximized
+delay/setup as a conservative routed-cone bound, not an exact pin-chain
+measurement. State-hold and unexplained relations remain separately counted,
+without fabricated arcs; their downstream semantic treatment is still
+required. Local consumer tests pass; this producer's real-design integration
+and complete global path qualification remain pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
