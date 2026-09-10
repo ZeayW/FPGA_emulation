@@ -3582,6 +3582,16 @@ slack. A missing requested path failed. This is an adapter fixture, not real
 dual-board hold closure; existing positive setup results alone must not be
 interpreted as hold closure. Exported lower delay bounds also do not establish
 an uncharacterized fast-process/voltage/temperature hardware corner.
+Fresh real SERV validation subsequently passed min and max queries for all
+4,367 / 17,257 requested physical boundary pairs. Both boards' minimum hold
+slack was 0.438 ns, with no negative queried hold pair; min queries took
+5.29 / 4.97 seconds. The complete qualification run took 368.75 seconds,
+including the declared four-cycle trace and both routed bitstreams. This
+result uses the exported SDF lower bounds, same-edge capture and ideal skew;
+it is not measured PVT-corner closure, asynchronous reset recovery/removal,
+or whole-design global timing. The reference-platform plan now separates the
+implemented transport/backend from the still-unfinished asynchronous timing
+composition and canonical complete-flow entry point.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the

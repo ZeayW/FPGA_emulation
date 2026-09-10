@@ -41,16 +41,25 @@ Implementation sequence and completion gates:
    `--85k --package CABGA381 --speed 6`, and Project Trellis `ecppack` must
    produce a routed design and bitstream without commercial tools. Check the
    package pin database and all clock/I/O constraints, not only process exit.
-3. **Transport (pending).** Implement portable framed GPIO communication with
-   CDC-safe receive, reset/recovery, integrity checks and backpressure. Verify
-   independent clocks and clock tolerance. Virtual design state must advance
-   only after all required transfers are complete; variable transport latency
-   must not be hidden behind an arbitrary fixed cycle count.
-4. **EmuFlow integration (pending).** Add an ECP5 physical backend, family-aware
-   LUT4/FF/RAM/DSP accounting including communication overhead, and physical
-   timing binding. Never reinterpret VTR or AMD resource counts as ECP5 counts.
-   Physical segment timing and protocol timing need explicit global analysis;
-   handshake progress and local Fmax are not whole-design WNS/TNS.
+3. **Transport (implemented; qualification incomplete).** Portable framed
+   GPIO RTL now includes synchronized receive, CRC/sequence checks,
+   backpressure, multi-round exchange and logical commit. Independent-clock
+   simulations and real routed implementations pass. Recovery remains
+   coordinated reset/new-session restart, not transparent retry or rollback.
+   Physical reset recovery/removal, metastability and external electrical
+   assumptions are not established by those tests. Variable transport latency
+   is not hidden behind an arbitrary fixed cycle count.
+4. **EmuFlow integration (partial).** The generalized TritonPart LUT4/FF
+   frontend, source-bound dual-board splitter, physical ECP5 backend and
+   combined DUT/transport resource checks exist. Real SERV has passed
+   four declared macrocycles, dual-board placement/routing and bitstreams.
+   Source boundary-influence correspondence and native OpenSTA maximum-delay
+   queries cover both local and cross-board boundary segments, including
+   extracted synchronous controls. This is not complete original-path global
+   timing. Conditional asynchronous timing composition and the canonical
+   one-command complete-flow entry point remain unfinished. Never reinterpret
+   VTR or AMD resource counts as ECP5 counts; handshake progress and local
+   Fmax are not whole-design WNS/TNS.
 5. **Acceptance (pending).** Real RTL through Phase 1--7, one physical seed,
    complete original-path timing coverage, macro-cycle equivalence, checked
    placement/routing and bitstream production. Keep only compact terminal
