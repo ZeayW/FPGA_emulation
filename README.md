@@ -3144,12 +3144,14 @@ macrocycles across independent clocks. Six RTL test methods cover these cases
 plus clock offsets and integrity/error regressions (11 simulation runs).
 Run `PYTHONPATH=src python3 -m unittest discover -s tests -p test_ulx3s_rtl.py -v`
 with `iverilog`/`vvp` on PATH, or explicit `IVERILOG`/`VVP` paths. Missing tools
-produce an explicit skip, not qualification. New-controller physical validation,
-host I/O integration and real-design Phase 1–7 remain pending; earlier endpoint
-bitstreams do not qualify this changed controller automatically.
-The controller physical fixture now selects three rounds explicitly, so the
-next physical gate exercises the multi-round state rather than synthesizing
-it away with the one-round default.
+produce an explicit skip, not qualification. Host I/O integration and
+real-design Phase 1–7 remain pending.
+The revised controller's three-round fixture has now also passed actual ECP5
+synthesis, place/route and bitstream generation for both roles. Leader/follower
+use 1,384/1,437 combinational cells and 623 FFs each; both pass the 75% resource
+gate and local 25 MHz constraint. This exercises multi-round state rather than
+synthesizing it away. External settling, global timing and hardware operation
+are still unqualified; this is not a complete DUT-flow result.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

@@ -214,7 +214,7 @@ emitted partitions now agrees with an independent synchronous reference for
 state updates. That test verifies netlist lowering only: its explicit snapshot
 transfer model is not physical link or whole-flow timing evidence.
 
-### Multi-round combinational evaluation (RTL qualified; physical gate pending)
+### Multi-round combinational evaluation (RTL and scoped physical gates passed)
 
 The exchange controller now performs `ROUNDS` acknowledged snapshot exchanges
 per DUT macrocycle. Intermediate exchanges update only remote shadows; DUT
@@ -246,8 +246,19 @@ workload, physical timing, or complete Phase 1–7. The test command is
 both Icarus executables must be installed (`IVERILOG`/`VVP` override PATH).
 An explicit missing-tool skip is not a passing RTL gate. All six test methods
 (11 simulations including the required negative case) pass. The physical
-bitstreams recorded above predate this protocol revision and are not evidence
-for the changed controller.
+bitstreams recorded above predate this protocol revision. A new physical gate
+explicitly selects three rounds on both roles using the same open toolchain,
+fixed device and seed 1. Actual synthesis, nextpnr P&R and Trellis packing pass:
+
+| Role | TRELLIS_COMB | TRELLIS_FF | I/O | Local constraint | Synthesis / P&R / pack |
+|---|---:|---:|---:|---|---|
+| Leader | 1,384 | 623 | 4 | 25 MHz passed | 9.29 / 15.71 / 2.23 s |
+| Follower | 1,437 | 623 | 4 | 25 MHz passed | 8.51 / 15.62 / 1.86 s |
+
+Both pass the resource-inventory and 75% gates. Only compact terminal summaries
+are retained; the completed physical scratch was removed. This scoped physical
+result does not establish external settling, intended-clock coverage, global
+timing, real-workload integration or measured board operation.
 
 `derive_snapshot_rounds` now computes the logical exchange count for supported
 LUT/FF netlists by a linear DAG traversal after partition selection. Edges
