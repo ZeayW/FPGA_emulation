@@ -352,6 +352,9 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Open multi-FPGA emulation flow frontend",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    from .snapshot_flow import add_arguments as add_snapshot_qualification_arguments
+    add_snapshot_qualification_arguments(subparsers.add_parser(
+        "ulx3s-qualify", help="one-shot open dual-ULX3S finite-trace physical/timing qualification"))
 
     archive_parser = subparsers.add_parser(
         "archive", help="archive and safely clean completed validation runs"
@@ -3753,6 +3756,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _dispatch(args: argparse.Namespace) -> int:
+    if args.command == "ulx3s-qualify":
+        from .snapshot_flow import run
+        return run(args)
     if args.command == "experiment-stage":
         if args.experiment_stage_command == "frontend-run":
             with json_write_policy(durable=not args.managed_dag_node):

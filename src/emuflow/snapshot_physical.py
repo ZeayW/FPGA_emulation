@@ -14,7 +14,8 @@ from .snapshot_physical_binding import bind_snapshot_routed_identities, bind_sna
 from .errors import ValidationError
 
 
-def qualify_snapshot_physical(output_dir, interface, physical_report, *, mapped_top, host_uart=False):
+def qualify_snapshot_physical(output_dir, interface, physical_report, *, mapped_top, host_uart=False,
+                              timing_consumer=None):
     source=interface.get("source_binding")
     if not isinstance(source,dict): raise ValidationError("snapshot physical qualification requires source binding")
     root=Path(output_dir)
@@ -32,6 +33,9 @@ def qualify_snapshot_physical(output_dir, interface, physical_report, *, mapped_
     states=bind_snapshot_routed_identities(state_source,routed,hierarchy='core.dut',
         mapped=mapped,mapped_top=mapped_top)['registers']
     storage=bind_snapshot_transport_storage(interface,routed,mapped=mapped,mapped_top=mapped_top)
+    if timing_consumer is not None:
+        # One active-run handoff, not another serialized routed JSON/checkpoint.
+        timing_consumer(routed,mapped,delays)
     return {'status':'physical_structure_qualified_global_timing_pending',
         'clock_coverage':clocks,'timing_annotation_coverage':coverage,
         'combinational_arc_coverage':comb,

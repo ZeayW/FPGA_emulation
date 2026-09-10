@@ -3768,6 +3768,23 @@ classifications. It checks every TX/commit readiness result separately. This
 explicit finite-trace qualification entry still withholds global/full-flow
 promotion pending integrated validation and the remaining local hold,
 reset/CDC and physical acceptance gates; it is not measured link signoff.
+The dedicated Linux one-shot entry `emuflow ulx3s-qualify` now
+connects source RTL synthesis, natural TritonPart partitioning, complete source
+population, real transport macrocycle simulation, parallel dual-board physical
+implementation (seed 1), local hold and native global checks. It requires
+explicit source/top/clock/target period, JSON host-input vectors, undefined-state
+seed, selected timing cycle, setup uncertainty, tool paths and installation
+identity (`--help` lists arguments). There is no benchmark download, persistent
+cache, hidden input stimulus, fixed UART-delay substitute, or automatic
+full-flow promotion. Each invocation requires a new `--out` directory;
+`result.json` retains compact evidence while process-aware cleanup removes
+`.scratch` only after tool completion. A cleanup refusal remains explicit.
+The physical consumer hands already-parsed routed objects to timing binding
+inside the active run instead of making another routed JSON/SDF read pass.
+Control-plane tests cover preflight, environment restoration, duplicate-run
+rejection, failure and cleanup refusal. The new entry's actual native complete
+execution is still pending; it is an explicit qualification command, not yet
+a qualified default or a registered QoR benchmark.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
