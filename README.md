@@ -3524,6 +3524,13 @@ CE/synchronous-LSR connections from state retention; a hold relation is never
 exported as an invented zero-delay Q-to-D timing arc. The two unmatched pairs
 remain a failed coverage gate pending semantic qualification, not discarded
 paths or evidence that whole-design timing passed.
+An explicit qualification-only Boolean sensitivity miter exporter now builds
+two source-LUT cofactors for a requested unmatched boundary pair. All other
+state/import/host launches remain shared unconstrained inputs, so a native SAT
+proof can distinguish a structurally present but functionally canceled
+dependency from a real missing connection. The exporter does not itself prove
+the claim or remove a pair from timing coverage; native real-design proof and
+integration of any resulting classification are pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
