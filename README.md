@@ -3756,6 +3756,18 @@ check used an unsplit assignment solely for coverage validation, not forced
 cut or full-flow evidence. Only a compact summary remains after scratch
 cleanup. This proves bounded enumeration is feasible for this real workload;
 the 102,211 members still need complete physical/event/global STA integration.
+`qualify_snapshot_global_timing` joins that complete source population to
+native measured segment bounds and causally bound protocol epochs. It invokes
+native SAT for missing Boolean influence, retains same-register CE-hold and
+proven-independent member counts separately, and never invents zero-delay
+arcs or numerical slack for them. Other missing segments fail, including a
+retention claim between different original registers. Target/runtime WNS/TNS
+aggregate only native engine scalars for numerically timed original members;
+the report discloses the complete structural population and all nontimed
+classifications. It checks every TX/commit readiness result separately. This
+explicit finite-trace qualification entry still withholds global/full-flow
+promotion pending integrated validation and the remaining local hold,
+reset/CDC and physical acceptance gates; it is not measured link signoff.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
