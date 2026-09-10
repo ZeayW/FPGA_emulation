@@ -72,6 +72,16 @@ XDG directories within that output, avoiding tool-wrapper writes to a default
 home. Its `physical_outputs_generated` status deliberately does not say that
 the hardware platform or external clock-domain crossings are qualified.
 
+The initial byte PHY is `rtl/transport/emuflow_gpio_uart.sv`: portable 8N1,
+two-stage receive synchronization, ready/valid buffering, explicit overrun and
+framing-error pulses, and break recovery. It never overwrites an unread byte
+without reporting an error. The upper framed transport must invalidate a frame
+on either error; this byte module alone does not supply remote backpressure,
+CRC/retry, bounded latency, or virtual-cycle commit. The independent-clock
+testbench exercises all 256 byte values, unread-data preservation, overflow
+and break recovery. Physical CDC constraints/MTBF and complete transport
+qualification remain pending.
+
 ## Historical vendor reference investigation
 
 ## Deliverable and current status
