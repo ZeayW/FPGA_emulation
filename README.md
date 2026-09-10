@@ -3121,6 +3121,12 @@ Generated board tops have passed a real RTL simulation of 16 reference-checked
 macrocycles across independent clocks with unequal 33/17-bit directions.
 This validates the snapshot interface fixture, not arbitrary RTL lowering or
 complete Phase 1–7; those acceptance requirements remain outstanding.
+`emuflow.snapshot_netlist.emit_snapshot_partition` now generates portable
+LUT/positive-edge-FF partition RTL directly from EmuIR and the assignment.
+It retains explicit host data I/O and requires explicit initial state rather
+than inventing reset values. This first lowerer rejects unsupported memories,
+clock/reset transformations and inverted FF controls; RTL qualification and
+general stateful-primitive support are still pending.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

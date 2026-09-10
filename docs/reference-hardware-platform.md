@@ -194,6 +194,22 @@ using predicted scheduling feasibility; the currently implemented envelope
 size is checked after partitioning. This plan still needs the automatic
 partition RTL lowering and evaluation/timing binding consumers.
 
+### Automatic mapped partition lowering (initial subset)
+
+`emit_snapshot_partition` consumes actual EmuIR connectivity and assignment,
+emitting local LUT functions, positive-edge generic FF/FDRE/FDSE behavior,
+snapshot export/import indices and explicit host I/O vectors. The source is
+not mutated. Coordinated reset uses an explicit binary initial-state contract;
+missing state is not implicitly zero. Unknown constants, missing or multiply
+bound primitive pins, inverted FF controls, unsupported stateful primitives,
+generated/multiple clocks and unbound DUT resets fail explicitly.
+
+This is the initial lowerer, not yet full-design support. Host data inputs must
+be connected by the host adapter, and combinational snapshot values require
+the evaluation/settling contract before committing the original DUT state.
+The lowerer does not remove combinational cuts or constrain partitioning to
+make the transport test easier. Its generated RTL qualification is pending.
+
 ## Historical vendor reference investigation
 
 ## Deliverable and current status
