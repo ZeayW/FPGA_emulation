@@ -46,3 +46,10 @@ class Ecp5TimingCoverageTests(unittest.TestCase):
         result=qualify_ecp5_timing_coverage(r,d)
         self.assertEqual(result['asynchronous_assertion_pins'],[('ff','LSR')])
         self.assertFalse(result['recovery_removal_qualified'])
+
+    def test_omitted_mode_only_allowed_without_reset_port(self):
+        r,d=self.model();ff=r['modules']['top']['cells']['ff']
+        del ff['parameters']['SRMODE']
+        self.assertEqual(qualify_ecp5_timing_coverage(r,d)['ff_checked_inputs'],1)
+        ff['connections']['LSR']=['0'];ff['port_directions']['LSR']='input'
+        with self.assertRaises(ValidationError):qualify_ecp5_timing_coverage(r,d)

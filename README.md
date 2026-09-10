@@ -3438,8 +3438,14 @@ routed netlist and requires exact agreement with SDF interconnect records.
 Every supported physical FF must have clock-to-Q and both transition-specific
 setup/hold checks for its selected data input and enabled synchronous controls.
 Missing, reversed and extra records fail. Asynchronous reset pins remain
-explicitly unqualified for recovery/removal. This new gate has unit regression
-coverage; **real routed validation is pending**. It is not a substitute for
+explicitly unqualified for recovery/removal. Real routed SERV validation passed
+for 24,141 / 14,366 internal connections and 2,218 / 1,328 physical FFs on the
+two boards. The first integrated attempt rejected reset-free FFs whose packed
+parameters omit `SRMODE`; the corrected checker accepts that omission only
+when `LSR` is disconnected, while retaining all data/enable timing checks.
+The correction was checked against that attempt's existing routed output,
+without rerunning synthesis or claiming an integrated full-flow pass.
+It is not a substitute for
 primitive combinational-arc completeness, original-path coverage or OpenSTA.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine

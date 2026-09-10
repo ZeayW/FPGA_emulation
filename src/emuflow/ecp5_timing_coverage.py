@@ -54,7 +54,11 @@ def qualify_ecp5_timing_coverage(routed, delays, *, top="top"):
         if ce in {'CE','INV'}: pins.append('CE')
         elif ce!='1': raise ValidationError('unsupported FF clock enable')
         sr=p.get('SRMODE')
-        if sr=='LSR_OVER_CE':
+        if sr is None and not c.get('LSR'):
+            # Yosys/nextpnr omit SRMODE on reset-free FFs. No reset timing
+            # endpoint exists in this case; data/enable checks still apply.
+            pass
+        elif sr=='LSR_OVER_CE':
             if c.get('LSR'): pins.append('LSR')
         elif sr=='ASYNC': async_assertions.append((name,'LSR'))
         else: raise ValidationError('unsupported FF set/reset mode')
