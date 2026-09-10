@@ -341,6 +341,44 @@ RTL workload. Only compact terminal reports were retained after both foreground
 tool chains completed; physical scratch was removed. Measured FTDI/electrical
 operation, full Phase 1–7 and whole-design timing remain pending.
 
+### Host software
+
+`scripts/ulx3s_host.py` uses `SnapshotHostClient` and the dependency-free POSIX
+`SnapshotSerialPort`. The latter opens only the explicitly selected TTY at
+115200 8N1, raw mode, without hardware/software flow control. It does not run
+a programmer, change FTDI EEPROM, automatically toggle reset, or discard bytes
+to guess a new packet boundary. Opening a serial device still has normal
+OS/driver control-line behavior; physical power/reset behavior is unmeasured.
+
+After loading matching generated board bitstreams and coordinating their reset,
+use the exact session and packed vector widths from that generated design. For
+the documented one-bit semantic fixture, an example command is:
+
+```sh
+python3 scripts/ulx3s_host.py --device /dev/ttyUSB0 --session 0x789 \
+  --input-bits 1 --output-bits 1 --timeout 30 1 0 1
+```
+
+The device path is an example, never autodetected or opened by tests. It emits
+one compact JSON result per completed macrocycle. Outputs are valid only after
+all indexed words and the matching DONE arrive. Returned values use the
+generated interface's original port/bit order and pre-active-edge semantics.
+The example requires the matching fixture bitstream; it is not a real workload
+benchmark command or a way to control arbitrary existing firmware.
+
+The client checks the known record CRC vectors, header/version, sequence,
+configuration widths, output word/epoch, zero padding and final completion.
+Partial writes and reads are handled under a single deadline for each connect
+or step. Timeout/protocol/I/O errors latch software failure; reconnect and
+further steps on that client are forbidden. A fresh session requires coordinated
+hardware restart, not replay of a possibly already committed input. The client
+is synchronous and not thread-safe.
+
+Seven software tests pass, including fault/no-retry cases, shrinking total
+deadline, exact multiword commands, golden CRC and binary I/O through a real
+OS pseudo-terminal. They do not prove FTDI hardware operation or end-to-end
+software-to-hardware execution; that remains an explicitly unmeasured gate.
+
 `derive_snapshot_rounds` now computes the logical exchange count for supported
 LUT/FF netlists by a linear DAG traversal after partition selection. Edges
 carry zero for local connectivity and one for a board crossing; original FF

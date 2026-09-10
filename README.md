@@ -3174,6 +3174,15 @@ synthesis, P&R and bitstream generation: board0 uses 1,889 combinational cells,
 I/Os. Both meet the local 25 MHz constraint and 75% resource gate. This is a
 small semantic fixture, not real-workload or full global timing qualification;
 physical USB operation remains unmeasured.
+`scripts/ulx3s_host.py` now provides the POSIX host client without an additional
+serial-library dependency. It accepts explicit device/session/vector widths and
+packed macrocycle inputs, checks CRC/sequence/output padding and matching DONE,
+and prints pre-active-edge outputs. One deadline covers each entire transaction;
+short I/O does not renew it. Errors permanently invalidate that client session,
+with no automatic retry, reset, programming or serial resynchronization.
+Protocol/golden-vector and real pseudo-terminal tests pass; this is not a claim
+of measured FT231X hardware operation. See the reference-platform document for
+the coordinated reset and generated-port-map requirements.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
