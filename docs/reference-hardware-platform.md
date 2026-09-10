@@ -82,6 +82,16 @@ testbench exercises all 256 byte values, unread-data preservation, overflow
 and break recovery. Physical CDC constraints/MTBF and complete transport
 qualification remain pending.
 
+`emuflow_gpio_record.sv` adds the initial fixed 64-bit record envelope: magic,
+version, 16-bit sequence, payload and CRC-16/CCITT-FALSE. It buffers receive
+records, holds transmit bytes under backpressure, and latches faults on CRC,
+sequence, receive overflow or PHY errors. It is deliberately fail-stop rather
+than silently dropping or replaying DUT data. Both peers must be reset into a
+new coordinated session; independent reset recovery and distributed commit
+are not implemented yet. The record test uses independently calculated CRC
+vectors; integration with the UART and physical implementation are subsequent
+gates. No record-layer success qualifies virtual-cycle semantics by itself.
+
 ## Historical vendor reference investigation
 
 ## Deliverable and current status

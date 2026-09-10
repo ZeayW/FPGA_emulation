@@ -3076,6 +3076,9 @@ The open GPIO byte PHY now has explicit receive overflow/framing errors and
 ready/valid buffering. Its standalone asynchronous-clock simulation covers all
 byte values and recovery; reliable framing and virtual-cycle commit remain
 unfinished and it is not yet an EmuFlow transport provider.
+An initial CRC/sequence-protected record layer now exposes explicit fail-stop
+errors. Coordinated session reset and distributed virtual-cycle commit remain
+required integration work; this is not an automatically reliable board link.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
