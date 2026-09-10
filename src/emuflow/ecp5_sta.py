@@ -1,6 +1,6 @@
 """Export a shared physical ECP5 data graph for native OpenSTA analysis.
 
-This graph is a conservative scalar-max abstraction of routed rise/fall arcs,
+This graph uses conservative scalar bounds of routed rise/fall arcs,
 not a functional Verilog design or a whole-original-design timing report.
 Every launch epoch and capture deadline is supplied explicitly by the caller.
 The asynchronous protocol contract must supply these bounds before promotion.
@@ -13,7 +13,14 @@ from .opensta import render_opensta_liberty
 from .native_tools import resolve_native_executable
 
 
-def export_ecp5_data_checks(graph, directory, *, launches_ns, deadlines_ns):
+def export_ecp5_data_checks(graph, directory, *, launches_ns, deadlines_ns, analysis='max'):
+    """Max checks use latest deadlines; min checks use earliest allowed arrival.
+
+    Min/hold uses the same launch edge (epoch zero), not the next setup edge.
+    The caller includes physical hold requirements and clock skew in its
+    explicit earliest-arrival bounds. No setup values are reused as hold.
+    """
+    if analysis not in ('min','max'):raise ValidationError('STA analysis must be min or max')
     dynamic = graph['dynamic_nodes']
     roots = sorted(set(graph['roots']) & dynamic)
     captures = sorted(set(graph['captures']) & dynamic)
@@ -24,14 +31,15 @@ def export_ecp5_data_checks(graph, directory, *, launches_ns, deadlines_ns):
     for value in (*launches_ns.values(), *deadlines_ns.values()):
         if type(value) not in (int, float) or not math.isfinite(value):
             raise ValidationError('physical STA constraints must be finite numbers')
-    def maximum(values):
+    def bound(values):
         if (len(values) != 2 or any(len(v) != 3 for v in values)
                 or any(type(n) not in (int,float) or not math.isfinite(n) or n < 0
                        for v in values for n in v)):
             raise ValidationError('invalid physical propagation delay')
-        return max(v[2] for v in values)
-    arcs = [(a,b,maximum(v)) for a,b,v in graph['edges'] if a in dynamic]
-    cq = {r:maximum(graph['roots'][r]['clock_to_q']) for r in roots
+        if any(v[0]>v[1] or v[1]>v[2] for v in values):raise ValidationError('unordered physical delay bounds')
+        return max(v[2] for v in values) if analysis=='max' else min(v[0] for v in values)
+    arcs = [(a,b,bound(v)) for a,b,v in graph['edges'] if a in dynamic]
+    cq = {r:bound(graph['roots'][r]['clock_to_q']) for r in roots
           if graph['roots'][r]['kind']=='ff'}
     values = sorted(set(cq.values()) | {v for _,_,v in arcs})
     names = {v:f'D{i}' for i,v in enumerate(values)}
@@ -56,7 +64,7 @@ def export_ecp5_data_checks(graph, directory, *, launches_ns, deadlines_ns):
         for i,root in enumerate(roots):
             if root in cq: v.write(f'{names[cq[root]]} q{i} (.A(i{i}), .Y({nodes[root]}));\n')
             else: v.write(f'assign {nodes[root]}=i{i};\n')
-            s.write(f'set_input_delay -clock epoch -max {launches_ns[root]:.17g} [get_ports i{i}]\n')
+            s.write(f'set_input_delay -clock epoch -{analysis} {launches_ns[root]:.17g} [get_ports i{i}]\n')
             s.write(f'set_input_transition 0 [get_ports i{i}]\n')
         for i,(source,sink,value) in enumerate(arcs):
             v.write(f'wire e{i};\n{names[value]} a{i} (.A({nodes[source]}), .Y(e{i}));\n')
@@ -68,7 +76,8 @@ def export_ecp5_data_checks(graph, directory, *, launches_ns, deadlines_ns):
                 v.write(f'M{len(fanin)} m{nodes[sink]} ({pins}, .Y({nodes[sink]}));\n')
         for i,capture in enumerate(captures):
             v.write(f'assign o{i}={nodes[capture]};\n')
-            s.write(f'set_output_delay -clock epoch -max {1-deadlines_ns[capture]:.17g} [get_ports o{i}]\n')
+            offset=(1 if analysis=='max' else 0)-deadlines_ns[capture]
+            s.write(f'set_output_delay -clock epoch -{analysis} {offset:.17g} [get_ports o{i}]\n')
         v.write('endmodule\n')
     (directory/'analyze.tcl').write_text('''proc analyze {} {
   read_liberty physical.lib
@@ -82,7 +91,7 @@ def export_ecp5_data_checks(graph, directory, *, launches_ns, deadlines_ns):
   close $constraints
   set out [open measurements.tsv w]
   puts $out "endpoint\\tarrival_ns\\trequired_ns\\tslack_ns"
-  set paths [find_timing_paths -path_delay max -group_count COUNT -endpoint_count 1]
+  set paths [find_timing_paths -path_delay ANALYSIS -group_count COUNT -endpoint_count 1]
   foreach p $paths {
     set endpoint [get_property [get_property $p endpoint] full_name]
     set arrival [expr {[$p data_arrival_time] * 1.0e9}]
@@ -94,13 +103,13 @@ def export_ecp5_data_checks(graph, directory, *, launches_ns, deadlines_ns):
 }
 if {[catch {analyze} message]} {puts stderr $message; exit 2}
 exit 0
-'''.replace('COUNT',str(len(captures))))
+'''.replace('COUNT',str(len(captures))).replace('ANALYSIS',analysis))
     return captures
 
 
-def run_ecp5_data_checks(graph, directory, *, launches_ns, deadlines_ns, executable=None):
+def run_ecp5_data_checks(graph, directory, *, launches_ns, deadlines_ns, executable=None, analysis='max'):
     directory=Path(directory)
-    captures=export_ecp5_data_checks(graph,directory,launches_ns=launches_ns,deadlines_ns=deadlines_ns)
+    captures=export_ecp5_data_checks(graph,directory,launches_ns=launches_ns,deadlines_ns=deadlines_ns,analysis=analysis)
     tool=resolve_native_executable('sta',executable)
     output=directory/'measurements.tsv'; output.unlink(missing_ok=True)
     with (directory/'opensta.log').open('w') as log:
@@ -123,7 +132,7 @@ def run_ecp5_data_checks(graph, directory, *, launches_ns, deadlines_ns, executa
             for i,capture in enumerate(captures)}
 
 
-def run_ecp5_pair_checks(graph, directory, *, pairs, launches_ns, deadlines_ns, executable=None):
+def run_ecp5_pair_checks(graph, directory, *, pairs, launches_ns, deadlines_ns, executable=None, analysis='max'):
     """Native launch/capture-pair checks, not just each endpoint's worst root.
 
     All requests share one physical timing graph. Queries are grouped by
@@ -137,7 +146,7 @@ def run_ecp5_pair_checks(graph, directory, *, pairs, launches_ns, deadlines_ns, 
     if not pairs or any(a not in ri or z not in ci for a,z in pairs):
         raise ValidationError('pair STA requires bound dynamic launch/capture pins')
     directory=Path(directory)
-    export_ecp5_data_checks(graph,directory,launches_ns=launches_ns,deadlines_ns=deadlines_ns)
+    export_ecp5_data_checks(graph,directory,launches_ns=launches_ns,deadlines_ns=deadlines_ns,analysis=analysis)
     with (directory/'requests.tsv').open('w') as stream:
         for a,z in pairs:stream.write(f'i{ri[a]}\to{ci[z]}\n')
     # Keep constraint loading identical to the endpoint adapter. Only the
@@ -157,7 +166,7 @@ def run_ecp5_pair_checks(graph, directory, *, pairs, launches_ns, deadlines_ns, 
   dict for {launch endpoints} $groups {
     set targets {}
     foreach endpoint $endpoints {lappend targets [$::emuflow_cell find_port $endpoint]}
-    set paths [find_timing_paths -from [$::emuflow_cell find_port $launch] -to $targets -path_delay max -group_count [llength $endpoints] -endpoint_count 1]
+    set paths [find_timing_paths -from [$::emuflow_cell find_port $launch] -to $targets -path_delay ANALYSIS -group_count [llength $endpoints] -endpoint_count 1]
     foreach p $paths {
       set endpoint [get_property [get_property $p endpoint] full_name]
       set arrival [expr {[$p data_arrival_time] * 1.0e9}]
@@ -166,7 +175,7 @@ def run_ecp5_pair_checks(graph, directory, *, pairs, launches_ns, deadlines_ns, 
       puts $out "$launch\\t$endpoint\\t$arrival\\t$required\\t$slack"
     }
   }
-  close $out'''
+  close $out'''.replace('ANALYSIS',analysis)
     (directory/'analyze.tcl').write_text(script[:begin]+query+script[end:])
     output=directory/'pairs.tsv';output.unlink(missing_ok=True)
     tool=resolve_native_executable('sta',executable)

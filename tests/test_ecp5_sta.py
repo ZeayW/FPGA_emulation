@@ -47,3 +47,21 @@ def test_pair_binding_rejected_before_export(tmp_path):
     with pytest.raises(ValidationError,match='bound dynamic'):
         run_ecp5_pair_checks(graph(),tmp_path,pairs=[(('wrong','Q'),('sink','DI'))],launches_ns={},deadlines_ns={})
     assert not list(tmp_path.iterdir())
+
+
+def test_min_export_uses_earliest_arcs_and_same_edge(tmp_path):
+    g=graph();g['edges'][0]=(g['edges'][0][0],g['edges'][0][1],((.1,1,2),(.3,2,4)))
+    export_ecp5_data_checks(g,tmp_path,launches_ns={r:0 for r in g['roots']},deadlines_ns={('sink','DI'):.4},analysis='min')
+    assert '-min -0.40000000000000002 ' in (tmp_path/'physical.sdc').read_text()
+    assert '-path_delay min' in (tmp_path/'analyze.tcl').read_text()
+    assert '-max' not in (tmp_path/'physical.sdc').read_text()
+
+
+@pytest.mark.skipif(not shutil.which('sta'),reason='native OpenSTA unavailable')
+def test_native_min_reports_hold_violation(tmp_path):
+    g=graph();end=('sink','DI')
+    rows=run_ecp5_pair_checks(g,tmp_path,pairs=[(r,end) for r in g['roots']],
+        launches_ns={r:0 for r in g['roots']},deadlines_ns={end:3},analysis='min')
+    assert rows[(('a','Q'),end)]['arrival_ns']==pytest.approx(2.7,abs=.001)
+    assert rows[(('a','Q'),end)]['slack_ns']==pytest.approx(-.3,abs=.001)
+    assert rows[(('b','Q'),end)]['slack_ns']==pytest.approx(1.9,abs=.001)

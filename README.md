@@ -3571,6 +3571,12 @@ was negative. Source correspondence, four declared macrocycles of equivalence,
 both physical implementations and bitstreams passed in the same run. These
 are local physical-segment diagnostics; the cross-board asynchronous timing
 contract and complete original-design global WNS/TNS remain unqualified.
+The physical graph adapter now accepts explicit `analysis="min"` hold checks
+as well as the default `max` setup checks. Min mode uses the lower rise/fall
+delay bound and the same launch/capture epoch; the caller supplies the earliest
+allowed arrival including hold and skew. It does not reuse setup deadlines or
+infer reset recovery/removal. Native min-mode validation is pending; existing
+positive setup results alone must not be interpreted as hold closure.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
