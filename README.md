@@ -3562,6 +3562,15 @@ with **all** reachable D, CE and synchronous-LSR capture pins. A matching D
 path cannot hide a slower control path to the same state element. Hold and
 unexplained relations remain explicit records with no fabricated timing arcs;
 callers must complete correspondence qualification before querying delays.
+A fresh natural SERV run passed this integrated request path and native
+OpenSTA pair analysis on both boards: 4,367 / 17,257 distinct physical pairs,
+with no missing requested pair. Queries took 5.58 / 5.31 seconds. Under the
+explicit 40 ns local-period, zero external-arrival and ideal-skew diagnostic
+assumptions, minimum pair slack was 28.386 / 28.392 ns and no queried pair
+was negative. Source correspondence, four declared macrocycles of equivalence,
+both physical implementations and bitstreams passed in the same run. These
+are local physical-segment diagnostics; the cross-board asynchronous timing
+contract and complete original-design global WNS/TNS remain unqualified.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
