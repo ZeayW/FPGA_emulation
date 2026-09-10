@@ -70,3 +70,56 @@ def qualify_ecp5_endpoint_report(report: Mapping, *, required_mhz=25.0,
             "utilization_limit": utilization_limit, "reported_clocks": len(clocks),
             "external_timing_qualified": False, "global_timing_qualified": False,
             "intended_clock_coverage_qualified": False}
+
+
+def qualify_snapshot_clock_coverage(routed, report, *, top="top", clock_port="clk_25mhz"):
+    """Check the fixed snapshot board's physical FF clock connectivity.
+
+    One external oscillator, one ungated DCCA, positive-edge TRELLIS_FF state.
+    This checks reported-clock coverage, NOT setup/hold path coverage or CDC.
+    Unexpected hard blocks or inferred LUT RAM require a separate adapter.
+    """
+    qualify_ecp5_endpoint_report(report)
+    if any(report["utilization"][name]["used"] for name in ("DP16KD","MULT18X18D")):
+        raise ValidationError("hard-block clock coverage is not implemented")
+    module=routed.get("modules",{}).get(top)
+    if not isinstance(module,dict): raise ValidationError("missing routed clock top")
+    cells=module.get("cells",{}); nets=module.get("netnames",{})
+    port=module.get("ports",{}).get(clock_port,{})
+    def bit(bits):
+        if not isinstance(bits,list) or len(bits)!=1 or type(bits[0]) is not int or bits[0]<0:
+            raise ValidationError("clock binding requires one connected physical bit")
+        return bits[0]
+    if port.get("direction")!="input": raise ValidationError("missing physical oscillator input")
+    pad=bit(port.get("bits"))
+    clocks=report["fmax"]
+    if len(clocks)!=1: raise ValidationError("snapshot board requires exactly one reported clock")
+    clock_name=next(iter(clocks)); clock=bit(nets.get(clock_name,{}).get("bits"))
+    buffers=[c for c in cells.values() if c.get("type")=="DCCA" and c.get("connections",{}).get("CLKO")==[clock]]
+    if len(buffers)!=1: raise ValidationError("reported clock has no unique DCCA driver")
+    buffer=buffers[0]; connections=buffer["connections"]
+    if connections.get("CE",[]) not in ([],["1"]):
+        raise ValidationError("snapshot oscillator must not be gated")
+    input_wire=bit(connections.get("CLKI"))
+    pads=[c for c in cells.values() if c.get("type")=="TRELLIS_IO" and
+          c.get("connections",{}).get("O")==[input_wire] and
+          c.get("connections",{}).get("B")==[pad] and
+          c.get("parameters",{}).get("DIR")=="INPUT"]
+    if len(pads)!=1: raise ValidationError("clock buffer is not bound to the oscillator pad")
+    count=0
+    for name,cell in cells.items():
+        kind=cell.get("type")
+        if kind not in {"TRELLIS_FF","TRELLIS_COMB","TRELLIS_IO","DCCA","GSR"}:
+            raise ValidationError(f"unqualified clock/state primitive: {kind}")
+        if kind=="TRELLIS_COMB" and cell.get("parameters",{}).get("MODE","LOGIC") not in {"LOGIC","CCU2"}:
+            raise ValidationError("LUT memory clock coverage is not implemented")
+        if kind=="TRELLIS_FF":
+            if cell.get("connections",{}).get("CLK")!=[clock] or cell.get("parameters",{}).get("CLKMUX")!="CLK":
+                raise ValidationError(f"FF outside the reported positive-edge clock: {name}")
+            count+=1
+    if not count or count!=report["utilization"]["TRELLIS_FF"]["used"]:
+        raise ValidationError("routed FF count disagrees with physical report")
+    return {"status":"pass","scope":"snapshot_ff_clock_connectivity",
+            "clock":clock_name,"ff_count":count,"ff_clock_coverage_qualified":True,
+            "timing_path_coverage_qualified":False,"cdc_qualified":False,
+            "global_timing_qualified":False}

@@ -3302,6 +3302,14 @@ internal combinational aliases remain absent; the all-net diagnostic still
 fails and is not replaced with a false full-coverage claim. Extracting physical
 cones/delays between the resolved endpoints and validating CDC/global timing
 remain pending.
+The scoped `qualify_snapshot_clock_coverage` checker now verifies the routed
+FF population against the reported clock: one physical oscillator pad, an
+ungated DCCA, positive-edge clock connectivity for every `TRELLIS_FF`, and an
+exact FF-count match. It rejects unknown state primitives, LUT RAM and nonzero
+hard-block usage until their clock adapters exist. Negative tests cover a
+second clock, inverted clock, gating, wrong pad and count mismatch. This is
+**FF clock connectivity coverage**, not setup/hold-path, CDC or global timing
+qualification; real routed qualification of this new checker is pending.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
