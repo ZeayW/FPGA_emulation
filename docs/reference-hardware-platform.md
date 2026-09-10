@@ -208,7 +208,11 @@ This is the initial lowerer, not yet full-design support. Host data inputs must
 be connected by the host adapter, and combinational snapshot values require
 the evaluation/settling contract before committing the original DUT state.
 The lowerer does not remove combinational cuts or constrain partitioning to
-make the transport test easier. Its generated RTL qualification is pending.
+make the transport test easier. Actual Icarus simulation of two automatically
+emitted partitions now agrees with an independent synchronous reference for
+32 macrocycles, including a LUT-driven combinational cut and pauses between
+state updates. That test verifies netlist lowering only: its explicit snapshot
+transfer model is not physical link or whole-flow timing evidence.
 
 ## Historical vendor reference investigation
 
