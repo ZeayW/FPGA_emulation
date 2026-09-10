@@ -3642,6 +3642,16 @@ native STA floating-point resolution; their displayed fractional ns must not
 be claimed as sub-ns exact. Per-launch shifting protects the tight late path,
 not arbitrary precision on a 0.1-second slack. The complete real-design
 event-to-physical consumer and global timing qualification remain pending.
+The explicit `qualify_snapshot_event_setup` consumer now connects source
+boundary correspondence, observed protocol windows and native physical pair
+queries. It runs bounded native SAT for otherwise unexplained source pairs,
+retains every reachable D/CE/synchronous-LSR capture, accounts separately for
+state retention and Boolean independence, and rejects inconsistent event
+epochs on merged physical aliases or incomplete native pair results. Reports
+contain per-window counts/margins, not duplicated physical payloads. This is
+finite-trace local setup qualification; native real-design validation is
+pending, and it does not yet provide original-path global WNS/TNS or prove
+initial reset/hold/hardware behavior.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
