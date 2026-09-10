@@ -3083,6 +3083,10 @@ required integration work; this is not an automatically reliable board link.
 gate accepts `--extra-rtl` dependencies so the complete communication endpoint,
 not just a GPIO counter, can be placed and routed. This remains endpoint-only
 qualification; the virtual-cycle controller and full-flow backend are pending.
+The composed endpoint has passed independent-clock record roundtrip simulations
+and actual open ECP5 place/route plus bitstream generation (758 combinational
+cells, 344 FFs; local 25 MHz constraint passed). No cross-board/global timing or
+complete EmuFlow acceptance is claimed from this endpoint test.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

@@ -92,6 +92,16 @@ are not implemented yet. The record test uses independently calculated CRC
 vectors; integration with the UART and physical implementation are subsequent
 gates. No record-layer success qualifies virtual-cycle semantics by itself.
 
+The composed `emuflow_gpio_endpoint` has now completed 16 checked-record
+roundtrips in each of two independent-clock simulations (receive half-period
+19.8 ns and 20.2 ns against 20 ns, plus phase offset). Its echo qualification
+top, including UART and CRC/sequence/buffering logic, also completed real ECP5
+synthesis, placement/routing and bitstream production with the above open
+toolchain. It used 758 TRELLIS_COMB, 344 TRELLIS_FF and four I/Os. The local
+25 MHz constraint passed. This is not a measured link, CDC MTBF proof, global
+WNS/TNS result, or a full Phase 1--7 DUT run. The echo top is a tool fixture,
+not a substitute for the required naturally connected workload.
+
 ## Historical vendor reference investigation
 
 ## Deliverable and current status
