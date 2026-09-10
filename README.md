@@ -3863,6 +3863,11 @@ readiness/runtime and local synchronizer/hold gates pass. A missed original
 target period is reported separately, not relabelled as closure. This finite
 offline contract explicitly leaves recovery/removal, MTBF, electrical/PVT and
 universal-input/clock coverage unverified; it never sets hardware qualification.
+The saved physical-host SERV terminal result passed this scoped acceptance
+without rerunning any phase. The old unused `require_ulx3s_full_flow_qualification`
+always-raise placeholder has been removed: validate an actual terminal result
+with the scoped acceptance API instead. A static wiring profile still cannot
+certify an arbitrary run or hardware operation.
 Terminal simulation summaries state their actual board/client periods and
 phase offsets, reset-release time, ideal zero-delay digital-wire model, absence
 of jitter/metastability modeling, and finite-trace claim. The board profile

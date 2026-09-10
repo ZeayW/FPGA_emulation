@@ -2,7 +2,6 @@ import unittest
 
 from emuflow.board_ulx3s import (
     ulx3s_pair_profile, ulx3s_endpoint_lpf,
-    require_ulx3s_full_flow_qualification,
 )
 from emuflow.errors import ValidationError
 
@@ -31,8 +30,6 @@ class ULX3SBoardTests(unittest.TestCase):
         self.assertEqual(p["clocks"]["relationship"], "asynchronous")
         self.assertIsNone(p["clocks"]["external_delay_bound_ns"])
         self.assertFalse(any(p["qualification"].values()))
-        with self.assertRaises(ValidationError):
-            require_ulx3s_full_flow_qualification()
 
     def test_constraints(self):
         lpf = ulx3s_endpoint_lpf("board0")

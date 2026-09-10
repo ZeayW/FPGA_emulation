@@ -77,6 +77,10 @@ Source revision: `emard/ulx3s` commit
 `6a92cec6b177191c5b0f80e260013a1f8ec147dd`; manual section “Connectors” and
 `doc/constraints/ulx3s_v20.lpf` (declared compatible with v3.0.x).
 The wiring profile explicitly rejects claims of full-flow qualification today.
+Wiring alone is not run evidence. The unused always-raise qualification stub
+has been replaced by `snapshot_acceptance.validate_snapshot_offline_result`,
+which checks the completed run's compact gates and returns a finite offline
+claim with explicit assumptions, not universal or hardware qualification.
 
 ### Integrated physical-host evidence and remaining boundary
 
@@ -98,6 +102,9 @@ input trace. Physical data timing uses exported SDF bounds and ideal clock skew;
 raw asynchronous reset recovery/removal and external electrical behavior remain
 unqualified. The integrated acceptance claim must retain those boundaries, not
 turn existing `False` qualification fields into unconditional pass flags.
+The retained physical-host SERV result passed the scoped offline acceptance
+checker. No physical stages, waveform replay or numerical timing were rerun
+to check that terminal contract.
 
 ### Open physical bring-up evidence
 

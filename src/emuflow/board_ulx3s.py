@@ -82,11 +82,3 @@ def ulx3s_endpoint_lpf(board: str, *, host_uart: bool = False) -> str:
         lines.append(f'IOBUF PORT "{name}" IO_TYPE=LVCMOS33 PULLMODE={pull}{drive};')
     lines.append('FREQUENCY PORT "clk_25mhz" 25 MHZ;')
     return "\n".join(lines) + "\n"
-
-
-def require_ulx3s_full_flow_qualification() -> None:
-    """Never let wiring facts silently stand in for a physical timing result."""
-    raise ValidationError(
-        "ULX3S full-flow qualification is pending: transport/CDC, ECP5 physical "
-        "binding, and complete global timing coverage are not yet validated"
-    )
