@@ -110,7 +110,7 @@ non-finite or malformed clock/resource data fails qualification. This is a
 single-clock endpoint gate, not a general multi-clock timing analyzer; device
 I/O availability is not interpreted as the board's free connector budget.
 
-### Logical snapshot exchange (experimental, validation pending)
+### Logical snapshot exchange (experimental)
 
 `emuflow_gpio_exchange` operates on checked ordered records. Both fixed roles
 first exchange an identical externally supplied session identifier and word
@@ -129,6 +129,10 @@ restart requires coordinated reset and a new externally selected session ID.
 Epoch wrap is rejected. Timeout is a fail-stop policy, not a wire-delay bound.
 A lost ACK can leave one peer committed: the run is invalid, and this protocol
 does not claim fault-tolerant atomic rollback or physical hardware reliability.
+The composed UART/record/exchange simulation passes eight two-word transactions
+at both tested clock offsets and rejects a disconnected transaction by timeout
+without advancing either consumer. Additional injected protocol-error and
+controller physical fixtures are checked in; their qualification is pending.
 
 ## Historical vendor reference investigation
 
