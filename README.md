@@ -3623,6 +3623,17 @@ Actual two-round UART simulation exercises the source-bound window adapter;
 separate tests cover word indexing, multi-cycle launch selection, same-edge
 updates and missing/contradictory bindings. End-to-end physical event-window
 analysis and original-path global composition remain pending.
+`run_ecp5_event_setup_checks` connects explicit physical launch/capture epochs
+to the native pair-query adapter. It selects the requested physical cones
+without inventing arrivals for unrelated controller roots, retains the raw
+routed arcs/CQ, and subtracts the exported FF setup bound plus explicitly
+declared uncertainty from each capture edge. Distinct launch epochs are
+analyzed in separate relative-time coordinates so long UART traces do not
+erase a tight latest-launch margin through native floating-point cancellation.
+Only coordinate conversion occurs in Python; OpenSTA supplies slack. This
+qualification adapter is not a global timing composer, hold/reset proof or
+constant-delay UART model. Local structural/export tests pass; native event
+checks and the complete real-design event-to-physical consumer remain pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the

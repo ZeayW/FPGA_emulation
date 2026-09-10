@@ -9,6 +9,41 @@ from .errors import ValidationError
 from .ecp5_timing_coverage import qualify_ecp5_timing_coverage, qualify_ecp5_comb_arcs
 
 
+def select_ecp5_data_cones(graph, *, roots, captures):
+    """Transient physical subgraph for explicitly selected endpoint queries.
+
+    Preserve every raw arc on any selected root-to-capture path. Excluded
+    roots are outside this query population, not assigned guessed arrivals.
+    This is structural selection, not propagation or source coverage proof.
+    """
+    roots, captures = set(roots), set(captures)
+    if (not roots or not captures or not roots <= set(graph['roots']) or
+            not captures <= set(graph['captures']) or
+            not (roots | captures) <= graph['dynamic_nodes']):
+        raise ValidationError('cone selection needs bound dynamic roots and captures')
+    outgoing, incoming = defaultdict(list), defaultdict(list)
+    for a, b, _ in graph['edges']:
+        outgoing[a].append(b)
+        incoming[b].append(a)
+
+    def reachable(start, edges):
+        seen, pending = set(start), list(start)
+        while pending:
+            for other in edges[pending.pop()]:
+                if other not in seen:
+                    seen.add(other)
+                    pending.append(other)
+        return seen
+
+    kept = reachable(roots, outgoing) & reachable(captures, incoming)
+    if not (roots | captures) <= kept:
+        raise ValidationError('selected physical boundary has no root-to-capture path')
+    return dict(roots={r: graph['roots'][r] for r in roots},
+                captures={c: graph['captures'][c] for c in captures},
+                dynamic_nodes=kept, order=[n for n in graph['order'] if n in kept],
+                edges=[edge for edge in graph['edges'] if edge[0] in kept and edge[1] in kept])
+
+
 def build_ecp5_data_graph(routed, delays, *, top='top'):
     """Return a shared DAG with raw rise/fall delay triples and physical IDs.
 

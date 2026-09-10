@@ -11,6 +11,61 @@ from pathlib import Path
 from .errors import ValidationError
 from .opensta import render_opensta_liberty
 from .native_tools import resolve_native_executable
+from .ecp5_data_graph import select_ecp5_data_cones
+
+
+def run_ecp5_event_setup_checks(graph, directory, *, pairs, launch_edges_ns,
+                               capture_edges_ns, setup_uncertainty_ns, executable=None):
+    """Native physical pair setup checks at explicit observed protocol edges.
+
+    The query population and event epochs come from source/protocol binding.
+    This is not global original-path timing or reset/CDC/hold qualification.
+    Clock uncertainty is explicit; zero means an explicitly ideal-skew model.
+    """
+    pairs = tuple(set(pairs))
+    roots, captures = {a for a, _ in pairs}, {b for _, b in pairs}
+    if set(launch_edges_ns) != roots or set(capture_edges_ns) != captures:
+        raise ValidationError('event setup requires complete exact endpoint epochs')
+    if (type(setup_uncertainty_ns) not in (int, float) or
+            not math.isfinite(setup_uncertainty_ns) or setup_uncertainty_ns < 0):
+        raise ValidationError('event setup requires explicit nonnegative uncertainty')
+    times = (*launch_edges_ns.values(), *capture_edges_ns.values())
+    if not times or any(type(v) not in (int, float) or not math.isfinite(v) for v in times):
+        raise ValidationError('event setup requires finite endpoint epochs')
+    # Each distinct launch epoch gets a shifted native query. One common
+    # shift is insufficient when a stale state launch and a just-updated RX
+    # word are millions of ns apart. This qualification path prioritizes
+    # preserving tight margins over batching unlike clock epochs together.
+    selected = select_ecp5_data_cones(graph, roots=roots, captures=captures)
+    deadlines = {}
+    for pin in captures:
+        record = selected['captures'][pin]
+        if record.get('kind') != 'ff' or set(record.get('setuphold', {})) != {'posedge', 'negedge'}:
+            raise ValidationError('event capture requires complete physical FF setup data')
+        if any(len(record['setuphold'][edge]) != 2 for edge in ('posedge', 'negedge')):
+            raise ValidationError('invalid physical setup/hold record')
+        setups = [record['setuphold'][edge][0] for edge in ('posedge', 'negedge')]
+        if any(len(v) != 3 or any(type(n) not in (int, float) or not math.isfinite(n) for n in v)
+               or not v[0] <= v[1] <= v[2] for v in setups):
+            raise ValidationError('invalid physical setup bounds')
+        edge = capture_edges_ns[pin]
+        if type(edge) not in (int, float) or not math.isfinite(edge):
+            raise ValidationError('invalid physical capture epoch')
+        deadlines[pin] = max(v[2] for v in setups) + setup_uncertainty_ns
+    grouped = {}
+    for pair in pairs:
+        grouped.setdefault(launch_edges_ns[pair[0]], []).append(pair)
+    result = {}
+    for index, (origin, requests) in enumerate(sorted(grouped.items())):
+        rs, cs = {a for a, _ in requests}, {b for _, b in requests}
+        cone = select_ecp5_data_cones(selected, roots=rs, captures=cs)
+        rows = run_ecp5_pair_checks(cone, Path(directory) / f'epoch-{index}', pairs=requests,
+            launches_ns={pin: 0.0 for pin in rs},
+            deadlines_ns={pin: (capture_edges_ns[pin] - origin) - deadlines[pin] for pin in cs},
+            executable=executable, analysis='max')
+        result.update({pair: dict(row, arrival_ns=row['arrival_ns'] + origin,
+                                required_ns=row['required_ns'] + origin) for pair, row in rows.items()})
+    return result
 
 
 def export_ecp5_data_checks(graph, directory, *, launches_ns, deadlines_ns, analysis='max'):
