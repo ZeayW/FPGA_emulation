@@ -20,6 +20,7 @@ from emuflow.board_ulx3s import ulx3s_endpoint_lpf, ulx3s_pair_profile
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("rtl", type=Path)
+    parser.add_argument("--extra-rtl", type=Path, action="append", default=[])
     parser.add_argument("--top", required=True)
     parser.add_argument("--tools", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
@@ -27,8 +28,9 @@ def main():
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args.top):
         parser.error("top must be a simple Verilog identifier")
     rtl = args.rtl.resolve(strict=True)
+    sources = [rtl] + [p.resolve(strict=True) for p in args.extra_rtl]
     # Yosys command strings need stricter quoting than subprocess argv.
-    if any(c in str(rtl) for c in '\n\r"\\'):
+    if any(c in str(p) for p in sources for c in '\n\r"\\'):
         parser.error("unsupported RTL path characters")
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -42,9 +44,10 @@ def main():
                XDG_CONFIG_HOME=str(out / "config"),
                XDG_CACHE_HOME=str(out / "cache"), XDG_DATA_HOME=str(out / "data"))
     (out / "endpoint.lpf").write_text(ulx3s_endpoint_lpf("board0"))
+    read_sources = " ".join(f'"{p}"' for p in sources)
     stages = [
         ("synthesis", [str(tools / "yosys"), "-p",
-                       f'read_verilog -sv "{rtl}"; synth_ecp5 -top {args.top} -json mapped.json']),
+                       f'read_verilog -sv {read_sources}; synth_ecp5 -top {args.top} -json mapped.json']),
         ("place_route", [str(tools / "nextpnr-ecp5"), "--85k", "--package", "CABGA381",
                          "--speed", "6", "--seed", "1", "--json", "mapped.json",
                          "--lpf", "endpoint.lpf", "--textcfg", "routed.config",

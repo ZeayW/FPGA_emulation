@@ -3079,6 +3079,10 @@ unfinished and it is not yet an EmuFlow transport provider.
 An initial CRC/sequence-protected record layer now exposes explicit fail-stop
 errors. Coordinated session reset and distributed virtual-cycle commit remain
 required integration work; this is not an automatically reliable board link.
+`emuflow_gpio_endpoint.sv` composes that record layer with the UART. The physical
+gate accepts `--extra-rtl` dependencies so the complete communication endpoint,
+not just a GPIO counter, can be placed and routed. This remains endpoint-only
+qualification; the virtual-cycle controller and full-flow backend are pending.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
