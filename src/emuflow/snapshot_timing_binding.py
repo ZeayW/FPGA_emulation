@@ -2,7 +2,7 @@
 from .errors import ValidationError
 from .snapshot_physical_binding import bind_snapshot_routed_identities
 from .snapshot_timing_population import required_snapshot_connections
-from .ecp5_data_graph import project_data_reachability, require_data_connections
+from .ecp5_data_graph import project_data_reachability
 
 
 def bind_snapshot_timing_boundaries(population, interface, routed, graph, *, mapped, mapped_top, top='top'):
@@ -51,6 +51,7 @@ def bind_snapshot_timing_boundaries(population, interface, routed, graph, *, map
     resolved=bind_snapshot_routed_identities(aliases,routed,hierarchy='core',top=top,
         mapped=mapped,mapped_top=mapped_top)['registers']
     result={'launches':{},'captures':{},'constant_launches':{},'constant_captures':{},
+            'capture_controls':{},'hold_pins':{},
             'global_timing_qualified':False}
     for key,record in resolved.items():
         role,name=roles[key]
@@ -65,17 +66,55 @@ def bind_snapshot_timing_boundaries(population, interface, routed, graph, *, map
         if pin not in graph['roots' if role=='launches' else 'captures']:
             raise ValidationError('bound source boundary is missing from physical data graph')
         result[role][name]=pin
+        if role=='captures':
+            # Yosys can extract the source D-input mux into physical CE or
+            # synchronous LSR. These are real timed capture pins, not D arcs.
+            result['capture_controls'][name]=tuple((cellname,p) for p in ('CE','LSR')
+                if (cellname,p) in graph['captures'])
+            if (cellname,'CE') in graph['captures']:
+                result['hold_pins'][name]=(cellname,'Q')
     return result
 
 
-def qualify_snapshot_boundary_connections(population, bindings, graph):
+def classify_snapshot_boundary_connections(population, bindings, graph):
     # Constant-folded boundaries are explicit, not silently removed from the
     # source dependency population. A separate equivalence proof is required.
     if bindings['constant_launches'] or bindings['constant_captures']:
         for launch,capture in required_snapshot_connections(population):
             if launch in bindings['constant_launches'] or capture in bindings['constant_captures']:
                 raise ValidationError('constant-folded source dependency requires semantic qualification')
-    projection=project_data_reachability(graph,bindings['launches'],bindings['captures'])
-    result=require_data_connections(projection,required_snapshot_connections(population))
-    return dict(result,scope='source_required_local_boundary_connections',
-                original_path_coverage_qualified=False,global_timing_qualified=False)
+    pins={}
+    for name,pin in bindings['captures'].items():
+        pins['data:'+name]=pin
+        for control in bindings.get('capture_controls',{}).get(name,()):
+            pins[control[1]+':'+name]=control
+    projection=project_data_reachability(graph,bindings['launches'],pins)
+    labels={name:index for index,name in enumerate(projection['launch_labels'])}
+    masks=projection['capture_masks']
+    counts={'data':0,'synchronous_control':0,'state_hold':0,'unexplained':0}
+    examples=[]
+    for launch,capture in required_snapshot_connections(population):
+        if launch not in labels or capture not in bindings['captures']:
+            raise ValidationError('unbound required source boundary')
+        bit=1<<labels[launch]
+        if masks.get('data:'+capture,0)&bit:kind='data'
+        elif any(masks.get(p+':'+capture,0)&bit for p in ('CE','LSR')):kind='synchronous_control'
+        elif bindings.get('hold_pins',{}).get(capture)==bindings['launches'][launch]:
+            # Physical CE retains Q with no routed Q->D feedback. Record a
+            # state-retention relation, never invent a zero-delay timing path.
+            kind='state_hold'
+        else:
+            kind='unexplained'
+            if len(examples)<8:examples.append((launch,capture))
+        counts[kind]+=1
+    return {'required_pairs':sum(counts.values()),'classification':counts,
+            'unexplained_examples':examples,'scope':'source_required_boundary_influence',
+            'original_path_coverage_qualified':False,'global_timing_qualified':False}
+
+
+def qualify_snapshot_boundary_connections(population, bindings, graph):
+    result=classify_snapshot_boundary_connections(population,bindings,graph)
+    if result['classification']['unexplained']:
+        raise ValidationError('missing required physical data connection: '+
+            repr(result['unexplained_examples'][0]))
+    return dict(result,status='pass')

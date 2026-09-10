@@ -3516,7 +3516,14 @@ the required source-derived connections in the physical data graph. Wrong-board
 interfaces, missing endpoints and constant-folded required dependencies fail
 instead of being silently dropped. This consumer has unit tests; integrated
 real-design correspondence and optimization-equivalence qualification remain
-pending.
+pending. The first real SERV correspondence run passed all 4,429 required
+pairs on board 0 but rejected board 1. Diagnosis found 8,973 dependencies
+entering extracted synchronous control pins, 529 physical CE hold relations,
+and two remaining unmatched pairs. The binder now distinguishes timed D and
+CE/synchronous-LSR connections from state retention; a hold relation is never
+exported as an invented zero-delay Q-to-D timing arc. The two unmatched pairs
+remain a failed coverage gate pending semantic qualification, not discarded
+paths or evidence that whole-design timing passed.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the

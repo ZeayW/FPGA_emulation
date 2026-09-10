@@ -50,3 +50,18 @@ class TimingBindingTests(unittest.TestCase):
         self.assertEqual(b['constant_launches'],{'input':0})
         with self.assertRaisesRegex(ValidationError,'semantic qualification'):
             qualify_snapshot_boundary_connections(p,b,g)
+
+    def test_extracted_enable_and_hold_are_not_fake_data_arcs(self):
+        p,i,r,g,m=self.model()
+        g['captures']['0','CE']={}
+        g['order'].append(('0','CE'))
+        b=bind_snapshot_timing_boundaries(p,i,r,g,mapped=m,mapped_top='device')
+        p['capture_masks']={'s':3,'tx':0,'output':0}
+        g['edges']=[(b['launches']['rx'],('0','CE'),None)]
+        result=qualify_snapshot_boundary_connections(p,b,g)
+        self.assertEqual(result['classification'],{'data':0,'synchronous_control':1,'state_hold':1,'unexplained':0})
+        self.assertFalse(result['global_timing_qualified'])
+        self.assertEqual(len(g['edges']),1)
+        g['edges']=[]
+        with self.assertRaisesRegex(ValidationError,'missing required'):
+            qualify_snapshot_boundary_connections(p,b,g)
