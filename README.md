@@ -3338,6 +3338,24 @@ annotation only, **not reset-release CDC, analog metastability MTBF, external
 electrical timing or global timing closure**. The finite trace and dual-board
 physical run took 342.33 seconds. Tests reject bypasses, extra fanout, clock or
 enable changes, stage merging, absent host chains and missing timing records.
+The physical runner now accepts `snapshot_interface=` (endpoint CLI:
+`--snapshot-interface FILE`, the source-bound interface emitted for that
+board). This selects timing export and one integrated qualification consumer:
+clock coverage, SDF connectivity, UART receive chains, reset release structure,
+all original FF identities and transport storage. Routed/mapped JSON and SDF
+are read once by this consumer; its terminal summary contains counts and
+scoped results, not duplicate netlist payloads. Any failed check fails the
+physical runner. Ordinary endpoint checks remain explicitly endpoint-only.
+
+`qualify_snapshot_reset_structure` checks the physical active-low pad inverter,
+two distinct asynchronously asserted FFs, constant-zero shift input, shared
+clock/assertion, exclusive first-stage fanout and absence of asynchronous FFs
+outside the release chain. It does not certify recovery/removal, external
+reset pulse width or metastability MTBF. A fresh natural SERV run through the
+integrated physical API passed on both boards in 339.19 seconds, including
+all 702 / 634 original FF identities and both reset chains. Global path delay
+coverage and the asynchronous timing model are still pending: this is **not**
+a completed Phase 1–7/global timing qualification.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

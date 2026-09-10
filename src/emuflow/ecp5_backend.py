@@ -18,7 +18,7 @@ from .errors import ValidationError
 
 def run_ulx3s_physical(sources, *, top: str, tools: Path, output_dir: Path,
                       board: str = "board0", host_uart: bool = False,
-                      export_timing: bool = False) -> dict:
+                      export_timing: bool = False, snapshot_interface=None) -> dict:
     """Map, place/route and pack real RTL with fixed pins and seed 1.
 
     No unconstrained-pin or timing-failure allowances. Fresh scratch per call;
@@ -29,6 +29,10 @@ def run_ulx3s_physical(sources, *, top: str, tools: Path, output_dir: Path,
     lpf = ulx3s_endpoint_lpf(board, host_uart=host_uart)
     if type(export_timing) is not bool:
         raise ValidationError("export_timing must be explicit boolean")
+    if snapshot_interface is not None:
+        if not isinstance(snapshot_interface,dict) or not isinstance(snapshot_interface.get('source_binding'),dict):
+            raise ValidationError("snapshot qualification requires emitted source-bound interface")
+        export_timing=True
     paths = [Path(p).resolve(strict=True) for p in sources]
     if not paths or len(set(paths)) != len(paths) or any(not p.is_file() for p in paths):
         raise ValidationError("RTL sources must be nonempty, unique files")
@@ -93,6 +97,10 @@ def run_ulx3s_physical(sources, *, top: str, tools: Path, output_dir: Path,
         physical = json.loads((out / "physical.json").read_text())
         report["local_qualification"] = qualify_ecp5_endpoint_report(physical)
         report["physical"] = {key: physical[key] for key in ("utilization", "fmax")}
+        if snapshot_interface is not None:
+            from .snapshot_physical import qualify_snapshot_physical
+            report['snapshot_qualification']=qualify_snapshot_physical(out,snapshot_interface,
+                physical,mapped_top=top,host_uart=host_uart)
         report["status"] = "physical_outputs_generated"
     except Exception as exc:
         report["status"] = "failed"

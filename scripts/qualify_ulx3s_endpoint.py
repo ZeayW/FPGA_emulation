@@ -19,10 +19,14 @@ def main():
     parser.add_argument("--board", choices=("board0", "board1"), default="board0")
     parser.add_argument("--host-uart", action="store_true", help="bind board0 onboard FT231X UART pins")
     parser.add_argument("--export-timing", action="store_true", help="emit scratch routed netlist/SDF for timing binding")
+    parser.add_argument("--snapshot-interface", type=Path,
+                        help="emitted source-bound snapshot interface JSON; check routed clocks, CDC/reset and state/storage binding")
     args = parser.parse_args()
     report = run_ulx3s_physical([args.rtl, *args.extra_rtl], top=args.top,
                                tools=args.tools, output_dir=args.out, board=args.board,
-                               host_uart=args.host_uart, export_timing=args.export_timing)
+                               host_uart=args.host_uart, export_timing=args.export_timing,
+                               snapshot_interface=(json.loads(args.snapshot_interface.read_text())
+                                                   if args.snapshot_interface else None))
     print(json.dumps({"status": report["status"],
                       "summary": str(args.out.resolve() / "summary.json")}))
 

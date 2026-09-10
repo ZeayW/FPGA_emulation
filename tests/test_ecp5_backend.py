@@ -97,3 +97,21 @@ class ECP5BackendTests(unittest.TestCase):
             return result
         with patch("emuflow.ecp5_backend.subprocess.run",side_effect=omit_sdf):
             with self.assertRaises(ValidationError): self.run_backend(export_timing=True)
+
+    def test_snapshot_interface_selects_single_integrated_consumer(self):
+        interface={'source_binding':{'schema':'emuflow.snapshot-source-binding/v1'}}
+        checked={'status':'physical_structure_qualified_global_timing_pending','full_flow_qualified':False}
+        with patch('emuflow.ecp5_backend.subprocess.run',side_effect=self.tool),patch(
+                'emuflow.snapshot_physical.qualify_snapshot_physical',return_value=checked) as qualify:
+            result=self.run_backend(snapshot_interface=interface)
+        self.assertIn('--sdf',result['stages'][1]['command'])
+        self.assertEqual(result['snapshot_qualification'],checked)
+        self.assertEqual(qualify.call_count,1)
+        self.assertIs(qualify.call_args.args[1],interface)
+
+    def test_snapshot_check_failure_is_backend_failure(self):
+        with patch('emuflow.ecp5_backend.subprocess.run',side_effect=self.tool),patch(
+                'emuflow.snapshot_physical.qualify_snapshot_physical',side_effect=ValidationError('CDC bypass')):
+            with self.assertRaisesRegex(ValidationError,'CDC bypass'):
+                self.run_backend(snapshot_interface={'source_binding':{}})
+        self.assertEqual(json.loads((self.out/'summary.json').read_text())['status'],'failed')

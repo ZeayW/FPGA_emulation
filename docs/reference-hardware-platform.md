@@ -405,6 +405,17 @@ are not replaced by this operation. Missing/unbound reset handling still fails.
 This is an integration capability with unit tests, not yet real-RTL full-flow
 qualification or permission to convert arbitrary asynchronous resets.
 
+Physical qualification now has an integrated snapshot interface in
+`run_ulx3s_physical(snapshot_interface=...)`. It checks the routed FF clock
+population, SDF wire/primitive identity, UART synchronizer structure, reset
+assert/release structure, original FF bindings and TX/RX storage together.
+Its compact report explicitly retains pending recovery/removal, metastability,
+original-path delay coverage and asynchronous global timing obligations.
+The structural checks do not establish MTBF, external reset pulse width,
+electrical closure or complete global STA. Natural SERV has passed this
+integrated structural gate on both physical boards; full-flow qualification
+remains incomplete until those timing obligations are resolved.
+
 `derive_snapshot_rounds` now computes the logical exchange count for supported
 LUT/FF netlists by a linear DAG traversal after partition selection. Edges
 carry zero for local connectivity and one for a board crossing; original FF
