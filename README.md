@@ -3117,6 +3117,10 @@ The companion snapshot boundary planner derives directional bit order from
 actual EmuIR connectivity and the selected assignment, without register-only
 cut filtering. External host-port ownership must be explicit; this is not a
 timing or combinational-settling certificate.
+Generated board tops have passed a real RTL simulation of 16 reference-checked
+macrocycles across independent clocks with unequal 33/17-bit directions.
+This validates the snapshot interface fixture, not arbitrary RTL lowering or
+complete Phase 1–7; those acceptance requirements remain outstanding.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

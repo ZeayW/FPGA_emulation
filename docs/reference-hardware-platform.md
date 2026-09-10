@@ -179,7 +179,11 @@ The initial binder still requires automatic EmuIR lowering and combinational
 evaluation-round support before claiming general DUT acceptance. The generated
 interface test compares unequal-width stateful consumers against a synchronous
 reference; it is a synthetic semantic test, not the required real-RTL benchmark.
-Its actual RTL validation is pending.
+Actual Icarus RTL validation now passes 16 synchronous-reference macrocycles,
+with independent 20/20.2 ns half-period clocks and unequal 33/17-bit directional
+payloads. Both generated tops are exercised, including padding and clock-enable
+updates. This does not establish automatic arbitrary-RTL lowering, combinational
+evaluation rounds, physical timing or full-flow acceptance.
 
 `build_snapshot_boundary_plan` is the connectivity bridge from a validated
 EmuIR and full instance assignment to directional envelope bit order. It uses
