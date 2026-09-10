@@ -67,3 +67,17 @@ def test_root_cli_exposes_the_same_explicit_contract(tmp_path):
     with patch('emuflow.snapshot_flow.run',return_value=1) as execute:
         assert _dispatch(args)==1
     assert execute.call_args.args==(args,)
+
+
+def test_vectors_allow_declared_unused_ports_but_never_guess_live_inputs():
+    from types import SimpleNamespace
+    from emuflow.snapshot_flow import _connected_vectors
+    ir=SimpleNamespace(value=dict(ports=[dict(id=n,direction='input',width=1) for n in ('clk','data','unused')],
+        nets=[dict(cut_class='primary_input',drivers=[dict(instance=None,port='data')])]))
+    assert _connected_vectors(ir,'clk',[dict(data=1,unused=0)])==[dict(data=1)]
+    with pytest.raises(ValidationError,match='missing connected inputs'):
+        _connected_vectors(ir,'clk',[dict(unused=0)])
+    with pytest.raises(ValidationError,match='unknown inputs'):
+        _connected_vectors(ir,'clk',[dict(data=1,typo=0)])
+    with pytest.raises(ValidationError,match='out-of-range'):
+        _connected_vectors(ir,'clk',[dict(data=1,unused=2)])

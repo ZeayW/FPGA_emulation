@@ -91,6 +91,23 @@ def _remove_joined_scratch(root):
     shutil.rmtree(root)
 
 
+def _connected_vectors(ir, clock, vectors):
+    widths = {p['id']:p['width'] for p in ir.value['ports'] if p['direction']=='input' and p['id']!=clock}
+    required = {ep['port'] for net in ir.value['nets'] if net['cut_class']!='clock'
+                for ep in net['drivers'] if ep['instance'] is None}
+    result = []
+    for index, vector in enumerate(vectors):
+        missing, unknown = required-set(vector), set(vector)-set(widths)
+        if missing or unknown:
+            raise ValidationError(f'vector {index}: missing connected inputs {sorted(missing)}; unknown inputs {sorted(unknown)}')
+        if any(type(value) is not int or not 0 <= value < 1 << widths[name] for name,value in vector.items()):
+            raise ValidationError(f'vector {index}: out-of-range or noninteger input value')
+        # A supplied value for a declared but optimized-unconnected port is
+        # legal, but has no physical host bit. Never fill a missing live input.
+        result.append({name:vector[name] for name in required})
+    return result
+
+
 def _execute(args, sources, vectors, tools, root, report):
     from .synthesis import run_generic_yosys
     from .yosys import import_yosys_json
@@ -111,6 +128,7 @@ def _execute(args, sources, vectors, tools, root, report):
     run_generic_yosys(sources,args.top,mapped_path,executable=str(tools/'yosys'),
         log_path=root/'frontend.log',lut_size=4,abc_executable=str(tools)+'/./yosys-abc')
     ir = import_yosys_json(mapped_path,top=args.top,clocks=[args.clock])
+    vectors = _connected_vectors(ir,args.clock,vectors)
     owners = {p['id']:'board0' for p in ir.value['ports'] if p['id'] != args.clock}
     bound = bind_snapshot_reset_inputs(ir,args.reset_data_port)
     database = build_snapshot_source_paths(bound,port_owners=owners,clock_port=args.clock,

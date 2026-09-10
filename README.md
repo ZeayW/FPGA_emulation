@@ -3785,6 +3785,14 @@ Control-plane tests cover preflight, environment restoration, duplicate-run
 rejection, failure and cleanup refusal. The new entry's actual native complete
 execution is still pending; it is an explicit qualification command, not yet
 a qualified default or a registered QoR benchmark.
+Host-vector validation now runs immediately after synthesis and identifies
+missing connected inputs, unknown names and out-of-range values before
+partitioning. Values for declared but optimized-unconnected input ports are
+accepted and omitted from the physical host payload; missing live inputs are
+never defaulted. The first native command run completed SERV synthesis and
+natural partitioning, but rejected an incorrectly named validation vector
+before simulation/physical execution. It is failure evidence, not a timing
+result; that attempt's internal scratch was removed.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
