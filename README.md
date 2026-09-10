@@ -3823,6 +3823,13 @@ interstage wire, and both-edge setup/hold for the release synchronizer. It
 reports their min/max bounds without treating them as asynchronous
 recovery/removal or MTBF proof. Missing annotations fail explicitly; native
 integration of this additional gate is pending.
+The one-shot runner additionally issues native setup/hold queries for reset
+release and UART synchronizer interstage data paths. Setup uses the assembly's
+nominal 25 MHz clock and the declared uncertainty, not the DUT target or a
+guessed UART deadline. Negative interstage results fail the run. Asynchronous
+first-stage sampling, recovery/removal and analog metastability remain separate
+obligations; passing second-stage data timing does not waive them. Native
+integration of these new queries is pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the

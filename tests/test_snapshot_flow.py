@@ -96,3 +96,22 @@ def test_hold_query_uses_selected_cone_not_unconstrained_other_roots(tmp_path):
         return {(q,d):dict(slack_ns=.3)}
     with patch('emuflow.ecp5_sta.run_ecp5_pair_checks',side_effect=query):
         assert _measure_hold(graph,{(q,d)},tmp_path,'sta')['minimum_slack_ns']==.3
+
+
+def test_synchronizer_checks_use_local_clock_not_dut_or_link_period(tmp_path):
+    from emuflow.snapshot_flow import _measure_synchronizers
+    q=('first','Q');d=('second','M')
+    graph=dict(roots={q:{}},captures={d:dict(setuphold={e:((0,0,.5),(0,0,.2))
+        for e in ('posedge','negedge')})},dynamic_nodes={q,d},order=[q,d],edges=[(q,d,None)])
+    qualification=dict(reset_structure=dict(first_cell='first',second_cell='second'),
+        uart_data_cdc=dict(receivers={}))
+    def query(cone,directory,**kwargs):
+        assert kwargs['deadlines_ns'][d] == (38.5 if kwargs['analysis']=='max' else .2)
+        return {(q,d):dict(slack_ns=3.0)}
+    with patch('emuflow.ecp5_sta.run_ecp5_pair_checks',side_effect=query):
+        result=_measure_synchronizers(graph,qualification,tmp_path,'sta',1.0)
+    assert result['physical_pairs']==1 and result['negative_setup_pairs']==0
+    assert not result['recovery_removal_qualified']
+    with patch('emuflow.ecp5_sta.run_ecp5_pair_checks',return_value={}):
+        with pytest.raises(ValidationError,match='incomplete synchronizer'):
+            _measure_synchronizers(graph,qualification,tmp_path,'sta',1.0)

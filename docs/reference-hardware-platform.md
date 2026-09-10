@@ -55,9 +55,16 @@ Implementation sequence and completion gates:
    four declared macrocycles, dual-board placement/routing and bitstreams.
    Source boundary-influence correspondence and native OpenSTA maximum-delay
    queries cover both local and cross-board boundary segments, including
-   extracted synchronous controls. This is not complete original-path global
-   timing. Conditional asynchronous timing composition and the canonical
-   one-command complete-flow entry point remain unfinished. Never reinterpret
+   extracted synchronous controls. The `emuflow ulx3s-qualify` one-command
+   qualification now also covers all 102,211 SERV structural source paths:
+   101,170 numerically timed members and 1,041 explicitly classified retention
+   or Boolean-independent members. Native OpenSTA observed-event analysis has
+   no TX/commit readiness violations, runtime WNS +291,598.204058 ns and TNS 0;
+   at the original 40 ns target, WNS is -2,716,800.197959 ns. UART is therefore
+   a slow functional emulation transport, not target-frequency execution.
+   These are finite-trace, ideal-skew routed-cone bounds, not measured link or
+   universal timing guarantees. Reset/CDC and integrated acceptance remain
+   incomplete. Never reinterpret
    VTR or AMD resource counts as ECP5 counts; handshake progress and local
    Fmax are not whole-design WNS/TNS.
 5. **Acceptance (pending).** Real RTL through Phase 1--7, one physical seed,

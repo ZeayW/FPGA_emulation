@@ -125,6 +125,38 @@ def _measure_hold(graph, pairs, directory, sta):
         negative_pairs=sum(v['slack_ns']<0 for v in rows.values()),scope='same_edge_exported_sdf_ideal_skew')
 
 
+def _measure_synchronizers(graph, qualification, directory, sta, uncertainty_ns):
+    """Check second-stage data paths, never asynchronous first-stage sampling."""
+    from .ecp5_data_graph import select_ecp5_data_cones
+    from .ecp5_sta import run_ecp5_pair_checks
+    reset = qualification['reset_structure']
+    identities = [(reset['first_cell'], reset['second_cell'])]
+    identities += [(v['meta_cell'], v['sync_cell'])
+                   for v in qualification['uart_data_cdc']['receivers'].values()]
+    pairs = set()
+    for first, second in identities:
+        targets = [p for p in graph['captures'] if p[0] == second and p[1] in ('M','DI')]
+        if len(targets) != 1 or (first,'Q') not in graph['roots']:
+            raise ValidationError('synchronizer physical data boundary is missing or ambiguous')
+        pairs.add(((first,'Q'),targets[0]))
+    launches = {q:0.0 for q,_ in pairs}
+    # The fixed reference assembly uses nominal 25 MHz local oscillators.
+    # This is unrelated to the user's DUT target or asynchronous UART epoch.
+    deadlines = {d:40.0-uncertainty_ns-max(v[0][2] for v in graph['captures'][d]['setuphold'].values())
+                 for _,d in pairs}
+    cone = select_ecp5_data_cones(graph,roots=set(launches),captures=set(deadlines))
+    rows = run_ecp5_pair_checks(cone,directory/'setup',pairs=pairs,launches_ns=launches,
+        deadlines_ns=deadlines,executable=sta,analysis='max')
+    if set(rows) != pairs:
+        raise ValidationError('incomplete synchronizer setup coverage')
+    return dict(scope='nominal_25mhz_interstage_data_ideal_skew_not_metastability',
+        physical_pairs=len(pairs),setup_uncertainty_ns=uncertainty_ns,
+        minimum_setup_slack_ns=min(v['slack_ns'] for v in rows.values()),
+        negative_setup_pairs=sum(v['slack_ns']<0 for v in rows.values()),
+        hold=_measure_hold(graph,pairs,directory/'hold',sta),
+        recovery_removal_qualified=False,metastability_mtbf_qualified=False)
+
+
 def _execute(args, sources, vectors, tools, root, report):
     from .synthesis import run_generic_yosys
     from .yosys import import_yosys_json
@@ -191,6 +223,7 @@ def _execute(args, sources, vectors, tools, root, report):
     with ThreadPoolExecutor(max_workers=2) as pool:
         report['physical'] = dict(pool.map(physical,('board0','board1')))
     report['local_hold'] = {}
+    report['synchronizer_timing'] = {}
     for board in ('board0','board1'):
         directory = root/board
         graph,bindings,population = (models[board][key] for key in ('graph','bindings','population'))
@@ -198,11 +231,16 @@ def _execute(args, sources, vectors, tools, root, report):
                               if record['kind']=='state'})
         pairs = {(q,d) for _,_,q,targets,_ in iter_bound_snapshot_connections(population,bindings,graph) for d in targets}
         report['local_hold'][board] = _measure_hold(graph,pairs,directory/'hold',str(args.sta.resolve()))
+        report['synchronizer_timing'][board] = _measure_synchronizers(graph,
+            report['physical'][board]['snapshot_qualification'],directory/'synchronizers',
+            str(args.sta.resolve()),args.setup_uncertainty_ns)
     report['global_timing'] = qualify_snapshot_global_timing(database,bound,assignment,pair=pair,protocol=protocol,
         physical_models=models,port_owners=owners,initial_launch_ns=initial_ready,cycle=args.timing_cycle,
         setup_uncertainty_ns=args.setup_uncertainty_ns,output_dir=root/'global',yosys=tools/'yosys',sta=str(args.sta.resolve()))
     report['status'] = 'checks_finished_qualification_pending'
     if report['global_timing']['readiness_violations'] or any(r['negative_pairs'] for r in report['local_hold'].values()):
+        report['status'] = 'timing_violations'
+    if any(r['negative_setup_pairs'] or r['hold']['negative_pairs'] for r in report['synchronizer_timing'].values()):
         report['status'] = 'timing_violations'
 
 
