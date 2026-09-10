@@ -3326,6 +3326,18 @@ On the same natural SERV physical outputs it reads 6,245 / 3,937 primitives,
 annotations, **not** an STA result or a proof of complete timing-path coverage.
 CDC qualification, original-path physical-cone coverage and the conditional
 asynchronous global timing model remain pending; no global WNS/TNS is claimed.
+The scoped `qualify_snapshot_uart_cdc` check now binds the emitted UART
+`rx_meta`/`rx_sync` state to physical FFs and requires input-pad buffer → first
+FF → second FF connectivity, no first-stage extra fanout, common clock/reset,
+and always-enabled positive-edge sampling. It also requires the routed
+meta-to-sync delay, clock-to-Q and both edge-specific setup/hold annotations.
+Natural SERV at `3d701870` passes for both peer receivers and the board0 host
+receiver; their meta-to-sync wire maxima are 0.420 / 0.786 ns (peer) and
+0.914 ns (host). This proves the declared data-synchronizer structure and
+annotation only, **not reset-release CDC, analog metastability MTBF, external
+electrical timing or global timing closure**. The finite trace and dual-board
+physical run took 342.33 seconds. Tests reject bypasses, extra fanout, clock or
+enable changes, stage merging, absent host chains and missing timing records.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
