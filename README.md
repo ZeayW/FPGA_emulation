@@ -3723,6 +3723,17 @@ measurement. State-hold and unexplained relations remain separately counted,
 without fabricated arcs; their downstream semantic treatment is still
 required. Local consumer tests pass; this producer's real-design integration
 and complete global path qualification remain pending.
+`qualify_snapshot_path_coverage` independently counts all conservative source
+net chains on the acyclic LUT graph and requires distinct, structurally valid
+TimingPathDB members to cover that population exactly. It detects a missing
+reconvergent branch even when every endpoint pair is present, duplicate chains
+under different member IDs, and omitted host-output paths. Tied LUT inputs
+count as one net chain, not separate transition arcs. The count is structural,
+not a Boolean sensitizability or physical timing proof. The existing generic
+OpenSTA extractor's `-endpoint_count 1` and absent host I/O delay constraints
+cannot establish this stronger snapshot coverage contract; a non-saturated
+path limit does not establish completeness either. Complete source population
+production and its real-design global timing integration remain pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
