@@ -3224,6 +3224,14 @@ invented for Phase 3. DUT capacity is 75% of the fixed device; the later physica
 gate must separately fit DUT **plus** transport into that same limit. Unit
 coverage verifies this adapter contract; native real-RTL partition qualification
 and end-to-end asynchronous timing integration remain pending.
+For actual mapped RTL, `mapped_snapshot_initial_state` preserves every declared
+Yosys `init` bit and rejects contradictory aliases. Undefined FF bits require an
+explicit seed, producing a reproducible **declared starting state**, never an
+implicit all-zero reset. The original and transformed simulations must use the
+same returned state. This is not proof of reset convergence or correctness over
+all initial states; those claims require separate verification. The natural
+SERV frontend declares no initial value for its 1,336 mapped FFs, so this
+distinction is necessary for honest real-RTL equivalence qualification.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
