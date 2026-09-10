@@ -181,6 +181,15 @@ interface test compares unequal-width stateful consumers against a synchronous
 reference; it is a synthetic semantic test, not the required real-RTL benchmark.
 Its actual RTL validation is pending.
 
+`build_snapshot_boundary_plan` is the connectivity bridge from a validated
+EmuIR and full instance assignment to directional envelope bit order. It uses
+actual net drivers/sinks, includes combinational cuts, deduplicates fanout,
+and requires explicit ownership for external data ports. Clock/reset wiring
+remains a separate board-service binding. No assignment is rejected or ranked
+using predicted scheduling feasibility; the currently implemented envelope
+size is checked after partitioning. This plan still needs the automatic
+partition RTL lowering and evaluation/timing binding consumers.
+
 ## Historical vendor reference investigation
 
 ## Deliverable and current status

@@ -5,6 +5,51 @@ are not compatible. This generator does not itself establish DUT equivalence.
 """
 import re
 from .errors import ValidationError
+from .ir import EmuIR
+
+
+def build_snapshot_boundary_plan(ir: EmuIR, instance_assignment: dict,
+                                 *, port_owners: dict) -> dict:
+    """Map actual partition-crossing data nets to paired snapshot bit indices.
+
+    No register-only filtering or new partition constraints. Clock/reset nets
+    belong to board services, not the data envelope. External port ownership
+    must be supplied by a host-I/O binding, never invented by this function.
+    This is connectivity binding, not a combinational settling certificate.
+    """
+    peers = {"board0", "board1"}
+    instances = {item["id"] for item in ir.value["instances"]}
+    if set(instance_assignment) != instances or set(instance_assignment.values())-peers:
+        raise ValidationError("snapshot assignment must cover all instances on the fixed pair")
+    ports = {item["id"] for item in ir.value["ports"]}
+    if set(port_owners)-ports or set(port_owners.values())-peers:
+        raise ValidationError("invalid host port ownership")
+
+    def owner(endpoint):
+        instance = endpoint["instance"]
+        if instance is not None:
+            return instance_assignment[instance]
+        if endpoint["port"] not in port_owners:
+            raise ValidationError(f"missing external port binding: {endpoint['port']}")
+        return port_owners[endpoint["port"]]
+
+    outbound = {peer: [] for peer in sorted(peers)}
+    for net in sorted(ir.value["nets"], key=lambda item: item["id"]):
+        if net["cut_class"] in {"clock", "reset"} or not net["sinks"]:
+            continue
+        if len(net["drivers"]) != 1:
+            raise ValidationError(f"snapshot data requires one driver: {net['id']}")
+        source = owner(net["drivers"][0])
+        destinations = {owner(ep) for ep in net["sinks"]}-{source}
+        if destinations:
+            outbound[source].append(net["id"])
+    words = max(1, (max(map(len, outbound.values()))+31)//32)
+    if words > 256:
+        raise ValidationError("snapshot binding exceeds the implemented 256-word envelope")
+    return {"schema": "emuflow.snapshot-boundary-plan/v1",
+            "design": ir.value["design"]["name"], "words": words,
+            "outbound_nets": outbound,
+            "timing_and_evaluation_binding_qualified": False}
 
 
 def build_ulx3s_snapshot_top(*, top: str, dut_module: str, board: str,

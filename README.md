@@ -3113,6 +3113,10 @@ clock-enable DUT to the open endpoint and commit controller, including unequal
 export/import widths and checked envelope padding. It is an initial integration
 interface, not automatic arbitrary-RTL partition lowering. Generated-binding
 RTL qualification and general combinational-cut evaluation remain pending.
+The companion snapshot boundary planner derives directional bit order from
+actual EmuIR connectivity and the selected assignment, without register-only
+cut filtering. External host-port ownership must be explicit; this is not a
+timing or combinational-settling certificate.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

@@ -40,6 +40,7 @@ module ulx3s_dut_binding_tb;
         end
         #300; reset_n=1;
         wait(an==16 && bn==16);
+        #2; // Let both post-edge reference checks finish before ending simulation.
         $display("PASS generated DUT bindings: 16 reference macrocycles, unequal widths, independent clocks");
         $finish;
     end
