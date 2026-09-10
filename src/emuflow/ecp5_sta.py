@@ -121,3 +121,69 @@ def run_ecp5_data_checks(graph, directory, *, launches_ns, deadlines_ns, executa
         raise ValidationError('physical STA missing/extra/unconstrained endpoints')
     return {capture:dict(zip(('arrival_ns','required_ns','slack_ns'),measurements[f'o{i}']))
             for i,capture in enumerate(captures)}
+
+
+def run_ecp5_pair_checks(graph, directory, *, pairs, launches_ns, deadlines_ns, executable=None):
+    """Native launch/capture-pair checks, not just each endpoint's worst root.
+
+    All requests share one physical timing graph. Queries are grouped by
+    physical launch; merged original identities can reuse a returned pair.
+    Missing paths fail. Boolean-independent and hold relations must be
+    classified separately and must not be submitted as zero-delay paths.
+    """
+    pairs=sorted(set(pairs));roots=sorted(set(graph['roots']) & graph['dynamic_nodes'])
+    captures=sorted(set(graph['captures']) & graph['dynamic_nodes'])
+    ri={p:i for i,p in enumerate(roots)};ci={p:i for i,p in enumerate(captures)}
+    if not pairs or any(a not in ri or z not in ci for a,z in pairs):
+        raise ValidationError('pair STA requires bound dynamic launch/capture pins')
+    directory=Path(directory)
+    export_ecp5_data_checks(graph,directory,launches_ns=launches_ns,deadlines_ns=deadlines_ns)
+    with (directory/'requests.tsv').open('w') as stream:
+        for a,z in pairs:stream.write(f'i{ri[a]}\to{ci[z]}\n')
+    # Keep constraint loading identical to the endpoint adapter. Only the
+    # native query/report block differs; no Python timing propagation occurs.
+    script=(directory/'analyze.tcl').read_text()
+    begin=script.index('  set out [open measurements.tsv w]')
+    end=script.index('\n  close $out',begin)+len('\n  close $out')
+    query='''  set requests [open requests.tsv r]
+  set groups [dict create]
+  while {[gets $requests line] >= 0} {
+    lassign [split $line "\\t"] launch capture
+    dict lappend groups $launch $capture
+  }
+  close $requests
+  set out [open pairs.tsv w]
+  puts $out "launch\\tendpoint\\tarrival_ns\\trequired_ns\\tslack_ns"
+  dict for {launch endpoints} $groups {
+    set targets {}
+    foreach endpoint $endpoints {lappend targets [$::emuflow_cell find_port $endpoint]}
+    set paths [find_timing_paths -from [$::emuflow_cell find_port $launch] -to $targets -path_delay max -group_count [llength $endpoints] -endpoint_count 1]
+    foreach p $paths {
+      set endpoint [get_property [get_property $p endpoint] full_name]
+      set arrival [expr {[$p data_arrival_time] * 1.0e9}]
+      set required [expr {[$p data_required_time] * 1.0e9}]
+      set slack [expr {[$p slack] * 1.0e9}]
+      puts $out "$launch\\t$endpoint\\t$arrival\\t$required\\t$slack"
+    }
+  }
+  close $out'''
+    (directory/'analyze.tcl').write_text(script[:begin]+query+script[end:])
+    output=directory/'pairs.tsv';output.unlink(missing_ok=True)
+    tool=resolve_native_executable('sta',executable)
+    with (directory/'opensta.log').open('w') as log:
+        proc=subprocess.run([tool,'-exit','analyze.tcl'],cwd=directory,stdout=log,stderr=subprocess.STDOUT)
+    if proc.returncode or not output.is_file():raise ValidationError('pair OpenSTA failed; see opensta.log')
+    expected={(f'i{ri[a]}',f'o{ci[z]}'):(a,z) for a,z in pairs};result={}
+    with output.open() as stream:
+        if next(stream,'').strip()!='launch\tendpoint\tarrival_ns\trequired_ns\tslack_ns':
+            raise ValidationError('invalid pair STA result header')
+        for line in stream:
+            fields=line.rstrip('\n').split('\t');key=tuple(fields[:2])
+            if len(fields)!=5 or key not in expected or expected[key] in result:
+                raise ValidationError('duplicate/extra/malformed pair STA result')
+            try:values=tuple(map(float,fields[2:]))
+            except ValueError as exc:raise ValidationError('nonnumeric pair STA result') from exc
+            if not all(math.isfinite(v) for v in values):raise ValidationError('nonfinite pair STA result')
+            result[expected[key]]=dict(zip(('arrival_ns','required_ns','slack_ns'),values))
+    if set(result)!=set(pairs):raise ValidationError('pair STA missing requested paths')
+    return result

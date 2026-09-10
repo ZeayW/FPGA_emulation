@@ -1,7 +1,7 @@
 from pathlib import Path
 import shutil
 import pytest
-from emuflow.ecp5_sta import export_ecp5_data_checks, run_ecp5_data_checks
+from emuflow.ecp5_sta import export_ecp5_data_checks, run_ecp5_data_checks, run_ecp5_pair_checks
 from emuflow.errors import ValidationError
 
 
@@ -33,3 +33,17 @@ def test_native_opensta_selects_longer_branch(tmp_path):
     row=measurements['sink','DI']
     assert row['arrival_ns']==pytest.approx(4.9,abs=.001)
     assert row['slack_ns']==pytest.approx(5.1,abs=.001)
+
+
+@pytest.mark.skipif(not shutil.which('sta'),reason='native OpenSTA unavailable')
+def test_native_pairs_preserve_noncritical_launch(tmp_path):
+    g=graph();end=('sink','DI');pairs=[(r,end) for r in g['roots']]
+    result=run_ecp5_pair_checks(g,tmp_path,pairs=pairs,launches_ns={r:0 for r in g['roots']},deadlines_ns={end:10})
+    assert result[(('a','Q'),end)]['arrival_ns']==pytest.approx(2.7,abs=.001)
+    assert result[(('b','Q'),end)]['arrival_ns']==pytest.approx(4.9,abs=.001)
+
+
+def test_pair_binding_rejected_before_export(tmp_path):
+    with pytest.raises(ValidationError,match='bound dynamic'):
+        run_ecp5_pair_checks(graph(),tmp_path,pairs=[(('wrong','Q'),('sink','DI'))],launches_ns={},deadlines_ns={})
+    assert not list(tmp_path.iterdir())

@@ -3546,6 +3546,12 @@ Boolean-independent pairs, with zero unexplained pairs. Together with board
 0's 4,429 matched pairs, this closes this run's local boundary-influence
 correspondence gate. Physical synthesis and routing were not rerun for this
 validator correction; the original failed gate remains in compact evidence.
+The native physical STA adapter also has an explicit launch/capture-pair
+query mode. It shares one exported graph and groups requests by launch;
+unreachable, duplicate or missing results fail. This retains noncritical
+source contributions that an endpoint-only worst-path report would hide,
+which is necessary for later original-path binding. It is not yet global
+asynchronous timing: native pair-query qualification is pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
