@@ -11,6 +11,11 @@ def build_snapshot_equivalence_testbench(ir, assignment, pair, *, initial_state,
                                          vectors, max_board_cycles=20000000, timing_events=False,
                                          physical_session_id=None):
     physical = physical_session_id is not None
+    from .board_ulx3s import ulx3s_pair_profile
+    profile = ulx3s_pair_profile()
+    nominal_period = 1000.0/profile['clocks']['local_mhz']
+    periods = dict(board0=nominal_period, board1=nominal_period*1.01)
+    if physical: periods['serial_client'] = nominal_period*.99
     if physical and (type(physical_session_id) is not int or not 0 <= physical_session_id < 2**32):
         raise ValidationError('physical host session must be an explicit uint32')
     if type(timing_events) is not bool:raise ValidationError('timing_events must be an explicit boolean')
@@ -112,14 +117,13 @@ always @(posedge {clock}) if(!{reset_signal} && !{instance}.fault) begin
 end
 '''
     if physical:
-        from .board_ulx3s import ulx3s_pair_profile
-        divider=ulx3s_pair_profile()['host_interface']['clocks_per_bit']
+        divider=profile['host_interface']['clocks_per_bit']
         text=f'''`timescale 1ns/1ps
 module snapshot_equivalence_tb;
 reg ac=0,bc=0,hc=0,reset_n=0,reset=1;
-always #20 ac=~ac;
-initial begin #7; forever #20.2 bc=~bc; end
-initial begin #3; forever #19.8 hc=~hc; end
+always #{periods['board0']/2:g} ac=~ac;
+initial begin #7; forever #{periods['board1']/2:g} bc=~bc; end
+initial begin #3; forever #{periods['serial_client']/2:g} hc=~hc; end
 wire aw,bw,htx,hrx;
 wire [63:0] rx;
 reg [63:0] tx=0;
@@ -160,8 +164,8 @@ reg ac=0,bc=0,reset=1,request=0,ack=0;
 reg [{ni-1}:0] host_input=0;
 wire aw,bw,ready,valid,af,bf;
 wire [{no-1}:0] value;
-always #20 ac=~ac;
-initial begin #7; forever #20.2 bc=~bc; end
+always #{periods['board0']/2:g} ac=~ac;
+initial begin #7; forever #{periods['board1']/2:g} bc=~bc; end
 {boards['board0']['top']} a(.clk(ac),.reset(reset),.link_rx(bw),.link_tx(aw),
  .host_inputs(host_input),.request_valid(request),.request_ready(ready),
  .host_outputs(value),.response_valid(valid),.response_ready(ack),.fault(af));
@@ -182,6 +186,13 @@ endmodule
     return text, {"macrocycles": len(vectors), "observed_ff": len(state_points),
                   "physical_wrappers_simulated": physical,
                   "host_drive": "serial_records" if physical else "internal_request_interface",
+                  "simulation_conditions": dict(clock_periods_ns=periods,
+                      initial_clock_phase_ns=dict(board0=0,board1=7,**({'serial_client':3} if physical else {})),
+                      external_reset_release_ns=300,
+                      interboard_wire_model='ideal_zero_delay_digital_wires',
+                      metastability_model='not_simulated',
+                      clock_jitter_model='none',
+                      claim='declared_trace_only_not_all_clock_phases_or_pvt'),
                   "observed_output_bits": len(outputs),
                   "timing_event_scope": "simulated_protocol_events_not_measured_link" if timing_events else None,
                   "scope": "declared-input-trace-and-initial-state", "physical_timing_proof": False}

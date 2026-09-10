@@ -3843,6 +3843,12 @@ boundary. Native Icarus wrapper-mode regression passed both correct-state and
 injected-corruption cases, including bound per-board reset/event traces;
 real-design execution of this expanded boundary remains pending. The
 internal-interface test generator remains available for focused tests.
+Terminal simulation summaries state their actual board/client periods and
+phase offsets, reset-release time, ideal zero-delay digital-wire model, absence
+of jitter/metastability modeling, and finite-trace claim. The board profile
+owns the nominal local period used by simulation and synchronizer setup checks;
+no user DUT target is silently substituted. These recorded conditions are not
+evidence of measured cable delay or worst-case oscillator/PVT behavior.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the

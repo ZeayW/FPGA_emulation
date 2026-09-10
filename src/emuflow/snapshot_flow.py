@@ -129,6 +129,7 @@ def _measure_synchronizers(graph, qualification, directory, sta, uncertainty_ns)
     """Check second-stage data paths, never asynchronous first-stage sampling."""
     from .ecp5_data_graph import select_ecp5_data_cones
     from .ecp5_sta import run_ecp5_pair_checks
+    from .board_ulx3s import ulx3s_pair_profile
     reset = qualification['reset_structure']
     identities = [(reset['first_cell'], reset['second_cell'])]
     identities += [(v['meta_cell'], v['sync_cell'])
@@ -142,7 +143,8 @@ def _measure_synchronizers(graph, qualification, directory, sta, uncertainty_ns)
     launches = {q:0.0 for q,_ in pairs}
     # The fixed reference assembly uses nominal 25 MHz local oscillators.
     # This is unrelated to the user's DUT target or asynchronous UART epoch.
-    deadlines = {d:40.0-uncertainty_ns-max(v[0][2] for v in graph['captures'][d]['setuphold'].values())
+    period = 1000.0/ulx3s_pair_profile()['clocks']['local_mhz']
+    deadlines = {d:period-uncertainty_ns-max(v[0][2] for v in graph['captures'][d]['setuphold'].values())
                  for _,d in pairs}
     cone = select_ecp5_data_cones(graph,roots=set(launches),captures=set(deadlines))
     rows = run_ecp5_pair_checks(cone,directory/'setup',pairs=pairs,launches_ns=launches,

@@ -24,6 +24,9 @@ class SnapshotEquivalenceTests(unittest.TestCase):
             initial_state={'q':0},vectors=[{'in':0},{'in':1}],timing_events=True,
             physical_session_id=0x789)
         self.assertTrue(summary['physical_wrappers_simulated'])
+        self.assertEqual(summary['simulation_conditions']['clock_periods_ns'],
+                         {'board0':40.0,'board1':40.4,'serial_client':39.6})
+        self.assertEqual(summary['simulation_conditions']['metastability_model'],'not_simulated')
         self.assertIn('host_pair_board0_physical a',text)
         self.assertIn('send(64\'h6001000000000789)',text)
         self.assertIn('always @(negedge b.reset)',text)
