@@ -17,7 +17,7 @@ module ulx3s_exchange_physical # (parameter integer LEADER=1) (
     emuflow_gpio_endpoint endpoint(.clk(clk_25mhz),.reset(reset),
         .serial_rx(link_rx),.serial_tx(link_tx),.tx_record(tx),.tx_valid(tv),.tx_ready(tr),
         .rx_record(rx),.rx_valid(rv),.rx_ready(rr),.fault(phy_fault));
-    emuflow_gpio_exchange #(.LEADER(LEADER)) exchange(.clk(clk_25mhz),.reset(reset),
+    emuflow_gpio_exchange #(.LEADER(LEADER),.ROUNDS(3)) exchange(.clk(clk_25mhz),.reset(reset),
         .session_id(32'h1234),.start(ready),.start_ready(ready),.local_snapshot(state),
         .remote_snapshot(remote),.commit(commit),.session_ready(),.fault(fault),
         .link_fault(phy_fault),.tx_record(tx),.tx_valid(tv),.tx_ready(tr),

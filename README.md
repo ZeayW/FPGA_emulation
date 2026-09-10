@@ -3147,6 +3147,9 @@ with `iverilog`/`vvp` on PATH, or explicit `IVERILOG`/`VVP` paths. Missing tools
 produce an explicit skip, not qualification. New-controller physical validation,
 host I/O integration and real-design Phase 1–7 remain pending; earlier endpoint
 bitstreams do not qualify this changed controller automatically.
+The controller physical fixture now selects three rounds explicitly, so the
+next physical gate exercises the multi-round state rather than synthesizing
+it away with the one-round default.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
