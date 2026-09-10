@@ -3557,6 +3557,11 @@ arrivals and 7.3 / 5.1 ns slacks against a 10 ns deadline. Removing one
 requested connection correctly failed instead of returning only the remaining
 worst path. This fixture completed in 3.36 seconds; real-design pair-delay
 binding and the asynchronous timing contract remain pending.
+Source-to-physical request generation now streams every required boundary pair
+with **all** reachable D, CE and synchronous-LSR capture pins. A matching D
+path cannot hide a slower control path to the same state element. Hold and
+unexplained relations remain explicit records with no fabricated timing arcs;
+callers must complete correspondence qualification before querying delays.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the

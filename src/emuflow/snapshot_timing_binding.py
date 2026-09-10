@@ -76,7 +76,13 @@ def bind_snapshot_timing_boundaries(population, interface, routed, graph, *, map
     return result
 
 
-def classify_snapshot_boundary_connections(population, bindings, graph):
+def iter_bound_snapshot_connections(population, bindings, graph):
+    """Stream every required source pair with all reachable timed captures.
+
+    A source may influence both D and CE/LSR. Do not let a D match mask a
+    slower control path. Hold/unexplained relations carry no fabricated arc.
+    Callers must qualify unexplained relations, not drop empty target tuples.
+    """
     # Constant-folded boundaries are explicit, not silently removed from the
     # source dependency population. A separate equivalence proof is required.
     if bindings['constant_launches'] or bindings['constant_captures']:
@@ -91,12 +97,14 @@ def classify_snapshot_boundary_connections(population, bindings, graph):
     projection=project_data_reachability(graph,bindings['launches'],pins)
     labels={name:index for index,name in enumerate(projection['launch_labels'])}
     masks=projection['capture_masks']
-    counts={'data':0,'synchronous_control':0,'state_hold':0,'unexplained':0}
-    examples=[]
     for launch,capture in required_snapshot_connections(population):
         if launch not in labels or capture not in bindings['captures']:
             raise ValidationError('unbound required source boundary')
         bit=1<<labels[launch]
+        targets=[]
+        if masks.get('data:'+capture,0)&bit:targets.append(bindings['captures'][capture])
+        targets.extend(pin for pin in bindings.get('capture_controls',{}).get(capture,())
+                       if masks.get(pin[1]+':'+capture,0)&bit)
         if masks.get('data:'+capture,0)&bit:kind='data'
         elif any(masks.get(p+':'+capture,0)&bit for p in ('CE','LSR')):kind='synchronous_control'
         elif bindings.get('hold_pins',{}).get(capture)==bindings['launches'][launch]:
@@ -105,7 +113,14 @@ def classify_snapshot_boundary_connections(population, bindings, graph):
             kind='state_hold'
         else:
             kind='unexplained'
-            if len(examples)<8:examples.append((launch,capture))
+        yield launch,capture,bindings['launches'][launch],tuple(targets),kind
+
+
+def classify_snapshot_boundary_connections(population, bindings, graph):
+    counts={'data':0,'synchronous_control':0,'state_hold':0,'unexplained':0}
+    examples=[]
+    for launch,capture,_,_,kind in iter_bound_snapshot_connections(population,bindings,graph):
+        if kind=='unexplained' and len(examples)<8:examples.append((launch,capture))
         counts[kind]+=1
     return {'required_pairs':sum(counts.values()),'classification':counts,
             'unexplained_examples':examples,'scope':'source_required_boundary_influence',

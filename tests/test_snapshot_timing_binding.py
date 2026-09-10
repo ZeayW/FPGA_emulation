@@ -1,6 +1,7 @@
 import unittest
 from emuflow.snapshot_timing_binding import bind_snapshot_timing_boundaries, qualify_snapshot_boundary_connections
 from emuflow.errors import ValidationError
+from emuflow.snapshot_timing_binding import iter_bound_snapshot_connections
 
 
 class TimingBindingTests(unittest.TestCase):
@@ -65,3 +66,14 @@ class TimingBindingTests(unittest.TestCase):
         g['edges']=[]
         with self.assertRaisesRegex(ValidationError,'missing required'):
             qualify_snapshot_boundary_connections(p,b,g)
+
+    def test_data_match_does_not_hide_simultaneous_control_path(self):
+        p,i,r,g,m=self.model();g['captures']['0','CE']={};g['order'].append(('0','CE'))
+        b=bind_snapshot_timing_boundaries(p,i,r,g,mapped=m,mapped_top='device')
+        p['capture_masks']={'s':2}
+        g['edges']=[(b['launches']['rx'],pin,None) for pin in (('0','DI'),('0','CE'))]
+        rows=list(iter_bound_snapshot_connections(p,b,g))
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0][3],(('0','DI'),('0','CE')))
+        g['edges']=[]
+        self.assertEqual(list(iter_bound_snapshot_connections(p,b,g))[0][3:],((),'unexplained'))
