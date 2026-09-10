@@ -245,7 +245,7 @@ workload, physical timing, or complete Phase 1–7. The test command is
 `PYTHONPATH=src python3 -m unittest discover -s tests -p test_ulx3s_rtl.py -v`;
 both Icarus executables must be installed (`IVERILOG`/`VVP` override PATH).
 An explicit missing-tool skip is not a passing RTL gate. All six test methods
-(11 simulations including the required negative case) pass. The physical
+(11 simulations including the required negative case) passed at that gate. The physical
 bitstreams recorded above predate this protocol revision. A new physical gate
 explicitly selects three rounds on both roles using the same open toolchain,
 fixed device and seed 1. Actual synthesis, nextpnr P&R and Trellis packing pass:
@@ -259,6 +259,29 @@ Both pass the resource-inventory and 75% gates. Only compact terminal summaries
 are retained; the completed physical scratch was removed. This scoped physical
 result does not establish external settling, intended-clock coverage, global
 timing, real-workload integration or measured board operation.
+
+### Host transaction composition (logical interface qualified)
+
+`emit_snapshot_pair` composes the lowerer, post-partition rounds and actual
+UART/exchange RTL. All host data ports must be explicitly owned by board0.
+Its request/response interface is synchronous to that board's clock; it is
+not an unsynchronized external pin interface. An accepted request latches
+inputs, waits a clock edge before snapshot launch, then runs the derived
+exchanges. Original DUT state changes only on commit. The result samples
+outputs immediately before that original active edge, not from an arbitrary
+later physical instant. The result stays valid and unchanged until consumed;
+no next request is accepted while a transaction or unconsumed result exists.
+Fault suppresses both interfaces and requires coordinated session restart.
+
+The composition RTL test drives new live input values during an in-flight
+request, pauses response consumption, and checks 16 macrocycles against an
+independent synchronous XOR-state reference. This brings the automated RTL
+suite to seven test methods / twelve simulations. Missing host ownership and
+invalid session/module contracts fail explicitly. The interface vectors retain
+their original port/bit mapping; no actual DUT input is silently tied off.
+Physical host communication, additional primitive support, full Phase 1–7 and
+global timing remain outstanding. A logical adapter alone is not a usable
+board-level host connection.
 
 `derive_snapshot_rounds` now computes the logical exchange count for supported
 LUT/FF netlists by a linear DAG traversal after partition selection. Edges

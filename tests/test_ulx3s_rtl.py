@@ -56,6 +56,11 @@ class ULX3SRTLTests(unittest.TestCase):
     def test_record_integrity(self):
         self.simulate("ulx3s_record_tb")
 
+    def test_host_request_response_binding(self):
+        from test_snapshot_pair import generated_host_pair
+        pair = generated_host_pair()
+        self.simulate("ulx3s_host_tb", generated=[b["rtl"] for b in pair["boards"].values()])
+
     def test_automatically_lowered_three_crossing_partitions(self):
         from emuflow.ir import EmuIR
         from emuflow.snapshot_netlist import emit_snapshot_partition

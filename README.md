@@ -3140,8 +3140,8 @@ and stale shadows against Boolean propagation. The composed UART protocol passes
 a three-crossing chain; the intentionally insufficient one-round run fails on
 stale data. Automatically lowered EmuIR partitions, generated board tops and
 the three-round protocol also agree with a synchronous reference for 16
-macrocycles across independent clocks. Six RTL test methods cover these cases
-plus clock offsets and integrity/error regressions (11 simulation runs).
+macrocycles across independent clocks. Seven RTL test methods cover these cases
+plus host I/O, clock offsets and integrity/error regressions (12 simulation runs).
 Run `PYTHONPATH=src python3 -m unittest discover -s tests -p test_ulx3s_rtl.py -v`
 with `iverilog`/`vvp` on PATH, or explicit `IVERILOG`/`VVP` paths. Missing tools
 produce an explicit skip, not qualification. Host I/O integration and
@@ -3152,6 +3152,14 @@ use 1,384/1,437 combinational cells and 623 FFs each; both pass the 75% resource
 gate and local 25 MHz constraint. This exercises multi-round state rather than
 synthesizing it away. External settling, global timing and hardware operation
 are still unqualified; this is not a complete DUT-flow result.
+`emuflow.snapshot_pair.emit_snapshot_pair` now composes both mapped partitions,
+derived rounds and UART transport around an explicit board0-clocked host
+request/response interface. Inputs are latched once per accepted request;
+outputs represent the values just before the corresponding DUT active edge
+and remain stable under response backpressure. A 16-macrocycle RTL test checks
+changing live inputs during execution and delayed response consumption against
+a synchronous reference. Host port ownership must be explicit. This is a
+logical host adapter, not yet a physical USB/UART pin binding or full-flow CLI.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
