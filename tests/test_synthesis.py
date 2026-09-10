@@ -86,6 +86,13 @@ class SynthesisTest(unittest.TestCase):
         self.assertIn('write_verilog -norename "build/design.v"', script)
         self.assertNotIn("write_verilog -noattr", script)
 
+    def test_explicit_ecp5_lut4_frontend(self):
+        script=build_generic_yosys_script([Path("dut.v")],"dut",Path("out.json"),lut_size=4)
+        self.assertIn("abc -lut 4",script)
+        self.assertNotIn("abc -lut 6",script)
+        for size in (True,0,5,"4"):
+            with self.assertRaises(EmuFlowError):
+                build_generic_yosys_script([Path("dut.v")],"dut",Path("out.json"),lut_size=size)
     def test_unknown_policy_is_rejected(self) -> None:
         with self.assertRaisesRegex(EmuFlowError, "synthesis policy"):
             build_yosys_script(

@@ -3183,6 +3183,11 @@ with no automatic retry, reset, programming or serial resynchronization.
 Protocol/golden-vector and real pseudo-terminal tests pass; this is not a claim
 of measured FT231X hardware operation. See the reference-platform document for
 the coordinated reset and generated-port-map requirements.
+The generic Yosys API now accepts explicit `lut_size=4` for the ECP5 frontend;
+the existing generic LUT6 default is unchanged. This prevents treating a
+LUT6-mapped planning cell as one ECP5 LUT4. Actual post-route resource accounting
+still includes transport and remapping overhead; this option alone is not a
+full ECP5 frontend or whole-flow qualification.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

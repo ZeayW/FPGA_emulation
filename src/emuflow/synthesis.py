@@ -132,8 +132,12 @@ def build_generic_yosys_script(
     sources: Iterable[Path],
     top: str,
     output: Path,
+    *, lut_size: int = 6,
 ) -> str:
-    """Build an architecture-neutral LUT6/FF synthesis script for EmuIR."""
+    """Build portable LUT/FF mapping; ECP5 consumers explicitly request LUT4."""
+
+    if type(lut_size) is not int or lut_size not in (4, 6):
+        raise EmuFlowError("generic mapping supports explicit LUT4 or LUT6")
 
     source_list = list(sources)
     if not source_list:
@@ -151,7 +155,7 @@ def build_generic_yosys_script(
         "techmap",
         "opt",
         "dffunmap",
-        "abc -lut 6",
+        f"abc -lut {lut_size}",
         "dffunmap",
         # Yosys 0.57+ may materialize debug-only hierarchy metadata as
         # $scopeinfo cells. They have no hardware behavior or pins and must
@@ -170,6 +174,7 @@ def run_generic_yosys(
     output: Path,
     executable: Optional[str] = None,
     log_path: Optional[Path] = None,
+    *, lut_size: int = 6,
 ) -> None:
     """Synthesize RTL to provider-neutral LUT6/FF Yosys JSON."""
 
@@ -179,7 +184,7 @@ def run_generic_yosys(
             raise EmuFlowError(f"RTL source does not exist: {source}")
     command = resolve_native_executable("yosys", executable)
     output.parent.mkdir(parents=True, exist_ok=True)
-    script = build_generic_yosys_script(source_list, top, output)
+    script = build_generic_yosys_script(source_list, top, output, lut_size=lut_size)
     completed = subprocess.run(
         [command, "-p", script],
         stdout=subprocess.PIPE,
