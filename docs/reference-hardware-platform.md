@@ -325,9 +325,21 @@ use a bounded receive timeout and invalidate the run after a timeout.
 
 Actual RTL tests pass command backpressure/error cases and eight original-state
 macrocycles over the complete serial-host/generated-pair chain, with independent
-clocks. The RTL suite now has nine methods / fourteen simulations. Host-wrapper
-P&R, measured FTDI operation and whole-design timing are still pending; the
-older controller physical tests do not qualify this additional hardware.
+clocks. The RTL suite now has nine methods / fourteen simulations. The actual
+generated physical wrappers have now separately passed Yosys ECP5 synthesis,
+nextpnr place/route and Trellis packing using the same fixed target and seed 1:
+
+| Board | TRELLIS_COMB | TRELLIS_FF | I/O | Local constraint | Synthesis / P&R / pack |
+|---|---:|---:|---:|---|---|
+| board0 (host and peer UARTs) | 1,889 | 830 | 6 | 25 MHz passed | 11.19 / 21.40 / 2.15 s |
+| board1 (DUT and peer UART) | 1,141 | 465 | 4 | 25 MHz passed | 9.47 / 11.23 / 1.94 s |
+
+The exact-device inventory and 75% checks pass. This includes the generated
+mapped XOR-state fixture and host adapter, not just a disconnected protocol
+module. It is still a synthetic correctness fixture, not the required natural
+RTL workload. Only compact terminal reports were retained after both foreground
+tool chains completed; physical scratch was removed. Measured FTDI/electrical
+operation, full Phase 1–7 and whole-design timing remain pending.
 
 `derive_snapshot_rounds` now computes the logical exchange count for supported
 LUT/FF netlists by a linear DAG traversal after partition selection. Edges

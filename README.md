@@ -3168,7 +3168,12 @@ physical runner's explicit `host_uart=True` / endpoint CLI `--host-uart`
 selects those two additional audited pins on board0 only. A serial-host RTL
 test passes eight reference macrocycles through both generated physical
 wrappers; protocol tests cover partial input, wrong index/session, padding and
-backpressure. Actual host-wrapper P&R and physical USB operation remain pending.
+backpressure. The generated host wrappers have also completed actual open ECP5
+synthesis, P&R and bitstream generation: board0 uses 1,889 combinational cells,
+830 FFs and six I/Os; board1 uses 1,141 combinational cells, 465 FFs and four
+I/Os. Both meet the local 25 MHz constraint and 75% resource gate. This is a
+small semantic fixture, not real-workload or full global timing qualification;
+physical USB operation remains unmeasured.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
