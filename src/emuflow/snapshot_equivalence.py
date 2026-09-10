@@ -8,7 +8,8 @@ from .errors import ValidationError
 
 
 def build_snapshot_equivalence_testbench(ir, assignment, pair, *, initial_state,
-                                         vectors, max_board_cycles=20000000):
+                                         vectors, max_board_cycles=20000000, timing_events=False):
+    if type(timing_events) is not bool:raise ValidationError('timing_events must be an explicit boolean')
     if type(max_board_cycles) is not int or max_board_cycles <= 0:
         raise ValidationError("RTL qualification requires a positive cycle timeout")
     vectors = list(vectors)
@@ -62,6 +63,37 @@ def build_snapshot_equivalence_testbench(ir, assignment, pair, *, initial_state,
                   f'if(!valid || ready || value!=={no}\'h{packed_out:x}) $fatal(1,"response hold mismatch");',
                   "ack=1; @(negedge ac); ack=0;"]
         state = next_state
+    event_monitors=''
+    if timing_events:
+        for board,instance,clock in [('board0','a','ac'),('board1','b','bc')]:
+            e=instance+'.exchange'
+            def record(kind,epoch=None,round_=None,word="0"):
+                return (f'$display("SNAPSHOT_EVENT {board} %.3f {kind} %0d %0d %0d", '
+                    f'$realtime, {epoch or e+".epoch"}, {round_ or e+".evaluation_round"}, {word});')
+            # Observe the SAME pre-NBA guards as the source RTL. FINISH's
+            # snapshot belongs to the next epoch/round assigned on this edge.
+            event_monitors+=f'''
+always @(negedge reset) begin {record('reset_release',"0","0")} end
+always @(posedge {clock}) if(!reset && !{instance}.fault) begin
+  if({instance}.request_valid && {instance}.request_ready) begin {record('host_latch')} end
+  if({instance}.dut.step) begin {record('commit')} end
+  if({e}.state=={e}.S_DATA && {e}.tx_valid && {e}.tx_ready) begin
+    {record('tx_data',word=e+'.index')}
+  end
+  if(({e}.state=={e}.IDLE && {e}.LEADER && {e}.start && !{e}.rx_valid) ||
+     ({e}.state=={e}.W_PREPARE && {e}.rx_valid && {e}.rx_ready &&
+      {e}.rx_record=={{{e}.PREPARE,8'b0,{e}.epoch,32'b0}})) begin
+    {record('tx_capture')}
+  end
+  if({e}.state=={e}.FINISH && {e}.epoch!=16'hffff && {e}.evaluation_round!={e}.ROUNDS-1) begin
+    {record('tx_capture',e+'.epoch+1',e+'.evaluation_round+1')}
+  end
+  if({e}.state=={e}.W_DATA && {e}.rx_valid && {e}.rx_ready &&
+     {e}.rx_record[63:32]=={{{e}.DATA,{e}.index,{e}.epoch}}) begin
+    {record('rx_update',word=e+'.index')}
+  end
+end
+'''
     text = f'''`timescale 1ns/1ps
 module snapshot_equivalence_tb;
 reg ac=0,bc=0,reset=1,request=0,ack=0;
@@ -77,6 +109,7 @@ initial begin #7; forever #20.2 bc=~bc; end
  .host_inputs(1'b0),.request_valid(1'b0),.request_ready(),.host_outputs(),
  .response_valid(),.response_ready(1'b0),.fault(bf));
 always @(negedge ac) if(!reset && (af!==1'b0 || bf!==1'b0)) $fatal(1,"transport fault");
+{event_monitors}
 initial begin repeat({max_board_cycles}) @(posedge ac); $fatal(1,"macrocycle timeout"); end
 initial begin
  #300; reset=0;
@@ -88,4 +121,5 @@ endmodule
 '''
     return text, {"macrocycles": len(vectors), "observed_ff": len(state_points),
                   "observed_output_bits": len(outputs),
+                  "timing_event_scope": "simulated_protocol_events_not_measured_link" if timing_events else None,
                   "scope": "declared-input-trace-and-initial-state", "physical_timing_proof": False}

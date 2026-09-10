@@ -3592,6 +3592,17 @@ it is not measured PVT-corner closure, asynchronous reset recovery/removal,
 or whole-design global timing. The reference-platform plan now separates the
 implemented transport/backend from the still-unfinished asynchronous timing
 composition and canonical complete-flow entry point.
+The explicit `build_snapshot_equivalence_testbench(..., timing_events=True)`
+qualification option observes host latches, snapshot captures, DATA handoffs,
+per-word remote updates and actual DUT commit edges in the running RTL.
+It emits no event records by default and does not change production transport.
+One- and two-round Icarus tests check event identity and ordering, including
+the follower's intermediate speculative capture overwritten by PREPARE:
+transmitted data belongs to the last capture, not necessarily the first.
+These are simulated protocol events under the testbench's declared clocks,
+not measured wire latency or a worst-case asynchronous timing guarantee.
+Physical-delay composition and complete original-path global timing remain
+pending; event collection alone does not qualify them.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
