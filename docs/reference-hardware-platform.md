@@ -159,6 +159,10 @@ outputs and retains only resource/clock metrics rather than copying full
 nextpnr path diagnostics. Input RTL and generated constraints are identified
 once in the terminal summary. Fixed-slot Phase 7 does not silently select this
 runner: asynchronous DUT/transport and global timing binding remain required.
+After extraction, the follower fixture was rerun with the real open tools
+through this API and `--board board1`. All three stages and scoped checks
+passed; nextpnr reported the same 84.338363647 MHz local Fmax against 25 MHz.
+The terminal report has five RTL input identities and no detailed path copy.
 
 ## Historical vendor reference investigation
 
