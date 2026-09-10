@@ -312,6 +312,13 @@ policy.
 
 ## Managed-flow hot paths must stay compact
 
+- The OpenSTA global timing route must execute independently of the Python
+  system-timing composer. Never run both implicitly, including to construct a
+  report before replacing its numbers. Keep cross-engine comparisons in
+  explicitly requested qualification tests; normal execution selects one
+  engine. Structural binding/coverage checks and explicit terminal validation
+  of saved engine scalars must not call the other engine as a hidden fallback.
+
 These rules apply to every producer, validator, checkpoint, and downstream
 consumer in the managed Phase 1--7 flow.  They are correctness and scalability
 requirements, not optional micro-optimizations.

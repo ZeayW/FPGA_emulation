@@ -2170,6 +2170,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="run independent per-FPGA physical backends concurrently",
     )
     multi_fpga_compile.add_argument(
+        "--global-sta-executable",
+        help="override the default in-tree OpenSTA executable",
+    )
+    multi_fpga_compile.add_argument("--global-timing-engine", choices=("opensta", "python"),
+                                   default="opensta", help="global physical timing engine (default: opensta)")
+    multi_fpga_compile.add_argument(
         "--serial-bsp-phy-provider",
         type=Path,
         help=(
@@ -3698,6 +3704,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Phase 4 routes.json required for unified physical timing",
     )
     phase7c.add_argument("--simulation-frames", type=int, default=12)
+    phase7c.add_argument("--global-sta-executable", help="override the default in-tree OpenSTA executable")
+    phase7c.add_argument("--global-timing-engine", choices=("opensta", "python"),
+                        default="opensta", help="global physical timing engine (default: opensta)")
     phase7c.add_argument("--out", type=Path, required=True)
 
     phase7d = subparsers.add_parser(
@@ -5225,6 +5234,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.physical_vivado_route_directive
             ),
             physical_workers=args.physical_workers,
+            global_sta_executable=args.global_sta_executable,
+            global_timing_engine=args.global_timing_engine,
             serial_bsp_phy_provider=args.serial_bsp_phy_provider,
             serial_bsp_runtime_sync_provider=(
                 args.serial_bsp_runtime_sync_provider
@@ -5872,6 +5883,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             physical_summary_path=args.physical_summary,
             routes_path=args.routes,
             simulation_frames=args.simulation_frames,
+            global_sta_executable=args.global_sta_executable,
+            global_timing_engine=args.global_timing_engine,
             output_dir=args.out,
         )
         _print_json(report)

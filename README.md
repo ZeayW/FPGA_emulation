@@ -749,6 +749,82 @@ The original refinement artifact is retained and hash-bound; this lane
 coalescing is explicitly reported as an EmuFlow timing-preservation extension,
 not attributed to Chimew.
 
+### Default global OpenSTA timing authority
+
+The staged acceptance plan is in [global OpenSTA qualification](docs/global-opensta-qualification.md).
+
+Physical `phase7c` and `multi-fpga compile --physical` default to standalone
+OpenSTA (`--global-timing-engine opensta`). The default exports
+a measured-arc timing abstraction and independently checks every original
+path's arrival, required time and slack using OpenSTA alone.
+The exporter consumes logic-segment, boundary and directed BoardLinkTimingDB
+inputs, not Python-computed path delays. Without an explicit BoardLinkTimingDB,
+it uses the existing BoardDB cycle-latency model (model-only, not measured link
+timing). Missing physical logic/interface data, missing or unconstrained observations
+and invalid observations fail the check. OpenSTA supplies
+the canonical path values and target/runtime metrics. It does **not** run the
+Python timing composer, even to prebuild a report or check the result. The
+Python comparison belongs to explicit qualification tests only. Select the old
+engine explicitly with `--global-timing-engine python`. OpenSTA is located in
+the native installation (`EMUFLOW_NATIVE_ROOT` or the in-tree build); override
+its location with `--global-sta-executable /absolute/path/to/sta`. A missing
+OpenSTA installation fails the physical compile preflight, with no silent
+Python fallback. Non-physical generation still produces only pre-physical
+runtime estimates, not global physical STA. Initial hand-computed two-cut
+checks and 201 randomized/long-frame checks executed successfully on OpenSTA
+2.6.0. Real Koios DLA medium / EDA2023 case6 physical-flow qualification has
+also passed terminal independent validation with 10 naturally selected
+combinational cuts, 195,532 original paths and 403,778 STA observations.
+The earlier dual-execution authority integration passed terminal independent
+validation at `e90698cf` (962 tests, three optional skips). The subsequent
+standalone execution change has separate regression coverage; those historical
+DLA results are not claimed as a new standalone DLA run or runtime comparison.
+Standalone/default-selection regression passed 56 tests (one optional skip). A real OpenSTA
+five-observation physical-binding smoke test also passed with calls to the old
+timing composer and comparison function explicitly forbidden.
+An offline OpenTimer driver also checks the exported raw model, including a
+late-TX counterexample and 256 mixed arc-chain paths. See the qualification
+document for the optional build/test interface; OpenTimer is not added to
+the production hot path. Target/runtime observations must share an identical
+physical chain, and orphan transport-event observations are rejected.
+The scalar comparison gate also rejects nonfinite values, duplicate event
+identities and duplicate original-path references before computing metrics.
+Normal execution validates measurement identities, finite values and complete
+coverage, then aggregates OpenSTA slacks, including separate TX/commit failure
+checks. Explicit terminal validation additionally checks the saved scalars
+against raw arc chains and deadlines without invoking the old timing composer.
+The compact check records OpenSTA's version/revision from its existing startup
+log. Constraint binding uses indexed linked-cell port lookup: OpenSTA's ordinary
+`get_ports` scans the full port table even for an exact name, so invoking it per
+observation would make constraint loading quadratic. The portable OpenTimer SDC
+reader retains its symbolic port lookup. The
+terminal validator verifies the engine record without launching another STA.
+The same engine/path options are available on `multi-fpga compile` for a fresh complete
+physical flow. Its terminal validator reconstructs the binding and verifies
+the retained engine scalars; it does not invoke OpenSTA a second time.
+
+The exported Verilog/Liberty/SDC uses fixed-event cutpoints: launch times are
+absolute TX edges, and readiness/relay/commit deadlines are explicit. These
+are a timing abstraction of transport registers, not synthesizable RTL.
+Checking a terminal observation alone cannot establish causality; all preceding
+TX checks must also pass. Periodic clocks must not silently move a missed event
+to a following frame. No average TDM wait or precomputed global delay becomes
+a Liberty arc. Scalar physical bounds are retained as bounds, not re-labelled
+characterized silicon timing. Hold/min-delay and unconstrained CDC signoff are
+outside this first max-delay model.
+
+The project metric remains **original-path TNS** (one negative slack per
+original TimingPathDB member), not conventional unique-register-endpoint TNS.
+There is one explicit target and runtime observation per original path, with
+separate transport legality checks. Generated tool inputs and per-check TSV
+are ephemeral scratch; `qor_report.json#/timing/global_opensta` is the compact
+authority/cross-check result. Comparison uses a 1 ps floor plus four float32 relative
+epsilons on each compared value, not on the global frame period. Near-zero
+slacks retain the strict floor. A 447,632 ns runtime-period probe observed
+about 0.047 ns slack roundoff; per-check launch-relative coordinates avoid
+charging this long-frame cancellation to short target/TX checks. Reports
+include the largest observed difference and permitted tolerance.
+
 ### Phase 6 provider promotion and Phase 7 timing acceptance
 
 A Phase 6 legality check, pin-plan comparison, or contest-scale result is an
@@ -3365,6 +3441,13 @@ Missing, reversed and extra records fail. Asynchronous reset pins remain
 explicitly unqualified for recovery/removal. This new gate has unit regression
 coverage; **real routed validation is pending**. It is not a substitute for
 primitive combinational-arc completeness, original-path coverage or OpenSTA.
+The reference-platform branch also incorporates main's standalone global
+OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
+without implicitly running the Python system-timing composer. This is the
+shared engine to reuse for measured snapshot timing checks. It does **not**
+make the asynchronous UART link a fixed TDM event or complete its still-pending
+snapshot timing binding. The snapshot physical report continues to withhold
+global WNS/TNS until that separate contract and path coverage are qualified.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
@@ -4446,3 +4529,35 @@ kept behind independent artifact checkers and deterministic promotion gates.
 The current campaign evaluates their checked Phase 3--5 outer feedback loop;
 cross-stage behavior is promoted only after small, medium, and large
 real-design comparisons against the frozen single-stage flow.
+# Target-FPGA loading diagnostics
+
+Final QoR reports include `resource_loading`: separate Phase 3 DUT and Phase 7
+resource usage, per FPGA and capacity-weighted platform totals (including idle
+FPGAs). `utilization` divides by raw BoardDB capacity; `effective_utilization`
+divides by capacity after the BoardDB reserve. Neither is partition balance.
+Requested/effective balance and automatic relaxation are retained alongside it.
+
+The default experimental policy uses the maximum platform-wide LUT/FF/DSP/BRAM
+utilization: below 40% is `low-load`, 60--80% is `target`; intervening and higher
+loads are explicitly classified. This is configurable experimental qualification,
+not a physical law or a partition legality restriction. A low-load run remains
+valid functional evidence, but alone is insufficient for high-load QoR claims.
+
+```sh
+PYTHONPATH=src python -m emuflow.utilization \
+  --platform board.json --phase3-report phase3_report.json \
+  --physical-summary physical-summary.json --output loading.json
+```
+
+Optional `--policy policy.json` accepts `minimum`, `target_min`, `target_max`
+(fractions) and `principal_resources`. `--compare baseline-loading.json` rejects
+different FPGA capacities/reserves, requested balance or loading policies and
+reports whether effective balance differs. It checks loading fairness only;
+the normal source/tool/seed and complete Phase 7 timing comparison still apply.
+
+The open physical backend measures occupied built-in LUT/FF primitives from
+VPR's packed netlist, including transport. Architecture-specific hard-block
+units remain **unknown**, not estimated from bit-slice atoms or total cells.
+Historical summaries without resource measurements also remain unknown.
+BoardDB-relative loading does not certify physical-device capacity equivalence;
+do not shrink an academic BoardDB and describe it as a smaller physical device.

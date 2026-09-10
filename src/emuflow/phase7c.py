@@ -46,6 +46,7 @@ def system_timing_summary(timing: Dict[str, Any]) -> Dict[str, Any]:
         "runtime_clock",
         "source_binding",
         "physical_evidence_completeness",
+        "global_opensta",
     )
     return {field: timing[field] for field in fields if field in timing}
 
@@ -71,7 +72,14 @@ def run_phase7c(
     routes_path: Optional[Path] = None,
     board_link_timing_path: Optional[Path] = None,
     simulation_frames: int = 12,
+    global_sta_executable: Optional[str] = None,
+    global_sta_results_dir: Optional[Path] = None,
+    global_timing_engine: str = "opensta",
 ) -> Dict[str, Any]:
+    if global_timing_engine not in {"opensta", "python"}:
+        raise ValidationError("unsupported global timing engine")
+    if global_timing_engine == "python" and (global_sta_executable is not None or global_sta_results_dir is not None):
+        raise ValidationError("Python timing cannot accept OpenSTA options")
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
     runtime = build_virtual_runtime(schedule, platform)
@@ -142,6 +150,30 @@ def run_phase7c(
             "status": physical_binding["status"],
             **physical_binding["metrics"],
         }
+    sta_timing = None
+    if ((global_timing_engine == "opensta" and physical_summary is not None)
+            or global_sta_executable is not None or global_sta_results_dir is not None):
+        if global_sta_executable is not None and global_sta_results_dir is not None:
+            raise ValidationError("choose live OpenSTA or explicit saved-result validation")
+        if physical_summary is None or routes is None:
+            raise ValidationError("global OpenSTA requires physical Phase 7 inputs")
+        from .global_sta import (
+            bind_physical_checks, build_opensta_timing, read_engine_identity,
+            read_measurements, run_event_checks,
+        )
+        metadata = {}
+        checks = bind_physical_checks(runtime, routes, schedule, physical_summary, platform,
+                                      metadata=metadata, routes_artifact_sha256=routes_artifact_sha256)
+        if global_sta_results_dir is None:
+            sta_dir = output_dir / "global-opensta"
+            measurements = run_event_checks(checks, sta_dir, global_sta_executable, verify_arcs=False)
+        else:
+            sta_dir = global_sta_results_dir
+            # Explicit terminal artifact validation checks raw arcs, not the
+            # former system-timing composer, and never launches STA again.
+            measurements = read_measurements(sta_dir / "measurements.tsv", checks)
+        sta_timing = build_opensta_timing(runtime, metadata, measurements)
+        sta_timing["global_opensta"]["engine"] = read_engine_identity(sta_dir / "opensta.log")
     qor = aggregate_qor(
         runtime,
         read_json(phase3_report_path),
@@ -154,6 +186,7 @@ def run_phase7c(
         schedule=schedule,
         routes_artifact_sha256=routes_artifact_sha256,
         semantic_contract=semantic_contract,
+        system_timing_result=sta_timing,
     )
     if physical_binding_validation is not None:
         qor["physical_evidence_completeness"] = physical_binding_validation
