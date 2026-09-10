@@ -8,10 +8,58 @@ from .errors import ValidationError
 from .snapshot_netlist import emit_snapshot_partition
 from .snapshot_rounds import derive_snapshot_rounds
 from .board_ulx3s import ulx3s_pair_profile
+from .ir import EmuIR
+
+
+def bind_snapshot_reset_inputs(ir, ports):
+    """Explicit synchronous reset-data view; never rewrite source semantics.
+
+    Follow each requested input through combinational cells. Only ordinary
+    data/synchronous-control endpoints are legal; clocks and asynchronous or
+    unknown stateful primitives are rejected. No polarity or initial state is
+    inferred. Board reset remains a separate service.
+    """
+    names=set(ports)
+    if not names:
+        return ir
+    source_ports={p["id"]:p for p in ir.value["ports"]}
+    if any(p not in source_ports or source_ports[p]["direction"]!="input" for p in names):
+        raise ValidationError("reset-data binding requires named DUT input ports")
+    cells={c["id"]:c for c in ir.value["instances"]}
+    by_driver={}
+    roots=[]
+    for net in ir.value["nets"]:
+        for ep in net["drivers"]:
+            by_driver.setdefault(ep["instance"],[]).append(net)
+        if any(ep["instance"] is None and ep["port"] in names for ep in net["drivers"]):
+            if net["cut_class"]!="reset" or len(net["drivers"])!=1:
+                raise ValidationError("reset-data input must identify a single-driver reset net")
+            roots.append(net)
+    found={n["drivers"][0]["port"] for n in roots}
+    if found!=names:
+        raise ValidationError("reset-data binding has no matching connected reset net")
+    pending=list(roots); seen=set()
+    safe={"$_DFF_P_":{"D"},"FDRE":{"D","CE","R"},"FDSE":{"D","CE","S"}}
+    while pending:
+        net=pending.pop()
+        if net["id"] in seen: continue
+        seen.add(net["id"])
+        for ep in net["sinks"]:
+            if ep["instance"] is None: continue
+            cell=cells[ep["instance"]]; kind=cell["type"]
+            if kind.startswith("LUT") or kind in {"$lut","$_LUT_"}:
+                pending.extend(by_driver.get(ep["instance"],[]))
+            elif ep["port"] not in safe.get(kind,set()):
+                raise ValidationError("reset-data reaches a clock, asynchronous or unsupported endpoint")
+    root_ids={n["id"] for n in roots}
+    value=dict(ir.value)
+    value["nets"]=[dict(n,cut_class="primary_input") if n["id"] in root_ids else n
+                   for n in ir.value["nets"]]
+    return EmuIR(value)
 
 
 def emit_snapshot_pair(ir, assignment, *, prefix, port_owners, initial_state,
-                       session_id):
+                       session_id, reset_data_ports=()):
     """Emit both cores. Host data ports must explicitly belong to board0.
 
     A request samples the input vector once, then performs the derived number
@@ -25,6 +73,7 @@ def emit_snapshot_pair(ir, assignment, *, prefix, port_owners, initial_state,
         raise ValidationError("snapshot pair requires an explicit uint32 session")
     if any(owner != "board0" for owner in port_owners.values()):
         raise ValidationError("the host adapter owns data ports on board0 only")
+    ir=bind_snapshot_reset_inputs(ir,reset_data_ports)
     rounds = derive_snapshot_rounds(ir, assignment, port_owners=port_owners)
     boards = {}
     for board in ("board0", "board1"):

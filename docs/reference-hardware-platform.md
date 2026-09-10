@@ -379,6 +379,24 @@ deadline, exact multiword commands, golden CRC and binary I/O through a real
 OS pseudo-terminal. They do not prove FTDI hardware operation or end-to-end
 software-to-hardware execution; that remains an explicitly unmeasured gate.
 
+### Real-RTL frontend binding (in progress)
+
+The generic Yosys API can explicitly map `lut_size=4` for ECP5, instead of
+counting generic LUT6 cells as individual LUT4 resources. The existing LUT6
+default for other consumers is unchanged. Final native ECP5 resource checks
+still include communication and physical remapping overhead.
+
+`emit_snapshot_pair(..., reset_data_ports=[...])` explicitly binds named
+synchronous DUT reset inputs as sampled host data. Its binder follows the
+combinational fanout to state endpoints, allowing supported FF data and
+synchronous controls, but rejecting clock pins, asynchronous resets and unknown
+stateful semantics. Original polarity and logic remain unchanged. A separate
+view changes only accepted root nets' classification; the original EmuIR is
+not mutated. Board reset, coordinated session reset and declared initial state
+are not replaced by this operation. Missing/unbound reset handling still fails.
+This is an integration capability with unit tests, not yet real-RTL full-flow
+qualification or permission to convert arbitrary asynchronous resets.
+
 `derive_snapshot_rounds` now computes the logical exchange count for supported
 LUT/FF netlists by a linear DAG traversal after partition selection. Edges
 carry zero for local connectivity and one for a board crossing; original FF

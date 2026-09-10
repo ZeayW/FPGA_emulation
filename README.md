@@ -3188,6 +3188,12 @@ the existing generic LUT6 default is unchanged. This prevents treating a
 LUT6-mapped planning cell as one ECP5 LUT4. Actual post-route resource accounting
 still includes transport and remapping overhead; this option alone is not a
 full ECP5 frontend or whole-flow qualification.
+Snapshot composition now accepts explicit `reset_data_ports` for synchronous
+DUT reset inputs. It follows their combinational fanout and rejects paths to
+clock, asynchronous-reset or unsupported stateful endpoints. Accepted ports
+remain ordinary sampled host data with unchanged polarity; physical board
+reset and the declared initial state remain separate. Source EmuIR is not
+mutated, and unbound reset nets still fail rather than being silently ignored.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
