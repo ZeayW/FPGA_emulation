@@ -12,14 +12,7 @@ from .snapshot_path_binding import iter_snapshot_path_bindings
 from .snapshot_timing_population import boundary_id, build_snapshot_timing_population
 
 
-def qualify_snapshot_path_coverage(database, ir, assignment, *, port_owners):
-    """Require every distinct original structural net chain exactly once.
-
-    Validated, distinct members form a subset of source paths; equality of
-    counts per capture proves coverage including reconvergence. Endpoint-pair
-    equality alone cannot do that. This gate never calculates timing and does
-    not authorize a sampled native extractor or prove physical correspondence.
-    """
+def _source_path_graph(ir, port_owners):
     original = build_snapshot_timing_population(ir,
         {cell['id']: 'board0' for cell in ir.value['instances']}, board='board0',
         port_owners={name: 'board0' for name in port_owners})
@@ -65,6 +58,18 @@ def qualify_snapshot_path_coverage(database, ir, assignment, *, port_owners):
     if visited != len(indegree):
         raise ValidationError('combinational cycle in original path population')
     expected = {key: counts.get(captures.get(key), 0) for key in original['captures']}
+    return successors, captures, expected
+
+
+def qualify_snapshot_path_coverage(database, ir, assignment, *, port_owners):
+    """Require every distinct original structural net chain exactly once.
+
+    Validated, distinct members form a subset of source paths; equality of
+    counts per capture proves coverage including reconvergence. Endpoint-pair
+    equality alone cannot do that. This gate never calculates timing and does
+    not authorize a sampled native extractor or prove physical correspondence.
+    """
+    _, _, expected = _source_path_graph(ir, port_owners)
     observed = defaultdict(int)
     seen = set()
     bindings = iter_snapshot_path_bindings(database, ir, assignment, port_owners=port_owners)

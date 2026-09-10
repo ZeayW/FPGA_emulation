@@ -8,6 +8,7 @@ from .errors import ValidationError
 from .equivalence import _lut_definition
 from .sta import validate_sta_path_database_value, sta_object_index, sta_path_endpoints
 from .snapshot_timing_population import boundary_id
+from .snapshot_source_paths import SCHEMA as SOURCE_PATH_SCHEMA, validate_snapshot_source_paths
 
 
 def iter_snapshot_path_bindings(database, ir, assignment, *, port_owners):
@@ -17,7 +18,10 @@ def iter_snapshot_path_bindings(database, ir, assignment, *, port_owners):
     list. Only actual on-path board transitions create transport segments;
     multicast branches elsewhere on the same net do not create fake hops.
     """
-    validate_sta_path_database_value(database, ir)
+    if database.get('schema') == SOURCE_PATH_SCHEMA:
+        validate_snapshot_source_paths(database, ir)
+    else:
+        validate_sta_path_database_value(database, ir)
     objects = sta_object_index(ir)
     cells = {cell['id']: cell for cell in ir.value['instances']}
     nets = {net['id']: net for net in ir.value['nets']}

@@ -3734,6 +3734,18 @@ OpenSTA extractor's `-endpoint_count 1` and absent host I/O delay constraints
 cannot establish this stronger snapshot coverage contract; a non-saturated
 path limit does not establish completeness either. Complete source population
 production and its real-design global timing integration remain pending.
+`build_snapshot_source_paths` supplies an explicitly structural alternative
+for the snapshot consumer: it preserves every ordered original net chain,
+including host I/O and reconvergent branches, without fabricating source STA
+slack/delay values or attributing them to OpenSTA. Its separate
+`emuflow.snapshot-source-paths/v1` schema requires an explicit single mapped
+FF clock and target period. Before enumeration, the source DAG count must fit
+the declared path budget; overflow rejects rather than truncates. Dead cones
+are pruned and enumeration is independent of input serialization order.
+This bounded producer is not a claim of scalable exhaustive enumeration for
+arbitrary reconvergent designs. Source-schema validation, segment binding and
+independent coverage tests pass; real SERV population size and full global
+physical integration still require validation.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
