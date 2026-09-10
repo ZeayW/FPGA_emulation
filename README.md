@@ -3356,6 +3356,15 @@ integrated physical API passed on both boards in 339.19 seconds, including
 all 702 / 634 original FF identities and both reset chains. Global path delay
 coverage and the asynchronous timing model are still pending: this is **not**
 a completed Phase 1–7/global timing qualification.
+The integrated consumer additionally checks annotation coverage in the reverse
+direction: it reconstructs every internal driver-to-load connection from the
+routed netlist and requires exact agreement with SDF interconnect records.
+Every supported physical FF must have clock-to-Q and both transition-specific
+setup/hold checks for its selected data input and enabled synchronous controls.
+Missing, reversed and extra records fail. Asynchronous reset pins remain
+explicitly unqualified for recovery/removal. This new gate has unit regression
+coverage; **real routed validation is pending**. It is not a substitute for
+primitive combinational-arc completeness, original-path coverage or OpenSTA.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
