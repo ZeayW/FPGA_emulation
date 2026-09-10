@@ -9,6 +9,8 @@ from emuflow.errors import ValidationError
 from emuflow.snapshot_equivalence import build_snapshot_equivalence_testbench
 from emuflow.snapshot_pair import emit_snapshot_pair
 from emuflow.snapshot_protocol_events import bind_snapshot_protocol_events
+from emuflow.snapshot_timing_population import build_snapshot_timing_population
+from emuflow.snapshot_timing_windows import iter_snapshot_timing_windows
 from test_snapshot_pair import host_fixture, generated_host_pair
 
 
@@ -109,6 +111,17 @@ class SnapshotEquivalenceTests(unittest.TestCase):
         self.assertEqual(len(bound['cycles']), 2)
         self.assertEqual(len(bound['cycles'][0]['transfers']), 4)
         self.assertFalse(bound['global_timing_qualified'])
+        for board in ('board0', 'board1'):
+            population = build_snapshot_timing_population(ir, assignment, board=board,
+                port_owners={'in': 'board0', 'out': 'board0'})
+            initial = {key: bound['reset_release_ns'][board] for key, value in population['launches'].items()
+                       if value['kind'] in ('state', 'cut')}
+            windows = list(iter_snapshot_timing_windows(population, pair['boards'][board]['interface'],
+                bound, initial_ready_ns=initial))
+            self.assertTrue(windows)
+            for window in windows:
+                self.assertEqual(set(window['launches_ns']), set(population['launches']))
+                self.assertTrue(all(time < window['capture_edge_ns'] for time in window['launches_ns'].values()))
         lines = run.stdout.splitlines()
         event_index = next(i for i, line in enumerate(lines) if ' tx_data ' in line)
         for broken in (lines[:event_index] + lines[event_index+1:],

@@ -102,5 +102,5 @@ def bind_snapshot_protocol_events(lines, pair, *, macrocycles):
         previous_commit = commits
     if events:
         raise ValidationError('unexpected/unconsumed snapshot events')
-    return dict(scope='simulated_protocol_events_not_measured_link', cycles=result,
+    return dict(scope='simulated_protocol_events_not_measured_link', cycles=result, reset_release_ns=reset,
         physical_timing_qualified=False, global_timing_qualified=False)

@@ -3611,6 +3611,18 @@ per-macrocycle transfer records are transient inputs for physical timing
 binding, not a persistent trace cache, and explicitly withhold physical/global
 timing qualification. One- and two-round actual UART RTL fixtures exercise the
 binder, with missing/duplicate/nonfinite-time/completion-negative cases.
+`iter_snapshot_timing_windows` now translates that bound trace into grouped
+local setup-event constraints: preceding DUT commits for state launches,
+per-word remote updates for cut launches, held-input latches for host launches,
+and actual snapshot/commit capture edges. It excludes same-edge storage
+updates and requires explicit conditional initial storage readiness rather
+than inferring reset recovery/removal from reset deassertion. The window
+adapter does not calculate propagation, setup slack, hold or global WNS/TNS;
+the native physical STA consumer must add the physical CQ/setup/skew model.
+Actual two-round UART simulation exercises the source-bound window adapter;
+separate tests cover word indexing, multi-cycle launch selection, same-edge
+updates and missing/contradictory bindings. End-to-end physical event-window
+analysis and original-path global composition remain pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
