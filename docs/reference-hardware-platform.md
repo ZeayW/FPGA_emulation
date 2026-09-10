@@ -110,6 +110,26 @@ non-finite or malformed clock/resource data fails qualification. This is a
 single-clock endpoint gate, not a general multi-clock timing analyzer; device
 I/O availability is not interpreted as the board's free connector budget.
 
+### Logical snapshot exchange (experimental, validation pending)
+
+`emuflow_gpio_exchange` operates on checked ordered records. Both fixed roles
+first exchange an identical externally supplied session identifier and word
+count. The leader requests a transaction; both peers retain their local
+snapshots, exchange indexed 32-bit words, then perform COMMIT/ACK. The follower
+commits first; the leader commits only after ACK. Neither may begin another
+transaction before the leader has completed that handshake. These are logical
+macrocycle barriers, not simultaneous oscillator edges. A DUT consumer must
+hold its exported snapshot through each transaction and use the commit pulse
+as a clock enable. General combinational-cut evaluation rounds and the actual
+split-netlist adapter are not implemented by this module.
+
+Unexpected records, changed session IDs, transport errors or in-flight timeout
+invalidate the session. No auto-retry or independent-reset recovery is claimed;
+restart requires coordinated reset and a new externally selected session ID.
+Epoch wrap is rejected. Timeout is a fail-stop policy, not a wire-delay bound.
+A lost ACK can leave one peer committed: the run is invalid, and this protocol
+does not claim fault-tolerant atomic rollback or physical hardware reliability.
+
 ## Historical vendor reference investigation
 
 ## Deliverable and current status

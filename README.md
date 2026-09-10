@@ -3091,6 +3091,11 @@ The endpoint runner now rejects missing/mismatched ECP5 device inventories,
 logic/memory/DSP usage above the 75% limit (including transport), and missing
 or failing reported local clock constraints. This scoped check does not prove
 external I/O timing, intended-clock coverage or whole-design timing.
+An experimental `emuflow_gpio_exchange` adds a fixed-pair session handshake,
+multiword snapshot exchange and acknowledged logical commit. It is pending
+RTL qualification and is not wired into the full-flow transport provider.
+Commit edges are not physically simultaneous; a transport fault invalidates
+the run rather than promising rollback of a peer's already committed state.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
