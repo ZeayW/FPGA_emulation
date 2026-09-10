@@ -3491,6 +3491,14 @@ capture-DI/M into that physical graph. Merged registers preserve every original
 ID; constant state is explicit. Missing graph endpoints fail. This closes the
 state-endpoint interface only, not original combinational-path correspondence;
 the new binding has unit tests and still needs integrated real-design use.
+The data-graph consumer can now project named original/cut boundary
+reachability using transient bit masks rather than enumerate all paths.
+Original identities remain distinct when physical launch pins are merged.
+Requested but unreachable source/capture pairs fail explicitly; optimized-away
+paths require a separate semantic classification, not silent removal. Tests
+include an 80-diamond graph (exponentially many paths) and missing/invalid
+bindings. This is a structural consumer interface: deriving and validating the
+complete original-design required-pair population remains pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the

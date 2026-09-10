@@ -1,10 +1,45 @@
 import unittest
-from emuflow.ecp5_data_graph import build_ecp5_data_graph
+from emuflow.ecp5_data_graph import build_ecp5_data_graph, project_data_reachability, require_data_connections
 from emuflow.errors import ValidationError
 import test_ecp5_timing_coverage as fixture
 
 
 class DataGraphTests(unittest.TestCase):
+    def test_reachability_preserves_original_aliases_and_rejects_missing_pairs(self):
+        from test_ecp5_sta import graph
+        g=graph()
+        projection=project_data_reachability(g,{'original-a':('a','Q'),'merged-a':('a','Q'),'b':('b','Q')},
+                                             {'capture':('sink','DI')})
+        self.assertEqual(projection['capture_masks']['capture'],7)
+        self.assertEqual(require_data_connections(projection,[('original-a','capture'),('merged-a','capture')])['required_pairs'],2)
+        g['edges']=g['edges'][1:]
+        projection=project_data_reachability(g,{'a':('a','Q'),'b':('b','Q')},{'sink':('sink','DI')})
+        with self.assertRaisesRegex(ValidationError,'missing required'):
+            require_data_connections(projection,[('a','sink')])
+        with self.assertRaisesRegex(ValidationError,'unbound'):
+            require_data_connections(projection,[('unknown','sink')])
+
+    def test_reachability_requires_real_boundaries_and_topological_order(self):
+        from test_ecp5_sta import graph
+        g=graph()
+        with self.assertRaisesRegex(ValidationError,'physical root'):
+            project_data_reachability(g,{'a':('lut','F')},{'sink':('sink','DI')})
+        g['order'].reverse()
+        with self.assertRaisesRegex(ValidationError,'topologically'):
+            project_data_reachability(g,{'a':('a','Q')},{'sink':('sink','DI')})
+
+    def test_reconvergent_projection_does_not_enumerate_exponential_paths(self):
+        root=('root','Q'); previous=root; order=[root]; edges=[]
+        # Eighty diamonds represent 2**80 paths but only 241 graph nodes.
+        for index in range(80):
+            a=(str(index),'A');b=(str(index),'B');merge=(str(index),'Y')
+            order.extend((a,b,merge))
+            edges.extend((x,y,None) for x,y in ((previous,a),(previous,b),(a,merge),(b,merge)))
+            previous=merge
+        g={'roots':{root:{}},'captures':{previous:{}},'edges':edges,'order':order}
+        result=project_data_reachability(g,{'original':root},{'capture':previous})
+        self.assertEqual(result['capture_masks'],{'capture':1})
+
     def test_register_feedback_stops_at_sequential_boundary(self):
         r, d = fixture.Ecp5TimingCoverageTests().model()
         g = build_ecp5_data_graph(r, d)

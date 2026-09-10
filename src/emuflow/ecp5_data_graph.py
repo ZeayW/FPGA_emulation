@@ -95,3 +95,59 @@ def build_ecp5_data_graph(routed, delays, *, top='top'):
             'excluded_boundaries': excluded,
             'scope': 'physical_data_pin_graph', 'original_path_coverage_qualified': False,
             'global_timing_qualified': False}
+
+
+def project_data_reachability(graph, launches, captures):
+    """Project named source/cut boundaries without enumerating timing paths.
+
+    Each name maps to an already bound physical pin. Original IDs remain
+    separate even if synthesis merges their physical launch registers.
+    Bit masks are transient consumer data; they are not a global timing or
+    equivalence certificate. No physical delay arithmetic is performed.
+    """
+    if not launches or not captures:
+        raise ValidationError('data reachability needs launch and capture boundaries')
+    if any(not isinstance(name,str) or not name for name in (*launches,*captures)):
+        raise ValidationError('invalid data reachability boundary name')
+    if any(pin not in graph['roots'] for pin in launches.values()):
+        raise ValidationError('data reachability launch is not a physical root')
+    if any(pin not in graph['captures'] for pin in captures.values()):
+        raise ValidationError('data reachability capture is not a physical endpoint')
+    labels=tuple(sorted(launches)); masks={}
+    for index,name in enumerate(labels):
+        pin=launches[name]; masks[pin]=masks.get(pin,0) | (1<<index)
+    outgoing=defaultdict(list)
+    for source,sink,_ in graph['edges']:outgoing[source].append(sink)
+    positions={node:i for i,node in enumerate(graph['order'])}
+    if len(positions)!=len(graph['order']):raise ValidationError('duplicate physical graph node')
+    for source,sinks in outgoing.items():
+        for sink in sinks:
+            if source not in positions or sink not in positions or positions[source]>=positions[sink]:
+                raise ValidationError('physical data graph is not topologically ordered')
+    for node in graph['order']:
+        mask=masks.get(node,0)
+        if mask:
+            for sink in outgoing[node]:masks[sink]=masks.get(sink,0)|mask
+    return {'launch_labels':labels,
+            'capture_masks':{name:masks.get(pin,0) for name,pin in captures.items()},
+            'scope':'bound_physical_boundary_reachability',
+            'original_path_coverage_qualified':False,'global_timing_qualified':False}
+
+
+def require_data_connections(projection, required):
+    """Reject missing requested pairs; callers own the original-path population.
+
+    An optimized-away path is not silently accepted. It needs a separate
+    semantic proof/classification before the caller changes its required set.
+    """
+    indices={name:1<<i for i,name in enumerate(projection['launch_labels'])}
+    targets=projection['capture_masks']; count=0
+    for launch,capture in required:
+        if launch not in indices or capture not in targets:
+            raise ValidationError('unbound required source/capture identity')
+        if not targets[capture] & indices[launch]:
+            raise ValidationError(f'missing required physical data connection: {launch} -> {capture}')
+        count+=1
+    return {'status':'pass','required_pairs':count,
+            'scope':'requested_physical_boundary_connections',
+            'original_path_coverage_qualified':False,'global_timing_qualified':False}
