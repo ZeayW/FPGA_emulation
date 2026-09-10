@@ -353,8 +353,6 @@ static int tclReadlineInit(Tcl_Interp* interp)
   }
   return TCL_OK;
 }
-#endif
-
 namespace {
 // A stopgap fallback from the hardcoded TCLRL_LIBRARY path for OpenROAD,
 // not essential for OpenSTA
@@ -401,6 +399,7 @@ std::string findPathToTclreadlineInit(Tcl_Interp* interp)
   return Tcl_GetStringResult(interp);
 }
 }  // namespace
+#endif  // ENABLE_READLINE
 
 // Tcl init executed inside Tcl_Main.
 static int tclAppInit(int& argc,
