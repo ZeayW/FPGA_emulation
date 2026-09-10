@@ -3199,6 +3199,11 @@ The ECP5 runner can explicitly request `export_timing=True` (endpoint CLI:
 consumer inputs. Missing outputs fail; the terminal summary references them
 without copying their payloads. Export is off for endpoint-only checks and does
 not certify SDF annotation coverage, original-path binding or global timing.
+Both synthesis APIs stream an explicitly requested scratch log while Yosys is
+running, instead of retaining the whole log in Python until completion. On
+failure only a bounded tail enters the exception. This enables live stage
+diagnosis without adding report payloads or changing synthesis algorithms;
+it does not itself resolve a waiting external tool process.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

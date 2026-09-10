@@ -19,6 +19,25 @@ LOGIC_ONLY_MAP = (
 )
 
 
+def _run_logged_yosys(command: list[str], log_path: Optional[Path]):
+    """Stream a requested scratch log; retain only a bounded failure tail."""
+    if log_path is None:
+        result = subprocess.run(command, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, check=False)
+        return result.returncode, result.stdout[-65536:]
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("wb") as log:
+        result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,
+                                check=False)
+    if result.returncode == 0:
+        return 0, ""
+    with log_path.open("rb") as log:
+        log.seek(0, 2)
+        log.seek(max(0, log.tell() - 65536))
+        tail = log.read().decode("utf-8", errors="replace")
+    return result.returncode, tail
+
+
 def _yosys_quote(value: str) -> str:
     # Yosys accepts double-quoted strings with JSON-compatible escaping.
     return json.dumps(value)
@@ -176,7 +195,7 @@ def run_generic_yosys(
     log_path: Optional[Path] = None,
     *, lut_size: int = 6,
 ) -> None:
-    """Synthesize RTL to provider-neutral LUT6/FF Yosys JSON."""
+    """Synthesize RTL to explicitly selected provider-neutral LUT4/6 and FF JSON."""
 
     source_list = list(sources)
     for source in source_list:
@@ -185,21 +204,12 @@ def run_generic_yosys(
     command = resolve_native_executable("yosys", executable)
     output.parent.mkdir(parents=True, exist_ok=True)
     script = build_generic_yosys_script(source_list, top, output, lut_size=lut_size)
-    completed = subprocess.run(
-        [command, "-p", script],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
-    if log_path is not None:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(completed.stdout, encoding="utf-8")
-    if completed.returncode != 0:
-        tail = "\n".join(completed.stdout.splitlines()[-20:])
+    returncode, output_tail = _run_logged_yosys([command, "-p", script], log_path)
+    if returncode != 0:
+        tail = "\n".join(output_tail.splitlines()[-20:])
         raise EmuFlowError(
             "generic Yosys synthesis failed with exit code "
-            f"{completed.returncode}\n{tail}"
+            f"{returncode}\n{tail}"
         )
     if not output.is_file():
         raise EmuFlowError(
@@ -246,20 +256,11 @@ def run_yosys(
         include_dirs=include_list,
         defines=define_list,
     )
-    completed = subprocess.run(
-        [command, "-p", script],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
-    if log_path is not None:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(completed.stdout, encoding="utf-8")
-    if completed.returncode != 0:
-        tail = "\n".join(completed.stdout.splitlines()[-20:])
+    returncode, output_tail = _run_logged_yosys([command, "-p", script], log_path)
+    if returncode != 0:
+        tail = "\n".join(output_tail.splitlines()[-20:])
         raise EmuFlowError(
-            f"Yosys synthesis failed with exit code {completed.returncode}\n{tail}"
+            f"Yosys synthesis failed with exit code {returncode}\n{tail}"
         )
     if not output.is_file():
         raise EmuFlowError(
