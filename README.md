@@ -3633,7 +3633,15 @@ erase a tight latest-launch margin through native floating-point cancellation.
 Only coordinate conversion occurs in Python; OpenSTA supplies slack. This
 qualification adapter is not a global timing composer, hold/reset proof or
 constant-delay UART model. Local structural/export tests pass; native event
-checks and the complete real-design event-to-physical consumer remain pending.
+checks were initially pending. Native OpenSTA 2.6.0 subsequently passed the
+event fixture with launch epochs of 1.0 / 1.1 seconds: the later path's 4.9 ns
+physical delay against a 4.5 ns setup-adjusted window reported -0.400 ns slack,
+and deleting the earlier launch's physical connection failed qualification.
+The test took 5.21 seconds. Very large positive windows remain limited by
+native STA floating-point resolution; their displayed fractional ns must not
+be claimed as sub-ns exact. Per-launch shifting protects the tight late path,
+not arbitrary precision on a 0.1-second slack. The complete real-design
+event-to-physical consumer and global timing qualification remain pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
