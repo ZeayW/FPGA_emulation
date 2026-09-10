@@ -7,7 +7,7 @@ from .errors import ValidationError
 
 
 def bind_snapshot_routed_identities(source_binding, routed, *, hierarchy, top="top",
-                                   mapped=None, mapped_top=None):
+                                   mapped=None, mapped_top=None, port_bindings=None):
     """Resolve every requested one-bit source alias, including merged aliases.
 
     The exact hierarchy is supplied by the composing top. Constants may be a
@@ -42,14 +42,28 @@ def bind_snapshot_routed_identities(source_binding, routed, *, hierarchy, top="t
                 if type(bit) is int:
                     aliases_by_bit.setdefault(bit, []).append((name, index, len(bits), offset))
 
-    def resolve(full):
+    port_bindings = {} if port_bindings is None else port_bindings
+    if not isinstance(port_bindings, dict) or any(not isinstance(v,str) or not v for v in port_bindings.values()):
+        raise ValidationError("invalid physical port bindings")
+
+    def resolve(full, references):
         direct = nets.get(full, {}).get("bits", [])
         found = set()
         if len(direct) == 1:
             found.add(direct[0])
+        prebits=[]
         before = mapped_nets.get(full, {}).get("bits", [])
-        if len(before) == 1:
-            prebit = before[0]
+        if len(before) == 1: prebits.append(before[0])
+        for ref in references:
+            port, index = ref.get("port"), ref.get("bit")
+            if not isinstance(port,str) or type(index) is not int or index<0:
+                raise ValidationError("invalid source port-bit reference")
+            name=port_bindings.get(port,hierarchy+"."+port)
+            vector=nets.get(name,{}).get("bits",[])
+            if index<len(vector): found.add(vector[index])
+            before=mapped_nets.get(name,{}).get("bits",[])
+            if index<len(before): prebits.append(before[index])
+        for prebit in prebits:
             if prebit in ("0", "1"):
                 found.add(prebit)
             for name, index, width, offset in aliases_by_bit.get(prebit, []):
@@ -85,7 +99,8 @@ def bind_snapshot_routed_identities(source_binding, routed, *, hierarchy, top="t
             if not isinstance(local, str) or not local:
                 raise ValidationError("invalid source alias")
             full = hierarchy + "." + local
-            bit = resolve(full)
+            references=source_binding.get("net_ports",{}).get(original,[]) if category=="nets" else []
+            bit = resolve(full,references)
             record = {"alias": full, "bit": bit}
             if category == "registers":
                 if type(bit) is str:

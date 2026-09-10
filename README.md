@@ -3281,6 +3281,12 @@ natural SERV physical result, including aliases removed by nextpnr. Full net
 coverage still fails: some aliases are already absent before packing, requiring
 an explicit emitted-port/connectivity binding rather than a naming heuristic.
 Thus neither full original-path coverage nor global timing is qualified yet.
+Snapshot source binding now also records exact child-port bit connections;
+the pair composer provides their physical-parent wire names. The routed
+resolver can follow these explicit connections through the mapped alias table
+when a child wire name was removed before packing. Out-of-range or unresolved
+bindings still fail, and the generated RTL is unchanged. This port bridge has
+unit coverage; its full real-design coverage is not yet qualified.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

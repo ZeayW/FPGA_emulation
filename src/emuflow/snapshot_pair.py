@@ -174,6 +174,12 @@ module {physical_top}(input wire clk_25mhz,reset_n,link_rx,output wire link_tx{h
         rtl += "endmodule\n"
         boards[board] = {"rtl": rtl, "top": core, "physical_top": physical_top,
                          "host_uart": bool(leader), "interface": interface}
+        if include_source_binding:
+            # Exact wires connected above, relative to physical_top. These
+            # are generated connectivity, not inferred post-synthesis names.
+            boards[board]["physical_port_bindings"]={
+                "imported_values":"core.imports", "exported_values":"core.exports",
+                "host_inputs":"core.held_inputs", "host_outputs":"core.dut_outputs"}
     return {"boards": boards, "evaluation_rounds": rounds,
             "host_clock_domain": "board0", "output_sampling": "pre_dut_active_edge",
             "physical_host_binding_qualified": False}

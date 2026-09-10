@@ -34,7 +34,10 @@ def emit_snapshot_partition(ir: EmuIR, assignment: dict, *, board: str,
     imported = {n:i for i,n in enumerate(imports)}
     pins = {}; constants = {}; host_in = {}; host_out = {}; wires = {}
     clock_nets = set()
-    body = []
+    body = []; net_ports = {}
+    def bind_port(net, port, bit):
+        if include_source_binding:
+            net_ports.setdefault(net, []).append({"port":port,"bit":bit})
     for cell_id,cell in local.items():
         for c in cell.get("constant_connections", []):
             key=(cell_id,c["port"],c["bit"])
@@ -58,18 +61,21 @@ def emit_snapshot_partition(ir: EmuIR, assignment: dict, *, board: str,
             raise ValidationError("DUT reset requires an explicit data/board-service binding")
         if net["id"] in imported:
             body.append(f"assign {wire}=imported_values[{imported[net['id']]}];")
+            bind_port(net["id"],"imported_values",imported[net["id"]])
         else:
             for ep in net["drivers"]:
                 if ep["instance"] is None and port_owners.get(ep["port"])==board:
                     key=(ep["port"],ep["bit"])
                     host_in.setdefault(key,len(host_in))
                     body.append(f"assign {wire}=host_inputs[{host_in[key]}];")
+                    bind_port(net["id"],"host_inputs",host_in[key])
         for ep in net["sinks"]:
             if ep["instance"] is None and port_owners.get(ep["port"])==board:
                 key=(ep["port"],ep["bit"])
                 if key in host_out: raise ValidationError("multiply bound host output")
                 host_out[key]=len(host_out)
                 body.append(f"assign host_outputs[{host_out[key]}]={wire};")
+                bind_port(net["id"],"host_outputs",host_out[key])
     if len(clock_nets)>1: raise ValidationError("multi-clock DUT needs explicit clock-domain lowering")
 
     def pin(cell,port,bit=0):
@@ -101,7 +107,9 @@ def emit_snapshot_partition(ir: EmuIR, assignment: dict, *, board: str,
             body.append(f"assign {pin(cell_id,'Q')}={q};")
             body.append(f"always @(posedge clk) if(reset) {q}<=1'b{initial_state[cell_id]}; else if(step) {q}<={data};")
         else: raise ValidationError(f"unsupported snapshot primitive: {kind}")
-    for index,net in enumerate(exports): body.append(f"assign exported_values[{index}]={wires[net]};")
+    for index,net in enumerate(exports):
+        body.append(f"assign exported_values[{index}]={wires[net]};")
+        bind_port(net,"exported_values",index)
     if not exports: body.append("assign exported_values=1'b0;")
     if not host_out: body.append("assign host_outputs=1'b0;")
     header=[f"module {module}(input wire clk,reset,step,",
@@ -120,5 +128,5 @@ def emit_snapshot_partition(ir: EmuIR, assignment: dict, *, board: str,
         # No keep/dont_touch attributes: valid physical optimizations remain
         # enabled and the consumer must resolve aliases or reject missing ones.
         report["source_binding"]={"schema":"emuflow.snapshot-source-binding/v1",
-            "nets":wires,"registers":source_registers}
+            "nets":wires,"registers":source_registers,"net_ports":net_ports}
     return text,report

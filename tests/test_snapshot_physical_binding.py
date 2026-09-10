@@ -16,6 +16,7 @@ class SnapshotPhysicalBindingTests(unittest.TestCase):
         self.assertNotIn("source_binding",plain)
         self.assertEqual(bound["source_binding"]["registers"],{"a":"state0"})
         self.assertEqual(set(bound["source_binding"]["nets"]),{"clk","qa","comb"})
+        self.assertEqual(bound["source_binding"]["net_ports"]["comb"],[{"port":"imported_values","bit":0}])
 
     def model(self):
         source={"schema":"emuflow.snapshot-source-binding/v1","nets":{"n":"n0"},"registers":{"a":"s0","b":"s1","c":"s2"}}
@@ -50,3 +51,12 @@ class SnapshotPhysicalBindingTests(unittest.TestCase):
         routed["modules"]["top"]["netnames"]["core.dut.old"]={"bits":[42]}
         with self.assertRaises(ValidationError):
             bind_snapshot_routed_identities(source,routed,hierarchy="core.dut",mapped=mapped,mapped_top="device")
+
+    def test_parent_port_survives_removed_child_alias(self):
+        source={"schema":"emuflow.snapshot-source-binding/v1","nets":{"cut":"gone"},"registers":{},"net_ports":{"cut":[{"port":"imported_values","bit":1}]}}
+        mapped={"modules":{"device":{"netnames":{"core.imports":{"bits":[20,21]}}}}}
+        routed={"modules":{"top":{"netnames":{"core.imports[1]":{"bits":[100]}},"cells":{}}}}
+        args=dict(hierarchy="core.dut",mapped=mapped,mapped_top="device",port_bindings={"imported_values":"core.imports"})
+        self.assertEqual(bind_snapshot_routed_identities(source,routed,**args)["nets"]["cut"]["bit"],100)
+        source["net_ports"]["cut"][0]["bit"]=2
+        with self.assertRaises(ValidationError): bind_snapshot_routed_identities(source,routed,**args)
