@@ -3676,6 +3676,17 @@ of a split dependency. Its transient bitmasks describe endpoint reachability,
 not every reconvergent logic path; counting them as global path TNS is
 explicitly forbidden. Real-design coverage integration and native global
 timing composition remain pending.
+`iter_snapshot_path_bindings` consumes the existing validated TimingPathDB
+member identities and checks each ordered source net chain against EmuIR
+drivers, LUT inputs/outputs and mapped FF/host endpoints. It emits ordered
+local segment boundaries referencing original net-index ranges rather than
+duplicating the path payload. Reconvergent members with identical endpoints
+remain separate; off-path multicast destinations do not create extra hops.
+Tests cover crossing-and-return order, reconvergent local/crossing members,
+and rejected skipped/reordered nets or endpoint mismatches. Source slack and
+delay are never copied into physical timing. This preserves each supplied
+database member, but does not certify the upstream extractor's complete
+path enumeration or replace the still-pending physical/global timing binding.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
