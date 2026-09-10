@@ -3830,15 +3830,19 @@ release and UART synchronizer interstage data paths. Setup uses the assembly's
 nominal 25 MHz clock and the declared uncertainty, not the DUT target or a
 guessed UART deadline. Negative interstage results fail the run. Asynchronous
 first-stage sampling, recovery/removal and analog metastability remain separate
-obligations; passing second-stage data timing does not waive them. Native
-integration of these new queries is pending.
+obligations; passing second-stage data timing does not waive them. Native SERV
+integration completed in 526.47 seconds: three board0 and two board1 interstage
+paths passed, with minimum setup slack 38.5610/38.6890 ns and minimum hold slack
+0.4380 ns on both boards (zero declared setup uncertainty, ideal skew).
 The canonical qualification simulation now drives serial host records through
 the actual generated physical wrappers, including each board's reset-release
 chain, rather than driving the core's internal request interface. It observes
 all original FFs and checks host responses against unsplit logic. Earlier SERV
 results used the internal request interface and do not qualify this expanded
-boundary. Native wrapper-mode regression and real-design execution are pending;
-the internal-interface test generator remains available for focused tests.
+boundary. Native Icarus wrapper-mode regression passed both correct-state and
+injected-corruption cases, including bound per-board reset/event traces;
+real-design execution of this expanded boundary remains pending. The
+internal-interface test generator remains available for focused tests.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
