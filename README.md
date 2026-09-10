@@ -3551,7 +3551,12 @@ query mode. It shares one exported graph and groups requests by launch;
 unreachable, duplicate or missing results fail. This retains noncritical
 source contributions that an endpoint-only worst-path report would hide,
 which is necessary for later original-path binding. It is not yet global
-asynchronous timing: native pair-query qualification is pending.
+asynchronous timing. Native OpenSTA 2.6.0 qualification passed on a shared
+reconvergent graph: the two requested starts produced distinct 2.7 / 4.9 ns
+arrivals and 7.3 / 5.1 ns slacks against a 10 ns deadline. Removing one
+requested connection correctly failed instead of returning only the remaining
+worst path. This fixture completed in 3.36 seconds; real-design pair-delay
+binding and the asynchronous timing contract remain pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
