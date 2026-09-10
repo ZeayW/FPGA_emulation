@@ -3575,8 +3575,13 @@ The physical graph adapter now accepts explicit `analysis="min"` hold checks
 as well as the default `max` setup checks. Min mode uses the lower rise/fall
 delay bound and the same launch/capture epoch; the caller supplies the earliest
 allowed arrival including hold and skew. It does not reuse setup deadlines or
-infer reset recovery/removal. Native min-mode validation is pending; existing
-positive setup results alone must not be interpreted as hold closure.
+infer reset recovery/removal. Native OpenSTA 2.6.0 min-mode validation passed:
+two paths using distinct lower/typical/upper arc values arrived at 0.6 / 0.9 ns
+against a same-edge 0.7 ns hold requirement, correctly reporting -0.1 / +0.2 ns
+slack. A missing requested path failed. This is an adapter fixture, not real
+dual-board hold closure; existing positive setup results alone must not be
+interpreted as hold closure. Exported lower delay bounds also do not establish
+an uncharacterized fast-process/voltage/temperature hardware corner.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
