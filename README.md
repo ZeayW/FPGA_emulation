@@ -3821,8 +3821,10 @@ false. This is real-design integration evidence, not a registered QoR study.
 The physical reset gate now also requires annotated clock-to-Q, routed
 interstage wire, and both-edge setup/hold for the release synchronizer. It
 reports their min/max bounds without treating them as asynchronous
-recovery/removal or MTBF proof. Missing annotations fail explicitly; native
-integration of this additional gate is pending.
+recovery/removal or MTBF proof. Missing annotations fail explicitly. A fresh
+native SERV full qualification completed this additional gate on both boards
+in 521.55 seconds; interstage wire bounds were 0.316--0.427 ns and
+0.311--0.421 ns. Compact terminal evidence was retained and scratch removed.
 The one-shot runner additionally issues native setup/hold queries for reset
 release and UART synchronizer interstage data paths. Setup uses the assembly's
 nominal 25 MHz clock and the declared uncertainty, not the DUT target or a
