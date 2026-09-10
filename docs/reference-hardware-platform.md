@@ -102,6 +102,14 @@ toolchain. It used 758 TRELLIS_COMB, 344 TRELLIS_FF and four I/Os. The local
 WNS/TNS result, or a full Phase 1--7 DUT run. The echo top is a tool fixture,
 not a substitute for the required naturally connected workload.
 
+The runner additionally checks nextpnr resource accounting against the 85k
+device inventory and applies the 75% ceiling to LUT4/FF/DP16KD/MULT18X18D
+resources, including communication overhead. All reported local clocks must
+satisfy their constraints (at least the endpoint's 25 MHz clock). Missing,
+non-finite or malformed clock/resource data fails qualification. This is a
+single-clock endpoint gate, not a general multi-clock timing analyzer; device
+I/O availability is not interpreted as the board's free connector budget.
+
 ## Historical vendor reference investigation
 
 ## Deliverable and current status

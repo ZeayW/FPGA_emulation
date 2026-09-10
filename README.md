@@ -3087,6 +3087,10 @@ The composed endpoint has passed independent-clock record roundtrip simulations
 and actual open ECP5 place/route plus bitstream generation (758 combinational
 cells, 344 FFs; local 25 MHz constraint passed). No cross-board/global timing or
 complete EmuFlow acceptance is claimed from this endpoint test.
+The endpoint runner now rejects missing/mismatched ECP5 device inventories,
+logic/memory/DSP usage above the 75% limit (including transport), and missing
+or failing reported local clock constraints. This scoped check does not prove
+external I/O timing, intended-clock coverage or whole-design timing.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

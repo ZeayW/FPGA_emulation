@@ -15,6 +15,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from emuflow.board_ulx3s import ulx3s_endpoint_lpf, ulx3s_pair_profile
+from emuflow.ecp5_qualification import qualify_ecp5_endpoint_report
 
 
 def main():
@@ -76,6 +77,7 @@ def main():
                 raise RuntimeError(f"missing or empty tool output: {artifact}")
         physical = json.loads((out / "physical.json").read_text())
         report["physical"] = physical
+        report["local_qualification"] = qualify_ecp5_endpoint_report(physical)
         report["status"] = "physical_outputs_generated"
     except Exception as exc:
         report["status"] = "failed"
