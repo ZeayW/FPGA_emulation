@@ -3108,6 +3108,11 @@ path diagnostics. This low-level API is not yet a full-flow backend selection.
 The extracted runner has also passed actual follower synthesis, P&R and packing
 with the same local timing result; its report records board identity and RTL
 inputs. This is tested tool integration, not merely mocked subprocess coverage.
+`emuflow.ulx3s_dut.build_ulx3s_snapshot_top` now binds an explicitly lowered
+clock-enable DUT to the open endpoint and commit controller, including unequal
+export/import widths and checked envelope padding. It is an initial integration
+interface, not automatic arbitrary-RTL partition lowering. Generated-binding
+RTL qualification and general combinational-cut evaluation remain pending.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

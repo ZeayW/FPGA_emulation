@@ -164,6 +164,23 @@ through this API and `--board board1`. All three stages and scoped checks
 passed; nextpnr reported the same 84.338363647 MHz local Fmax against 25 MHz.
 The terminal report has five RTL input identities and no detailed path copy.
 
+### DUT binding interface
+
+`build_ulx3s_snapshot_top` generates the four-pin board top around a partition
+with ports `clk`, `reset`, `step`, `exported_values`, `imported_values`. It gates
+`step` with commit and both protocol/PHY fault signals. Unequal directional
+widths share an explicitly selected word envelope with zero padding; invalid
+widths, peer IDs and recursive module bindings are rejected. Both peers must
+use the same envelope and session identifier. All state must already have been
+lowered to step-enable semantics, and exported values must satisfy the snapshot
+contract. This interface does not translate a fixed-slot transport netlist.
+
+The initial binder still requires automatic EmuIR lowering and combinational
+evaluation-round support before claiming general DUT acceptance. The generated
+interface test compares unequal-width stateful consumers against a synchronous
+reference; it is a synthetic semantic test, not the required real-RTL benchmark.
+Its actual RTL validation is pending.
+
 ## Historical vendor reference investigation
 
 ## Deliverable and current status
