@@ -3652,6 +3652,18 @@ contain per-window counts/margins, not duplicated physical payloads. This is
 finite-trace local setup qualification; native real-design validation is
 pending, and it does not yet provide original-path global WNS/TNS or prove
 initial reset/hold/hardware behavior.
+Fresh natural SERV validation subsequently passed this consumer on both
+physically implemented boards: 12 capture windows per board, 20,720 / 72,892
+physical pair occurrences and no negative setup checks. Minimum window
+slacks were approximately 37.729 ns / 194.233 microseconds. Event-query time
+was 34.81 / 25.39 seconds; the complete qualification, including four declared
+macrocycles, both bitstreams and the existing native setup/hold checks, took
+427.09 seconds. This uses the simulated independent clocks, ideal skew and
+explicit reset-release initial-readiness assumption. It is **finite-trace
+source-bound physical setup evidence**, not a worst-case UART timing bound,
+reset recovery/removal proof or whole-original-design WNS/TNS. Scratch was
+removed after terminal checks; only compact result evidence remains. Complete
+original-path global timing and the canonical full-flow entry remain pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
