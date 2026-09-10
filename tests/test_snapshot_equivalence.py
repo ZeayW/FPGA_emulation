@@ -11,6 +11,10 @@ from emuflow.snapshot_pair import emit_snapshot_pair
 from emuflow.snapshot_protocol_events import bind_snapshot_protocol_events
 from emuflow.snapshot_timing_population import build_snapshot_timing_population
 from emuflow.snapshot_timing_windows import iter_snapshot_timing_windows
+from emuflow.snapshot_path_binding import iter_snapshot_path_bindings
+from emuflow.snapshot_path_events import iter_snapshot_path_events
+from emuflow.snapshot_timing_population import boundary_id
+from test_snapshot_path_binding import database
 from test_snapshot_pair import host_fixture, generated_host_pair
 
 
@@ -111,6 +115,13 @@ class SnapshotEquivalenceTests(unittest.TestCase):
         self.assertEqual(len(bound['cycles']), 2)
         self.assertEqual(len(bound['cycles'][0]['transfers']), 4)
         self.assertFalse(bound['global_timing_qualified'])
+        paths=iter_snapshot_path_bindings(database(ir,[('feedback',['state','next'])]),ir,assignment,
+            port_owners={'in':'board0','out':'board0'})
+        path_events=list(iter_snapshot_path_events(paths,pair,bound,
+            initial_launch_ns={boundary_id('state','q'):bound['reset_release_ns']['board0']}))
+        self.assertEqual(len(path_events),2)
+        for cycle,row in enumerate(path_events):
+            self.assertEqual([e['transfer_epoch'] for e in row['segment_events']], [2*cycle,2*cycle+1,None])
         for board in ('board0', 'board1'):
             population = build_snapshot_timing_population(ir, assignment, board=board,
                 port_owners={'in': 'board0', 'out': 'board0'})

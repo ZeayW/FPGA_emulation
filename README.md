@@ -3687,6 +3687,17 @@ and rejected skipped/reordered nets or endpoint mismatches. Source slack and
 delay are never copied into physical timing. This preserves each supplied
 database member, but does not certify the upstream extractor's complete
 path enumeration or replace the still-pending physical/global timing binding.
+`iter_snapshot_path_events` now binds each original member and macrocycle to
+the observed transfer epochs by tracing backwards from final commit. It
+selects only remote updates preceding the next local snapshot and requires
+the whole dependency chain to belong to the current macrocycle. A completed
+commit alone cannot authorize a path that depends on a stale shadow. The
+adapter verifies exact exported/imported bit identity, uses previous DUT
+commits or held-input latches for source launches, and requires explicit
+initial state readiness. Unit tests and actual two-round UART RTL confirm
+causal earlier/later-round selection, reject insufficient exchanges and
+preserve macrocycle identity. These are event identities, not calculated
+physical delays/slacks or completed global timing evidence.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
