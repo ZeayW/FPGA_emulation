@@ -214,6 +214,25 @@ emitted partitions now agrees with an independent synchronous reference for
 state updates. That test verifies netlist lowering only: its explicit snapshot
 transfer model is not physical link or whole-flow timing evidence.
 
+### Multi-round combinational evaluation (qualification pending)
+
+The exchange controller now performs `ROUNDS` acknowledged snapshot exchanges
+per DUT macrocycle. Intermediate exchanges update only remote shadows; DUT
+state commits on the final exchange. Re-evaluated local combinational outputs
+are sampled for the next round. Both peers explicitly exchange their round
+count after the session/role/width handshake and reject disagreement. An epoch
+identifies an exchange, not a DUT cycle; epoch exhaustion invalidates the run
+instead of wrapping. The new protocol requires matching implementations on
+both peers and is not silently compatible with the earlier single-handshake
+fixture.
+
+This is a post-partition transport evaluation mechanism, not a Phase 3 guard
+or partitioning objective. The caller must derive adequate rounds from the
+actual combinational dependencies and validate local settling against physical
+timing. Neither a configured round count nor a successful handshake proves
+whole-design timing. A three-crossing inverter chain tests the distinction
+between shadow propagation and original register commit; RTL results pending.
+
 ## Historical vendor reference investigation
 
 ## Deliverable and current status

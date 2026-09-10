@@ -3128,6 +3128,10 @@ than inventing reset values. Generated partition RTL has passed 32 reference
 macrocycles with a combinational cut and paused state enables. This first
 lowerer rejects unsupported memories, clock/reset transformations and inverted
 FF controls; general stateful-primitive and full-flow support remain pending.
+The exchange controller now supports explicit multi-round shadow evaluation
+before DUT commit, and checks that both peers agree on the round count during
+session setup. This new protocol revision is pending RTL qualification;
+round-count derivation and physical settling validation are not yet complete.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

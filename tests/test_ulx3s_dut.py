@@ -27,6 +27,9 @@ class ULX3SDUTTests(unittest.TestCase):
                    dict(board="board2"),dict(words=True),dict(words=257),
                    dict(exported_bits=65),dict(imported_bits=0),dict(session_id=-1)):
             with self.subTest(kw=kw), self.assertRaises(ValidationError): self.build(**kw)
+        for rounds in (0,True,65536):
+            with self.assertRaises(ValidationError): self.build(evaluation_rounds=rounds)
+        self.assertIn(".ROUNDS(3)",self.build(evaluation_rounds=3))
 
     def test_real_ir_connectivity_does_not_filter_combination(self):
         def endpoint(instance, port): return dict(instance=instance,port=port,bit=0)

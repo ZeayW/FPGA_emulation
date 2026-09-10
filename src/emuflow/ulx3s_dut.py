@@ -54,13 +54,13 @@ def build_snapshot_boundary_plan(ir: EmuIR, instance_assignment: dict,
 
 def build_ulx3s_snapshot_top(*, top: str, dut_module: str, board: str,
                              exported_bits: int, imported_bits: int,
-                             words: int, session_id: int) -> str:
+                             words: int, session_id: int, evaluation_rounds: int = 1) -> str:
     """Bind a partition to actual audited pins, UART and logical commit.
 
     DUT ports: clk, reset, step, exported_values, imported_values. Every DUT
     state element must use step as an enable; outputs must remain stable until
     the next transaction. The common word count must cover both directions.
-    No combinational-cut evaluation rounds are supplied by this initial binder.
+    Evaluation rounds must come from the post-partition dependency binding.
     """
     for name in (top, dut_module):
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
@@ -76,6 +76,8 @@ def build_ulx3s_snapshot_top(*, top: str, dut_module: str, board: str,
             raise ValidationError("snapshot widths must fit the common envelope")
     if type(session_id) is not int or not 0 <= session_id < 2**32:
         raise ValidationError("session ID must be an explicit uint32")
+    if type(evaluation_rounds) is not int or not 1 <= evaluation_rounds <= 65535:
+        raise ValidationError("evaluation rounds must be 1..65535")
     width = words*32
     leader = int(board=="board0")
     padding = width-exported_bits
@@ -102,7 +104,7 @@ module {top} (
         .serial_rx(link_rx),.serial_tx(link_tx),
         .tx_record(tx_record),.tx_valid(tx_valid),.tx_ready(tx_ready),
         .rx_record(rx_record),.rx_valid(rx_valid),.rx_ready(rx_ready),.fault(link_fault));
-    emuflow_gpio_exchange #(.LEADER({leader}),.WORDS({words})) exchange(
+    emuflow_gpio_exchange #(.LEADER({leader}),.WORDS({words}),.ROUNDS({evaluation_rounds})) exchange(
         .clk(clk_25mhz),.reset(reset),.session_id(32'h{session_id:08x}),
         .start(ready),.start_ready(ready),.local_snapshot({value}),
         .remote_snapshot(remote_values),.commit(commit),.session_ready(),.fault(fault),

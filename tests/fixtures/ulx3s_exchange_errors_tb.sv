@@ -32,12 +32,13 @@ module ulx3s_exchange_errors_tb;
         end
     endtask
     task connect;
-        begin restart; receive(64'h1000000200001234); wait(ready); end
+        begin restart; receive(64'h1000000200001234); receive(64'h1100000100000000); wait(ready); end
     endtask
     initial begin
         restart; receive(64'h1000000200005678); failed; // wrong session
         restart; receive(64'h1001000200001234); failed; // same role
         restart; receive(64'h1000000100001234); failed; // wrong width
+        restart; receive(64'h1000000200001234); receive(64'h1100000200000000); failed; // round mismatch
         restart; wait(fault); failed; // missing peer timeout
         connect; receive(64'h1000000200001234); failed; // independent peer reset
         connect; @(negedge clk); session=32'h5678; failed;
