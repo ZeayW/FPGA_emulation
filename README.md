@@ -3664,6 +3664,18 @@ source-bound physical setup evidence**, not a worst-case UART timing bound,
 reset recovery/removal proof or whole-original-design WNS/TNS. Scratch was
 removed after terminal checks; only compact result evidence remains. Complete
 original-path global timing and the canonical full-flow entry remain pending.
+`qualify_snapshot_global_reachability` adds an unsplit-source endpoint
+coverage gate for that global consumer. It independently constructs the
+required reachability without partition cuts, then compares it against the
+two local populations connected only through matched exported/imported cut
+identities. Register captures stop traversal; paths that leave and return to
+the same FPGA remain crossing paths. Missing endpoints, unmatched cut roles,
+combinational boundary cycles and changed reachability fail. Small tests
+cover local outputs, cross-and-return paths, sequential feedback and deletion
+of a split dependency. Its transient bitmasks describe endpoint reachability,
+not every reconvergent logic path; counting them as global path TNS is
+explicitly forbidden. Real-design coverage integration and native global
+timing composition remain pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
