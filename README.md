@@ -3470,6 +3470,13 @@ requires explicit launch epochs and capture deadlines for the complete dynamic
 boundary set. Zero-delay merge nodes only join timing graph fanin; they never
 replace missing physical delays. This adapter is under qualification, not the
 completed original-path/asynchronous protocol binding or final global QoR.
+A native OpenSTA 2.6.0 reconvergent-graph fixture passed: separate 2 ns and
+4 ns branches with 0.2 / 0.4 ns launch clock-to-Q and a shared 0.5 ns wire
+produced 4.9 ns arrival and 5.1 ns slack against an explicit 10 ns deadline.
+The executable reported `GITDIR-NOT`; its exact binary digest, rather than an
+invented Git revision, is recorded in external qualification evidence. This
+proves the adapter's native propagation on that fixture only; real snapshot
+path binding and conditional asynchronous timing remain pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
