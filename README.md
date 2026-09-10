@@ -3486,6 +3486,11 @@ input arrival, 40 ns external output deadlines and ideal clock skew, the
 minimum physical-endpoint slacks were 27.068 / 28.357 ns. These are **conditional
 physical endpoint diagnostics**, not original-design global WNS/TNS or a
 qualified asynchronous link-delay bound.
+Original state binding now resolves both launch-Q and the selected packed
+capture-DI/M into that physical graph. Merged registers preserve every original
+ID; constant state is explicit. Missing graph endpoints fail. This closes the
+state-endpoint interface only, not original combinational-path correspondence;
+the new binding has unit tests and still needs integrated real-design use.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the

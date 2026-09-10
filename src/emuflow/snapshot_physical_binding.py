@@ -159,3 +159,35 @@ def bind_snapshot_transport_storage(interface, routed, *, mapped, mapped_top,
             record=dict(record,role="launch" if role=="rx" else "constant")
         result[role][name]=record
     return result
+
+
+def bind_snapshot_state_endpoints(source_binding, routed, data_graph, *, hierarchy='core.dut',
+                                 top='top', mapped=None, mapped_top=None):
+    """Bind each original FF's launch and selected physical capture pin.
+
+    Preserve original IDs even when physical optimization merges FFs. Explicit
+    constants remain constants, not zero-delay timing paths. This does not
+    enumerate original combinational paths or establish their coverage.
+    """
+    resolved = bind_snapshot_routed_identities(dict(source_binding, nets={}), routed,
+        hierarchy=hierarchy, top=top, mapped=mapped, mapped_top=mapped_top)['registers']
+    cells = routed['modules'][top]['cells']; result = {}
+    for original, record in resolved.items():
+        if record['kind'] == 'constant':
+            result[original] = {'kind':'constant', 'value':record['value']}
+            continue
+        name = record['cell']; cell = cells[name]
+        mode = str(cell.get('parameters', {}).get('SD', '')).strip()
+        if mode not in {'0','1'}:
+            raise ValidationError('unknown original-state FF packing mode')
+        port = 'DI' if mode == '1' else 'M'
+        launch, capture = (name,'Q'), (name,port)
+        if launch not in data_graph['roots'] or capture not in data_graph['captures']:
+            raise ValidationError('original state endpoint missing from physical data graph')
+        bits = cell.get('connections', {}).get(port, [])
+        if len(bits) != 1 or not (type(bits[0]) is int or bits[0] in ('0','1')):
+            raise ValidationError('unbound original-state capture data')
+        result[original] = {'kind':'ff', 'launch':launch, 'capture':capture,
+                            'capture_dynamic':capture in data_graph['dynamic_nodes']}
+    return {'registers':result, 'original_register_coverage_qualified':True,
+            'original_path_coverage_qualified':False, 'global_timing_qualified':False}

@@ -2,11 +2,26 @@ import copy
 import unittest
 from emuflow.errors import ValidationError
 from emuflow.snapshot_netlist import emit_snapshot_partition
-from emuflow.snapshot_physical_binding import bind_snapshot_routed_identities, bind_snapshot_transport_storage
+from emuflow.snapshot_physical_binding import bind_snapshot_routed_identities, bind_snapshot_transport_storage, bind_snapshot_state_endpoints
 from test_snapshot_netlist import fixture
 
 
 class SnapshotPhysicalBindingTests(unittest.TestCase):
+    def test_original_state_launch_capture_keep_merged_ids(self):
+        source,routed=self.model()
+        cell=routed['modules']['top']['cells']['actual']
+        for mode,port in [('0','M'),('1','DI')]:
+            cell['parameters']={'SD':mode};cell['connections'][port]=[4]
+            graph={'roots':{('actual','Q'):{}},'captures':{('actual',port):{}},'dynamic_nodes':{('actual',port)}}
+            result=bind_snapshot_state_endpoints(source,routed,graph)
+            self.assertEqual(set(result['registers']),{'a','b','c'})
+            self.assertEqual(result['registers']['a']['capture'],('actual',port))
+            self.assertEqual(result['registers']['a'],result['registers']['b'])
+            self.assertEqual(result['registers']['c'],{'kind':'constant','value':0})
+            self.assertFalse(result['original_path_coverage_qualified'])
+            graph['captures'].clear()
+            with self.assertRaises(ValidationError):bind_snapshot_state_endpoints(source,routed,graph)
+
     def test_source_binding_does_not_change_rtl(self):
         args=dict(board="board0",module="dut",port_owners={"result":"board0"},initial_state={"a":0,"b":0})
         assignment={"a":"board0","b":"board1","inv":"board1"}
