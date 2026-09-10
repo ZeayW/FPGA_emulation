@@ -3746,6 +3746,16 @@ This bounded producer is not a claim of scalable exhaustive enumeration for
 arbitrary reconvergent designs. Source-schema validation, segment binding and
 independent coverage tests pass; real SERV population size and full global
 physical integration still require validation.
+Fresh native Yosys synthesis of natural SERV (`serv_rf_top`, 3,864 cells and
+3,966 nets) subsequently passed complete structural source-path production
+and coverage: 102,211 distinct net chains across 1,504 nonconstant captures,
+in 13.18 seconds for source loading/production/coverage. The mapped source
+clock is `clk`; the producer rejected the qualification script's initial
+incorrect `i_clk` selection before enumeration. The corrected source-only
+check used an unsplit assignment solely for coverage validation, not forced
+cut or full-flow evidence. Only a compact summary remains after scratch
+cleanup. This proves bounded enumeration is feasible for this real workload;
+the 102,211 members still need complete physical/event/global STA integration.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
