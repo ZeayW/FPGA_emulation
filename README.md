@@ -3539,6 +3539,13 @@ entry point that runs this proof for otherwise unexplained pairs; a failed,
 missing or oversized proof set fails qualification. It never accepts an
 external pass flag. This is source boundary-influence correspondence, not
 sequential mapping equivalence or whole-design asynchronous WNS/TNS.
+The entry point passed against the existing real routed SERV outputs: all
+15,803 board-1 boundary pairs were classified as 6,299 data connections,
+8,973 synchronous-control connections, 529 hold relations and two SAT-proven
+Boolean-independent pairs, with zero unexplained pairs. Together with board
+0's 4,429 matched pairs, this closes this run's local boundary-influence
+correspondence gate. Physical synthesis and routing were not rerun for this
+validator correction; the original failed gate remains in compact evidence.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
