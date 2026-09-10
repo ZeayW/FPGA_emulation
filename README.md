@@ -3194,6 +3194,11 @@ clock, asynchronous-reset or unsupported stateful endpoints. Accepted ports
 remain ordinary sampled host data with unchanged polarity; physical board
 reset and the declared initial state remain separate. Source EmuIR is not
 mutated, and unbound reset nets still fail rather than being silently ignored.
+The ECP5 runner can explicitly request `export_timing=True` (endpoint CLI:
+`--export-timing`) to emit nextpnr's routed netlist and SDF as temporary timing
+consumer inputs. Missing outputs fail; the terminal summary references them
+without copying their payloads. Export is off for endpoint-only checks and does
+not certify SDF annotation coverage, original-path binding or global timing.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

@@ -17,7 +17,8 @@ from .errors import ValidationError
 
 
 def run_ulx3s_physical(sources, *, top: str, tools: Path, output_dir: Path,
-                      board: str = "board0", host_uart: bool = False) -> dict:
+                      board: str = "board0", host_uart: bool = False,
+                      export_timing: bool = False) -> dict:
     """Map, place/route and pack real RTL with fixed pins and seed 1.
 
     No unconstrained-pin or timing-failure allowances. Fresh scratch per call;
@@ -26,6 +27,8 @@ def run_ulx3s_physical(sources, *, top: str, tools: Path, output_dir: Path,
     if not isinstance(top, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", top):
         raise ValidationError("top must be a simple Verilog identifier")
     lpf = ulx3s_endpoint_lpf(board, host_uart=host_uart)
+    if type(export_timing) is not bool:
+        raise ValidationError("export_timing must be explicit boolean")
     paths = [Path(p).resolve(strict=True) for p in sources]
     if not paths or len(set(paths)) != len(paths) or any(not p.is_file() for p in paths):
         raise ValidationError("RTL sources must be nonempty, unique files")
@@ -53,9 +56,12 @@ def run_ulx3s_physical(sources, *, top: str, tools: Path, output_dir: Path,
                          "--report", "physical.json"]),
         ("bitstream", [str(tools / "ecppack"), "routed.config", "endpoint.bit"]),
     ]
+    if export_timing:
+        stages[1][1].extend(["--write", "routed.json", "--sdf", "routed.sdf"])
     report = {"schema": "emuflow.open-endpoint-qualification/v1",
               "scope": "offline-physical-endpoint-only", "top": top, "board": board,
               "host_uart": host_uart,
+              "timing_export_requested": export_timing,
               "profile": ulx3s_pair_profile()["id"], "seed": 1,
               "sources": [{"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
                           for p in paths],
@@ -76,6 +82,14 @@ def run_ulx3s_physical(sources, *, top: str, tools: Path, output_dir: Path,
         for artifact in ("mapped.json", "routed.config", "physical.json", "endpoint.bit"):
             if not (out / artifact).is_file() or (out / artifact).stat().st_size == 0:
                 raise ValidationError(f"missing or empty tool output: {artifact}")
+        if export_timing:
+            for artifact in ("routed.json", "routed.sdf"):
+                if not (out / artifact).is_file() or (out / artifact).stat().st_size == 0:
+                    raise ValidationError(f"missing or empty timing consumer input: {artifact}")
+            # These scratch files are inputs to the future binding consumer,
+            # not a second report payload or proof of complete path coverage.
+            report["timing_inputs"] = {"routed_netlist": "routed.json", "delays": "routed.sdf",
+                                       "original_path_binding_qualified": False}
         physical = json.loads((out / "physical.json").read_text())
         report["local_qualification"] = qualify_ecp5_endpoint_report(physical)
         report["physical"] = {key: physical[key] for key in ("utilization", "fmax")}

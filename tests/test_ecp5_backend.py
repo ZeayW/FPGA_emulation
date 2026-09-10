@@ -40,6 +40,9 @@ class ECP5BackendTests(unittest.TestCase):
                 "utilization": {k:{"used":1,"available":v} for k,v in ECP5_85F_CAPACITY.items()},
                 "fmax":{"clk":{"achieved":80,"constraint":25}},
                 "critical_paths":["large scratch-only diagnostic"]}))
+            if "--sdf" in command:
+                (self.out/"routed.sdf").write_text("(DELAYFILE)\n")
+                (self.out/"routed.json").write_text("{}\n")
         if name=="ecppack": (self.out / "endpoint.bit").write_bytes(b"mock")
         return SimpleNamespace(returncode=0)
 
@@ -79,3 +82,18 @@ class ECP5BackendTests(unittest.TestCase):
             result=self.run_backend(host_uart=True)
         self.assertTrue(result["host_uart"])
         self.assertIn('"host_tx" SITE "L4"',(self.out/"endpoint.lpf").read_text())
+
+    def test_timing_export_is_opt_in_and_not_global_qualification(self):
+        with patch("emuflow.ecp5_backend.subprocess.run",side_effect=self.tool):
+            result=self.run_backend(export_timing=True)
+        self.assertFalse(result["timing_inputs"]["original_path_binding_qualified"])
+        self.assertIsNone(result["global_wns_tns"])
+        self.assertIn("--sdf",result["stages"][1]["command"])
+
+    def test_missing_timing_export_fails(self):
+        def omit_sdf(command,**kwargs):
+            result=self.tool(command,**kwargs)
+            if "--sdf" in command: (self.out/"routed.sdf").unlink()
+            return result
+        with patch("emuflow.ecp5_backend.subprocess.run",side_effect=omit_sdf):
+            with self.assertRaises(ValidationError): self.run_backend(export_timing=True)
