@@ -3135,6 +3135,10 @@ physical settling validation is not yet complete. The companion dependency
 walker derives rounds from the selected partition's longest combinational
 crossing chain, stopping at original state boundaries. It rejects combinational
 cycles and does not feed this result back into partition selection.
+The round-count unit test independently enumerates placements, launch bits
+and stale shadows against Boolean propagation. Actual new-protocol RTL and
+physical validation remain pending; earlier endpoint bitstreams do not qualify
+this changed controller automatically.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

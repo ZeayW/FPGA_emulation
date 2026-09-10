@@ -1,4 +1,5 @@
 import unittest
+from itertools import product
 from emuflow.ir import EmuIR
 from emuflow.snapshot_rounds import derive_snapshot_rounds
 from emuflow.errors import ValidationError
@@ -34,3 +35,22 @@ class SnapshotRoundTests(unittest.TestCase):
         ir=chain(); ir.value["ports"].append(dict(id="out",direction="output",width=1))
         ir.value["nets"][-1]["sinks"].append(dict(instance=None,port="out",bit=0))
         self.assertEqual(derive_snapshot_rounds(ir,{"q":"board0","x":"board1","y":"board0"},port_owners={"out":"board1"}),3)
+
+    def test_rounds_against_independent_boolean_propagation(self):
+        # Enumerate placements, launch state and arbitrary stale shadows.
+        # The oracle evaluates Boolean logic, not the longest-path algorithm.
+        for placement in product(("board0","board1"),repeat=3):
+            assignment=dict(zip(("q","x","y"),placement))
+            rounds=derive_snapshot_rounds(chain(),assignment,port_owners={})
+            for q in (0,1):
+                for initial in product((0,1),repeat=3):
+                    shadow=list(initial)
+                    for _ in range(rounds):
+                        x=1-(q if placement[0]==placement[1] else shadow[0])
+                        y=1-(x if placement[1]==placement[2] else shadow[1])
+                        shadow=[q,x,y]
+                    # Re-settle local logic after the last received shadow.
+                    x=1-(q if placement[0]==placement[1] else shadow[0])
+                    y=1-(x if placement[1]==placement[2] else shadow[1])
+                    capture=y if placement[2]==placement[0] else shadow[2]
+                    self.assertEqual(capture,q,(placement,q,initial,rounds))
