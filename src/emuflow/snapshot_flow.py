@@ -247,6 +247,9 @@ def _execute(args, sources, vectors, tools, root, report):
         report['status'] = 'timing_violations'
     if any(r['negative_setup_pairs'] or r['hold']['negative_pairs'] for r in report['synchronizer_timing'].values()):
         report['status'] = 'timing_violations'
+    if report['status'] == 'checks_finished_qualification_pending':
+        from .snapshot_acceptance import validate_snapshot_offline_result
+        report['offline_acceptance'] = validate_snapshot_offline_result(report)
 
 
 def run(args):

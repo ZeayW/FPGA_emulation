@@ -3855,6 +3855,14 @@ of this event timeline: this result must not be compared as an algorithm-only
 delta against the earlier internal-request-interface run. It still does not
 establish universal reset behavior, analog CDC, measured link timing or
 hardware qualification. Only compact terminal evidence is retained.
+`snapshot_acceptance.validate_snapshot_offline_result` joins the compact
+terminal gates without rerunning optimization, hashing or numerical timing.
+The one-shot command attaches its scoped `offline_acceptance` only after the
+physical-host trace, both physical boards, source coverage, native global
+readiness/runtime and local synchronizer/hold gates pass. A missed original
+target period is reported separately, not relabelled as closure. This finite
+offline contract explicitly leaves recovery/removal, MTBF, electrical/PVT and
+universal-input/clock coverage unverified; it never sets hardware qualification.
 Terminal simulation summaries state their actual board/client periods and
 phase offsets, reset-release time, ideal zero-delay digital-wire model, absence
 of jitter/metastability modeling, and finite-trace claim. The board profile
