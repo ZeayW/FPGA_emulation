@@ -3509,6 +3509,14 @@ database. Tests cover both boards, unsplit local paths, constant inputs and
 missing/reset bindings. Physical correspondence and optimization-equivalence
 classification for this source-owned population are still pending; this is not
 an original-path/global timing completion claim.
+The source population now has a physical binding consumer for original state,
+RX shadow/TX capture storage, held host inputs and captured host outputs.
+It resolves generated bus indices through mapped-to-routed aliases and checks
+the required source-derived connections in the physical data graph. Wrong-board
+interfaces, missing endpoints and constant-folded required dependencies fail
+instead of being silently dropped. This consumer has unit tests; integrated
+real-design correspondence and optimization-equivalence qualification remain
+pending.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
