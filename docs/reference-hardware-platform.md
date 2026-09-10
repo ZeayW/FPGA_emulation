@@ -2,6 +2,14 @@
 
 ## Active target: fully open ECP5 reference platform
 
+The real-RTL qualification path now has an automatically generated macrocycle
+testbench (`snapshot_equivalence.py`), using the unsplit mapped-logic evaluator
+as reference and actual generated dual-board transport RTL as implementation.
+Every mapped FF is observed after commit in addition to pre-edge host outputs.
+Run it with the exact declared initial-state contract and explicit workload
+vectors; passing a finite trace is not a proof over all inputs or initial states.
+Keep this expensive replay in qualification, not the production hot path.
+
 The active target supersedes the vendor-dependent plan below. Neither Vivado,
 Diamond, nor proprietary communication IP is an allowed dependency of this
 deliverable. The earlier MPS4/VCU118 work remains optional historical research,

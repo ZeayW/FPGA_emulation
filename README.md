@@ -3232,6 +3232,15 @@ same returned state. This is not proof of reset convergence or correctness over
 all initial states; those claims require separate verification. The natural
 SERV frontend declares no initial value for its 1,336 mapped FFs, so this
 distinction is necessary for honest real-RTL equivalence qualification.
+`build_snapshot_equivalence_testbench` creates an explicit offline qualification
+testbench for the generated two-board cores. It drives their actual UART and
+record/exchange RTL under independent clocks, compares pre-edge host outputs
+against the unsplit mapped-logic model, and checks **every mapped FF** after each
+macrocycle commit. Input vectors and starting state must be complete and
+explicit; response backpressure is exercised. An Icarus positive test and an
+injected next-state corruption test pass, including detection before an output
+mismatch appears. This is finite-trace functional evidence, not a universal
+equivalence proof, host USB/UART test, or routed physical timing result.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline
