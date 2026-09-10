@@ -3698,6 +3698,17 @@ initial state readiness. Unit tests and actual two-round UART RTL confirm
 causal earlier/later-round selection, reject insufficient exchanges and
 preserve macrocycle identity. These are event identities, not calculated
 physical delays/slacks or completed global timing evidence.
+`build_snapshot_global_checks` now maps those original-member event bindings
+and supplied physical segment cone bounds into the shared OpenSTA `EventCheck`
+interface. Each member/cycle gets separate target/runtime observations plus
+all preceding TX and final commit readiness checks. Missing member/segment
+coverage fails, frontend slack/delay is not used, and no zero-delay fallback
+is permitted. `run_snapshot_global_checks` explicitly disables Python arc
+replay so numerical propagation remains native-only. Unit tests distinguish
+an early TX miss from a legal final runtime window. Native snapshot-global
+fixture execution, complete upstream path extraction/physical-bound production
+and real-design global timing qualification remain pending; this exporter
+alone cannot promote supplied bounds or a partial path population.
 The reference-platform branch also incorporates main's standalone global
 OpenSTA engine (`fb33133e`): existing fixed-event Phase 7C uses that engine
 without implicitly running the Python system-timing composer. This is the
