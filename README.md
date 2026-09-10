@@ -3272,7 +3272,15 @@ nonconstant state bit. Merged state aliases and constant states remain explicit;
 missing/unknown aliases or ambiguous drivers fail. This is connectivity
 provenance only: it does not prove sequential optimization equivalence, SDF
 annotation coverage or global timing. Unit coverage passes; real routed
-source-identity coverage remains pending.
+full source-identity coverage remains pending.
+The resolver also accepts the explicit pre-pack `mapped` JSON and `mapped_top`.
+It uses equal-bit aliases within that file to find canonical scalar or split-bus
+names in routed JSON; numeric bit IDs are never equated across files. Conflicting
+surviving aliases still fail. This bridge resolves all 702/634 source FFs in the
+natural SERV physical result, including aliases removed by nextpnr. Full net
+coverage still fails: some aliases are already absent before packing, requiring
+an explicit emitted-port/connectivity binding rather than a naming heuristic.
+Thus neither full original-path coverage nor global timing is qualified yet.
 The earlier vendor [reference hardware platform acceptance plan](docs/reference-hardware-platform.md)
 tracks the remaining source-binding, communication-endpoint and full-flow
 qualification gates. The current MPS4 model is not yet a qualified offline

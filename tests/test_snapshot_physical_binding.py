@@ -40,3 +40,13 @@ class SnapshotPhysicalBindingTests(unittest.TestCase):
             if mutation=="wide": m["netnames"]["core.dut.s0"]["bits"]=[3,4]
             with self.subTest(mutation=mutation),self.assertRaises(ValidationError):
                 bind_snapshot_routed_identities(source,routed,hierarchy="core.dut")
+
+    def test_mapped_alias_bridge_uses_connectivity_not_numeric_id(self):
+        source={"schema":"emuflow.snapshot-source-binding/v1","nets":{"n":"old"},"registers":{"a":"old"}}
+        mapped={"modules":{"device":{"netnames":{"core.dut.old":{"bits":[42]},"canonical":{"bits":[41,42],"offset":7}}}}}
+        routed={"modules":{"top":{"netnames":{"canonical[8]":{"bits":[90]}},"cells":{"ff":{"type":"TRELLIS_FF","connections":{"Q":[90]}}}}}}
+        result=bind_snapshot_routed_identities(source,routed,hierarchy="core.dut",mapped=mapped,mapped_top="device")
+        self.assertEqual(result["registers"]["a"]["bit"],90)
+        routed["modules"]["top"]["netnames"]["core.dut.old"]={"bits":[42]}
+        with self.assertRaises(ValidationError):
+            bind_snapshot_routed_identities(source,routed,hierarchy="core.dut",mapped=mapped,mapped_top="device")

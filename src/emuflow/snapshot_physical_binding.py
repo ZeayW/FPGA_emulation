@@ -6,7 +6,8 @@ Unresolved aliases fail rather than falling back to name suffix guesses.
 from .errors import ValidationError
 
 
-def bind_snapshot_routed_identities(source_binding, routed, *, hierarchy, top="top"):
+def bind_snapshot_routed_identities(source_binding, routed, *, hierarchy, top="top",
+                                   mapped=None, mapped_top=None):
     """Resolve every requested one-bit source alias, including merged aliases.
 
     The exact hierarchy is supplied by the composing top. Constants may be a
@@ -21,6 +22,51 @@ def bind_snapshot_routed_identities(source_binding, routed, *, hierarchy, top="t
     if not isinstance(module, dict):
         raise ValidationError("missing routed top module")
     nets, cells = module.get("netnames", {}), module.get("cells", {})
+    # nextpnr keeps a canonical name per wire, not every Yosys alias. Bridge
+    # through actual equal-bit aliases in the PRE-pack netlist. Bit numbers
+    # are local to each file and must never be equated across the two files.
+    mapped_nets = {}; aliases_by_bit = {}
+    if mapped is not None:
+        pre = mapped.get("modules", {}).get(mapped_top)
+        if not isinstance(pre, dict):
+            raise ValidationError("missing explicit mapped top module")
+        mapped_nets = pre.get("netnames", {})
+        for name, item in mapped_nets.items():
+            bits = item.get("bits", [])
+            if item.get("upto", 0):
+                continue  # Ascending bus spelling needs a separately checked adapter.
+            offset = item.get("offset", 0)
+            if type(offset) is not int:
+                raise ValidationError("invalid mapped bus offset")
+            for index, bit in enumerate(bits):
+                if type(bit) is int:
+                    aliases_by_bit.setdefault(bit, []).append((name, index, len(bits), offset))
+
+    def resolve(full):
+        direct = nets.get(full, {}).get("bits", [])
+        found = set()
+        if len(direct) == 1:
+            found.add(direct[0])
+        before = mapped_nets.get(full, {}).get("bits", [])
+        if len(before) == 1:
+            prebit = before[0]
+            if prebit in ("0", "1"):
+                found.add(prebit)
+            for name, index, width, offset in aliases_by_bit.get(prebit, []):
+                # Consume a vector if retained, otherwise its exact split-bit
+                # spelling. All candidates originate in the mapped JSON.
+                vector = nets.get(name, {}).get("bits", [])
+                if len(vector) == width:
+                    found.add(vector[index])
+                split = nets.get(f"{name}[{offset+index}]", {}).get("bits", [])
+                if len(split) == 1:
+                    found.add(split[0])
+        if len(found) != 1:
+            raise ValidationError(f"unresolved or conflicting routed source alias: {full}")
+        bit = found.pop()
+        if not ((type(bit) is int and bit >= 0) or bit in ("0", "1")):
+            raise ValidationError(f"unknown routed source bit: {full}")
+        return bit
     q_drivers = {}
     for name, cell in cells.items():
         if cell.get("type") != "TRELLIS_FF":
@@ -39,10 +85,7 @@ def bind_snapshot_routed_identities(source_binding, routed, *, hierarchy, top="t
             if not isinstance(local, str) or not local:
                 raise ValidationError("invalid source alias")
             full = hierarchy + "." + local
-            bits = nets.get(full, {}).get("bits", [])
-            if len(bits) != 1 or not ((type(bits[0]) is int and bits[0] >= 0) or bits[0] in ("0", "1")):
-                raise ValidationError(f"unresolved routed source alias: {full}")
-            bit = bits[0]
+            bit = resolve(full)
             record = {"alias": full, "bit": bit}
             if category == "registers":
                 if type(bit) is str:
