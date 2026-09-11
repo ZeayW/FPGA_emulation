@@ -493,6 +493,15 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
 
 ## Benchmark and execution policy
 
+- Reference-platform development must start from identified public hardware,
+  communication implementation and execution-model references. Record source,
+  license, constraints, performance evidence and adaptation gaps before new RTL.
+  Do not treat a real board schematic or a passing self-authored simulation as
+  evidence of a practical multi-FPGA architecture. Establish the payload and
+  macrocycle budget first; no default slow host round trip per DUT cycle.
+  Observed-event positive slack is not a throughput qualification. The old
+  UART assembly is a functional prototype, not the accepted replacement platform.
+
 - Source-backed reference-hardware integration is distinct from the contest
   provider-comparison matrix. The dedicated `ulx3s-qualify` interface may
   validate a fixed real-board assembly with naturally connected RTL. Report

@@ -1,5 +1,12 @@
 # Credible reference hardware platform
 
+**Current decision: redevelopment required.** The UART assembly below remains
+a functional prototype, not an accepted practical emulation platform. Its
+previous overall completion claim is withdrawn. Follow the
+[reference-first selection plan](open-platform-reference-selection.md) before
+implementing a replacement; the historical offline test results remain valid
+only within their stated scope.
+
 ## Active target: fully open ECP5 reference platform
 
 The real-RTL qualification path now has an automatically generated macrocycle

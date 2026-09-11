@@ -3768,7 +3768,14 @@ classifications. It checks every TX/commit readiness result separately. This
 explicit finite-trace qualification entry still withholds global/full-flow
 promotion pending integrated validation and the remaining local hold,
 reset/CDC and physical acceptance gates; it is not measured link signoff.
-**Current acceptance:** the fully open dual-ULX3S reference implementation has
+**Current decision:** the UART-based platform is not accepted as a practical
+emulation reference; its overall completion claim is withdrawn. Redevelopment
+starts with existing architecture and communication implementations, their
+source/constraint audit and an explicit throughput budget. See
+[reference-first platform selection](docs/open-platform-reference-selection.md).
+No replacement platform is selected or performance-qualified yet.
+
+**Historical prototype evidence:** the fully open dual-ULX3S implementation has
 passed finite-trace offline integration on natural SERV, including physical host
 UART, both routed bitstreams and complete structural source-path accounting.
 This is reference-platform integration evidence, not a contest-matrix algorithm
