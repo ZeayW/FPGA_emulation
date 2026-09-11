@@ -3774,6 +3774,11 @@ starts with existing architecture and communication implementations, their
 source/constraint audit and an explicit throughput budget. See
 [reference-first platform selection](docs/open-platform-reference-selection.md).
 No replacement platform is selected or performance-qualified yet.
+The initial code audit reproduced all nine LiteICLink upstream tests with
+matching LiteX sources. It also identified the important reuse boundary:
+ECP5 SerDes streaming alone has no remote backpressure, while the documented
+SerWB dual-board demo is a bus extension rather than an emulation engine.
+These tests are dependency/interface evidence, not a physical platform pass.
 
 **Historical prototype evidence:** the fully open dual-ULX3S implementation has
 passed finite-trace offline integration on natural SERV, including physical host

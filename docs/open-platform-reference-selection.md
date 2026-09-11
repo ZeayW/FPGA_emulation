@@ -29,6 +29,49 @@ Upstream links to moving branches must be pinned before integration.
 
 ## Stop conditions before implementation
 
+### Code-level audit and upstream test reproduction
+
+Inspected LiteICLink revision `8a4ce305510614266dad462dbe6b1f154f7487f4`
+(BSD-2-Clause). Its unmodified nine upstream tests passed with LiteX revision
+`743825d3f625d3047039dbea0d9f47b0f7785135`, Migen 0.9.2 and LiteEth 2024.12.
+Using LiteX 2024.12 instead produced two construction errors because the newer
+core needs `CSRStorage.wr_stb`; do not patch away that dependency requirement.
+These are Python/Migen tests, not physical builds or measured link tests.
+
+- [`SerDesECP5.add_stream_endpoints`](https://github.com/enjoy-digital/liteiclink/blob/8a4ce305510614266dad462dbe6b1f154f7487f4/liteiclink/serdes/serdes_ecp5.py)
+  drives TX ready and RX valid constantly. It exposes continuously clocked
+  symbols, not a remotely backpressured lossless packet channel. Reusing this
+  block alone would leave most of the transport problem unsolved.
+- The pinned [`SerWB demo`](https://github.com/enjoy-digital/liteiclink/blob/8a4ce305510614266dad462dbe6b1f154f7487f4/bench/serwb/demo/README.md)
+  is stronger system evidence: it documents an ECPIX-5/iCEBreaker three-wire
+  assembly and remote register/SRAM operations. Its source supplies board
+  connectors, forwarded clock, initialization and Wishbone/Etherbone integration.
+  It is a bus-extension example, not a general emulation engine.
+- `serwb/genphy.py` sends one serial bit per clock using a forwarded-clock
+  relationship. The demo uses 25 MHz. `serwb/packet.py` emits two 32-bit header
+  words plus payload, without an end-to-end payload CRC field. Local FIFO
+  ready/valid is not proof of remote overload recovery or corrupt-word rejection.
+  `SERIOCore` is change-driven I/O propagation and is not a cycle-token protocol.
+- The nine tests cover construction/OOB defaults, digital word alignment,
+  scrambling, six-word Wishbone readback through a fake PHY and simulated
+  initialization success/failure. They do not establish sustained two-board
+  throughput, physical CDC closure, payload integrity or autonomous DUT execution.
+
+FireAxe's [platform documentation](https://docs.fires.im/en/1.21.0/Advanced-Usage/FireAxe-Partitioning-onto-Multiple-FPGAs/FireAxe-Overview.html)
+explicitly uses peer-to-peer PCIe on F1 or Aurora over QSFP on local FPGAs.
+These are not a verified commercial-IP-free ECP5 backend. The
+[ISCA 2024 paper](https://joonho3020.github.io/assets/ISCA2024-FireAxe.pdf)
+provides the relevant execution reference: queued cycle tokens, output production
+when dependent inputs are present and target advancement when token obligations
+are satisfied. Its reported MHz results belong to its own hardware/workloads,
+not to a proposed ECP5 port. Reusing this model would require explicit EmuFlow
+adaptation and validation, not simply connecting wires to SerDes.
+
+**Selection remains open:** neither a continuous-symbol SerDes bench nor the
+SerWB bus demo yet meets the complete requested platform contract. Next inspect
+the existing Ethernet framing/flow-control alternatives and reproduce the
+selected upstream board build before introducing any new EmuFlow transport.
+
 1. Identify the exact upstream code and license for board support, physical link,
    link initialization and transport/control. Record what is reused unchanged,
    adapted or still missing. A paper-only diagram is insufficient for claimed
@@ -60,6 +103,16 @@ It does not establish payload throughput, cable reliability or a target
 macrocycle. Do not promise a numerical speedup until those terms are measured
 or bounded under explicit assumptions. Select the intended operating budget
 before accepting implementation, not after discovering its achieved speed.
+
+For a transparent serialization-only comparison, six 32-bit words in one SerWB
+packet require `(6 + 2) * 40 = 320` encoded bits: 12.8 us at the demo's 25 MHz
+serial clock. Two sequential dependency rounds require at least 25.6 us even
+with concurrent opposite directions, before Etherbone, gaps, control, logic or
+CDC costs. Thus roughly 39,063 DUT cycles/s is an optimistic ceiling for that
+specific hypothetical traffic pattern, not a measured platform result. At
+2.5 Gbps, 8b/10b alone leaves at most 2 Gbps; a complete higher-layer framing
+and latency contract is still missing. These bounds prevent treating line-rate
+improvement as demonstrated emulation throughput.
 
 ## Delivery gates
 
