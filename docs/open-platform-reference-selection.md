@@ -103,6 +103,47 @@ that configuration explains the failure remains a diagnosis, not an established
 root cause. This failure does not prove every ECPIX-5 configuration is broken.
 The attempt is terminal; only its compact failure evidence remains.
 
+Restoring the target's default external DDR configuration removed the dedicated
+edge-clock routing failure and allowed routing to finish. Strict timing still
+failed: the Ethernet RX domain achieved 87.49 MHz against 125 MHz; the system
+domain achieved 93.84 MHz against 75 MHz. This isolates two different problems;
+it does not justify fabric routing of an edge clock.
+
+The upstream `SoC.add_etherbone(data_width=32)` option runs the protocol/MAC
+datapath in the system domain and retains the PHY clock domain through upstream
+CDC/width-conversion logic. LiteX-Boards' `colorlight_5a_75x` ECP5 target already
+uses that option. Applying only this configuration override to ECPIX-5 (external
+DDR, 75 MHz system, seed 1) produced 189.00 MHz RX timing, passing 125 MHz, but
+system timing was 73.09 MHz, failing 75 MHz. This is an explicit adaptation of
+an existing option, not an unmodified default-target pass.
+
+The explicit 50 MHz system configuration passed Yosys, strict nextpnr and
+ecppack in 187.79 seconds, with physical seed 1. Post-route RX timing achieved
+181.42 MHz against 125 MHz, system timing 66.45 MHz against 50 MHz, initialization
+381.10 MHz against 25 MHz and input-clock logic 461.47 MHz against 100 MHz.
+The build produced a bitstream, using 11,578 COMB and 4,748 FF. Neither
+`--allow-fabric-eclk` nor `--timing-allow-fail` was used. Its 32-bit internal raw
+bandwidth is 1.6 Gbit/s; that arithmetic is not sustained packet throughput.
+This qualifies a configuration-level upstream endpoint build, **not** a
+dual-board EmuFlow engine, external-interface timing signoff or measured hardware.
+
+The configuration override is a subclass of the pinned `BaseSoC` that forwards
+`add_etherbone` to the upstream implementation with `data_width=32`. Construction
+uses `device="85F", toolchain="trellis", sys_clk_freq=50e6,
+with_etherbone=True, cpu_type=None, uart_name="serial"`; default external DDR is
+retained. `Builder.build(..., timingstrict=True)` supplies the strict build.
+The native tool set was Yosys 0.69+10, nextpnr 0.11.1-25-ge47c2589 and ecppack
+from OSS CAD Suite 2026-09-10. Failed attempts and routed scratch are removed
+after process termination; compact terminal identities and summaries remain.
+
+The R02 schematic advertises all RGMII link capabilities, while the inspected
+target does not enable LiteEth's optional dynamic-link datapath. A selected
+platform must require and verify gigabit/full-duplex negotiation or explicitly
+configure the supported speed handling; silently assuming 1 Gbit/s after any
+link-up is insufficient. PHY skew/MDIO settings and board timing remain open
+items. CPU-free builds with DDR do not prove DDR runtime initialization, and
+nextpnr's ignored false-path constraints are not CDC/electrical signoff.
+
 Ethernet supplies stronger standardized physical/interconnect references than
 custom GPIO wiring. It still does not supply an off-the-shelf complete EmuFlow
 engine. Selection requires resolving the build issue, auditing PHY timing and
@@ -161,6 +202,24 @@ evaluation and any commit handshake are additional. Standard line rate must
 not be converted into a fabricated fixed BoardDB latency.
 
 ## Delivery gates
+
+### Decision before new transport RTL
+
+The inspected references do not yet provide a directly reusable, complete
+commercial-tool-free ECP5 multi-FPGA emulation engine. The feasible candidate is
+**two ECPIX-5 boards using their existing gigabit Ethernet ports and LiteEth**,
+with the upstream board pins, PHY/MAC/CDC implementation and strict open build.
+FireAxe supplies an execution-model reference, not a reusable Ethernet adapter.
+
+This candidate still requires EmuFlow-specific target-cycle/round identity,
+complete-packet admission, duplicate/stale rejection, bounded buffering and a
+fault policy that cannot silently advance the DUT after loss or reset. Host
+input/output should be batched and target advancement autonomous. These are
+new integration work, not capabilities established by the Etherbone build.
+Do not quietly label the combination an existing mature emulation architecture.
+Confirm acceptance of this reference-backed integration scope with the user
+before adding its transport RTL. No claim of measured link latency, BER or
+throughput is possible without physical boards.
 
 - A: source and missing-component audit, with justified platform selection.
 - B: unmodified upstream endpoint build and independent interface/fault tests.

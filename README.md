@@ -3781,7 +3781,14 @@ SerWB dual-board demo is a bus extension rather than an emulation engine.
 These tests are dependency/interface evidence, not a physical platform pass.
 The Ethernet alternative has also passed 31 upstream LiteEth tests. A real
 strict build of the upstream CPU-free ECPIX-5 Etherbone configuration failed
-dedicated edge-clock routing; no bitstream or platform qualification is claimed.
+dedicated edge-clock routing. Restoring default DDR removed that failure but
+RX timing failed 125 MHz. Selecting upstream's 32-bit system datapath passed
+RX timing (189 MHz) but narrowly failed the 75 MHz system clock (73.09 MHz).
+The explicit 32-bit/50 MHz system configuration then passed Yosys, strict nextpnr
+and ecppack: post-route RX 181.42 MHz meets 125 MHz and system 66.45 MHz meets
+50 MHz. It produced a bitstream in 187.79 seconds without timing/skew bypasses.
+This is an upstream-component endpoint build, not dual-board EmuFlow acceptance,
+measured Ethernet throughput, external-interface signoff or hardware validation.
 The failure and serialization-only budgets are recorded in the selection plan;
 timing/skew checks were not disabled to obtain a nominal pass.
 
