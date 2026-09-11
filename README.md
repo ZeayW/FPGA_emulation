@@ -3779,6 +3779,11 @@ matching LiteX sources. It also identified the important reuse boundary:
 ECP5 SerDes streaming alone has no remote backpressure, while the documented
 SerWB dual-board demo is a bus extension rather than an emulation engine.
 These tests are dependency/interface evidence, not a physical platform pass.
+The Ethernet alternative has also passed 31 upstream LiteEth tests. A real
+strict build of the upstream CPU-free ECPIX-5 Etherbone configuration failed
+dedicated edge-clock routing; no bitstream or platform qualification is claimed.
+The failure and serialization-only budgets are recorded in the selection plan;
+timing/skew checks were not disabled to obtain a nominal pass.
 
 **Historical prototype evidence:** the fully open dual-ULX3S implementation has
 passed finite-trace offline integration on natural SERV, including physical host

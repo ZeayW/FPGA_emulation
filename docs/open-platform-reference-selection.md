@@ -72,6 +72,43 @@ SerWB bus demo yet meets the complete requested platform contract. Next inspect
 the existing Ethernet framing/flow-control alternatives and reproduce the
 selected upstream board build before introducing any new EmuFlow transport.
 
+### Ethernet candidate: implementation evidence, not yet selected
+
+LiteEth `8c9150ff121cb3148d8ea26ce3b1c5200479848d` with the LiteX revision above
+passed 31 unmodified tests from `test_ecp5rgmii`, `test_crc`, `test_mac_packet`,
+`test_stream` and `test_udp`. These cover digital RGMII behavior, CRC loopback,
+complete packet buffering, late-error/oversize drops and UDP streaming. The
+source provides MAC FCS checking and packet error propagation, but UDP streaming
+does not itself supply end-to-end acknowledgments, loss recovery or target-cycle
+identity. An EmuFlow consumer must never commit on a partial or dropped packet.
+
+LiteX-Boards `3e606b50b3f14e31d4bf565e5ba3cac3d21f841d` provides a concrete
+[ECPIX-5 target](https://github.com/litex-hub/litex-boards/blob/3e606b50b3f14e31d4bf565e5ba3cac3d21f841d/litex_boards/targets/lambdaconcept_ecpix5.py)
+and pin platform: LFE5UM5G-85F-8BG554I, onboard RGMII Ethernet and Trellis build.
+This is not the ULX3S LFE5U/CABGA381 device. The manufacturer publishes the
+[R02 schematic](https://docs.lambdaconcept.com/ecpix-5/_static/resources/SCH_ECPIX-5_R02.PDF)
+with KSZ9031 Ethernet PHY and RJ45 connection; exact timing/strap audit is still
+required before selecting it.
+
+An unmodified target configuration (`--with-etherbone --cpu-type None
+--integrated-main-ram-size 32768 --toolchain trellis --device 85F`, 75 MHz,
+physical seed 1 and strict nextpnr timing) was generated and actually submitted
+to Yosys/nextpnr/ecppack. Synthesis passed, but nextpnr terminated at dedicated
+clock routing: it could not route `crg_clkout0` to `ECLKSYNCB.ECLKI`. No bitstream
+was produced. The pre-route RX clock estimate also failed 125 MHz and is not a
+post-route timing result. The suggested `--allow-fabric-eclk` workaround was
+**not** used because it introduces indeterminate skew. The upstream clock tree
+retains DDR-oriented ECLKSYNCB/CLKDIVF even with integrated main RAM; whether
+that configuration explains the failure remains a diagnosis, not an established
+root cause. This failure does not prove every ECPIX-5 configuration is broken.
+The attempt is terminal; only its compact failure evidence remains.
+
+Ethernet supplies stronger standardized physical/interconnect references than
+custom GPIO wiring. It still does not supply an off-the-shelf complete EmuFlow
+engine. Selection requires resolving the build issue, auditing PHY timing and
+defining the minimal reference-backed execution adapter without reinstating
+per-cycle host communication.
+
 1. Identify the exact upstream code and license for board support, physical link,
    link initialization and transport/control. Record what is reused unchanged,
    adapted or still missing. A paper-only diagram is insufficient for claimed
@@ -113,6 +150,15 @@ specific hypothetical traffic pattern, not a measured platform result. At
 2.5 Gbps, 8b/10b alone leaves at most 2 Gbps; a complete higher-layer framing
 and latency contract is still missing. These bounds prevent treating line-rate
 improvement as demonstrated emulation throughput.
+
+For 1 Gbps Ethernet, an untagged IPv4/UDP packet carrying six 32-bit words has
+24 bytes of payload plus 14 MAC, 20 IPv4, 8 UDP and 4 FCS bytes. Including eight
+preamble/SFD and twelve inter-frame-gap byte times yields 90 byte times / 720 ns.
+Two sequential full-duplex exchange rounds therefore cost at least 1.44 us in
+serialization alone. This is a lower bound, not a delay guarantee: PHY latency,
+MAC buffering, clock crossings, ARP, congestion, application headers, local
+evaluation and any commit handshake are additional. Standard line rate must
+not be converted into a fabricated fixed BoardDB latency.
 
 ## Delivery gates
 
