@@ -3773,7 +3773,17 @@ emulation reference; its overall completion claim is withdrawn. Redevelopment
 starts with existing architecture and communication implementations, their
 source/constraint audit and an explicit throughput budget. See
 [reference-first platform selection](docs/open-platform-reference-selection.md).
-No replacement platform is selected or performance-qualified yet.
+ECPIX-5 plus LiteEth is selected for integration, with real Koios DLA medium
+requested for acceptance. It is not yet a performance-qualified platform.
+The initial Python integration constructs the real upstream UDP port and
+attaches whole-packet admission using LiteX PacketFIFO (late-error, length and
+peer checks). Session/cycle control and complete DLA integration remain pending.
+Twelve focused construction/contract and packet-simulation tests cover this
+boundary, not a completed DLA run.
+DLA medium capacity preflight already found that the upstream coarse hard-DSP
+mapping uses 736 multipliers, exceeding the fixed pair's 312 physical units
+(234 at 75%). Alternative soft/mixed mapping and complete physical acceptance
+remain unresolved; the workload and device capacities have not been changed.
 The initial code audit reproduced all nine LiteICLink upstream tests with
 matching LiteX sources. It also identified the important reuse boundary:
 ECP5 SerDes streaming alone has no remote backpressure, while the documented

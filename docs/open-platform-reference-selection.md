@@ -1,6 +1,6 @@
 # Reference-first platform redevelopment
 
-Status: research and feasibility gates in progress; no replacement selected.
+Status: ECPIX-5/LiteEth integration authorized; DLA medium acceptance pending.
 
 ## Acceptance correction
 
@@ -67,12 +67,11 @@ are satisfied. Its reported MHz results belong to its own hardware/workloads,
 not to a proposed ECP5 port. Reusing this model would require explicit EmuFlow
 adaptation and validation, not simply connecting wires to SerDes.
 
-**Selection remains open:** neither a continuous-symbol SerDes bench nor the
-SerWB bus demo yet meets the complete requested platform contract. Next inspect
-the existing Ethernet framing/flow-control alternatives and reproduce the
-selected upstream board build before introducing any new EmuFlow transport.
+Neither a continuous-symbol SerDes bench nor the SerWB bus demo meets the
+complete requested platform contract. The selected integration uses ECPIX-5's
+existing Ethernet interface and LiteEth instead, with the reuse boundary below.
 
-### Ethernet candidate: implementation evidence, not yet selected
+### Selected Ethernet components: implementation evidence
 
 LiteEth `8c9150ff121cb3148d8ea26ce3b1c5200479848d` with the LiteX revision above
 passed 31 unmodified tests from `test_ecp5rgmii`, `test_crc`, `test_mac_packet`,
@@ -217,9 +216,35 @@ fault policy that cannot silently advance the DUT after loss or reset. Host
 input/output should be batched and target advancement autonomous. These are
 new integration work, not capabilities established by the Etherbone build.
 Do not quietly label the combination an existing mature emulation architecture.
-Confirm acceptance of this reference-backed integration scope with the user
-before adding its transport RTL. No claim of measured link latency, BER or
+The user has authorized this integration and requested real Koios DLA medium
+as the validation workload. No claim of measured link latency, BER or
 throughput is possible without physical boards.
+
+The initial `ecpix5_liteeth.make_ecpix5_endpoint` integration constructs the
+actual pinned upstream SoC/UDP application port and attaches a LiteX PacketFIFO
+admission stage. The stage withholds every packet until its last word, rejects
+late errors, wrong peers/ports, invalid length and truncated/oversized data, and
+latches a run-invalidating fault. It does not yet provide target-cycle/session
+validation, a transmitter, autonomous control, or complete DUT integration.
+Six contract/construction tests and six packet simulations cover this initial
+boundary; they are not DLA equivalence or physical acceptance.
+
+DLA medium is the catalog-pinned `dla_like.medium.v`, top `DLA`, revision
+`95f5c6de9e158371ba7185bf97c07a84153735d6`, target period 10 ns. Existing
+Xilinx/VTR run settings must not be reused as ECP5 physical evidence. The first
+gate maps its actual logic to LUT4/FF and checks the fixed pair's 75% capacity;
+the final check must include communication logic and physical packing. Do not
+silently shrink the workload or enlarge the device if capacity fails.
+
+An actual upstream `synth_ecp5` coarse mapping of this source produced 736
+`MULT18X18D` cells. Two 85F devices contain only 312 such cells in total, or
+234 at the 75% policy. That specific hard-DSP mapping does not fit the pair;
+it is not proof that every mixed DSP/soft-logic implementation is impossible.
+The separate generic LUT4/FF mapping remains pending. The coarse diagnostic
+stopped before RAM mapping (`-run begin:map_ram`) and its attempted full JSON
+export failed on an unused library module containing processes. Native DLA
+statistics were retained; this is neither a successful complete synthesis nor
+a BRAM-capacity result, and the failed scratch has been removed.
 
 - A: source and missing-component audit, with justified platform selection.
 - B: unmodified upstream endpoint build and independent interface/fault tests.
