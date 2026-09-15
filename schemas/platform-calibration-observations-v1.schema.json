@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/platform-calibration-observations-v1.schema.json",
+  "title": "EmuFlow aggregate platform calibration observations v1",
+  "type": "object",
+  "required": ["schema", "dataset"],
+  "properties": {
+    "schema": {"const": "emuflow.platform-calibration-observations/v1"},
+    "dataset": {
+      "type": "object",
+      "required": ["id", "role", "reference_alias", "source_class", "authorization_id", "publication_scope"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "role": {"enum": ["fit", "holdout"]},
+        "reference_alias": {"type": "string", "minLength": 1},
+        "source_class": {"enum": ["authorized_reference_flow", "synthetic_fixture"]},
+        "authorization_id": {"type": "string", "minLength": 1},
+        "publication_scope": {"enum": ["internal", "aggregate_only", "public"]}
+      },
+      "additionalProperties": false
+    },
+    "capacity_boundaries": {"type": "array"},
+    "link_capacity_boundaries": {"type": "array"},
+    "link_delay_measurements": {"type": "array"}
+  },
+  "additionalProperties": false
+}

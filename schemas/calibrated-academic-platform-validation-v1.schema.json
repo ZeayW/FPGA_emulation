@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/calibrated-academic-platform-validation-v1.schema.json",
+  "title": "EmuFlow calibrated academic platform holdout validation v1",
+  "type": "object",
+  "required": ["schema", "model", "fit_dataset_id", "holdout_dataset_id", "status", "gates", "thresholds"],
+  "properties": {
+    "schema": {"const": "emuflow.calibrated-academic-platform-validation/v1"},
+    "status": {"enum": ["pass", "fail"]}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/calibrated-academic-platform-v1.schema.json",
+  "title": "EmuFlow behaviorally calibrated academic platform v1",
+  "type": "object",
+  "required": ["schema", "model", "device", "link", "configurations", "profiles", "calibration", "acceptance"],
+  "properties": {
+    "schema": {"const": "emuflow.calibrated-academic-platform/v1"},
+    "model": {
+      "type": "object",
+      "required": ["name", "qualification", "not_a_hardware_clone", "reference_alias", "source_class", "authorization_id", "publication_scope"],
+      "properties": {
+        "qualification": {"const": "behaviorally_calibrated_academic_model"},
+        "not_a_hardware_clone": {"const": true}
+      },
+      "additionalProperties": true
+    },
+    "device": {"type": "object"},
+    "link": {"type": "object"},
+    "configurations": {"type": "array", "minItems": 1},
+    "profiles": {
+      "type": "object",
+      "required": ["conservative", "nominal", "aggressive"],
+      "additionalProperties": false
+    },
+    "calibration": {"type": "object"},
+    "acceptance": {"type": "object"}
+  },
+  "additionalProperties": false
+}

@@ -55,6 +55,11 @@ from .board_link_timing import (
     validate_board_link_timing,
 )
 from .board_support import validate_board_support_overlay_file
+from .calibrated_platform import (
+    fit_calibrated_platform_files,
+    materialize_calibrated_boarddb_file,
+    validate_calibrated_platform_holdout_files,
+)
 from .bsp import run_phase8a
 from .cross_stage import (
     evaluate_cross_stage_candidate,
@@ -1173,6 +1178,40 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     platform_link_validate.add_argument("--platform", type=Path, required=True)
     platform_link_validate.add_argument("--input", type=Path, required=True)
+    platform_calibrated_fit = platform_subparsers.add_parser(
+        "calibrated-fit",
+        help="fit an academic platform from controlled aggregate observations",
+    )
+    platform_calibrated_fit.add_argument("--template", type=Path, required=True)
+    platform_calibrated_fit.add_argument(
+        "--observations", type=Path, required=True
+    )
+    platform_calibrated_fit.add_argument("--output", "-o", type=Path, required=True)
+    platform_calibrated_validate = platform_subparsers.add_parser(
+        "calibrated-holdout-validate",
+        help="blind-validate a calibrated academic platform",
+    )
+    platform_calibrated_validate.add_argument("--model", type=Path, required=True)
+    platform_calibrated_validate.add_argument(
+        "--observations", type=Path, required=True
+    )
+    platform_calibrated_validate.add_argument("--output", "-o", type=Path)
+    platform_calibrated_materialize = platform_subparsers.add_parser(
+        "calibrated-materialize",
+        help="materialize one explicitly supported calibrated BoardDB",
+    )
+    platform_calibrated_materialize.add_argument("--model", type=Path, required=True)
+    platform_calibrated_materialize.add_argument(
+        "--configuration", required=True
+    )
+    platform_calibrated_materialize.add_argument(
+        "--profile",
+        choices=("conservative", "nominal", "aggressive"),
+        default="nominal",
+    )
+    platform_calibrated_materialize.add_argument(
+        "--output", "-o", type=Path, required=True
+    )
 
     phy_provider = subparsers.add_parser(
         "phy-provider", help="serial PHY provider and vendor recipe operations"
@@ -4298,6 +4337,27 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0 if report.get("status") not in {"failed", "submit_failed"} else 2
 
     if args.command == "platform":
+        if args.platform_command == "calibrated-fit":
+            report = fit_calibrated_platform_files(
+                args.template, args.observations, args.output
+            )
+            _print_json(report)
+            return 0
+        if args.platform_command == "calibrated-holdout-validate":
+            report = validate_calibrated_platform_holdout_files(
+                args.model, args.observations, args.output
+            )
+            _print_json(report)
+            return 0 if report["status"] == "pass" else 2
+        if args.platform_command == "calibrated-materialize":
+            report = materialize_calibrated_boarddb_file(
+                args.model,
+                args.configuration,
+                args.profile,
+                args.output,
+            )
+            _print_json(report)
+            return 0
         if args.platform_command == "arm-mps4-materialize":
             report = materialize_arm_mps4_boarddb(
                 output_path=args.output,

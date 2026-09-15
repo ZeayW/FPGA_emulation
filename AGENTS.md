@@ -310,6 +310,35 @@ policy.
   attempts, duplicated ancestors, and other scratch. Never delete unrelated
   tasks or unvalidated evidence merely to make a run fit.
 
+## Calibrated academic platform policy
+
+- A behaviorally calibrated platform is an academic model, not a clone or
+  reverse-engineered description of the reference hardware or software. Public
+  names, documentation, and reports must state this boundary explicitly.
+- Use a proprietary reference flow only under a recorded authorization ID and
+  publication scope. Raw reports, licensed files, internal paths, credentials,
+  and vendor implementation details stay outside the repository. Check in only
+  reusable code, schemas, public templates, and publication-authorized aggregate
+  parameters.
+- Hardware-parameter fitting requires controlled microbenchmarks with fixed
+  FPGA assignment and fixed route. Free partitioning or routing runs are
+  application-level holdout evidence only; never interpret their decisions as
+  device capacity, topology, link latency, or bandwidth measurements.
+- Fit and holdout observation IDs must be disjoint. Report capacity intervals,
+  timing residuals, acceptance thresholds, and failed holdout gates; do not
+  publish a single fitted number without its identifiable evidence boundary.
+- A calibrated model may materialize only explicitly enumerated supported
+  platform configurations. FPGA count and topology are not generated
+  arbitrarily from a requested number of devices.
+- Nominal, conservative, and aggressive profiles share the same declared
+  topology and model equation. They differ only within measured capacity and
+  timing uncertainty intervals; they must not silently change the workload or
+  reference-flow optimization settings.
+- Calibration implementation and tests may use synthetic fixtures, but a
+  platform is not qualified until a separately collected authorized fit set and
+  blind application holdout set pass. Algorithm claims still require the normal
+  complete Phase 1--7 endpoint and final system-global WNS/TNS.
+
 ## Managed-flow hot paths must stay compact
 
 - The OpenSTA global timing route must execute independently of the Python

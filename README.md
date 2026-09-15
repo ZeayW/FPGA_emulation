@@ -145,6 +145,12 @@ An optional Vivado provider implements the same timing and physical-result
 contracts for a concrete Xilinx part. Vivado is proprietary, is not bundled,
 and is never required by the default open path.
 
+An experimental calibrated-academic-platform path can fit a public, editable
+behavior model from publication-authorized aggregate observations of a reference
+flow. It is explicitly not a hardware clone and is not yet the default platform.
+Only named topology configurations may be materialized; fit and blind holdout
+datasets remain separate.
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both
@@ -4216,3 +4222,52 @@ units remain **unknown**, not estimated from bit-slice atoms or total cells.
 Historical summaries without resource measurements also remain unknown.
 BoardDB-relative loading does not certify physical-device capacity equivalence;
 do not shrink an academic BoardDB and describe it as a smaller physical device.
+
+## Behaviorally calibrated academic platform (experimental)
+
+The first calibration milestone adds a strict, tool-independent contract for
+constructing an academic multi-FPGA model from controlled observations. The
+reference flow supplies aggregate outcomes; EmuFlow owns the model and never
+imports the reference partitioner, router, raw reports, licensed files, or
+internal data structures.
+
+The current implementation fits:
+
+- per-resource effective-capacity intervals from fixed-assignment pass/fail
+  boundaries;
+- per-direction link payload capacity from fixed-route pass/fail boundaries;
+- endpoint, per-hop, serialization/TDM-slot, and contention timing components
+  from controlled delay measurements;
+- conservative, nominal, and aggressive profiles within the measured
+  intervals.
+
+It rejects free partitioning/routing observations during hardware-parameter
+fitting, non-identifiable timing experiments, reused fit observations in the
+holdout set, and arbitrary FPGA-count/topology generation. A model can produce
+BoardDB only for configurations enumerated in its source template.
+
+```sh
+emuflow platform calibrated-fit \
+  --template platform-template.json \
+  --observations controlled-fit-observations.json \
+  --output calibrated-model.json
+
+emuflow platform calibrated-holdout-validate \
+  --model calibrated-model.json \
+  --observations blind-holdout-observations.json \
+  --output holdout-validation.json
+
+emuflow platform calibrated-materialize \
+  --model calibrated-model.json \
+  --configuration 4fpga-ring \
+  --profile nominal \
+  --output boarddb.json
+```
+
+The schemas are
+`emuflow.calibrated-platform-template/v1`,
+`emuflow.platform-calibration-observations/v1`, and
+`emuflow.calibrated-academic-platform/v1`. Synthetic observations are limited
+to unit tests. No PPro-derived parameter is checked in at this milestone, and
+real microbenchmark collection plus application-level blind validation remain
+pending. See [the calibration plan](docs/CALIBRATED_ACADEMIC_PLATFORM.md).
