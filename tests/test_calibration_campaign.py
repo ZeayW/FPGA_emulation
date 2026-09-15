@@ -28,7 +28,13 @@ def campaign():
                 "id": "2fpga-p2p",
                 "topology_file": "/external/synthetic-2fpga.stf",
                 "targets": {"F0": "B1.F1", "F1": "B1.F2"},
-                "routes": [{"id": "F0-F1", "path": ["F0", "F1"]}],
+                "routes": [
+                    {
+                        "id": "F0-F1",
+                        "path": ["F0", "F1"],
+                        "control": "topology_unique_path",
+                    }
+                ],
             },
             {
                 "id": "3fpga-chain",
@@ -38,7 +44,13 @@ def campaign():
                     "F1": "B1.F2",
                     "F2": "B1.F3",
                 },
-                "routes": [{"id": "F0-F2", "path": ["F0", "F1", "F2"]}],
+                "routes": [
+                    {
+                        "id": "F0-F2",
+                        "path": ["F0", "F1", "F2"],
+                        "control": "topology_unique_path",
+                    }
+                ],
             },
         ],
         "cases": [
@@ -145,6 +157,20 @@ class CalibrationCampaignTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "single-hop"):
             validate_calibration_campaign(value)
 
+    def test_observed_route_must_match_unique_topology_path(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest = plan_calibration_campaign(campaign(), root)
+            self._result(
+                root,
+                "link-32",
+                "pass",
+                {},
+                observed_route=["F0", "F9", "F1"],
+            )
+            with self.assertRaisesRegex(ValidationError, "observed route"):
+                collect_calibration_observations(manifest, root)
+
     def test_existing_output_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -173,7 +199,25 @@ class CalibrationCampaignTest(unittest.TestCase):
                 collect_calibration_observations(manifest, root)
 
     @staticmethod
-    def _result(root, case_id, status, metrics, assignment=True, route=True):
+    def _result(
+        root,
+        case_id,
+        status,
+        metrics,
+        assignment=True,
+        route=True,
+        observed_route=None,
+    ):
+        assignments = {
+            "lut-100": {"u_probe": "B1.F1"},
+            "lut-provider-failure": {"u_probe": "B1.F1"},
+            "link-32": {"u_source": "B1.F1", "u_sink": "B1.F2"},
+            "delay-two-hop": {"u_source": "B1.F1", "u_sink": "B1.F3"},
+        }
+        routes = {
+            "link-32": ["F0", "F1"],
+            "delay-two-hop": ["F0", "F1", "F2"],
+        }
         write_json(
             root / "cases" / case_id / "result.json",
             {
@@ -183,6 +227,12 @@ class CalibrationCampaignTest(unittest.TestCase):
                 "controls": {
                     "assignment_applied": assignment,
                     "route_applied": route,
+                    "observed_assignment": assignments[case_id],
+                    "observed_route": (
+                        observed_route
+                        if observed_route is not None
+                        else routes.get(case_id)
+                    ),
                 },
                 "metrics": metrics,
             },

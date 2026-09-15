@@ -256,9 +256,14 @@ def validate_calibration_campaign(value: Mapping[str, Any]) -> Dict[str, Any]:
             route = _mapping(raw_route, "campaign route")
             _reject_unknown(
                 route,
-                {"id", "path"},
+                {"id", "path", "control"},
                 f"campaign.configurations[{index}].routes[{route_index}]",
             )
+            control = _string(route.get("control"), "campaign route control")
+            if control != "topology_unique_path":
+                raise ValidationError(
+                    "campaign route control: only topology_unique_path is supported"
+                )
             path = [
                 _string(fpga, "campaign route path")
                 for fpga in _array(route.get("path"), "campaign route path", nonempty=True)
@@ -268,7 +273,11 @@ def validate_calibration_campaign(value: Mapping[str, Any]) -> Dict[str, Any]:
             if len(path) != len(set(path)):
                 raise ValidationError("campaign route path must not repeat an FPGA")
             routes.append(
-                {"id": _identifier(route.get("id"), "campaign route id"), "path": path}
+                {
+                    "id": _identifier(route.get("id"), "campaign route id"),
+                    "path": path,
+                    "control": control,
+                }
             )
         _unique(routes, "campaign routes")
         configurations.append(
@@ -397,6 +406,9 @@ def plan_calibration_campaign(
                 f"{{{configuration['targets'][case['target_fpga']]}}}\n"
             )
             controlled_route = None
+            expected_assignment = {
+                "u_probe": configuration["targets"][case["target_fpga"]]
+            }
         else:
             rtl = _link_rtl(case["payload_bits"], case["parallel_flows"])
             source = case["route_path"][0]
@@ -406,6 +418,10 @@ def plan_calibration_campaign(
                 f"assign_inst {{u_sink}} {{{configuration['targets'][sink]}}}\n"
             )
             controlled_route = case["route_path"]
+            expected_assignment = {
+                "u_source": configuration["targets"][source],
+                "u_sink": configuration["targets"][sink],
+            }
         (case_dir / "design.sv").write_text(rtl, encoding="utf-8")
         (case_dir / "filelist.f").write_text("design.sv\n", encoding="utf-8")
         (case_dir / "prepartition.cfg").write_text(constraints, encoding="utf-8")
@@ -420,8 +436,11 @@ def plan_calibration_campaign(
                 ),
                 "topology_file": configuration["topology_file"],
                 "assignment_control": "fixed",
+                "expected_assignment": expected_assignment,
                 "route_control": (
-                    "declared_path" if controlled_route is not None else "not_applicable"
+                    "topology_unique_path"
+                    if controlled_route is not None
+                    else "not_applicable"
                 ),
                 "controlled_route": controlled_route,
                 "result_contract": str(
@@ -480,6 +499,14 @@ def collect_calibration_observations(
             raise ValidationError(
                 f"campaign result {case['id']!r}: fixed assignment was not applied"
             )
+        observed_assignment = _mapping(
+            controls.get("observed_assignment"),
+            f"result {case['id']}.controls.observed_assignment",
+        )
+        if dict(observed_assignment) != case.get("expected_assignment"):
+            raise ValidationError(
+                f"campaign result {case['id']!r}: observed assignment does not match control"
+            )
         metrics = _mapping(result.get("metrics"), f"result {case['id']}.metrics")
         if case["kind"] == "capacity_boundary":
             if status not in {"pass", "capacity_fail"}:
@@ -503,6 +530,11 @@ def collect_calibration_observations(
                 raise ValidationError(
                     f"campaign result {case['id']!r}: fixed route was not applied"
                 )
+            if controls.get("observed_route") != case["route_path"]:
+                raise ValidationError(
+                    f"campaign result {case['id']!r}: observed route does not match "
+                    "the topology-unique path"
+                )
             if status not in {"pass", "link_capacity_fail"}:
                 raise ValidationError(f"campaign result {case['id']!r}: wrong failure class")
             link_capacity_boundaries.append(
@@ -520,6 +552,11 @@ def collect_calibration_observations(
             if status != "pass" or controls.get("route_applied") is not True:
                 raise ValidationError(
                     f"campaign result {case['id']!r}: delay case did not run its fixed route"
+                )
+            if controls.get("observed_route") != case["route_path"]:
+                raise ValidationError(
+                    f"campaign result {case['id']!r}: observed route does not match "
+                    "the topology-unique path"
                 )
             delay = metrics.get("sr0_worst_cross_fpga_delay_ns")
             if isinstance(delay, bool) or not isinstance(delay, (int, float)) or delay <= 0:

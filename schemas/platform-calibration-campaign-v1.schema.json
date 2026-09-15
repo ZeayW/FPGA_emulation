@@ -38,10 +38,11 @@
             "minItems": 1,
             "items": {
               "type": "object",
-              "required": ["id", "path"],
+              "required": ["id", "path", "control"],
               "properties": {
                 "id": {"type": "string", "minLength": 1},
-                "path": {"type": "array", "minItems": 2, "items": {"type": "string", "minLength": 1}}
+                "path": {"type": "array", "minItems": 2, "items": {"type": "string", "minLength": 1}},
+                "control": {"const": "topology_unique_path"}
               },
               "additionalProperties": false
             }

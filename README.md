@@ -4274,8 +4274,8 @@ emuflow platform calibrated-materialize \
 ```
 
 The campaign planner generates isolated probes, fixed PPro assignment
-constraints, and declared routes. Its collector requires the external adapter
-to attest that those controls were applied, and keeps license/provider failures
+constraints, and topology-unique routes. Its collector compares the observed
+assignment and route against those controls, and keeps license/provider failures
 out of capacity inference. The schemas are
 `emuflow.calibrated-platform-template/v1`,
 `emuflow.platform-calibration-observations/v1`, and

@@ -12,10 +12,18 @@
     },
     "controls": {
       "type": "object",
-      "required": ["assignment_applied", "route_applied"],
+      "required": ["assignment_applied", "route_applied", "observed_assignment", "observed_route"],
       "properties": {
         "assignment_applied": {"type": "boolean"},
-        "route_applied": {"type": "boolean"}
+        "route_applied": {"type": "boolean"},
+        "observed_assignment": {
+          "type": "object",
+          "additionalProperties": {"type": "string", "minLength": 1}
+        },
+        "observed_route": {
+          "type": ["array", "null"],
+          "items": {"type": "string", "minLength": 1}
+        }
       },
       "additionalProperties": false
     },

@@ -20,9 +20,11 @@ algorithm rankings.
 - Repository artifacts use an opaque reference alias and authorization ID.
 - Public output contains only parameters and aggregates permitted by the
   recorded publication scope.
-- Fixed FPGA assignment and fixed route isolate hardware behavior during
-  fitting. A free run combines hardware behavior with the reference tool's
-  optimization decisions and therefore cannot identify hardware parameters.
+- Fixed FPGA assignment and a topology with a unique source-to-sink path
+  isolate hardware behavior during fitting. The observed assignment and route
+  must match those controls. A free run combines hardware behavior with the
+  reference tool's optimization decisions and therefore cannot identify
+  hardware parameters.
 - The platform offers only explicitly supported configurations. Asking for
   eight FPGAs cannot synthesize a new topology unless an eight-FPGA
   configuration was independently observed and declared.
