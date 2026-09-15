@@ -33,7 +33,7 @@
         "actual_resource_demand_per_fpga": {"type": "integer", "minimum": 1},
         "sr0_worst_cross_fpga_delay_ns": {"type": "number", "exclusiveMinimum": 0},
         "sr0_cross_fpga_path_count": {"type": "integer", "minimum": 1},
-        "tdm_wait_slots": {"type": "integer", "minimum": 0}
+        "sr0_max_tdm_ratio": {"type": "integer", "minimum": 1}
       },
       "additionalProperties": false
     }

@@ -7,6 +7,7 @@ from emuflow.calibration_campaign import (
     collect_calibration_observations,
     plan_calibration_campaign,
     validate_calibration_campaign,
+    validate_calibration_run_result,
 )
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
@@ -143,7 +144,7 @@ class CalibrationCampaignTest(unittest.TestCase):
                 {
                     "sr0_worst_cross_fpga_delay_ns": 31.5,
                     "sr0_cross_fpga_path_count": 192,
-                    "tdm_wait_slots": 2,
+                    "sr0_max_tdm_ratio": 3,
                 },
             )
             observations = collect_calibration_observations(manifest, root)
@@ -155,6 +156,24 @@ class CalibrationCampaignTest(unittest.TestCase):
             self.assertEqual(observations["capacity_boundaries"][0]["demand_per_fpga"], 98)
             self.assertEqual(observations["link_delay_measurements"][0]["hop_count"], 2)
             self.assertEqual(observations["link_delay_measurements"][0]["contention_units"], 2)
+            self.assertEqual(observations["link_delay_measurements"][0]["max_tdm_ratio"], 3)
+
+    def test_result_contract_rejects_unknown_diagnostic_fields(self):
+        value = {
+            "schema": RUN_RESULT_SCHEMA,
+            "case_id": "case-1",
+            "status": "pass",
+            "controls": {
+                "assignment_applied": True,
+                "route_applied": False,
+                "observed_assignment": {},
+                "observed_route": None,
+            },
+            "metrics": {},
+            "raw_report_path": "/private/reference/report",
+        }
+        with self.assertRaisesRegex(ValidationError, "unknown fields"):
+            validate_calibration_run_result(value, expected_case_id="case-1")
 
     def test_missing_fixed_control_is_rejected(self):
         with tempfile.TemporaryDirectory() as raw:

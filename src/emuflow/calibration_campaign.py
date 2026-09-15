@@ -139,6 +139,110 @@ run_system_route
 """
 
 
+def validate_calibration_run_result(
+    value: Mapping[str, Any], *, expected_case_id: str
+) -> Dict[str, Any]:
+    root = _mapping(value, "campaign result")
+    _reject_unknown(
+        root,
+        {"schema", "case_id", "status", "controls", "metrics"},
+        "campaign result",
+    )
+    if root.get("schema") != RUN_RESULT_SCHEMA:
+        raise ValidationError(
+            f"campaign result.schema: expected {RUN_RESULT_SCHEMA!r}"
+        )
+    case_id = _identifier(root.get("case_id"), "campaign result.case_id")
+    if case_id != expected_case_id:
+        raise ValidationError("campaign result.case_id: identity mismatch")
+    status = _string(root.get("status"), "campaign result.status")
+    if status not in _RUN_STATUSES:
+        raise ValidationError("campaign result.status: unsupported status")
+
+    controls = _mapping(root.get("controls"), "campaign result.controls")
+    _reject_unknown(
+        controls,
+        {
+            "assignment_applied",
+            "route_applied",
+            "observed_assignment",
+            "observed_route",
+        },
+        "campaign result.controls",
+    )
+    for field in ("assignment_applied", "route_applied"):
+        if not isinstance(controls.get(field), bool):
+            raise ValidationError(f"campaign result.controls.{field}: expected boolean")
+    assignment = _mapping(
+        controls.get("observed_assignment"),
+        "campaign result.controls.observed_assignment",
+    )
+    observed_assignment = {
+        _string(instance, "campaign result assignment instance"): _string(
+            target, "campaign result assignment target"
+        )
+        for instance, target in assignment.items()
+    }
+    raw_route = controls.get("observed_route")
+    if raw_route is None:
+        observed_route = None
+    else:
+        observed_route = [
+            _string(fpga, "campaign result route FPGA")
+            for fpga in _array(raw_route, "campaign result.controls.observed_route")
+        ]
+        if len(observed_route) != len(set(observed_route)):
+            raise ValidationError(
+                "campaign result.controls.observed_route: repeated FPGA"
+            )
+
+    metrics = _mapping(root.get("metrics"), "campaign result.metrics")
+    _reject_unknown(
+        metrics,
+        {
+            "actual_resource_demand_per_fpga",
+            "sr0_worst_cross_fpga_delay_ns",
+            "sr0_cross_fpga_path_count",
+            "sr0_max_tdm_ratio",
+        },
+        "campaign result.metrics",
+    )
+    normalized_metrics: Dict[str, Any] = {}
+    for field in (
+        "actual_resource_demand_per_fpga",
+        "sr0_cross_fpga_path_count",
+        "sr0_max_tdm_ratio",
+    ):
+        if field in metrics:
+            normalized_metrics[field] = _positive_integer(
+                metrics[field], f"campaign result.metrics.{field}"
+            )
+    if "sr0_worst_cross_fpga_delay_ns" in metrics:
+        delay = metrics["sr0_worst_cross_fpga_delay_ns"]
+        if (
+            isinstance(delay, bool)
+            or not isinstance(delay, (int, float))
+            or delay <= 0
+        ):
+            raise ValidationError(
+                "campaign result.metrics.sr0_worst_cross_fpga_delay_ns: "
+                "expected a positive number"
+            )
+        normalized_metrics["sr0_worst_cross_fpga_delay_ns"] = float(delay)
+    return {
+        "schema": RUN_RESULT_SCHEMA,
+        "case_id": case_id,
+        "status": status,
+        "controls": {
+            "assignment_applied": controls["assignment_applied"],
+            "route_applied": controls["route_applied"],
+            "observed_assignment": observed_assignment,
+            "observed_route": observed_route,
+        },
+        "metrics": normalized_metrics,
+    }
+
+
 def _capacity_rtl(resource: str, units: int) -> str:
     if resource == "lut":
         body = f"""
@@ -588,9 +692,9 @@ def collect_calibration_observations(
         if not result_path.is_file():
             excluded.append({"id": case["id"], "reason": "missing_result"})
             continue
-        result = read_json(result_path)
-        if result.get("schema") != RUN_RESULT_SCHEMA or result.get("case_id") != case["id"]:
-            raise ValidationError(f"campaign result {case['id']!r}: identity/schema mismatch")
+        result = validate_calibration_run_result(
+            read_json(result_path), expected_case_id=case["id"]
+        )
         status = result.get("status")
         if status not in _RUN_STATUSES:
             raise ValidationError(f"campaign result {case['id']!r}: unsupported status")
@@ -668,16 +772,17 @@ def collect_calibration_observations(
                 )
             path_count = metrics.get("sr0_cross_fpga_path_count")
             _positive_integer(path_count, f"result {case['id']}.sr0_cross_fpga_path_count")
-            waits = metrics.get("tdm_wait_slots")
-            if isinstance(waits, bool) or not isinstance(waits, int) or waits < 0:
-                raise ValidationError(f"campaign result {case['id']!r}: missing TDM wait slots")
+            max_tdm_ratio = metrics.get("sr0_max_tdm_ratio")
+            _positive_integer(
+                max_tdm_ratio, f"result {case['id']}.sr0_max_tdm_ratio"
+            )
             delay_measurements.append(
                 {
                     "id": case["id"],
                     "configuration": case["configuration"],
                     "hop_count": len(case["route_path"]) - 1,
                     "payload_bits": case["payload_bits"],
-                    "tdm_wait_slots": waits,
+                    "max_tdm_ratio": max_tdm_ratio,
                     "contention_units": max(0, case["parallel_flows"] - 1),
                     "observed_delay_ns": float(delay),
                     "assignment_control": "fixed",

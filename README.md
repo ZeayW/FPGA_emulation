@@ -4236,8 +4236,8 @@ The current implementation fits:
 - per-resource effective-capacity intervals from fixed-assignment pass/fail
   boundaries;
 - per-direction link payload capacity from fixed-route pass/fail boundaries;
-- endpoint, per-hop, serialization/TDM-slot, and contention timing components
-  from controlled delay measurements;
+- endpoint, per-hop, serialization, observed TDM-ratio pressure, and contention
+  timing components from controlled delay measurements;
 - conservative, nominal, and aggressive profiles within the measured
   intervals.
 
@@ -4278,6 +4278,9 @@ constraints, and topology-unique routes. Its collector compares the observed
 assignment and route against those controls, and keeps license/provider failures
 out of capacity inference. Generated reference tasks are cold starts, carry
 explicit per-resource utilization limits, and stop after system routing. The
+aggregate result contract is strict: raw report paths and diagnostic payloads
+are rejected, and the observed maximum TDM ratio remains a measured feature
+rather than being relabeled as an exact slot wait. The
 schemas are
 `emuflow.calibrated-platform-template/v1`,
 `emuflow.platform-calibration-observations/v1`, and

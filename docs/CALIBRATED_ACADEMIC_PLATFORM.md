@@ -36,14 +36,17 @@ The v1 link-delay model is:
 ```text
 delay_ns = endpoint_ns
          + hop_count * per_hop_ns
-         + (serialization_cycles + tdm_wait_slots) * slot_ns
+         + serialization_cycles * slot_ns
+         + (max_tdm_ratio - 1) * per_tdm_ratio_step_ns
          + contention_units * contention_ns
 ```
 
 `serialization_cycles` is derived from payload width and the fitted effective
-payload bits per cycle. The non-negative endpoint, hop, and contention terms
-are fitted only when the controlled experiment matrix has full rank. EmuFlow
-rejects an experiment that cannot distinguish these terms.
+payload bits per cycle. `max_tdm_ratio` is an observed aggregate from the
+reference run; it is not silently reinterpreted as an exact slot wait. The
+non-negative endpoint, hop, TDM-pressure, and contention terms are fitted only
+when the controlled experiment matrix has full rank. EmuFlow rejects an
+experiment that cannot distinguish these terms.
 
 Capacity is represented as an interval. The greatest controlled passing demand
 is its lower bound and the smallest controlled capacity failure is its exclusive

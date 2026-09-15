@@ -126,8 +126,8 @@ def dataset(role="fit"):
                 "route_control": "fixed",
             },
         ]
-        # Ground truth: endpoint=2ns, hop=3ns, contention=0.5ns/unit;
-        # the 250 MHz slot is 4ns for serialization and TDM waits.
+        # Ground truth: endpoint=2ns, hop=3ns, TDM-ratio step=4ns,
+        # contention=0.5ns/unit; the 250 MHz slot is 4ns for serialization.
         result["link_delay_measurements"] = [
             delay("fit-delay-base", 1, 16, 0, 0, 5.0),
             delay("fit-delay-hop", 2, 16, 0, 0, 8.0),
@@ -180,13 +180,13 @@ def dataset(role="fit"):
     return result
 
 
-def delay(identifier, hops, payload, waits, contention, observed):
+def delay(identifier, hops, payload, tdm_pressure, contention, observed):
     return {
         "id": identifier,
         "configuration": "4fpga-ring" if hops > 1 else "2fpga-p2p",
         "hop_count": hops,
         "payload_bits": payload,
-        "tdm_wait_slots": waits,
+        "max_tdm_ratio": tdm_pressure + 1,
         "contention_units": contention,
         "observed_delay_ns": observed,
         "assignment_control": "fixed",
@@ -209,6 +209,9 @@ class CalibratedPlatformTest(unittest.TestCase):
         delay_model = model["calibration"]["link_delay_model"]
         self.assertAlmostEqual(delay_model["endpoint_ns"], 2.0, places=7)
         self.assertAlmostEqual(delay_model["per_hop_ns"], 3.0, places=7)
+        self.assertAlmostEqual(
+            delay_model["per_tdm_ratio_step_ns"], 4.0, places=7
+        )
         self.assertAlmostEqual(delay_model["contention_ns"], 0.5, places=7)
 
     def test_materializes_only_declared_platform_configurations(self):
@@ -251,6 +254,7 @@ class CalibratedPlatformTest(unittest.TestCase):
         observations = dataset()
         for item in observations["link_delay_measurements"]:
             item["hop_count"] = 1
+            item["max_tdm_ratio"] = 1
             item["contention_units"] = 0
         with self.assertRaisesRegex(ValidationError, "not identifiable"):
             fit_calibrated_platform(template(), observations)

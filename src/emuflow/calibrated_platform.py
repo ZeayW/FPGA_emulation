@@ -526,7 +526,7 @@ def validate_calibration_observations(
                 "configuration",
                 "hop_count",
                 "payload_bits",
-                "tdm_wait_slots",
+                "max_tdm_ratio",
                 "contention_units",
                 "observed_delay_ns",
                 "assignment_control",
@@ -551,9 +551,10 @@ def validate_calibration_observations(
                 "payload_bits": _integer(
                     item.get("payload_bits"), f"link_delay_measurements[{index}].payload_bits", minimum=1
                 ),
-                "tdm_wait_slots": _integer(
-                    item.get("tdm_wait_slots"),
-                    f"link_delay_measurements[{index}].tdm_wait_slots",
+                "max_tdm_ratio": _integer(
+                    item.get("max_tdm_ratio"),
+                    f"link_delay_measurements[{index}].max_tdm_ratio",
+                    minimum=1,
                 ),
                 "contention_units": _number(
                     item.get("contention_units"),
@@ -621,15 +622,18 @@ def _delay_features(
     serialization_cycles = max(
         0, math.ceil(int(item["payload_bits"]) / payload_capacity) - 1
     )
-    fixed_slot_delay = (
-        serialization_cycles + int(item["tdm_wait_slots"])
-    ) * slot_ns
-    features = [1.0, float(item["hop_count"]), float(item["contention_units"])]
+    fixed_slot_delay = serialization_cycles * slot_ns
+    features = [
+        1.0,
+        float(item["hop_count"]),
+        float(int(item["max_tdm_ratio"]) - 1),
+        float(item["contention_units"]),
+    ]
     adjusted = float(item["observed_delay_ns"]) - fixed_slot_delay
     if adjusted < 0.0:
         raise ValidationError(
             f"link_delay_measurements {item['id']!r}: observed delay is below "
-            "the declared serialization/TDM wait"
+            "the declared serialization delay"
         )
     return features, adjusted
 
@@ -692,17 +696,18 @@ def fit_calibrated_platform(
     clock_mhz = float(template["link"]["fabric_clock_mhz"])
     slot_ns = 1000.0 / clock_mhz
     delay_measurements = observations["link_delay_measurements"]
-    if len(delay_measurements) < 3:
-        raise ValidationError("delay fit requires at least three controlled measurements")
+    if len(delay_measurements) < 4:
+        raise ValidationError("delay fit requires at least four controlled measurements")
     feature_rows: List[List[float]] = []
     adjusted_values: List[float] = []
     for item in delay_measurements:
         features, adjusted = _delay_features(item, nominal_payload, slot_ns)
         feature_rows.append(features)
         adjusted_values.append(adjusted)
-    if _matrix_rank(feature_rows) < 3:
+    if _matrix_rank(feature_rows) < 4:
         raise ValidationError(
-            "delay fit is not identifiable: vary hop count and contention independently"
+            "delay fit is not identifiable: vary hop count, observed TDM ratio, "
+            "and contention independently"
         )
     coefficients = _nnls_coordinate_descent(feature_rows, adjusted_values)
     predicted_adjusted = [
@@ -715,7 +720,7 @@ def fit_calibrated_platform(
     ]
     maximum_absolute_residual = max(abs(value) for value in residuals)
     mean_absolute_residual = sum(abs(value) for value in residuals) / len(residuals)
-    endpoint_ns, per_hop_ns, contention_ns = coefficients
+    endpoint_ns, per_hop_ns, per_tdm_ratio_step_ns, contention_ns = coefficients
 
     profiles = {}
     for profile in _PROFILES:
@@ -764,11 +769,13 @@ def fit_calibrated_platform(
             "link_delay_model": {
                 "equation": (
                     "endpoint_ns + hop_count * per_hop_ns + "
-                    "(serialization_cycles + tdm_wait_slots) * slot_ns + "
+                    "serialization_cycles * slot_ns + "
+                    "(max_tdm_ratio - 1) * per_tdm_ratio_step_ns + "
                     "contention_units * contention_ns"
                 ),
                 "endpoint_ns": endpoint_ns,
                 "per_hop_ns": per_hop_ns,
+                "per_tdm_ratio_step_ns": per_tdm_ratio_step_ns,
                 "contention_ns": contention_ns,
                 "slot_ns": slot_ns,
                 "fit_mean_absolute_residual_ns": mean_absolute_residual,
@@ -903,7 +910,9 @@ def _predict_delay(model: Mapping[str, Any], item: Mapping[str, Any]) -> float:
     return (
         delay_model["endpoint_ns"]
         + item["hop_count"] * delay_model["per_hop_ns"]
-        + (serialization_cycles + item["tdm_wait_slots"]) * delay_model["slot_ns"]
+        + serialization_cycles * delay_model["slot_ns"]
+        + (item["max_tdm_ratio"] - 1)
+        * delay_model["per_tdm_ratio_step_ns"]
         + item["contention_units"] * delay_model["contention_ns"]
     )
 
