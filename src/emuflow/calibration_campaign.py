@@ -80,6 +80,53 @@ def _unique(items: List[Mapping[str, Any]], context: str) -> None:
         raise ValidationError(f"{context}: duplicate IDs")
 
 
+def _percentage(value: Any, context: str) -> int:
+    result = _positive_integer(value, context)
+    if result > 100:
+        raise ValidationError(f"{context}: expected an integer <= 100")
+    return result
+
+
+def _tcl_braced(value: str) -> str:
+    if "\x00" in value or "\n" in value or "\r" in value:
+        raise ValidationError("Tcl path/value must be one line and contain no NUL")
+    escaped = value.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+    return "{" + escaped + "}"
+
+
+def _ppro_runner_tcl(
+    *,
+    case_id: str,
+    topology_file: str,
+    utilization_limits_percent: Mapping[str, int],
+) -> str:
+    project_name = _tcl_braced("calibration_" + case_id)
+    return f"""# Generated controlled calibration run. Keep raw output outside Git.
+set work_space [file normalize [file dirname [info script]]]
+set project_parent [file join $work_space ppro_project]
+if {{[file exists $project_parent]}} {{
+  error "calibration requires a fresh cold-start directory: $project_parent"
+}}
+file mkdir $project_parent
+cd $work_space
+
+create_project -project_name {project_name} -project_path $project_parent -force
+set_partition_mode -r -d
+create_rtlpart
+
+run_compile -top calibration_top -lib work -filelist [file join $work_space filelist.f]
+run_pre_partition \\
+  -stf [file normalize {_tcl_braced(topology_file)}] \\
+  -config [file join $work_space prepartition.cfg] \\
+  -lut_area {utilization_limits_percent['lut']} \\
+  -ff_area {utilization_limits_percent['ff']} \\
+  -bram_area {utilization_limits_percent['bram']} \\
+  -dsp_area {utilization_limits_percent['dsp']}
+run_partition -costmode 1 -max_process_num 4
+run_system_route
+"""
+
+
 def _capacity_rtl(resource: str, units: int) -> str:
     if resource == "lut":
         body = f"""
@@ -239,9 +286,31 @@ def validate_calibration_campaign(value: Mapping[str, Any]) -> Dict[str, Any]:
         item = _mapping(raw, f"campaign.configurations[{index}]")
         _reject_unknown(
             item,
-            {"id", "topology_file", "targets", "routes"},
+            {
+                "id",
+                "topology_file",
+                "targets",
+                "routes",
+                "utilization_limits_percent",
+            },
             f"campaign.configurations[{index}]",
         )
+        limits = _mapping(
+            item.get("utilization_limits_percent"),
+            f"campaign.configurations[{index}].utilization_limits_percent",
+        )
+        _reject_unknown(
+            limits,
+            {"lut", "ff", "bram", "dsp"},
+            f"campaign.configurations[{index}].utilization_limits_percent",
+        )
+        normalized_limits = {
+            resource: _percentage(
+                limits.get(resource),
+                f"campaign.configurations[{index}].utilization_limits_percent.{resource}",
+            )
+            for resource in ("lut", "ff", "bram", "dsp")
+        }
         targets = _mapping(item.get("targets"), f"campaign.configurations[{index}].targets")
         if not targets:
             raise ValidationError(f"campaign.configurations[{index}].targets: expected mappings")
@@ -291,6 +360,7 @@ def validate_calibration_campaign(value: Mapping[str, Any]) -> Dict[str, Any]:
                 ),
                 "targets": normalized_targets,
                 "routes": routes,
+                "utilization_limits_percent": normalized_limits,
             }
         )
     _unique(configurations, "campaign configurations")
@@ -425,6 +495,16 @@ def plan_calibration_campaign(
         (case_dir / "design.sv").write_text(rtl, encoding="utf-8")
         (case_dir / "filelist.f").write_text("design.sv\n", encoding="utf-8")
         (case_dir / "prepartition.cfg").write_text(constraints, encoding="utf-8")
+        (case_dir / "run_ppro.tcl").write_text(
+            _ppro_runner_tcl(
+                case_id=case["id"],
+                topology_file=configuration["topology_file"],
+                utilization_limits_percent=configuration[
+                    "utilization_limits_percent"
+                ],
+            ),
+            encoding="utf-8",
+        )
         manifest_cases.append(
             {
                 **case,
@@ -435,6 +515,17 @@ def plan_calibration_campaign(
                     Path("cases") / case["id"] / "prepartition.cfg"
                 ),
                 "topology_file": configuration["topology_file"],
+                "utilization_limits_percent": configuration[
+                    "utilization_limits_percent"
+                ],
+                "runner": {
+                    "kind": "ppro_rtlpart_tcl_v1",
+                    "script": str(Path("cases") / case["id"] / "run_ppro.tcl"),
+                    "command": [
+                        "rtlpart_linux",
+                        str(Path("cases") / case["id"] / "run_ppro.tcl"),
+                    ],
+                },
                 "assignment_control": "fixed",
                 "expected_assignment": expected_assignment,
                 "route_control": (

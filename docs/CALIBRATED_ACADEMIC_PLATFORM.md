@@ -99,12 +99,14 @@ reference runs remain pending.
 
 `calibrated-campaign-plan` materializes isolated LUT-, FF-, BRAM-, DSP-,
 link-width-, hop-, TDM-, and contention probes plus fixed-assignment constraints
-and declared controlled routes. `calibrated-campaign-collect` accepts a small,
+and topology-unique controlled routes. Every task includes a cold-start Tcl
+runner that stops after `run_system_route`; the resource utilization limits are
+explicit campaign inputs. `calibrated-campaign-collect` accepts a small,
 versioned result contract. It excludes provider, license, transport, and
 execution failures instead of misclassifying them as capacity failures. The
 planner/collector and mock reports have unit-test coverage. The external PPro
-adapter must prove that the assignment and route controls were applied before a
-measurement is accepted.
+adapter must report the observed assignment and route; the collector compares
+both against the planned controls before accepting a measurement.
 
 Campaign inputs and raw reports remain under the approved external experiment
 root. Only compact aggregate observations enter the fitter; raw reports and

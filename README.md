@@ -4276,7 +4276,9 @@ emuflow platform calibrated-materialize \
 The campaign planner generates isolated probes, fixed PPro assignment
 constraints, and topology-unique routes. Its collector compares the observed
 assignment and route against those controls, and keeps license/provider failures
-out of capacity inference. The schemas are
+out of capacity inference. Generated reference tasks are cold starts, carry
+explicit per-resource utilization limits, and stop after system routing. The
+schemas are
 `emuflow.calibrated-platform-template/v1`,
 `emuflow.platform-calibration-observations/v1`, and
 `emuflow.calibrated-academic-platform/v1`. Synthetic observations are limited

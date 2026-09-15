@@ -28,6 +28,12 @@ def campaign():
                 "id": "2fpga-p2p",
                 "topology_file": "/external/synthetic-2fpga.stf",
                 "targets": {"F0": "B1.F1", "F1": "B1.F2"},
+                "utilization_limits_percent": {
+                    "lut": 75,
+                    "ff": 75,
+                    "bram": 75,
+                    "dsp": 75,
+                },
                 "routes": [
                     {
                         "id": "F0-F1",
@@ -43,6 +49,12 @@ def campaign():
                     "F0": "B1.F1",
                     "F1": "B1.F2",
                     "F2": "B1.F3",
+                },
+                "utilization_limits_percent": {
+                    "lut": 75,
+                    "ff": 75,
+                    "bram": 75,
+                    "dsp": 75,
                 },
                 "routes": [
                     {
@@ -104,6 +116,13 @@ class CalibrationCampaignTest(unittest.TestCase):
             self.assertIn("assign_inst {u_source} {B1.F1}", link_cfg)
             self.assertIn("assign_inst {u_sink} {B1.F2}", link_cfg)
             self.assertIn("module calibration_top", (root / "cases/link-32/design.sv").read_text())
+            runner = (root / "cases/link-32/run_ppro.tcl").read_text()
+            self.assertIn("run_compile", runner)
+            self.assertIn("run_pre_partition", runner)
+            self.assertIn("-lut_area 75", runner)
+            self.assertIn("run_partition", runner)
+            self.assertIn("run_system_route", runner)
+            self.assertIn("fresh cold-start directory", runner)
             self.assertEqual(
                 read_json(root / "campaign-manifest.json")["schema"],
                 "emuflow.platform-calibration-campaign-manifest/v1",
@@ -155,6 +174,12 @@ class CalibrationCampaignTest(unittest.TestCase):
         value["cases"][2]["configuration"] = "3fpga-chain"
         value["cases"][2]["route"] = "F0-F2"
         with self.assertRaisesRegex(ValidationError, "single-hop"):
+            validate_calibration_campaign(value)
+
+    def test_utilization_limit_must_be_explicit_and_bounded(self):
+        value = campaign()
+        value["configurations"][0]["utilization_limits_percent"]["lut"] = 101
+        with self.assertRaisesRegex(ValidationError, "<= 100"):
             validate_calibration_campaign(value)
 
     def test_observed_route_must_match_unique_topology_path(self):

@@ -24,7 +24,7 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["id", "topology_file", "targets", "routes"],
+        "required": ["id", "topology_file", "targets", "routes", "utilization_limits_percent"],
         "properties": {
           "id": {"type": "string", "minLength": 1},
           "topology_file": {"type": "string", "minLength": 1},
@@ -32,6 +32,17 @@
             "type": "object",
             "minProperties": 1,
             "additionalProperties": {"type": "string", "minLength": 1}
+          },
+          "utilization_limits_percent": {
+            "type": "object",
+            "required": ["lut", "ff", "bram", "dsp"],
+            "properties": {
+              "lut": {"type": "integer", "minimum": 1, "maximum": 100},
+              "ff": {"type": "integer", "minimum": 1, "maximum": 100},
+              "bram": {"type": "integer", "minimum": 1, "maximum": 100},
+              "dsp": {"type": "integer", "minimum": 1, "maximum": 100}
+            },
+            "additionalProperties": false
           },
           "routes": {
             "type": "array",
