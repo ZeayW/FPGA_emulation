@@ -92,13 +92,21 @@ Status: implemented on this branch.
 
 ### Stage 2 — reference microbenchmark generator and collector
 
-Status: pending.
+Status: generator and aggregate collector implemented on this branch; real
+reference runs remain pending.
 
-Generate small LUT-, FF-, BRAM-, DSP-, link-width-, hop-, TDM-, contention-,
-and transport-overhead sweeps. First validate manifests and parsers with mock
-reports; only then run authorized PPro jobs. Collection output stays under the
-approved external experiment root and produces a compact aggregate observation
-file rather than copying reports into Git.
+`calibrated-campaign-plan` materializes isolated LUT-, FF-, BRAM-, DSP-,
+link-width-, hop-, TDM-, and contention probes plus fixed-assignment constraints
+and declared controlled routes. `calibrated-campaign-collect` accepts a small,
+versioned result contract. It excludes provider, license, transport, and
+execution failures instead of misclassifying them as capacity failures. The
+planner/collector and mock reports have unit-test coverage. The external PPro
+adapter must prove that the assignment and route controls were applied before a
+measurement is accepted.
+
+Campaign inputs and raw reports remain under the approved external experiment
+root. Only compact aggregate observations enter the fitter; raw reports and
+licensed topology files are never copied into Git.
 
 ### Stage 3 — parameter campaign
 

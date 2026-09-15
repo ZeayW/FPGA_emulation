@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/platform-calibration-run-result-v1.schema.json",
+  "title": "EmuFlow aggregate reference-flow calibration run result v1",
+  "type": "object",
+  "required": ["schema", "case_id", "status", "controls", "metrics"],
+  "properties": {
+    "schema": {"const": "emuflow.platform-calibration-run-result/v1"},
+    "case_id": {"type": "string", "minLength": 1},
+    "status": {
+      "enum": ["pass", "capacity_fail", "link_capacity_fail", "provider_fail", "license_fail", "transport_fail", "execution_fail"]
+    },
+    "controls": {
+      "type": "object",
+      "required": ["assignment_applied", "route_applied"],
+      "properties": {
+        "assignment_applied": {"type": "boolean"},
+        "route_applied": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "actual_resource_demand_per_fpga": {"type": "integer", "minimum": 1},
+        "sr0_worst_cross_fpga_delay_ns": {"type": "number", "exclusiveMinimum": 0},
+        "sr0_cross_fpga_path_count": {"type": "integer", "minimum": 1},
+        "tdm_wait_slots": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

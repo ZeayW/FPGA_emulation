@@ -388,6 +388,7 @@ def validate_calibration_observations(
             "capacity_boundaries",
             "link_capacity_boundaries",
             "link_delay_measurements",
+            "collection",
         },
         "observations",
     )
@@ -572,13 +573,18 @@ def validate_calibration_observations(
     _unique_ids(all_items, "observations")
     if not all_items:
         raise ValidationError("observations: expected at least one measurement")
-    return {
+    normalized = {
         "schema": OBSERVATIONS_SCHEMA,
         "dataset": normalized_dataset,
         "capacity_boundaries": capacity_boundaries,
         "link_capacity_boundaries": link_capacity_boundaries,
         "link_delay_measurements": delay_measurements,
     }
+    if "collection" in root:
+        normalized["collection"] = dict(
+            _mapping(root["collection"], "observations.collection")
+        )
+    return normalized
 
 
 def _boundary_interval(

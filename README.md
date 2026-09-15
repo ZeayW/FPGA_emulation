@@ -4247,6 +4247,15 @@ holdout set, and arbitrary FPGA-count/topology generation. A model can produce
 BoardDB only for configurations enumerated in its source template.
 
 ```sh
+emuflow platform calibrated-campaign-plan \
+  --spec controlled-campaign.json \
+  --output-dir /approved/external/campaign
+
+emuflow platform calibrated-campaign-collect \
+  --manifest /approved/external/campaign/campaign-manifest.json \
+  --result-root /approved/external/campaign \
+  --output /approved/external/controlled-fit-observations.json
+
 emuflow platform calibrated-fit \
   --template platform-template.json \
   --observations controlled-fit-observations.json \
@@ -4264,10 +4273,13 @@ emuflow platform calibrated-materialize \
   --output boarddb.json
 ```
 
-The schemas are
+The campaign planner generates isolated probes, fixed PPro assignment
+constraints, and declared routes. Its collector requires the external adapter
+to attest that those controls were applied, and keeps license/provider failures
+out of capacity inference. The schemas are
 `emuflow.calibrated-platform-template/v1`,
 `emuflow.platform-calibration-observations/v1`, and
 `emuflow.calibrated-academic-platform/v1`. Synthetic observations are limited
-to unit tests. No PPro-derived parameter is checked in at this milestone, and
-real microbenchmark collection plus application-level blind validation remain
-pending. See [the calibration plan](docs/CALIBRATED_ACADEMIC_PLATFORM.md).
+to unit tests. No PPro-derived parameter is checked in at this milestone. Real
+authorized microbenchmark execution and application-level blind validation
+remain pending. See [the calibration plan](docs/CALIBRATED_ACADEMIC_PLATFORM.md).

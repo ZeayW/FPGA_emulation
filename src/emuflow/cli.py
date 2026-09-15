@@ -60,6 +60,10 @@ from .calibrated_platform import (
     materialize_calibrated_boarddb_file,
     validate_calibrated_platform_holdout_files,
 )
+from .calibration_campaign import (
+    collect_calibration_observation_files,
+    plan_calibration_campaign_files,
+)
 from .bsp import run_phase8a
 from .cross_stage import (
     evaluate_cross_stage_candidate,
@@ -1212,6 +1216,19 @@ def _build_parser() -> argparse.ArgumentParser:
     platform_calibrated_materialize.add_argument(
         "--output", "-o", type=Path, required=True
     )
+    platform_calibrated_plan = platform_subparsers.add_parser(
+        "calibrated-campaign-plan",
+        help="materialize controlled calibration RTL and fixed constraints",
+    )
+    platform_calibrated_plan.add_argument("--spec", type=Path, required=True)
+    platform_calibrated_plan.add_argument("--output-dir", type=Path, required=True)
+    platform_calibrated_collect = platform_subparsers.add_parser(
+        "calibrated-campaign-collect",
+        help="collect aggregate observations while excluding infrastructure failures",
+    )
+    platform_calibrated_collect.add_argument("--manifest", type=Path, required=True)
+    platform_calibrated_collect.add_argument("--result-root", type=Path, required=True)
+    platform_calibrated_collect.add_argument("--output", "-o", type=Path, required=True)
 
     phy_provider = subparsers.add_parser(
         "phy-provider", help="serial PHY provider and vendor recipe operations"
@@ -4337,6 +4354,16 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0 if report.get("status") not in {"failed", "submit_failed"} else 2
 
     if args.command == "platform":
+        if args.platform_command == "calibrated-campaign-plan":
+            report = plan_calibration_campaign_files(args.spec, args.output_dir)
+            _print_json(report)
+            return 0
+        if args.platform_command == "calibrated-campaign-collect":
+            report = collect_calibration_observation_files(
+                args.manifest, args.result_root, args.output
+            )
+            _print_json(report)
+            return 0
         if args.platform_command == "calibrated-fit":
             report = fit_calibrated_platform_files(
                 args.template, args.observations, args.output

@@ -21,7 +21,8 @@
     },
     "capacity_boundaries": {"type": "array"},
     "link_capacity_boundaries": {"type": "array"},
-    "link_delay_measurements": {"type": "array"}
+    "link_delay_measurements": {"type": "array"},
+    "collection": {"type": "object"}
   },
   "additionalProperties": false
 }

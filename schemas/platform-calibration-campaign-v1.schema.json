@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/platform-calibration-campaign-v1.schema.json",
+  "title": "EmuFlow controlled platform calibration campaign v1",
+  "type": "object",
+  "required": ["schema", "dataset", "configurations", "cases"],
+  "properties": {
+    "schema": {"const": "emuflow.platform-calibration-campaign/v1"},
+    "dataset": {
+      "type": "object",
+      "required": ["id", "role", "reference_alias", "source_class", "authorization_id", "publication_scope"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "role": {"enum": ["fit", "holdout"]},
+        "reference_alias": {"type": "string", "minLength": 1},
+        "source_class": {"enum": ["authorized_reference_flow", "synthetic_fixture"]},
+        "authorization_id": {"type": "string", "minLength": 1},
+        "publication_scope": {"enum": ["internal", "aggregate_only", "public"]}
+      },
+      "additionalProperties": false
+    },
+    "configurations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "topology_file", "targets", "routes"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "topology_file": {"type": "string", "minLength": 1},
+          "targets": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {"type": "string", "minLength": 1}
+          },
+          "routes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "path"],
+              "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "path": {"type": "array", "minItems": 2, "items": {"type": "string", "minLength": 1}}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "configuration"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["capacity_boundary", "link_capacity_boundary", "link_delay"]},
+          "configuration": {"type": "string", "minLength": 1},
+          "resource": {"enum": ["lut", "ff", "bram", "dsp"]},
+          "units": {"type": "integer", "minimum": 1},
+          "target_fpga": {"type": "string", "minLength": 1},
+          "route": {"type": "string", "minLength": 1},
+          "payload_bits": {"type": "integer", "minimum": 1},
+          "parallel_flows": {"type": "integer", "minimum": 1}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
