@@ -110,13 +110,25 @@ if {{[file exists $project_parent]}} {{
 file mkdir $project_parent
 cd $work_space
 
+set topology_file {_tcl_braced(topology_file)}
+if {{[file pathtype $topology_file] eq "relative"}} {{
+  if {{![info exists ::env(PPRO_CT_RCF_ROOT)] || $::env(PPRO_CT_RCF_ROOT) eq ""}} {{
+    error "relative topology_file requires PPRO_CT_RCF_ROOT"
+  }}
+  set topology_file [file join $::env(PPRO_CT_RCF_ROOT) $topology_file]
+}}
+set topology_file [file normalize $topology_file]
+if {{![file isfile $topology_file]}} {{
+  error "topology_file does not exist: $topology_file"
+}}
+
 create_project -project_name {project_name} -project_path $project_parent -force
 set_partition_mode -r -d
 create_rtlpart
 
 run_compile -top calibration_top -lib work -filelist [file join $work_space filelist.f]
 run_pre_partition \\
-  -stf [file normalize {_tcl_braced(topology_file)}] \\
+  -stf $topology_file \\
   -config [file join $work_space prepartition.cfg] \\
   -lut_area {utilization_limits_percent['lut']} \\
   -ff_area {utilization_limits_percent['ff']} \\

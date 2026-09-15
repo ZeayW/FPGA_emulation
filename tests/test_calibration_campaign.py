@@ -119,6 +119,7 @@ class CalibrationCampaignTest(unittest.TestCase):
             runner = (root / "cases/link-32/run_ppro.tcl").read_text()
             self.assertIn("run_compile", runner)
             self.assertIn("run_pre_partition", runner)
+            self.assertIn("relative topology_file requires PPRO_CT_RCF_ROOT", runner)
             self.assertIn("-lut_area 75", runner)
             self.assertIn("run_partition", runner)
             self.assertIn("run_system_route", runner)
