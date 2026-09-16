@@ -58,6 +58,7 @@ from .board_support import validate_board_support_overlay_file
 from .calibrated_platform import (
     fit_calibrated_platform_files,
     materialize_calibrated_boarddb_file,
+    validate_calibrated_platform_application_holdout_files,
     validate_calibrated_platform_holdout_files,
 )
 from .calibration_campaign import (
@@ -1200,6 +1201,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--observations", type=Path, required=True
     )
     platform_calibrated_validate.add_argument("--output", "-o", type=Path)
+    platform_calibrated_application_validate = platform_subparsers.add_parser(
+        "calibrated-application-holdout-validate",
+        help="blind-validate calibrated behavior on a real application run",
+    )
+    platform_calibrated_application_validate.add_argument(
+        "--model", type=Path, required=True
+    )
+    platform_calibrated_application_validate.add_argument(
+        "--observation", type=Path, required=True
+    )
+    platform_calibrated_application_validate.add_argument(
+        "--output", "-o", type=Path
+    )
     platform_calibrated_materialize = platform_subparsers.add_parser(
         "calibrated-materialize",
         help="materialize one explicitly supported calibrated BoardDB",
@@ -1215,6 +1229,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     platform_calibrated_materialize.add_argument(
         "--output", "-o", type=Path, required=True
+    )
+    platform_calibrated_materialize.add_argument(
+        "--timing-output",
+        type=Path,
+        help="also write the characterized BoardLinkTimingDB",
     )
     platform_calibrated_plan = platform_subparsers.add_parser(
         "calibrated-campaign-plan",
@@ -4376,12 +4395,19 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             _print_json(report)
             return 0 if report["status"] == "pass" else 2
+        if args.platform_command == "calibrated-application-holdout-validate":
+            report = validate_calibrated_platform_application_holdout_files(
+                args.model, args.observation, args.output
+            )
+            _print_json(report)
+            return 0 if report["status"] == "pass" else 2
         if args.platform_command == "calibrated-materialize":
             report = materialize_calibrated_boarddb_file(
                 args.model,
                 args.configuration,
                 args.profile,
                 args.output,
+                args.timing_output,
             )
             _print_json(report)
             return 0

@@ -110,7 +110,11 @@ class CalibrationCampaignTest(unittest.TestCase):
     def test_capacity_probes_preserve_requested_resource_structure(self):
         ff_rtl = _capacity_rtl("ff", 8)
         self.assertIn('shreg_extract = "no"', ff_rtl)
-        self.assertIn("probe[(i + 1) % 8]", ff_rtl)
+        self.assertIn("probe[(i + 1) % WIDTH]", ff_rtl)
+        self.assertIn("FF_BANK_SIZE = 8192", ff_rtl)
+        large_ff_rtl = _capacity_rtl("ff", 165000)
+        self.assertIn("FF_BANKS = (165000 + FF_BANK_SIZE - 1)", large_ff_rtl)
+        self.assertNotIn("i < 165000", large_ff_rtl)
         bram_rtl = _capacity_rtl("bram", 2)
         self.assertIn('ram_style = "block"', bram_rtl)
         self.assertIn("read_data <= memory[address]", bram_rtl)
@@ -118,6 +122,10 @@ class CalibrationCampaignTest(unittest.TestCase):
         dsp_rtl = _capacity_rtl("dsp", 2)
         self.assertIn('use_dsp = "yes"', dsp_rtl)
         self.assertIn("calibration_dsp_cell u_cell", dsp_rtl)
+        large_lut_rtl = _capacity_rtl("lut", 154000)
+        self.assertIn("LUT_BANK_SIZE = 8192", large_lut_rtl)
+        self.assertIn("LUT_BANKS = (154000 + LUT_BANK_SIZE - 1)", large_lut_rtl)
+        self.assertNotIn("i < 154000", large_lut_rtl)
 
     def test_plan_materializes_isolated_rtl_and_fixed_constraints(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -200,7 +208,18 @@ class CalibrationCampaignTest(unittest.TestCase):
             manifest = plan_calibration_campaign(campaign(), root)
             self._result(root, "lut-100", "pass", {"actual_resource_demand_per_fpga": 98})
             self._result(root, "lut-provider-failure", "license_fail", {})
-            self._result(root, "link-32", "pass", {})
+            self._result(
+                root,
+                "link-32",
+                "pass",
+                {
+                    "link_line_rate_mbps": 8000.0,
+                    "link_phy_width_bits": 32,
+                    "link_channels_per_direction": 1,
+                    "link_max_tdm_ratio_supported": 2,
+                    "link_base_route_delay_ns": 5.0,
+                },
+            )
             self._result(
                 root,
                 "delay-two-hop",
@@ -218,6 +237,26 @@ class CalibrationCampaignTest(unittest.TestCase):
                 [{"id": "lut-provider-failure", "reason": "license_fail"}],
             )
             self.assertEqual(observations["capacity_boundaries"][0]["demand_per_fpga"], 98)
+            self.assertEqual(
+                observations["capacity_boundaries"][0]["utilization_limit"], 0.75
+            )
+            self.assertEqual(
+                observations["link_characteristics"],
+                [
+                    {
+                        "id": "link-32-characteristic",
+                        "configuration": "2fpga-p2p",
+                        "hop_count": 1,
+                        "line_rate_mbps": 8000.0,
+                        "phy_width_bits": 32,
+                        "channels_per_direction": 1,
+                        "max_tdm_ratio": 2,
+                        "base_route_delay_ns": 5.0,
+                        "assignment_control": "fixed",
+                        "route_control": "fixed",
+                    }
+                ],
+            )
             self.assertEqual(observations["link_delay_measurements"][0]["hop_count"], 2)
             self.assertEqual(observations["link_delay_measurements"][0]["contention_units"], 2)
             self.assertEqual(observations["link_delay_measurements"][0]["max_tdm_ratio"], 3)

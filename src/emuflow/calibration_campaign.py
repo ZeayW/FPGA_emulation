@@ -240,6 +240,11 @@ def validate_calibration_run_result(
         metrics,
         {
             "actual_resource_demand_per_fpga",
+            "link_line_rate_mbps",
+            "link_phy_width_bits",
+            "link_channels_per_direction",
+            "link_max_tdm_ratio_supported",
+            "link_base_route_delay_ns",
             "sr0_worst_cross_fpga_delay_ns",
             "sr0_cross_fpga_path_count",
             "sr0_max_tdm_ratio",
@@ -249,6 +254,9 @@ def validate_calibration_run_result(
     normalized_metrics: Dict[str, Any] = {}
     for field in (
         "actual_resource_demand_per_fpga",
+        "link_phy_width_bits",
+        "link_channels_per_direction",
+        "link_max_tdm_ratio_supported",
         "sr0_cross_fpga_path_count",
         "sr0_max_tdm_ratio",
     ):
@@ -256,18 +264,24 @@ def validate_calibration_run_result(
             normalized_metrics[field] = _positive_integer(
                 metrics[field], f"campaign result.metrics.{field}"
             )
-    if "sr0_worst_cross_fpga_delay_ns" in metrics:
-        delay = metrics["sr0_worst_cross_fpga_delay_ns"]
+    for field in (
+        "link_line_rate_mbps",
+        "link_base_route_delay_ns",
+        "sr0_worst_cross_fpga_delay_ns",
+    ):
+        if field not in metrics:
+            continue
+        delay = metrics[field]
         if (
             isinstance(delay, bool)
             or not isinstance(delay, (int, float))
             or delay <= 0
         ):
             raise ValidationError(
-                "campaign result.metrics.sr0_worst_cross_fpga_delay_ns: "
+                f"campaign result.metrics.{field}: "
                 "expected a positive number"
             )
-        normalized_metrics["sr0_worst_cross_fpga_delay_ns"] = float(delay)
+        normalized_metrics[field] = float(delay)
     return {
         "schema": RUN_RESULT_SCHEMA,
         "case_id": case_id,
@@ -293,38 +307,99 @@ module calibration_lut_cell(
                 (din[4] & ~din[5]);
 endmodule
 
-"""
-        body = f"""
-  (* keep = "true" *) wire [{units}:0] probe_chain;
-  assign probe_chain[0] = stimulus[0];
+(* keep_hierarchy = "yes" *)
+module calibration_lut_bank #(
+  parameter integer WIDTH = 1,
+  parameter integer OFFSET = 0
+)(
+  input wire [63:0] stimulus,
+  input wire chain_in,
+  output wire chain_out
+);
+  (* keep = "true" *) wire [WIDTH:0] probe_chain;
+  assign probe_chain[0] = chain_in;
   genvar i;
-  generate for (i = 0; i < {units}; i = i + 1) begin : g_lut
+  generate for (i = 0; i < WIDTH; i = i + 1) begin : g_lut
     wire [5:0] cell_input;
-    assign cell_input = {{
-      stimulus[(i * 13 + 47) % 64],
-      stimulus[(i * 11 + 31) % 64],
-      stimulus[(i * 7 + 23) % 64],
-      stimulus[(i * 5 + 17) % 64],
-      stimulus[(i * 3 + 7) % 64],
+    assign cell_input = {
+      stimulus[((OFFSET + i) * 13 + 47) % 64],
+      stimulus[((OFFSET + i) * 11 + 31) % 64],
+      stimulus[((OFFSET + i) * 7 + 23) % 64],
+      stimulus[((OFFSET + i) * 5 + 17) % 64],
+      stimulus[((OFFSET + i) * 3 + 7) % 64],
       probe_chain[i]
-    }};
+    };
     (* dont_touch = "true", keep_hierarchy = "yes" *)
     calibration_lut_cell u_cell(.din(cell_input), .dout(probe_chain[i + 1]));
   end endgenerate
-  assign result = probe_chain[{units}];
+  assign chain_out = probe_chain[WIDTH];
+endmodule
+
+"""
+        body = f"""
+  localparam integer LUT_BANK_SIZE = 8192;
+  localparam integer LUT_BANKS = ({units} + LUT_BANK_SIZE - 1) / LUT_BANK_SIZE;
+  (* keep = "true" *) wire [LUT_BANKS:0] bank_chain;
+  assign bank_chain[0] = stimulus[0];
+  genvar bank;
+  generate for (bank = 0; bank < LUT_BANKS; bank = bank + 1) begin : g_lut_bank
+    localparam integer THIS_WIDTH =
+      ((bank + 1) * LUT_BANK_SIZE <= {units})
+        ? LUT_BANK_SIZE : ({units} - bank * LUT_BANK_SIZE);
+    (* dont_touch = "true", keep_hierarchy = "yes" *)
+    calibration_lut_bank #(
+      .WIDTH(THIS_WIDTH),
+      .OFFSET(bank * LUT_BANK_SIZE)
+    ) u_bank (
+      .stimulus(stimulus),
+      .chain_in(bank_chain[bank]),
+      .chain_out(bank_chain[bank + 1])
+    );
+  end endgenerate
+  assign result = bank_chain[LUT_BANKS];
 """
     elif resource == "ff":
-        declarations = ""
-        body = f"""
+        declarations = """(* keep_hierarchy = "yes" *)
+module calibration_ff_bank #(
+  parameter integer WIDTH = 1,
+  parameter integer OFFSET = 0
+)(
+  input wire clk,
+  input wire [63:0] stimulus,
+  output wire reduction
+);
   (* keep = "true", dont_touch = "true", shreg_extract = "no" *)
-  reg [{units - 1}:0] probe;
+  reg [WIDTH - 1:0] probe;
   integer i;
   always @(posedge clk) begin
-    for (i = 0; i < {units}; i = i + 1)
-      probe[i] <= probe[i] ^ probe[(i + 1) % {units}] ^
-                  stimulus[(i * 13 + 5) % 64];
+    for (i = 0; i < WIDTH; i = i + 1)
+      probe[i] <= probe[i] ^ probe[(i + 1) % WIDTH] ^
+                  stimulus[(i * 13 + OFFSET + 5) % 64];
   end
-  assign result = ^probe;
+  assign reduction = ^probe;
+endmodule
+
+"""
+        body = f"""
+  localparam integer FF_BANK_SIZE = 8192;
+  localparam integer FF_BANKS = ({units} + FF_BANK_SIZE - 1) / FF_BANK_SIZE;
+  (* keep = "true" *) wire [FF_BANKS - 1:0] bank_reduction;
+  genvar bank;
+  generate for (bank = 0; bank < FF_BANKS; bank = bank + 1) begin : g_ff_bank
+    localparam integer THIS_WIDTH =
+      ((bank + 1) * FF_BANK_SIZE <= {units})
+        ? FF_BANK_SIZE : ({units} - bank * FF_BANK_SIZE);
+    (* dont_touch = "true", keep_hierarchy = "yes" *)
+    calibration_ff_bank #(
+      .WIDTH(THIS_WIDTH),
+      .OFFSET(bank * FF_BANK_SIZE)
+    ) u_bank (
+      .clk(clk),
+      .stimulus(stimulus),
+      .reduction(bank_reduction[bank])
+    );
+  end endgenerate
+  assign result = ^bank_reduction;
 """
     elif resource == "dsp":
         declarations = """(* keep_hierarchy = "yes" *)
@@ -820,6 +895,7 @@ def collect_calibration_observations(
         raise ValidationError(f"campaign manifest.schema: expected {MANIFEST_SCHEMA!r}")
     capacity_boundaries = []
     link_capacity_boundaries = []
+    link_characteristics = []
     delay_measurements = []
     excluded = []
     for raw_case in _array(manifest.get("cases"), "campaign manifest.cases", nonempty=True):
@@ -870,6 +946,9 @@ def collect_calibration_observations(
                     "configuration": case["configuration"],
                     "resource": case["resource"],
                     "demand_per_fpga": demand,
+                    "utilization_limit": (
+                        case["utilization_limits_percent"][case["resource"]] / 100.0
+                    ),
                     "outcome": status,
                     "assignment_control": "fixed",
                 }
@@ -897,6 +976,34 @@ def collect_calibration_observations(
                     "route_control": "fixed",
                 }
             )
+            characteristic_fields = (
+                "link_line_rate_mbps",
+                "link_phy_width_bits",
+                "link_channels_per_direction",
+                "link_max_tdm_ratio_supported",
+                "link_base_route_delay_ns",
+            )
+            if all(field in metrics for field in characteristic_fields):
+                link_characteristics.append(
+                    {
+                        "id": f"{case['id']}-characteristic",
+                        "configuration": case["configuration"],
+                        "hop_count": 1,
+                        "line_rate_mbps": metrics["link_line_rate_mbps"],
+                        "phy_width_bits": metrics["link_phy_width_bits"],
+                        "channels_per_direction": metrics[
+                            "link_channels_per_direction"
+                        ],
+                        "max_tdm_ratio": metrics[
+                            "link_max_tdm_ratio_supported"
+                        ],
+                        "base_route_delay_ns": metrics[
+                            "link_base_route_delay_ns"
+                        ],
+                        "assignment_control": "fixed",
+                        "route_control": "fixed",
+                    }
+                )
         else:
             if status != "pass" or controls.get("route_applied") is not True:
                 raise ValidationError(
@@ -936,6 +1043,7 @@ def collect_calibration_observations(
         "dataset": dict(manifest["dataset"]),
         "capacity_boundaries": capacity_boundaries,
         "link_capacity_boundaries": link_capacity_boundaries,
+        "link_characteristics": link_characteristics,
         "link_delay_measurements": delay_measurements,
     }
     normalized = validate_calibration_observations(observations)

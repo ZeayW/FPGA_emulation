@@ -4235,9 +4235,11 @@ The current implementation fits:
 
 - per-resource effective-capacity intervals from fixed-assignment pass/fail
   boundaries;
-- per-direction link payload capacity from fixed-route pass/fail boundaries;
-- endpoint, per-hop, serialization, observed TDM-ratio pressure, and contention
-  timing components from controlled delay measurements;
+- per-direction logical TDM channel capacity, with physical PHY serialization
+  width and line rate retained as separate characterized quantities;
+- endpoint and per-hop timing plus a monotone, discrete observed-TDM-tier
+  penalty curve from controlled delay measurements; the observed ratio already
+  captures provider serialization and contention decisions;
 - conservative, nominal, and aggressive profiles within the measured
   intervals.
 
@@ -4266,11 +4268,17 @@ emuflow platform calibrated-holdout-validate \
   --observations blind-holdout-observations.json \
   --output holdout-validation.json
 
+emuflow platform calibrated-application-holdout-validate \
+  --model calibrated-model.json \
+  --observation blind-application-observation.json \
+  --output application-validation.json
+
 emuflow platform calibrated-materialize \
   --model calibrated-model.json \
   --configuration 4fpga-ring \
   --profile nominal \
-  --output boarddb.json
+  --output boarddb.json \
+  --timing-output board-link-timing.json
 ```
 
 The campaign planner generates isolated probes, hard PPro instance-to-FPGA
@@ -4284,9 +4292,16 @@ are rejected, and the observed maximum TDM ratio remains a measured feature
 rather than being relabeled as an exact slot wait. Each task launches PPro
 through its documented `rtlpart_linux -script_file` interface after loading the
 external reference environment; its `TMPDIR` remains inside the isolated case
-directory. The sealed runner kind is `ppro_rtlpart_script_file_v1`. Capacity
-probes request a per-case `res_result.csv`; calibration
-uses the realized resource demand rather than the nominal RTL generator count.
+directory. The sealed runner kind is `ppro_rtlpart_script_file_v1`. Fresh
+cold-start pre-partition does not pass the provider's optional `-res_result`
+input. The external adapter reads the provider-generated
+`*_InstResourceResult.csv` report after execution, and calibration uses the
+realized resource demand rather than the nominal RTL generator count. Capacity
+observations are normalized by their explicit run-time utilization limit, so a
+small low-limit probe can identify raw capacity without synthesizing millions
+of artificial cells. Physical link payload is derived independently from
+channel count, PHY width, line rate, and fabric clock; TDM-expanded offered load
+is not relabeled as parallel physical bandwidth.
 LUT probes are preserved nonlinear cell chains, FF probes explicitly disable
 shift-register extraction, and BRAM/DSP probes use preserved inference cells;
 this prevents nominal probe counts from being optimized into unrelated logic.
@@ -4299,7 +4314,13 @@ adapter can independently reconstruct and check direct and multi-hop routes. The
 schemas are
 `emuflow.calibrated-platform-template/v1`,
 `emuflow.platform-calibration-observations/v1`, and
-`emuflow.calibrated-academic-platform/v1`. Synthetic observations are limited
-to unit tests. No PPro-derived parameter is checked in at this milestone. Real
-authorized microbenchmark execution and application-level blind validation
-remain pending. See [the calibration plan](docs/CALIBRATED_ACADEMIC_PLATFORM.md).
+`emuflow.calibrated-academic-platform/v1`, with separate strict contracts for
+application holdout observations and their compact validation reports.
+Synthetic observations are limited to unit tests. The authorized internal
+campaign has completed controlled resource boundaries, link/TDM timing fitting,
+a disjoint microbenchmark holdout, and a free-partition Koios DLA application
+holdout. Both holdout gates pass, including exact active-FPGA and TDM-tier
+prediction plus bounded worst-cross-FPGA-delay error. No reference-derived
+numeric parameter, raw report, or proprietary path is checked into Git. Full
+fresh Phase 1--7 qualification and transport-overhead characterization remain
+pending. See [the calibration plan](docs/CALIBRATED_ACADEMIC_PLATFORM.md).

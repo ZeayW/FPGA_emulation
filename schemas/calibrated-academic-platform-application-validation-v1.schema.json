@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/calibrated-academic-platform-application-validation-v1.schema.json",
+  "title": "EmuFlow calibrated academic platform application validation v1",
+  "type": "object",
+  "required": ["schema", "status", "model", "dataset_id", "workload_id", "source_sha256", "configuration", "utilization_limit", "cross_fpga_path_count", "predicted_required_fpgas_by_resource", "predicted_active_fpga_count", "observed_active_fpga_count", "predicted_tdm_ratio", "observed_tdm_ratio", "predicted_worst_cross_fpga_delay_ns", "observed_worst_cross_fpga_delay_ns", "gates", "thresholds"],
+  "properties": {
+    "schema": {"const": "emuflow.calibrated-academic-platform-application-validation/v1"},
+    "status": {"enum": ["pass", "fail"]},
+    "model": {"type": "string", "minLength": 1},
+    "dataset_id": {"type": "string", "minLength": 1},
+    "workload_id": {"type": "string", "minLength": 1},
+    "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "configuration": {"type": "string", "minLength": 1},
+    "utilization_limit": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+    "cross_fpga_path_count": {"type": "integer", "minimum": 1},
+    "predicted_required_fpgas_by_resource": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "integer", "minimum": 1}
+    },
+    "predicted_active_fpga_count": {"type": "integer", "minimum": 1},
+    "observed_active_fpga_count": {"type": "integer", "minimum": 1},
+    "predicted_tdm_ratio": {"type": "integer", "minimum": 1},
+    "observed_tdm_ratio": {"type": "integer", "minimum": 1},
+    "predicted_worst_cross_fpga_delay_ns": {"type": "number", "exclusiveMinimum": 0},
+    "observed_worst_cross_fpga_delay_ns": {"type": "number", "exclusiveMinimum": 0},
+    "gates": {
+      "type": "object",
+      "required": ["active_fpga_count_exact", "tdm_ratio_absolute_error", "delay_relative_error"],
+      "properties": {
+        "active_fpga_count_exact": {"type": "boolean"},
+        "tdm_ratio_absolute_error": {"type": "integer", "minimum": 0},
+        "delay_relative_error": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "thresholds": {
+      "type": "object",
+      "required": ["tdm_ratio_absolute_error_max", "delay_relative_error_max"],
+      "properties": {
+        "tdm_ratio_absolute_error_max": {"type": "integer", "minimum": 0},
+        "delay_relative_error_max": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

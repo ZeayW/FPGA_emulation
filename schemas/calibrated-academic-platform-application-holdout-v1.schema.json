@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/calibrated-academic-platform-application-holdout-v1.schema.json",
+  "title": "EmuFlow calibrated academic platform application holdout v1",
+  "type": "object",
+  "required": ["schema", "dataset", "workload", "configuration", "partition_mode", "utilization_limit", "resource_demand", "observed"],
+  "properties": {
+    "schema": {"const": "emuflow.calibrated-academic-platform-application-holdout/v1"},
+    "dataset": {
+      "type": "object",
+      "required": ["id", "role", "reference_alias", "source_class", "authorization_id", "publication_scope"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "role": {"const": "holdout"},
+        "reference_alias": {"type": "string", "minLength": 1},
+        "source_class": {"enum": ["authorized_reference_flow", "synthetic_fixture"]},
+        "authorization_id": {"type": "string", "minLength": 1},
+        "publication_scope": {"enum": ["internal", "aggregate_only", "public"]}
+      },
+      "additionalProperties": false
+    },
+    "workload": {
+      "type": "object",
+      "required": ["id", "source_sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "configuration": {"type": "string", "minLength": 1},
+    "partition_mode": {"const": "free"},
+    "utilization_limit": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+    "resource_demand": {
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "lut": {"type": "integer", "minimum": 0},
+        "ff": {"type": "integer", "minimum": 0},
+        "bram": {"type": "integer", "minimum": 0},
+        "dsp": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "observed": {
+      "type": "object",
+      "required": ["active_fpga_count", "max_direction_cut_bits", "max_tdm_ratio", "worst_cross_fpga_delay_ns", "worst_path_hop_count", "cross_fpga_path_count"],
+      "properties": {
+        "active_fpga_count": {"type": "integer", "minimum": 1},
+        "max_direction_cut_bits": {"type": "integer", "minimum": 1},
+        "max_tdm_ratio": {"type": "integer", "minimum": 1},
+        "worst_cross_fpga_delay_ns": {"type": "number", "exclusiveMinimum": 0},
+        "worst_path_hop_count": {"type": "integer", "minimum": 1},
+        "cross_fpga_path_count": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

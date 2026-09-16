@@ -31,28 +31,41 @@ algorithm rankings.
 
 ## Model equation
 
-The v1 link-delay model is:
+The link-delay model is:
 
 ```text
 delay_ns = endpoint_ns
          + hop_count * per_hop_ns
-         + serialization_cycles * slot_ns
-         + (max_tdm_ratio - 1) * per_tdm_ratio_step_ns
-         + contention_units * contention_ns
+         + interpolate(tdm_penalty_curve_ns, max_tdm_ratio)
 ```
 
-`serialization_cycles` is derived from payload width and the fitted effective
-payload bits per cycle. `max_tdm_ratio` is an observed aggregate from the
-reference run; it is not silently reinterpreted as an exact slot wait. The
-non-negative endpoint, hop, TDM-pressure, and contention terms are fitted only
-when the controlled experiment matrix has full rank. EmuFlow rejects an
-experiment that cannot distinguish these terms.
+`max_tdm_ratio` is an observed aggregate from the reference run. It already
+reflects the provider's serialization, multiplexing, and contention decisions,
+so the model must not add separate payload-width or flow-count penalties and
+double-count them. Providers may implement discrete TDM tiers: controlled PPro
+measurements showed a large ratio-2 to ratio-8 transition and a much smaller
+ratio-8 to ratio-16 transition, invalidating a per-ratio linear cost. The
+non-negative endpoint and hop terms plus one penalty per observed TDM tier are
+fitted only when the controlled matrix has full rank. The tier curve must be
+monotone; interpolation is reserved for ratios not directly characterized.
 
-Capacity is represented as an interval. The greatest controlled passing demand
-is its lower bound and the smallest controlled capacity failure is its exclusive
-upper bound. Conservative, nominal, and aggressive profiles select values only
-inside this interval. Raw BoardDB capacity is derived from the selected
-effective capacity and the declared utilization limit.
+Capacity is represented as a raw-device interval. Each controlled demand is
+normalized by the utilization limit used for that run, so a small probe at a
+1% limit identifies the same raw-capacity boundary without elaborating millions
+of synthetic cells merely to reach a 75% boundary. The greatest normalized
+passing demand is the lower bound and the smallest normalized capacity failure
+is the exclusive upper bound. Conservative, nominal, and aggressive profiles
+select raw capacities only inside this interval; BoardDB applies the model's
+separate utilization limit when deriving effective capacity.
+
+Logical TDM service, physical serializer throughput, and offered-load tolerance
+are separate quantities. BoardDB exposes one independently schedulable logical
+bit per characterized directional channel. PHY width, line rate, and fabric
+clock describe the serializer behind those channels; multiplying channel count
+by PHY width would incorrectly turn serial line bits into independent TDM
+lanes. Offered load is checked separately against the provider-declared maximum
+ratio. A passing TDM-expanded workload is therefore never mislabeled as
+evidence that the physical link has that many parallel logical bits per slot.
 
 ## Artifact flow
 
@@ -67,14 +80,22 @@ platform-calibration-observations/v1  +  calibrated-platform-template/v1
         v
 calibrated-academic-platform/v1
         |                         \
-        | blind holdout            \ named configuration + profile
+        | blind micro holdout       \ named configuration + profile
         v                           v
-validation/v1                  BoardDB v1
+validation/v1                  BoardDB v1 + BoardLinkTimingDB v1
+        |
+        | free-partition workload excluded from fitting
+        v
+application-validation/v1
 ```
 
 The template owns topology. The observation set owns measurements. The fitted
 model owns parameter intervals and provenance. BoardDB remains the normal
 consumer interface, so Phase 3--7 do not parse calibration diagnostics.
+Materialization can also emit a direction-complete BoardLinkTimingDB carrying
+the characterized sub-cycle link bound. BoardDB retains the integer cycle
+latency needed by transport RTL, while timing-driven routing and final global
+timing consume the non-rounded bound.
 
 ## Staged implementation and validation
 
@@ -88,7 +109,7 @@ in the repository.
 
 Status: implemented on this branch.
 
-- strict Python validators and four JSON schemas;
+- strict Python validators and six JSON schemas;
 - controlled capacity/link boundary inference;
 - identifiable non-negative delay fitting;
 - disjoint blind-holdout validation;
@@ -97,8 +118,8 @@ Status: implemented on this branch.
 
 ### Stage 2 — reference microbenchmark generator and collector
 
-Status: generator and aggregate collector implemented on this branch; real
-reference runs remain pending.
+Status: implemented and exercised by the authorized internal campaign; no raw
+report or reference-derived numeric parameter is committed to the repository.
 
 `calibrated-campaign-plan` materializes isolated LUT-, FF-, BRAM-, DSP-,
 link-width-, hop-, TDM-, and contention probes plus fixed-assignment constraints
@@ -120,8 +141,10 @@ environment and invokes the documented
 below the isolated case directory and does not copy the reference installation,
 license, or reports into repository artifacts. Its manifest identity is
 `ppro_rtlpart_script_file_v1`.
-Capacity probes request a per-case `res_result.csv`; fitting consumes the
-realized resource demand, never the nominal RTL generator count. The generated
+Fresh cold-start pre-partition intentionally omits the provider's optional
+`-res_result` input. The private adapter consumes the provider-generated
+`*_InstResourceResult.csv` report after the run; fitting uses that realized
+resource demand, never the nominal RTL generator count. The generated
 LUT/FF/BRAM/DSP structures carry preservation/inference attributes and avoid
 algebraically cancellable reductions or inferred shift registers. A contention
 probe creates one independently preserved and fixed endpoint pair per flow;
@@ -141,23 +164,37 @@ licensed topology files are never copied into Git.
 
 ### Stage 3 — parameter campaign
 
-Status: pending.
+Status: authorized internal controlled campaign complete for the current named
+three-FPGA configuration; publication of fitted numeric parameters remains out
+of scope for this branch.
 
-Run controlled fixed-assignment/fixed-route tests across the explicitly
-supported 2/4/8-style configurations available in the reference platform.
-Parallel jobs may use independent HPC nodes subject to the actual license
-limit. Separate provider, license, SSH, and infrastructure failures from
-capacity outcomes.
+The completed campaign identifies all four modeled resource-capacity intervals,
+logical TDM service, physical serializer characteristics, endpoint/per-hop
+delay, and a monotone observed-TDM-tier penalty curve. Fit and holdout datasets
+are disjoint. Provider, license, SSH, and infrastructure failures remain
+separate from capacity outcomes. Additional platform sizes require their own
+controlled campaigns; topology is never extrapolated from a requested count.
 
 ### Stage 4 — blind application validation
 
-Status: pending.
+Status: complete for one authorized Koios DLA medium holdout excluded from
+fitting.
 
-Use workloads excluded from fitting: Koios DLA/GEMM and NVDLA where feasible.
-Validate minimum FPGA count, resource-loading distribution, pair-load ordering,
-maximum TDM ratio, worst cross-FPGA delay, and trend error. Initial gates are
-10% mean and 15% maximum link-delay relative error plus exact controlled
-capacity outcomes; thresholds remain versioned in the template.
+`calibrated-application-holdout-validate` predicts the minimum active FPGA count
+from fitted raw capacities at the observation's declared utilization limit,
+rounds aggregate directional cut load to a characterized TDM tier, and predicts
+the worst cross-FPGA delay from the fitted timing model. It checks exact active
+FPGA count, bounded TDM-tier error, and bounded delay-relative error. The
+completed blind DLA run passes all three gates. It is a free-partition
+application check and is never reused to fit hardware parameters. GEMM/NVDLA
+remain useful future holdouts, not prerequisites for the current model contract.
+
+```sh
+emuflow platform calibrated-application-holdout-validate \
+  --model calibrated-model.json \
+  --observation blind-application-observation.json \
+  --output application-validation.json
+```
 
 ### Stage 5 — full EmuFlow qualification
 
@@ -171,11 +208,13 @@ with the reference within declared error bounds.
 
 ## Current limitations
 
-- v1 does not yet fit transport LUT/FF/BRAM overhead; that requires a separate
+- The current model does not yet fit transport LUT/FF/BRAM overhead; that requires a separate
   controlled delta-resource observation family.
 - It models one link class per academic platform. Heterogeneous link classes
   require a schema revision rather than implicit special cases.
 - The model does not claim cycle-accurate equivalence, package-pin closure, or
   bitstream deployability.
-- No real reference-derived values are committed yet. Current tests prove only
-  the calibration machinery against synthetic ground truth.
+- No real reference-derived values are committed yet. Public tests prove the
+  fitter and contracts against synthetic ground truth; the completed internal
+  pilot proves that the private adapter can execute and verify real controlled
+  cases without moving vendor reports into Git.

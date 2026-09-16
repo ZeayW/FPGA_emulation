@@ -3,7 +3,9 @@ import unittest
 
 from emuflow.calibrated_platform import (
     fit_calibrated_platform,
+    materialize_calibrated_board_link_timing,
     materialize_calibrated_boarddb,
+    validate_calibrated_platform_application_holdout,
     validate_calibrated_platform_holdout,
 )
 from emuflow.errors import ValidationError
@@ -51,6 +53,7 @@ def template():
             "link_outcome_accuracy_min": 1.0,
             "delay_mean_relative_error_max": 0.10,
             "delay_max_relative_error_max": 0.15,
+            "application_tdm_ratio_absolute_error_max": 1,
         },
     }
 
@@ -69,6 +72,7 @@ def dataset(role="fit"):
         },
         "capacity_boundaries": [],
         "link_capacity_boundaries": [],
+        "link_characteristics": [],
         "link_delay_measurements": [],
     }
     if role == "fit":
@@ -78,6 +82,7 @@ def dataset(role="fit"):
                 "configuration": "2fpga-p2p",
                 "resource": "lut",
                 "demand_per_fpga": 740,
+                "utilization_limit": 0.75,
                 "outcome": "pass",
                 "assignment_control": "fixed",
             },
@@ -86,6 +91,7 @@ def dataset(role="fit"):
                 "configuration": "2fpga-p2p",
                 "resource": "lut",
                 "demand_per_fpga": 761,
+                "utilization_limit": 0.75,
                 "outcome": "capacity_fail",
                 "assignment_control": "fixed",
             },
@@ -94,6 +100,7 @@ def dataset(role="fit"):
                 "configuration": "4fpga-ring",
                 "resource": "ff",
                 "demand_per_fpga": 1500,
+                "utilization_limit": 0.75,
                 "outcome": "pass",
                 "assignment_control": "fixed",
             },
@@ -102,6 +109,7 @@ def dataset(role="fit"):
                 "configuration": "4fpga-ring",
                 "resource": "ff",
                 "demand_per_fpga": 1601,
+                "utilization_limit": 0.75,
                 "outcome": "capacity_fail",
                 "assignment_control": "fixed",
             },
@@ -111,7 +119,7 @@ def dataset(role="fit"):
                 "id": "fit-link-pass",
                 "configuration": "2fpga-p2p",
                 "hop_count": 1,
-                "offered_bits_per_cycle": 32,
+                "offered_bits_per_cycle": 4,
                 "outcome": "pass",
                 "assignment_control": "fixed",
                 "route_control": "fixed",
@@ -120,20 +128,35 @@ def dataset(role="fit"):
                 "id": "fit-link-fail",
                 "configuration": "2fpga-p2p",
                 "hop_count": 1,
-                "offered_bits_per_cycle": 34,
+                "offered_bits_per_cycle": 5,
                 "outcome": "capacity_fail",
                 "assignment_control": "fixed",
                 "route_control": "fixed",
             },
         ]
-        # Ground truth: endpoint=2ns, hop=3ns, TDM-ratio step=4ns,
-        # contention=0.5ns/unit; the 250 MHz slot is 4ns for serialization.
+        result["link_characteristics"] = [
+            {
+                "id": "fit-link-characteristic",
+                "configuration": "2fpga-p2p",
+                "hop_count": 1,
+                "line_rate_mbps": 8000.0,
+                "phy_width_bits": 32,
+                "channels_per_direction": 1,
+                "max_tdm_ratio": 4,
+                "base_route_delay_ns": 5.0,
+                "assignment_control": "fixed",
+                "route_control": "fixed",
+            }
+        ]
+        # Ground truth: endpoint=2ns, hop=3ns, and discrete TDM-tier
+        # penalties {ratio 1: 0ns, ratio 2: 4ns, ratio 4: 10ns}.
         result["link_delay_measurements"] = [
             delay("fit-delay-base", 1, 16, 0, 0, 5.0),
             delay("fit-delay-hop", 2, 16, 0, 0, 8.0),
-            delay("fit-delay-serialize", 1, 64, 0, 0, 9.0),
-            delay("fit-delay-tdm", 1, 16, 2, 0, 13.0),
-            delay("fit-delay-contention", 1, 16, 0, 4, 7.0),
+            delay("fit-delay-payload-replicate", 1, 64, 0, 0, 5.0),
+            delay("fit-delay-ratio-2", 1, 16, 1, 0, 9.0),
+            delay("fit-delay-ratio-4", 1, 16, 3, 0, 15.0),
+            delay("fit-delay-contention-replicate", 1, 16, 1, 4, 9.0),
         ]
     else:
         result["capacity_boundaries"] = [
@@ -142,6 +165,7 @@ def dataset(role="fit"):
                 "configuration": "4fpga-ring",
                 "resource": "lut",
                 "demand_per_fpga": 749,
+                "utilization_limit": 0.75,
                 "outcome": "pass",
                 "assignment_control": "fixed",
             },
@@ -150,6 +174,7 @@ def dataset(role="fit"):
                 "configuration": "4fpga-ring",
                 "resource": "lut",
                 "demand_per_fpga": 751,
+                "utilization_limit": 0.75,
                 "outcome": "capacity_fail",
                 "assignment_control": "fixed",
             },
@@ -159,7 +184,7 @@ def dataset(role="fit"):
                 "id": "holdout-link-pass",
                 "configuration": "4fpga-ring",
                 "hop_count": 1,
-                "offered_bits_per_cycle": 32,
+                "offered_bits_per_cycle": 4,
                 "outcome": "pass",
                 "assignment_control": "fixed",
                 "route_control": "fixed",
@@ -168,14 +193,14 @@ def dataset(role="fit"):
                 "id": "holdout-link-fail",
                 "configuration": "4fpga-ring",
                 "hop_count": 1,
-                "offered_bits_per_cycle": 33,
+                "offered_bits_per_cycle": 5,
                 "outcome": "capacity_fail",
                 "assignment_control": "fixed",
                 "route_control": "fixed",
             },
         ]
         result["link_delay_measurements"] = [
-            delay("holdout-delay", 3, 96, 1, 2, 24.0)
+            delay("holdout-delay", 3, 96, 2, 2, 18.0)
         ]
     return result
 
@@ -194,35 +219,98 @@ def delay(identifier, hops, payload, tdm_pressure, contention, observed):
     }
 
 
+def application_holdout():
+    return {
+        "schema": "emuflow.calibrated-academic-platform-application-holdout/v1",
+        "dataset": {
+            "id": "synthetic-application-holdout",
+            "role": "holdout",
+            "reference_alias": "synthetic-reference",
+            "source_class": "synthetic_fixture",
+            "authorization_id": "unit-test-public-fixture",
+            "publication_scope": "public",
+        },
+        "workload": {
+            "id": "connected-real-rtl-fixture",
+            "source_sha256": "a" * 64,
+        },
+        "configuration": "2fpga-p2p",
+        "partition_mode": "free",
+        "utilization_limit": 0.75,
+        "resource_demand": {"lut": 1500, "ff": 100},
+        "observed": {
+            "active_fpga_count": 2,
+            "max_direction_cut_bits": 3,
+            "max_tdm_ratio": 4,
+            "worst_cross_fpga_delay_ns": 15.0,
+            "worst_path_hop_count": 1,
+            "cross_fpga_path_count": 10,
+        },
+    }
+
+
 class CalibratedPlatformTest(unittest.TestCase):
     def test_fit_recovers_controlled_capacity_and_delay(self):
         model = fit_calibrated_platform(template(), dataset())
         self.assertEqual(
-            model["calibration"]["resource_effective_capacity_intervals"]["lut"],
-            {"effective_lower": 740, "effective_upper_exclusive": 761},
+            model["calibration"]["resource_raw_capacity_intervals"]["lut"],
+            {"raw_lower": 987, "raw_upper_exclusive": 1015},
         )
         self.assertEqual(model["profiles"]["nominal"]["device_capacity"]["lut"], 1000)
         self.assertEqual(
             model["profiles"]["nominal"]["link_payload_bits_per_cycle_per_direction"],
-            32,
+            1,
         )
         delay_model = model["calibration"]["link_delay_model"]
         self.assertAlmostEqual(delay_model["endpoint_ns"], 2.0, places=7)
         self.assertAlmostEqual(delay_model["per_hop_ns"], 3.0, places=7)
-        self.assertAlmostEqual(
-            delay_model["per_tdm_ratio_step_ns"], 4.0, places=7
+        self.assertEqual(
+            [item["ratio"] for item in delay_model["tdm_penalty_curve_ns"]],
+            [1, 2, 4],
         )
-        self.assertAlmostEqual(delay_model["contention_ns"], 0.5, places=7)
+        self.assertAlmostEqual(
+            delay_model["tdm_penalty_curve_ns"][1]["penalty_ns"], 4.0, places=7
+        )
+        self.assertAlmostEqual(
+            delay_model["tdm_penalty_curve_ns"][2]["penalty_ns"], 10.0, places=7
+        )
+        self.assertAlmostEqual(delay_model["fit_mean_relative_error"], 0.0, places=7)
+        self.assertAlmostEqual(delay_model["fit_max_relative_error"], 0.0, places=7)
+
+    def test_fit_rejects_a_full_rank_but_inaccurate_delay_model(self):
+        observations = dataset()
+        conflicting = copy.deepcopy(observations["link_delay_measurements"][0])
+        conflicting["id"] = "fit-delay-conflicting-replicate"
+        conflicting["observed_delay_ns"] = 200.0
+        observations["link_delay_measurements"].append(conflicting)
+        with self.assertRaisesRegex(ValidationError, "does not meet acceptance"):
+            fit_calibrated_platform(template(), observations)
 
     def test_materializes_only_declared_platform_configurations(self):
         model = fit_calibrated_platform(template(), dataset())
         boarddb = materialize_calibrated_boarddb(model, "4fpga-ring", "nominal")
         self.assertEqual(len(boarddb["fpgas"]), 4)
         self.assertEqual(len(boarddb["links"]), 4)
+        self.assertEqual(boarddb["links"][0]["mode"], "abstract")
         self.assertTrue(boarddb["platform"]["name"].endswith("__nominal"))
         self.assertEqual(boarddb["fpgas"][0]["effective_capacity"]["lut"], 750)
         with self.assertRaisesRegex(ValidationError, "not an explicitly supported"):
             materialize_calibrated_boarddb(model, "8fpga-invented", "nominal")
+
+    def test_materializes_characterized_link_timing_without_cycle_rounding(self):
+        model = fit_calibrated_platform(template(), dataset())
+        timing = materialize_calibrated_board_link_timing(
+            model, "2fpga-p2p", "nominal"
+        )
+        self.assertEqual(len(timing["links"]), 2)
+        self.assertEqual(
+            {item["qualification"] for item in timing["links"]},
+            {"characterized-upper-bound"},
+        )
+        self.assertEqual(
+            {item["delay_bound_ns"] for item in timing["links"]}, {5.0}
+        )
+        self.assertFalse(timing["final_link_timing_signoff"])
 
     def test_disjoint_holdout_passes(self):
         model = fit_calibrated_platform(template(), dataset())
@@ -236,6 +324,29 @@ class CalibratedPlatformTest(unittest.TestCase):
         holdout["link_delay_measurements"][0]["observed_delay_ns"] = 40.0
         report = validate_calibrated_platform_holdout(model, holdout)
         self.assertEqual(report["status"], "fail")
+
+    def test_real_application_holdout_predicts_capacity_tdm_and_delay(self):
+        model = fit_calibrated_platform(template(), dataset())
+        report = validate_calibrated_platform_application_holdout(
+            model, application_holdout()
+        )
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["predicted_active_fpga_count"], 2)
+        self.assertEqual(report["predicted_tdm_ratio"], 4)
+        self.assertAlmostEqual(
+            report["predicted_worst_cross_fpga_delay_ns"], 15.0
+        )
+
+    def test_application_holdout_requires_free_partition_and_authorized_scope(self):
+        model = fit_calibrated_platform(template(), dataset())
+        fixed = application_holdout()
+        fixed["partition_mode"] = "fixed"
+        with self.assertRaisesRegex(ValidationError, "partition_mode 'free'"):
+            validate_calibrated_platform_application_holdout(model, fixed)
+        restricted = application_holdout()
+        restricted["dataset"]["publication_scope"] = "internal"
+        with self.assertRaisesRegex(ValidationError, "publication_scope"):
+            validate_calibrated_platform_application_holdout(model, restricted)
 
     def test_fit_rejects_free_reference_partitioner_behavior(self):
         observations = dataset()
