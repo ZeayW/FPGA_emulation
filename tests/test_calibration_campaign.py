@@ -140,6 +140,10 @@ class CalibrationCampaignTest(unittest.TestCase):
                 ["bash", "cases/link-32/run_ppro.sh"],
             )
             self.assertEqual(
+                manifest["cases"][3]["logical_targets"],
+                {"F0": "B1.F1", "F1": "B1.F2", "F2": "B1.F3"},
+            )
+            self.assertEqual(
                 read_json(root / "campaign-manifest.json")["schema"],
                 "emuflow.platform-calibration-campaign-manifest/v1",
             )

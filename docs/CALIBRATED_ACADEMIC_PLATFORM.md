@@ -119,6 +119,9 @@ Capacity probes request a per-case `res_result.csv`; fitting consumes the
 realized resource demand, never the nominal RTL generator count.
 The launcher writes one atomic `runner.exit-code` file; it neither duplicates
 stdout nor converts raw diagnostics into repository artifacts.
+Each case manifest carries the complete logical-target map needed to translate
+the observed reference assignment and every intermediate route hop back into
+the provider-neutral campaign namespace.
 
 Campaign inputs and raw reports remain under the approved external experiment
 root. Only compact aggregate observations enter the fitter; raw reports and

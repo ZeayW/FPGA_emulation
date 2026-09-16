@@ -672,6 +672,7 @@ def plan_calibration_campaign(
                     Path("cases") / case["id"] / "prepartition.cfg"
                 ),
                 "topology_file": configuration["topology_file"],
+                "logical_targets": configuration["targets"],
                 "utilization_limits_percent": configuration[
                     "utilization_limits_percent"
                 ],
