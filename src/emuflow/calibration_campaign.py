@@ -164,10 +164,16 @@ if [[ -n "${PPRO_CT_RCF_LICENSE:-}" && -f "$PPRO_CT_RCF_LICENSE" ]]; then
   export s2c_LICENSE="$PPRO_CT_RCF_LICENSE"
 fi
 
+set +e
 "$PPRO_CT_RCF_ROOT/bin/rtlpart_linux" <<EOF
 source {$case_dir/run_ppro.tcl}
 exit
 EOF
+runner_rc=$?
+set -e
+printf '%s\n' "$runner_rc" > "$case_dir/runner.exit-code.tmp"
+mv "$case_dir/runner.exit-code.tmp" "$case_dir/runner.exit-code"
+exit "$runner_rc"
 """
 
 

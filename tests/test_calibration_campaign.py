@@ -133,6 +133,7 @@ class CalibrationCampaignTest(unittest.TestCase):
             self.assertIn('export TMPDIR="$case_dir/tmp"', launcher)
             self.assertIn('"$PPRO_CT_RCF_ROOT/bin/rtlpart_linux" <<EOF', launcher)
             self.assertIn("source {$case_dir/run_ppro.tcl}", launcher)
+            self.assertIn('> "$case_dir/runner.exit-code.tmp"', launcher)
             self.assertTrue((root / "cases/link-32/run_ppro.sh").stat().st_mode & 0o100)
             self.assertEqual(
                 manifest["cases"][2]["runner"]["command"],
@@ -218,6 +219,9 @@ class CalibrationCampaignTest(unittest.TestCase):
             self.assertEqual(
                 Path(observed_stdin[0][8:-1]).resolve(),
                 (root / "cases/link-32/run_ppro.tcl").resolve(),
+            )
+            self.assertEqual(
+                (root / "cases/link-32/runner.exit-code").read_text(), "0\n"
             )
 
     def test_result_contract_rejects_unknown_diagnostic_fields(self):

@@ -4285,6 +4285,8 @@ sourcing its Tcl through `rtlpart_linux` standard input after loading the
 external reference environment; its `TMPDIR` remains inside the isolated case
 directory. Capacity probes request a per-case `res_result.csv`; calibration
 uses the realized resource demand rather than the nominal RTL generator count. The
+launcher records only a constant-size atomic exit-code file and leaves detailed
+diagnostics in the reference flow's existing external reports. The
 schemas are
 `emuflow.calibrated-platform-template/v1`,
 `emuflow.platform-calibration-observations/v1`, and
