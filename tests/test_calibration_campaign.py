@@ -157,6 +157,10 @@ class CalibrationCampaignTest(unittest.TestCase):
             self.assertIn("fresh cold-start directory", runner)
             launcher = (root / "cases/link-32/run_ppro.sh").read_text()
             self.assertIn('source "$PPRO_CT_RCF_ROOT/setting_rtl.sh"', launcher)
+            self.assertIn(
+                'set +u\nsource "$PPRO_CT_RCF_ROOT/setting_rtl.sh"\nset -u',
+                launcher,
+            )
             self.assertIn('export TMPDIR="$case_dir/tmp"', launcher)
             self.assertIn('"$PPRO_CT_RCF_ROOT/bin/rtlpart_linux"', launcher)
             self.assertIn('-script_file "$case_dir/run_ppro.tcl"', launcher)
@@ -226,7 +230,8 @@ class CalibrationCampaignTest(unittest.TestCase):
             bin_dir = reference_root / "bin"
             bin_dir.mkdir(parents=True)
             (reference_root / "setting_rtl.sh").write_text(
-                "export PPRO_TEST_ENV=loaded\n", encoding="utf-8"
+                'if [[ -z "$SYN_HOME" ]]; then export PPRO_TEST_ENV=loaded; fi\n',
+                encoding="utf-8",
             )
             fake_rtlpart = bin_dir / "rtlpart_linux"
             fake_rtlpart.write_text(

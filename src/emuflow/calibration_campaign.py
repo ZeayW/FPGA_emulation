@@ -159,7 +159,12 @@ export TMPDIR="$case_dir/tmp"
 
 # The reference environment owns library and floating-license setup.  Keep it
 # outside the campaign and never copy its contents into an EmuFlow artifact.
+# Vendor setup scripts commonly probe optional variables before defining them.
+# Disable nounset only across that compatibility boundary, then immediately
+# restore the launcher's strict mode for the actual run.
+set +u
 source "$PPRO_CT_RCF_ROOT/setting_rtl.sh"
+set -u
 if [[ -n "${PPRO_CT_RCF_LICENSE:-}" && -f "$PPRO_CT_RCF_LICENSE" ]]; then
   export s2c_LICENSE="$PPRO_CT_RCF_LICENSE"
 fi
