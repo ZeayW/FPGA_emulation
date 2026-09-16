@@ -111,6 +111,11 @@ planner/collector and mock reports have unit-test coverage. The external PPro
 adapter must report the observed assignment and route; the collector compares
 both against the planned controls before accepting a measurement.
 
+Every generated case contains `run_ppro.sh`, which loads the external PPro
+environment and feeds `run_ppro.tcl` to `rtlpart_linux` over standard input.
+The wrapper sets `TMPDIR` below the isolated case directory and does not copy
+the reference installation, license, or reports into repository artifacts.
+
 Campaign inputs and raw reports remain under the approved external experiment
 root. Only compact aggregate observations enter the fitter; raw reports and
 licensed topology files are never copied into Git.

@@ -139,6 +139,37 @@ run_system_route
 """
 
 
+def _ppro_runner_shell() -> str:
+    return """#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${PPRO_CT_RCF_ROOT:-}" ]]; then
+  echo "PPRO_CT_RCF_ROOT is required" >&2
+  exit 2
+fi
+if [[ ! -x "$PPRO_CT_RCF_ROOT/bin/rtlpart_linux" ]]; then
+  echo "rtlpart_linux is not executable below PPRO_CT_RCF_ROOT" >&2
+  exit 2
+fi
+
+case_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+mkdir -p "$case_dir/tmp"
+export TMPDIR="$case_dir/tmp"
+
+# The reference environment owns library and floating-license setup.  Keep it
+# outside the campaign and never copy its contents into an EmuFlow artifact.
+source "$PPRO_CT_RCF_ROOT/setting_rtl.sh"
+if [[ -n "${PPRO_CT_RCF_LICENSE:-}" && -f "$PPRO_CT_RCF_LICENSE" ]]; then
+  export s2c_LICENSE="$PPRO_CT_RCF_LICENSE"
+fi
+
+"$PPRO_CT_RCF_ROOT/bin/rtlpart_linux" <<EOF
+source {$case_dir/run_ppro.tcl}
+exit
+EOF
+"""
+
+
 def validate_calibration_run_result(
     value: Mapping[str, Any], *, expected_case_id: str
 ) -> Dict[str, Any]:
@@ -621,6 +652,9 @@ def plan_calibration_campaign(
             ),
             encoding="utf-8",
         )
+        shell_runner = case_dir / "run_ppro.sh"
+        shell_runner.write_text(_ppro_runner_shell(), encoding="utf-8")
+        shell_runner.chmod(0o755)
         manifest_cases.append(
             {
                 **case,
@@ -635,11 +669,12 @@ def plan_calibration_campaign(
                     "utilization_limits_percent"
                 ],
                 "runner": {
-                    "kind": "ppro_rtlpart_tcl_v1",
+                    "kind": "ppro_rtlpart_stdin_tcl_v1",
                     "script": str(Path("cases") / case["id"] / "run_ppro.tcl"),
+                    "launcher": str(Path("cases") / case["id"] / "run_ppro.sh"),
                     "command": [
-                        "rtlpart_linux",
-                        str(Path("cases") / case["id"] / "run_ppro.tcl"),
+                        "bash",
+                        str(Path("cases") / case["id"] / "run_ppro.sh"),
                     ],
                 },
                 "assignment_control": "fixed",
