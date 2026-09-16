@@ -4273,9 +4273,9 @@ emuflow platform calibrated-materialize \
   --output boarddb.json
 ```
 
-The campaign planner generates isolated probes, explicit PPro `-exclusive`
-fixed-assignment
-constraints, and topology-unique routes. Its collector compares the observed
+The campaign planner generates isolated probes, hard PPro instance-to-FPGA
+constraints, and topology-unique routes. It does not add `-exclusive`, whose
+FPGA-reservation semantics would invalidate multi-instance probes. Its collector compares the observed
 assignment and route against those controls, and keeps license/provider failures
 out of capacity inference. Generated reference tasks are cold starts, carry
 explicit per-resource utilization limits, and stop after system routing. The

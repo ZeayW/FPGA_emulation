@@ -129,15 +129,12 @@ class CalibrationCampaignTest(unittest.TestCase):
             capacity_cfg = (root / "cases/lut-100/prepartition.cfg").read_text()
             self.assertEqual(
                 capacity_cfg,
-                "assign_inst {u_probe} {B1.F1} -exclusive\n",
+                "assign_inst {u_probe} {B1.F1}\n",
             )
             link_cfg = (root / "cases/link-32/prepartition.cfg").read_text()
-            self.assertIn(
-                "assign_inst {u_source_f0} {B1.F1} -exclusive", link_cfg
-            )
-            self.assertIn(
-                "assign_inst {u_sink_f0} {B1.F2} -exclusive", link_cfg
-            )
+            self.assertIn("assign_inst {u_source_f0} {B1.F1}", link_cfg)
+            self.assertIn("assign_inst {u_sink_f0} {B1.F2}", link_cfg)
+            self.assertNotIn("-exclusive", link_cfg)
             self.assertIn("module calibration_top", (root / "cases/link-32/design.sv").read_text())
             lut_rtl = (root / "cases/lut-100/design.sv").read_text()
             self.assertIn("calibration_lut_cell u_cell", lut_rtl)

@@ -102,8 +102,10 @@ reference runs remain pending.
 
 `calibrated-campaign-plan` materializes isolated LUT-, FF-, BRAM-, DSP-,
 link-width-, hop-, TDM-, and contention probes plus fixed-assignment constraints
-using the reference flow's explicit `-exclusive` binding, plus topology-unique
-controlled routes. Every task includes a cold-start Tcl
+using hard instance-to-FPGA bindings, plus topology-unique controlled routes.
+It deliberately does not add `-exclusive`: in PPro that option reserves the
+entire target FPGA for the named instance and would invalidate multi-instance
+capacity and contention probes. Every task includes a cold-start Tcl
 runner that stops after `run_system_route`; the resource utilization limits are
 explicit campaign inputs. `calibrated-campaign-collect` accepts a small,
 versioned result contract. It excludes provider, license, transport, and
