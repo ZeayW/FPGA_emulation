@@ -140,6 +140,10 @@ class CalibrationCampaignTest(unittest.TestCase):
                 ["bash", "cases/link-32/run_ppro.sh"],
             )
             self.assertEqual(
+                manifest["cases"][2]["runner"]["kind"],
+                "ppro_rtlpart_script_file_v1",
+            )
+            self.assertEqual(
                 manifest["cases"][3]["logical_targets"],
                 {"F0": "B1.F1", "F1": "B1.F2", "F2": "B1.F3"},
             )

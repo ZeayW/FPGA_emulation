@@ -674,7 +674,7 @@ def plan_calibration_campaign(
                     "utilization_limits_percent"
                 ],
                 "runner": {
-                    "kind": "ppro_rtlpart_stdin_tcl_v1",
+                    "kind": "ppro_rtlpart_script_file_v1",
                     "script": str(Path("cases") / case["id"] / "run_ppro.tcl"),
                     "launcher": str(Path("cases") / case["id"] / "run_ppro.sh"),
                     "command": [

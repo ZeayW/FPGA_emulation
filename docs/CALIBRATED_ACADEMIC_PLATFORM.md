@@ -115,7 +115,8 @@ Every generated case contains `run_ppro.sh`, which loads the external PPro
 environment and invokes the documented
 `rtlpart_linux -script_file run_ppro.tcl` interface. The wrapper sets `TMPDIR`
 below the isolated case directory and does not copy the reference installation,
-license, or reports into repository artifacts.
+license, or reports into repository artifacts. Its manifest identity is
+`ppro_rtlpart_script_file_v1`.
 Capacity probes request a per-case `res_result.csv`; fitting consumes the
 realized resource demand, never the nominal RTL generator count.
 The launcher writes one atomic `runner.exit-code` file; it neither duplicates
