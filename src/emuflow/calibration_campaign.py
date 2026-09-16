@@ -708,7 +708,7 @@ def plan_calibration_campaign(
             rtl = _capacity_rtl(case["resource"], case["units"])
             constraints = (
                 f"assign_inst {{u_probe}} "
-                f"{{{configuration['targets'][case['target_fpga']]}}}\n"
+                f"{{{configuration['targets'][case['target_fpga']]}}} -exclusive\n"
             )
             controlled_route = None
             expected_assignment = {
@@ -723,11 +723,11 @@ def plan_calibration_campaign(
             )
             constraints = "".join(
                 f"assign_inst {{{instance}}} "
-                f"{{{configuration['targets'][source]}}}\n"
+                f"{{{configuration['targets'][source]}}} -exclusive\n"
                 for instance in source_instances
             ) + "".join(
                 f"assign_inst {{{instance}}} "
-                f"{{{configuration['targets'][sink]}}}\n"
+                f"{{{configuration['targets'][sink]}}} -exclusive\n"
                 for instance in sink_instances
             )
             controlled_route = case["route_path"]

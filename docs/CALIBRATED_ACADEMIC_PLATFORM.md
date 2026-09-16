@@ -102,7 +102,8 @@ reference runs remain pending.
 
 `calibrated-campaign-plan` materializes isolated LUT-, FF-, BRAM-, DSP-,
 link-width-, hop-, TDM-, and contention probes plus fixed-assignment constraints
-and topology-unique controlled routes. Every task includes a cold-start Tcl
+using the reference flow's explicit `-exclusive` binding, plus topology-unique
+controlled routes. Every task includes a cold-start Tcl
 runner that stops after `run_system_route`; the resource utilization limits are
 explicit campaign inputs. `calibrated-campaign-collect` accepts a small,
 versioned result contract. It excludes provider, license, transport, and
