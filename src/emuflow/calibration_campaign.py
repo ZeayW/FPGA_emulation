@@ -165,10 +165,7 @@ if [[ -n "${PPRO_CT_RCF_LICENSE:-}" && -f "$PPRO_CT_RCF_LICENSE" ]]; then
 fi
 
 set +e
-"$PPRO_CT_RCF_ROOT/bin/rtlpart_linux" <<EOF
-source {$case_dir/run_ppro.tcl}
-exit
-EOF
+"$PPRO_CT_RCF_ROOT/bin/rtlpart_linux" -script_file "$case_dir/run_ppro.tcl"
 runner_rc=$?
 set -e
 printf '%s\n' "$runner_rc" > "$case_dir/runner.exit-code.tmp"

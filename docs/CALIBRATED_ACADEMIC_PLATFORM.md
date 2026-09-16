@@ -112,9 +112,10 @@ adapter must report the observed assignment and route; the collector compares
 both against the planned controls before accepting a measurement.
 
 Every generated case contains `run_ppro.sh`, which loads the external PPro
-environment and feeds `run_ppro.tcl` to `rtlpart_linux` over standard input.
-The wrapper sets `TMPDIR` below the isolated case directory and does not copy
-the reference installation, license, or reports into repository artifacts.
+environment and invokes the documented
+`rtlpart_linux -script_file run_ppro.tcl` interface. The wrapper sets `TMPDIR`
+below the isolated case directory and does not copy the reference installation,
+license, or reports into repository artifacts.
 Capacity probes request a per-case `res_result.csv`; fitting consumes the
 realized resource demand, never the nominal RTL generator count.
 The launcher writes one atomic `runner.exit-code` file; it neither duplicates

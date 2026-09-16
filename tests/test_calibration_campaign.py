@@ -131,8 +131,8 @@ class CalibrationCampaignTest(unittest.TestCase):
             launcher = (root / "cases/link-32/run_ppro.sh").read_text()
             self.assertIn('source "$PPRO_CT_RCF_ROOT/setting_rtl.sh"', launcher)
             self.assertIn('export TMPDIR="$case_dir/tmp"', launcher)
-            self.assertIn('"$PPRO_CT_RCF_ROOT/bin/rtlpart_linux" <<EOF', launcher)
-            self.assertIn("source {$case_dir/run_ppro.tcl}", launcher)
+            self.assertIn('"$PPRO_CT_RCF_ROOT/bin/rtlpart_linux"', launcher)
+            self.assertIn('-script_file "$case_dir/run_ppro.tcl"', launcher)
             self.assertIn('> "$case_dir/runner.exit-code.tmp"', launcher)
             self.assertTrue((root / "cases/link-32/run_ppro.sh").stat().st_mode & 0o100)
             self.assertEqual(
@@ -176,7 +176,7 @@ class CalibrationCampaignTest(unittest.TestCase):
             self.assertEqual(observations["link_delay_measurements"][0]["contention_units"], 2)
             self.assertEqual(observations["link_delay_measurements"][0]["max_tdm_ratio"], 3)
 
-    def test_generated_launcher_uses_reference_environment_and_stdin_tcl(self):
+    def test_generated_launcher_uses_reference_environment_and_script_file(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             plan_calibration_campaign(campaign(), root)
@@ -193,7 +193,7 @@ class CalibrationCampaignTest(unittest.TestCase):
                 "printf '%s\\n' \"$PPRO_TEST_ENV\" > \"$PPRO_CAPTURE_DIR/environment.txt\"\n"
                 "printf '%s\\n' \"$TMPDIR\" > \"$PPRO_CAPTURE_DIR/tmpdir.txt\"\n"
                 "printf '%s\\n' \"${s2c_LICENSE:-}\" > \"$PPRO_CAPTURE_DIR/license.txt\"\n"
-                "cat > \"$PPRO_CAPTURE_DIR/stdin.tcl\"\n",
+                "printf '%s\\n' \"$@\" > \"$PPRO_CAPTURE_DIR/argv.txt\"\n",
                 encoding="utf-8",
             )
             fake_rtlpart.chmod(0o755)
@@ -217,11 +217,10 @@ class CalibrationCampaignTest(unittest.TestCase):
             self.assertEqual((capture / "license.txt").read_text(), f"{license_file}\n")
             observed_tmp = Path((capture / "tmpdir.txt").read_text().strip())
             self.assertEqual(observed_tmp.resolve(), (root / "cases/link-32/tmp").resolve())
-            observed_stdin = (capture / "stdin.tcl").read_text().splitlines()
-            self.assertEqual(observed_stdin[-1], "exit")
-            self.assertTrue(observed_stdin[0].startswith("source {") and observed_stdin[0].endswith("}"))
+            observed_argv = (capture / "argv.txt").read_text().splitlines()
+            self.assertEqual(observed_argv[0], "-script_file")
             self.assertEqual(
-                Path(observed_stdin[0][8:-1]).resolve(),
+                Path(observed_argv[1]).resolve(),
                 (root / "cases/link-32/run_ppro.tcl").resolve(),
             )
             self.assertEqual(
