@@ -118,7 +118,14 @@ below the isolated case directory and does not copy the reference installation,
 license, or reports into repository artifacts. Its manifest identity is
 `ppro_rtlpart_script_file_v1`.
 Capacity probes request a per-case `res_result.csv`; fitting consumes the
-realized resource demand, never the nominal RTL generator count.
+realized resource demand, never the nominal RTL generator count. The generated
+LUT/FF/BRAM/DSP structures carry preservation/inference attributes and avoid
+algebraically cancellable reductions or inferred shift registers. A contention
+probe creates one independently preserved and fixed endpoint pair per flow;
+concatenating all flows into a single wider bus is expressly not treated as a
+contention experiment. A valid fit campaign pairs equal-total-width cases with
+different flow counts so payload serialization and endpoint contention are
+separately identifiable.
 The launcher writes one atomic `runner.exit-code` file; it neither duplicates
 stdout nor converts raw diagnostics into repository artifacts.
 Each case manifest carries the complete logical-target map needed to translate

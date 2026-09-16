@@ -6,6 +6,7 @@ from pathlib import Path
 
 from emuflow.calibration_campaign import (
     RUN_RESULT_SCHEMA,
+    _capacity_rtl,
     collect_calibration_observations,
     plan_calibration_campaign,
     validate_calibration_campaign,
@@ -106,6 +107,18 @@ def campaign():
 
 
 class CalibrationCampaignTest(unittest.TestCase):
+    def test_capacity_probes_preserve_requested_resource_structure(self):
+        ff_rtl = _capacity_rtl("ff", 8)
+        self.assertIn('shreg_extract = "no"', ff_rtl)
+        self.assertIn("probe[(i + 1) % 8]", ff_rtl)
+        bram_rtl = _capacity_rtl("bram", 2)
+        self.assertIn('ram_style = "block"', bram_rtl)
+        self.assertIn("read_data <= memory[address]", bram_rtl)
+        self.assertEqual(bram_rtl.count("calibration_bram_cell u_cell"), 1)
+        dsp_rtl = _capacity_rtl("dsp", 2)
+        self.assertIn('use_dsp = "yes"', dsp_rtl)
+        self.assertIn("calibration_dsp_cell u_cell", dsp_rtl)
+
     def test_plan_materializes_isolated_rtl_and_fixed_constraints(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -116,9 +129,19 @@ class CalibrationCampaignTest(unittest.TestCase):
             capacity_cfg = (root / "cases/lut-100/prepartition.cfg").read_text()
             self.assertEqual(capacity_cfg, "assign_inst {u_probe} {B1.F1}\n")
             link_cfg = (root / "cases/link-32/prepartition.cfg").read_text()
-            self.assertIn("assign_inst {u_source} {B1.F1}", link_cfg)
-            self.assertIn("assign_inst {u_sink} {B1.F2}", link_cfg)
+            self.assertIn("assign_inst {u_source_f0} {B1.F1}", link_cfg)
+            self.assertIn("assign_inst {u_sink_f0} {B1.F2}", link_cfg)
             self.assertIn("module calibration_top", (root / "cases/link-32/design.sv").read_text())
+            lut_rtl = (root / "cases/lut-100/design.sv").read_text()
+            self.assertIn("calibration_lut_cell u_cell", lut_rtl)
+            self.assertIn('dont_touch = "true"', lut_rtl)
+            self.assertNotIn("assign result = ^probe", lut_rtl)
+            contention_rtl = (root / "cases/delay-two-hop/design.sv").read_text()
+            self.assertIn("calibration_source u_source_f0", contention_rtl)
+            self.assertIn("calibration_source u_source_f1", contention_rtl)
+            self.assertIn("calibration_source u_source_f2", contention_rtl)
+            self.assertIn("calibration_sink u_sink_f2", contention_rtl)
+            self.assertNotIn("WIDTH*FLOWS", contention_rtl)
             runner = (root / "cases/link-32/run_ppro.tcl").read_text()
             self.assertIn("run_compile", runner)
             self.assertIn("run_pre_partition", runner)
@@ -146,6 +169,17 @@ class CalibrationCampaignTest(unittest.TestCase):
             self.assertEqual(
                 manifest["cases"][3]["logical_targets"],
                 {"F0": "B1.F1", "F1": "B1.F2", "F2": "B1.F3"},
+            )
+            self.assertEqual(
+                manifest["cases"][3]["expected_assignment"],
+                {
+                    "u_source_f0": "B1.F1",
+                    "u_source_f1": "B1.F1",
+                    "u_source_f2": "B1.F1",
+                    "u_sink_f0": "B1.F3",
+                    "u_sink_f1": "B1.F3",
+                    "u_sink_f2": "B1.F3",
+                },
             )
             self.assertEqual(
                 read_json(root / "campaign-manifest.json")["schema"],
@@ -329,8 +363,15 @@ class CalibrationCampaignTest(unittest.TestCase):
         assignments = {
             "lut-100": {"u_probe": "B1.F1"},
             "lut-provider-failure": {"u_probe": "B1.F1"},
-            "link-32": {"u_source": "B1.F1", "u_sink": "B1.F2"},
-            "delay-two-hop": {"u_source": "B1.F1", "u_sink": "B1.F3"},
+            "link-32": {"u_source_f0": "B1.F1", "u_sink_f0": "B1.F2"},
+            "delay-two-hop": {
+                "u_source_f0": "B1.F1",
+                "u_source_f1": "B1.F1",
+                "u_source_f2": "B1.F1",
+                "u_sink_f0": "B1.F3",
+                "u_sink_f1": "B1.F3",
+                "u_sink_f2": "B1.F3",
+            },
         }
         routes = {
             "link-32": ["F0", "F1"],

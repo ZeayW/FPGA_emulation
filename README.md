@@ -4285,8 +4285,13 @@ through its documented `rtlpart_linux -script_file` interface after loading the
 external reference environment; its `TMPDIR` remains inside the isolated case
 directory. The sealed runner kind is `ppro_rtlpart_script_file_v1`. Capacity
 probes request a per-case `res_result.csv`; calibration
-uses the realized resource demand rather than the nominal RTL generator count. The
-launcher records only a constant-size atomic exit-code file and leaves detailed
+uses the realized resource demand rather than the nominal RTL generator count.
+LUT probes are preserved nonlinear cell chains, FF probes explicitly disable
+shift-register extraction, and BRAM/DSP probes use preserved inference cells;
+this prevents nominal probe counts from being optimized into unrelated logic.
+Contention cases instantiate separately constrained source/sink endpoint pairs,
+not one concatenated wide bus, so flow count and payload width can be varied
+independently. The launcher records only a constant-size atomic exit-code file and leaves detailed
 diagnostics in the reference flow's existing external reports. The manifest
 preserves the complete logical-FPGA-to-reference-target map so the external
 adapter can independently reconstruct and check direct and multi-hop routes. The

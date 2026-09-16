@@ -280,31 +280,69 @@ def validate_calibration_run_result(
 
 def _capacity_rtl(resource: str, units: int) -> str:
     if resource == "lut":
+        declarations = """(* keep_hierarchy = "yes" *)
+module calibration_lut_cell(
+  input wire [5:0] din,
+  output wire dout
+);
+  assign dout = (din[0] & din[1]) ^ (din[2] | din[3]) ^
+                (din[4] & ~din[5]);
+endmodule
+
+"""
         body = f"""
-  (* keep = "true" *) wire [{units - 1}:0] probe;
+  (* keep = "true" *) wire [{units}:0] probe_chain;
+  assign probe_chain[0] = stimulus[0];
   genvar i;
   generate for (i = 0; i < {units}; i = i + 1) begin : g_lut
-    assign probe[i] = ^(stimulus ^ (64'h9e3779b97f4a7c15 * (i + 1)));
+    wire [5:0] cell_input;
+    assign cell_input = {{
+      stimulus[(i * 13 + 47) % 64],
+      stimulus[(i * 11 + 31) % 64],
+      stimulus[(i * 7 + 23) % 64],
+      stimulus[(i * 5 + 17) % 64],
+      stimulus[(i * 3 + 7) % 64],
+      probe_chain[i]
+    }};
+    (* dont_touch = "true", keep_hierarchy = "yes" *)
+    calibration_lut_cell u_cell(.din(cell_input), .dout(probe_chain[i + 1]));
   end endgenerate
-  assign result = ^probe;
+  assign result = probe_chain[{units}];
 """
     elif resource == "ff":
+        declarations = ""
         body = f"""
-  (* keep = "true" *) reg [{units - 1}:0] probe = {{{units}{{1'b0}}}};
-  always @(posedge clk)
-    probe <= {{probe[{max(units - 2, 0)}:0], stimulus[0] ^ probe[{units - 1}]}};
+  (* keep = "true", dont_touch = "true", shreg_extract = "no" *)
+  reg [{units - 1}:0] probe;
+  integer i;
+  always @(posedge clk) begin
+    for (i = 0; i < {units}; i = i + 1)
+      probe[i] <= probe[i] ^ probe[(i + 1) % {units}] ^
+                  stimulus[(i * 13 + 5) % 64];
+  end
   assign result = ^probe;
-""" if units > 1 else """
-  (* keep = "true" *) reg probe = 1'b0;
-  always @(posedge clk) probe <= stimulus[0] ^ probe;
-  assign result = probe;
 """
     elif resource == "dsp":
+        declarations = """(* keep_hierarchy = "yes" *)
+module calibration_dsp_cell(
+  input wire [17:0] lhs,
+  input wire [17:0] rhs,
+  output wire [35:0] product
+);
+  (* use_dsp = "yes" *) assign product = lhs * rhs;
+endmodule
+
+"""
         body = f"""
-  (* keep = "true", use_dsp = "yes" *) wire [35:0] probe [0:{units - 1}];
+  (* keep = "true" *) wire [35:0] probe [0:{units - 1}];
   genvar i;
   generate for (i = 0; i < {units}; i = i + 1) begin : g_dsp
-    assign probe[i] = (stimulus[17:0] ^ i) * (stimulus[35:18] + i);
+    (* dont_touch = "true", keep_hierarchy = "yes" *)
+    calibration_dsp_cell u_cell(
+      .lhs(stimulus[17:0] ^ i),
+      .rhs(stimulus[35:18] + i),
+      .product(probe[i])
+    );
   end endgenerate
   integer k;
   reg reduction;
@@ -315,24 +353,46 @@ def _capacity_rtl(resource: str, units: int) -> str:
   assign result = reduction;
 """
     elif resource == "bram":
-        body = f"""
-  (* keep = "true", ram_style = "block" *) reg [31:0] probe [0:{units - 1}][0:1023];
-  integer k;
+        declarations = """(* keep_hierarchy = "yes" *)
+module calibration_bram_cell(
+  input wire clk,
+  input wire [9:0] address,
+  input wire [31:0] write_data,
+  output reg [31:0] read_data
+);
+  (* ram_style = "block" *) reg [31:0] memory [0:1023];
   always @(posedge clk) begin
-    for (k = 0; k < {units}; k = k + 1)
-      probe[k][stimulus[9:0]] <= stimulus[31:0] ^ k;
+    memory[address] <= write_data;
+    read_data <= memory[address];
   end
+endmodule
+
+"""
+        body = f"""
+  (* keep = "true" *) wire [31:0] probe [0:{units - 1}];
+  genvar i;
+  generate for (i = 0; i < {units}; i = i + 1) begin : g_bram
+    (* dont_touch = "true", keep_hierarchy = "yes" *)
+    calibration_bram_cell u_cell(
+      .clk(clk),
+      .address(stimulus[9:0]),
+      .write_data(stimulus[31:0] ^ i),
+      .read_data(probe[i])
+    );
+  end endgenerate
   reg reduction;
+  integer k;
   always @* begin
     reduction = 1'b0;
     for (k = 0; k < {units}; k = k + 1)
-      reduction = reduction ^ probe[k][stimulus[9:0]][0];
+      reduction = reduction ^ probe[k][0];
   end
   assign result = reduction;
 """
     else:
         raise ValidationError(f"capacity resource {resource!r} is not supported")
-    return f"""module calibration_capacity_probe(
+    return f"""{declarations}(* keep_hierarchy = "yes" *)
+module calibration_capacity_probe(
   input wire clk,
   input wire [63:0] stimulus,
   output wire result
@@ -350,27 +410,44 @@ endmodule
 
 
 def _link_rtl(payload_bits: int, parallel_flows: int) -> str:
-    return f"""module calibration_source #(
-  parameter WIDTH = {payload_bits},
-  parameter FLOWS = {parallel_flows}
+    flow_wires = []
+    flow_instances = []
+    for flow in range(parallel_flows):
+        flow_wires.append(
+            f"  (* keep = \"true\" *) wire [{payload_bits - 1}:0] payload_f{flow};\n"
+            f"  wire result_f{flow};"
+        )
+        flow_instances.append(
+            f"  (* dont_touch = \"true\", keep_hierarchy = \"yes\" *)\n"
+            f"  calibration_source u_source_f{flow}(\n"
+            f"    .clk(clk), .stimulus(stimulus ^ {payload_bits}'d{flow}),\n"
+            f"    .payload(payload_f{flow})\n"
+            f"  );\n"
+            f"  (* dont_touch = \"true\", keep_hierarchy = \"yes\" *)\n"
+            f"  calibration_sink u_sink_f{flow}(\n"
+            f"    .clk(clk), .payload(payload_f{flow}), .result(result_f{flow})\n"
+            f"  );"
+        )
+    result_vector = ", ".join(
+        f"result_f{flow}" for flow in reversed(range(parallel_flows))
+    )
+    return f"""(* keep_hierarchy = "yes" *)
+module calibration_source #(
+  parameter WIDTH = {payload_bits}
 ) (
   input wire clk,
   input wire [WIDTH-1:0] stimulus,
-  output reg [WIDTH*FLOWS-1:0] payload
+  output reg [WIDTH-1:0] payload
 );
-  integer i;
-  always @(posedge clk) begin
-    for (i = 0; i < FLOWS; i = i + 1)
-      payload[i*WIDTH +: WIDTH] <= stimulus ^ i;
-  end
+  always @(posedge clk) payload <= stimulus;
 endmodule
 
+(* keep_hierarchy = "yes" *)
 module calibration_sink #(
-  parameter WIDTH = {payload_bits},
-  parameter FLOWS = {parallel_flows}
+  parameter WIDTH = {payload_bits}
 ) (
   input wire clk,
-  input wire [WIDTH*FLOWS-1:0] payload,
+  input wire [WIDTH-1:0] payload,
   output reg result
 );
   always @(posedge clk) result <= ^payload;
@@ -381,11 +458,18 @@ module calibration_top(
   input wire [{payload_bits - 1}:0] stimulus,
   output wire result
 );
-  (* keep = "true" *) wire [{payload_bits * parallel_flows - 1}:0] payload;
-  calibration_source u_source(.clk(clk), .stimulus(stimulus), .payload(payload));
-  calibration_sink u_sink(.clk(clk), .payload(payload), .result(result));
+{chr(10).join(flow_wires)}
+{chr(10).join(flow_instances)}
+  assign result = ^{{{result_vector}}};
 endmodule
 """
+
+
+def _link_instance_names(parallel_flows: int) -> tuple[list[str], list[str]]:
+    return (
+        [f"u_source_f{flow}" for flow in range(parallel_flows)],
+        [f"u_sink_f{flow}" for flow in range(parallel_flows)],
+    )
 
 
 def validate_calibration_campaign(value: Mapping[str, Any]) -> Dict[str, Any]:
@@ -634,14 +718,28 @@ def plan_calibration_campaign(
             rtl = _link_rtl(case["payload_bits"], case["parallel_flows"])
             source = case["route_path"][0]
             sink = case["route_path"][-1]
-            constraints = (
-                f"assign_inst {{u_source}} {{{configuration['targets'][source]}}}\n"
-                f"assign_inst {{u_sink}} {{{configuration['targets'][sink]}}}\n"
+            source_instances, sink_instances = _link_instance_names(
+                case["parallel_flows"]
+            )
+            constraints = "".join(
+                f"assign_inst {{{instance}}} "
+                f"{{{configuration['targets'][source]}}}\n"
+                for instance in source_instances
+            ) + "".join(
+                f"assign_inst {{{instance}}} "
+                f"{{{configuration['targets'][sink]}}}\n"
+                for instance in sink_instances
             )
             controlled_route = case["route_path"]
             expected_assignment = {
-                "u_source": configuration["targets"][source],
-                "u_sink": configuration["targets"][sink],
+                **{
+                    instance: configuration["targets"][source]
+                    for instance in source_instances
+                },
+                **{
+                    instance: configuration["targets"][sink]
+                    for instance in sink_instances
+                },
             }
         (case_dir / "design.sv").write_text(rtl, encoding="utf-8")
         (case_dir / "filelist.f").write_text("design.sv\n", encoding="utf-8")
