@@ -130,6 +130,7 @@ run_compile -top calibration_top -lib work -filelist [file join $work_space file
 run_pre_partition \\
   -stf $topology_file \\
   -config [file join $work_space prepartition.cfg] \\
+  -res_result [file join $work_space res_result.csv] \\
   -lut_area {utilization_limits_percent['lut']} \\
   -ff_area {utilization_limits_percent['ff']} \\
   -bram_area {utilization_limits_percent['bram']} \\

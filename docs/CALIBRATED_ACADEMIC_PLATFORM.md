@@ -115,6 +115,8 @@ Every generated case contains `run_ppro.sh`, which loads the external PPro
 environment and feeds `run_ppro.tcl` to `rtlpart_linux` over standard input.
 The wrapper sets `TMPDIR` below the isolated case directory and does not copy
 the reference installation, license, or reports into repository artifacts.
+Capacity probes request a per-case `res_result.csv`; fitting consumes the
+realized resource demand, never the nominal RTL generator count.
 
 Campaign inputs and raw reports remain under the approved external experiment
 root. Only compact aggregate observations enter the fitter; raw reports and

@@ -123,6 +123,7 @@ class CalibrationCampaignTest(unittest.TestCase):
             self.assertIn("run_compile", runner)
             self.assertIn("run_pre_partition", runner)
             self.assertIn("relative topology_file requires PPRO_CT_RCF_ROOT", runner)
+            self.assertIn("-res_result [file join $work_space res_result.csv]", runner)
             self.assertIn("-lut_area 75", runner)
             self.assertIn("run_partition", runner)
             self.assertIn("run_system_route", runner)

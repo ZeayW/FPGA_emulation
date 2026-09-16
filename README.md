@@ -4283,7 +4283,8 @@ are rejected, and the observed maximum TDM ratio remains a measured feature
 rather than being relabeled as an exact slot wait. Each task launches PPro by
 sourcing its Tcl through `rtlpart_linux` standard input after loading the
 external reference environment; its `TMPDIR` remains inside the isolated case
-directory. The
+directory. Capacity probes request a per-case `res_result.csv`; calibration
+uses the realized resource demand rather than the nominal RTL generator count. The
 schemas are
 `emuflow.calibrated-platform-template/v1`,
 `emuflow.platform-calibration-observations/v1`, and
