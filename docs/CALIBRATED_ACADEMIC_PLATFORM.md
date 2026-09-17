@@ -183,7 +183,8 @@ of scope for this branch.
 
 The completed campaign identifies all four modeled resource-capacity intervals,
 logical TDM service, physical serializer characteristics, endpoint/per-hop
-delay, and a monotone observed-TDM-knot penalty curve. Fit and holdout datasets
+delay, and a monotone observed-TDM-knot service-time curve charged on every
+traversed hop. Fit and holdout datasets
 are disjoint. Provider, license, SSH, and infrastructure failures remain
 separate from capacity outcomes. Additional platform sizes require their own
 controlled campaigns; topology is never extrapolated from a requested count.

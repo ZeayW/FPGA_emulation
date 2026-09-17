@@ -198,7 +198,7 @@ def dataset(role="fit"):
                 "route_control": "fixed",
             }
         ]
-        # Ground truth: endpoint=2ns, hop=3ns, and discrete TDM-tier
+        # Ground truth: endpoint=2ns, hop=3ns, and per-hop discrete TDM-tier
         # penalties {ratio 1: 0ns, ratio 2: 4ns, ratio 4: 10ns}.
         result["link_delay_measurements"] = [
             delay("fit-delay-base", 1, 16, 0, 0, 5.0),
@@ -250,7 +250,7 @@ def dataset(role="fit"):
             },
         ]
         result["link_delay_measurements"] = [
-            delay("holdout-delay", 3, 96, 2, 2, 18.0)
+            delay("holdout-delay", 3, 96, 2, 2, 32.0)
         ]
     return result
 
@@ -780,6 +780,18 @@ class CalibratedPlatformTest(unittest.TestCase):
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["configurations"], ["4fpga-ring"])
         self.assertAlmostEqual(report["gates"]["delay_max_relative_error"], 0.0)
+
+    def test_multi_hop_tdm_service_cost_is_charged_per_hop(self):
+        model = fit_calibrated_platform(template(), dataset())
+        multi_hop = dataset("holdout")
+        multi_hop["link_delay_measurements"] = [
+            delay("holdout-three-hop-ratio-four", 3, 96, 3, 0, 41.0)
+        ]
+        report = validate_calibrated_platform_holdout(model, multi_hop)
+        self.assertEqual(report["status"], "pass")
+        self.assertAlmostEqual(
+            report["link_delay_checks"][0]["predicted_delay_ns"], 41.0
+        )
 
     def test_holdout_failure_is_not_silently_accepted(self):
         model = fit_calibrated_platform(template(), dataset())

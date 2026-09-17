@@ -4240,8 +4240,9 @@ The current implementation fits:
   axes and is not treated as a universal application resource-count ratio;
 - per-direction logical TDM channel capacity, with physical PHY serialization
   width and line rate retained as separate characterized quantities;
-- endpoint and per-hop timing plus a monotone observed-TDM-knot penalty curve
-  from controlled delay measurements; integer ratios between measured knots
+- endpoint and per-hop timing plus a monotone observed-TDM-knot service-time
+  curve charged on every traversed hop, from controlled delay measurements;
+  integer ratios between measured knots
   are interpolated, while ratios above the measured timing domain fail closed;
   the observed ratio already
   captures provider serialization and contention decisions;

@@ -1081,10 +1081,14 @@ def _delay_features(
     """
 
     ratio = int(item["max_tdm_ratio"])
+    hops = float(item["hop_count"])
     return [
         1.0,
-        float(item["hop_count"]),
-        *(1.0 if ratio == candidate else 0.0 for candidate in characterized_ratios[1:]),
+        hops,
+        *(
+            hops if ratio == candidate else 0.0
+            for candidate in characterized_ratios[1:]
+        ),
     ]
 
 
@@ -1328,8 +1332,8 @@ def fit_calibrated_platform(
         tdm_penalties = [0.0, *coefficients[2:]]
         hop_model_scope = "identified_multi_hop"
         delay_equation = (
-            "endpoint_ns + hop_count * per_hop_ns + "
-            "interpolate(tdm_penalty_curve_ns, max_tdm_ratio)"
+            "endpoint_ns + hop_count * (per_hop_ns + "
+            "interpolate(tdm_penalty_curve_ns, max_tdm_ratio))"
         )
     if any(
         right + 1.0e-9 < left
@@ -1759,9 +1763,13 @@ def _predict_delay(model: Mapping[str, Any], item: Mapping[str, Any]) -> float:
         )
     return (
         delay_model["endpoint_ns"]
-        + item["hop_count"] * delay_model["per_hop_ns"]
-        + _tdm_penalty_ns(
-            delay_model["tdm_penalty_curve_ns"], int(item["max_tdm_ratio"])
+        + item["hop_count"]
+        * (
+            delay_model["per_hop_ns"]
+            + _tdm_penalty_ns(
+                delay_model["tdm_penalty_curve_ns"],
+                int(item["max_tdm_ratio"]),
+            )
         )
     )
 
