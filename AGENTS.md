@@ -348,6 +348,18 @@ policy.
   equivalence, schedule legality, zero DRC violations, and zero unrouted nets.
   Candidate specifications may be recorded, but automatic selection must
   ignore them until all admission evidence passes.
+- Never assume that two reference configurations use the same FPGA capacity,
+  link service, or loading policy merely because they come from one tool or
+  product family. Calibrate each explicit family specification independently,
+  unless a sealed public or authorized reference identity proves that the
+  device and link class are identical. A capacity or delay fitted on one
+  configuration must not be copied into another configuration without that
+  evidence.
+- The utilization limit is part of a family tier's identity. It must be
+  explicit, may only lower the calibrated model limit, and must match both the
+  free-partition application holdout and the complete Phase 1--7 acceptance.
+  Selection and emitted BoardDB capacity must use the admitted tier limit, not
+  silently revert to the model maximum.
 - Pre-partition family selection may use aggregate effective resource capacity
   only to choose the lowest explicit qualified service tier.  It is not a
   partition-feasibility proof: Phase 3 per-FPGA balance and the calibrated

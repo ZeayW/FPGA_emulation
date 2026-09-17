@@ -32,7 +32,7 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["id", "service_rank", "admission", "model_file", "model_sha256", "configuration", "profile"],
+        "required": ["id", "service_rank", "admission", "model_file", "model_sha256", "configuration", "profile", "utilization_limit"],
         "properties": {
           "id": {"type": "string", "minLength": 1},
           "service_rank": {"type": "integer", "minimum": 1},
@@ -41,6 +41,7 @@
           "model_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "configuration": {"type": "string", "minLength": 1},
           "profile": {"enum": ["conservative", "nominal", "aggressive"]},
+          "utilization_limit": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
           "evidence": {"type": "object"}
         },
         "additionalProperties": false

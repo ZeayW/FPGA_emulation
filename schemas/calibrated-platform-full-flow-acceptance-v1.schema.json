@@ -3,11 +3,12 @@
   "$id": "https://emuflow.dev/schema/calibrated-platform-full-flow-acceptance-v1.schema.json",
   "title": "EmuFlow calibrated platform one-shot Phase 1-7 acceptance v1",
   "type": "object",
-  "required": ["schema", "status", "model", "model_sha256", "configuration", "profile", "workload", "workload_sha256", "physical_seed", "completed_phases", "checks", "timing"],
+  "required": ["schema", "status", "model", "model_sha256", "configuration", "profile", "utilization_limit", "workload", "workload_sha256", "physical_seed", "completed_phases", "checks", "timing"],
   "properties": {
     "schema": {"const": "emuflow.calibrated-platform-full-flow-acceptance/v1"},
     "status": {"const": "pass"},
     "model_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "utilization_limit": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
     "workload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "physical_seed": {"type": "integer", "minimum": 1},
     "completed_phases": {"const": [1, 2, 3, 4, 5, 6, 7]},

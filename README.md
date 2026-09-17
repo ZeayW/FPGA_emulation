@@ -4286,11 +4286,16 @@ emuflow platform calibrated-materialize \
 
 Different design sizes are handled by a **qualified platform family**, not by
 inventing a topology for a requested FPGA count.  A family lists explicit
-service tiers, each sealing one calibrated model/configuration and three
+service tiers, each sealing one calibrated model/configuration, an explicit
+admitted utilization limit, and three
 independent admission artifacts: disjoint microbenchmark holdout, free
 application holdout, and a fresh one-shot Phase 1--7 acceptance.  Candidate
 tiers are visible but cannot be selected.  Qualified tiers must monotonically
 increase aggregate effective capacity in every modeled resource dimension.
+Different reference configurations are not assumed to share a device or link
+class: each tier is calibrated independently unless a sealed reference identity
+proves those properties identical. The tier utilization limit may only lower
+the model limit and must match both application and full-flow evidence.
 
 ```sh
 emuflow platform calibrated-family-select \
@@ -4311,6 +4316,9 @@ demand, selection, and full-flow evidence contracts are respectively
 `emuflow.calibrated-platform-design-demand/v1`,
 `emuflow.calibrated-platform-selection/v1`, and
 `emuflow.calibrated-platform-full-flow-acceptance/v1`.
+The selected utilization limit is returned in the selection report and is used
+when materializing BoardDB capacity; it never silently reverts to the model
+maximum.
 
 An explicit lower `--utilization-limit` may be used for a capacity-stressed
 qualification run. It cannot exceed the model's declared loading policy, and

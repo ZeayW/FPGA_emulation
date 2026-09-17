@@ -339,6 +339,7 @@ class CalibratedPlatformTest(unittest.TestCase):
                 "model_sha256": model_sha,
                 "configuration": configuration,
                 "profile": "nominal",
+                "utilization_limit": 0.75,
                 "workload": "connected-real-rtl-fixture",
                 "workload_sha256": "c" * 64,
                 "physical_seed": 1,
@@ -368,6 +369,7 @@ class CalibratedPlatformTest(unittest.TestCase):
                 "model_sha256": model_sha,
                 "configuration": configuration,
                 "profile": "nominal",
+                "utilization_limit": 0.75,
             }
             if admission == "qualified":
                 item["evidence"] = {
@@ -428,6 +430,58 @@ class CalibratedPlatformTest(unittest.TestCase):
             )
             self.assertEqual(medium["selected_specification"], "tier-2")
             self.assertEqual(len(boarddb["fpgas"]), 4)
+
+    def test_family_binds_tier_utilization_to_evidence_and_materialization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            family_path = self._family_fixture(root)
+            family = json.loads(family_path.read_text())
+            family["specifications"][0]["utilization_limit"] = 0.50
+            for name, evidence_key in (
+                ("application-1.json", "application_holdout"),
+                ("full-1.json", "full_flow_acceptance"),
+            ):
+                path = root / name
+                value = json.loads(path.read_text())
+                value["utilization_limit"] = 0.50
+                self._write_json(path, value)
+                family["specifications"][0]["evidence"][evidence_key][
+                    "sha256"
+                ] = hashlib.sha256(path.read_bytes()).hexdigest()
+            self._write_json(family_path, family)
+
+            report, boarddb, timing = select_calibrated_platform(
+                family_path, self._demand(900)
+            )
+            self.assertEqual(report["selected_specification"], "tier-1")
+            self.assertEqual(report["selected_utilization_limit"], 0.50)
+            self.assertEqual(boarddb["fpgas"][0]["utilization_limit"], 0.50)
+            self.assertEqual(boarddb["fpgas"][0]["effective_capacity"]["lut"], 500)
+            self.assertEqual(timing["platform"], boarddb["platform"]["name"])
+
+            report, _, _ = select_calibrated_platform(
+                family_path, self._demand(1001)
+            )
+            self.assertEqual(report["selected_specification"], "tier-2")
+
+    def test_family_rejects_unproven_or_overdeclared_tier_utilization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            family_path = self._family_fixture(root)
+            family = json.loads(family_path.read_text())
+            family["specifications"][0]["utilization_limit"] = 0.50
+            self._write_json(family_path, family)
+            with self.assertRaisesRegex(ValidationError, "does not pass"):
+                load_calibrated_platform_family(family_path)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            family_path = self._family_fixture(root)
+            family = json.loads(family_path.read_text())
+            family["specifications"][0]["utilization_limit"] = 0.80
+            self._write_json(family_path, family)
+            with self.assertRaisesRegex(ValidationError, "may not exceed"):
+                load_calibrated_platform_family(family_path)
 
     def test_family_excludes_candidate_and_fails_closed_when_oversized(self):
         with tempfile.TemporaryDirectory() as directory:

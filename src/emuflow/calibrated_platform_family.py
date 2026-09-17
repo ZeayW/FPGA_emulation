@@ -118,6 +118,7 @@ def validate_full_flow_acceptance(value: Mapping[str, Any]) -> Dict[str, Any]:
             "model_sha256",
             "configuration",
             "profile",
+            "utilization_limit",
             "workload",
             "workload_sha256",
             "physical_seed",
@@ -136,6 +137,13 @@ def validate_full_flow_acceptance(value: Mapping[str, Any]) -> Dict[str, Any]:
     profile = _string(root.get("profile"), "full-flow acceptance.profile")
     if profile not in _PROFILES:
         raise ValidationError("full-flow acceptance.profile: unsupported profile")
+    utilization_limit = _number(
+        root.get("utilization_limit"), "full-flow acceptance.utilization_limit"
+    )
+    if utilization_limit <= 0.0 or utilization_limit > 1.0:
+        raise ValidationError(
+            "full-flow acceptance.utilization_limit: expected 0 < value <= 1"
+        )
     phases = [
         _integer(item, "full-flow acceptance.completed_phases", minimum=1)
         for item in _array(
@@ -190,6 +198,7 @@ def validate_full_flow_acceptance(value: Mapping[str, Any]) -> Dict[str, Any]:
             root.get("configuration"), "full-flow acceptance.configuration"
         ),
         "profile": profile,
+        "utilization_limit": utilization_limit,
         "workload": _string(root.get("workload"), "full-flow acceptance.workload"),
         "workload_sha256": _sha256(
             root.get("workload_sha256"), "full-flow acceptance.workload_sha256"
@@ -222,6 +231,7 @@ def _validate_evidence(
     model_sha256: str,
     configuration: str,
     profile: str,
+    utilization_limit: float,
 ) -> Dict[str, Any]:
     evidence = _mapping(raw, "family specification.evidence")
     expected = {
@@ -257,11 +267,21 @@ def _validate_evidence(
             "family blind holdout evidence does not pass for the configuration"
         )
     application = reports["application_holdout"]
+    application_utilization_limit = _number(
+        application.get("utilization_limit"),
+        "family application holdout utilization_limit",
+    )
     if (
         application.get("schema") != APPLICATION_VALIDATION_SCHEMA
         or application.get("status") != "pass"
         or application.get("model") != model_name
         or application.get("configuration") != configuration
+        or not math.isclose(
+            application_utilization_limit,
+            utilization_limit,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
     ):
         raise ValidationError(
             "family application holdout evidence does not pass for the configuration"
@@ -272,6 +292,12 @@ def _validate_evidence(
         or full_flow["model_sha256"] != model_sha256
         or full_flow["configuration"] != configuration
         or full_flow["profile"] != profile
+        or not math.isclose(
+            full_flow["utilization_limit"],
+            utilization_limit,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
     ):
         raise ValidationError("family full-flow evidence identity does not match")
     return normalized
@@ -333,6 +359,7 @@ def load_calibrated_platform_family(
                 "model_sha256",
                 "configuration",
                 "profile",
+                "utilization_limit",
                 "evidence",
             },
             f"family.specifications[{index}]",
@@ -379,6 +406,16 @@ def load_calibrated_platform_family(
         profile = _string(item.get("profile"), f"family.specifications[{index}].profile")
         if profile not in _PROFILES:
             raise ValidationError("family specification profile is unsupported")
+        utilization_limit = _number(
+            item.get("utilization_limit"),
+            f"family.specifications[{index}].utilization_limit",
+        )
+        declared_limit = float(model["device"]["utilization_limit"])
+        if utilization_limit <= 0.0 or utilization_limit > declared_limit:
+            raise ValidationError(
+                "family specification utilization_limit must be positive and may "
+                "not exceed the calibrated model limit"
+            )
         normalized_evidence = None
         if admission == "qualified":
             normalized_evidence = _validate_evidence(
@@ -388,6 +425,7 @@ def load_calibrated_platform_family(
                 model_sha256=model_digest,
                 configuration=configuration,
                 profile=profile,
+                utilization_limit=utilization_limit,
             )
             resource_names = set(model["profiles"][profile]["device_capacity"])
             if not resource_names or not resource_names <= _RESOURCES:
@@ -408,6 +446,7 @@ def load_calibrated_platform_family(
             "model_sha256": model_digest,
             "configuration": configuration,
             "profile": profile,
+            "utilization_limit": utilization_limit,
             **({"evidence": normalized_evidence} if normalized_evidence else {}),
         }
         specifications.append(normalized)
@@ -424,7 +463,7 @@ def load_calibrated_platform_family(
         state = loaded[item["id"]]
         model = state["model"]
         config = state["configuration"]
-        limit = float(model["device"]["utilization_limit"])
+        limit = float(item["utilization_limit"])
         aggregate = {
             resource: len(config["fpgas"])
             * math.floor(int(model["profiles"][item["profile"]]["device_capacity"][resource]) * limit)
@@ -506,7 +545,7 @@ def select_calibrated_platform(
         configuration = state["configuration"]
         profile = model["profiles"][specification["profile"]]
         fpga_count = len(configuration["fpgas"])
-        limit = float(model["device"]["utilization_limit"])
+        limit = float(specification["utilization_limit"])
         effective_per_fpga = {
             resource: math.floor(int(profile["device_capacity"][resource]) * limit)
             for resource in sorted(resources)
@@ -542,6 +581,9 @@ def select_calibrated_platform(
         "selected_specification": selected["id"] if selected else None,
         "selected_configuration": selected["configuration"] if selected else None,
         "selected_profile": selected["profile"] if selected else None,
+        "selected_utilization_limit": (
+            selected["utilization_limit"] if selected else None
+        ),
         "candidates": candidates,
         "qualification_boundary": (
             "Selection is an aggregate resource-capacity prefilter over independently "
@@ -553,10 +595,16 @@ def select_calibrated_platform(
         return report, {}, {}
     state = loaded[selected["id"]]
     boarddb = materialize_calibrated_boarddb(
-        state["model"], selected["configuration"], selected["profile"]
+        state["model"],
+        selected["configuration"],
+        selected["profile"],
+        utilization_limit=selected["utilization_limit"],
     )
     timing = materialize_calibrated_board_link_timing(
-        state["model"], selected["configuration"], selected["profile"]
+        state["model"],
+        selected["configuration"],
+        selected["profile"],
+        utilization_limit=selected["utilization_limit"],
     )
     return report, boarddb, timing
 

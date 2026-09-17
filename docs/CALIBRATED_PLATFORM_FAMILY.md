@@ -11,19 +11,26 @@ Every selectable specification binds:
 1. one sealed `emuflow.calibrated-academic-platform/v1` model;
 2. one configuration already enumerated by that model;
 3. one conservative, nominal, or aggressive uncertainty profile;
-4. a passing disjoint microbenchmark holdout;
-5. a passing free-partition application holdout; and
-6. a fresh one-shot Phase 1--7 acceptance with physical seed 1, macro-cycle
+4. one explicit utilization limit no greater than the calibrated model limit;
+5. a passing disjoint microbenchmark holdout;
+6. a passing free-partition application holdout at that utilization limit; and
+7. a fresh one-shot Phase 1--7 acceptance at the same utilization limit with physical seed 1, macro-cycle
    equivalence, schedule legality, zero DRC violations, zero unrouted nets,
    complete timing-path coverage, and independent system-global OpenSTA.
 
 A specification is `candidate` until all evidence exists. Candidates are never
 eligible for selection.
 
+Specifications are calibrated independently. A family loader never infers that
+different FPGA counts share the same device capacity, link service, or loading
+policy. Sharing a calibrated basis is permitted only when a sealed reference
+identity proves the device and link class are the same; otherwise each
+specification uses its own model artifact and evidence.
+
 ## Selection
 
 The design demand contains the resource counts produced by the selected open
-mapping flow. For each qualified tier, EmuFlow applies the model's declared
+mapping flow. For each qualified tier, EmuFlow applies the tier's admitted
 utilization limit to each per-FPGA capacity, computes the number of FPGAs
 required independently for each resource, and chooses the lowest service rank
 whose explicit configuration has enough devices. Qualified ranks must increase
