@@ -35,6 +35,12 @@ namespaces and therefore do not characterize board topology. Their original
 probe configuration remains recorded as provenance; capacity boundaries,
 links, routes, and delays must still be measured independently for every tier.
 
+A two-FPGA point-to-point tier cannot identify separate endpoint and per-hop
+delay terms because every legal path has exactly one hop. EmuFlow fits the
+observable one-hop total directly and seals that model as one-hop-only; it
+rejects any attempt to use the model for a multi-hop prediction. Larger tiers
+must independently vary hop count so the two terms remain identifiable.
+
 ## Selection
 
 The design demand contains the resource counts produced by the selected open

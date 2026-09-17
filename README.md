@@ -4302,6 +4302,9 @@ probes: those measurements relate reference resource units to the academic
 mapper and are independent of board topology. Their source configuration is
 retained as provenance; all capacity, link, route, and delay calibration stays
 tier-specific.
+For a strict two-FPGA point-to-point tier, delay fitting uses the directly
+observable one-hop total rather than inventing an endpoint/per-hop split; that
+model is sealed as one-hop-only and cannot be extrapolated to multi-hop paths.
 
 ```sh
 emuflow platform calibrated-family-select \

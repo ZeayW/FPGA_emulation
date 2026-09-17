@@ -1088,6 +1088,26 @@ def _delay_features(
     ]
 
 
+def _one_hop_only_configurations(
+    configurations: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Return true only when every declared topology admits exactly one hop.
+
+    The narrow two-node/one-link test is intentional. A larger clique may
+    still use a multi-hop detour under congestion, so treating it as a
+    one-hop-only service would extrapolate beyond the calibration evidence.
+    """
+
+    for configuration in configurations:
+        fpgas = list(configuration["fpgas"])
+        links = list(configuration["links"])
+        if len(fpgas) != 2 or len(links) != 1:
+            return False
+        if set(links[0]["endpoints"]) != set(fpgas):
+            return False
+    return True
+
+
 def _tdm_penalty_ns(curve: Sequence[Mapping[str, Any]], ratio: int) -> float:
     """Interpolate a monotone characterized TDM-tier penalty curve."""
 
@@ -1244,14 +1264,21 @@ def fit_calibrated_platform(
         raise ValidationError(
             "delay fit is not identifiable: characterize at least two observed TDM tiers"
         )
+    one_hop_only = _one_hop_only_configurations(template["configurations"])
     feature_rows: List[List[float]] = []
     for item in delay_measurements:
-        feature_rows.append(_delay_features(item, characterized_ratios))
-    coefficient_count = 2 + len(characterized_ratios) - 1
+        full_features = _delay_features(item, characterized_ratios)
+        feature_rows.append(
+            [full_features[0], *full_features[2:]]
+            if one_hop_only
+            else full_features
+        )
+    coefficient_count = (1 if one_hop_only else 2) + len(characterized_ratios) - 1
     if _matrix_rank(feature_rows) < coefficient_count:
         raise ValidationError(
             "delay fit is not identifiable: vary hop count independently at the "
-            "baseline and characterize every observed TDM tier"
+            "baseline (unless the declared platform is strictly one-hop-only) "
+            "and characterize every observed TDM tier"
         )
     observed_values = [float(item["observed_delay_ns"]) for item in delay_measurements]
     coefficients = _nnls_coordinate_descent(feature_rows, observed_values)
@@ -1282,8 +1309,22 @@ def fit_calibrated_platform(
             f"mean relative error {mean_relative_error:.6f}, "
             f"maximum relative error {maximum_relative_error:.6f}"
         )
-    endpoint_ns, per_hop_ns = coefficients[:2]
-    tdm_penalties = [0.0, *coefficients[2:]]
+    if one_hop_only:
+        endpoint_ns = 0.0
+        per_hop_ns = coefficients[0]
+        tdm_penalties = [0.0, *coefficients[1:]]
+        hop_model_scope = "declared_one_hop_only"
+        delay_equation = (
+            "one_hop_base_ns + interpolate(tdm_penalty_curve_ns, max_tdm_ratio)"
+        )
+    else:
+        endpoint_ns, per_hop_ns = coefficients[:2]
+        tdm_penalties = [0.0, *coefficients[2:]]
+        hop_model_scope = "identified_multi_hop"
+        delay_equation = (
+            "endpoint_ns + hop_count * per_hop_ns + "
+            "interpolate(tdm_penalty_curve_ns, max_tdm_ratio)"
+        )
     if any(
         right + 1.0e-9 < left
         for left, right in zip(tdm_penalties, tdm_penalties[1:])
@@ -1365,10 +1406,8 @@ def fit_calibrated_platform(
                 "base_route_delay_ns": base_route_delay_ns,
             },
             "link_delay_model": {
-                "equation": (
-                    "endpoint_ns + hop_count * per_hop_ns + "
-                    "interpolate(tdm_penalty_curve_ns, max_tdm_ratio)"
-                ),
+                "equation": delay_equation,
+                "hop_model_scope": hop_model_scope,
                 "endpoint_ns": endpoint_ns,
                 "per_hop_ns": per_hop_ns,
                 "tdm_penalty_curve_ns": tdm_penalty_curve,
@@ -1454,6 +1493,20 @@ def validate_calibrated_platform_model(value: Mapping[str, Any]) -> Dict[str, An
     if set(mapping) != set(profiles["nominal"]["device_capacity"]):
         raise ValidationError(
             "calibrated model resource-unit mapping does not cover device capacity"
+        )
+    delay_model = _mapping(
+        root["calibration"].get("link_delay_model"),
+        "calibrated model.calibration.link_delay_model",
+    )
+    expected_hop_scope = (
+        "declared_one_hop_only"
+        if _one_hop_only_configurations(configurations)
+        else "identified_multi_hop"
+    )
+    if delay_model.get("hop_model_scope") != expected_hop_scope:
+        raise ValidationError(
+            "calibrated model link-delay hop scope does not match its declared "
+            "platform configurations"
         )
     return dict(root)
 
@@ -1669,6 +1722,13 @@ def materialize_calibrated_board_link_timing(
 def _predict_delay(model: Mapping[str, Any], item: Mapping[str, Any]) -> float:
     calibration = model["calibration"]
     delay_model = calibration["link_delay_model"]
+    if (
+        delay_model.get("hop_model_scope") == "declared_one_hop_only"
+        and int(item["hop_count"]) != 1
+    ):
+        raise ValidationError(
+            "one-hop-only calibrated platform cannot predict a multi-hop path"
+        )
     return (
         delay_model["endpoint_ns"]
         + item["hop_count"] * delay_model["per_hop_ns"]
@@ -2145,7 +2205,12 @@ def validate_calibrated_partition_envelope(
     required_ratio = math.ceil(cut_bits / logical_capacity)
     supported = [int(value) for value in nominal["tdm_supported_ratios"]]
     selected = next((ratio for ratio in supported if ratio >= required_ratio), None)
-    status = "pass" if selected is not None else "fail"
+    hop_supported = not (
+        model["calibration"]["link_delay_model"]["hop_model_scope"]
+        == "declared_one_hop_only"
+        and hops != 1
+    )
+    status = "pass" if selected is not None and hop_supported else "fail"
     return {
         "schema": PARTITION_ENVELOPE_VALIDATION_SCHEMA,
         "status": status,
@@ -2160,8 +2225,13 @@ def validate_calibrated_partition_envelope(
         "maximum_characterized_tdm_ratio": max(supported),
         "reason": (
             "partition load lies inside the calibrated communication envelope"
-            if selected is not None
-            else "partition load exceeds the calibrated communication envelope"
+            if status == "pass"
+            else (
+                "partition path hop count lies outside the one-hop-only "
+                "calibrated platform"
+                if not hop_supported
+                else "partition load exceeds the calibrated communication envelope"
+            )
         ),
     }
 

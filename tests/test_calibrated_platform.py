@@ -673,6 +673,54 @@ class CalibratedPlatformTest(unittest.TestCase):
             1.0,
         )
 
+    def test_two_fpga_platform_fits_one_hop_delay_without_fake_decomposition(self):
+        one_hop_template = template()
+        one_hop_template["configurations"] = [
+            one_hop_template["configurations"][0]
+        ]
+        observations = dataset()
+        for category in (
+            "capacity_boundaries",
+            "link_capacity_boundaries",
+            "link_characteristics",
+        ):
+            for item in observations[category]:
+                item["configuration"] = "2fpga-p2p"
+        observations["link_delay_measurements"] = [
+            item
+            for item in observations["link_delay_measurements"]
+            if item["hop_count"] == 1
+        ]
+        model = fit_calibrated_platform(one_hop_template, observations)
+        delay_model = model["calibration"]["link_delay_model"]
+        self.assertEqual(delay_model["hop_model_scope"], "declared_one_hop_only")
+        self.assertEqual(delay_model["endpoint_ns"], 0.0)
+        self.assertAlmostEqual(delay_model["per_hop_ns"], 5.0, places=7)
+
+        invalid_holdout = dataset("holdout")
+        for category in (
+            "capacity_boundaries",
+            "link_capacity_boundaries",
+            "link_delay_measurements",
+        ):
+            for item in invalid_holdout[category]:
+                item["configuration"] = "2fpga-p2p"
+        with self.assertRaisesRegex(ValidationError, "one-hop-only"):
+            validate_calibrated_platform_holdout(model, invalid_holdout)
+
+        envelope = validate_calibrated_partition_envelope(
+            model,
+            {
+                "schema": "emuflow.calibrated-platform-partition-load/v1",
+                "configuration": "2fpga-p2p",
+                "partition_sha256": "e" * 64,
+                "max_direction_cut_bits": 1,
+                "worst_path_hop_count": 2,
+            },
+        )
+        self.assertEqual(envelope["status"], "fail")
+        self.assertIn("one-hop-only", envelope["reason"])
+
     def test_fit_rejects_a_full_rank_but_inaccurate_delay_model(self):
         observations = dataset()
         conflicting = copy.deepcopy(observations["link_delay_measurements"][0])
