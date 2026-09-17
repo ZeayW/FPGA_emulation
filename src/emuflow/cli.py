@@ -58,6 +58,8 @@ from .board_support import validate_board_support_overlay_file
 from .calibrated_platform import (
     fit_calibrated_platform_files,
     materialize_calibrated_boarddb_file,
+    measure_mapped_yosys_resource_units_file,
+    validate_calibrated_partition_envelope_files,
     validate_calibrated_platform_application_holdout_files,
     validate_calibrated_platform_holdout_files,
 )
@@ -1214,6 +1216,36 @@ def _build_parser() -> argparse.ArgumentParser:
     platform_calibrated_application_validate.add_argument(
         "--output", "-o", type=Path
     )
+    platform_calibrated_partition_envelope = platform_subparsers.add_parser(
+        "calibrated-partition-envelope-validate",
+        help="reject a partition that exceeds calibrated communication service",
+    )
+    platform_calibrated_partition_envelope.add_argument(
+        "--model", type=Path, required=True
+    )
+    platform_calibrated_partition_envelope.add_argument(
+        "--load", type=Path, required=True
+    )
+    platform_calibrated_partition_envelope.add_argument(
+        "--output", "-o", type=Path
+    )
+    platform_calibrated_resource_measure = platform_subparsers.add_parser(
+        "calibrated-resource-unit-measure",
+        help="measure mapped academic units through retained Yosys hierarchy",
+    )
+    platform_calibrated_resource_measure.add_argument(
+        "--yosys-json", type=Path, required=True
+    )
+    platform_calibrated_resource_measure.add_argument("--top", required=True)
+    platform_calibrated_resource_measure.add_argument(
+        "--resource", choices=("lut", "ff", "bram", "dsp"), required=True
+    )
+    platform_calibrated_resource_measure.add_argument(
+        "--source", type=Path, required=True
+    )
+    platform_calibrated_resource_measure.add_argument(
+        "--output", "-o", type=Path
+    )
     platform_calibrated_materialize = platform_subparsers.add_parser(
         "calibrated-materialize",
         help="materialize one explicitly supported calibrated BoardDB",
@@ -1226,6 +1258,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--profile",
         choices=("conservative", "nominal", "aggressive"),
         default="nominal",
+    )
+    platform_calibrated_materialize.add_argument(
+        "--utilization-limit",
+        type=float,
+        help=(
+            "explicit lower loading limit for a stress qualification; may "
+            "not exceed the model's declared default"
+        ),
     )
     platform_calibrated_materialize.add_argument(
         "--output", "-o", type=Path, required=True
@@ -1773,11 +1813,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     vpr_synth.add_argument("--log", type=Path)
     vpr_synth.add_argument(
+        "--json-output",
+        type=Path,
+        help="also emit the mapped Yosys JSON used by multi-FPGA Phase 1",
+    )
+    vpr_synth.add_argument(
         "--hard-blocks",
         action="store_true",
         help=(
             "map multipliers and RAMs to the public VTR flagship "
             "architecture modes"
+        ),
+    )
+    vpr_synth.add_argument(
+        "--strip-keep-hierarchy",
+        action="store_true",
+        help=(
+            "ignore provider-facing keep_hierarchy controls before the "
+            "normal flattened VTR mapping (for isolated same-RTL calibration)"
         ),
     )
     vpr_full_open = vpr_subparsers.add_parser(
@@ -4401,6 +4454,22 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             _print_json(report)
             return 0 if report["status"] == "pass" else 2
+        if args.platform_command == "calibrated-partition-envelope-validate":
+            report = validate_calibrated_partition_envelope_files(
+                args.model, args.load, args.output
+            )
+            _print_json(report)
+            return 0 if report["status"] == "pass" else 2
+        if args.platform_command == "calibrated-resource-unit-measure":
+            report = measure_mapped_yosys_resource_units_file(
+                args.yosys_json,
+                top=args.top,
+                resource=args.resource,
+                source_path=args.source,
+                output_path=args.output,
+            )
+            _print_json(report)
+            return 0
         if args.platform_command == "calibrated-materialize":
             report = materialize_calibrated_boarddb_file(
                 args.model,
@@ -4408,6 +4477,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.profile,
                 args.output,
                 args.timing_output,
+                args.utilization_limit,
             )
             _print_json(report)
             return 0
@@ -4874,6 +4944,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 executable=args.yosys,
                 log_path=args.log,
                 hard_blocks=args.hard_blocks,
+                json_output=args.json_output,
+                strip_keep_hierarchy=args.strip_keep_hierarchy,
             )
         elif args.vpr_command == "run":
             report = run_vpr(

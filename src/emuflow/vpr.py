@@ -48,6 +48,7 @@ def build_vtr_yosys_script(
     *,
     hard_blocks: bool = False,
     json_output: Optional[Path] = None,
+    strip_keep_hierarchy: bool = False,
 ) -> str:
     """Build a VTR-compatible LUT6/DFF and optional hard-block eBLIF script.
 
@@ -65,6 +66,23 @@ def build_vtr_yosys_script(
         f"read_verilog -sv {read_sources}",
         f"hierarchy -check -top {top_identifier}",
     ]
+    if strip_keep_hierarchy:
+        # Controlled calibration probes retain hierarchy for fixed assignment
+        # in the reference flow.  The academic mapper must ignore that
+        # provider-facing control attribute so it observes the same flattened
+        # resource namespace as normal multi-FPGA Phase 1.  Functional RTL and
+        # source hash remain identical on both sides.
+        commands.extend(
+            (
+                # ``attrmap`` does not reliably clear module attributes on
+                # parameter-specialized modules created by ``hierarchy``.
+                # Clear both module and object attributes explicitly, then
+                # flatten before the staged hard-block synthesis begins.
+                "setattr -mod -unset keep_hierarchy",
+                "setattr -unset keep_hierarchy",
+                "flatten",
+            )
+        )
     if hard_blocks:
         for path in (
             _VTR_MODEL_LIBRARY,
@@ -131,6 +149,7 @@ def run_vtr_yosys(
     log_path: Optional[Path] = None,
     hard_blocks: bool = False,
     json_output: Optional[Path] = None,
+    strip_keep_hierarchy: bool = False,
 ) -> Dict[str, Any]:
     source_list = [path.resolve() for path in sources]
     for source in source_list:
@@ -148,6 +167,7 @@ def run_vtr_yosys(
         output,
         hard_blocks=hard_blocks,
         json_output=json_output,
+        strip_keep_hierarchy=strip_keep_hierarchy,
     )
     completed = subprocess.run(
         [command, "-p", script],
@@ -199,6 +219,7 @@ def run_vtr_yosys(
             "vtr-flagship-heterogeneous" if hard_blocks else "logic-only"
         ),
         "mapping_profile": VTR_HARD_BLOCK_PROFILE if hard_blocks else None,
+        "stripped_provider_keep_hierarchy": strip_keep_hierarchy,
         "top": top,
         "output": str(output),
         "sha256": _sha256(output),

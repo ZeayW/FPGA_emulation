@@ -7,6 +7,7 @@ from pathlib import Path
 from emuflow.calibration_campaign import (
     RUN_RESULT_SCHEMA,
     _capacity_rtl,
+    _resource_unit_mapping_rtl,
     collect_calibration_observations,
     plan_calibration_campaign,
     validate_calibration_campaign,
@@ -121,11 +122,22 @@ class CalibrationCampaignTest(unittest.TestCase):
         self.assertEqual(bram_rtl.count("calibration_bram_cell u_cell"), 1)
         dsp_rtl = _capacity_rtl("dsp", 2)
         self.assertIn('use_dsp = "yes"', dsp_rtl)
+        self.assertIn("wire [35:0] product_dsp", dsp_rtl)
+        self.assertIn("assign product_dsp = lhs * rhs", dsp_rtl)
         self.assertIn("calibration_dsp_cell u_cell", dsp_rtl)
         large_lut_rtl = _capacity_rtl("lut", 154000)
         self.assertIn("LUT_BANK_SIZE = 8192", large_lut_rtl)
         self.assertIn("LUT_BANKS = (154000 + LUT_BANK_SIZE - 1)", large_lut_rtl)
         self.assertNotIn("i < 154000", large_lut_rtl)
+
+    def test_resource_mapping_probe_uses_distinct_sequential_feedback(self):
+        rtl = _resource_unit_mapping_rtl(1024)
+        self.assertIn("reg [WIDTH - 1:0] state", rtl)
+        self.assertIn("always @(posedge clk) state <= next_state", rtl)
+        self.assertIn("state[(i + 13) % WIDTH]", rtl)
+        self.assertIn('shreg_extract = "no"', rtl)
+        self.assertIn("BANK_SIZE = 8192", rtl)
+        self.assertIn("BANKS = (1024 + BANK_SIZE - 1)", rtl)
 
     def test_plan_materializes_isolated_rtl_and_fixed_constraints(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -260,6 +272,55 @@ class CalibrationCampaignTest(unittest.TestCase):
             self.assertEqual(observations["link_delay_measurements"][0]["hop_count"], 2)
             self.assertEqual(observations["link_delay_measurements"][0]["contention_units"], 2)
             self.assertEqual(observations["link_delay_measurements"][0]["max_tdm_ratio"], 3)
+
+    def test_collects_same_rtl_resource_unit_mapping(self):
+        value = campaign()
+        value["cases"] = [
+            {
+                "id": "mapping-small",
+                "kind": "resource_unit_mapping",
+                "configuration": "2fpga-p2p",
+                "resources": ["lut", "ff"],
+                "units": 1024,
+                "target_fpga": "F0",
+            }
+        ]
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest = plan_calibration_campaign(value, root)
+            case = manifest["cases"][0]
+            write_json(
+                root / "cases/mapping-small/result.json",
+                {
+                    "schema": RUN_RESULT_SCHEMA,
+                    "case_id": "mapping-small",
+                    "status": "pass",
+                    "controls": {
+                        "assignment_applied": True,
+                        "route_applied": False,
+                        "observed_assignment": {"u_probe": "B1.F1"},
+                        "observed_route": None,
+                    },
+                    "metrics": {
+                        "reference_resource_inventory_per_fpga": {
+                            "lut": 900,
+                            "ff": 1024,
+                        },
+                        "academic_resource_inventory_per_fpga": {
+                            "lut": 1024,
+                            "ff": 1024,
+                        },
+                        "source_sha256": case["source_sha256"],
+                    },
+                },
+            )
+            observations = collect_calibration_observations(manifest, root)
+            self.assertEqual(
+                [(item["resource"], item["reference_units"], item["academic_units"])
+                 for item in observations["resource_unit_mappings"]],
+                [("lut", 900, 1024), ("ff", 1024, 1024)],
+            )
+            self.assertEqual(observations["collection"]["included_cases"], 1)
 
     def test_generated_launcher_uses_reference_environment_and_script_file(self):
         with tempfile.TemporaryDirectory() as raw:

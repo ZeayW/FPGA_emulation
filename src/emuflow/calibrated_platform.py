@@ -9,6 +9,7 @@ data structures.
 from __future__ import annotations
 
 import math
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -16,7 +17,7 @@ from .board_link_timing import directed_board_links, validate_board_link_timing
 from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import Platform
-from .resources import RESOURCE_FIELDS
+from .resources import RESOURCE_FIELDS, ResourceVector, classify_primitive_resources
 
 
 TEMPLATE_SCHEMA = "emuflow.calibrated-platform-template/v1"
@@ -29,6 +30,13 @@ APPLICATION_HOLDOUT_SCHEMA = (
 APPLICATION_VALIDATION_SCHEMA = (
     "emuflow.calibrated-academic-platform-application-validation/v1"
 )
+PARTITION_LOAD_SCHEMA = "emuflow.calibrated-platform-partition-load/v1"
+PARTITION_ENVELOPE_VALIDATION_SCHEMA = (
+    "emuflow.calibrated-platform-partition-envelope-validation/v1"
+)
+RESOURCE_UNIT_MEASUREMENT_SCHEMA = (
+    "emuflow.calibrated-platform-resource-unit-measurement/v1"
+)
 
 _ROLES = {"fit", "holdout"}
 _SOURCE_CLASSES = {"authorized_reference_flow", "synthetic_fixture"}
@@ -36,6 +44,171 @@ _PUBLICATION_SCOPES = {"internal", "aggregate_only", "public"}
 _OUTCOMES = {"pass", "capacity_fail"}
 _PROFILES = ("conservative", "nominal", "aggressive")
 _PUBLICATION_RANK = {"internal": 0, "aggregate_only": 1, "public": 2}
+
+
+def _attribute_is_true(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        try:
+            return int(value, 2) != 0
+        except ValueError:
+            return value.strip().lower() in {"yes", "true"}
+    return False
+
+
+def _reachable_yosys_resource_totals(
+    design: Mapping[str, Any], top: str
+) -> Dict[str, int]:
+    """Count mapped leaf resources through retained Yosys hierarchy.
+
+    Calibration RTL intentionally keeps hierarchy so both the reference flow
+    and the academic mapper cannot optimize away repeated resource probes.
+    Counting only top-level cells would therefore report one opaque module.
+    This traversal expands reachable non-blackbox modules and classifies only
+    leaf/blackbox primitives; unreachable vendor library modules are ignored.
+    """
+
+    modules = _mapping(design.get("modules"), "mapped Yosys design.modules")
+    normalized_modules = {
+        str(name).lstrip("\\"): _mapping(module, f"mapped Yosys module {name}")
+        for name, module in modules.items()
+    }
+    top_name = top.lstrip("\\")
+    if top_name not in normalized_modules:
+        raise ValidationError(f"mapped Yosys design: top module {top!r} not found")
+
+    memo: Dict[str, ResourceVector] = {}
+
+    def visit(module_name: str, stack: Tuple[str, ...]) -> ResourceVector:
+        if module_name in memo:
+            return memo[module_name]
+        if module_name in stack:
+            raise ValidationError(
+                "mapped Yosys design: recursive module hierarchy "
+                + " -> ".join((*stack, module_name))
+            )
+        module = normalized_modules[module_name]
+        attributes = _mapping(
+            module.get("attributes", {}),
+            f"mapped Yosys module {module_name}.attributes",
+        )
+        if _attribute_is_true(attributes.get("blackbox", False)):
+            result = classify_primitive_resources(module_name)
+            memo[module_name] = result
+            return result
+
+        cells = _mapping(
+            module.get("cells", {}), f"mapped Yosys module {module_name}.cells"
+        )
+        vectors = []
+        vtr_memory_groups = set()
+        for cell_name, raw_cell in cells.items():
+            cell = _mapping(
+                raw_cell, f"mapped Yosys module {module_name}.cells[{cell_name}]"
+            )
+            cell_type = _string(
+                cell.get("type"),
+                f"mapped Yosys module {module_name}.cells[{cell_name}].type",
+            ).lstrip("\\")
+            if cell_type.lower() in {"single_port_ram", "dual_port_ram"}:
+                # VTR's public memory model emits one architecture atom per
+                # data bit.  Yosys preserves the originating memory instance
+                # in each flattened atom name, so count each group once rather
+                # than treating bit atoms as independent BRAMs.
+                marker = ".bits["
+                if marker not in cell_name:
+                    raise ValidationError(
+                        "mapped Yosys design: cannot identify the physical "
+                        f"VTR memory group for cell {cell_name!r}"
+                    )
+                vtr_memory_groups.add(cell_name.rsplit(marker, 1)[0])
+                continue
+            child = normalized_modules.get(cell_type)
+            if child is not None and not _attribute_is_true(
+                _mapping(
+                    child.get("attributes", {}),
+                    f"mapped Yosys module {cell_type}.attributes",
+                ).get("blackbox", False)
+            ):
+                vectors.append(visit(cell_type, (*stack, module_name)))
+            else:
+                vectors.append(classify_primitive_resources(cell_type))
+        vectors.extend(
+            ResourceVector(bram=1) for _ in sorted(vtr_memory_groups)
+        )
+        result = ResourceVector.sum(vectors)
+        memo[module_name] = result
+        return result
+
+    return visit(top_name, ()).to_dict(include_zeros=False)
+
+
+def measure_mapped_yosys_resource_units(
+    design: Mapping[str, Any],
+    *,
+    top: str,
+    resource: str,
+    source_sha256: str,
+) -> Dict[str, Any]:
+    """Measure one academic resource namespace from a mapped Yosys design."""
+
+    if resource not in {"lut", "ff", "bram", "dsp"}:
+        raise ValidationError(f"resource: unsupported mapping resource {resource!r}")
+    if len(source_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in source_sha256
+    ):
+        raise ValidationError("source_sha256: expected lowercase SHA-256")
+    totals = _reachable_yosys_resource_totals(design, top)
+    if resource == "bram":
+        bram18k = totals.get("bram18k", 0)
+        if bram18k % 2:
+            raise ValidationError(
+                "isolated BRAM mapping probe must contain a whole number of "
+                "36-Kib academic BRAM units"
+            )
+        academic_units = totals.get("bram", 0) + bram18k // 2
+    elif resource == "dsp":
+        academic_units = totals.get("dsp", 0) + totals.get("dsp48", 0)
+    else:
+        academic_units = totals.get(resource, 0)
+    if academic_units <= 0:
+        raise ValidationError(
+            f"mapped Yosys design contains no academic {resource} units"
+        )
+    return {
+        "schema": RESOURCE_UNIT_MEASUREMENT_SCHEMA,
+        "top": top,
+        "resource": resource,
+        "academic_units": academic_units,
+        "mapped_resource_totals": totals,
+        "source_sha256": source_sha256,
+    }
+
+
+def measure_mapped_yosys_resource_units_file(
+    design_path: Path,
+    *,
+    top: str,
+    resource: str,
+    source_path: Path,
+    output_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    digest = hashlib.sha256()
+    with source_path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    report = measure_mapped_yosys_resource_units(
+        read_json(design_path),
+        top=top,
+        resource=resource,
+        source_sha256=digest.hexdigest(),
+    )
+    if output_path is not None:
+        write_json(output_path, report)
+    return report
 
 
 def _mapping(value: Any, context: str) -> Mapping[str, Any]:
@@ -332,6 +505,7 @@ def validate_calibration_template(value: Mapping[str, Any]) -> Dict[str, Any]:
             "link_outcome_accuracy_min",
             "delay_mean_relative_error_max",
             "delay_max_relative_error_max",
+            "resource_unit_mapping_max_relative_error",
             "application_tdm_ratio_absolute_error_max",
         },
         "template.acceptance",
@@ -352,6 +526,10 @@ def validate_calibration_template(value: Mapping[str, Any]) -> Dict[str, Any]:
         "delay_max_relative_error_max": _number(
             acceptance.get("delay_max_relative_error_max"),
             "template.acceptance.delay_max_relative_error_max",
+        ),
+        "resource_unit_mapping_max_relative_error": _number(
+            acceptance.get("resource_unit_mapping_max_relative_error"),
+            "template.acceptance.resource_unit_mapping_max_relative_error",
         ),
         "application_tdm_ratio_absolute_error_max": _integer(
             acceptance.get("application_tdm_ratio_absolute_error_max"),
@@ -398,6 +576,7 @@ def validate_calibration_observations(
             "schema",
             "dataset",
             "capacity_boundaries",
+            "resource_unit_mappings",
             "link_capacity_boundaries",
             "link_characteristics",
             "link_delay_measurements",
@@ -448,7 +627,9 @@ def validate_calibration_observations(
     }
 
     capacity_boundaries = []
-    for index, raw in enumerate(_array(root.get("capacity_boundaries", []), "capacity_boundaries")):
+    for index, raw in enumerate(
+        _array(root.get("capacity_boundaries", []), "capacity_boundaries")
+    ):
         item = _mapping(raw, f"capacity_boundaries[{index}]")
         _reject_unknown(
             item,
@@ -463,7 +644,9 @@ def validate_calibration_observations(
             },
             f"capacity_boundaries[{index}]",
         )
-        resource = _string(item.get("resource"), f"capacity_boundaries[{index}].resource")
+        resource = _string(
+            item.get("resource"), f"capacity_boundaries[{index}].resource"
+        )
         if resource not in RESOURCE_FIELDS:
             raise ValidationError(f"capacity_boundaries[{index}].resource: unsupported resource")
         assignment_control = _string(
@@ -501,6 +684,69 @@ def validate_calibration_observations(
                 "utilization_limit": utilization_limit,
                 "outcome": outcome,
                 "assignment_control": "fixed",
+            }
+        )
+
+    resource_unit_mappings = []
+    for index, raw in enumerate(
+        _array(root.get("resource_unit_mappings", []), "resource_unit_mappings")
+    ):
+        item = _mapping(raw, f"resource_unit_mappings[{index}]")
+        _reject_unknown(
+            item,
+            {
+                "id",
+                "configuration",
+                "resource",
+                "reference_units",
+                "academic_units",
+                "source_sha256",
+                "mapping_control",
+            },
+            f"resource_unit_mappings[{index}]",
+        )
+        resource = _string(
+            item.get("resource"), f"resource_unit_mappings[{index}].resource"
+        )
+        if resource not in RESOURCE_FIELDS:
+            raise ValidationError(
+                f"resource_unit_mappings[{index}].resource: unsupported resource"
+            )
+        if item.get("mapping_control") != "isolated_same_rtl":
+            raise ValidationError(
+                f"resource_unit_mappings[{index}].mapping_control: expected "
+                "'isolated_same_rtl'"
+            )
+        source_sha256 = _string(
+            item.get("source_sha256"),
+            f"resource_unit_mappings[{index}].source_sha256",
+        )
+        if len(source_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in source_sha256
+        ):
+            raise ValidationError(
+                f"resource_unit_mappings[{index}].source_sha256: expected SHA-256"
+            )
+        resource_unit_mappings.append(
+            {
+                "id": _string(item.get("id"), f"resource_unit_mappings[{index}].id"),
+                "configuration": _string(
+                    item.get("configuration"),
+                    f"resource_unit_mappings[{index}].configuration",
+                ),
+                "resource": resource,
+                "reference_units": _integer(
+                    item.get("reference_units"),
+                    f"resource_unit_mappings[{index}].reference_units",
+                    minimum=1,
+                ),
+                "academic_units": _integer(
+                    item.get("academic_units"),
+                    f"resource_unit_mappings[{index}].academic_units",
+                    minimum=1,
+                ),
+                "source_sha256": source_sha256,
+                "mapping_control": "isolated_same_rtl",
             }
         )
 
@@ -670,6 +916,7 @@ def validate_calibration_observations(
 
     all_items = (
         capacity_boundaries
+        + resource_unit_mappings
         + link_capacity_boundaries
         + link_characteristics
         + delay_measurements
@@ -681,6 +928,7 @@ def validate_calibration_observations(
         "schema": OBSERVATIONS_SCHEMA,
         "dataset": normalized_dataset,
         "capacity_boundaries": capacity_boundaries,
+        "resource_unit_mappings": resource_unit_mappings,
         "link_capacity_boundaries": link_capacity_boundaries,
         "link_characteristics": link_characteristics,
         "link_delay_measurements": delay_measurements,
@@ -753,6 +1001,59 @@ def _raw_capacity_interval(
             f"pass lower {lower} is not below fail upper {upper}"
         )
     return lower, upper
+
+
+def _fit_resource_unit_mappings(
+    observations: Sequence[Mapping[str, Any]],
+    resources: Sequence[str],
+    maximum_relative_error: float,
+) -> Dict[str, Dict[str, Any]]:
+    """Fit a zero-intercept, per-resource reference-to-academic conversion.
+
+    Capacity constraints are independent resource axes.  A dense cross-resource
+    regression would turn one device's LUT capacity into another device's FF or
+    DSP capacity and would not preserve that feasible region.  Controlled
+    same-RTL probes therefore identify one scale per resource.  Application
+    workloads remain blind holdouts and cannot contribute to these scales.
+    """
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for resource in resources:
+        relevant = [item for item in observations if item["resource"] == resource]
+        distinct = {int(item["reference_units"]) for item in relevant}
+        if len(relevant) < 2 or len(distinct) < 2:
+            raise ValidationError(
+                f"resource unit mapping {resource!r}: requires at least two "
+                "distinct isolated same-RTL probes"
+            )
+        denominator = sum(float(item["reference_units"]) ** 2 for item in relevant)
+        scale = sum(
+            float(item["reference_units"]) * float(item["academic_units"])
+            for item in relevant
+        ) / denominator
+        if not math.isfinite(scale) or scale <= 0.0:
+            raise ValidationError(
+                f"resource unit mapping {resource!r}: invalid fitted scale"
+            )
+        relative_errors = [
+            abs(scale * float(item["reference_units"]) - item["academic_units"])
+            / float(item["academic_units"])
+            for item in relevant
+        ]
+        maximum = max(relative_errors)
+        mean = sum(relative_errors) / len(relative_errors)
+        if maximum > maximum_relative_error:
+            raise ValidationError(
+                f"resource unit mapping {resource!r} does not meet acceptance: "
+                f"maximum relative error {maximum:.6f}"
+            )
+        result[resource] = {
+            "academic_units_per_reference_unit": scale,
+            "fit_mean_relative_error": mean,
+            "fit_max_relative_error": maximum,
+            "observation_ids": sorted(item["id"] for item in relevant),
+        }
+    return result
 
 
 def _consistent_link_characteristic(
@@ -838,6 +1139,7 @@ def fit_calibrated_platform(
     configuration_ids = {item["id"] for item in template["configurations"]}
     for category in (
         "capacity_boundaries",
+        "resource_unit_mappings",
         "link_capacity_boundaries",
         "link_characteristics",
         "link_delay_measurements",
@@ -850,7 +1152,9 @@ def fit_calibrated_platform(
                 )
 
     resource_intervals: Dict[str, Dict[str, int]] = {}
-    resource_profiles: Dict[str, Dict[str, int]] = {profile: {} for profile in _PROFILES}
+    reference_resource_profiles: Dict[str, Dict[str, int]] = {
+        profile: {} for profile in _PROFILES
+    }
     resources = sorted({item["resource"] for item in observations["capacity_boundaries"]})
     if not resources:
         raise ValidationError("fit dataset: capacity boundaries are required")
@@ -864,7 +1168,30 @@ def fit_calibrated_platform(
             "raw_upper_exclusive": upper,
         }
         for profile, raw_capacity in _profile_values(lower, upper).items():
-            resource_profiles[profile][resource] = raw_capacity
+            reference_resource_profiles[profile][resource] = raw_capacity
+
+    unit_mappings = _fit_resource_unit_mappings(
+        observations["resource_unit_mappings"],
+        resources,
+        float(
+            template["acceptance"]["resource_unit_mapping_max_relative_error"]
+        ),
+    )
+    academic_resource_profiles: Dict[str, Dict[str, int]] = {
+        profile: {
+            resource: max(
+                1,
+                math.floor(
+                    reference_resource_profiles[profile][resource]
+                    * unit_mappings[resource][
+                        "academic_units_per_reference_unit"
+                    ]
+                ),
+            )
+            for resource in resources
+        }
+        for profile in _PROFILES
+    }
 
     link_characteristics = observations["link_characteristics"]
     if not link_characteristics:
@@ -977,7 +1304,12 @@ def fit_calibrated_platform(
     for profile in _PROFILES:
         base_one_hop_ns = base_route_delay_ns
         profiles[profile] = {
-            "device_capacity": dict(sorted(resource_profiles[profile].items())),
+            "device_capacity": dict(
+                sorted(academic_resource_profiles[profile].items())
+            ),
+            "reference_device_capacity": dict(
+                sorted(reference_resource_profiles[profile].items())
+            ),
             "link_channels_per_direction": channels_per_direction,
             "phy_serialization_width_bits": phy_width_bits,
             "payload_bits_per_lane_per_cycle": 1,
@@ -992,6 +1324,7 @@ def fit_calibrated_platform(
         item["id"]
         for category in (
             "capacity_boundaries",
+            "resource_unit_mappings",
             "link_capacity_boundaries",
             "link_characteristics",
             "link_delay_measurements",
@@ -1012,7 +1345,8 @@ def fit_calibrated_platform(
         "calibration": {
             "fit_dataset_id": observations["dataset"]["id"],
             "fit_observation_ids": fit_ids,
-            "resource_raw_capacity_intervals": resource_intervals,
+            "reference_resource_raw_capacity_intervals": resource_intervals,
+            "resource_unit_mapping": unit_mappings,
             "link_characteristics": {
                 "line_rate_mbps": line_rate_mbps,
                 "phy_width_bits": phy_width_bits,
@@ -1041,7 +1375,8 @@ def fit_calibrated_platform(
             "parameter_provenance": {
                 "device_capacity": (
                     "controlled fixed-assignment pass/fail boundaries normalized "
-                    "by the applied utilization limit"
+                    "by the applied utilization limit, then converted into the "
+                    "academic mapper's units using disjoint isolated same-RTL probes"
                 ),
                 "link_capacity": (
                     "one independently schedulable logical bit per characterized "
@@ -1091,13 +1426,37 @@ def validate_calibrated_platform_model(value: Mapping[str, Any]) -> Dict[str, An
     if set(profiles) != set(_PROFILES):
         raise ValidationError(f"calibrated model.profiles: expected {list(_PROFILES)}")
     for profile in _PROFILES:
+        profile_value = _mapping(profiles[profile], f"profiles.{profile}")
+        academic_capacity = _mapping(
+            profile_value.get("device_capacity"),
+            f"profiles.{profile}.device_capacity",
+        )
+        reference_capacity = _mapping(
+            profile_value.get("reference_device_capacity"),
+            f"profiles.{profile}.reference_device_capacity",
+        )
+        if set(academic_capacity) != set(reference_capacity):
+            raise ValidationError(
+                f"profiles.{profile}: academic and reference resource axes differ"
+            )
         for configuration in configurations:
             materialize_calibrated_boarddb(root, configuration["id"], profile)
+    mapping = _mapping(
+        root["calibration"].get("resource_unit_mapping"),
+        "calibrated model.calibration.resource_unit_mapping",
+    )
+    if set(mapping) != set(profiles["nominal"]["device_capacity"]):
+        raise ValidationError(
+            "calibrated model resource-unit mapping does not cover device capacity"
+        )
     return dict(root)
 
 
 def materialize_calibrated_boarddb(
-    model_value: Mapping[str, Any], configuration_id: str, profile: str = "nominal"
+    model_value: Mapping[str, Any],
+    configuration_id: str,
+    profile: str = "nominal",
+    utilization_limit: Optional[float] = None,
 ) -> Dict[str, Any]:
     root = _mapping(model_value, "calibrated model")
     if root.get("schema") != MODEL_SCHEMA:
@@ -1122,6 +1481,40 @@ def materialize_calibrated_boarddb(
             profile_value.get("device_capacity"), f"profiles.{profile}.device_capacity"
         ).items()
     }
+    declared_utilization_limit = _number(
+        device.get("utilization_limit"),
+        "calibrated model.device.utilization_limit",
+        exclusive=True,
+    )
+    selected_utilization_limit = (
+        declared_utilization_limit
+        if utilization_limit is None
+        else _number(
+            utilization_limit,
+            "calibrated materialization utilization_limit",
+            exclusive=True,
+        )
+    )
+    if selected_utilization_limit > declared_utilization_limit:
+        raise ValidationError(
+            "calibrated materialization utilization_limit may reduce the "
+            "declared loading policy for a stress qualification, but may not "
+            "increase it"
+        )
+    if selected_utilization_limit > 1.0:
+        raise ValidationError(
+            "calibrated materialization utilization_limit must be <= 1"
+        )
+    utilization_suffix = (
+        ""
+        if math.isclose(
+            selected_utilization_limit,
+            declared_utilization_limit,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
+        else f"__util{round(selected_utilization_limit * 10000):04d}bp"
+    )
     payload_capacity = _integer(
         profile_value.get("link_payload_bits_per_cycle_per_direction"),
         f"profiles.{profile}.link_payload_bits_per_cycle_per_direction",
@@ -1149,17 +1542,26 @@ def materialize_calibrated_boarddb(
     boarddb = {
         "schema": "emuflow.boarddb/v1",
         "platform": {
-            "name": f"{model['name']}__{configuration_id}__{profile}",
+            "name": (
+                f"{model['name']}__{configuration_id}__{profile}"
+                f"{utilization_suffix}"
+            ),
             "kind": "virtual",
             "description": (
-                "Behaviorally calibrated academic platform; not a physical hardware clone"
+                "Behaviorally calibrated academic platform; not a physical "
+                "hardware clone"
+                + (
+                    "; explicit reduced-utilization stress qualification"
+                    if utilization_suffix
+                    else ""
+                )
             ),
         },
         "fpgas": [
             {
                 "id": fpga_id,
                 "part": device["part"],
-                "utilization_limit": device["utilization_limit"],
+                "utilization_limit": selected_utilization_limit,
                 "capacity": capacity,
             }
             for fpga_id in configuration["fpgas"]
@@ -1201,12 +1603,18 @@ def materialize_calibrated_board_link_timing(
     model_value: Mapping[str, Any],
     configuration_id: str,
     profile: str = "nominal",
+    utilization_limit: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Materialize characterized directed timing beside the BoardDB."""
 
     model = validate_calibrated_platform_model(model_value)
     platform = Platform.from_dict(
-        materialize_calibrated_boarddb(model, configuration_id, profile)
+        materialize_calibrated_boarddb(
+            model,
+            configuration_id,
+            profile,
+            utilization_limit=utilization_limit,
+        )
     )
     calibration = _mapping(model["calibration"], "calibrated model.calibration")
     characteristics = _mapping(
@@ -1311,7 +1719,7 @@ def validate_calibrated_platform_holdout(
     nominal = model["profiles"]["nominal"]
     capacity_checks = []
     for item in observations["capacity_boundaries"]:
-        raw_capacity = nominal["device_capacity"].get(item["resource"])
+        raw_capacity = nominal["reference_device_capacity"].get(item["resource"])
         if raw_capacity is None:
             raise ValidationError(
                 f"holdout resource {item['resource']!r} was not identified during fitting"
@@ -1469,17 +1877,40 @@ def validate_calibrated_platform_application_holdout(
     )
     if utilization_limit > 1.0:
         raise ValidationError("application holdout utilization_limit must be <= 1")
-    demand = {
-        resource: _integer(value, f"application holdout.resource_demand.{resource}")
+    demand_namespaces = _mapping(
+        observation.get("resource_demand"),
+        "application holdout.resource_demand",
+    )
+    _reject_unknown(
+        demand_namespaces,
+        {"reference", "academic"},
+        "application holdout.resource_demand",
+    )
+    reference_demand = {
+        resource: _integer(
+            value,
+            f"application holdout.resource_demand.reference.{resource}",
+        )
         for resource, value in _mapping(
-            observation.get("resource_demand"),
-            "application holdout.resource_demand",
+            demand_namespaces.get("reference"),
+            "application holdout.resource_demand.reference",
+        ).items()
+    }
+    academic_demand = {
+        resource: _integer(
+            value,
+            f"application holdout.resource_demand.academic.{resource}",
+        )
+        for resource, value in _mapping(
+            demand_namespaces.get("academic"),
+            "application holdout.resource_demand.academic",
         ).items()
     }
     fitted_resources = set(model["profiles"]["nominal"]["device_capacity"])
-    if set(demand) != fitted_resources:
+    if set(reference_demand) != fitted_resources or set(academic_demand) != fitted_resources:
         raise ValidationError(
-            "application holdout resource_demand must cover every fitted resource"
+            "application holdout resource_demand reference and academic namespaces "
+            "must each cover every fitted resource"
         )
     observed = _mapping(observation.get("observed"), "application holdout.observed")
     observed_active = _integer(
@@ -1514,9 +1945,9 @@ def validate_calibrated_platform_application_holdout(
     )
 
     nominal = model["profiles"]["nominal"]
-    required_by_resource = {}
-    for resource, amount in demand.items():
-        raw_capacity = nominal["device_capacity"].get(resource)
+    reference_required_by_resource = {}
+    for resource, amount in reference_demand.items():
+        raw_capacity = nominal["reference_device_capacity"].get(resource)
         if raw_capacity is None:
             raise ValidationError(
                 f"application holdout resource {resource!r} was not fitted"
@@ -1524,10 +1955,47 @@ def validate_calibrated_platform_application_holdout(
         effective = math.floor(raw_capacity * utilization_limit)
         if effective <= 0:
             raise ValidationError("application holdout effective capacity is zero")
-        required_by_resource[resource] = math.ceil(amount / effective)
-    predicted_active = max(required_by_resource.values(), default=1)
+        reference_required_by_resource[resource] = math.ceil(amount / effective)
+    predicted_active = max(reference_required_by_resource.values(), default=1)
     if predicted_active > len(configuration["fpgas"]):
         raise ValidationError("application holdout does not fit the configuration")
+
+    academic_required_by_resource = {}
+    for resource, amount in academic_demand.items():
+        raw_capacity = nominal["device_capacity"].get(resource)
+        if raw_capacity is None:
+            raise ValidationError(
+                f"application holdout academic resource {resource!r} was not fitted"
+            )
+        effective = math.floor(raw_capacity * utilization_limit)
+        if effective <= 0:
+            raise ValidationError(
+                "application holdout academic effective capacity is zero"
+            )
+        academic_required_by_resource[resource] = math.ceil(amount / effective)
+    predicted_academic_active = max(
+        academic_required_by_resource.values(), default=1
+    )
+    if predicted_academic_active > len(configuration["fpgas"]):
+        raise ValidationError(
+            "application holdout academic mapping does not fit the configuration"
+        )
+
+    mapping_errors = {}
+    predicted_academic_demand = {}
+    for resource in sorted(fitted_resources):
+        mapping = model["calibration"]["resource_unit_mapping"][resource]
+        predicted = reference_demand[resource] * float(
+            mapping["academic_units_per_reference_unit"]
+        )
+        predicted_academic_demand[resource] = predicted
+        observed_academic = academic_demand[resource]
+        mapping_errors[resource] = (
+            abs(predicted - observed_academic) / observed_academic
+            if observed_academic
+            else (0.0 if predicted == 0.0 else math.inf)
+        )
+    maximum_mapping_error = max(mapping_errors.values(), default=0.0)
 
     logical_capacity = int(nominal["link_payload_bits_per_cycle_per_direction"])
     raw_ratio = max(1, math.ceil(observed_cut_bits / logical_capacity))
@@ -1549,13 +2017,18 @@ def validate_calibrated_platform_application_holdout(
     ratio_error = abs(predicted_ratio - observed_ratio)
     delay_error = abs(predicted_delay - observed_delay) / observed_delay
     acceptance = model["acceptance"]
+    resource_capacity_decisions_exact = (
+        academic_required_by_resource == reference_required_by_resource
+    )
     gates = {
         "active_fpga_count_exact": predicted_active == observed_active,
+        "resource_capacity_decisions_exact": resource_capacity_decisions_exact,
         "tdm_ratio_absolute_error": ratio_error,
         "delay_relative_error": delay_error,
     }
     passed = (
         gates["active_fpga_count_exact"]
+        and gates["resource_capacity_decisions_exact"]
         and ratio_error
         <= acceptance["application_tdm_ratio_absolute_error_max"]
         and delay_error <= acceptance["delay_max_relative_error_max"]
@@ -1570,14 +2043,22 @@ def validate_calibrated_platform_application_holdout(
         "configuration": configuration_id,
         "utilization_limit": utilization_limit,
         "cross_fpga_path_count": cross_paths,
-        "predicted_required_fpgas_by_resource": required_by_resource,
+        "reference_required_fpgas_by_resource": reference_required_by_resource,
+        "academic_required_fpgas_by_resource": academic_required_by_resource,
+        "predicted_academic_resource_demand": predicted_academic_demand,
+        "observed_academic_resource_demand": academic_demand,
         "predicted_active_fpga_count": predicted_active,
+        "predicted_academic_active_fpga_count": predicted_academic_active,
         "observed_active_fpga_count": observed_active,
         "predicted_tdm_ratio": predicted_ratio,
         "observed_tdm_ratio": observed_ratio,
         "predicted_worst_cross_fpga_delay_ns": predicted_delay,
         "observed_worst_cross_fpga_delay_ns": observed_delay,
         "gates": gates,
+        "diagnostics": {
+            "resource_unit_mapping_relative_error": mapping_errors,
+            "resource_unit_mapping_max_relative_error": maximum_mapping_error,
+        },
         "thresholds": {
             "tdm_ratio_absolute_error_max": acceptance[
                 "application_tdm_ratio_absolute_error_max"
@@ -1586,6 +2067,84 @@ def validate_calibrated_platform_application_holdout(
                 "delay_max_relative_error_max"
             ],
         },
+    }
+
+
+def validate_calibrated_partition_envelope(
+    model_value: Mapping[str, Any], load_value: Mapping[str, Any]
+) -> Dict[str, Any]:
+    """Fail closed before routing when a partition exceeds calibrated service.
+
+    This gate evaluates only the academic partition's offered communication
+    load against fixed-assignment hardware characterization.  It deliberately
+    does not compare the partition with a reference tool's free-partition
+    result, because that would conflate hardware capacity with partitioner QoR.
+    """
+
+    model = validate_calibrated_platform_model(model_value)
+    load = _mapping(load_value, "partition load")
+    _reject_unknown(
+        load,
+        {
+            "schema",
+            "configuration",
+            "partition_sha256",
+            "max_direction_cut_bits",
+            "worst_path_hop_count",
+        },
+        "partition load",
+    )
+    if load.get("schema") != PARTITION_LOAD_SCHEMA:
+        raise ValidationError(
+            f"partition load.schema: expected {PARTITION_LOAD_SCHEMA!r}"
+        )
+    configuration_id = _string(
+        load.get("configuration"), "partition load.configuration"
+    )
+    if configuration_id not in {
+        item["id"] for item in model["configurations"]
+    }:
+        raise ValidationError("partition load uses an unknown configuration")
+    partition_sha256 = _string(
+        load.get("partition_sha256"), "partition load.partition_sha256"
+    )
+    if len(partition_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in partition_sha256
+    ):
+        raise ValidationError("partition load.partition_sha256: expected SHA-256")
+    cut_bits = _integer(
+        load.get("max_direction_cut_bits"),
+        "partition load.max_direction_cut_bits",
+        minimum=1,
+    )
+    hops = _integer(
+        load.get("worst_path_hop_count"),
+        "partition load.worst_path_hop_count",
+        minimum=1,
+    )
+    nominal = model["profiles"]["nominal"]
+    logical_capacity = int(nominal["link_payload_bits_per_cycle_per_direction"])
+    required_ratio = math.ceil(cut_bits / logical_capacity)
+    supported = [int(value) for value in nominal["tdm_supported_ratios"]]
+    selected = next((ratio for ratio in supported if ratio >= required_ratio), None)
+    status = "pass" if selected is not None else "fail"
+    return {
+        "schema": PARTITION_ENVELOPE_VALIDATION_SCHEMA,
+        "status": status,
+        "model": model["model"]["name"],
+        "configuration": configuration_id,
+        "partition_sha256": partition_sha256,
+        "max_direction_cut_bits": cut_bits,
+        "worst_path_hop_count": hops,
+        "logical_bits_per_slot_per_direction": logical_capacity,
+        "required_raw_tdm_ratio": required_ratio,
+        "selected_characterized_tdm_ratio": selected,
+        "maximum_characterized_tdm_ratio": max(supported),
+        "reason": (
+            "partition load lies inside the calibrated communication envelope"
+            if selected is not None
+            else "partition load exceeds the calibrated communication envelope"
+        ),
     }
 
 
@@ -1603,19 +2162,29 @@ def materialize_calibrated_boarddb_file(
     profile: str,
     output_path: Path,
     timing_output_path: Optional[Path] = None,
+    utilization_limit: Optional[float] = None,
 ) -> Dict[str, Any]:
     model = read_json(model_path)
-    boarddb = materialize_calibrated_boarddb(model, configuration_id, profile)
+    boarddb = materialize_calibrated_boarddb(
+        model,
+        configuration_id,
+        profile,
+        utilization_limit=utilization_limit,
+    )
     write_json(output_path, boarddb)
     result = {
         "status": "pass",
         "configuration": configuration_id,
         "profile": profile,
+        "utilization_limit": boarddb["fpgas"][0]["utilization_limit"],
         "output": str(output_path),
     }
     if timing_output_path is not None:
         timing = materialize_calibrated_board_link_timing(
-            model, configuration_id, profile
+            model,
+            configuration_id,
+            profile,
+            utilization_limit=utilization_limit,
         )
         write_json(timing_output_path, timing)
         result["timing_output"] = str(timing_output_path)
@@ -1648,4 +2217,15 @@ def validate_calibrated_platform_application_holdout_files(
     if output_path is not None:
         write_json(output_path, report)
         report = {**report, "output": str(output_path)}
+    return report
+
+
+def validate_calibrated_partition_envelope_files(
+    model_path: Path, load_path: Path, output_path: Optional[Path] = None
+) -> Dict[str, Any]:
+    report = validate_calibrated_partition_envelope(
+        read_json(model_path), read_json(load_path)
+    )
+    if output_path is not None:
+        write_json(output_path, report)
     return report

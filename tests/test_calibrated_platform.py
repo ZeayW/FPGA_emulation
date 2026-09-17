@@ -5,6 +5,8 @@ from emuflow.calibrated_platform import (
     fit_calibrated_platform,
     materialize_calibrated_board_link_timing,
     materialize_calibrated_boarddb,
+    measure_mapped_yosys_resource_units,
+    validate_calibrated_partition_envelope,
     validate_calibrated_platform_application_holdout,
     validate_calibrated_platform_holdout,
 )
@@ -53,6 +55,7 @@ def template():
             "link_outcome_accuracy_min": 1.0,
             "delay_mean_relative_error_max": 0.10,
             "delay_max_relative_error_max": 0.15,
+            "resource_unit_mapping_max_relative_error": 0.05,
             "application_tdm_ratio_absolute_error_max": 1,
         },
     }
@@ -71,11 +74,50 @@ def dataset(role="fit"):
             "publication_scope": "public",
         },
         "capacity_boundaries": [],
+        "resource_unit_mappings": [],
         "link_capacity_boundaries": [],
         "link_characteristics": [],
         "link_delay_measurements": [],
     }
     if role == "fit":
+        result["resource_unit_mappings"] = [
+            {
+                "id": "fit-lut-map-small",
+                "configuration": "2fpga-p2p",
+                "resource": "lut",
+                "reference_units": 100,
+                "academic_units": 100,
+                "source_sha256": "1" * 64,
+                "mapping_control": "isolated_same_rtl",
+            },
+            {
+                "id": "fit-lut-map-large",
+                "configuration": "2fpga-p2p",
+                "resource": "lut",
+                "reference_units": 200,
+                "academic_units": 200,
+                "source_sha256": "2" * 64,
+                "mapping_control": "isolated_same_rtl",
+            },
+            {
+                "id": "fit-ff-map-small",
+                "configuration": "4fpga-ring",
+                "resource": "ff",
+                "reference_units": 100,
+                "academic_units": 100,
+                "source_sha256": "3" * 64,
+                "mapping_control": "isolated_same_rtl",
+            },
+            {
+                "id": "fit-ff-map-large",
+                "configuration": "4fpga-ring",
+                "resource": "ff",
+                "reference_units": 200,
+                "academic_units": 200,
+                "source_sha256": "4" * 64,
+                "mapping_control": "isolated_same_rtl",
+            },
+        ]
         result["capacity_boundaries"] = [
             {
                 "id": "fit-lut-pass",
@@ -237,7 +279,10 @@ def application_holdout():
         "configuration": "2fpga-p2p",
         "partition_mode": "free",
         "utilization_limit": 0.75,
-        "resource_demand": {"lut": 1500, "ff": 100},
+        "resource_demand": {
+            "reference": {"lut": 1500, "ff": 100},
+            "academic": {"lut": 1500, "ff": 100},
+        },
         "observed": {
             "active_fpga_count": 2,
             "max_direction_cut_bits": 3,
@@ -250,10 +295,84 @@ def application_holdout():
 
 
 class CalibratedPlatformTest(unittest.TestCase):
+    def test_resource_measurement_expands_only_reachable_hierarchy(self):
+        design = {
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "cells": {
+                        "a": {"type": "wrapper"},
+                        "b": {"type": "wrapper"},
+                    },
+                },
+                "wrapper": {
+                    "attributes": {"keep_hierarchy": "yes"},
+                    "cells": {
+                        "l0": {"type": "LUT6"},
+                        "l1": {"type": "LUT6"},
+                        "l2": {"type": "LUT6"},
+                        "f0": {"type": "FDRE"},
+                        "f1": {"type": "FDRE"},
+                        "r0": {"type": "RAMB36E2"},
+                        "d0": {"type": "DSP48E2"},
+                    },
+                },
+                "LUT6": {"attributes": {"blackbox": "1"}, "cells": {}},
+                "FDRE": {"attributes": {"blackbox": "1"}, "cells": {}},
+                "RAMB36E2": {"attributes": {"blackbox": "1"}, "cells": {}},
+                "DSP48E2": {"attributes": {"blackbox": "1"}, "cells": {}},
+                "unreachable": {
+                    "attributes": {},
+                    "cells": {"noise": {"type": "LUT6"}},
+                },
+            }
+        }
+        expected = {"lut": 6, "ff": 4, "bram": 2, "dsp": 2}
+        for resource, units in expected.items():
+            report = measure_mapped_yosys_resource_units(
+                design,
+                top="top",
+                resource=resource,
+                source_sha256="a" * 64,
+            )
+            self.assertEqual(report["academic_units"], units)
+            self.assertEqual(report["source_sha256"], "a" * 64)
+
+    def test_resource_measurement_groups_vtr_memory_bit_atoms(self):
+        design = {
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "cells": {
+                        "bank.mem0.bits[0].bit_cell": {
+                            "type": "single_port_ram"
+                        },
+                        "bank.mem0.bits[1].bit_cell": {
+                            "type": "single_port_ram"
+                        },
+                        "bank.mem1.bits[0].bit_cell": {
+                            "type": "dual_port_ram"
+                        },
+                        "bank.mem1.bits[1].bit_cell": {
+                            "type": "dual_port_ram"
+                        },
+                    },
+                }
+            }
+        }
+        report = measure_mapped_yosys_resource_units(
+            design,
+            top="top",
+            resource="bram",
+            source_sha256="b" * 64,
+        )
+        self.assertEqual(report["academic_units"], 2)
+        self.assertEqual(report["mapped_resource_totals"], {"bram": 2})
+
     def test_fit_recovers_controlled_capacity_and_delay(self):
         model = fit_calibrated_platform(template(), dataset())
         self.assertEqual(
-            model["calibration"]["resource_raw_capacity_intervals"]["lut"],
+            model["calibration"]["reference_resource_raw_capacity_intervals"]["lut"],
             {"raw_lower": 987, "raw_upper_exclusive": 1015},
         )
         self.assertEqual(model["profiles"]["nominal"]["device_capacity"]["lut"], 1000)
@@ -297,6 +416,24 @@ class CalibratedPlatformTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "not an explicitly supported"):
             materialize_calibrated_boarddb(model, "8fpga-invented", "nominal")
 
+    def test_materialization_allows_only_explicit_lower_utilization_stress(self):
+        model = fit_calibrated_platform(template(), dataset())
+        boarddb = materialize_calibrated_boarddb(
+            model,
+            "2fpga-p2p",
+            "nominal",
+            utilization_limit=0.10,
+        )
+        self.assertEqual(boarddb["fpgas"][0]["utilization_limit"], 0.10)
+        self.assertTrue(boarddb["platform"]["name"].endswith("__util1000bp"))
+        with self.assertRaisesRegex(ValidationError, "may not increase"):
+            materialize_calibrated_boarddb(
+                model,
+                "2fpga-p2p",
+                "nominal",
+                utilization_limit=0.80,
+            )
+
     def test_materializes_characterized_link_timing_without_cycle_rounding(self):
         model = fit_calibrated_platform(template(), dataset())
         timing = materialize_calibrated_board_link_timing(
@@ -332,10 +469,37 @@ class CalibratedPlatformTest(unittest.TestCase):
         )
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["predicted_active_fpga_count"], 2)
+        self.assertTrue(report["gates"]["resource_capacity_decisions_exact"])
         self.assertEqual(report["predicted_tdm_ratio"], 4)
         self.assertAlmostEqual(
             report["predicted_worst_cross_fpga_delay_ns"], 15.0
         )
+
+    def test_application_holdout_gates_capacity_decisions_not_raw_mapper_counts(self):
+        model = fit_calibrated_platform(template(), dataset())
+        equivalent = application_holdout()
+        equivalent["resource_demand"]["academic"]["lut"] = 1400
+        report = validate_calibrated_platform_application_holdout(
+            model, equivalent
+        )
+        self.assertEqual(report["status"], "pass")
+        self.assertGreater(
+            report["diagnostics"][
+                "resource_unit_mapping_max_relative_error"
+            ],
+            template()["acceptance"][
+                "resource_unit_mapping_max_relative_error"
+            ],
+        )
+        self.assertTrue(report["gates"]["resource_capacity_decisions_exact"])
+
+        inequivalent = application_holdout()
+        inequivalent["resource_demand"]["academic"]["lut"] = 700
+        report = validate_calibrated_platform_application_holdout(
+            model, inequivalent
+        )
+        self.assertEqual(report["status"], "fail")
+        self.assertFalse(report["gates"]["resource_capacity_decisions_exact"])
 
     def test_application_holdout_requires_free_partition_and_authorized_scope(self):
         model = fit_calibrated_platform(template(), dataset())
@@ -347,6 +511,28 @@ class CalibratedPlatformTest(unittest.TestCase):
         restricted["dataset"]["publication_scope"] = "internal"
         with self.assertRaisesRegex(ValidationError, "publication_scope"):
             validate_calibrated_platform_application_holdout(model, restricted)
+
+    def test_fit_rejects_unmapped_resource_namespaces(self):
+        observations = dataset()
+        observations["resource_unit_mappings"][1]["academic_units"] = 260
+        with self.assertRaisesRegex(ValidationError, "resource unit mapping"):
+            fit_calibrated_platform(template(), observations)
+
+    def test_partition_envelope_fails_before_routing(self):
+        model = fit_calibrated_platform(template(), dataset())
+        report = validate_calibrated_partition_envelope(
+            model,
+            {
+                "schema": "emuflow.calibrated-platform-partition-load/v1",
+                "configuration": "2fpga-p2p",
+                "partition_sha256": "b" * 64,
+                "max_direction_cut_bits": 5,
+                "worst_path_hop_count": 1,
+            },
+        )
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["required_raw_tdm_ratio"], 5)
+        self.assertIsNone(report["selected_characterized_tdm_ratio"])
 
     def test_fit_rejects_free_reference_partitioner_behavior(self):
         observations = dataset()

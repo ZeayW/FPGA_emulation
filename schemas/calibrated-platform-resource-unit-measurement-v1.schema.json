@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/calibrated-platform-resource-unit-measurement-v1.schema.json",
+  "title": "EmuFlow calibrated platform mapped resource-unit measurement v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "top",
+    "resource",
+    "academic_units",
+    "mapped_resource_totals",
+    "source_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "emuflow.calibrated-platform-resource-unit-measurement/v1"
+    },
+    "top": {"type": "string", "minLength": 1},
+    "resource": {"enum": ["lut", "ff", "bram", "dsp"]},
+    "academic_units": {"type": "integer", "minimum": 1},
+    "mapped_resource_totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lut": {"type": "integer", "minimum": 0},
+        "ff": {"type": "integer", "minimum": 0},
+        "bram": {"type": "integer", "minimum": 0},
+        "dsp": {"type": "integer", "minimum": 0},
+        "carry": {"type": "integer", "minimum": 0},
+        "bram18k": {"type": "integer", "minimum": 0},
+        "uram288": {"type": "integer", "minimum": 0},
+        "dsp48": {"type": "integer", "minimum": 0},
+        "carry8": {"type": "integer", "minimum": 0},
+        "io": {"type": "integer", "minimum": 0},
+        "clock": {"type": "integer", "minimum": 0},
+        "other": {"type": "integer", "minimum": 0}
+      }
+    },
+    "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -306,6 +306,22 @@ int main() {
         self.assertIn('write_json "build/cpu.json"', script)
         self.assertLess(script.index("write_json"), script.index("write_blif"))
 
+    def test_calibration_mapping_can_strip_provider_hierarchy_control(self) -> None:
+        script = build_vtr_yosys_script(
+            [Path("rtl/probe.sv")],
+            "calibration_top",
+            Path("build/probe.eblif"),
+            hard_blocks=True,
+            strip_keep_hierarchy=True,
+        )
+        self.assertIn("setattr -mod -unset keep_hierarchy", script)
+        self.assertIn("setattr -unset keep_hierarchy", script)
+        self.assertIn("flatten", script)
+        self.assertLess(
+            script.index("setattr -mod -unset keep_hierarchy"),
+            script.index("synth -top calibration_top"),
+        )
+
     def test_empty_source_list_is_rejected(self) -> None:
         with self.assertRaisesRegex(EmuFlowError, "at least one RTL source"):
             build_vtr_yosys_script([], "cpu", Path("cpu.eblif"))

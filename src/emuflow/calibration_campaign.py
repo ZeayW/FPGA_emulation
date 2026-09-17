@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
@@ -17,7 +18,12 @@ from .io import read_json, write_json
 CAMPAIGN_SCHEMA = "emuflow.platform-calibration-campaign/v1"
 MANIFEST_SCHEMA = "emuflow.platform-calibration-campaign-manifest/v1"
 RUN_RESULT_SCHEMA = "emuflow.platform-calibration-run-result/v1"
-_CASE_KINDS = {"capacity_boundary", "link_capacity_boundary", "link_delay"}
+_CASE_KINDS = {
+    "capacity_boundary",
+    "resource_unit_mapping",
+    "link_capacity_boundary",
+    "link_delay",
+}
 _SOURCE_CLASSES = {"authorized_reference_flow", "synthetic_fixture"}
 _PUBLICATION_SCOPES = {"internal", "aggregate_only", "public"}
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -240,6 +246,9 @@ def validate_calibration_run_result(
         metrics,
         {
             "actual_resource_demand_per_fpga",
+            "reference_resource_inventory_per_fpga",
+            "academic_resource_inventory_per_fpga",
+            "source_sha256",
             "link_line_rate_mbps",
             "link_phy_width_bits",
             "link_channels_per_direction",
@@ -252,6 +261,33 @@ def validate_calibration_run_result(
         "campaign result.metrics",
     )
     normalized_metrics: Dict[str, Any] = {}
+    for field in (
+        "reference_resource_inventory_per_fpga",
+        "academic_resource_inventory_per_fpga",
+    ):
+        if field not in metrics:
+            continue
+        inventory = _mapping(metrics[field], f"campaign result.metrics.{field}")
+        normalized_metrics[field] = {
+            _string(resource, f"campaign result.metrics.{field} resource"):
+            _positive_integer(
+                units,
+                f"campaign result.metrics.{field}.{resource}",
+            )
+            for resource, units in inventory.items()
+        }
+    if "source_sha256" in metrics:
+        source_sha256 = _string(
+            metrics["source_sha256"],
+            "campaign result.metrics.source_sha256",
+        )
+        if len(source_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in source_sha256
+        ):
+            raise ValidationError(
+                "campaign result.metrics.source_sha256: expected lowercase SHA-256"
+            )
+        normalized_metrics["source_sha256"] = source_sha256
     for field in (
         "actual_resource_demand_per_fpga",
         "link_phy_width_bits",
@@ -408,7 +444,9 @@ module calibration_dsp_cell(
   input wire [17:0] rhs,
   output wire [35:0] product
 );
-  (* use_dsp = "yes" *) assign product = lhs * rhs;
+  (* use_dsp = "yes" *) wire [35:0] product_dsp;
+  assign product_dsp = lhs * rhs;
+  assign product = product_dsp;
 endmodule
 
 """
@@ -484,6 +522,75 @@ module calibration_top(
   output wire result
 );
   calibration_capacity_probe u_probe(.clk(clk), .stimulus(stimulus), .result(result));
+endmodule
+"""
+
+
+def _resource_unit_mapping_rtl(units: int) -> str:
+    """Build a mapper-resistant sequential LUT/FF inventory probe.
+
+    Every state bit has a distinct feedback cone.  Unlike a long combinational
+    chain driven by a small input bus, the network cannot be collapsed to one
+    equivalent 64-input Boolean function by an aggressive mapper.  The same
+    RTL is mapped independently by the reference and academic flows.
+    """
+
+    return f"""(* keep_hierarchy = "yes" *)
+module calibration_resource_mapping_bank #(
+  parameter integer WIDTH = 1,
+  parameter integer OFFSET = 0
+)(
+  input wire clk,
+  input wire [63:0] stimulus,
+  output wire result
+);
+  (* keep = "true", dont_touch = "true", shreg_extract = "no" *)
+  reg [WIDTH - 1:0] state;
+  wire [WIDTH - 1:0] next_state;
+  genvar i;
+  generate for (i = 0; i < WIDTH; i = i + 1) begin : g_logic
+    assign next_state[i] =
+      (state[i] & state[(i + 1) % WIDTH]) ^
+      (state[(i + 7) % WIDTH] | state[(i + 13) % WIDTH]) ^
+      stimulus[((OFFSET + i) * 17 + 3) % 64];
+  end endgenerate
+  always @(posedge clk) state <= next_state;
+  assign result = ^state;
+endmodule
+
+(* keep_hierarchy = "yes" *)
+module calibration_resource_mapping_probe(
+  input wire clk,
+  input wire [63:0] stimulus,
+  output wire result
+);
+  localparam integer BANK_SIZE = 8192;
+  localparam integer BANKS = ({units} + BANK_SIZE - 1) / BANK_SIZE;
+  wire [BANKS - 1:0] bank_result;
+  genvar bank;
+  generate for (bank = 0; bank < BANKS; bank = bank + 1) begin : g_bank
+    localparam integer THIS_WIDTH =
+      ((bank + 1) * BANK_SIZE <= {units})
+        ? BANK_SIZE : ({units} - bank * BANK_SIZE);
+    (* dont_touch = "true", keep_hierarchy = "yes" *)
+    calibration_resource_mapping_bank #(
+      .WIDTH(THIS_WIDTH), .OFFSET(bank * BANK_SIZE)
+    ) u_bank (
+      .clk(clk), .stimulus(stimulus), .result(bank_result[bank])
+    );
+  end endgenerate
+  assign result = ^bank_result;
+endmodule
+
+module calibration_top(
+  input wire clk,
+  input wire [63:0] stimulus,
+  output wire result
+);
+  (* dont_touch = "true", keep_hierarchy = "yes" *)
+  calibration_resource_mapping_probe u_probe(
+    .clk(clk), .stimulus(stimulus), .result(result)
+  );
 endmodule
 """
 
@@ -690,6 +797,7 @@ def validate_calibration_campaign(value: Mapping[str, Any]) -> Dict[str, Any]:
                 "kind",
                 "configuration",
                 "resource",
+                "resources",
                 "units",
                 "target_fpga",
                 "route",
@@ -708,27 +816,52 @@ def validate_calibration_campaign(value: Mapping[str, Any]) -> Dict[str, Any]:
         if configuration_id not in configuration_by_id:
             raise ValidationError(f"campaign.cases[{index}]: unknown configuration")
         configuration = configuration_by_id[configuration_id]
-        if kind == "capacity_boundary":
-            resource = _string(item.get("resource"), f"campaign.cases[{index}].resource")
-            if resource not in {"lut", "ff", "bram", "dsp"}:
-                raise ValidationError(f"campaign.cases[{index}].resource: unsupported resource")
+        if kind in {"capacity_boundary", "resource_unit_mapping"}:
             target_fpga = _string(
                 item.get("target_fpga"), f"campaign.cases[{index}].target_fpga"
             )
             if target_fpga not in configuration["targets"]:
                 raise ValidationError(f"campaign.cases[{index}]: unknown target FPGA")
-            cases.append(
-                {
-                    "id": case_id,
-                    "kind": kind,
-                    "configuration": configuration_id,
-                    "resource": resource,
-                    "units": _positive_integer(
-                        item.get("units"), f"campaign.cases[{index}].units"
-                    ),
-                    "target_fpga": target_fpga,
-                }
-            )
+            normalized = {
+                "id": case_id,
+                "kind": kind,
+                "configuration": configuration_id,
+                "units": _positive_integer(
+                    item.get("units"), f"campaign.cases[{index}].units"
+                ),
+                "target_fpga": target_fpga,
+            }
+            if kind == "capacity_boundary":
+                resource = _string(
+                    item.get("resource"), f"campaign.cases[{index}].resource"
+                )
+                if resource not in {"lut", "ff", "bram", "dsp"}:
+                    raise ValidationError(
+                        f"campaign.cases[{index}].resource: unsupported resource"
+                    )
+                normalized["resource"] = resource
+            else:
+                resources = [
+                    _string(
+                        resource,
+                        f"campaign.cases[{index}].resources",
+                    )
+                    for resource in _array(
+                        item.get("resources"),
+                        f"campaign.cases[{index}].resources",
+                        nonempty=True,
+                    )
+                ]
+                if len(resources) != len(set(resources)) or any(
+                    resource not in {"lut", "ff"} for resource in resources
+                ):
+                    raise ValidationError(
+                        f"campaign.cases[{index}].resources: expected unique "
+                        "lut/ff resources"
+                    )
+                normalized["resources"] = resources
+                normalized["mapping_control"] = "isolated_same_rtl"
+            cases.append(normalized)
         else:
             route_id = _string(item.get("route"), f"campaign.cases[{index}].route")
             route = next(
@@ -783,8 +916,12 @@ def plan_calibration_campaign(
         case_dir = output_dir / "cases" / case["id"]
         case_dir.mkdir(parents=True)
         configuration = configurations[case["configuration"]]
-        if case["kind"] == "capacity_boundary":
-            rtl = _capacity_rtl(case["resource"], case["units"])
+        if case["kind"] in {"capacity_boundary", "resource_unit_mapping"}:
+            rtl = (
+                _capacity_rtl(case["resource"], case["units"])
+                if case["kind"] == "capacity_boundary"
+                else _resource_unit_mapping_rtl(case["units"])
+            )
             constraints = (
                 f"assign_inst {{u_probe}} "
                 f"{{{configuration['targets'][case['target_fpga']]}}}\n"
@@ -820,7 +957,9 @@ def plan_calibration_campaign(
                     for instance in sink_instances
                 },
             }
-        (case_dir / "design.sv").write_text(rtl, encoding="utf-8")
+        source_path = case_dir / "design.sv"
+        source_path.write_text(rtl, encoding="utf-8")
+        source_sha256 = hashlib.sha256(rtl.encode("utf-8")).hexdigest()
         (case_dir / "filelist.f").write_text("design.sv\n", encoding="utf-8")
         (case_dir / "prepartition.cfg").write_text(constraints, encoding="utf-8")
         (case_dir / "run_ppro.tcl").write_text(
@@ -841,6 +980,7 @@ def plan_calibration_campaign(
                 **case,
                 "top": "calibration_top",
                 "source": str(Path("cases") / case["id"] / "design.sv"),
+                "source_sha256": source_sha256,
                 "filelist": str(Path("cases") / case["id"] / "filelist.f"),
                 "prepartition_config": str(
                     Path("cases") / case["id"] / "prepartition.cfg"
@@ -894,6 +1034,7 @@ def collect_calibration_observations(
     if manifest.get("schema") != MANIFEST_SCHEMA:
         raise ValidationError(f"campaign manifest.schema: expected {MANIFEST_SCHEMA!r}")
     capacity_boundaries = []
+    resource_unit_mappings = []
     link_capacity_boundaries = []
     link_characteristics = []
     delay_measurements = []
@@ -953,6 +1094,52 @@ def collect_calibration_observations(
                     "assignment_control": "fixed",
                 }
             )
+        elif case["kind"] == "resource_unit_mapping":
+            if status != "pass" or controls.get("route_applied") is not False:
+                raise ValidationError(
+                    f"campaign result {case['id']!r}: resource mapping probe "
+                    "must pass without system routing"
+                )
+            source_sha256 = metrics.get("source_sha256")
+            if source_sha256 != case.get("source_sha256"):
+                raise ValidationError(
+                    f"campaign result {case['id']!r}: source SHA-256 mismatch"
+                )
+            reference_inventory = _mapping(
+                metrics.get("reference_resource_inventory_per_fpga"),
+                f"result {case['id']}.reference_resource_inventory_per_fpga",
+            )
+            academic_inventory = _mapping(
+                metrics.get("academic_resource_inventory_per_fpga"),
+                f"result {case['id']}.academic_resource_inventory_per_fpga",
+            )
+            expected_resources = set(case["resources"])
+            if (
+                set(reference_inventory) != expected_resources
+                or set(academic_inventory) != expected_resources
+            ):
+                raise ValidationError(
+                    f"campaign result {case['id']!r}: resource inventories "
+                    "do not match the planned resources"
+                )
+            for resource in case["resources"]:
+                resource_unit_mappings.append(
+                    {
+                        "id": f"{case['id']}-{resource}",
+                        "configuration": case["configuration"],
+                        "resource": resource,
+                        "reference_units": _positive_integer(
+                            reference_inventory[resource],
+                            f"result {case['id']}.reference.{resource}",
+                        ),
+                        "academic_units": _positive_integer(
+                            academic_inventory[resource],
+                            f"result {case['id']}.academic.{resource}",
+                        ),
+                        "source_sha256": source_sha256,
+                        "mapping_control": case["mapping_control"],
+                    }
+                )
         elif case["kind"] == "link_capacity_boundary":
             if controls.get("route_applied") is not True:
                 raise ValidationError(
@@ -1042,6 +1229,7 @@ def collect_calibration_observations(
         "schema": OBSERVATIONS_SCHEMA,
         "dataset": dict(manifest["dataset"]),
         "capacity_boundaries": capacity_boundaries,
+        "resource_unit_mappings": resource_unit_mappings,
         "link_capacity_boundaries": link_capacity_boundaries,
         "link_characteristics": link_characteristics,
         "link_delay_measurements": delay_measurements,
@@ -1049,9 +1237,7 @@ def collect_calibration_observations(
     normalized = validate_calibration_observations(observations)
     normalized["collection"] = {
         "planned_cases": len(manifest["cases"]),
-        "included_cases": (
-            len(capacity_boundaries) + len(link_capacity_boundaries) + len(delay_measurements)
-        ),
+        "included_cases": len(manifest["cases"]) - len(excluded),
         "excluded_cases": excluded,
     }
     return normalized

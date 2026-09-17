@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/calibrated-platform-partition-envelope-validation-v1.schema.json",
+  "title": "EmuFlow calibrated platform partition envelope validation v1",
+  "type": "object",
+  "required": ["schema", "status", "model", "configuration", "partition_sha256", "max_direction_cut_bits", "worst_path_hop_count", "logical_bits_per_slot_per_direction", "required_raw_tdm_ratio", "selected_characterized_tdm_ratio", "maximum_characterized_tdm_ratio", "reason"],
+  "properties": {
+    "schema": {"const": "emuflow.calibrated-platform-partition-envelope-validation/v1"},
+    "status": {"enum": ["pass", "fail"]},
+    "model": {"type": "string", "minLength": 1},
+    "configuration": {"type": "string", "minLength": 1},
+    "partition_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "max_direction_cut_bits": {"type": "integer", "minimum": 1},
+    "worst_path_hop_count": {"type": "integer", "minimum": 1},
+    "logical_bits_per_slot_per_direction": {"type": "integer", "minimum": 1},
+    "required_raw_tdm_ratio": {"type": "integer", "minimum": 1},
+    "selected_characterized_tdm_ratio": {"type": ["integer", "null"], "minimum": 1},
+    "maximum_characterized_tdm_ratio": {"type": "integer", "minimum": 1},
+    "reason": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": false
+}

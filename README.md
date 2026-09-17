@@ -4235,6 +4235,9 @@ The current implementation fits:
 
 - per-resource effective-capacity intervals from fixed-assignment pass/fail
   boundaries;
+- per-resource reference-to-open capacity-unit conversion from at least two
+  isolated, same-RTL mapping probes; this conversion sizes BoardDB capacity
+  axes and is not treated as a universal application resource-count ratio;
 - per-direction logical TDM channel capacity, with physical PHY serialization
   width and line rate retained as separate characterized quantities;
 - endpoint and per-hop timing plus a monotone, discrete observed-TDM-tier
@@ -4281,6 +4284,12 @@ emuflow platform calibrated-materialize \
   --timing-output board-link-timing.json
 ```
 
+An explicit lower `--utilization-limit` may be used for a capacity-stressed
+qualification run. It cannot exceed the model's declared loading policy, and
+the override is encoded in the generated platform name. The default research
+platform remains at its declared limit; a 10% stress BoardDB must not be
+reported as the default 75% platform.
+
 The campaign planner generates isolated probes, hard PPro instance-to-FPGA
 constraints, and topology-unique routes. It does not add `-exclusive`, whose
 FPGA-reservation semantics would invalidate multi-instance probes. Its collector compares the observed
@@ -4319,8 +4328,24 @@ application holdout observations and their compact validation reports.
 Synthetic observations are limited to unit tests. The authorized internal
 campaign has completed controlled resource boundaries, link/TDM timing fitting,
 a disjoint microbenchmark holdout, and a free-partition Koios DLA application
-holdout. Both holdout gates pass, including exact active-FPGA and TDM-tier
-prediction plus bounded worst-cross-FPGA-delay error. No reference-derived
-numeric parameter, raw report, or proprietary path is checked into Git. Full
-fresh Phase 1--7 qualification and transport-overhead characterization remain
-pending. See [the calibration plan](docs/CALIBRATED_ACADEMIC_PLATFORM.md).
+holdout. The DLA behavioral gates pass: reference and open mappings make the
+same per-resource FPGA-count decisions, the active-FPGA count and TDM tier are
+exact, and worst-cross-FPGA-delay error is 1.33%. Raw application resource
+counts differ by as much as 34.96%; that value remains an explicit diagnostic
+because mapper-dependent raw counts are not themselves hardware behavior. No reference-derived
+numeric parameter, raw report, or proprietary path is checked into Git.
+
+A fresh one-shot Koios DLA medium Phase 1--7 qualification is also complete on
+the named three-FPGA nominal model with an explicit 10% utilization stress
+override, baseline Phase 6, and physical seed 1. It used three FPGAs, cut 1,404
+nets, scheduled 1,867 board hops, and completed all three physical routes with
+zero DRC violations and zero unrouted nets. Phase 7C covered all 195,532
+original timing paths and passed schedule legality plus macro-cycle equivalence.
+At the realized 1,280 ns virtual period, independent OpenSTA reports runtime WNS
++607.021434 ns and TNS 0 ns. The separate 10 ns target-frequency diagnostic is
+WNS -662.978550 ns / TNS -158,313.972324 ns and must not be reported as the
+runtime result. The final board-link timing remains a characterized academic
+model rather than measured-hardware sign-off. Reference-correlated transport
+overhead characterization remains future work; the open-flow qualification
+observed 4,989 added transport cells. See
+[the calibration plan](docs/CALIBRATED_ACADEMIC_PLATFORM.md).

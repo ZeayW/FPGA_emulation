@@ -58,6 +58,16 @@ is the exclusive upper bound. Conservative, nominal, and aggressive profiles
 select raw capacities only inside this interval; BoardDB applies the model's
 separate utilization limit when deriving effective capacity.
 
+Reference-flow and open-flow resource counters are not assumed to share a
+universal unit.  The fitter converts each capacity axis with two or more
+isolated, same-RTL mapping probes.  LUT/FF probes use banked sequential
+feedback networks so neither mapper can collapse a large nominal structure to
+a small Boolean function; BRAM/DSP probes retain their inferred hard blocks.
+This conversion is used to express a measured capacity boundary in the open
+mapper's units.  It is not a promise that arbitrary application resource
+reports differ by the same fixed ratio: technology mapping is
+structure-dependent.
+
 Logical TDM service, physical serializer throughput, and offered-load tolerance
 are separate quantities. BoardDB exposes one independently schedulable logical
 bit per characterized directional channel. PHY width, line rate, and fabric
@@ -122,7 +132,8 @@ Status: implemented and exercised by the authorized internal campaign; no raw
 report or reference-derived numeric parameter is committed to the repository.
 
 `calibrated-campaign-plan` materializes isolated LUT-, FF-, BRAM-, DSP-,
-link-width-, hop-, TDM-, and contention probes plus fixed-assignment constraints
+same-RTL resource-unit-mapping, link-width-, hop-, TDM-, and contention probes
+plus fixed-assignment constraints
 using hard instance-to-FPGA bindings, plus topology-unique controlled routes.
 It deliberately does not add `-exclusive`: in PPro that option reserves the
 entire target FPGA for the named instance and would invalidate multi-instance
@@ -182,10 +193,17 @@ fitting.
 
 `calibrated-application-holdout-validate` predicts the minimum active FPGA count
 from fitted raw capacities at the observation's declared utilization limit,
-rounds aggregate directional cut load to a characterized TDM tier, and predicts
-the worst cross-FPGA delay from the fitted timing model. It checks exact active
-FPGA count, bounded TDM-tier error, and bounded delay-relative error. The
-completed blind DLA run passes all three gates. It is a free-partition
+checks that the reference and open mappings make the same per-resource FPGA
+count decisions, rounds aggregate directional cut load to a characterized TDM
+tier, and predicts the worst cross-FPGA delay from the fitted timing model. It
+checks exact active FPGA count, exact resource-capacity decisions, bounded
+TDM-tier error, and bounded delay-relative error. Raw cross-mapper application
+count error is retained as a diagnostic rather than misrepresented as a
+hardware-behavior gate. The completed blind DLA run passes all four behavioral
+gates: both mappings require two FPGAs (DSP is the binding resource), TDM ratio
+is predicted exactly, and worst-cross-FPGA delay error is 1.33%. Its raw
+resource-count diagnostic reaches 34.96%, confirming that a universal
+application-count scale would be invalid. It is a free-partition
 application check and is never reused to fit hardware parameters. GEMM/NVDLA
 remain useful future holdouts, not prerequisites for the current model contract.
 
@@ -198,7 +216,9 @@ emuflow platform calibrated-application-holdout-validate \
 
 ### Stage 5 — full EmuFlow qualification
 
-Status: pending.
+Status: complete for one fresh Koios DLA medium Phase 1--7 qualification on the
+named three-FPGA nominal configuration, using an explicit 10% utilization
+stress override, baseline Phase 6, and physical seed 1.
 
 Register qualified workload/platform combinations in the canonical validation
 matrix, run a fresh complete Phase 1--7 flow with one physical seed, and retain
@@ -206,10 +226,41 @@ only compact terminal evidence. Final claims use system-global WNS/TNS. The
 calibrated model is promoted only if holdout trends and algorithm ordering agree
 with the reference within declared error bounds.
 
+The completed one-shot qualification did not reuse a stage checkpoint. It
+synthesized 379,357 instances, used all three FPGAs, cut 1,404 nets, scheduled
+1,867 board hops, and added 4,989 transport cells. All three VTR physical
+implementations passed; the aggregate physical result has zero DRC violations,
+zero unrouted nets, and a worst local backend slack of +1.61078 ns. Phase 7C
+passed schedule legality and macro-cycle equivalence with no mismatches.
+
+The independent OpenSTA route covered all 195,532 original TimingPathDB paths
+(188,418 local and 7,114 cross-FPGA). At the realized 256-slot, 200 MHz fabric
+schedule, the virtual period is 1,280 ns and the runtime result is WNS
++607.021434 ns / TNS 0 ns. The separate 10 ns source-clock target comparison is
+WNS -662.978550 ns / TNS -158,313.972324 ns; it is a target-frequency QoR
+diagnostic, not the actual emulation runtime frequency. The OpenSTA executable
+identity is sealed by SHA-256 when its build banner lacks a source revision.
+Independent terminal validation with physical evidence required also passed.
+
+This result qualifies the implementation and the calibrated academic-platform
+contract; it does not prove equivalence to proprietary hardware. The blind
+application gate predicted two FPGAs at its declared utilization, whereas this
+deliberately stricter 10% stress qualification used three. The VTR backend is
+an academic physical model, and the characterized board-link timing is not a
+measured hardware sign-off (`final_board_link_timing_signoff=false`).
+
+For a deliberately capacity-stressed qualification, `calibrated-materialize`
+accepts an explicit lower `--utilization-limit`. It may never exceed the
+model's declared default, and the generated BoardDB name records the override
+in basis points. This keeps a 10% communication stress run distinguishable
+from the normal 75% research platform.
+
 ## Current limitations
 
-- The current model does not yet fit transport LUT/FF/BRAM overhead; that requires a separate
-  controlled delta-resource observation family.
+- The current model does not yet fit transport LUT/FF/BRAM overhead; the full
+  qualification reports the realized open-flow transport cost, but fitting that
+  cost against the reference requires a separate controlled delta-resource
+  observation family.
 - It models one link class per academic platform. Heterogeneous link classes
   require a schema revision rather than implicit special cases.
 - The model does not claim cycle-accurate equivalence, package-pin closure, or

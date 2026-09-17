@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/calibrated-platform-partition-load-v1.schema.json",
+  "title": "EmuFlow calibrated platform partition load v1",
+  "type": "object",
+  "required": ["schema", "configuration", "partition_sha256", "max_direction_cut_bits", "worst_path_hop_count"],
+  "properties": {
+    "schema": {"const": "emuflow.calibrated-platform-partition-load/v1"},
+    "configuration": {"type": "string", "minLength": 1},
+    "partition_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "max_direction_cut_bits": {"type": "integer", "minimum": 1},
+    "worst_path_hop_count": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": false
+}
