@@ -32,6 +32,7 @@ def campaign():
             {
                 "id": "2fpga-p2p",
                 "topology_file": "/external/synthetic-2fpga.stf",
+                "topology_sha256": "1" * 64,
                 "targets": {"F0": "B1.F1", "F1": "B1.F2"},
                 "utilization_limits_percent": {
                     "lut": 75,
@@ -50,6 +51,7 @@ def campaign():
             {
                 "id": "3fpga-chain",
                 "topology_file": "/external/synthetic-3fpga.stf",
+                "topology_sha256": "2" * 64,
                 "targets": {
                     "F0": "B1.F1",
                     "F1": "B1.F2",
@@ -161,6 +163,11 @@ class CalibrationCampaignTest(unittest.TestCase):
             self.assertEqual(manifest["execution_policy"]["cold_start"], True)
             self.assertFalse(manifest["execution_policy"]["persistent_cache"])
             self.assertEqual(len(manifest["cases"]), 4)
+            self.assertEqual(manifest["cases"][0]["topology_sha256"], "1" * 64)
+            self.assertIn(
+                "topology_file SHA-256 mismatch",
+                (root / "cases/lut-100/run_ppro.tcl").read_text(),
+            )
             capacity_cfg = (root / "cases/lut-100/prepartition.cfg").read_text()
             self.assertEqual(
                 capacity_cfg,

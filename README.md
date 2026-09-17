@@ -4321,7 +4321,9 @@ reported as the default 75% platform.
 The campaign planner generates isolated probes, hard PPro instance-to-FPGA
 constraints, and either topology-unique routes or explicitly audited unique
 shortest routes. The external adapter checks the exact observed route in both
-cases. The planner does not add `-exclusive`, whose
+cases. Every configuration seals the exact topology file by SHA-256 and each
+cold-start launcher checks that identity before invoking the reference flow.
+The planner does not add `-exclusive`, whose
 FPGA-reservation semantics would invalidate multi-instance probes. Its collector compares the observed
 assignment and route against those controls, and keeps license/provider failures
 out of capacity inference. Generated reference tasks are cold starts, carry

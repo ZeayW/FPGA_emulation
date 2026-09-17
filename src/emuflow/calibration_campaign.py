@@ -66,6 +66,13 @@ def _identifier(value: Any, context: str) -> str:
     return result
 
 
+def _sha256(value: Any, context: str) -> str:
+    result = _string(value, context)
+    if len(result) != 64 or any(char not in "0123456789abcdef" for char in result):
+        raise ValidationError(f"{context}: expected lowercase SHA-256")
+    return result
+
+
 def _reject_unknown(
     value: Mapping[str, Any], allowed: set[str], context: str
 ) -> None:
@@ -104,6 +111,7 @@ def _ppro_runner_tcl(
     *,
     case_id: str,
     topology_file: str,
+    topology_sha256: str,
     utilization_limits_percent: Mapping[str, int],
 ) -> str:
     project_name = _tcl_braced("calibration_" + case_id)
@@ -126,6 +134,11 @@ if {{[file pathtype $topology_file] eq "relative"}} {{
 set topology_file [file normalize $topology_file]
 if {{![file isfile $topology_file]}} {{
   error "topology_file does not exist: $topology_file"
+}}
+set expected_topology_sha256 {_tcl_braced(topology_sha256)}
+set observed_topology_sha256 [lindex [exec sha256sum -- $topology_file] 0]
+if {{$observed_topology_sha256 ne $expected_topology_sha256}} {{
+  error "topology_file SHA-256 mismatch"
 }}
 
 create_project -project_name {project_name} -project_path $project_parent -force
@@ -710,6 +723,7 @@ def validate_calibration_campaign(value: Mapping[str, Any]) -> Dict[str, Any]:
             {
                 "id",
                 "topology_file",
+                "topology_sha256",
                 "targets",
                 "routes",
                 "utilization_limits_percent",
@@ -782,6 +796,10 @@ def validate_calibration_campaign(value: Mapping[str, Any]) -> Dict[str, Any]:
                 "topology_file": _string(
                     item.get("topology_file"),
                     f"campaign.configurations[{index}].topology_file",
+                ),
+                "topology_sha256": _sha256(
+                    item.get("topology_sha256"),
+                    f"campaign.configurations[{index}].topology_sha256",
                 ),
                 "targets": normalized_targets,
                 "routes": routes,
@@ -971,6 +989,7 @@ def plan_calibration_campaign(
             _ppro_runner_tcl(
                 case_id=case["id"],
                 topology_file=configuration["topology_file"],
+                topology_sha256=configuration["topology_sha256"],
                 utilization_limits_percent=configuration[
                     "utilization_limits_percent"
                 ],
@@ -991,6 +1010,7 @@ def plan_calibration_campaign(
                     Path("cases") / case["id"] / "prepartition.cfg"
                 ),
                 "topology_file": configuration["topology_file"],
+                "topology_sha256": configuration["topology_sha256"],
                 "logical_targets": configuration["targets"],
                 "utilization_limits_percent": configuration[
                     "utilization_limits_percent"

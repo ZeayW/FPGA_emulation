@@ -24,10 +24,11 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["id", "topology_file", "targets", "routes", "utilization_limits_percent"],
+        "required": ["id", "topology_file", "topology_sha256", "targets", "routes", "utilization_limits_percent"],
         "properties": {
           "id": {"type": "string", "minLength": 1},
           "topology_file": {"type": "string", "minLength": 1},
+          "topology_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "targets": {
             "type": "object",
             "minProperties": 1,
