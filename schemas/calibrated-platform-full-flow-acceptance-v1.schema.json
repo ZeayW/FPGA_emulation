@@ -7,13 +7,38 @@
   "properties": {
     "schema": {"const": "emuflow.calibrated-platform-full-flow-acceptance/v1"},
     "status": {"const": "pass"},
+    "model": {"type": "string", "minLength": 1},
     "model_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "configuration": {"type": "string", "minLength": 1},
+    "profile": {"enum": ["conservative", "nominal", "aggressive"]},
     "utilization_limit": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+    "workload": {"type": "string", "minLength": 1},
     "workload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "physical_seed": {"type": "integer", "minimum": 1},
     "completed_phases": {"const": [1, 2, 3, 4, 5, 6, 7]},
-    "checks": {"type": "object"},
-    "timing": {"type": "object"}
+    "checks": {
+      "type": "object",
+      "required": ["macro_cycle_equivalence", "schedule_legality", "drc_violations", "unrouted_nets", "phase7c_path_coverage"],
+      "properties": {
+        "macro_cycle_equivalence": {"const": "pass"},
+        "schedule_legality": {"const": "pass"},
+        "drc_violations": {"const": 0},
+        "unrouted_nets": {"const": 0},
+        "phase7c_path_coverage": {"const": 1.0}
+      },
+      "additionalProperties": false
+    },
+    "timing": {
+      "type": "object",
+      "required": ["engine", "scope", "wns_ns", "tns_ns"],
+      "properties": {
+        "engine": {"const": "opensta"},
+        "scope": {"const": "system_global"},
+        "wns_ns": {"type": "number"},
+        "tns_ns": {"type": "number"}
+      },
+      "additionalProperties": false
+    }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }
