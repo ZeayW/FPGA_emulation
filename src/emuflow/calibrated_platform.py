@@ -2108,7 +2108,9 @@ def validate_calibrated_platform_application_holdout(
     maximum_ratio = int(nominal["max_tdm_ratio"])
     predicted_ratio = raw_ratio if raw_ratio <= maximum_ratio else None
     if predicted_ratio is None:
-        raise ValidationError("application holdout exceeds the characterized TDM domain")
+        raise ValidationError(
+            "application holdout exceeds the provider TDM scheduling domain"
+        )
     predicted_delay = _predict_delay(
         model,
         {
