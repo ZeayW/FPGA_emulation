@@ -1137,9 +1137,15 @@ def fit_calibrated_platform(
             "fit dataset publication_scope does not authorize the model publication_scope"
         )
     configuration_ids = {item["id"] for item in template["configurations"]}
+    # Capacity, routing, and delay measurements characterize one explicit
+    # system configuration. Resource-unit mappings do not: they compare the
+    # same isolated RTL under the reference and academic device mappers, so
+    # their recorded configuration is provenance for the probe host rather
+    # than a topology constraint. Independently fitted platform tiers using
+    # the same device/mapping contract may therefore share these probes
+    # without relabeling them as if topology changed the mapper.
     for category in (
         "capacity_boundaries",
-        "resource_unit_mappings",
         "link_capacity_boundaries",
         "link_characteristics",
         "link_delay_measurements",

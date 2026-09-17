@@ -28,6 +28,13 @@ artifact and independent evidence. A sealed reference identity may justify
 equal fitted values for two known-identical device/link classes, but it does not
 permit reusing one model artifact across FPGA counts.
 
+Device resource-unit mapping probes are the one intentionally shared
+calibration input when tiers use the same reference device class and the same
+academic mapper. They compare identical isolated RTL in the two resource
+namespaces and therefore do not characterize board topology. Their original
+probe configuration remains recorded as provenance; capacity boundaries,
+links, routes, and delays must still be measured independently for every tier.
+
 ## Selection
 
 The design demand contains the resource counts produced by the selected open

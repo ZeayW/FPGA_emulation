@@ -4297,6 +4297,11 @@ class: each qualified tier uses a distinct calibrated model artifact and
 independent evidence. A sealed identity may justify equal fitted values for a
 known-identical device/link class, but not model reuse. The tier utilization limit may only lower
 the model limit and must match both application and full-flow evidence.
+Identical-device tiers may share isolated same-RTL resource-unit mapping
+probes: those measurements relate reference resource units to the academic
+mapper and are independent of board topology. Their source configuration is
+retained as provenance; all capacity, link, route, and delay calibration stays
+tier-specific.
 
 ```sh
 emuflow platform calibrated-family-select \

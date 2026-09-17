@@ -661,6 +661,18 @@ class CalibratedPlatformTest(unittest.TestCase):
         self.assertAlmostEqual(delay_model["fit_mean_relative_error"], 0.0, places=7)
         self.assertAlmostEqual(delay_model["fit_max_relative_error"], 0.0, places=7)
 
+    def test_device_mapping_probe_may_come_from_an_auxiliary_topology(self):
+        observations = dataset()
+        for item in observations["resource_unit_mappings"]:
+            item["configuration"] = "device-mapping-probe-topology"
+        model = fit_calibrated_platform(template(), observations)
+        self.assertEqual(
+            model["calibration"]["resource_unit_mapping"]["lut"][
+                "academic_units_per_reference_unit"
+            ],
+            1.0,
+        )
+
     def test_fit_rejects_a_full_rank_but_inaccurate_delay_model(self):
         observations = dataset()
         conflicting = copy.deepcopy(observations["link_delay_measurements"][0])
