@@ -10,6 +10,7 @@ No Python-computed arrival, slack, or TDM wait enters the exported circuit.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 import subprocess
@@ -190,19 +191,42 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
     with (directory / "opensta.log").open("w") as log:
         result = subprocess.run([tool, "-exit", "analyze.tcl"], cwd=directory,
                                 stdout=log, stderr=subprocess.STDOUT, check=False)
+    digest = hashlib.sha256()
+    with Path(tool).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    with (directory / "opensta.log").open("a") as log:
+        log.write(f"EMUFLOW_OPENSTA_BINARY_SHA256 {digest.hexdigest()}\n")
     if result.returncode or not output.is_file():
         raise ValidationError("global OpenSTA failed; see opensta.log")
     return read_measurements(output, rows, verify_arcs=verify_arcs)
 
 
 def read_engine_identity(log_path: Path) -> dict:
-    """Read the existing process banner, without another tool invocation."""
+    """Read the existing process banner and exact executed-binary identity."""
+    version = None
+    revision = None
+    binary_sha256 = None
     with log_path.open() as stream:
-        for _ in range(16):
-            line = stream.readline(4096)
-            match = re.match(r"OpenSTA\s+(\S+)\s+([0-9a-f]{7,40})\b", line)
-            if match:
-                return {"name": "OpenSTA", "version": match[1], "revision": match[2]}
+        for line_number, line in enumerate(stream):
+            if line_number < 16:
+                banner = re.match(r"OpenSTA\s+(\S+)(?:\s+(\S+))?", line)
+                if banner:
+                    version = banner[1]
+                    candidate = banner[2]
+                    if candidate and re.fullmatch(r"[0-9a-f]{7,40}", candidate):
+                        revision = candidate
+            marker = re.fullmatch(
+                r"EMUFLOW_OPENSTA_BINARY_SHA256 ([0-9a-f]{64})\n?", line
+            )
+            if marker:
+                binary_sha256 = marker[1]
+    if version and (revision or binary_sha256):
+        return {
+            "name": "OpenSTA",
+            "version": version,
+            "revision": revision or f"sha256:{binary_sha256}",
+        }
     raise ValidationError("global OpenSTA log lacks engine version/revision")
 
 

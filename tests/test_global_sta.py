@@ -1,5 +1,8 @@
+import hashlib
 import os
 import subprocess
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -57,6 +60,45 @@ def test_engine_identity_from_existing_banner(tmp_path):
     log.write_text("unidentified engine\n")
     with pytest.raises(ValidationError, match="engine version"):
         read_engine_identity(log)
+
+
+def test_engine_identity_uses_sealed_binary_when_build_has_no_git_revision(tmp_path):
+    digest = "a" * 64
+    log = tmp_path / "opensta.log"
+    log.write_text(
+        "OpenSTA 2.6.0 GITDIR-NOT Copyright (c) 2024\n"
+        f"EMUFLOW_OPENSTA_BINARY_SHA256 {digest}\n"
+    )
+    assert read_engine_identity(log) == {
+        "name": "OpenSTA",
+        "version": "2.6.0",
+        "revision": f"sha256:{digest}",
+    }
+
+
+def test_live_engine_log_seals_executed_binary(tmp_path, monkeypatch):
+    tool = tmp_path / "sta"
+    tool.write_bytes(b"controlled OpenSTA test executable\n")
+    tool.chmod(0o755)
+    rows = example()
+
+    def run(_args, *, cwd, stdout, stderr, check):
+        del stderr, check
+        stdout.write("OpenSTA 2.6.0 GITDIR-NOT Copyright (c) 2024\n")
+        with (Path(cwd) / "measurements.tsv").open("w") as stream:
+            stream.write("endpoint\tarrival_ns\trequired_ns\tslack_ns\n")
+            for i, row in enumerate(rows):
+                arrival = sum(row.arcs_ns)
+                required = row.required_ns - row.launch_ns
+                stream.write(f"o{i}\t{arrival}\t{required}\t{required-arrival}\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    run_event_checks(rows, tmp_path / "run", str(tool))
+    digest = hashlib.sha256(tool.read_bytes()).hexdigest()
+    assert read_engine_identity(tmp_path / "run/opensta.log")["revision"] == (
+        f"sha256:{digest}"
+    )
 
 
 @pytest.mark.parametrize("field", [0, 1, 2])
