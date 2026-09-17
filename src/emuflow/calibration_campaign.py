@@ -750,9 +750,13 @@ def validate_calibration_campaign(value: Mapping[str, Any]) -> Dict[str, Any]:
                 f"campaign.configurations[{index}].routes[{route_index}]",
             )
             control = _string(route.get("control"), "campaign route control")
-            if control != "topology_unique_path":
+            if control not in {
+                "topology_unique_path",
+                "topology_unique_shortest_path",
+            }:
                 raise ValidationError(
-                    "campaign route control: only topology_unique_path is supported"
+                    "campaign route control: expected topology_unique_path or "
+                    "topology_unique_shortest_path"
                 )
             path = [
                 _string(fpga, "campaign route path")
@@ -886,6 +890,7 @@ def validate_calibration_campaign(value: Mapping[str, Any]) -> Dict[str, Any]:
                     "configuration": configuration_id,
                     "route": route_id,
                     "route_path": route["path"],
+                    "route_control": route["control"],
                     "payload_bits": _positive_integer(
                         item.get("payload_bits"), f"campaign.cases[{index}].payload_bits"
                     ),
@@ -1002,7 +1007,7 @@ def plan_calibration_campaign(
                 "assignment_control": "fixed",
                 "expected_assignment": expected_assignment,
                 "route_control": (
-                    "topology_unique_path"
+                    case["route_control"]
                     if controlled_route is not None
                     else "not_applicable"
                 ),

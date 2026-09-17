@@ -108,6 +108,21 @@ def campaign():
 
 
 class CalibrationCampaignTest(unittest.TestCase):
+    def test_unique_shortest_route_is_sealed_for_exact_post_run_check(self):
+        value = campaign()
+        value["configurations"][0]["routes"][0][
+            "control"
+        ] = "topology_unique_shortest_path"
+        with tempfile.TemporaryDirectory() as raw:
+            manifest = plan_calibration_campaign(value, Path(raw))
+            link_case = next(
+                item for item in manifest["cases"] if item["id"] == "link-32"
+            )
+            self.assertEqual(
+                link_case["route_control"], "topology_unique_shortest_path"
+            )
+            self.assertEqual(link_case["controlled_route"], ["F0", "F1"])
+
     def test_capacity_probes_preserve_requested_resource_structure(self):
         ff_rtl = _capacity_rtl("ff", 8)
         self.assertIn('shreg_extract = "no"', ff_rtl)

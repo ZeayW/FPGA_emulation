@@ -4319,7 +4319,9 @@ platform remains at its declared limit; a 10% stress BoardDB must not be
 reported as the default 75% platform.
 
 The campaign planner generates isolated probes, hard PPro instance-to-FPGA
-constraints, and topology-unique routes. It does not add `-exclusive`, whose
+constraints, and either topology-unique routes or explicitly audited unique
+shortest routes. The external adapter checks the exact observed route in both
+cases. The planner does not add `-exclusive`, whose
 FPGA-reservation semantics would invalidate multi-instance probes. Its collector compares the observed
 assignment and route against those controls, and keeps license/provider failures
 out of capacity inference. Generated reference tasks are cold starts, carry
