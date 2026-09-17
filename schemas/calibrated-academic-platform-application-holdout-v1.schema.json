@@ -33,12 +33,14 @@
     "utilization_limit": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
     "resource_demand": {
       "type": "object",
-      "minProperties": 1,
+      "required": ["reference", "academic"],
       "properties": {
-        "lut": {"type": "integer", "minimum": 0},
-        "ff": {"type": "integer", "minimum": 0},
-        "bram": {"type": "integer", "minimum": 0},
-        "dsp": {"type": "integer", "minimum": 0}
+        "reference": {
+          "$ref": "#/$defs/resourceVector"
+        },
+        "academic": {
+          "$ref": "#/$defs/resourceVector"
+        }
       },
       "additionalProperties": false
     },
@@ -52,6 +54,19 @@
         "worst_cross_fpga_delay_ns": {"type": "number", "exclusiveMinimum": 0},
         "worst_path_hop_count": {"type": "integer", "minimum": 1},
         "cross_fpga_path_count": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "resourceVector": {
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "lut": {"type": "integer", "minimum": 0},
+        "ff": {"type": "integer", "minimum": 0},
+        "bram": {"type": "integer", "minimum": 0},
+        "dsp": {"type": "integer", "minimum": 0}
       },
       "additionalProperties": false
     }
