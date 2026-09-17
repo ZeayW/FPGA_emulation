@@ -251,8 +251,11 @@ def _validate_evidence(
         blind.get("schema") != VALIDATION_SCHEMA
         or blind.get("status") != "pass"
         or blind.get("model") != model_name
+        or configuration not in blind.get("configurations", [])
     ):
-        raise ValidationError("family blind holdout evidence does not pass for the model")
+        raise ValidationError(
+            "family blind holdout evidence does not pass for the configuration"
+        )
     application = reports["application_holdout"]
     if (
         application.get("schema") != APPLICATION_VALIDATION_SCHEMA

@@ -312,7 +312,14 @@ class CalibratedPlatformTest(unittest.TestCase):
         model_path = root / "model.json"
         self._write_json(model_path, model)
         model_sha = hashlib.sha256(model_path.read_bytes()).hexdigest()
-        blind = validate_calibrated_platform_holdout(model, dataset("holdout"))
+        blind_observations = dataset("holdout")
+        second_configuration = copy.deepcopy(
+            blind_observations["link_delay_measurements"][0]
+        )
+        second_configuration["id"] = "holdout-delay-second-configuration"
+        second_configuration["configuration"] = "2fpga-p2p"
+        blind_observations["link_delay_measurements"].append(second_configuration)
+        blind = validate_calibrated_platform_holdout(model, blind_observations)
         blind_path = root / "blind.json"
         self._write_json(blind_path, blind)
 
@@ -445,6 +452,21 @@ class CalibratedPlatformTest(unittest.TestCase):
             family_path = self._family_fixture(root)
             (root / "full-1.json").write_text("{}\n")
             with self.assertRaisesRegex(ValidationError, "SHA-256 mismatch"):
+                load_calibrated_platform_family(family_path)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            family_path = self._family_fixture(root)
+            blind_path = root / "blind.json"
+            blind = json.loads(blind_path.read_text())
+            blind["configurations"] = ["2fpga-p2p"]
+            self._write_json(blind_path, blind)
+            family = json.loads(family_path.read_text())
+            new_sha = hashlib.sha256(blind_path.read_bytes()).hexdigest()
+            for item in family["specifications"]:
+                item["evidence"]["blind_holdout"]["sha256"] = new_sha
+            self._write_json(family_path, family)
+            with self.assertRaisesRegex(ValidationError, "for the configuration"):
                 load_calibrated_platform_family(family_path)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -615,6 +637,7 @@ class CalibratedPlatformTest(unittest.TestCase):
         model = fit_calibrated_platform(template(), dataset())
         report = validate_calibrated_platform_holdout(model, dataset("holdout"))
         self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["configurations"], ["4fpga-ring"])
         self.assertAlmostEqual(report["gates"]["delay_max_relative_error"], 0.0)
 
     def test_holdout_failure_is_not_silently_accepted(self):

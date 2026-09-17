@@ -1768,6 +1768,18 @@ def validate_calibrated_platform_holdout(
         "model": model["model"]["name"],
         "fit_dataset_id": model["calibration"]["fit_dataset_id"],
         "holdout_dataset_id": observations["dataset"]["id"],
+        "configurations": sorted(
+            {
+                item["configuration"]
+                for category in (
+                    "capacity_boundaries",
+                    "link_capacity_boundaries",
+                    "link_characteristics",
+                    "link_delay_measurements",
+                )
+                for item in observations[category]
+            }
+        ),
         "status": "pass" if passed else "fail",
         "gates": gates,
         "thresholds": acceptance,
