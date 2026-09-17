@@ -4293,8 +4293,9 @@ application holdout, and a fresh one-shot Phase 1--7 acceptance.  Candidate
 tiers are visible but cannot be selected.  Qualified tiers must monotonically
 increase aggregate effective capacity in every modeled resource dimension.
 Different reference configurations are not assumed to share a device or link
-class: each tier is calibrated independently unless a sealed reference identity
-proves those properties identical. The tier utilization limit may only lower
+class: each qualified tier uses a distinct calibrated model artifact and
+independent evidence. A sealed identity may justify equal fitted values for a
+known-identical device/link class, but not model reuse. The tier utilization limit may only lower
 the model limit and must match both application and full-flow evidence.
 
 ```sh

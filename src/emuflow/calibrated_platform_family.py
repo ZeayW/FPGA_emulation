@@ -344,6 +344,7 @@ def load_calibrated_platform_family(
     loaded: Dict[str, Dict[str, Any]] = {}
     seen_ids = set()
     seen_ranks = set()
+    seen_qualified_model_digests = set()
     qualified_resource_names: Optional[set[str]] = None
     for index, raw in enumerate(
         _array(root.get("specifications"), "family.specifications", nonempty=True)
@@ -418,6 +419,12 @@ def load_calibrated_platform_family(
             )
         normalized_evidence = None
         if admission == "qualified":
+            if model_digest in seen_qualified_model_digests:
+                raise ValidationError(
+                    "qualified family specifications must use independently "
+                    "calibrated model artifacts"
+                )
+            seen_qualified_model_digests.add(model_digest)
             normalized_evidence = _validate_evidence(
                 family_root,
                 item.get("evidence"),

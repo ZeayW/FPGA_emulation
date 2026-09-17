@@ -23,9 +23,10 @@ eligible for selection.
 
 Specifications are calibrated independently. A family loader never infers that
 different FPGA counts share the same device capacity, link service, or loading
-policy. Sharing a calibrated basis is permitted only when a sealed reference
-identity proves the device and link class are the same; otherwise each
-specification uses its own model artifact and evidence.
+policy. Every qualified specification must use a distinct calibrated model
+artifact and independent evidence. A sealed reference identity may justify
+equal fitted values for two known-identical device/link classes, but it does not
+permit reusing one model artifact across FPGA counts.
 
 ## Selection
 

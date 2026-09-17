@@ -354,7 +354,9 @@ policy.
   unless a sealed public or authorized reference identity proves that the
   device and link class are identical. A capacity or delay fitted on one
   configuration must not be copied into another configuration without that
-  evidence.
+  evidence. Qualified specifications must use distinct calibrated model
+  artifacts; duplicating one model across FPGA counts is not independent
+  calibration.
 - The utilization limit is part of a family tier's identity. It must be
   explicit, may only lower the calibrated model limit, and must match both the
   free-partition application holdout and the complete Phase 1--7 acceptance.
