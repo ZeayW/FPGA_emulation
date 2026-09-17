@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/calibrated-platform-selection-v1.schema.json",
+  "title": "EmuFlow calibrated platform selection v1",
+  "type": "object",
+  "required": ["schema", "status", "family", "design", "resources", "selection_policy", "selected_specification", "selected_configuration", "selected_profile", "candidates", "qualification_boundary"],
+  "properties": {
+    "schema": {"const": "emuflow.calibrated-platform-selection/v1"},
+    "status": {"enum": ["pass", "fail"]},
+    "selected_specification": {"type": ["string", "null"]},
+    "selected_configuration": {"type": ["string", "null"]},
+    "selected_profile": {"type": ["string", "null"]},
+    "candidates": {"type": "array"}
+  },
+  "additionalProperties": true
+}

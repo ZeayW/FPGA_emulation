@@ -340,6 +340,20 @@ policy.
 - A calibrated model may materialize only explicitly enumerated supported
   platform configurations. FPGA count and topology are not generated
   arbitrarily from a requested number of devices.
+- A multi-size calibrated platform family is a catalog, not a topology
+  generator.  Each selectable specification must seal one explicit model and
+  configuration and must independently pass a disjoint blind holdout, a free
+  application holdout, and a fresh one-shot Phase 1--7 run with one physical
+  seed, complete path coverage, independent system-global OpenSTA, macro-cycle
+  equivalence, schedule legality, zero DRC violations, and zero unrouted nets.
+  Candidate specifications may be recorded, but automatic selection must
+  ignore them until all admission evidence passes.
+- Pre-partition family selection may use aggregate effective resource capacity
+  only to choose the lowest explicit qualified service tier.  It is not a
+  partition-feasibility proof: Phase 3 per-FPGA balance and the calibrated
+  post-partition communication-envelope gate remain mandatory.  Service tiers
+  must monotonically dominate every modeled resource dimension; do not rank
+  incomparable platforms with a guessed scalar score.
 - Nominal, conservative, and aggressive profiles share the same declared
   topology and model equation. They differ only within measured capacity and
   timing uncertainty intervals; they must not silently change the workload or

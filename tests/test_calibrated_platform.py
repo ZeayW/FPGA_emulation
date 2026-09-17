@@ -1,5 +1,9 @@
 import copy
+import hashlib
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from emuflow.calibrated_platform import (
     fit_calibrated_platform,
@@ -11,6 +15,10 @@ from emuflow.calibrated_platform import (
     validate_calibrated_platform_holdout,
 )
 from emuflow.errors import ValidationError
+from emuflow.calibrated_platform_family import (
+    load_calibrated_platform_family,
+    select_calibrated_platform,
+)
 
 
 def template():
@@ -295,6 +303,160 @@ def application_holdout():
 
 
 class CalibratedPlatformTest(unittest.TestCase):
+    @staticmethod
+    def _write_json(path, value):
+        path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+    def _family_fixture(self, root: Path, *, first_admission="qualified"):
+        model = fit_calibrated_platform(template(), dataset())
+        model_path = root / "model.json"
+        self._write_json(model_path, model)
+        model_sha = hashlib.sha256(model_path.read_bytes()).hexdigest()
+        blind = validate_calibrated_platform_holdout(model, dataset("holdout"))
+        blind_path = root / "blind.json"
+        self._write_json(blind_path, blind)
+
+        specifications = []
+        for rank, configuration in enumerate(("2fpga-p2p", "4fpga-ring"), 1):
+            holdout = application_holdout()
+            holdout["configuration"] = configuration
+            application = validate_calibrated_platform_application_holdout(
+                model, holdout
+            )
+            application_path = root / f"application-{rank}.json"
+            self._write_json(application_path, application)
+            full_flow = {
+                "schema": "emuflow.calibrated-platform-full-flow-acceptance/v1",
+                "status": "pass",
+                "model": model["model"]["name"],
+                "model_sha256": model_sha,
+                "configuration": configuration,
+                "profile": "nominal",
+                "workload": "connected-real-rtl-fixture",
+                "workload_sha256": "c" * 64,
+                "physical_seed": 1,
+                "completed_phases": list(range(1, 8)),
+                "checks": {
+                    "macro_cycle_equivalence": "pass",
+                    "schedule_legality": "pass",
+                    "drc_violations": 0,
+                    "unrouted_nets": 0,
+                    "phase7c_path_coverage": 1.0,
+                },
+                "timing": {
+                    "engine": "opensta",
+                    "scope": "system_global",
+                    "wns_ns": -2.5,
+                    "tns_ns": -20.0,
+                },
+            }
+            full_path = root / f"full-{rank}.json"
+            self._write_json(full_path, full_flow)
+            admission = first_admission if rank == 1 else "qualified"
+            item = {
+                "id": f"tier-{rank}",
+                "service_rank": rank,
+                "admission": admission,
+                "model_file": model_path.name,
+                "model_sha256": model_sha,
+                "configuration": configuration,
+                "profile": "nominal",
+            }
+            if admission == "qualified":
+                item["evidence"] = {
+                    "blind_holdout": {
+                        "file": blind_path.name,
+                        "sha256": hashlib.sha256(blind_path.read_bytes()).hexdigest(),
+                    },
+                    "application_holdout": {
+                        "file": application_path.name,
+                        "sha256": hashlib.sha256(
+                            application_path.read_bytes()
+                        ).hexdigest(),
+                    },
+                    "full_flow_acceptance": {
+                        "file": full_path.name,
+                        "sha256": hashlib.sha256(full_path.read_bytes()).hexdigest(),
+                    },
+                }
+            specifications.append(item)
+        family = {
+            "schema": "emuflow.calibrated-platform-family/v1",
+            "family": {
+                "name": "synthetic-qualified-family",
+                "description": "unit test",
+                "qualification": "independently_admitted_calibrated_platforms",
+                "not_a_hardware_clone": True,
+            },
+            "selection_policy": {
+                "objective": "lowest_explicit_service_tier",
+                "resource_prefilter": "aggregate_effective_capacity",
+                "post_partition_gate": "calibrated_partition_envelope",
+            },
+            "specifications": specifications,
+        }
+        family_path = root / "family.json"
+        self._write_json(family_path, family)
+        return family_path
+
+    @staticmethod
+    def _demand(lut, ff=100):
+        return {
+            "schema": "emuflow.calibrated-platform-design-demand/v1",
+            "design": {"id": "design-under-test", "source_sha256": "d" * 64},
+            "resources": {"lut": lut, "ff": ff},
+        }
+
+    def test_family_selects_smallest_qualified_capacity_fit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            family_path = self._family_fixture(Path(directory))
+            small, boarddb, timing = select_calibrated_platform(
+                family_path, self._demand(1499)
+            )
+            self.assertEqual(small["selected_specification"], "tier-1")
+            self.assertEqual(len(boarddb["fpgas"]), 2)
+            self.assertEqual(len(timing["links"]), 2)
+            medium, boarddb, _ = select_calibrated_platform(
+                family_path, self._demand(1501)
+            )
+            self.assertEqual(medium["selected_specification"], "tier-2")
+            self.assertEqual(len(boarddb["fpgas"]), 4)
+
+    def test_family_excludes_candidate_and_fails_closed_when_oversized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            family_path = self._family_fixture(
+                Path(directory), first_admission="candidate"
+            )
+            report, boarddb, timing = select_calibrated_platform(
+                family_path, self._demand(100)
+            )
+            self.assertEqual(report["selected_specification"], "tier-2")
+            self.assertEqual(len(boarddb["fpgas"]), 4)
+            oversized, boarddb, timing = select_calibrated_platform(
+                family_path, self._demand(4000)
+            )
+            self.assertEqual(oversized["status"], "fail")
+            self.assertEqual(boarddb, {})
+            self.assertEqual(timing, {})
+
+    def test_family_rejects_tampered_evidence_and_non_monotonic_tiers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            family_path = self._family_fixture(root)
+            (root / "full-1.json").write_text("{}\n")
+            with self.assertRaisesRegex(ValidationError, "SHA-256 mismatch"):
+                load_calibrated_platform_family(family_path)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            family_path = self._family_fixture(root)
+            family = json.loads(family_path.read_text())
+            family["specifications"][0]["service_rank"] = 2
+            family["specifications"][1]["service_rank"] = 1
+            self._write_json(family_path, family)
+            with self.assertRaisesRegex(ValidationError, "monotonically dominate"):
+                load_calibrated_platform_family(family_path)
+
     def test_resource_measurement_expands_only_reachable_hierarchy(self):
         design = {
             "modules": {

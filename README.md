@@ -4284,6 +4284,34 @@ emuflow platform calibrated-materialize \
   --timing-output board-link-timing.json
 ```
 
+Different design sizes are handled by a **qualified platform family**, not by
+inventing a topology for a requested FPGA count.  A family lists explicit
+service tiers, each sealing one calibrated model/configuration and three
+independent admission artifacts: disjoint microbenchmark holdout, free
+application holdout, and a fresh one-shot Phase 1--7 acceptance.  Candidate
+tiers are visible but cannot be selected.  Qualified tiers must monotonically
+increase aggregate effective capacity in every modeled resource dimension.
+
+```sh
+emuflow platform calibrated-family-select \
+  --family calibrated-family.json \
+  --demand mapped-design-demand.json \
+  --output selection.json \
+  --boarddb-output selected-boarddb.json \
+  --timing-output selected-board-link-timing.json
+```
+
+The selector chooses the lowest explicit qualified service tier whose
+aggregate effective LUT/FF/BRAM/DSP capacity fits the mapped design demand. It
+is intentionally only a pre-partition capacity filter. It neither predicts
+balance nor fabricates traffic; Phase 3 per-FPGA legality and the calibrated
+post-partition communication-envelope check remain authoritative. The family,
+demand, selection, and full-flow evidence contracts are respectively
+`emuflow.calibrated-platform-family/v1`,
+`emuflow.calibrated-platform-design-demand/v1`,
+`emuflow.calibrated-platform-selection/v1`, and
+`emuflow.calibrated-platform-full-flow-acceptance/v1`.
+
 An explicit lower `--utilization-limit` may be used for a capacity-stressed
 qualification run. It cannot exceed the model's declared loading policy, and
 the override is encoded in the generated platform name. The default research

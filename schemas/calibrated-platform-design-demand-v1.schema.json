@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/calibrated-platform-design-demand-v1.schema.json",
+  "title": "EmuFlow calibrated platform design demand v1",
+  "type": "object",
+  "required": ["schema", "design", "resources"],
+  "properties": {
+    "schema": {"const": "emuflow.calibrated-platform-design-demand/v1"},
+    "design": {
+      "type": "object",
+      "required": ["id", "source_sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "lut": {"type": "integer", "minimum": 0},
+        "ff": {"type": "integer", "minimum": 0},
+        "bram": {"type": "integer", "minimum": 0},
+        "dsp": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

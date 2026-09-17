@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/calibrated-platform-family-v1.schema.json",
+  "title": "EmuFlow independently qualified calibrated platform family v1",
+  "type": "object",
+  "required": ["schema", "family", "selection_policy", "specifications"],
+  "properties": {
+    "schema": {"const": "emuflow.calibrated-platform-family/v1"},
+    "family": {
+      "type": "object",
+      "required": ["name", "qualification", "not_a_hardware_clone"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string"},
+        "qualification": {"const": "independently_admitted_calibrated_platforms"},
+        "not_a_hardware_clone": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "selection_policy": {
+      "type": "object",
+      "required": ["objective", "resource_prefilter", "post_partition_gate"],
+      "properties": {
+        "objective": {"const": "lowest_explicit_service_tier"},
+        "resource_prefilter": {"const": "aggregate_effective_capacity"},
+        "post_partition_gate": {"const": "calibrated_partition_envelope"}
+      },
+      "additionalProperties": false
+    },
+    "specifications": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "service_rank", "admission", "model_file", "model_sha256", "configuration", "profile"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "service_rank": {"type": "integer", "minimum": 1},
+          "admission": {"enum": ["candidate", "qualified"]},
+          "model_file": {"type": "string", "minLength": 1},
+          "model_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "configuration": {"type": "string", "minLength": 1},
+          "profile": {"enum": ["conservative", "nominal", "aggressive"]},
+          "evidence": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

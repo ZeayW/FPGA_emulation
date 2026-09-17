@@ -63,6 +63,7 @@ from .calibrated_platform import (
     validate_calibrated_platform_application_holdout_files,
     validate_calibrated_platform_holdout_files,
 )
+from .calibrated_platform_family import select_calibrated_platform_files
 from .calibration_campaign import (
     collect_calibration_observation_files,
     plan_calibration_campaign_files,
@@ -1274,6 +1275,28 @@ def _build_parser() -> argparse.ArgumentParser:
         "--timing-output",
         type=Path,
         help="also write the characterized BoardLinkTimingDB",
+    )
+    platform_calibrated_family_select = platform_subparsers.add_parser(
+        "calibrated-family-select",
+        help=(
+            "select the smallest independently qualified named platform that "
+            "fits a design's aggregate resource demand"
+        ),
+    )
+    platform_calibrated_family_select.add_argument(
+        "--family", type=Path, required=True
+    )
+    platform_calibrated_family_select.add_argument(
+        "--demand", type=Path, required=True
+    )
+    platform_calibrated_family_select.add_argument(
+        "--output", "-o", type=Path, required=True
+    )
+    platform_calibrated_family_select.add_argument(
+        "--boarddb-output", type=Path
+    )
+    platform_calibrated_family_select.add_argument(
+        "--timing-output", type=Path
     )
     platform_calibrated_plan = platform_subparsers.add_parser(
         "calibrated-campaign-plan",
@@ -4481,6 +4504,16 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             _print_json(report)
             return 0
+        if args.platform_command == "calibrated-family-select":
+            report = select_calibrated_platform_files(
+                args.family,
+                args.demand,
+                args.output,
+                args.boarddb_output,
+                args.timing_output,
+            )
+            _print_json(report)
+            return 0 if report["status"] == "pass" else 2
         if args.platform_command == "arm-mps4-materialize":
             report = materialize_arm_mps4_boarddb(
                 output_path=args.output,
