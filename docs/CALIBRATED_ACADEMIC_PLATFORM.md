@@ -35,14 +35,18 @@ The link-delay model is:
 
 ```text
 delay_ns = endpoint_ns
-         + hop_count * per_hop_ns
-         + interpolate(tdm_penalty_curve_ns, max_tdm_ratio)
+         + hop_count * (
+             per_hop_ns
+             + interpolate(tdm_penalty_curve_ns, path_tdm_ratio)
+           )
 ```
 
-`max_tdm_ratio` is an observed aggregate from the reference run. It already
-reflects the provider's serialization, multiplexing, and contention decisions,
-so the model must not add separate payload-width or flow-count penalties and
-double-count them. Providers may have nonlinear TDM behavior: controlled PPro
+`path_tdm_ratio` is the ratio reported for the measured path. Every traversed
+physical hop incurs its own serialized service interval, so the fitted TDM
+penalty is charged per hop. The ratio already reflects the provider's
+serialization, multiplexing, and contention decisions, so the model must not
+add separate payload-width or flow-count penalties and double-count them.
+Providers may have nonlinear TDM behavior: controlled PPro
 measurements showed a large ratio-2 to ratio-8 transition and a much smaller
 ratio-8 to ratio-16 transition, invalidating one global per-ratio linear cost.
 The non-negative endpoint and hop terms plus one penalty per observed TDM knot
@@ -194,19 +198,19 @@ controlled campaigns; topology is never extrapolated from a requested count.
 Status: complete for one authorized Koios DLA medium holdout excluded from
 fitting.
 
-`calibrated-application-holdout-validate` predicts the minimum active FPGA count
-from fitted raw capacities at the observation's declared utilization limit,
-checks that the reference and open mappings make the same per-resource FPGA
-count decisions, rounds aggregate directional cut load to a characterized TDM
-tier, and predicts the worst cross-FPGA delay from the fitted timing model. It
-checks exact active FPGA count, exact resource-capacity decisions, bounded
-TDM-ratio error, and bounded delay-relative error. Raw cross-mapper application
-count error is retained as a diagnostic rather than misrepresented as a
-hardware-behavior gate. The completed blind DLA run passes all four behavioral
-gates: both mappings require two FPGAs (DSP is the binding resource), TDM ratio
-is predicted exactly, and worst-cross-FPGA delay error is 1.33%. Its raw
-resource-count diagnostic reaches 34.96%, confirming that a universal
-application-count scale would be invalid. It is a free-partition
+`calibrated-application-holdout-validate` computes the minimum FPGA count from
+fitted raw capacities at the observation's declared utilization limit and
+requires the reference and open resource namespaces to imply the same minimum.
+The reference flow may legally activate more devices than that lower bound;
+this is checked for feasibility rather than falsely treated as a hardware
+parameter. Likewise, aggregate cut load supplies only a lower bound on system
+TDM service. The observed system-wide maximum ratio must satisfy that bound and
+the provider limit, while the independently observed ratio on the worst timing
+path drives delay prediction and must stay inside the characterized timing
+curve. This validates platform capacity and timing without attempting to clone
+the reference partitioner or router. Raw cross-mapper application count error
+is retained as a diagnostic rather than misrepresented as a hardware-behavior
+gate. It is a free-partition
 application check and is never reused to fit hardware parameters. GEMM/NVDLA
 remain useful future holdouts, not prerequisites for the current model contract.
 

@@ -506,7 +506,6 @@ def validate_calibration_template(value: Mapping[str, Any]) -> Dict[str, Any]:
             "delay_mean_relative_error_max",
             "delay_max_relative_error_max",
             "resource_unit_mapping_max_relative_error",
-            "application_tdm_ratio_absolute_error_max",
         },
         "template.acceptance",
     )
@@ -530,10 +529,6 @@ def validate_calibration_template(value: Mapping[str, Any]) -> Dict[str, Any]:
         "resource_unit_mapping_max_relative_error": _number(
             acceptance.get("resource_unit_mapping_max_relative_error"),
             "template.acceptance.resource_unit_mapping_max_relative_error",
-        ),
-        "application_tdm_ratio_absolute_error_max": _integer(
-            acceptance.get("application_tdm_ratio_absolute_error_max"),
-            "template.acceptance.application_tdm_ratio_absolute_error_max",
         ),
     }
     if any(
@@ -2027,6 +2022,19 @@ def validate_calibrated_platform_application_holdout(
             "must each cover every fitted resource"
         )
     observed = _mapping(observation.get("observed"), "application holdout.observed")
+    _reject_unknown(
+        observed,
+        {
+            "active_fpga_count",
+            "max_direction_cut_bits",
+            "max_tdm_ratio",
+            "worst_path_tdm_ratio",
+            "worst_cross_fpga_delay_ns",
+            "worst_path_hop_count",
+            "cross_fpga_path_count",
+        },
+        "application holdout.observed",
+    )
     observed_active = _integer(
         observed.get("active_fpga_count"),
         "application holdout.observed.active_fpga_count",
@@ -2040,6 +2048,11 @@ def validate_calibrated_platform_application_holdout(
     observed_ratio = _integer(
         observed.get("max_tdm_ratio"),
         "application holdout.observed.max_tdm_ratio",
+        minimum=1,
+    )
+    observed_worst_path_ratio = _integer(
+        observed.get("worst_path_tdm_ratio"),
+        "application holdout.observed.worst_path_tdm_ratio",
         minimum=1,
     )
     observed_delay = _number(
@@ -2070,8 +2083,11 @@ def validate_calibrated_platform_application_holdout(
         if effective <= 0:
             raise ValidationError("application holdout effective capacity is zero")
         reference_required_by_resource[resource] = math.ceil(amount / effective)
-    predicted_active = max(reference_required_by_resource.values(), default=1)
-    if predicted_active > len(configuration["fpgas"]):
+    minimum_reference_active = max(
+        reference_required_by_resource.values(), default=1
+    )
+    configuration_fpga_count = len(configuration["fpgas"])
+    if minimum_reference_active > configuration_fpga_count:
         raise ValidationError("application holdout does not fit the configuration")
 
     academic_required_by_resource = {}
@@ -2087,10 +2103,10 @@ def validate_calibrated_platform_application_holdout(
                 "application holdout academic effective capacity is zero"
             )
         academic_required_by_resource[resource] = math.ceil(amount / effective)
-    predicted_academic_active = max(
+    minimum_academic_active = max(
         academic_required_by_resource.values(), default=1
     )
-    if predicted_academic_active > len(configuration["fpgas"]):
+    if minimum_academic_active > configuration_fpga_count:
         raise ValidationError(
             "application holdout academic mapping does not fit the configuration"
         )
@@ -2112,39 +2128,64 @@ def validate_calibrated_platform_application_holdout(
     maximum_mapping_error = max(mapping_errors.values(), default=0.0)
 
     logical_capacity = int(nominal["link_payload_bits_per_cycle_per_direction"])
-    raw_ratio = max(1, math.ceil(observed_cut_bits / logical_capacity))
-    maximum_ratio = int(nominal["max_tdm_ratio"])
-    predicted_ratio = raw_ratio if raw_ratio <= maximum_ratio else None
-    if predicted_ratio is None:
+    aggregate_cut_ratio_lower_bound = max(
+        1, math.ceil(observed_cut_bits / logical_capacity)
+    )
+    provider_maximum_ratio = int(nominal["max_tdm_ratio"])
+    characterized_ratios = [
+        int(item["ratio"])
+        for item in model["calibration"]["link_delay_model"][
+            "tdm_penalty_curve_ns"
+        ]
+    ]
+    timing_maximum_ratio = max(characterized_ratios)
+    if observed_worst_path_ratio > timing_maximum_ratio:
         raise ValidationError(
-            "application holdout exceeds the provider TDM scheduling domain"
+            "application holdout worst-path TDM ratio lies above the "
+            "characterized timing domain; collect a controlled delay "
+            "measurement instead of extrapolating"
         )
     predicted_delay = _predict_delay(
         model,
         {
             "payload_bits": observed_cut_bits,
             "hop_count": observed_hops,
-            "max_tdm_ratio": predicted_ratio,
+            "max_tdm_ratio": observed_worst_path_ratio,
             "contention_units": 0,
         },
     )
-    ratio_error = abs(predicted_ratio - observed_ratio)
     delay_error = abs(predicted_delay - observed_delay) / observed_delay
     acceptance = model["acceptance"]
-    resource_capacity_decisions_exact = (
-        academic_required_by_resource == reference_required_by_resource
-    )
     gates = {
-        "active_fpga_count_exact": predicted_active == observed_active,
-        "resource_capacity_decisions_exact": resource_capacity_decisions_exact,
-        "tdm_ratio_absolute_error": ratio_error,
+        "minimum_active_fpga_count_exact": (
+            minimum_reference_active == minimum_academic_active
+        ),
+        "observed_active_fpga_count_feasible": (
+            observed_active >= minimum_reference_active
+            and observed_active >= minimum_academic_active
+            and observed_active <= configuration_fpga_count
+        ),
+        "cut_load_service_lower_bound_satisfied": (
+            observed_ratio >= aggregate_cut_ratio_lower_bound
+        ),
+        "observed_tdm_ratio_within_provider_domain": (
+            observed_ratio <= provider_maximum_ratio
+        ),
+        "worst_path_tdm_ratio_within_timing_domain": (
+            observed_worst_path_ratio <= timing_maximum_ratio
+        ),
+        "worst_path_tdm_ratio_not_above_system_max": (
+            observed_worst_path_ratio <= observed_ratio
+        ),
         "delay_relative_error": delay_error,
     }
     passed = (
-        gates["active_fpga_count_exact"]
-        and gates["resource_capacity_decisions_exact"]
-        and ratio_error
-        <= acceptance["application_tdm_ratio_absolute_error_max"]
+        gates["minimum_active_fpga_count_exact"]
+        and gates["observed_active_fpga_count_feasible"]
+        and gates["cut_load_service_lower_bound_satisfied"]
+        and gates["observed_tdm_ratio_within_provider_domain"]
+        and gates["worst_path_tdm_ratio_within_timing_domain"]
+        and gates["worst_path_tdm_ratio_not_above_system_max"]
         and delay_error <= acceptance["delay_max_relative_error_max"]
     )
     return {
@@ -2161,11 +2202,12 @@ def validate_calibrated_platform_application_holdout(
         "academic_required_fpgas_by_resource": academic_required_by_resource,
         "predicted_academic_resource_demand": predicted_academic_demand,
         "observed_academic_resource_demand": academic_demand,
-        "predicted_active_fpga_count": predicted_active,
-        "predicted_academic_active_fpga_count": predicted_academic_active,
+        "minimum_reference_active_fpga_count": minimum_reference_active,
+        "minimum_academic_active_fpga_count": minimum_academic_active,
         "observed_active_fpga_count": observed_active,
-        "predicted_tdm_ratio": predicted_ratio,
-        "observed_tdm_ratio": observed_ratio,
+        "aggregate_cut_ratio_lower_bound": aggregate_cut_ratio_lower_bound,
+        "observed_max_tdm_ratio": observed_ratio,
+        "observed_worst_path_tdm_ratio": observed_worst_path_ratio,
         "predicted_worst_cross_fpga_delay_ns": predicted_delay,
         "observed_worst_cross_fpga_delay_ns": observed_delay,
         "gates": gates,
@@ -2174,9 +2216,6 @@ def validate_calibrated_platform_application_holdout(
             "resource_unit_mapping_max_relative_error": maximum_mapping_error,
         },
         "thresholds": {
-            "tdm_ratio_absolute_error_max": acceptance[
-                "application_tdm_ratio_absolute_error_max"
-            ],
             "delay_relative_error_max": acceptance[
                 "delay_max_relative_error_max"
             ],

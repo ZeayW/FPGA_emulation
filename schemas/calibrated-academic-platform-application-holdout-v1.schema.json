@@ -46,11 +46,12 @@
     },
     "observed": {
       "type": "object",
-      "required": ["active_fpga_count", "max_direction_cut_bits", "max_tdm_ratio", "worst_cross_fpga_delay_ns", "worst_path_hop_count", "cross_fpga_path_count"],
+      "required": ["active_fpga_count", "max_direction_cut_bits", "max_tdm_ratio", "worst_path_tdm_ratio", "worst_cross_fpga_delay_ns", "worst_path_hop_count", "cross_fpga_path_count"],
       "properties": {
         "active_fpga_count": {"type": "integer", "minimum": 1},
         "max_direction_cut_bits": {"type": "integer", "minimum": 1},
         "max_tdm_ratio": {"type": "integer", "minimum": 1},
+        "worst_path_tdm_ratio": {"type": "integer", "minimum": 1},
         "worst_cross_fpga_delay_ns": {"type": "number", "exclusiveMinimum": 0},
         "worst_path_hop_count": {"type": "integer", "minimum": 1},
         "cross_fpga_path_count": {"type": "integer", "minimum": 1}

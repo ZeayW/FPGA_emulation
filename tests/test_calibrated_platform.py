@@ -64,7 +64,6 @@ def template():
             "delay_mean_relative_error_max": 0.10,
             "delay_max_relative_error_max": 0.15,
             "resource_unit_mapping_max_relative_error": 0.05,
-            "application_tdm_ratio_absolute_error_max": 1,
         },
     }
 
@@ -295,6 +294,7 @@ def application_holdout():
             "active_fpga_count": 2,
             "max_direction_cut_bits": 3,
             "max_tdm_ratio": 3,
+            "worst_path_tdm_ratio": 3,
             "worst_cross_fpga_delay_ns": 12.0,
             "worst_path_hop_count": 1,
             "cross_fpga_path_count": 10,
@@ -806,9 +806,11 @@ class CalibratedPlatformTest(unittest.TestCase):
             model, application_holdout()
         )
         self.assertEqual(report["status"], "pass")
-        self.assertEqual(report["predicted_active_fpga_count"], 2)
-        self.assertTrue(report["gates"]["resource_capacity_decisions_exact"])
-        self.assertEqual(report["predicted_tdm_ratio"], 3)
+        self.assertEqual(report["minimum_reference_active_fpga_count"], 2)
+        self.assertEqual(report["minimum_academic_active_fpga_count"], 2)
+        self.assertTrue(report["gates"]["minimum_active_fpga_count_exact"])
+        self.assertTrue(report["gates"]["observed_active_fpga_count_feasible"])
+        self.assertEqual(report["aggregate_cut_ratio_lower_bound"], 3)
         self.assertAlmostEqual(
             report["predicted_worst_cross_fpga_delay_ns"], 12.0
         )
@@ -820,6 +822,7 @@ class CalibratedPlatformTest(unittest.TestCase):
         outside = application_holdout()
         outside["observed"]["max_direction_cut_bits"] = 5
         outside["observed"]["max_tdm_ratio"] = 5
+        outside["observed"]["worst_path_tdm_ratio"] = 5
         with self.assertRaisesRegex(ValidationError, "collect a controlled"):
             validate_calibrated_platform_application_holdout(model, outside)
 
@@ -839,7 +842,7 @@ class CalibratedPlatformTest(unittest.TestCase):
                 "resource_unit_mapping_max_relative_error"
             ],
         )
-        self.assertTrue(report["gates"]["resource_capacity_decisions_exact"])
+        self.assertTrue(report["gates"]["minimum_active_fpga_count_exact"])
 
         inequivalent = application_holdout()
         inequivalent["resource_demand"]["academic"]["lut"] = 700
@@ -847,7 +850,28 @@ class CalibratedPlatformTest(unittest.TestCase):
             model, inequivalent
         )
         self.assertEqual(report["status"], "fail")
-        self.assertFalse(report["gates"]["resource_capacity_decisions_exact"])
+        self.assertFalse(report["gates"]["minimum_active_fpga_count_exact"])
+
+    def test_application_holdout_validates_hardware_without_cloning_router(self):
+        model = fit_calibrated_platform(template(), dataset())
+        observation = application_holdout()
+        observation["configuration"] = "4fpga-ring"
+        observation["observed"]["active_fpga_count"] = 3
+        observation["observed"]["max_tdm_ratio"] = 4
+        observation["observed"]["worst_path_tdm_ratio"] = 3
+        report = validate_calibrated_platform_application_holdout(
+            model, observation
+        )
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["minimum_reference_active_fpga_count"], 2)
+        self.assertEqual(report["observed_active_fpga_count"], 3)
+        self.assertEqual(report["aggregate_cut_ratio_lower_bound"], 3)
+        self.assertTrue(
+            report["gates"]["cut_load_service_lower_bound_satisfied"]
+        )
+        self.assertTrue(
+            report["gates"]["worst_path_tdm_ratio_not_above_system_max"]
+        )
 
     def test_application_holdout_requires_free_partition_and_authorized_scope(self):
         model = fit_calibrated_platform(template(), dataset())

@@ -3,7 +3,7 @@
   "$id": "https://emuflow.dev/schema/calibrated-academic-platform-application-validation-v1.schema.json",
   "title": "EmuFlow calibrated academic platform application validation v1",
   "type": "object",
-  "required": ["schema", "status", "model", "dataset_id", "workload_id", "source_sha256", "configuration", "utilization_limit", "cross_fpga_path_count", "predicted_required_fpgas_by_resource", "predicted_active_fpga_count", "observed_active_fpga_count", "predicted_tdm_ratio", "observed_tdm_ratio", "predicted_worst_cross_fpga_delay_ns", "observed_worst_cross_fpga_delay_ns", "gates", "thresholds"],
+  "required": ["schema", "status", "model", "dataset_id", "workload_id", "source_sha256", "configuration", "utilization_limit", "cross_fpga_path_count", "reference_required_fpgas_by_resource", "academic_required_fpgas_by_resource", "predicted_academic_resource_demand", "observed_academic_resource_demand", "minimum_reference_active_fpga_count", "minimum_academic_active_fpga_count", "observed_active_fpga_count", "aggregate_cut_ratio_lower_bound", "observed_max_tdm_ratio", "observed_worst_path_tdm_ratio", "predicted_worst_cross_fpga_delay_ns", "observed_worst_cross_fpga_delay_ns", "gates", "diagnostics", "thresholds"],
   "properties": {
     "schema": {"const": "emuflow.calibrated-academic-platform-application-validation/v1"},
     "status": {"enum": ["pass", "fail"]},
@@ -14,32 +14,45 @@
     "configuration": {"type": "string", "minLength": 1},
     "utilization_limit": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
     "cross_fpga_path_count": {"type": "integer", "minimum": 1},
-    "predicted_required_fpgas_by_resource": {
+    "reference_required_fpgas_by_resource": {
       "type": "object",
       "minProperties": 1,
       "additionalProperties": {"type": "integer", "minimum": 1}
     },
-    "predicted_active_fpga_count": {"type": "integer", "minimum": 1},
+    "academic_required_fpgas_by_resource": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "integer", "minimum": 1}
+    },
+    "predicted_academic_resource_demand": {"type": "object"},
+    "observed_academic_resource_demand": {"type": "object"},
+    "minimum_reference_active_fpga_count": {"type": "integer", "minimum": 1},
+    "minimum_academic_active_fpga_count": {"type": "integer", "minimum": 1},
     "observed_active_fpga_count": {"type": "integer", "minimum": 1},
-    "predicted_tdm_ratio": {"type": "integer", "minimum": 1},
-    "observed_tdm_ratio": {"type": "integer", "minimum": 1},
+    "aggregate_cut_ratio_lower_bound": {"type": "integer", "minimum": 1},
+    "observed_max_tdm_ratio": {"type": "integer", "minimum": 1},
+    "observed_worst_path_tdm_ratio": {"type": "integer", "minimum": 1},
     "predicted_worst_cross_fpga_delay_ns": {"type": "number", "exclusiveMinimum": 0},
     "observed_worst_cross_fpga_delay_ns": {"type": "number", "exclusiveMinimum": 0},
     "gates": {
       "type": "object",
-      "required": ["active_fpga_count_exact", "tdm_ratio_absolute_error", "delay_relative_error"],
+      "required": ["minimum_active_fpga_count_exact", "observed_active_fpga_count_feasible", "cut_load_service_lower_bound_satisfied", "observed_tdm_ratio_within_provider_domain", "worst_path_tdm_ratio_within_timing_domain", "worst_path_tdm_ratio_not_above_system_max", "delay_relative_error"],
       "properties": {
-        "active_fpga_count_exact": {"type": "boolean"},
-        "tdm_ratio_absolute_error": {"type": "integer", "minimum": 0},
+        "minimum_active_fpga_count_exact": {"type": "boolean"},
+        "observed_active_fpga_count_feasible": {"type": "boolean"},
+        "cut_load_service_lower_bound_satisfied": {"type": "boolean"},
+        "observed_tdm_ratio_within_provider_domain": {"type": "boolean"},
+        "worst_path_tdm_ratio_within_timing_domain": {"type": "boolean"},
+        "worst_path_tdm_ratio_not_above_system_max": {"type": "boolean"},
         "delay_relative_error": {"type": "number", "minimum": 0}
       },
       "additionalProperties": false
     },
+    "diagnostics": {"type": "object"},
     "thresholds": {
       "type": "object",
-      "required": ["tdm_ratio_absolute_error_max", "delay_relative_error_max"],
+      "required": ["delay_relative_error_max"],
       "properties": {
-        "tdm_ratio_absolute_error_max": {"type": "integer", "minimum": 0},
         "delay_relative_error_max": {"type": "number", "minimum": 0}
       },
       "additionalProperties": false

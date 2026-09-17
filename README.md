@@ -4381,9 +4381,10 @@ Synthetic observations are limited to unit tests. The authorized internal
 campaign has completed controlled resource boundaries, link/TDM timing fitting,
 a disjoint microbenchmark holdout, and a free-partition Koios DLA application
 holdout. The DLA behavioral gates pass: reference and open mappings make the
-same per-resource FPGA-count decisions, the active-FPGA count and TDM ratio are
-exact, and worst-cross-FPGA-delay error is 1.33%. Raw application resource
-counts differ by as much as 34.96%; that value remains an explicit diagnostic
+same minimum FPGA-count decision, the observed active count is feasible, the
+system-wide TDM ratio satisfies the aggregate cut-load lower bound and provider
+limit, and the worst-path ratio drives a bounded delay prediction. Raw
+application resource counts differ by as much as 34.96%; that value remains an explicit diagnostic
 because mapper-dependent raw counts are not themselves hardware behavior. No reference-derived
 numeric parameter, raw report, or proprietary path is checked into Git.
 

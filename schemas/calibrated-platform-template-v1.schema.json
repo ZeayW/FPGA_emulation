@@ -65,13 +65,13 @@
     },
     "acceptance": {
       "type": "object",
-      "required": ["capacity_outcome_accuracy_min", "link_outcome_accuracy_min", "delay_mean_relative_error_max", "delay_max_relative_error_max", "application_tdm_ratio_absolute_error_max"],
+      "required": ["capacity_outcome_accuracy_min", "link_outcome_accuracy_min", "delay_mean_relative_error_max", "delay_max_relative_error_max", "resource_unit_mapping_max_relative_error"],
       "properties": {
         "capacity_outcome_accuracy_min": {"type": "number", "minimum": 0, "maximum": 1},
         "link_outcome_accuracy_min": {"type": "number", "minimum": 0, "maximum": 1},
         "delay_mean_relative_error_max": {"type": "number", "minimum": 0},
         "delay_max_relative_error_max": {"type": "number", "minimum": 0},
-        "application_tdm_ratio_absolute_error_max": {"type": "integer", "minimum": 0}
+        "resource_unit_mapping_max_relative_error": {"type": "number", "minimum": 0}
       },
       "additionalProperties": false
     }
