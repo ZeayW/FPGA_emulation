@@ -42,12 +42,14 @@ delay_ns = endpoint_ns
 `max_tdm_ratio` is an observed aggregate from the reference run. It already
 reflects the provider's serialization, multiplexing, and contention decisions,
 so the model must not add separate payload-width or flow-count penalties and
-double-count them. Providers may implement discrete TDM tiers: controlled PPro
+double-count them. Providers may have nonlinear TDM behavior: controlled PPro
 measurements showed a large ratio-2 to ratio-8 transition and a much smaller
-ratio-8 to ratio-16 transition, invalidating a per-ratio linear cost. The
-non-negative endpoint and hop terms plus one penalty per observed TDM tier are
-fitted only when the controlled matrix has full rank. The tier curve must be
-monotone; interpolation is reserved for ratios not directly characterized.
+ratio-8 to ratio-16 transition, invalidating one global per-ratio linear cost.
+The non-negative endpoint and hop terms plus one penalty per observed TDM knot
+are fitted only when the controlled matrix has full rank. The curve must be
+monotone. Integer scheduling ratios between measured knots may be interpolated;
+ratios above the largest measured knot are rejected rather than extrapolated.
+The provider-declared maximum scheduling ratio is not itself timing evidence.
 
 Capacity is represented as a raw-device interval. Each controlled demand is
 normalized by the utilization limit used for that run, so a small probe at a
@@ -181,7 +183,7 @@ of scope for this branch.
 
 The completed campaign identifies all four modeled resource-capacity intervals,
 logical TDM service, physical serializer characteristics, endpoint/per-hop
-delay, and a monotone observed-TDM-tier penalty curve. Fit and holdout datasets
+delay, and a monotone observed-TDM-knot penalty curve. Fit and holdout datasets
 are disjoint. Provider, license, SSH, and infrastructure failures remain
 separate from capacity outcomes. Additional platform sizes require their own
 controlled campaigns; topology is never extrapolated from a requested count.
@@ -197,7 +199,7 @@ checks that the reference and open mappings make the same per-resource FPGA
 count decisions, rounds aggregate directional cut load to a characterized TDM
 tier, and predicts the worst cross-FPGA delay from the fitted timing model. It
 checks exact active FPGA count, exact resource-capacity decisions, bounded
-TDM-tier error, and bounded delay-relative error. Raw cross-mapper application
+TDM-ratio error, and bounded delay-relative error. Raw cross-mapper application
 count error is retained as a diagnostic rather than misrepresented as a
 hardware-behavior gate. The completed blind DLA run passes all four behavioral
 gates: both mappings require two FPGAs (DSP is the binding resource), TDM ratio

@@ -4240,8 +4240,10 @@ The current implementation fits:
   axes and is not treated as a universal application resource-count ratio;
 - per-direction logical TDM channel capacity, with physical PHY serialization
   width and line rate retained as separate characterized quantities;
-- endpoint and per-hop timing plus a monotone, discrete observed-TDM-tier
-  penalty curve from controlled delay measurements; the observed ratio already
+- endpoint and per-hop timing plus a monotone observed-TDM-knot penalty curve
+  from controlled delay measurements; integer ratios between measured knots
+  are interpolated, while ratios above the measured timing domain fail closed;
+  the observed ratio already
   captures provider serialization and contention decisions;
 - conservative, nominal, and aggressive profiles within the measured
   intervals.
@@ -4378,7 +4380,7 @@ Synthetic observations are limited to unit tests. The authorized internal
 campaign has completed controlled resource boundaries, link/TDM timing fitting,
 a disjoint microbenchmark holdout, and a free-partition Koios DLA application
 holdout. The DLA behavioral gates pass: reference and open mappings make the
-same per-resource FPGA-count decisions, the active-FPGA count and TDM tier are
+same per-resource FPGA-count decisions, the active-FPGA count and TDM ratio are
 exact, and worst-cross-FPGA-delay error is 1.33%. Raw application resource
 counts differ by as much as 34.96%; that value remains an explicit diagnostic
 because mapper-dependent raw counts are not themselves hardware behavior. No reference-derived

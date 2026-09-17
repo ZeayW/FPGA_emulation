@@ -294,8 +294,8 @@ def application_holdout():
         "observed": {
             "active_fpga_count": 2,
             "max_direction_cut_bits": 3,
-            "max_tdm_ratio": 4,
-            "worst_cross_fpga_delay_ns": 15.0,
+            "max_tdm_ratio": 3,
+            "worst_cross_fpga_delay_ns": 12.0,
             "worst_path_hop_count": 1,
             "cross_fpga_path_count": 10,
         },
@@ -796,10 +796,20 @@ class CalibratedPlatformTest(unittest.TestCase):
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["predicted_active_fpga_count"], 2)
         self.assertTrue(report["gates"]["resource_capacity_decisions_exact"])
-        self.assertEqual(report["predicted_tdm_ratio"], 4)
+        self.assertEqual(report["predicted_tdm_ratio"], 3)
         self.assertAlmostEqual(
-            report["predicted_worst_cross_fpga_delay_ns"], 15.0
+            report["predicted_worst_cross_fpga_delay_ns"], 12.0
         )
+
+    def test_application_holdout_never_extrapolates_delay_beyond_measured_ratio(self):
+        observations = dataset()
+        observations["link_characteristics"][0]["max_tdm_ratio"] = 8
+        model = fit_calibrated_platform(template(), observations)
+        outside = application_holdout()
+        outside["observed"]["max_direction_cut_bits"] = 5
+        outside["observed"]["max_tdm_ratio"] = 5
+        with self.assertRaisesRegex(ValidationError, "collect a controlled"):
+            validate_calibrated_platform_application_holdout(model, outside)
 
     def test_application_holdout_gates_capacity_decisions_not_raw_mapper_counts(self):
         model = fit_calibrated_platform(template(), dataset())

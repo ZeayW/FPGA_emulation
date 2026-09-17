@@ -1070,7 +1070,7 @@ def _consistent_link_characteristic(
 def _delay_features(
     item: Mapping[str, Any], characterized_ratios: Sequence[int]
 ) -> List[float]:
-    """Build the externally observable hop-plus-TDM-tier feature vector.
+    """Build the externally observable hop-plus-TDM-knot feature vector.
 
     A reference flow's reported TDM ratio already includes serialization and
     contention decisions.  Adding independent payload-width or flow-count
@@ -1109,7 +1109,13 @@ def _one_hop_only_configurations(
 
 
 def _tdm_penalty_ns(curve: Sequence[Mapping[str, Any]], ratio: int) -> float:
-    """Interpolate a monotone characterized TDM-tier penalty curve."""
+    """Interpolate inside a monotone characterized TDM penalty curve.
+
+    The provider may accept every integer scheduling ratio while the
+    calibration campaign observes only a sparse set of timing knots. Sparse
+    knots are interpolation evidence, not permission to extrapolate beyond
+    the largest measured ratio.
+    """
 
     if not curve:
         raise ValidationError("link delay model: empty TDM penalty curve")
@@ -1132,11 +1138,11 @@ def _tdm_penalty_ns(curve: Sequence[Mapping[str, Any]], ratio: int) -> float:
         if ratio <= right[0]:
             fraction = (ratio - left[0]) / (right[0] - left[0])
             return left[1] + fraction * (right[1] - left[1])
-    if len(points) == 1:
-        return points[0][1]
-    left, right = points[-2], points[-1]
-    slope = (right[1] - left[1]) / (right[0] - left[0])
-    return right[1] + (ratio - right[0]) * slope
+    raise ValidationError(
+        "link delay model: requested TDM ratio lies above the characterized "
+        "timing domain; collect a controlled delay measurement instead of "
+        "extrapolating"
+    )
 
 
 def fit_calibrated_platform(
@@ -1262,7 +1268,7 @@ def fit_calibrated_platform(
     )
     if len(characterized_ratios) < 2:
         raise ValidationError(
-            "delay fit is not identifiable: characterize at least two observed TDM tiers"
+            "delay fit is not identifiable: characterize at least two observed TDM knots"
         )
     one_hop_only = _one_hop_only_configurations(template["configurations"])
     feature_rows: List[List[float]] = []
@@ -1278,7 +1284,7 @@ def fit_calibrated_platform(
         raise ValidationError(
             "delay fit is not identifiable: vary hop count independently at the "
             "baseline (unless the declared platform is strictly one-hop-only) "
-            "and characterize every observed TDM tier"
+            "and characterize every observed TDM knot"
         )
     observed_values = [float(item["observed_delay_ns"]) for item in delay_measurements]
     coefficients = _nnls_coordinate_descent(feature_rows, observed_values)
@@ -1330,7 +1336,7 @@ def fit_calibrated_platform(
         for left, right in zip(tdm_penalties, tdm_penalties[1:])
     ):
         raise ValidationError(
-            "delay fit produced a non-monotone TDM tier curve; collect more "
+            "delay fit produced a non-monotone TDM knot curve; collect more "
             "controlled measurements instead of publishing an unstable model"
         )
     tdm_penalty_curve = [
@@ -1341,11 +1347,11 @@ def fit_calibrated_platform(
         raise ValidationError(
             "delay fit observed a TDM ratio above the characterized provider maximum"
         )
-    supported_tdm_ratios = list(characterized_ratios)
-    while supported_tdm_ratios[-1] < max_tdm_ratio:
-        supported_tdm_ratios.append(
-            min(max_tdm_ratio, supported_tdm_ratios[-1] * 2)
-        )
+    # PPro's scheduling ratio is an integer, not a power-of-two service tier.
+    # Keep the provider-declared scheduling domain separate from the sparse
+    # delay-curve knots. Timing consumers still fail closed above the largest
+    # characterized knot in ``_tdm_penalty_ns``.
+    supported_tdm_ratios = list(range(1, max_tdm_ratio + 1))
 
     profiles = {}
     for profile in _PROFILES:
@@ -1429,7 +1435,7 @@ def fit_calibrated_platform(
                     "remain separate physical characteristics"
                 ),
                 "link_delay": (
-                    "non-negative hop fit plus a monotone discrete TDM-tier curve "
+                    "non-negative hop fit plus a monotone TDM-knot curve "
                     "over controlled fixed-assignment/fixed-route measurements; "
                     "the observed ratio already captures serialization and contention"
                 ),
@@ -1483,6 +1489,28 @@ def validate_calibrated_platform_model(value: Mapping[str, Any]) -> Dict[str, An
         if set(academic_capacity) != set(reference_capacity):
             raise ValidationError(
                 f"profiles.{profile}: academic and reference resource axes differ"
+            )
+        maximum_ratio = _integer(
+            profile_value.get("max_tdm_ratio"),
+            f"profiles.{profile}.max_tdm_ratio",
+            minimum=1,
+        )
+        supported_ratios = [
+            _integer(
+                item,
+                f"profiles.{profile}.tdm_supported_ratios",
+                minimum=1,
+            )
+            for item in _array(
+                profile_value.get("tdm_supported_ratios"),
+                f"profiles.{profile}.tdm_supported_ratios",
+                nonempty=True,
+            )
+        ]
+        if supported_ratios != list(range(1, maximum_ratio + 1)):
+            raise ValidationError(
+                f"profiles.{profile}.tdm_supported_ratios must describe the "
+                "complete integer scheduling-ratio domain"
             )
         for configuration in configurations:
             materialize_calibrated_boarddb(root, configuration["id"], profile)
@@ -2077,10 +2105,8 @@ def validate_calibrated_platform_application_holdout(
 
     logical_capacity = int(nominal["link_payload_bits_per_cycle_per_direction"])
     raw_ratio = max(1, math.ceil(observed_cut_bits / logical_capacity))
-    supported = [int(value) for value in nominal["tdm_supported_ratios"]]
-    predicted_ratio = next(
-        (ratio for ratio in supported if ratio >= raw_ratio), None
-    )
+    maximum_ratio = int(nominal["max_tdm_ratio"])
+    predicted_ratio = raw_ratio if raw_ratio <= maximum_ratio else None
     if predicted_ratio is None:
         raise ValidationError("application holdout exceeds the characterized TDM domain")
     predicted_delay = _predict_delay(
@@ -2203,8 +2229,16 @@ def validate_calibrated_partition_envelope(
     nominal = model["profiles"]["nominal"]
     logical_capacity = int(nominal["link_payload_bits_per_cycle_per_direction"])
     required_ratio = math.ceil(cut_bits / logical_capacity)
-    supported = [int(value) for value in nominal["tdm_supported_ratios"]]
-    selected = next((ratio for ratio in supported if ratio >= required_ratio), None)
+    provider_maximum = int(nominal["max_tdm_ratio"])
+    delay_curve = model["calibration"]["link_delay_model"][
+        "tdm_penalty_curve_ns"
+    ]
+    characterized_maximum = int(delay_curve[-1]["ratio"])
+    selected = (
+        required_ratio
+        if required_ratio <= min(provider_maximum, characterized_maximum)
+        else None
+    )
     hop_supported = not (
         model["calibration"]["link_delay_model"]["hop_model_scope"]
         == "declared_one_hop_only"
@@ -2222,7 +2256,8 @@ def validate_calibrated_partition_envelope(
         "logical_bits_per_slot_per_direction": logical_capacity,
         "required_raw_tdm_ratio": required_ratio,
         "selected_characterized_tdm_ratio": selected,
-        "maximum_characterized_tdm_ratio": max(supported),
+        "maximum_characterized_tdm_ratio": characterized_maximum,
+        "maximum_provider_tdm_ratio": provider_maximum,
         "reason": (
             "partition load lies inside the calibrated communication envelope"
             if status == "pass"
@@ -2230,7 +2265,11 @@ def validate_calibrated_partition_envelope(
                 "partition path hop count lies outside the one-hop-only "
                 "calibrated platform"
                 if not hop_supported
-                else "partition load exceeds the calibrated communication envelope"
+                else (
+                    "partition load exceeds the provider TDM domain"
+                    if required_ratio > provider_maximum
+                    else "partition load lies outside the characterized TDM timing domain"
+                )
             )
         ),
     }
