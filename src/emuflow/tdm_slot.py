@@ -35,6 +35,7 @@ def _write_native_input(
 ) -> None:
     from .tdm import (
         COMBINATIONAL_SETTLE_SLOTS,
+        RELAY_ENDPOINT_SETTLE_SLOTS,
         RUNTIME_BARRIER_SLOTS,
         _route_hops,
         sampled_logic_segment_budget_slots,
@@ -92,7 +93,7 @@ def _write_native_input(
                 first_hops.append(hop["index"])
             else:
                 dependencies.append(
-                    (parent, hop["index"], COMBINATIONAL_SETTLE_SLOTS)
+                    (parent, hop["index"], RELAY_ENDPOINT_SETTLE_SLOTS)
                 )
             incoming[edge["to"]] = hop["index"]
             incoming_by_net_fpga[(route["net"], edge["to"])] = hop["index"]

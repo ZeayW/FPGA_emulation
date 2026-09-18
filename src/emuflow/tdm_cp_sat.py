@@ -109,7 +109,11 @@ def solve_cp_sat_slot_schedule(
         or float(time_limit_seconds) <= 0.0
     ):
         raise ValidationError("CP-SAT oracle limits are invalid")
-    from .tdm import COMBINATIONAL_SETTLE_SLOTS, RUNTIME_BARRIER_SLOTS
+    from .tdm import (
+        COMBINATIONAL_SETTLE_SLOTS,
+        RELAY_ENDPOINT_SETTLE_SLOTS,
+        RUNTIME_BARRIER_SLOTS,
+    )
     from .tdm_oracle import (
         _reconstruct_slot_oracle_result,
         _slot_oracle_model,
@@ -173,7 +177,7 @@ def solve_cp_sat_slot_schedule(
             latency = oracle["link_by_id"][parent_hop["link"]].latency_cycles
             model.add(
                 ready[index]
-                == slots[parent] + latency + COMBINATIONAL_SETTLE_SLOTS
+                == slots[parent] + latency + RELAY_ENDPOINT_SETTLE_SLOTS
             )
         latency = oracle["link_by_id"][hop["link"]].latency_cycles
         model.add(slots[index] >= ready[index])

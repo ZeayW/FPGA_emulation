@@ -29,6 +29,12 @@ TDM_ACADEMIC_SCHEDULE_PROVIDER = (
     "lagrangian-kkt-ratio-aware-path-local-search-v2"
 )
 COMBINATIONAL_SETTLE_SLOTS = 1
+# A routed relay traverses both an RX boundary endpoint and a TX boundary
+# endpoint before the next fixed TX event. Physical closure constrains each
+# endpoint to one fabric cycle, so one generic settle slot is not a sound
+# pre-physical bound for a multi-hop route. Keep this distinct from Static
+# Exact logic-segment settling, which represents one local logic window.
+RELAY_ENDPOINT_SETTLE_SLOTS = 2
 RUNTIME_BARRIER_SLOTS = 1
 HopKey = Tuple[str, str, str, str]
 
@@ -668,7 +674,10 @@ def build_tdm_schedule(
             ready_slot = (
                 source_ready_slot
                 if edge["from"] == route["source"]
-                else arrival_by_node[edge["from"]] + 1
+                else (
+                    arrival_by_node[edge["from"]]
+                    + RELAY_ENDPOINT_SETTLE_SLOTS
+                )
             )
             # The final frame slot is reserved for the lockstep runtime
             # barrier/virtual-clock release.  A transport arrival must be
@@ -842,6 +851,7 @@ def build_tdm_schedule(
         "round_barriers": max(0, len(active_rounds) - 1),
         "max_transport_round": max(active_rounds, default=0),
         "combinational_settle_slots": COMBINATIONAL_SETTLE_SLOTS,
+        "relay_endpoint_settle_slots": RELAY_ENDPOINT_SETTLE_SLOTS,
         "collisions": 0,
     }
     if ratio_plan is not None:
@@ -1459,7 +1469,10 @@ def validate_tdm_schedule(
             ready = (
                 source_ready_slot
                 if edge["from"] == route["source"]
-                else arrival_by_node[edge["from"]] + 1
+                else (
+                    arrival_by_node[edge["from"]]
+                    + RELAY_ENDPOINT_SETTLE_SLOTS
+                )
             )
             if entry.get("ready_slot") != ready:
                 raise ValidationError(
@@ -1550,6 +1563,9 @@ def validate_tdm_schedule(
                 "round_barriers": max(0, len(active_rounds) - 1),
                 "max_transport_round": max(active_rounds, default=0),
                 "combinational_settle_slots": COMBINATIONAL_SETTLE_SLOTS,
+                "relay_endpoint_settle_slots": (
+                    RELAY_ENDPOINT_SETTLE_SLOTS
+                ),
             }
         )
     if exact_contract is not None:

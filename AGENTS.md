@@ -503,6 +503,13 @@ requirements, not optional micro-optimizations.
   appear free. The native optimizer, independent reconstruction, and small
   exhaustive oracle must share this event definition, including a regression
   where two zero-relative-wait schedules differ by one absolute slot.
+- Multi-hop relay readiness must reserve the RX and TX physical boundary
+  endpoints separately. Under the open physical contract each endpoint is
+  constrained to one fabric period, so the pre-physical schedule uses a
+  two-slot relay-endpoint bound while Static Exact local logic settling remains
+  a separate one-slot policy. Never collapse these into one magic settle slot;
+  Phase 7C must still replace the bound with measured endpoint delays and fail
+  closed on any event miss.
 - `global WNS` is the minimum composed slack over all original design paths.
   `global TNS` is the sum of every negative composed path slack, counted once
   per original TimingPathDB path.  A timing-equivalent representative used by

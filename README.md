@@ -476,6 +476,15 @@ the macro-cycle-equivalence and routed physical-segment gates. Physical-feedback
 PATRON refinement remains opt-in because it requires a prior physical timing
 artifact.
 
+For a multi-hop route, Phase 5 reserves two fabric slots between the incoming
+link arrival and the next TX event: one each for the independently routed RX
+and TX boundary endpoints. This is separate from the one-slot local
+combinational settle policy used by Static Exact logic segments. Open physical
+closure constrains each boundary endpoint to one fabric period, and Phase 7C
+then replaces this conservative pre-physical bound with measured endpoint
+delays. A schedule that reserves only one slot for the RX+TX pair is rejected
+because it can pass discrete scheduling while failing fixed-event global STA.
+
 The explicitly enabled TritonPart-to-MFSPart follow-up is likewise
 scheduler-neutral; it is not run merely because TritonPart and generalized
 Static Exact were selected. It

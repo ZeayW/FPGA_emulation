@@ -1995,7 +1995,7 @@ class Phase5Test(unittest.TestCase):
                 ("round0_b", "a", ["c"]),
                 ("round1", "c", ["a"]),
             ],
-            frame_slots=10,
+            frame_slots=12,
         )
         for route in routes["routes"]:
             route["transport_round"] = (
@@ -2040,14 +2040,14 @@ class Phase5Test(unittest.TestCase):
         )
         realization = schedule["round_barrier_realization"]
         self.assertEqual(realization["capacity_split_slot"], 3)
-        self.assertEqual(realization["source_ready_slot"], 5)
-        self.assertEqual(realization["shift_slots"], 2)
+        self.assertEqual(realization["source_ready_slot"], 6)
+        self.assertEqual(realization["shift_slots"], 3)
         self.assertEqual(validation["status"], "pass")
 
         oracle = exact_multi_round_slot_schedule(
             routes, platform, plan, max_hops=6
         )
-        self.assertEqual(oracle["round_source_ready_slots"][1], 5)
+        self.assertEqual(oracle["round_source_ready_slots"][1], 6)
         refined = refine_tdm_schedule_native(
             routes,
             platform,
@@ -2214,7 +2214,7 @@ class Phase5Test(unittest.TestCase):
             ):
                 self.assertFalse((root / "phase5-managed" / filename).exists())
 
-    def test_multihop_precedence_includes_store_and_forward_cycle(self) -> None:
+    def test_multihop_precedence_reserves_both_physical_endpoints(self) -> None:
         platform = Platform.from_dict(
             _platform_value(
                 "line",
@@ -2235,9 +2235,10 @@ class Phase5Test(unittest.TestCase):
         entries = sorted(schedule["entries"], key=lambda entry: entry["hop"])
         self.assertEqual(entries[0]["slot"], 0)
         self.assertEqual(entries[0]["arrival_slot"], 1)
-        self.assertEqual(entries[1]["ready_slot"], 2)
-        self.assertEqual(entries[1]["slot"], 2)
-        self.assertEqual(entries[1]["arrival_slot"], 3)
+        self.assertEqual(entries[1]["ready_slot"], 3)
+        self.assertEqual(entries[1]["slot"], 3)
+        self.assertEqual(entries[1]["arrival_slot"], 4)
+        self.assertEqual(schedule["metrics"]["relay_endpoint_settle_slots"], 2)
 
     def test_register_input_round_waits_for_register_output_round(self) -> None:
         platform = Platform.from_dict(

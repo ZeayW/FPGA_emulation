@@ -10,7 +10,11 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .errors import ValidationError
 from .platform import Platform
-from .tdm import COMBINATIONAL_SETTLE_SLOTS, RUNTIME_BARRIER_SLOTS
+from .tdm import (
+    COMBINATIONAL_SETTLE_SLOTS,
+    RELAY_ENDPOINT_SETTLE_SLOTS,
+    RUNTIME_BARRIER_SLOTS,
+)
 
 
 def exact_discrete_ratio_legalization(
@@ -357,7 +361,7 @@ def _reconstruct_slot_oracle_result(
                 if parent is None
                 else slots[parent]
                 + link_by_id[hop_by_index[parent]["link"]].latency_cycles
-                + COMBINATIONAL_SETTLE_SLOTS
+                + RELAY_ENDPOINT_SETTLE_SLOTS
             )
             slot = slots[index]
             latest_exclusive = min(
@@ -540,7 +544,7 @@ def exact_multi_round_slot_schedule(
                 + link_by_id[
                     hop_by_index[parent_index]["link"]
                 ].latency_cycles
-                + COMBINATIONAL_SETTLE_SLOTS
+                + RELAY_ENDPOINT_SETTLE_SLOTS
             )
         latest = min(
             ready + hop["discrete_ratio"],
