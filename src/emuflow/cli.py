@@ -65,6 +65,7 @@ from .calibrated_platform import (
 )
 from .calibrated_platform_family import (
     build_full_flow_acceptance_files,
+    qualify_calibrated_platform_family_files,
     select_calibrated_platform_files,
 )
 from .calibration_campaign import (
@@ -1300,6 +1301,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     platform_calibrated_family_select.add_argument(
         "--timing-output", type=Path
+    )
+    platform_calibrated_family_qualify = platform_subparsers.add_parser(
+        "calibrated-family-qualify",
+        help=(
+            "atomically assemble a qualified platform family from sealed "
+            "tier evidence"
+        ),
+    )
+    platform_calibrated_family_qualify.add_argument(
+        "--spec", type=Path, required=True
+    )
+    platform_calibrated_family_qualify.add_argument(
+        "--output-dir", type=Path, required=True
     )
     platform_calibrated_full_flow = platform_subparsers.add_parser(
         "calibrated-full-flow-acceptance",
@@ -4558,6 +4572,13 @@ def _dispatch(args: argparse.Namespace) -> int:
                 workload_path=args.workload_file,
                 flow_root=args.flow,
                 output_path=args.output,
+            )
+            _print_json(report)
+            return 0
+        if args.platform_command == "calibrated-family-qualify":
+            report = qualify_calibrated_platform_family_files(
+                spec_path=args.spec,
+                output_dir=args.output_dir,
             )
             _print_json(report)
             return 0

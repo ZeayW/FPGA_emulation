@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/calibrated-platform-family-qualification-spec-v1.schema.json",
+  "title": "EmuFlow calibrated platform family qualification specification v1",
+  "type": "object",
+  "required": ["schema", "family", "tiers"],
+  "properties": {
+    "schema": {"const": "emuflow.calibrated-platform-family-qualification-spec/v1"},
+    "family": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "tiers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "service_rank", "model_file", "configuration", "utilization_limit", "blind_holdout_file", "application_holdout_file", "full_flow_acceptance_file"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+          "service_rank": {"type": "integer", "minimum": 1},
+          "model_file": {"type": "string", "minLength": 1},
+          "configuration": {"type": "string", "minLength": 1},
+          "profile": {"enum": ["conservative", "nominal", "aggressive"]},
+          "utilization_limit": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+          "blind_holdout_file": {"type": "string", "minLength": 1},
+          "application_holdout_file": {"type": "string", "minLength": 1},
+          "full_flow_acceptance_file": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

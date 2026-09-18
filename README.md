@@ -4309,6 +4309,22 @@ For a strict two-FPGA point-to-point tier, delay fitting uses the directly
 observable one-hop total rather than inventing an endpoint/per-hop split; that
 model is sealed as one-hop-only and cannot be extrapolated to multi-hop paths.
 
+After every tier has its three independent evidence artifacts, assemble the
+publishable family atomically rather than hand-authoring hashes:
+
+```sh
+emuflow platform calibrated-family-qualify \
+  --spec qualification-spec.json \
+  --output-dir qualified-family
+```
+
+The qualification specification names each tier's model, configuration,
+profile, utilization limit, blind holdout, application holdout, and full-flow
+acceptance. The command copies the compact artifacts, computes every digest,
+and runs the same independent family admission checks used by selection. A
+failed tier leaves no partial output directory. The public input contract is
+`emuflow.calibrated-platform-family-qualification-spec/v1`.
+
 ```sh
 emuflow platform calibrated-family-select \
   --family calibrated-family.json \

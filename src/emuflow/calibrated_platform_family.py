@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import math
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -33,6 +35,9 @@ FAMILY_SCHEMA = "emuflow.calibrated-platform-family/v1"
 DEMAND_SCHEMA = "emuflow.calibrated-platform-design-demand/v1"
 SELECTION_SCHEMA = "emuflow.calibrated-platform-selection/v1"
 FULL_FLOW_SCHEMA = "emuflow.calibrated-platform-full-flow-acceptance/v1"
+QUALIFICATION_SPEC_SCHEMA = (
+    "emuflow.calibrated-platform-family-qualification-spec/v1"
+)
 _PROFILES = {"conservative", "nominal", "aggressive"}
 _RESOURCES = {"lut", "ff", "bram", "dsp"}
 
@@ -690,6 +695,183 @@ def load_calibrated_platform_family(
         "specifications": specifications,
     }
     return normalized_family, loaded
+
+
+def qualify_calibrated_platform_family_files(
+    spec_path: Path,
+    output_dir: Path,
+) -> Dict[str, Any]:
+    """Atomically assemble a qualified family from independently sealed evidence."""
+
+    spec_path = spec_path.expanduser()
+    if spec_path.is_symlink() or not spec_path.is_file():
+        raise ValidationError("family qualification specification is missing")
+    spec_path = spec_path.resolve()
+    output_dir = output_dir.expanduser()
+    if output_dir.exists() or output_dir.is_symlink():
+        raise ValidationError("family qualification output already exists")
+    output_dir = output_dir.resolve()
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    spec = _mapping(read_json(spec_path), "family qualification specification")
+    _reject_unknown(
+        spec,
+        {"schema", "family", "tiers"},
+        "family qualification specification",
+    )
+    if spec.get("schema") != QUALIFICATION_SPEC_SCHEMA:
+        raise ValidationError(
+            "family qualification specification has an unsupported schema"
+        )
+    family_value = _mapping(spec.get("family"), "family qualification family")
+    _reject_unknown(
+        family_value,
+        {"name", "description"},
+        "family qualification family",
+    )
+    family_name = _string(
+        family_value.get("name"), "family qualification family.name"
+    )
+    description = str(family_value.get("description", ""))
+    tier_values = _array(
+        spec.get("tiers"), "family qualification tiers", nonempty=True
+    )
+
+    def source_file(raw: Any, context: str) -> Path:
+        value = Path(_string(raw, context)).expanduser()
+        candidate = value if value.is_absolute() else spec_path.parent / value
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ValidationError(f"{context}: source file is missing or is a symlink")
+        return candidate.resolve()
+
+    with tempfile.TemporaryDirectory(
+        prefix=f".{output_dir.name}.tmp-", dir=output_dir.parent
+    ) as temporary:
+        temporary_root = Path(temporary)
+        specifications = []
+        for index, raw in enumerate(tier_values):
+            tier = _mapping(raw, f"family qualification tiers[{index}]")
+            _reject_unknown(
+                tier,
+                {
+                    "id",
+                    "service_rank",
+                    "model_file",
+                    "configuration",
+                    "profile",
+                    "utilization_limit",
+                    "blind_holdout_file",
+                    "application_holdout_file",
+                    "full_flow_acceptance_file",
+                },
+                f"family qualification tiers[{index}]",
+            )
+            identifier = _string(
+                tier.get("id"), f"family qualification tiers[{index}].id"
+            )
+            if (
+                identifier.startswith(".")
+                or Path(identifier).name != identifier
+                or any(
+                    not (character.isalnum() or character in "._-")
+                    for character in identifier
+                )
+            ):
+                raise ValidationError(
+                    "family qualification tier ID is not a safe directory name"
+                )
+            destination = temporary_root / identifier
+            destination.mkdir()
+            inputs = {
+                "model": source_file(
+                    tier.get("model_file"),
+                    f"family qualification tiers[{index}].model_file",
+                ),
+                "blind_holdout": source_file(
+                    tier.get("blind_holdout_file"),
+                    f"family qualification tiers[{index}].blind_holdout_file",
+                ),
+                "application_holdout": source_file(
+                    tier.get("application_holdout_file"),
+                    f"family qualification tiers[{index}].application_holdout_file",
+                ),
+                "full_flow_acceptance": source_file(
+                    tier.get("full_flow_acceptance_file"),
+                    f"family qualification tiers[{index}].full_flow_acceptance_file",
+                ),
+            }
+            copied = {}
+            for label, source in inputs.items():
+                target = destination / f"{label}.json"
+                shutil.copyfile(source, target)
+                copied[label] = {
+                    "file": str(target.relative_to(temporary_root)),
+                    "sha256": _file_sha256(target),
+                }
+            specifications.append(
+                {
+                    "id": identifier,
+                    "service_rank": _integer(
+                        tier.get("service_rank"),
+                        f"family qualification tiers[{index}].service_rank",
+                        minimum=1,
+                    ),
+                    "admission": "qualified",
+                    "model_file": copied["model"]["file"],
+                    "model_sha256": copied["model"]["sha256"],
+                    "configuration": _string(
+                        tier.get("configuration"),
+                        f"family qualification tiers[{index}].configuration",
+                    ),
+                    "profile": _string(
+                        tier.get("profile", "nominal"),
+                        f"family qualification tiers[{index}].profile",
+                    ),
+                    "utilization_limit": _number(
+                        tier.get("utilization_limit"),
+                        f"family qualification tiers[{index}].utilization_limit",
+                    ),
+                    "evidence": {
+                        label: copied[label]
+                        for label in (
+                            "blind_holdout",
+                            "application_holdout",
+                            "full_flow_acceptance",
+                        )
+                    },
+                }
+            )
+        family = {
+            "schema": FAMILY_SCHEMA,
+            "family": {
+                "name": family_name,
+                "description": description,
+                "qualification": "independently_admitted_calibrated_platforms",
+                "not_a_hardware_clone": True,
+            },
+            "selection_policy": {
+                "objective": "lowest_explicit_service_tier",
+                "resource_prefilter": "aggregate_effective_capacity",
+                "post_partition_gate": "calibrated_partition_envelope",
+            },
+            "specifications": specifications,
+        }
+        family_path = temporary_root / "family.json"
+        write_json(family_path, family)
+        normalized, _ = load_calibrated_platform_family(family_path)
+        write_json(family_path, normalized)
+        temporary_root.replace(output_dir)
+
+    final_family = output_dir / "family.json"
+    return {
+        "status": "pass",
+        "family": family_name,
+        "qualified_tiers": [
+            item["id"] for item in normalized["specifications"]
+        ],
+        "family_file": str(final_family),
+        "family_sha256": _file_sha256(final_family),
+    }
 
 
 def validate_design_demand(

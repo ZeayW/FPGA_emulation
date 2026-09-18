@@ -20,6 +20,7 @@ from emuflow.cli import _build_parser
 from emuflow.calibrated_platform_family import (
     build_full_flow_acceptance_files,
     load_calibrated_platform_family,
+    qualify_calibrated_platform_family_files,
     select_calibrated_platform,
 )
 
@@ -576,6 +577,89 @@ class CalibratedPlatformTest(unittest.TestCase):
         self.assertEqual(args.platform_command, "calibrated-full-flow-acceptance")
         self.assertEqual(args.profile, "nominal")
         self.assertEqual(args.utilization_limit, 0.11)
+
+        qualify = _build_parser().parse_args(
+            [
+                "platform",
+                "calibrated-family-qualify",
+                "--spec",
+                "qualification.json",
+                "--output-dir",
+                "qualified-family",
+            ]
+        )
+        self.assertEqual(qualify.platform_command, "calibrated-family-qualify")
+
+    def test_family_qualifier_atomically_copies_and_validates_all_tiers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_root = root / "source"
+            source_root.mkdir()
+            source_family_path = self._family_fixture(source_root)
+            source_family = json.loads(source_family_path.read_text())
+            tiers = []
+            for item in source_family["specifications"]:
+                evidence = item["evidence"]
+                tiers.append(
+                    {
+                        "id": item["id"],
+                        "service_rank": item["service_rank"],
+                        "model_file": str(
+                            Path("source") / item["model_file"]
+                        ),
+                        "configuration": item["configuration"],
+                        "profile": item["profile"],
+                        "utilization_limit": item["utilization_limit"],
+                        "blind_holdout_file": str(
+                            Path("source") / evidence["blind_holdout"]["file"]
+                        ),
+                        "application_holdout_file": str(
+                            Path("source")
+                            / evidence["application_holdout"]["file"]
+                        ),
+                        "full_flow_acceptance_file": str(
+                            Path("source")
+                            / evidence["full_flow_acceptance"]["file"]
+                        ),
+                    }
+                )
+            spec = {
+                "schema": (
+                    "emuflow.calibrated-platform-family-qualification-spec/v1"
+                ),
+                "family": {
+                    "name": "qualified-synthetic-family",
+                    "description": "unit test",
+                },
+                "tiers": tiers,
+            }
+            spec_path = root / "qualification.json"
+            self._write_json(spec_path, spec)
+            output_dir = root / "qualified"
+            report = qualify_calibrated_platform_family_files(
+                spec_path, output_dir
+            )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["qualified_tiers"], ["tier-1", "tier-2"])
+            family, _ = load_calibrated_platform_family(
+                output_dir / "family.json"
+            )
+            self.assertEqual(
+                [item["admission"] for item in family["specifications"]],
+                ["qualified", "qualified"],
+            )
+            self.assertFalse(any(path.is_symlink() for path in output_dir.rglob("*")))
+
+            invalid = copy.deepcopy(spec)
+            invalid["tiers"][1]["configuration"] = "not-declared"
+            invalid_path = root / "invalid.json"
+            self._write_json(invalid_path, invalid)
+            failed_output = root / "must-not-exist"
+            with self.assertRaisesRegex(ValidationError, "unknown model configuration"):
+                qualify_calibrated_platform_family_files(
+                    invalid_path, failed_output
+                )
+            self.assertFalse(failed_output.exists())
 
     @staticmethod
     def _demand(lut, ff=100):

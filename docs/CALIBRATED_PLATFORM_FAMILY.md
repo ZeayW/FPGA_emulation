@@ -27,6 +27,13 @@ report's recorded seed.
 A specification is `candidate` until all evidence exists. Candidates are never
 eligible for selection.
 
+Once all evidence is present, use
+`emuflow platform calibrated-family-qualify --spec ... --output-dir ...` to
+assemble the family. The operation copies only compact evidence into a new
+directory, fills all SHA-256 identities itself, validates every tier and the
+cross-tier monotonic-capacity rule, and publishes the directory atomically.
+It never converts an incomplete candidate into a qualified tier.
+
 Specifications are calibrated independently. A family loader never infers that
 different FPGA counts share the same device capacity, link service, or loading
 policy. Every qualified specification must use a distinct calibrated model
