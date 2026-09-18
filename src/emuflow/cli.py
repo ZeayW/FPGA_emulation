@@ -63,7 +63,10 @@ from .calibrated_platform import (
     validate_calibrated_platform_application_holdout_files,
     validate_calibrated_platform_holdout_files,
 )
-from .calibrated_platform_family import select_calibrated_platform_files
+from .calibrated_platform_family import (
+    build_full_flow_acceptance_files,
+    select_calibrated_platform_files,
+)
 from .calibration_campaign import (
     collect_calibration_observation_files,
     plan_calibration_campaign_files,
@@ -1297,6 +1300,37 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     platform_calibrated_family_select.add_argument(
         "--timing-output", type=Path
+    )
+    platform_calibrated_full_flow = platform_subparsers.add_parser(
+        "calibrated-full-flow-acceptance",
+        help=(
+            "derive sealed family-admission evidence from a completed physical "
+            "Phase 1-7 flow"
+        ),
+    )
+    platform_calibrated_full_flow.add_argument(
+        "--model", type=Path, required=True
+    )
+    platform_calibrated_full_flow.add_argument(
+        "--configuration", required=True
+    )
+    platform_calibrated_full_flow.add_argument(
+        "--profile",
+        choices=("conservative", "nominal", "aggressive"),
+        default="nominal",
+    )
+    platform_calibrated_full_flow.add_argument(
+        "--utilization-limit", type=float, required=True
+    )
+    platform_calibrated_full_flow.add_argument("--workload", required=True)
+    platform_calibrated_full_flow.add_argument(
+        "--workload-file", type=Path, required=True
+    )
+    platform_calibrated_full_flow.add_argument(
+        "--flow", type=Path, required=True
+    )
+    platform_calibrated_full_flow.add_argument(
+        "--output", "-o", type=Path, required=True
     )
     platform_calibrated_plan = platform_subparsers.add_parser(
         "calibrated-campaign-plan",
@@ -4514,6 +4548,19 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             _print_json(report)
             return 0 if report["status"] == "pass" else 2
+        if args.platform_command == "calibrated-full-flow-acceptance":
+            report = build_full_flow_acceptance_files(
+                model_path=args.model,
+                configuration=args.configuration,
+                profile=args.profile,
+                utilization_limit=args.utilization_limit,
+                workload=args.workload,
+                workload_path=args.workload_file,
+                flow_root=args.flow,
+                output_path=args.output,
+            )
+            _print_json(report)
+            return 0
         if args.platform_command == "arm-mps4-materialize":
             report = materialize_arm_mps4_boarddb(
                 output_path=args.output,

@@ -18,6 +18,12 @@ Every selectable specification binds:
    equivalence, schedule legality, zero DRC violations, zero unrouted nets,
    complete timing-path coverage, and independent system-global OpenSTA.
 
+The full-flow artifact must be produced with
+`emuflow platform calibrated-full-flow-acceptance`; it is reconstructed from
+the canonical flow/QoR reports rather than filled in by an experiment script.
+The compact artifact seals both source report hashes and verifies the physical
+report's recorded seed.
+
 A specification is `candidate` until all evidence exists. Candidates are never
 eligible for selection.
 

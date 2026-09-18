@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.calibrated_platform import (
     fit_calibrated_platform,
@@ -15,7 +16,9 @@ from emuflow.calibrated_platform import (
     validate_calibrated_platform_holdout,
 )
 from emuflow.errors import ValidationError
+from emuflow.cli import _build_parser
 from emuflow.calibrated_platform_family import (
+    build_full_flow_acceptance_files,
     load_calibrated_platform_family,
     select_calibrated_platform,
 )
@@ -348,6 +351,8 @@ class CalibratedPlatformTest(unittest.TestCase):
                 "status": "pass",
                 "model": model["model"]["name"],
                 "model_sha256": model_sha,
+                "flow_report_sha256": "a" * 64,
+                "qor_report_sha256": "b" * 64,
                 "configuration": configuration,
                 "profile": "nominal",
                 "utilization_limit": 0.75,
@@ -418,6 +423,159 @@ class CalibratedPlatformTest(unittest.TestCase):
         family_path = root / "family.json"
         self._write_json(family_path, family)
         return family_path
+
+    def test_full_flow_acceptance_is_derived_from_sealed_real_reports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = fit_calibrated_platform(template(), dataset())
+            model_path = root / "model.json"
+            self._write_json(model_path, model)
+            workload_path = root / "workload.json"
+            workload_path.write_text('{"design":"connected"}\n')
+            flow_root = root / "flow"
+            (flow_root / "runtime").mkdir(parents=True)
+            configuration = "2fpga-p2p"
+            expected_platform = materialize_calibrated_boarddb(
+                model, configuration, "nominal"
+            )["platform"]["name"]
+            qor = {
+                "schema": "emuflow.qor-report/v4",
+                "status": "pass",
+                "design": "connected",
+                "platform": expected_platform,
+                "equivalence": {"mismatches": 0},
+                "physical": {
+                    "status": "pass",
+                    "drc_violations": 0,
+                    "unrouted_nets": 0,
+                },
+                "timing": {
+                    "status": "pass",
+                    "timing_scope": "whole-original-design",
+                    "global_opensta": {
+                        "authority": "opensta",
+                        "execution": "standalone",
+                        "status": "pass",
+                        "timing_scope": "whole-original-design",
+                    },
+                    "summary": {"original_path_coverage": 1.0},
+                    "target_clock": {
+                        "worst_slack_bound_ns": -2.5,
+                        "total_negative_slack_bound_ns": -20.0,
+                    },
+                },
+            }
+            qor_path = flow_root / "runtime/qor_report.json"
+            self._write_json(qor_path, qor)
+            flow = {
+                "physical": {"execution": {"seed": 1}},
+                "stages": {"tdm": {"validation": {"status": "pass"}}},
+                "artifacts": {
+                    "qor_report": {
+                        "path": "runtime/qor_report.json",
+                        "sha256": hashlib.sha256(qor_path.read_bytes()).hexdigest(),
+                    }
+                },
+            }
+            flow_path = flow_root / "multi-fpga-flow-report.json"
+            self._write_json(flow_path, flow)
+            validation = {
+                "status": "pass",
+                "physical_status": "pass",
+                "design": "connected",
+                "platform": expected_platform,
+            }
+            with patch(
+                "emuflow.calibrated_platform_family.validate_multi_fpga_flow_report",
+                return_value=validation,
+            ):
+                acceptance = build_full_flow_acceptance_files(
+                    model_path=model_path,
+                    configuration=configuration,
+                    profile="nominal",
+                    utilization_limit=0.75,
+                    workload="connected-real-rtl-fixture",
+                    workload_path=workload_path,
+                    flow_root=flow_root,
+                    output_path=root / "acceptance.json",
+                )
+                self.assertEqual(acceptance["physical_seed"], 1)
+                self.assertEqual(acceptance["timing"]["wns_ns"], -2.5)
+                self.assertEqual(
+                    acceptance["qor_report_sha256"],
+                    hashlib.sha256(qor_path.read_bytes()).hexdigest(),
+                )
+                flow["physical"]["execution"]["seed"] = 2
+                self._write_json(flow_path, flow)
+                with self.assertRaisesRegex(ValidationError, "physical seed 1"):
+                    build_full_flow_acceptance_files(
+                        model_path=model_path,
+                        configuration=configuration,
+                        profile="nominal",
+                        utilization_limit=0.75,
+                        workload="connected-real-rtl-fixture",
+                        workload_path=workload_path,
+                        flow_root=flow_root,
+                    )
+
+                flow["physical"]["execution"]["seed"] = 1
+                self._write_json(flow_path, flow)
+                qor["timing"]["global_opensta"]["execution"] = "embedded"
+                self._write_json(qor_path, qor)
+                flow["artifacts"]["qor_report"]["sha256"] = hashlib.sha256(
+                    qor_path.read_bytes()
+                ).hexdigest()
+                self._write_json(flow_path, flow)
+                with self.assertRaisesRegex(
+                    ValidationError, "standalone global OpenSTA"
+                ):
+                    build_full_flow_acceptance_files(
+                        model_path=model_path,
+                        configuration=configuration,
+                        profile="nominal",
+                        utilization_limit=0.75,
+                        workload="connected-real-rtl-fixture",
+                        workload_path=workload_path,
+                        flow_root=flow_root,
+                    )
+
+                qor["timing"]["global_opensta"]["execution"] = "standalone"
+                self._write_json(qor_path, qor)
+                with self.assertRaisesRegex(ValidationError, "SHA-256 disagrees"):
+                    build_full_flow_acceptance_files(
+                        model_path=model_path,
+                        configuration=configuration,
+                        profile="nominal",
+                        utilization_limit=0.75,
+                        workload="connected-real-rtl-fixture",
+                        workload_path=workload_path,
+                        flow_root=flow_root,
+                    )
+
+    def test_cli_exposes_full_flow_acceptance_producer(self):
+        args = _build_parser().parse_args(
+            [
+                "platform",
+                "calibrated-full-flow-acceptance",
+                "--model",
+                "model.json",
+                "--configuration",
+                "2fpga-p2p",
+                "--utilization-limit",
+                "0.11",
+                "--workload",
+                "dla-medium",
+                "--workload-file",
+                "dla-medium.json",
+                "--flow",
+                "flow",
+                "--output",
+                "acceptance.json",
+            ]
+        )
+        self.assertEqual(args.platform_command, "calibrated-full-flow-acceptance")
+        self.assertEqual(args.profile, "nominal")
+        self.assertEqual(args.utilization_limit, 0.11)
 
     @staticmethod
     def _demand(lut, ff=100):

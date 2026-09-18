@@ -4318,6 +4318,27 @@ emuflow platform calibrated-family-select \
   --timing-output selected-board-link-timing.json
 ```
 
+Qualification evidence is not hand-authored.  After one fresh physical run,
+derive it from the canonical flow report and its hash-sealed QoR artifact:
+
+```sh
+emuflow platform calibrated-full-flow-acceptance \
+  --model calibrated-model.json \
+  --configuration named-platform \
+  --profile nominal \
+  --utilization-limit 0.13 \
+  --workload koios-dla-medium \
+  --workload-file dla-medium.json \
+  --flow one-shot-flow \
+  --output full-flow-acceptance.json
+```
+
+The producer independently requires all Phase 1--7 stage summaries, the exact
+calibrated platform identity, physical seed 1, zero macro-cycle mismatches,
+legal TDM scheduling, zero DRC/unrouted violations, complete original-path
+coverage, and standalone whole-design OpenSTA.  It seals both the canonical
+flow report and QoR report SHA-256 values before scratch cleanup.
+
 The selector chooses the lowest explicit qualified service tier whose
 aggregate effective LUT/FF/BRAM/DSP capacity fits the mapped design demand. It
 is intentionally only a pre-partition capacity filter. It neither predicts

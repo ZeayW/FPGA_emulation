@@ -25,6 +25,8 @@ from .calibrated_platform import (
 )
 from .errors import ValidationError
 from .io import read_json, write_json
+from .multi_fpga_flow import validate_multi_fpga_flow_report
+from .runtime import QOR_REPORT_SCHEMA
 
 
 FAMILY_SCHEMA = "emuflow.calibrated-platform-family/v1"
@@ -116,6 +118,8 @@ def validate_full_flow_acceptance(value: Mapping[str, Any]) -> Dict[str, Any]:
             "status",
             "model",
             "model_sha256",
+            "flow_report_sha256",
+            "qor_report_sha256",
             "configuration",
             "profile",
             "utilization_limit",
@@ -187,12 +191,25 @@ def validate_full_flow_acceptance(value: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValidationError(
             "full-flow acceptance requires independent system-global OpenSTA timing"
         )
+    physical_seed = _integer(
+        root.get("physical_seed"), "full-flow acceptance.physical_seed", minimum=1
+    )
+    if physical_seed != 1:
+        raise ValidationError("full-flow acceptance requires physical seed 1")
     return {
         "schema": FULL_FLOW_SCHEMA,
         "status": "pass",
         "model": _string(root.get("model"), "full-flow acceptance.model"),
         "model_sha256": _sha256(
             root.get("model_sha256"), "full-flow acceptance.model_sha256"
+        ),
+        "flow_report_sha256": _sha256(
+            root.get("flow_report_sha256"),
+            "full-flow acceptance.flow_report_sha256",
+        ),
+        "qor_report_sha256": _sha256(
+            root.get("qor_report_sha256"),
+            "full-flow acceptance.qor_report_sha256",
         ),
         "configuration": _string(
             root.get("configuration"), "full-flow acceptance.configuration"
@@ -203,9 +220,7 @@ def validate_full_flow_acceptance(value: Mapping[str, Any]) -> Dict[str, Any]:
         "workload_sha256": _sha256(
             root.get("workload_sha256"), "full-flow acceptance.workload_sha256"
         ),
-        "physical_seed": _integer(
-            root.get("physical_seed"), "full-flow acceptance.physical_seed", minimum=1
-        ),
+        "physical_seed": physical_seed,
         "completed_phases": phases,
         "checks": {
             "macro_cycle_equivalence": "pass",
@@ -221,6 +236,184 @@ def validate_full_flow_acceptance(value: Mapping[str, Any]) -> Dict[str, Any]:
             "tns_ns": _number(timing.get("tns_ns"), "full-flow acceptance.tns_ns"),
         },
     }
+
+
+def build_full_flow_acceptance_files(
+    *,
+    model_path: Path,
+    configuration: str,
+    profile: str,
+    utilization_limit: float,
+    workload: str,
+    workload_path: Path,
+    flow_root: Path,
+    output_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Derive admission evidence from one completed physical flow.
+
+    The caller cannot assert closure fields.  They are reconstructed from the
+    canonical flow report and its hash-sealed QoR artifact.  This is the only
+    producer for real family admission evidence; ``validate_full_flow_acceptance``
+    remains the small standalone consumer used after scratch cleanup.
+    """
+
+    model_path = model_path.resolve()
+    workload_path = workload_path.resolve()
+    flow_root = flow_root.resolve()
+    if not model_path.is_file():
+        raise ValidationError("full-flow acceptance model file is missing")
+    if not workload_path.is_file():
+        raise ValidationError("full-flow acceptance workload file is missing")
+    if not flow_root.is_dir():
+        raise ValidationError("full-flow acceptance flow root is missing")
+
+    model = validate_calibrated_platform_model(read_json(model_path))
+    if configuration not in {item["id"] for item in model["configurations"]}:
+        raise ValidationError("full-flow acceptance model configuration is unknown")
+    if profile not in _PROFILES:
+        raise ValidationError("full-flow acceptance profile is unsupported")
+    declared_limit = float(model["device"]["utilization_limit"])
+    if utilization_limit <= 0.0 or utilization_limit > declared_limit:
+        raise ValidationError(
+            "full-flow acceptance utilization limit exceeds the model"
+        )
+
+    flow_report_path = flow_root / "multi-fpga-flow-report.json"
+    if flow_report_path.is_symlink() or not flow_report_path.is_file():
+        raise ValidationError("full-flow acceptance canonical flow report is missing")
+    flow_report = _mapping(read_json(flow_report_path), "multi-FPGA flow report")
+    flow_validation = validate_multi_fpga_flow_report(dict(flow_report))
+    if flow_validation.get("physical_status") != "pass":
+        raise ValidationError("full-flow acceptance requires completed Phase 7")
+
+    expected_boarddb = materialize_calibrated_boarddb(
+        model,
+        configuration,
+        profile,
+        utilization_limit=utilization_limit,
+    )
+    expected_platform = expected_boarddb["platform"]["name"]
+    if flow_validation.get("platform") != expected_platform:
+        raise ValidationError(
+            "full-flow acceptance flow did not use the calibrated platform"
+        )
+
+    physical = _mapping(flow_report.get("physical"), "full-flow physical report")
+    execution = _mapping(
+        physical.get("execution"), "full-flow physical execution"
+    )
+    seed = _integer(
+        execution.get("seed"), "full-flow physical execution.seed", minimum=1
+    )
+    if seed != 1:
+        raise ValidationError("full-flow acceptance requires physical seed 1")
+
+    artifacts = _mapping(flow_report.get("artifacts"), "full-flow artifacts")
+    qor_ref = _mapping(artifacts.get("qor_report"), "full-flow QoR artifact")
+    relative_qor = Path(_string(qor_ref.get("path"), "full-flow QoR path"))
+    if relative_qor.is_absolute() or ".." in relative_qor.parts:
+        raise ValidationError("full-flow QoR path is not contained")
+    qor_candidate = flow_root / relative_qor
+    if qor_candidate.is_symlink() or not qor_candidate.is_file():
+        raise ValidationError("full-flow QoR artifact is missing or is a symlink")
+    qor_path = qor_candidate.resolve()
+    if qor_path.parent != flow_root and flow_root not in qor_path.parents:
+        raise ValidationError("full-flow QoR artifact escapes its root")
+    qor_digest = _file_sha256(qor_path)
+    if qor_digest != _sha256(qor_ref.get("sha256"), "full-flow QoR SHA-256"):
+        raise ValidationError("full-flow QoR artifact SHA-256 disagrees")
+    qor = _mapping(read_json(qor_path), "full-flow QoR report")
+    if (
+        qor.get("schema") != QOR_REPORT_SCHEMA
+        or qor.get("status") != "pass"
+        or qor.get("design") != flow_validation.get("design")
+        or qor.get("platform") != expected_platform
+    ):
+        raise ValidationError("full-flow QoR identity or status is invalid")
+
+    equivalence = _mapping(qor.get("equivalence"), "full-flow equivalence")
+    if equivalence.get("mismatches") != 0:
+        raise ValidationError("full-flow macro-cycle equivalence failed")
+    tdm_validation = _mapping(
+        _mapping(flow_report["stages"].get("tdm"), "full-flow Phase 5").get(
+            "validation"
+        ),
+        "full-flow Phase 5 validation",
+    )
+    if tdm_validation.get("status") != "pass":
+        raise ValidationError("full-flow schedule legality failed")
+
+    physical_qor = _mapping(qor.get("physical"), "full-flow physical QoR")
+    if (
+        physical_qor.get("status") != "pass"
+        or physical_qor.get("drc_violations") != 0
+        or physical_qor.get("unrouted_nets") != 0
+    ):
+        raise ValidationError("full-flow physical closure failed")
+    timing = _mapping(qor.get("timing"), "full-flow system timing")
+    global_opensta = _mapping(
+        timing.get("global_opensta"), "full-flow global OpenSTA"
+    )
+    summary = _mapping(timing.get("summary"), "full-flow timing summary")
+    target_clock = _mapping(
+        timing.get("target_clock"), "full-flow target clock"
+    )
+    coverage = _number(
+        summary.get("original_path_coverage"),
+        "full-flow original path coverage",
+    )
+    if (
+        timing.get("status") != "pass"
+        or timing.get("timing_scope") != "whole-original-design"
+        or global_opensta.get("authority") != "opensta"
+        or global_opensta.get("execution") != "standalone"
+        or global_opensta.get("status") != "pass"
+        or global_opensta.get("timing_scope") != "whole-original-design"
+        or not math.isclose(coverage, 1.0, rel_tol=0.0, abs_tol=1.0e-12)
+    ):
+        raise ValidationError(
+            "full-flow acceptance requires complete standalone global OpenSTA"
+        )
+
+    acceptance = validate_full_flow_acceptance(
+        {
+            "schema": FULL_FLOW_SCHEMA,
+            "status": "pass",
+            "model": model["model"]["name"],
+            "model_sha256": _file_sha256(model_path),
+            "flow_report_sha256": _file_sha256(flow_report_path),
+            "qor_report_sha256": qor_digest,
+            "configuration": configuration,
+            "profile": profile,
+            "utilization_limit": float(utilization_limit),
+            "workload": _string(workload, "full-flow workload"),
+            "workload_sha256": _file_sha256(workload_path),
+            "physical_seed": seed,
+            "completed_phases": list(range(1, 8)),
+            "checks": {
+                "macro_cycle_equivalence": "pass",
+                "schedule_legality": "pass",
+                "drc_violations": 0,
+                "unrouted_nets": 0,
+                "phase7c_path_coverage": coverage,
+            },
+            "timing": {
+                "engine": "opensta",
+                "scope": "system_global",
+                "wns_ns": _number(
+                    target_clock.get("worst_slack_bound_ns"),
+                    "full-flow target WNS",
+                ),
+                "tns_ns": _number(
+                    target_clock.get("total_negative_slack_bound_ns"),
+                    "full-flow target TNS",
+                ),
+            },
+        }
+    )
+    if output_path is not None:
+        write_json(output_path, acceptance)
+    return acceptance
 
 
 def _validate_evidence(
