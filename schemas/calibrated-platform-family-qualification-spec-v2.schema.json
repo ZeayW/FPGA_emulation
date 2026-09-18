@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://emuflow.dev/schema/calibrated-platform-family-qualification-spec-v1.schema.json",
-  "title": "EmuFlow calibrated platform family qualification specification v1",
+  "$id": "https://emuflow.dev/schema/calibrated-platform-family-qualification-spec-v2.schema.json",
+  "title": "EmuFlow calibrated platform family qualification specification v2",
   "type": "object",
   "required": ["schema", "family", "tiers"],
   "properties": {
-    "schema": {"const": "emuflow.calibrated-platform-family-qualification-spec/v1"},
+    "schema": {"const": "emuflow.calibrated-platform-family-qualification-spec/v2"},
     "family": {
       "type": "object",
       "required": ["name"],

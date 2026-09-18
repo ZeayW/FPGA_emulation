@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/calibrated-platform-selection-v2.schema.json",
+  "title": "EmuFlow calibrated platform selection v2",
+  "type": "object",
+  "required": ["schema", "status", "family", "design", "resources", "selection_policy", "selected_specification", "selected_configuration", "selected_profile", "selected_utilization_limit", "selected_frame_length_policy", "selected_maximum_frame_slots", "candidates", "qualification_boundary"],
+  "properties": {
+    "schema": {"const": "emuflow.calibrated-platform-selection/v2"},
+    "status": {"enum": ["pass", "fail"]},
+    "selected_specification": {"type": ["string", "null"]},
+    "selected_configuration": {"type": ["string", "null"]},
+    "selected_profile": {"type": ["string", "null"]},
+    "selected_utilization_limit": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1},
+    "selected_frame_length_policy": {"enum": ["minimum_feasible", null]},
+    "selected_maximum_frame_slots": {"type": ["integer", "null"], "minimum": 2},
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["specification", "service_rank", "fpga_count", "effective_capacity_per_fpga", "required_fpgas_by_resource", "resource_prefilter_pass", "maximum_frame_slots"],
+        "properties": {
+          "maximum_frame_slots": {"type": "integer", "minimum": 2}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

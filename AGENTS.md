@@ -362,6 +362,13 @@ policy.
   free-partition application holdout and the complete Phase 1--7 acceptance.
   Selection and emitted BoardDB capacity must use the admitted tier limit, not
   silently revert to the model maximum.
+- The calibrated profile's `max_tdm_ratio` is the authoritative frame-length
+  search bound for that tier. A qualifying full flow must pass it to Phase 4
+  as `--frame-slots` and enable `--optimize-frame-slots`; the accepted evidence
+  must seal both the calibrated upper bound and the independently proven
+  minimum feasible frame. Never fall back to the generic 32-slot default, and
+  never hard-code a workload holdout's observed TDM ratio as a platform
+  property.
 - Pre-partition family selection may use aggregate effective resource capacity
   only to choose the lowest explicit qualified service tier.  It is not a
   partition-feasibility proof: Phase 3 per-FPGA balance and the calibrated

@@ -348,7 +348,7 @@ class CalibratedPlatformTest(unittest.TestCase):
             application_path = root / f"application-{rank}.json"
             self._write_json(application_path, application)
             full_flow = {
-                "schema": "emuflow.calibrated-platform-full-flow-acceptance/v1",
+                "schema": "emuflow.calibrated-platform-full-flow-acceptance/v2",
                 "status": "pass",
                 "model": model["model"]["name"],
                 "model_sha256": model_sha,
@@ -360,6 +360,15 @@ class CalibratedPlatformTest(unittest.TestCase):
                 "workload": "connected-real-rtl-fixture",
                 "workload_sha256": "c" * 64,
                 "physical_seed": 1,
+                "frame_length": {
+                    "policy": "minimum_feasible",
+                    "maximum_frame_slots": model["profiles"]["nominal"][
+                        "max_tdm_ratio"
+                    ],
+                    "selected_frame_slots": application[
+                        "observed_max_tdm_ratio"
+                    ],
+                },
                 "completed_phases": list(range(1, 8)),
                 "checks": {
                     "macro_cycle_equivalence": "pass",
@@ -407,7 +416,7 @@ class CalibratedPlatformTest(unittest.TestCase):
                 }
             specifications.append(item)
         family = {
-            "schema": "emuflow.calibrated-platform-family/v1",
+            "schema": "emuflow.calibrated-platform-family/v2",
             "family": {
                 "name": "synthetic-qualified-family",
                 "description": "unit test",
@@ -439,6 +448,9 @@ class CalibratedPlatformTest(unittest.TestCase):
             expected_platform = materialize_calibrated_boarddb(
                 model, configuration, "nominal"
             )["platform"]["name"]
+            maximum_frame_slots = model["profiles"]["nominal"][
+                "max_tdm_ratio"
+            ]
             qor = {
                 "schema": "emuflow.qor-report/v4",
                 "status": "pass",
@@ -470,6 +482,47 @@ class CalibratedPlatformTest(unittest.TestCase):
             self._write_json(qor_path, qor)
             flow = {
                 "physical": {"execution": {"seed": 1}},
+                "frame_search": {
+                    "schema": "emuflow.frame-search/v4",
+                    "status": "pass",
+                    "maximum_frame_slots": maximum_frame_slots,
+                    "selected_frame_slots": 2,
+                    "evaluated_candidates": 2,
+                    "selected_candidate": "frame-00000002",
+                    "speedup_over_maximum": maximum_frame_slots / 2,
+                    "attempts": [
+                        {
+                            "frame_slots": 2,
+                            "status": "feasible",
+                            "completion_slot": 0,
+                            "route_dir": "frame-00000002/system-route",
+                            "tdm_dir": "frame-00000002/tdm",
+                        },
+                        {
+                            "frame_slots": maximum_frame_slots,
+                            "status": "feasible",
+                            "completion_slot": 0,
+                            "route_dir": (
+                                f"frame-{maximum_frame_slots:08d}"
+                                "/system-route"
+                            ),
+                            "tdm_dir": (
+                                f"frame-{maximum_frame_slots:08d}"
+                                "/tdm"
+                            ),
+                        },
+                    ],
+                    "configuration": {
+                        "ratio_max_iterations": 1,
+                        "max_ratio": None,
+                        "ratio_quantum": 1,
+                        "post_refinement_iterations": 1,
+                        "slot_refinement_iterations": 0,
+                        "tdm_provider": None,
+                        "ratio_convergence": 1.0e-9,
+                        "simulation_frames": 1,
+                    },
+                },
                 "stages": {"tdm": {"validation": {"status": "pass"}}},
                 "artifacts": {
                     "qor_report": {
@@ -501,6 +554,16 @@ class CalibratedPlatformTest(unittest.TestCase):
                     output_path=root / "acceptance.json",
                 )
                 self.assertEqual(acceptance["physical_seed"], 1)
+                self.assertEqual(
+                    acceptance["frame_length"],
+                    {
+                        "policy": "minimum_feasible",
+                        "maximum_frame_slots": model["profiles"]["nominal"][
+                            "max_tdm_ratio"
+                        ],
+                        "selected_frame_slots": 2,
+                    },
+                )
                 self.assertEqual(acceptance["timing"]["wns_ns"], -2.5)
                 self.assertEqual(
                     acceptance["qor_report_sha256"],
@@ -625,7 +688,7 @@ class CalibratedPlatformTest(unittest.TestCase):
                 )
             spec = {
                 "schema": (
-                    "emuflow.calibrated-platform-family-qualification-spec/v1"
+                    "emuflow.calibrated-platform-family-qualification-spec/v2"
                 ),
                 "family": {
                     "name": "qualified-synthetic-family",
@@ -676,6 +739,11 @@ class CalibratedPlatformTest(unittest.TestCase):
                 family_path, self._demand(1499)
             )
             self.assertEqual(small["selected_specification"], "tier-1")
+            self.assertEqual(
+                small["selected_frame_length_policy"], "minimum_feasible"
+            )
+            self.assertEqual(small["selected_maximum_frame_slots"], 4)
+            self.assertEqual(small["candidates"][0]["maximum_frame_slots"], 4)
             self.assertEqual(len(boarddb["fpgas"]), 2)
             self.assertEqual(len(timing["links"]), 2)
             medium, boarddb, _ = select_calibrated_platform(
@@ -800,6 +868,21 @@ class CalibratedPlatformTest(unittest.TestCase):
             family["specifications"][1]["configuration"] = "2fpga-p2p"
             self._write_json(family_path, family)
             with self.assertRaisesRegex(ValidationError, "independently calibrated"):
+                load_calibrated_platform_family(family_path)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            family_path = self._family_fixture(root)
+            full_path = root / "full-1.json"
+            full = json.loads(full_path.read_text())
+            full["frame_length"]["maximum_frame_slots"] -= 1
+            self._write_json(full_path, full)
+            family = json.loads(family_path.read_text())
+            family["specifications"][0]["evidence"][
+                "full_flow_acceptance"
+            ]["sha256"] = hashlib.sha256(full_path.read_bytes()).hexdigest()
+            self._write_json(family_path, family)
+            with self.assertRaisesRegex(ValidationError, "calibrated TDM domain"):
                 load_calibrated_platform_family(family_path)
 
     def test_resource_measurement_expands_only_reachable_hierarchy(self):

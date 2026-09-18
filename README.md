@@ -4323,7 +4323,7 @@ profile, utilization limit, blind holdout, application holdout, and full-flow
 acceptance. The command copies the compact artifacts, computes every digest,
 and runs the same independent family admission checks used by selection. A
 failed tier leaves no partial output directory. The public input contract is
-`emuflow.calibrated-platform-family-qualification-spec/v1`.
+`emuflow.calibrated-platform-family-qualification-spec/v2`.
 
 ```sh
 emuflow platform calibrated-family-select \
@@ -4352,8 +4352,13 @@ emuflow platform calibrated-full-flow-acceptance \
 The producer independently requires all Phase 1--7 stage summaries, the exact
 calibrated platform identity, physical seed 1, zero macro-cycle mismatches,
 legal TDM scheduling, zero DRC/unrouted violations, complete original-path
-coverage, and standalone whole-design OpenSTA.  It seals both the canonical
-flow report and QoR report SHA-256 values before scratch cleanup.
+coverage, and standalone whole-design OpenSTA. The flow must use the selected
+profile's calibrated `max_tdm_ratio` as the `--frame-slots` upper bound and
+enable `--optimize-frame-slots`. Admission seals both that calibrated bound and
+the independently proven minimum feasible frame; the generic 32-slot route
+default and an application holdout's observed ratio are not platform
+operating-point substitutes. It seals both the canonical flow report and QoR
+report SHA-256 values before scratch cleanup.
 
 The selector chooses the lowest explicit qualified service tier whose
 aggregate effective LUT/FF/BRAM/DSP capacity fits the mapped design demand. It
@@ -4361,13 +4366,15 @@ is intentionally only a pre-partition capacity filter. It neither predicts
 balance nor fabricates traffic; Phase 3 per-FPGA legality and the calibrated
 post-partition communication-envelope check remain authoritative. The family,
 demand, selection, and full-flow evidence contracts are respectively
-`emuflow.calibrated-platform-family/v1`,
+`emuflow.calibrated-platform-family/v2`,
 `emuflow.calibrated-platform-design-demand/v1`,
-`emuflow.calibrated-platform-selection/v1`, and
-`emuflow.calibrated-platform-full-flow-acceptance/v1`.
+`emuflow.calibrated-platform-selection/v2`, and
+`emuflow.calibrated-platform-full-flow-acceptance/v2`.
 The selected utilization limit is returned in the selection report and is used
 when materializing BoardDB capacity; it never silently reverts to the model
-maximum.
+maximum. The report also returns `selected_frame_length_policy` and
+`selected_maximum_frame_slots`; a complete flow consumes them as
+`--optimize-frame-slots` and `--frame-slots`, respectively.
 
 An explicit lower `--utilization-limit` may be used for a capacity-stressed
 qualification run. It cannot exceed the model's declared loading policy, and

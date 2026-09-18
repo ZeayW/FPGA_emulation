@@ -26,17 +26,18 @@ from .calibrated_platform import (
     validate_calibrated_platform_model,
 )
 from .errors import ValidationError
+from .frame_search import validate_frame_search_report
 from .io import read_json, write_json
 from .multi_fpga_flow import validate_multi_fpga_flow_report
 from .runtime import QOR_REPORT_SCHEMA
 
 
-FAMILY_SCHEMA = "emuflow.calibrated-platform-family/v1"
+FAMILY_SCHEMA = "emuflow.calibrated-platform-family/v2"
 DEMAND_SCHEMA = "emuflow.calibrated-platform-design-demand/v1"
-SELECTION_SCHEMA = "emuflow.calibrated-platform-selection/v1"
-FULL_FLOW_SCHEMA = "emuflow.calibrated-platform-full-flow-acceptance/v1"
+SELECTION_SCHEMA = "emuflow.calibrated-platform-selection/v2"
+FULL_FLOW_SCHEMA = "emuflow.calibrated-platform-full-flow-acceptance/v2"
 QUALIFICATION_SPEC_SCHEMA = (
-    "emuflow.calibrated-platform-family-qualification-spec/v1"
+    "emuflow.calibrated-platform-family-qualification-spec/v2"
 )
 _PROFILES = {"conservative", "nominal", "aggressive"}
 _RESOURCES = {"lut", "ff", "bram", "dsp"}
@@ -131,6 +132,7 @@ def validate_full_flow_acceptance(value: Mapping[str, Any]) -> Dict[str, Any]:
             "workload",
             "workload_sha256",
             "physical_seed",
+            "frame_length",
             "completed_phases",
             "checks",
             "timing",
@@ -201,6 +203,32 @@ def validate_full_flow_acceptance(value: Mapping[str, Any]) -> Dict[str, Any]:
     )
     if physical_seed != 1:
         raise ValidationError("full-flow acceptance requires physical seed 1")
+    frame_length = _mapping(
+        root.get("frame_length"), "full-flow acceptance.frame_length"
+    )
+    _reject_unknown(
+        frame_length,
+        {"policy", "maximum_frame_slots", "selected_frame_slots"},
+        "full-flow acceptance.frame_length",
+    )
+    if frame_length.get("policy") != "minimum_feasible":
+        raise ValidationError(
+            "full-flow acceptance requires minimum-feasible frame search"
+        )
+    maximum_frame_slots = _integer(
+        frame_length.get("maximum_frame_slots"),
+        "full-flow acceptance.maximum_frame_slots",
+        minimum=2,
+    )
+    selected_frame_slots = _integer(
+        frame_length.get("selected_frame_slots"),
+        "full-flow acceptance.selected_frame_slots",
+        minimum=2,
+    )
+    if selected_frame_slots > maximum_frame_slots:
+        raise ValidationError(
+            "full-flow acceptance selected frame exceeds calibrated maximum"
+        )
     return {
         "schema": FULL_FLOW_SCHEMA,
         "status": "pass",
@@ -226,6 +254,11 @@ def validate_full_flow_acceptance(value: Mapping[str, Any]) -> Dict[str, Any]:
             root.get("workload_sha256"), "full-flow acceptance.workload_sha256"
         ),
         "physical_seed": physical_seed,
+        "frame_length": {
+            "policy": "minimum_feasible",
+            "maximum_frame_slots": maximum_frame_slots,
+            "selected_frame_slots": selected_frame_slots,
+        },
         "completed_phases": phases,
         "checks": {
             "macro_cycle_equivalence": "pass",
@@ -290,6 +323,25 @@ def build_full_flow_acceptance_files(
     flow_validation = validate_multi_fpga_flow_report(dict(flow_report))
     if flow_validation.get("physical_status") != "pass":
         raise ValidationError("full-flow acceptance requires completed Phase 7")
+
+    frame_search = _mapping(
+        flow_report.get("frame_search"), "full-flow frame search"
+    )
+    frame_validation = validate_frame_search_report(dict(frame_search))
+    maximum_frame_slots = _integer(
+        frame_search.get("maximum_frame_slots"),
+        "full-flow frame-search maximum_frame_slots",
+        minimum=2,
+    )
+    calibrated_maximum = _integer(
+        model["profiles"][profile].get("max_tdm_ratio"),
+        f"full-flow model profiles.{profile}.max_tdm_ratio",
+        minimum=2,
+    )
+    if maximum_frame_slots != calibrated_maximum:
+        raise ValidationError(
+            "full-flow frame search must use the calibrated TDM maximum"
+        )
 
     expected_boarddb = materialize_calibrated_boarddb(
         model,
@@ -394,6 +446,13 @@ def build_full_flow_acceptance_files(
             "workload": _string(workload, "full-flow workload"),
             "workload_sha256": _file_sha256(workload_path),
             "physical_seed": seed,
+            "frame_length": {
+                "policy": "minimum_feasible",
+                "maximum_frame_slots": maximum_frame_slots,
+                "selected_frame_slots": frame_validation[
+                    "selected_frame_slots"
+                ],
+            },
             "completed_phases": list(range(1, 8)),
             "checks": {
                 "macro_cycle_equivalence": "pass",
@@ -498,6 +557,24 @@ def _validate_evidence(
         )
     ):
         raise ValidationError("family full-flow evidence identity does not match")
+    calibrated_maximum = _integer(
+        model["profiles"][profile].get("max_tdm_ratio"),
+        f"family model profiles.{profile}.max_tdm_ratio",
+        minimum=2,
+    )
+    if full_flow["frame_length"]["maximum_frame_slots"] != calibrated_maximum:
+        raise ValidationError(
+            "family full-flow evidence did not search the calibrated TDM domain"
+        )
+    observed_ratio = _integer(
+        application.get("observed_max_tdm_ratio"),
+        "family application holdout observed_max_tdm_ratio",
+        minimum=1,
+    )
+    if observed_ratio > calibrated_maximum:
+        raise ValidationError(
+            "family application holdout exceeds the calibrated TDM domain"
+        )
     return normalized
 
 
@@ -948,6 +1025,11 @@ def select_calibrated_platform(
             "effective_capacity_per_fpga": effective_per_fpga,
             "required_fpgas_by_resource": required,
             "resource_prefilter_pass": feasible,
+            "maximum_frame_slots": _integer(
+                profile.get("max_tdm_ratio"),
+                f"family specification {specification['id']!r} max_tdm_ratio",
+                minimum=2,
+            ),
         }
         candidates.append(candidate)
         if feasible and selected is None:
@@ -965,6 +1047,20 @@ def select_calibrated_platform(
         "selected_profile": selected["profile"] if selected else None,
         "selected_utilization_limit": (
             selected["utilization_limit"] if selected else None
+        ),
+        "selected_frame_length_policy": (
+            "minimum_feasible" if selected else None
+        ),
+        "selected_maximum_frame_slots": (
+            _integer(
+                loaded[selected["id"]]["model"]["profiles"][
+                    selected["profile"]
+                ].get("max_tdm_ratio"),
+                "selected calibrated max_tdm_ratio",
+                minimum=2,
+            )
+            if selected
+            else None
         ),
         "candidates": candidates,
         "qualification_boundary": (
