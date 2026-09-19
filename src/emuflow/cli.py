@@ -185,6 +185,10 @@ from .rapidwright_provider import (
     validate_rapidwright_provider_manifest,
 )
 from .xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
+from .xilinx_placement import (
+    place_xilinx_clusters,
+    validate_xilinx_placement,
+)
 from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from .experiment_partition import (
     run_partition_checkpoint,
@@ -2642,6 +2646,29 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_validate_xilinx_packing.add_argument("--packed", type=Path, required=True)
     arch_validate_xilinx_packing.add_argument("--architecture", type=Path)
     arch_validate_xilinx_packing.add_argument("--top")
+    arch_place_xilinx = arch_subparsers.add_parser(
+        "place-xilinx",
+        help="legalize packed UltraScale+ clusters onto exact physical sites",
+    )
+    arch_place_xilinx.add_argument("--packed", type=Path, required=True)
+    arch_place_xilinx.add_argument("--architecture", type=Path, required=True)
+    arch_place_xilinx.add_argument("--guidance", type=Path)
+    arch_place_xilinx.add_argument("--constraints", type=Path)
+    arch_place_xilinx.add_argument("--output", "-o", type=Path, required=True)
+    arch_validate_xilinx_placement = arch_subparsers.add_parser(
+        "validate-xilinx-placement",
+        help="independently validate exact UltraScale+ site/BEL placement",
+    )
+    arch_validate_xilinx_placement.add_argument(
+        "--packed", type=Path, required=True
+    )
+    arch_validate_xilinx_placement.add_argument(
+        "--architecture", type=Path, required=True
+    )
+    arch_validate_xilinx_placement.add_argument(
+        "--placement", type=Path, required=True
+    )
+    arch_validate_xilinx_placement.add_argument("--constraints", type=Path)
     arch_capacity_fpgaif = arch_subparsers.add_parser(
         "check-capacity",
         help="check EmuIR primitive support and BEL capacity",
@@ -5052,6 +5079,21 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.packed,
                 top=args.top,
                 architecture_path=args.architecture,
+            )
+        elif args.arch_command == "place-xilinx":
+            report = place_xilinx_clusters(
+                args.packed,
+                args.architecture,
+                args.output,
+                guidance_path=args.guidance,
+                constraints_path=args.constraints,
+            )
+        elif args.arch_command == "validate-xilinx-placement":
+            report = validate_xilinx_placement(
+                args.packed,
+                args.architecture,
+                args.placement,
+                constraints_path=args.constraints,
             )
         elif args.arch_command == "check-capacity":
             architecture = ArchitectureDB.load(args.arch)

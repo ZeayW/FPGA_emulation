@@ -4177,10 +4177,30 @@ emuflow arch validate-xilinx-packing \
   --mapped-json build/xilinx/mapped.json \
   --packed build/xilinx/packed-sites.json \
   --architecture /external/xcvu19p.architecture.json
+emuflow arch place-xilinx \
+  --packed build/xilinx/packed-sites.json \
+  --architecture /external/xcvu19p.architecture.json \
+  --guidance build/xilinx/global-guidance.json \
+  --constraints build/xilinx/placement-constraints.json \
+  --output build/xilinx/placement.json
+emuflow arch validate-xilinx-placement \
+  --packed build/xilinx/packed-sites.json \
+  --architecture /external/xcvu19p.architecture.json \
+  --constraints build/xilinx/placement-constraints.json \
+  --placement build/xilinx/placement.json
 ```
 
 The packed artifact contains cell ownership and compact constraints only; it
 does not copy vendor device data or a routing graph into the repository. This
+feeds a deterministic first-party exact site/BEL legalizer. Global-placement
+guidance is a cost input only: it cannot waive site compatibility, fixed-site,
+SLR, clock-region, non-overlap, or dedicated-cascade constraints. Cascade
+chains are placed on consecutive physical X/Y sites, while the independent
+checker reloads the ArchitectureDB and recomputes every ownership, BEL,
+constraint, overlap, and cascade decision. The result is a compact placement
+certificate and never embeds vendor device records. OpenPARF supplies global
+guidance only; it is not treated as the exact UltraScale+ legalizer.
+This
 profile remains opt-in until placement, RWRoute, timing, and complete
 small/medium Phase 1--7 acceptance gates pass; it does not silently replace
 the current default.

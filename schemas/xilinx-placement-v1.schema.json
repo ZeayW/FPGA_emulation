@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.org/schemas/xilinx-placement-v1.schema.json",
+  "title": "EmuFlow exact Xilinx site placement",
+  "type": "object",
+  "required": ["schema", "status", "part", "provider", "source", "clusters", "summary"],
+  "properties": {
+    "schema": {"const": "emuflow.xilinx-placement/v1"},
+    "status": {"const": "pass"},
+    "part": {"type": "string", "minLength": 1},
+    "provider": {"const": "emuflow-xilinx-exact-site-legalizer-v1"},
+    "source": {
+      "type": "object",
+      "required": ["packed_sha256", "architecture_sha256"],
+      "properties": {
+        "packed_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "architecture_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "guidance_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "constraints_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "clusters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["cluster", "site", "site_type", "x", "y", "fixed", "assignments"],
+        "properties": {
+          "cluster": {"type": "string", "minLength": 1},
+          "site": {"type": "string", "minLength": 1},
+          "site_type": {"type": "string", "minLength": 1},
+          "x": {"type": "integer", "minimum": 0},
+          "y": {"type": "integer", "minimum": 0},
+          "fixed": {"type": "boolean"},
+          "physical_region": {"type": ["object", "null"]},
+          "assignments": {"type": "array", "items": {"type": "object"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {"type": "object"}
+  },
+  "additionalProperties": false
+}
