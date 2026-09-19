@@ -10,6 +10,7 @@
     "release",
     "device",
     "fpga_interchange",
+    "rapidwright_device_database",
     "license",
     "expected_physical_resources",
     "resource_evidence"
@@ -56,6 +57,18 @@
         },
         "schema_license": {"const": "Apache-2.0"},
         "generator_class": {"type": "string", "minLength": 1}
+      }
+    },
+    "rapidwright_device_database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource", "md5", "redistribution"],
+      "properties": {
+        "resource": {"type": "string", "minLength": 1},
+        "md5": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "redistribution": {
+          "const": "external-dependency-not-redistributed"
+        }
       }
     },
     "license": {

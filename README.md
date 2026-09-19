@@ -4104,19 +4104,32 @@ Route A fixes the research device identity to
 (`v2026.1.0-beta`, commit
 `127f55cd704c277372697e699f1559e1cdc91f34`). The checked-in provider
 manifest records public DS890 resource evidence, but it contains no generated
-Xilinx device database. The importer rejects a mismatched device, package,
-speed grade, temperature grade, generator revision, package grade, resource
-inventory, or routing-graph reference. It never silently substitutes another
-part.
+Xilinx device database. XCVU19P uses a deliberately split provider contract:
+the compact DeviceResources file generated with `--skip_route_resources`
+provides package, site, BEL, and primitive compatibility; RWRoute reads the
+same pinned RapidWright native device database directly; and a first-party
+streaming checker walks every native wire, node membership, and PIP once to
+produce a sub-kilobyte route-resource certificate. This avoids duplicating a
+billion-PIP graph in ArchitectureDB or Python while preserving the exact graph
+used by routing. The importer rejects a mismatched device, package, speed
+grade, temperature grade, generator revision, package grade, native database
+MD5, certificate digest, resource inventory, or routing-graph reference. It
+never silently substitutes another part or falls back to an academic device.
 
 The provider and a generated device can be checked explicitly:
 
 ```bash
 emuflow arch validate-rapidwright-provider \
   resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json
-emuflow arch import-rapidwright-device xcvu19p.device \
+PYTHONPATH=src python3 scripts/rapidwright/export_route_resource_certificate.py \
+  --rapidwright-jar /external/rapidwright-2026.1.0-standalone-lin64.jar \
   --provider-manifest \
   resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json \
+  --output /external/xcvu19p.route-certificate.json
+emuflow arch import-rapidwright-device /external/xcvu19p-no-route.device \
+  --provider-manifest \
+  resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json \
+  --route-certificate /external/xcvu19p.route-certificate.json \
   --output xcvu19p.architecture.json
 emuflow arch validate-rapidwright-device \
   --arch xcvu19p.architecture.json \
@@ -4124,8 +4137,11 @@ emuflow arch validate-rapidwright-device \
   resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json
 ```
 
-`xcvu19p.device`, the imported ArchitectureDB, and physical-region sidecars
-are external run artifacts and must not be committed. RapidWright and its
+The no-route `.device`, route certificate, imported ArchitectureDB, native
+RapidWright database, and physical-region sidecars are external run artifacts
+and must not be committed. The certificate contains counts, hashes, and a
+pass/fail result only; it contains no routing graph or vendor device records.
+RapidWright and its
 Xilinx device data are therefore a mixed-license architecture/route-data
 provider around first-party EmuFlow contracts; they do not make Route A a
 fully open single-FPGA backend. Route A is not promoted to the default physical

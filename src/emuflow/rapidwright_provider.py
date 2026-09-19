@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -13,12 +14,16 @@ from .fpga_interchange import (
     run_fpga_interchange_architecture_import,
     validate_fpga_interchange_architecture,
 )
-from .io import read_json
+from .io import read_json, write_json
 from .physical_regions import validate_fpga_interchange_architecture_regions
 
 
 RAPIDWRIGHT_PROVIDER_SCHEMA = "emuflow.rapidwright-device-provider/v1"
 RAPIDWRIGHT_PROVIDER_ID = "rapidwright-xilinx-device-v1"
+RAPIDWRIGHT_ROUTE_CERTIFICATE_SCHEMA = (
+    "emuflow.rapidwright-route-resource-certificate/v1"
+)
+RAPIDWRIGHT_ROUTE_BACKEND = "rapidwright-native-device-database-v1"
 RAPIDWRIGHT_GENERATOR_QUALIFICATION = "mixed-license-external"
 _SUPPORTED_LICENSE_QUALIFICATION = {
     "source_code": "Apache-2.0",
@@ -34,6 +39,13 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _canonical_sha256(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _string(value: Any, context: str) -> str:
@@ -119,6 +131,31 @@ def validate_rapidwright_provider_manifest(
         interchange.get("generator_class"),
         "manifest.fpga_interchange.generator_class",
     )
+    native_database = manifest.get("rapidwright_device_database")
+    if not isinstance(native_database, dict):
+        raise ValidationError(
+            "manifest.rapidwright_device_database is missing"
+        )
+    database_resource = _string(
+        native_database.get("resource"),
+        "manifest.rapidwright_device_database.resource",
+    )
+    database_md5 = _string(
+        native_database.get("md5"),
+        "manifest.rapidwright_device_database.md5",
+    ).lower()
+    if len(database_md5) != 32 or any(
+        character not in "0123456789abcdef" for character in database_md5
+    ):
+        raise ValidationError(
+            "manifest.rapidwright_device_database.md5: expected MD5 hex"
+        )
+    if native_database.get("redistribution") != (
+        "external-dependency-not-redistributed"
+    ):
+        raise ValidationError(
+            "manifest.rapidwright_device_database.redistribution is invalid"
+        )
 
     license_contract = manifest.get("license")
     if not isinstance(license_contract, dict):
@@ -171,12 +208,198 @@ def validate_rapidwright_provider_manifest(
         "device_identity": identity,
         "schema_revision": schema_revision,
         "generator_class": generator_class,
+        "device_database_resource": database_resource,
+        "device_database_md5": database_md5,
         "license_qualification": RAPIDWRIGHT_GENERATOR_QUALIFICATION,
         "expected_physical_resources": dict(
             sorted(normalized_resources.items())
         ),
         "resource_evidence": normalized_evidence,
     }
+
+
+def validate_rapidwright_route_certificate(
+    certificate: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path,
+) -> Dict[str, Any]:
+    """Validate a compact certificate for RapidWright's native route graph."""
+    checked_manifest = validate_rapidwright_provider_manifest(manifest)
+    if certificate.get("schema") != RAPIDWRIGHT_ROUTE_CERTIFICATE_SCHEMA:
+        raise ValidationError(
+            "RapidWright route certificate schema is invalid"
+        )
+    payload = certificate.get("payload")
+    if not isinstance(payload, dict):
+        raise ValidationError(
+            "RapidWright route certificate payload is missing"
+        )
+    payload_sha256 = _string(
+        certificate.get("payload_sha256"),
+        "route_certificate.payload_sha256",
+    ).lower()
+    if payload_sha256 != _canonical_sha256(payload):
+        raise ValidationError("RapidWright route certificate digest mismatch")
+
+    expected_strings = {
+        "device": checked_manifest["device_identity"]["device"],
+        "full_part": checked_manifest["part"],
+        "device_database_md5": checked_manifest["device_database_md5"],
+        "provider_manifest_sha256": _sha256(manifest_path),
+        "route_backend": RAPIDWRIGHT_ROUTE_BACKEND,
+        "timing_qualification": (
+            "not-encoded-rwroute-native-device-database"
+        ),
+    }
+    for field, expected in expected_strings.items():
+        if payload.get(field) != expected:
+            raise ValidationError(
+                f"RapidWright route certificate field {field!r} does not "
+                "match the provider manifest"
+            )
+    generator = payload.get("generator")
+    if not isinstance(generator, dict) or generator != {
+        "revision": checked_manifest["revision"],
+        "version": checked_manifest["version"],
+    }:
+        raise ValidationError(
+            "RapidWright route certificate generator identity is invalid"
+        )
+    integrity = payload.get("reference_integrity")
+    if integrity != {
+        "errors": 0,
+        "route_resources_present": True,
+        "status": "pass",
+    }:
+        raise ValidationError(
+            "RapidWright route certificate reference integrity failed"
+        )
+    counts = payload.get("resource_counts")
+    required_counts = {
+        "all_sites",
+        "all_tiles",
+        "node_wire_memberships",
+        "nodes",
+        "pips",
+        "site_types",
+        "tile_types",
+        "wires",
+        "wires_unaccounted",
+        "wires_without_node",
+    }
+    if not isinstance(counts, dict) or set(counts) != required_counts:
+        raise ValidationError(
+            "RapidWright route certificate resource counts are incomplete"
+        )
+    for field in sorted(required_counts):
+        value = counts[field]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            or (
+                field not in {"wires_without_node", "wires_unaccounted"}
+                and value == 0
+            )
+        ):
+            raise ValidationError(
+                f"route_certificate.resource_counts.{field}: invalid count"
+            )
+    if (
+        counts["node_wire_memberships"]
+        + counts["wires_without_node"]
+        + counts["wires_unaccounted"]
+        != counts["wires"]
+    ):
+        raise ValidationError(
+            "RapidWright route certificate does not account for every wire"
+        )
+    return {
+        "status": "pass",
+        "schema": RAPIDWRIGHT_ROUTE_CERTIFICATE_SCHEMA,
+        "payload_sha256": payload_sha256,
+        "resource_counts": dict(sorted(counts.items())),
+        "route_backend": RAPIDWRIGHT_ROUTE_BACKEND,
+        "timing_qualification": payload["timing_qualification"],
+    }
+
+
+def load_rapidwright_route_certificate(
+    path: Path,
+    manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    value = read_json(path)
+    if not isinstance(value, dict):
+        raise ValidationError(
+            "RapidWright route certificate must be an object"
+        )
+    checked = validate_rapidwright_route_certificate(
+        value, manifest, manifest_path=manifest_path
+    )
+    return value, checked
+
+
+def bind_rapidwright_route_certificate(
+    architecture: ArchitectureDB,
+    certificate: Mapping[str, Any],
+    checked_certificate: Mapping[str, Any],
+    *,
+    certificate_path: Path,
+) -> ArchitectureDB:
+    """Bind an independently checked native route graph to ArchitectureDB."""
+    value = architecture.to_dict()
+    static_counts = value.get("routing_resource_counts")
+    if not isinstance(static_counts, dict):
+        raise ValidationError(
+            "ArchitectureDB static resource counts are missing"
+        )
+    route_counts = checked_certificate["resource_counts"]
+    for route_field, static_field in (
+        ("all_tiles", "all_tiles"),
+        ("site_types", "site_types"),
+        ("tile_types", "tile_types"),
+    ):
+        if route_counts[route_field] != static_counts.get(static_field):
+            raise ValidationError(
+                "RapidWright route certificate does not match the static "
+                f"DeviceResources count {static_field!r}"
+            )
+    value["routing_resource_counts"] = {
+        **static_counts,
+        **dict(route_counts),
+    }
+    value["routing_reference_integrity"] = {
+        "status": "pass",
+        "route_resources_present": True,
+        "route_timings_present": False,
+        "site_types": route_counts["site_types"],
+        "tile_types": route_counts["tile_types"],
+        "tiles": route_counts["all_tiles"],
+        "wires": route_counts["wires"],
+        "nodes": route_counts["nodes"],
+        "pips": route_counts["pips"],
+        "node_wire_memberships": route_counts["node_wire_memberships"],
+        "wires_unaccounted": route_counts["wires_unaccounted"],
+        "wires_without_node_membership": route_counts[
+            "wires_without_node"
+        ],
+    }
+    value["routing_resource_provider"] = {
+        "mode": RAPIDWRIGHT_ROUTE_BACKEND,
+        "certificate_schema": RAPIDWRIGHT_ROUTE_CERTIFICATE_SCHEMA,
+        "certificate_sha256": _sha256(certificate_path),
+        "certificate_payload_sha256": checked_certificate["payload_sha256"],
+        "device_database_md5": certificate["payload"][
+            "device_database_md5"
+        ],
+        "timing_qualification": checked_certificate[
+            "timing_qualification"
+        ],
+    }
+    return ArchitectureDB(value)
 
 
 def load_rapidwright_provider_manifest(path: Path) -> Dict[str, Any]:
@@ -240,10 +463,43 @@ def validate_rapidwright_architecture(
             "RapidWright ArchitectureDB is bound to a different provider manifest"
         )
 
+    route_provider = architecture.value.get("routing_resource_provider")
+    if not isinstance(route_provider, dict):
+        raise ValidationError(
+            "RapidWright ArchitectureDB native route provider is missing"
+        )
+    if route_provider.get("mode") != RAPIDWRIGHT_ROUTE_BACKEND:
+        raise ValidationError(
+            "RapidWright ArchitectureDB native route backend is invalid"
+        )
+    if route_provider.get("device_database_md5") != checked_manifest[
+        "device_database_md5"
+    ]:
+        raise ValidationError(
+            "RapidWright ArchitectureDB is bound to a different device database"
+        )
+
     slots = architecture.summary()["cell_slots"]
+    # DS890's CLB register count excludes the dedicated Laguna crossing
+    # registers.  FPGA Interchange correctly exposes those BELs as FDRE-
+    # compatible, so a device-wide compatible-cell sum is intentionally
+    # larger than CLB_FF.  Count only SLICEL/SLICEM for the data-sheet CLB
+    # inventory check while retaining Laguna sites in the exact device model.
+    slice_slots: Dict[str, int] = {}
+    templates = architecture.value.get("site_templates", {})
+    for site in architecture.value["sites"]:
+        if site.get("type") not in {"SLICEL", "SLICEM"}:
+            continue
+        bels = site.get("bels")
+        if bels is None:
+            template = templates.get(site.get("template"), {})
+            bels = template.get("bels", [])
+        for bel in bels:
+            for cell in bel.get("compatible_cells", []):
+                slice_slots[cell] = slice_slots.get(cell, 0) + 1
     observed_resources = {
-        "CLB_LUT": slots.get("LUT6", 0),
-        "CLB_FF": slots.get("FDRE", 0),
+        "CLB_LUT": slice_slots.get("LUT6", 0),
+        "CLB_FF": slice_slots.get("FDRE", 0),
         "CARRY8": slots.get("CARRY8", 0),
         "DSP48E2": slots.get("DSP48E2", 0),
         "RAMB18E2": slots.get("RAMB18E2", 0),
@@ -281,6 +537,7 @@ def run_rapidwright_device_import(
     *,
     input_path: Path,
     provider_manifest_path: Path,
+    route_certificate_path: Path,
     output_path: Path,
     executable: Optional[str] = None,
     log_path: Optional[Path] = None,
@@ -289,6 +546,11 @@ def run_rapidwright_device_import(
     manifest = load_rapidwright_provider_manifest(provider_manifest_path)
     checked = validate_rapidwright_provider_manifest(manifest)
     producer = rapidwright_producer_record(manifest, provider_manifest_path)
+    certificate, checked_certificate = load_rapidwright_route_certificate(
+        route_certificate_path,
+        manifest,
+        manifest_path=provider_manifest_path,
+    )
     report = run_fpga_interchange_architecture_import(
         input_path=input_path,
         part=checked["part"],
@@ -302,9 +564,21 @@ def run_rapidwright_device_import(
         executable=executable,
         log_path=log_path,
     )
-    validation = validate_rapidwright_architecture(
+    architecture = bind_rapidwright_route_certificate(
         ArchitectureDB.load(output_path),
+        certificate,
+        checked_certificate,
+        certificate_path=route_certificate_path,
+    )
+    write_json(output_path, architecture.to_dict())
+    validation = validate_rapidwright_architecture(
+        architecture,
         manifest,
         manifest_path=provider_manifest_path,
     )
-    return {**report, "rapidwright_validation": validation}
+    return {
+        **report,
+        "checker": validation["architecture"],
+        "route_certificate": dict(checked_certificate),
+        "rapidwright_validation": validation,
+    }

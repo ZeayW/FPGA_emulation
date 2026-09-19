@@ -423,7 +423,7 @@
       "upstream": "https://github.com/Xilinx/RapidWright",
       "version_or_revision": "127f55cd704c277372697e699f1559e1cdc91f34 (v2026.1.0-beta)",
       "license": "Apache-2.0 source; external packaged device data is Xilinx-EULA governed",
-      "used_by": "optional Route A DeviceResources, physical metadata, and RWRoute provider"
+      "used_by": "optional Route A no-route DeviceResources, native route graph, physical metadata, and RWRoute provider"
     }
   ],
   "architecture_sources": [

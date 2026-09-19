@@ -109,7 +109,7 @@ an EmuFlow optimization engine.
 | Hummingbird | [microsoft/hummingbird](https://github.com/microsoft/hummingbird) | OpenPARF learned delay/congestion models |
 | NetworkX | [networkx/networkx](https://github.com/networkx/networkx) | OpenPARF utilities |
 | tqdm | [tqdm/tqdm](https://github.com/tqdm/tqdm) | OpenPARF progress reporting |
-| RapidWright | [Xilinx/RapidWright](https://github.com/Xilinx/RapidWright/tree/127f55cd704c277372697e699f1559e1cdc91f34) | Optional Route A DeviceResources generation, physical metadata, and RWRoute; source is Apache-2.0, while packaged Xilinx device data remains Xilinx-EULA governed and external |
+| RapidWright | [Xilinx/RapidWright](https://github.com/Xilinx/RapidWright/tree/127f55cd704c277372697e699f1559e1cdc91f34) | Optional Route A no-route DeviceResources generation, native RWRoute graph, physical metadata, and RWRoute; source is Apache-2.0, while packaged Xilinx device data remains Xilinx-EULA governed and external |
 
 Qt, Doxygen, GoogleTest, CPLEX, VTune, and CUDA are optional upstream build
 features. The default EmuFlow build does not require Qt, Doxygen, CPLEX,
@@ -118,7 +118,9 @@ are deliberately outside the open-source inventory.
 
 RapidWright is also outside the in-tree source closure. The pinned provider
 contract is public and reviewable, but generated device data is never
-redistributed or counted as an open EmuFlow engine.
+redistributed or counted as an open EmuFlow engine. EmuFlow's Apache-2.0
+streaming certificate generator validates the complete native route graph
+without copying it into the repository or ArchitectureDB.
 
 ## Fetchable architecture sources
 

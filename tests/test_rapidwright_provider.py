@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import stat
 import tempfile
@@ -11,8 +12,10 @@ from emuflow.fpga_interchange import architecture_from_fpga_interchange_extract
 from emuflow.io import read_json
 from emuflow.rapidwright_provider import (
     RAPIDWRIGHT_GENERATOR_QUALIFICATION,
+    bind_rapidwright_route_certificate,
     rapidwright_producer_record,
     run_rapidwright_device_import,
+    validate_rapidwright_route_certificate,
     validate_rapidwright_architecture,
     validate_rapidwright_provider_manifest,
 )
@@ -49,6 +52,11 @@ def fixture_manifest() -> dict:
                 "com.xilinx.rapidwright.interchange.DeviceResourcesExample"
             ),
         },
+        "rapidwright_device_database": {
+            "resource": "data/devices/virtexuplus/xcvu3p_db.dat",
+            "md5": "a" * 32,
+            "redistribution": "external-dependency-not-redistributed",
+        },
         "license": {
             "source_code": "Apache-2.0",
             "device_data": "Xilinx-EULA",
@@ -70,6 +78,50 @@ def fixture_manifest() -> dict:
             "url": "https://example.invalid/fixture",
             "table": "fixture resources",
         },
+    }
+
+
+def fixture_route_certificate(manifest_path: Path) -> dict:
+    payload = {
+        "device": "xcvu3p",
+        "device_database_md5": "a" * 32,
+        "full_part": "xcvu3p-ffvc1517-2-e",
+        "generator": {
+            "revision": "1" * 40,
+            "version": "2026.1.0",
+        },
+        "provider_manifest_sha256": hashlib.sha256(
+            manifest_path.read_bytes()
+        ).hexdigest(),
+        "reference_integrity": {
+            "errors": 0,
+            "route_resources_present": True,
+            "status": "pass",
+        },
+        "resource_counts": {
+            "all_sites": 7,
+            "all_tiles": 12,
+            "node_wire_memberships": 8,
+            "nodes": 4,
+            "pips": 6,
+            "site_types": 3,
+            "tile_types": 3,
+            "wires": 10,
+            "wires_unaccounted": 0,
+            "wires_without_node": 2,
+        },
+        "route_backend": "rapidwright-native-device-database-v1",
+        "timing_qualification": (
+            "not-encoded-rwroute-native-device-database"
+        ),
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return {
+        "schema": "emuflow.rapidwright-route-resource-certificate/v1",
+        "payload": payload,
+        "payload_sha256": hashlib.sha256(encoded).hexdigest(),
     }
 
 
@@ -115,9 +167,15 @@ shutil.copyfile(sys.argv[1], sys.argv[2])
             )
             executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
             output = root / "architecture.json"
+            certificate_path = root / "route-certificate.json"
+            certificate_path.write_text(
+                json.dumps(fixture_route_certificate(manifest_path)),
+                encoding="utf-8",
+            )
             report = run_rapidwright_device_import(
                 input_path=EXTRACT,
                 provider_manifest_path=manifest_path,
+                route_certificate_path=certificate_path,
                 output_path=output,
                 executable=str(executable),
             )
@@ -156,10 +214,36 @@ shutil.copyfile(sys.argv[1], sys.argv[2])
                 generator_qualification=RAPIDWRIGHT_GENERATOR_QUALIFICATION,
                 producer=producer,
             )
+            certificate = fixture_route_certificate(manifest_path)
+            checked_certificate = validate_rapidwright_route_certificate(
+                certificate, manifest, manifest_path=manifest_path
+            )
+            certificate_path = Path(temporary) / "route-certificate.json"
+            certificate_path.write_text(
+                json.dumps(certificate), encoding="utf-8"
+            )
+            architecture = bind_rapidwright_route_certificate(
+                architecture,
+                certificate,
+                checked_certificate,
+                certificate_path=certificate_path,
+            )
             checked = validate_rapidwright_architecture(
                 architecture, manifest, manifest_path=manifest_path
             )
             self.assertEqual(checked["status"], "pass")
+
+    def test_tampered_route_certificate_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest_path = Path(temporary) / "provider.json"
+            manifest = fixture_manifest()
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            certificate = fixture_route_certificate(manifest_path)
+            certificate["payload"]["resource_counts"]["pips"] += 1
+            with self.assertRaisesRegex(ValidationError, "digest mismatch"):
+                validate_rapidwright_route_certificate(
+                    certificate, manifest, manifest_path=manifest_path
+                )
 
 
 if __name__ == "__main__":

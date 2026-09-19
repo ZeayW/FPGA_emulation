@@ -137,10 +137,13 @@ def _select_part_package(
                 grade.get("temperature_grade"),
                 f"{grade_context}.temperature_grade",
             )
+            normalized_temperature_grade = temperature_grade.lstrip(
+                "-"
+            ).upper()
             grade_key = (
                 grade_name.lower(),
                 speed_grade.upper(),
-                temperature_grade.upper(),
+                normalized_temperature_grade,
             )
             if grade_key in seen_grades:
                 raise ValidationError(
@@ -149,13 +152,13 @@ def _select_part_package(
             seen_grades.add(grade_key)
             if (
                 speed_grade.upper() == identity["speed_grade"]
-                and temperature_grade.upper()
+                and normalized_temperature_grade
                 == identity["temperature_grade"]
             ):
                 matching_grade = {
                     "name": grade_name,
                     "speed_grade": speed_grade,
-                    "temperature_grade": temperature_grade,
+                    "temperature_grade": normalized_temperature_grade,
                 }
         if normalized_name == identity["package"]:
             if matching_grade is None:

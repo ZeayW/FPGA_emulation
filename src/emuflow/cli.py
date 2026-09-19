@@ -2536,6 +2536,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--provider-manifest", type=Path, required=True
     )
     arch_import_rapidwright.add_argument(
+        "--route-certificate", type=Path, required=True
+    )
+    arch_import_rapidwright.add_argument(
         "--output", "-o", type=Path, required=True
     )
     arch_import_rapidwright.add_argument(
@@ -4931,6 +4934,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             report = run_rapidwright_device_import(
                 input_path=args.input,
                 provider_manifest_path=args.provider_manifest,
+                route_certificate_path=args.route_certificate,
                 output_path=args.output,
                 executable=args.native,
                 log_path=args.log,

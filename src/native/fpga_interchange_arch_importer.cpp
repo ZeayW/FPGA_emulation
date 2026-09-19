@@ -41,6 +41,8 @@ struct ReferenceIntegrity {
   std::uint64_t wires = 0;
   std::uint64_t nodes = 0;
   std::uint64_t pips = 0;
+  std::uint64_t node_wire_memberships = 0;
+  std::uint64_t wires_without_node_membership = 0;
 };
 
 std::string json_escape(const std::string& value) {
@@ -308,7 +310,10 @@ ReferenceIntegrity validate_reference_integrity(
         throw std::runtime_error(
             "DeviceResources tile PIP wire index is out of range");
       }
-      if (pip.getTiming() >= pip_timings.size()) {
+      // RapidWright's DeviceResources writer does not populate the optional
+      // pip timing table.  In that representation the schema-default timing
+      // index is not a dangling reference: timing is simply unqualified.
+      if (pip_timings.size() != 0 && pip.getTiming() >= pip_timings.size()) {
         throw std::runtime_error(
             "DeviceResources tile PIP timing index is out of range");
       }
@@ -371,7 +376,10 @@ ReferenceIntegrity validate_reference_integrity(
   }
   std::vector<std::uint8_t> wire_membership(wires.size(), 0);
   for (const auto node : nodes) {
-    if (node.getNodeTiming() >= node_timings.size()) {
+    // As with PIP timing, an empty optional node timing table means that
+    // physical timing was not encoded by the producer.
+    if (node_timings.size() != 0 &&
+        node.getNodeTiming() >= node_timings.size()) {
       throw std::runtime_error(
           "DeviceResources node timing index is out of range");
     }
@@ -384,13 +392,11 @@ ReferenceIntegrity validate_reference_integrity(
         throw std::runtime_error(
             "DeviceResources wire belongs to multiple nodes");
       }
+      ++result.node_wire_memberships;
     }
   }
-  if (std::find(wire_membership.begin(), wire_membership.end(), 0) !=
-      wire_membership.end()) {
-    throw std::runtime_error(
-        "DeviceResources wire is absent from the node graph");
-  }
+  result.wires_without_node_membership = static_cast<std::uint64_t>(
+      std::count(wire_membership.begin(), wire_membership.end(), 0));
   return result;
 }
 
@@ -673,14 +679,27 @@ void write_extract(const DeviceReader& device, std::ostream& output) {
     }
     output << "]}";
   }
+  const bool route_resources_present =
+      reference_integrity.wires != 0 && reference_integrity.nodes != 0;
+  const bool route_timings_present =
+      device.getPipTimings().size() != 0 ||
+      device.getNodeTimings().size() != 0;
   output << "],\"reference_integrity\":{"
          << "\"status\":\"pass\","
+         << "\"route_resources_present\":"
+         << (route_resources_present ? "true" : "false") << ','
+         << "\"route_timings_present\":"
+         << (route_timings_present ? "true" : "false") << ','
          << "\"site_types\":" << reference_integrity.site_types << ','
          << "\"tile_types\":" << reference_integrity.tile_types << ','
          << "\"tiles\":" << reference_integrity.tiles << ','
          << "\"wires\":" << reference_integrity.wires << ','
          << "\"nodes\":" << reference_integrity.nodes << ','
-         << "\"pips\":" << reference_integrity.pips << "},"
+         << "\"pips\":" << reference_integrity.pips << ','
+         << "\"node_wire_memberships\":"
+         << reference_integrity.node_wire_memberships << ','
+         << "\"wires_without_node_membership\":"
+         << reference_integrity.wires_without_node_membership << "},"
          << "\"resource_counts\":{"
          << "\"all_tiles\":" << device.getTileList().size() << ','
          << "\"tile_types\":" << device.getTileTypeList().size() << ','

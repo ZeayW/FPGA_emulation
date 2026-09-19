@@ -1,3 +1,4 @@
+import copy
 import stat
 import tempfile
 import unittest
@@ -123,6 +124,24 @@ shutil.copyfile(sys.argv[1], sys.argv[2])
                 input_path=EXTRACT,
                 generator="fixture",
             )
+
+    def test_rapidwright_dash_prefixed_temperature_grade_is_normalized(
+        self,
+    ) -> None:
+        extract = copy.deepcopy(read_json(EXTRACT))
+        extract["packages"][0]["grades"][0]["temperature_grade"] = "-e"
+        architecture = architecture_from_fpga_interchange_extract(
+            extract,
+            part="xcvu3p-ffvc1517-2-e",
+            input_path=EXTRACT,
+            generator="RapidWright fixture",
+        )
+        self.assertEqual(
+            architecture.value["source"]["device_identity"][
+                "temperature_grade"
+            ],
+            "E",
+        )
 
     def test_capacity_checker_covers_hard_resources_and_rejects_unknown(self) -> None:
         architecture = architecture_from_fpga_interchange_extract(

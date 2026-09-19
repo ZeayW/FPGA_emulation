@@ -18,6 +18,11 @@
     "schema_license": "Apache-2.0",
     "generator_class": "com.xilinx.rapidwright.interchange.DeviceResourcesExample"
   },
+  "rapidwright_device_database": {
+    "resource": "data/devices/virtexuplus/xcvu19p_db.dat",
+    "md5": "5ad01490fe442f360aa67d7dfe0fa1c3",
+    "redistribution": "external-dependency-not-redistributed"
+  },
   "license": {
     "source_code": "Apache-2.0",
     "device_data": "Xilinx-EULA",
