@@ -4092,13 +4092,45 @@ parser regression fixture. Current placement capacity is deliberately a
 relaxed maximum over mutually exclusive VTR modes. It must not be confused
 with a completed packer.
 
-The optional real-device path compiles
+The Route A real-device path compiles
 `src/native/fpga_interchange_arch_importer.cpp` against the vendored FPGA
 Interchange schema and Cap'n Proto source. A DeviceResources input must declare
 its generator because the schema license does not determine the generator's
 license. RapidWright may generate or compare such input, but its current
 `rapidwright-api-lib` dependency includes Xilinx-EULA-governed material, so it
 is an optional input-generation tool and not an EmuFlow open engine.
+Route A fixes the research device identity to
+`xcvu19p-fsva3824-2-e` and pins RapidWright `2026.1.0`
+(`v2026.1.0-beta`, commit
+`127f55cd704c277372697e699f1559e1cdc91f34`). The checked-in provider
+manifest records public DS890 resource evidence, but it contains no generated
+Xilinx device database. The importer rejects a mismatched device, package,
+speed grade, temperature grade, generator revision, package grade, resource
+inventory, or routing-graph reference. It never silently substitutes another
+part.
+
+The provider and a generated device can be checked explicitly:
+
+```bash
+emuflow arch validate-rapidwright-provider \
+  resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json
+emuflow arch import-rapidwright-device xcvu19p.device \
+  --provider-manifest \
+  resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json \
+  --output xcvu19p.architecture.json
+emuflow arch validate-rapidwright-device \
+  --arch xcvu19p.architecture.json \
+  --provider-manifest \
+  resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json
+```
+
+`xcvu19p.device`, the imported ArchitectureDB, and physical-region sidecars
+are external run artifacts and must not be committed. RapidWright and its
+Xilinx device data are therefore a mixed-license architecture/route-data
+provider around first-party EmuFlow contracts; they do not make Route A a
+fully open single-FPGA backend. Route A is not promoted to the default physical
+backend until Xilinx primitive mapping, packing, placement, RWRoute, independent
+route/timing checks, and complete small and medium Phase 1--7 gates pass.
 Repeated BEL inventories are stored once per site template, keeping real VU9P
 ArchitectureDB artifacts practical while preserving every physical site.
 DSP48E2 and RAM64X1S are recorded as macro resources over their canonical

@@ -178,6 +178,12 @@ from .experiment_upstream import (
     validate_tdm_checkpoint,
     validate_timing_checkpoint,
 )
+from .rapidwright_provider import (
+    load_rapidwright_provider_manifest,
+    run_rapidwright_device_import,
+    validate_rapidwright_architecture,
+    validate_rapidwright_provider_manifest,
+)
 from .experiment_partition import (
     run_partition_checkpoint,
     validate_partition_checkpoint,
@@ -2521,6 +2527,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="explicit comparison override; defaults to the in-tree build",
     )
     arch_import_fpgaif.add_argument("--log", type=Path)
+    arch_import_rapidwright = arch_subparsers.add_parser(
+        "import-rapidwright-device",
+        help="import a RapidWright DeviceResources using a pinned provider manifest",
+    )
+    arch_import_rapidwright.add_argument("input", type=Path)
+    arch_import_rapidwright.add_argument(
+        "--provider-manifest", type=Path, required=True
+    )
+    arch_import_rapidwright.add_argument(
+        "--output", "-o", type=Path, required=True
+    )
+    arch_import_rapidwright.add_argument(
+        "--native",
+        help="explicit comparison override; defaults to the in-tree build",
+    )
+    arch_import_rapidwright.add_argument("--log", type=Path)
     arch_import_vtr = arch_subparsers.add_parser(
         "import-vtr",
         help="import an open VTR academic architecture XML",
@@ -2565,6 +2587,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="independently validate FPGA Interchange ArchitectureDB metadata",
     )
     arch_validate_fpgaif.add_argument("path", type=Path)
+    arch_validate_rapidwright_provider = arch_subparsers.add_parser(
+        "validate-rapidwright-provider",
+        help="validate an exact RapidWright release and device contract",
+    )
+    arch_validate_rapidwright_provider.add_argument("path", type=Path)
+    arch_validate_rapidwright_device = arch_subparsers.add_parser(
+        "validate-rapidwright-device",
+        help="validate an imported device against its RapidWright provider contract",
+    )
+    arch_validate_rapidwright_device.add_argument(
+        "--arch", type=Path, required=True
+    )
+    arch_validate_rapidwright_device.add_argument(
+        "--provider-manifest", type=Path, required=True
+    )
+    arch_validate_rapidwright_device.add_argument(
+        "--require-physical-regions", action="store_true"
+    )
     arch_capacity_fpgaif = arch_subparsers.add_parser(
         "check-capacity",
         help="check EmuIR primitive support and BEL capacity",
@@ -4887,6 +4927,14 @@ def _dispatch(args: argparse.Namespace) -> int:
                 executable=args.native,
                 log_path=args.log,
             )
+        elif args.arch_command == "import-rapidwright-device":
+            report = run_rapidwright_device_import(
+                input_path=args.input,
+                provider_manifest_path=args.provider_manifest,
+                output_path=args.output,
+                executable=args.native,
+                log_path=args.log,
+            )
         elif args.arch_command == "import-vtr":
             if args.reference_placement is not None:
                 if args.width is not None or args.height is not None:
@@ -4925,6 +4973,19 @@ def _dispatch(args: argparse.Namespace) -> int:
         elif args.arch_command == "validate-fpga-interchange":
             architecture = ArchitectureDB.load(args.path)
             report = validate_fpga_interchange_architecture(architecture)
+        elif args.arch_command == "validate-rapidwright-provider":
+            manifest = load_rapidwright_provider_manifest(args.path)
+            report = validate_rapidwright_provider_manifest(manifest)
+        elif args.arch_command == "validate-rapidwright-device":
+            manifest = load_rapidwright_provider_manifest(
+                args.provider_manifest
+            )
+            report = validate_rapidwright_architecture(
+                ArchitectureDB.load(args.arch),
+                manifest,
+                manifest_path=args.provider_manifest,
+                require_physical_regions=args.require_physical_regions,
+            )
         elif args.arch_command == "check-capacity":
             architecture = ArchitectureDB.load(args.arch)
             report = check_ir_architecture_capacity(

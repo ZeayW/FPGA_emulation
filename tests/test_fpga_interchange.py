@@ -10,6 +10,7 @@ from emuflow.fpga_interchange import (
     architecture_from_fpga_interchange_extract,
     check_ir_architecture_capacity,
     run_fpga_interchange_architecture_import,
+    parse_xilinx_part_identity,
     validate_fpga_interchange_architecture,
 )
 from emuflow.io import read_json
@@ -20,6 +21,15 @@ EXTRACT = ROOT / "examples/phase2/fpga_interchange_extract_fixture.json"
 
 
 class FpgaInterchangeArchitectureTest(unittest.TestCase):
+    def test_complete_part_identity_is_required(self) -> None:
+        identity = parse_xilinx_part_identity("xcvu19p-fsva3824-2-e")
+        self.assertEqual(identity["device"], "xcvu19p")
+        self.assertEqual(identity["package"], "fsva3824")
+        self.assertEqual(identity["speed_grade"], "-2")
+        self.assertEqual(identity["temperature_grade"], "E")
+        with self.assertRaisesRegex(Exception, "complete device-package"):
+            parse_xilinx_part_identity("xcvu19p")
+
     def test_extract_maps_soft_logic_and_hard_blocks(self) -> None:
         architecture = architecture_from_fpga_interchange_extract(
             read_json(EXTRACT),
@@ -88,6 +98,30 @@ shutil.copyfile(sys.argv[1], sys.argv[2])
         with self.assertRaisesRegex(Exception, "coordinate transform"):
             validate_fpga_interchange_architecture(
                 ArchitectureDB(architecture)
+            )
+
+    def test_extract_device_package_and_grade_must_match_part(self) -> None:
+        extract = read_json(EXTRACT)
+        with self.assertRaisesRegex(Exception, "extract.device"):
+            architecture_from_fpga_interchange_extract(
+                {**extract, "device": "xcvu9p"},
+                part="xcvu3p-ffvc1517-2-e",
+                input_path=EXTRACT,
+                generator="fixture",
+            )
+        with self.assertRaisesRegex(Exception, "requested package"):
+            architecture_from_fpga_interchange_extract(
+                extract,
+                part="xcvu3p-fsvd1517-2-e",
+                input_path=EXTRACT,
+                generator="fixture",
+            )
+        with self.assertRaisesRegex(Exception, "requested grade"):
+            architecture_from_fpga_interchange_extract(
+                extract,
+                part="xcvu3p-ffvc1517-3-e",
+                input_path=EXTRACT,
+                generator="fixture",
             )
 
     def test_capacity_checker_covers_hard_resources_and_rejects_unknown(self) -> None:

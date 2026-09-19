@@ -109,11 +109,16 @@ an EmuFlow optimization engine.
 | Hummingbird | [microsoft/hummingbird](https://github.com/microsoft/hummingbird) | OpenPARF learned delay/congestion models |
 | NetworkX | [networkx/networkx](https://github.com/networkx/networkx) | OpenPARF utilities |
 | tqdm | [tqdm/tqdm](https://github.com/tqdm/tqdm) | OpenPARF progress reporting |
+| RapidWright | [Xilinx/RapidWright](https://github.com/Xilinx/RapidWright/tree/127f55cd704c277372697e699f1559e1cdc91f34) | Optional Route A DeviceResources generation, physical metadata, and RWRoute; source is Apache-2.0, while packaged Xilinx device data remains Xilinx-EULA governed and external |
 
 Qt, Doxygen, GoogleTest, CPLEX, VTune, and CUDA are optional upstream build
 features. The default EmuFlow build does not require Qt, Doxygen, CPLEX,
 VTune, GUROBI, or CUDA. Vivado and GUROBI are proprietary optional tools and
 are deliberately outside the open-source inventory.
+
+RapidWright is also outside the in-tree source closure. The pinned provider
+contract is public and reviewable, but generated device data is never
+redistributed or counted as an open EmuFlow engine.
 
 ## Fetchable architecture sources
 

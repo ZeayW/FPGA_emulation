@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/rapidwright-device-provider-v1.schema.json",
+  "title": "EmuFlow RapidWright external device provider v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "provider_id",
+    "release",
+    "device",
+    "fpga_interchange",
+    "license",
+    "expected_physical_resources",
+    "resource_evidence"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.rapidwright-device-provider/v1"},
+    "provider_id": {"const": "rapidwright-xilinx-device-v1"},
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "tag", "revision"],
+      "properties": {
+        "version": {"type": "string", "minLength": 1},
+        "tag": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "part",
+        "device",
+        "package",
+        "speed_grade",
+        "temperature_grade"
+      ],
+      "properties": {
+        "part": {"type": "string", "minLength": 1},
+        "device": {"type": "string", "minLength": 1},
+        "package": {"type": "string", "minLength": 1},
+        "speed_grade": {"type": "string", "minLength": 1},
+        "temperature_grade": {"type": "string", "minLength": 1}
+      }
+    },
+    "fpga_interchange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_revision", "schema_license", "generator_class"],
+      "properties": {
+        "schema_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "schema_license": {"const": "Apache-2.0"},
+        "generator_class": {"type": "string", "minLength": 1}
+      }
+    },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_code",
+        "device_data",
+        "runtime",
+        "redistribution",
+        "generated_device_data_committable"
+      ],
+      "properties": {
+        "source_code": {"const": "Apache-2.0"},
+        "device_data": {"const": "Xilinx-EULA"},
+        "runtime": {"const": "mixed-license-external"},
+        "redistribution": {
+          "const": "external-dependency-not-redistributed"
+        },
+        "generated_device_data_committable": {"const": false}
+      }
+    },
+    "expected_physical_resources": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "integer", "minimum": 1}
+    },
+    "resource_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["document", "revision", "url", "table"],
+      "properties": {
+        "document": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "url": {"type": "string", "minLength": 1},
+        "table": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

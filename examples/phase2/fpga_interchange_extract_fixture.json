@@ -13,6 +13,15 @@
       "package_pin_count": 520
     }
   ],
+  "reference_integrity": {
+    "status": "pass",
+    "site_types": 3,
+    "tile_types": 3,
+    "tiles": 12,
+    "wires": 0,
+    "nodes": 0,
+    "pips": 0
+  },
   "resource_counts": {
     "all_tiles": 12,
     "node_timings": 0,

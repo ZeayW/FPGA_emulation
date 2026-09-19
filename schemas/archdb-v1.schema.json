@@ -40,6 +40,27 @@
     },
     "packages": {"type": "array"},
     "routing_resource_counts": {"type": "object"},
+    "routing_reference_integrity": {
+      "type": "object",
+      "required": [
+        "status",
+        "site_types",
+        "tile_types",
+        "tiles",
+        "wires",
+        "nodes",
+        "pips"
+      ],
+      "properties": {
+        "status": {"const": "pass"},
+        "site_types": {"type": "integer", "minimum": 0},
+        "tile_types": {"type": "integer", "minimum": 0},
+        "tiles": {"type": "integer", "minimum": 0},
+        "wires": {"type": "integer", "minimum": 0},
+        "nodes": {"type": "integer", "minimum": 0},
+        "pips": {"type": "integer", "minimum": 0}
+      }
+    },
     "site_templates": {
       "type": "object",
       "additionalProperties": {

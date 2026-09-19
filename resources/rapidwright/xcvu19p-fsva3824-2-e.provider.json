@@ -1,0 +1,42 @@
+{
+  "schema": "emuflow.rapidwright-device-provider/v1",
+  "provider_id": "rapidwright-xilinx-device-v1",
+  "release": {
+    "version": "2026.1.0",
+    "tag": "v2026.1.0-beta",
+    "revision": "127f55cd704c277372697e699f1559e1cdc91f34"
+  },
+  "device": {
+    "part": "xcvu19p-fsva3824-2-e",
+    "device": "xcvu19p",
+    "package": "fsva3824",
+    "speed_grade": "-2",
+    "temperature_grade": "E"
+  },
+  "fpga_interchange": {
+    "schema_revision": "c985b4648e66414b250261c1ba4cbe45a2971b1c",
+    "schema_license": "Apache-2.0",
+    "generator_class": "com.xilinx.rapidwright.interchange.DeviceResourcesExample"
+  },
+  "license": {
+    "source_code": "Apache-2.0",
+    "device_data": "Xilinx-EULA",
+    "runtime": "mixed-license-external",
+    "redistribution": "external-dependency-not-redistributed",
+    "generated_device_data_committable": false
+  },
+  "expected_physical_resources": {
+    "CLB_LUT": 4085760,
+    "CLB_FF": 8171520,
+    "DSP48E2": 3840,
+    "RAMB18E2": 4320,
+    "RAMB36E2": 2160,
+    "URAM288": 320
+  },
+  "resource_evidence": {
+    "document": "AMD UltraScale Architecture and Product Data Sheet: Overview (DS890)",
+    "revision": "v4.10, May 21 2026",
+    "url": "https://docs.amd.com/v/u/en-US/ultrascale-overview",
+    "table": "Virtex UltraScale+ FPGA Feature Summary, XCVU19P"
+  }
+}

@@ -34,6 +34,15 @@ struct BelRecord {
 
 using SiteTemplates = std::map<std::string, std::vector<BelRecord>>;
 
+struct ReferenceIntegrity {
+  std::uint64_t site_types = 0;
+  std::uint64_t tile_types = 0;
+  std::uint64_t tiles = 0;
+  std::uint64_t wires = 0;
+  std::uint64_t nodes = 0;
+  std::uint64_t pips = 0;
+};
+
 std::string json_escape(const std::string& value) {
   std::string result;
   result.reserve(value.size() + 8);
@@ -189,6 +198,203 @@ bool excluded_shared_lut_bel(const std::string& bel_name) {
 }
 
 template <typename DeviceReader, typename StringList>
+ReferenceIntegrity validate_reference_integrity(
+    const DeviceReader& device,
+    const StringList& strings) {
+  ReferenceIntegrity result;
+  const auto site_types = device.getSiteTypeList();
+  const auto tile_types = device.getTileTypeList();
+  const auto tiles = device.getTileList();
+  const auto wires = device.getWires();
+  const auto nodes = device.getNodes();
+  const auto wire_types = device.getWireTypes();
+  const auto pip_timings = device.getPipTimings();
+  const auto node_timings = device.getNodeTimings();
+
+  result.site_types = site_types.size();
+  result.tile_types = tile_types.size();
+  result.tiles = tiles.size();
+  result.wires = wires.size();
+  result.nodes = nodes.size();
+
+  for (const auto site_type : site_types) {
+    string_at(strings, site_type.getName());
+    const auto bel_pins = site_type.getBelPins();
+    for (const auto bel_pin : bel_pins) {
+      string_at(strings, bel_pin.getName());
+      string_at(strings, bel_pin.getBel());
+    }
+    for (const auto pin : site_type.getPins()) {
+      string_at(strings, pin.getName());
+      if (pin.getBelpin() >= bel_pins.size()) {
+        throw std::runtime_error(
+            "DeviceResources site pin BEL-pin index is out of range");
+      }
+    }
+    for (const auto bel : site_type.getBels()) {
+      string_at(strings, bel.getName());
+      string_at(strings, bel.getType());
+      for (const auto pin : bel.getPins()) {
+        if (pin >= bel_pins.size()) {
+          throw std::runtime_error(
+              "DeviceResources BEL pin index is out of range");
+        }
+      }
+    }
+    for (const auto site_pip : site_type.getSitePIPs()) {
+      if (site_pip.getInpin() >= bel_pins.size() ||
+          site_pip.getOutpin() >= bel_pins.size()) {
+        throw std::runtime_error(
+            "DeviceResources site PIP BEL-pin index is out of range");
+      }
+    }
+    for (const auto site_wire : site_type.getSiteWires()) {
+      string_at(strings, site_wire.getName());
+      for (const auto pin : site_wire.getPins()) {
+        if (pin >= bel_pins.size()) {
+          throw std::runtime_error(
+              "DeviceResources site wire BEL-pin index is out of range");
+        }
+      }
+    }
+    for (const auto alternative : site_type.getAltSiteTypes()) {
+      if (alternative >= site_types.size()) {
+        throw std::runtime_error(
+            "DeviceResources alternative site type is out of range");
+      }
+    }
+  }
+
+  std::map<std::string, std::set<std::string>> tile_type_wires;
+  for (const auto tile_type : tile_types) {
+    const std::string tile_type_name =
+        string_at(strings, tile_type.getName());
+    auto& wire_names = tile_type_wires[tile_type_name];
+    for (const auto wire : tile_type.getWires()) {
+      wire_names.insert(string_at(strings, wire));
+    }
+    for (const auto site : tile_type.getSiteTypes()) {
+      if (site.getPrimaryType() >= site_types.size()) {
+        throw std::runtime_error(
+            "DeviceResources tile site type is out of range");
+      }
+      const auto primary = site_types[site.getPrimaryType()];
+      const auto primary_pins = primary.getPins();
+      if (site.getPrimaryPinsToTileWires().size() !=
+          primary_pins.size()) {
+        throw std::runtime_error(
+            "DeviceResources primary site-pin mapping has wrong length");
+      }
+      for (const auto wire : site.getPrimaryPinsToTileWires()) {
+        string_at(strings, wire);
+      }
+      if (site.getAltPinsToPrimaryPins().size() !=
+          primary.getAltSiteTypes().size()) {
+        throw std::runtime_error(
+            "DeviceResources alternate site-pin mapping has wrong length");
+      }
+      for (const auto parent_pins : site.getAltPinsToPrimaryPins()) {
+        for (const auto pin : parent_pins.getPins()) {
+          if (pin >= primary_pins.size()) {
+            throw std::runtime_error(
+                "DeviceResources alternate site-pin index is out of range");
+          }
+        }
+      }
+    }
+    for (const auto pip : tile_type.getPips()) {
+      if (pip.getWire0() >= tile_type.getWires().size() ||
+          pip.getWire1() >= tile_type.getWires().size()) {
+        throw std::runtime_error(
+            "DeviceResources tile PIP wire index is out of range");
+      }
+      if (pip.getTiming() >= pip_timings.size()) {
+        throw std::runtime_error(
+            "DeviceResources tile PIP timing index is out of range");
+      }
+      ++result.pips;
+    }
+    for (const auto constant : tile_type.getConstants()) {
+      for (const auto wire : constant.getWires()) {
+        if (wire >= tile_type.getWires().size()) {
+          throw std::runtime_error(
+              "DeviceResources constant wire index is out of range");
+        }
+      }
+    }
+  }
+
+  std::map<std::string, std::string> tile_to_type;
+  for (const auto tile : tiles) {
+    if (tile.getType() >= tile_types.size()) {
+      throw std::runtime_error("DeviceResources tile type is out of range");
+    }
+    const std::string tile_name = string_at(strings, tile.getName());
+    const std::string tile_type_name =
+        string_at(strings, tile_types[tile.getType()].getName());
+    if (!tile_to_type.emplace(tile_name, tile_type_name).second) {
+      throw std::runtime_error("DeviceResources tile name is duplicated");
+    }
+    for (const auto site : tile.getSites()) {
+      string_at(strings, site.getName());
+      if (site.getType() >= tile_types[tile.getType()].getSiteTypes().size()) {
+        throw std::runtime_error(
+            "DeviceResources site-in-tile type is out of range");
+      }
+    }
+    const auto prefixes = tile.getSubTilesPrefices();
+    for (const auto prefix : prefixes) {
+      string_at(strings, prefix);
+    }
+    for (const auto pip : tile_types[tile.getType()].getPips()) {
+      if ((prefixes.size() == 0 && pip.getSubTile() != 0) ||
+          (prefixes.size() != 0 && pip.getSubTile() >= prefixes.size())) {
+        throw std::runtime_error(
+            "DeviceResources tile PIP sub-tile index is out of range");
+      }
+    }
+  }
+
+  for (const auto wire : wires) {
+    const std::string tile_name = string_at(strings, wire.getTile());
+    const std::string wire_name = string_at(strings, wire.getWire());
+    if (wire.getType() >= wire_types.size()) {
+      throw std::runtime_error(
+          "DeviceResources wire type is out of range");
+    }
+    const auto tile = tile_to_type.find(tile_name);
+    if (tile == tile_to_type.end() ||
+        tile_type_wires[tile->second].count(wire_name) == 0) {
+      throw std::runtime_error(
+          "DeviceResources global wire does not resolve in its tile type");
+    }
+  }
+  std::vector<std::uint8_t> wire_membership(wires.size(), 0);
+  for (const auto node : nodes) {
+    if (node.getNodeTiming() >= node_timings.size()) {
+      throw std::runtime_error(
+          "DeviceResources node timing index is out of range");
+    }
+    for (const auto wire : node.getWires()) {
+      if (wire >= wires.size()) {
+        throw std::runtime_error(
+            "DeviceResources node wire index is out of range");
+      }
+      if (++wire_membership[wire] != 1) {
+        throw std::runtime_error(
+            "DeviceResources wire belongs to multiple nodes");
+      }
+    }
+  }
+  if (std::find(wire_membership.begin(), wire_membership.end(), 0) !=
+      wire_membership.end()) {
+    throw std::runtime_error(
+        "DeviceResources wire is absent from the node graph");
+  }
+  return result;
+}
+
+template <typename DeviceReader, typename StringList>
 CompatibilityMap build_compatibility(
     const DeviceReader& device,
     const StringList& strings) {
@@ -285,6 +491,8 @@ SiteTemplates build_site_templates(
 template <typename DeviceReader>
 void write_extract(const DeviceReader& device, std::ostream& output) {
   const auto strings = device.getStrList();
+  const ReferenceIntegrity reference_integrity =
+      validate_reference_integrity(device, strings);
   const auto site_types = device.getSiteTypeList();
   const auto tile_types = device.getTileTypeList();
   const CompatibilityMap compatibility =
@@ -465,7 +673,15 @@ void write_extract(const DeviceReader& device, std::ostream& output) {
     }
     output << "]}";
   }
-  output << "],\"resource_counts\":{"
+  output << "],\"reference_integrity\":{"
+         << "\"status\":\"pass\","
+         << "\"site_types\":" << reference_integrity.site_types << ','
+         << "\"tile_types\":" << reference_integrity.tile_types << ','
+         << "\"tiles\":" << reference_integrity.tiles << ','
+         << "\"wires\":" << reference_integrity.wires << ','
+         << "\"nodes\":" << reference_integrity.nodes << ','
+         << "\"pips\":" << reference_integrity.pips << "},"
+         << "\"resource_counts\":{"
          << "\"all_tiles\":" << device.getTileList().size() << ','
          << "\"tile_types\":" << device.getTileTypeList().size() << ','
          << "\"site_types\":" << device.getSiteTypeList().size() << ','

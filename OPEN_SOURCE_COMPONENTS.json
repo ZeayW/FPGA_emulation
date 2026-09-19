@@ -417,10 +417,18 @@
       "id": "tqdm",
       "upstream": "https://github.com/tqdm/tqdm",
       "used_by": "OpenPARF utilities"
+    },
+    {
+      "id": "rapidwright",
+      "upstream": "https://github.com/Xilinx/RapidWright",
+      "version_or_revision": "127f55cd704c277372697e699f1559e1cdc91f34 (v2026.1.0-beta)",
+      "license": "Apache-2.0 source; external packaged device data is Xilinx-EULA governed",
+      "used_by": "optional Route A DeviceResources, physical metadata, and RWRoute provider"
     }
   ],
   "architecture_sources": [
-    "resources/architectures/vtr/flagship-k6-n10-40nm.json"
+    "resources/architectures/vtr/flagship-k6-n10-40nm.json",
+    "resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json"
   ],
   "benchmark_catalog": "benchmarks/rtl_catalog.json",
   "ci_actions": [

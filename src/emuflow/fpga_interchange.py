@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import subprocess
 import tempfile
 from collections import Counter
@@ -21,6 +22,11 @@ FPGAIF_ARCH_EXTRACT_SCHEMA = (
 )
 FPGAIF_ARCH_SOURCE_FORMAT = "fpga-interchange-device-resources/v1"
 FPGAIF_ARCH_POLICY = "fpga-interchange-ultrascaleplus-v1"
+_XILINX_PART_RE = re.compile(
+    r"^(?P<device>xc[a-z0-9]+)-(?P<package>[a-z0-9]+)-"
+    r"(?P<speed>[0-9][a-z0-9]*)-(?P<temperature>[a-z])$",
+    re.IGNORECASE,
+)
 SUPPORTED_PLACEMENT_CELLS = {
     "CARRY8",
     "DSP48E2",
@@ -68,20 +74,130 @@ def _nonempty_string(value: Any, context: str) -> str:
     return value
 
 
+def parse_xilinx_part_identity(part: str) -> Dict[str, str]:
+    """Parse one complete AMD/Xilinx part identity without guessing fields."""
+    match = _XILINX_PART_RE.fullmatch(_nonempty_string(part, "part"))
+    if match is None:
+        raise ValidationError(
+            "part: expected a complete device-package-speed-temperature "
+            "identity such as xcvu19p-fsva3824-2-e"
+        )
+    fields = {key: value.lower() for key, value in match.groupdict().items()}
+    return {
+        **fields,
+        "part": part.lower(),
+        "speed_grade": f"-{fields['speed'].upper()}",
+        "temperature_grade": fields["temperature"].upper(),
+        "grade": (
+            f"-{fields['speed'].upper()}-{fields['temperature'].lower()}"
+        ),
+    }
+
+
+def _select_part_package(
+    packages: Any, identity: Mapping[str, str]
+) -> Dict[str, Any]:
+    if not isinstance(packages, list) or not packages:
+        raise ValidationError("extract.packages: expected a non-empty array")
+    seen_packages = set()
+    selected = None
+    for package_index, package in enumerate(packages):
+        context = f"extract.packages[{package_index}]"
+        if not isinstance(package, dict):
+            raise ValidationError(f"{context}: expected an object")
+        name = _nonempty_string(package.get("name"), f"{context}.name")
+        normalized_name = name.lower()
+        if normalized_name in seen_packages:
+            raise ValidationError(f"{context}.name: duplicate package {name!r}")
+        seen_packages.add(normalized_name)
+        pin_count = _nonnegative_integer(
+            package.get("package_pin_count"),
+            f"{context}.package_pin_count",
+        )
+        if pin_count == 0:
+            raise ValidationError(
+                f"{context}.package_pin_count: expected a positive integer"
+            )
+        grades = package.get("grades")
+        if not isinstance(grades, list) or not grades:
+            raise ValidationError(f"{context}.grades: expected a non-empty array")
+        seen_grades = set()
+        matching_grade = None
+        for grade_index, grade in enumerate(grades):
+            grade_context = f"{context}.grades[{grade_index}]"
+            if not isinstance(grade, dict):
+                raise ValidationError(f"{grade_context}: expected an object")
+            grade_name = _nonempty_string(
+                grade.get("name"), f"{grade_context}.name"
+            )
+            speed_grade = _nonempty_string(
+                grade.get("speed_grade"), f"{grade_context}.speed_grade"
+            )
+            temperature_grade = _nonempty_string(
+                grade.get("temperature_grade"),
+                f"{grade_context}.temperature_grade",
+            )
+            grade_key = (
+                grade_name.lower(),
+                speed_grade.upper(),
+                temperature_grade.upper(),
+            )
+            if grade_key in seen_grades:
+                raise ValidationError(
+                    f"{grade_context}: duplicate package grade {grade_name!r}"
+                )
+            seen_grades.add(grade_key)
+            if (
+                speed_grade.upper() == identity["speed_grade"]
+                and temperature_grade.upper()
+                == identity["temperature_grade"]
+            ):
+                matching_grade = {
+                    "name": grade_name,
+                    "speed_grade": speed_grade,
+                    "temperature_grade": temperature_grade,
+                }
+        if normalized_name == identity["package"]:
+            if matching_grade is None:
+                raise ValidationError(
+                    f"{context}: package {name!r} does not provide requested "
+                    f"grade {identity['speed_grade']}/"
+                    f"{identity['temperature_grade']}"
+                )
+            selected = {
+                "name": name,
+                "package_pin_count": pin_count,
+                "grade": matching_grade,
+            }
+    if selected is None:
+        raise ValidationError(
+            "extract.packages: requested package "
+            f"{identity['package']!r} is absent"
+        )
+    return selected
+
+
 def architecture_from_fpga_interchange_extract(
     extract: Mapping[str, Any],
     *,
     part: str,
     input_path: Path,
     generator: str,
+    generator_qualification: str = "declared-not-assumed-open",
+    producer: Optional[Mapping[str, Any]] = None,
 ) -> ArchitectureDB:
     if extract.get("schema") != FPGAIF_ARCH_EXTRACT_SCHEMA:
         raise ValidationError(
             "FPGA Interchange architecture extract schema is invalid"
         )
-    _nonempty_string(part, "part")
+    identity = parse_xilinx_part_identity(part)
     device = _nonempty_string(extract.get("device"), "extract.device")
+    if device.lower() != identity["device"]:
+        raise ValidationError(
+            "extract.device does not match the complete requested part"
+        )
     _nonempty_string(generator, "generator")
+    _nonempty_string(generator_qualification, "generator_qualification")
     raw_tiles = extract.get("tiles")
     if not isinstance(raw_tiles, list) or not raw_tiles:
         raise ValidationError("extract.tiles: expected a non-empty array")
@@ -249,28 +365,71 @@ def architecture_from_fpga_interchange_extract(
             )
 
     packages = extract.get("packages")
-    if not isinstance(packages, list):
-        raise ValidationError("extract.packages: expected an array")
+    selected_package = _select_part_package(packages, identity)
     resource_counts = extract.get("resource_counts")
     if not isinstance(resource_counts, dict):
         raise ValidationError("extract.resource_counts: expected an object")
     for key, value in resource_counts.items():
         _nonempty_string(key, "extract.resource_counts key")
         _nonnegative_integer(value, f"extract.resource_counts[{key!r}]")
+    reference_integrity = extract.get("reference_integrity")
+    if not isinstance(reference_integrity, dict):
+        raise ValidationError(
+            "extract.reference_integrity: expected an object"
+        )
+    if reference_integrity.get("status") != "pass":
+        raise ValidationError(
+            "extract.reference_integrity.status: expected 'pass'"
+        )
+    for key in (
+        "site_types",
+        "tile_types",
+        "tiles",
+        "wires",
+        "nodes",
+        "pips",
+    ):
+        _nonnegative_integer(
+            reference_integrity.get(key),
+            f"extract.reference_integrity.{key}",
+        )
+    for integrity_key, count_key in (
+        ("site_types", "site_types"),
+        ("tile_types", "tile_types"),
+        ("tiles", "all_tiles"),
+        ("wires", "wires"),
+        ("nodes", "nodes"),
+    ):
+        if reference_integrity[integrity_key] != resource_counts[count_key]:
+            raise ValidationError(
+                "extract.reference_integrity does not match resource_counts"
+            )
+
+    source: Dict[str, Any] = {
+        "format": FPGAIF_ARCH_SOURCE_FORMAT,
+        "device": device,
+        "path": str(input_path),
+        "sha256": _sha256(input_path),
+        "generator": generator,
+        "schema_license": "Apache-2.0",
+        "generator_qualification": generator_qualification,
+        "device_identity": {
+            **identity,
+            "selected_package_pin_count": selected_package[
+                "package_pin_count"
+            ],
+        },
+    }
+    if producer is not None:
+        if not isinstance(producer, Mapping):
+            raise ValidationError("producer: expected an object")
+        source["producer"] = dict(producer)
 
     architecture = ArchitectureDB(
         {
             "schema": ARCHDB_SCHEMA,
-            "part": part,
-            "source": {
-                "format": FPGAIF_ARCH_SOURCE_FORMAT,
-                "device": device,
-                "path": str(input_path),
-                "sha256": _sha256(input_path),
-                "generator": generator,
-                "schema_license": "Apache-2.0",
-                "generator_qualification": "declared-not-assumed-open",
-            },
+            "part": identity["part"],
+            "source": source,
             "policy": {
                 "name": FPGAIF_ARCH_POLICY,
                 "description": (
@@ -297,6 +456,9 @@ def architecture_from_fpga_interchange_extract(
             },
             "packages": packages,
             "routing_resource_counts": dict(sorted(resource_counts.items())),
+            "routing_reference_integrity": dict(
+                sorted(reference_integrity.items())
+            ),
             "site_templates": dict(sorted(site_templates.items())),
             "sites": sites,
         }
@@ -311,9 +473,58 @@ def validate_fpga_interchange_architecture(
     value = architecture.value
     if value["source"].get("format") != FPGAIF_ARCH_SOURCE_FORMAT:
         raise ValidationError("ArchitectureDB is not sourced from FPGA Interchange")
+    identity = parse_xilinx_part_identity(value["part"])
+    source_identity = value["source"].get("device_identity")
+    if not isinstance(source_identity, dict):
+        raise ValidationError("ArchitectureDB source device identity is missing")
+    for field in (
+        "part",
+        "device",
+        "package",
+        "speed_grade",
+        "temperature_grade",
+    ):
+        if source_identity.get(field) != identity[field]:
+            raise ValidationError(
+                f"ArchitectureDB source device identity field {field!r} "
+                "does not match arch.part"
+            )
+    selected_package = _select_part_package(value.get("packages"), identity)
+    if source_identity.get("selected_package_pin_count") != selected_package[
+        "package_pin_count"
+    ]:
+        raise ValidationError(
+            "ArchitectureDB selected package pin count is inconsistent"
+        )
     transform = value.get("coordinate_transform")
     if not isinstance(transform, dict):
         raise ValidationError("ArchitectureDB coordinate transform is missing")
+    reference_integrity = value.get("routing_reference_integrity")
+    if (
+        not isinstance(reference_integrity, dict)
+        or reference_integrity.get("status") != "pass"
+    ):
+        raise ValidationError(
+            "ArchitectureDB routing reference integrity is missing"
+        )
+    resource_counts = value.get("routing_resource_counts")
+    if not isinstance(resource_counts, dict):
+        raise ValidationError(
+            "ArchitectureDB routing resource counts are missing"
+        )
+    for integrity_key, count_key in (
+        ("site_types", "site_types"),
+        ("tile_types", "tile_types"),
+        ("tiles", "all_tiles"),
+        ("wires", "wires"),
+        ("nodes", "nodes"),
+    ):
+        if reference_integrity.get(integrity_key) != resource_counts.get(
+            count_key
+        ):
+            raise ValidationError(
+                "ArchitectureDB routing reference integrity is inconsistent"
+            )
     stride = _nonnegative_integer(
         transform.get("site_stride"), "arch.coordinate_transform.site_stride"
     )
@@ -375,8 +586,10 @@ def validate_fpga_interchange_architecture(
         "status": "pass",
         "part": value["part"],
         "device": value["source"]["device"],
+        "device_identity": dict(source_identity),
         "sites": len(value["sites"]),
         "cell_slots": dict(sorted(resource_sites.items())),
+        "routing_reference_integrity": dict(reference_integrity),
         "physical_region_qualification": region_model.get("qualification"),
     }
     if region_model["slr_encoded"]:
@@ -436,6 +649,8 @@ def run_fpga_interchange_architecture_import(
     input_path: Path,
     part: str,
     generator: str,
+    generator_qualification: str = "declared-not-assumed-open",
+    producer: Optional[Mapping[str, Any]] = None,
     output_path: Path,
     executable: Optional[str] = None,
     log_path: Optional[Path] = None,
@@ -471,6 +686,8 @@ def run_fpga_interchange_architecture_import(
             part=part,
             input_path=input_path,
             generator=generator,
+            generator_qualification=generator_qualification,
+            producer=producer,
         )
         write_json(output_path, architecture.to_dict())
     checked = validate_fpga_interchange_architecture(
