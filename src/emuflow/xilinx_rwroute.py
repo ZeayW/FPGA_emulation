@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import subprocess
 from collections import defaultdict, deque
@@ -139,6 +140,8 @@ def run_rwroute(
     classes_dir.mkdir(parents=True, exist_ok=True)
     runtime_home = classes_dir.parent / "rapidwright-runtime-home"
     runtime_home.mkdir(parents=True, exist_ok=True)
+    rapidwright_path = runtime_home / "RapidWright"
+    rapidwright_path.mkdir(parents=True, exist_ok=True)
     class_file = classes_dir / "EmuFlowRWRoute.class"
     if not class_file.is_file() or class_file.stat().st_mtime < java_source.stat().st_mtime:
         javac = java.with_name("javac")
@@ -156,6 +159,7 @@ def run_rwroute(
     completed = subprocess.run(
         command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, check=False,
+        env={**os.environ, "RAPIDWRIGHT_PATH": str(rapidwright_path)},
     )
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
