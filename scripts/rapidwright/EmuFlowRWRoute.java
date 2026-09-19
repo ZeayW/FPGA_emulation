@@ -144,8 +144,20 @@ public final class EmuFlowRWRoute {
             for (String[] row : pins) {
                 Cell cell = cells.get(row[2]);
                 if (cell == null) throw new IllegalArgumentException("unknown cell " + row[2]);
-                if (net.connect(cell, row[3]) == null)
-                    throw new IllegalStateException("failed to connect " + row[2] + "/" + row[3]);
+                if (!cell.getPinMappingsL2P().containsKey(row[3]))
+                    throw new IllegalStateException(
+                        "logical pin has no physical mapping: " + row[2] + "/" + row[3]
+                    );
+                try {
+                    // A legal intra-site connection intentionally returns no
+                    // SitePinInst; logical/physical pin mappings, not the
+                    // nullable return value, establish pin validity.
+                    net.connect(cell, row[3]);
+                } catch (RuntimeException error) {
+                    throw new IllegalStateException(
+                        "failed to connect " + row[2] + "/" + row[3], error
+                    );
+                }
             }
             nets.put(netName, net);
         }
