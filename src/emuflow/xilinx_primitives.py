@@ -217,6 +217,26 @@ def normalize_xilinx_mapped_json(
         max_net += 1
         return max_net
 
+    def output_connection(
+        cell: Mapping[str, Any], port: str, width: int, instance: str
+    ) -> List[Any]:
+        connections = cell.get("connections")
+        value = connections.get(port) if isinstance(connections, dict) else None
+        if value is None:
+            # Yosys omits a completely unused output port from JSON.  Preserve
+            # the physical primitive width with fresh dead nets so the CARRY8
+            # contract remains structurally complete and deterministic.
+            return [allocate_net() for _ in range(width)]
+        if not isinstance(value, list) or len(value) != width:
+            raise ValidationError(
+                f"mapped cell {instance!r} port {port!r} must have width {width}"
+            )
+        if any(not isinstance(bit, (int, str)) for bit in value):
+            raise ValidationError(
+                f"mapped cell {instance!r} port {port!r} is invalid"
+            )
+        return list(value)
+
     carry_names = sorted(
         name for name, cell in cells.items() if cell.get("type") == "CARRY4"
     )
@@ -236,7 +256,7 @@ def normalize_xilinx_mapped_json(
         if name in removed:
             continue
         first = cells[name]
-        first_co = _connection(first, "CO", 4, name)
+        first_co = output_connection(first, "CO", 4, name)
         successors = [
             candidate
             for candidate in carry_by_ci.get(first_co[3], [])
@@ -247,7 +267,7 @@ def normalize_xilinx_mapped_json(
         di = _connection(first, "DI", 4, name) + ["0"] * 4
         s = _connection(first, "S", 4, name) + ["0"] * 4
         co = first_co + [allocate_net() for _ in range(4)]
-        o = _connection(first, "O", 4, name) + [allocate_net() for _ in range(4)]
+        o = output_connection(first, "O", 4, name) + [allocate_net() for _ in range(4)]
         if second_name is not None:
             second = cells[second_name]
             carry_type = "SINGLE_CY8"
@@ -257,8 +277,8 @@ def normalize_xilinx_mapped_json(
             s = _connection(first, "S", 4, name) + _connection(
                 second, "S", 4, second_name
             )
-            co = first_co + _connection(second, "CO", 4, second_name)
-            o = _connection(first, "O", 4, name) + _connection(
+            co = first_co + output_connection(second, "CO", 4, second_name)
+            o = output_connection(first, "O", 4, name) + output_connection(
                 second, "O", 4, second_name
             )
             removed.add(second_name)

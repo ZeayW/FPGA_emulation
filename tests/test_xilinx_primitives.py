@@ -194,6 +194,38 @@ class XilinxPrimitiveContractTest(unittest.TestCase):
         )
         self.assertIn("carry$cyinit_or", cells)
 
+    def test_unused_carry_output_is_materialized_as_dead_carry8_nets(self) -> None:
+        value = {
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "cells": {
+                        "carry": {
+                            "type": "CARRY4",
+                            "port_directions": {
+                                "CI": "input", "CYINIT": "input",
+                                "DI": "input", "S": "input", "CO": "output",
+                            },
+                            "connections": {
+                                "CI": ["0"], "CYINIT": ["0"],
+                                "DI": [1, 2, 3, 4], "S": [5, 6, 7, 8],
+                                "CO": [9, 10, 11, 12],
+                            },
+                        }
+                    },
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "raw.json"
+            output = Path(temporary) / "normalized.json"
+            source.write_text(json.dumps(value), encoding="utf-8")
+            normalize_xilinx_mapped_json(source, output, top="top")
+            normalized = json.loads(output.read_text(encoding="utf-8"))
+        carry = normalized["modules"]["top"]["cells"]["carry"]
+        self.assertEqual(carry["type"], "CARRY8")
+        self.assertEqual(len(carry["connections"]["O"]), 8)
+
 
 if __name__ == "__main__":
     unittest.main()
