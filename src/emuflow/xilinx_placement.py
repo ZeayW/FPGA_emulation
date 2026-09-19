@@ -275,24 +275,38 @@ def place_xilinx_clusters(
     sites = {site["name"]: architecture.site_named(site["name"])
              for site in architecture.value["sites"]}
     candidates: Dict[str, List[str]] = {}
+    candidate_cache: Dict[
+        Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...]], List[str]
+    ] = {}
     resolved_by_cluster_template: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for cluster_id, cluster in cluster_by_id.items():
-        legal_sites = []
+        legal_bases = []
         for base, site_names in sites_by_template.items():
             resolved = _resolve_cluster_bels(cluster, contracts[base])
             if resolved is None:
                 continue
             resolved_by_cluster_template[(cluster_id, base)] = resolved
-            for site_name in site_names:
+            legal_bases.append(base)
+        cache_key = (
+            tuple(sorted(legal_bases)),
+            tuple(sorted(constraints.get(cluster_id, {}).items())),
+        )
+        legal_sites = candidate_cache.get(cache_key)
+        if legal_sites is None:
+            legal_sites = sorted({
+                site_name
+                for base in legal_bases
+                for site_name in sites_by_template[base]
                 if _site_satisfies_constraint(
                     sites[site_name], constraints.get(cluster_id, {})
-                ):
-                    legal_sites.append(site_name)
+                )
+            })
+            candidate_cache[cache_key] = legal_sites
         if not legal_sites:
             raise ValidationError(
                 f"cluster {cluster_id!r} has no legal site after exact constraints"
             )
-        candidates[cluster_id] = sorted(set(legal_sites))
+        candidates[cluster_id] = legal_sites
 
     site_base = {}
     for base, names in sites_by_template.items():
@@ -302,48 +316,49 @@ def place_xilinx_clusters(
     placed: Dict[str, str] = {}
     used_sites: Set[str] = set()
     chains = _cascade_cluster_chains(packed, owner)
-    chain_windows = []
-    for chain in chains:
-        coordinate_maps = []
-        for cluster_id in chain:
-            coordinates = {
-                _physical_site_coordinate(name): name
-                for name in candidates[cluster_id]
-            }
-            coordinate_maps.append(coordinates)
-        windows = []
-        for coordinate, first_name in coordinate_maps[0].items():
-            kind, physical_x, physical_y = coordinate
-            names = [first_name]
-            for offset, coordinate_map in enumerate(coordinate_maps[1:], start=1):
-                name = coordinate_map.get((kind, physical_x, physical_y + offset))
-                if name is None:
+    physical_sites = {
+        _physical_site_coordinate(name): name for name in site_base
+    }
+    membership_cache: Dict[int, Set[str]] = {}
+
+    def candidate_members(cluster_id: str) -> Set[str]:
+        values = candidates[cluster_id]
+        key = id(values)
+        if key not in membership_cache:
+            membership_cache[key] = set(values)
+        return membership_cache[key]
+
+    # The tightest chain is placed first. Windows are evaluated as a stream;
+    # retaining every possible window for a VU19P slice column would duplicate
+    # hundreds of thousands of site names in the hot path.
+    for chain in sorted(chains, key=lambda item: (len(candidates[item[0]]), item)):
+        best = None
+        best_cost = None
+        for first_name in candidates[chain[0]]:
+            kind, physical_x, physical_y = _physical_site_coordinate(first_name)
+            names = []
+            for offset, cluster_id in enumerate(chain):
+                name = physical_sites.get((kind, physical_x, physical_y + offset))
+                if (
+                    name is None
+                    or name not in candidate_members(cluster_id)
+                    or name in used_sites
+                ):
                     break
                 names.append(name)
-            if len(names) == len(chain):
-                windows.append(names)
-        if not windows:
-            raise ValidationError(
-                "dedicated cascade has no legal contiguous physical-site window: "
-                + " -> ".join(chain)
-            )
-        chain_windows.append((len(windows), chain, windows))
-
-    for _count, chain, windows in sorted(chain_windows, key=lambda item: (item[0], item[1])):
-        available = [
-            names for names in windows if not used_sites.intersection(names)
-        ]
-        if not available:
+            if len(names) != len(chain):
+                continue
+            cost = _distance(chain, [sites[name] for name in names], guidance)
+            if best_cost is None or cost < best_cost:
+                best = names
+                best_cost = cost
+                if not any(cluster_id in guidance for cluster_id in chain):
+                    break
+        if best is None:
             raise ValidationError(
                 "dedicated cascade windows conflict for chain: " + " -> ".join(chain)
             )
-        selected = min(
-            available,
-            key=lambda names: _distance(
-                chain, [sites[name] for name in names], guidance
-            ),
-        )
-        for cluster_id, site_name in zip(chain, selected):
+        for cluster_id, site_name in zip(chain, best):
             placed[cluster_id] = site_name
             used_sites.add(site_name)
 
@@ -355,20 +370,28 @@ def place_xilinx_clusters(
             cluster_id,
         ),
     )
+    cursors: Dict[int, int] = defaultdict(int)
     for cluster_id in remaining:
-        available = [
-            name for name in candidates[cluster_id] if name not in used_sites
-        ]
-        if not available:
+        values = candidates[cluster_id]
+        if cluster_id in guidance:
+            selected = min(
+                (name for name in values if name not in used_sites),
+                key=lambda name: _distance(
+                    [cluster_id], [sites[name]], guidance
+                ),
+                default=None,
+            )
+        else:
+            key = id(values)
+            cursor = cursors[key]
+            while cursor < len(values) and values[cursor] in used_sites:
+                cursor += 1
+            cursors[key] = cursor + 1
+            selected = values[cursor] if cursor < len(values) else None
+        if selected is None:
             raise ValidationError(
                 f"no unoccupied legal site remains for cluster {cluster_id!r}"
             )
-        selected = min(
-            available,
-            key=lambda name: _distance(
-                [cluster_id], [sites[name]], guidance
-            ),
-        )
         placed[cluster_id] = selected
         used_sites.add(selected)
 
