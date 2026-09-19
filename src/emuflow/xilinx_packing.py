@@ -23,6 +23,7 @@ SLICE_FF_BELS = tuple(
 )
 FF_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
 LUT_TYPES = {f"LUT{width}" for width in range(1, 7)}
+DUAL_OUTPUT_LUT_TYPE = "LUT6_2"
 CONSTANT_TYPES = {"GND", "VCC"}
 MUX_TYPES = {"MUXF7", "MUXF8", "MUXF9"}
 HARD_BINDINGS = {
@@ -380,15 +381,41 @@ def pack_xilinx_sites(
     if mux_members.intersection(constants):
         raise ValidationError("mux cone contains a constant pseudo-cell")
 
-    # Carry sites remain exclusive in v1.  This is conservative but exactly
-    # legal; the normalizer has already merged every connected CARRY4 pair.
+    # CARRY8 DI/S are dedicated in-slice LUT O5/O6 connections, not general
+    # inter-site pins.  The normalizer therefore creates one LUT6_2
+    # route-through per carry bit; bind those eight cells to the matching LUT
+    # BELs in the same exclusive slice.
+    carry_members = set()
     for index, name in enumerate(sorted(name for name, cell in cells.items() if cell.get("type") == "CARRY8")):
+        assignments = []
+        for bit_index, letter in enumerate("ABCDEFGH"):
+            di = _bits(cells[name], "DI")[bit_index]
+            s = _bits(cells[name], "S")[bit_index]
+            di_driver = drivers.get(di)
+            s_driver = drivers.get(s)
+            if (
+                di_driver is None
+                or di_driver != s_driver
+                or cells[di_driver].get("type") != DUAL_OUTPUT_LUT_TYPE
+            ):
+                raise ValidationError(
+                    f"CARRY8 {name!r} bit {bit_index} lacks its LUT6_2 DI/S adapter"
+                )
+            if di_driver in carry_members:
+                raise ValidationError("a LUT6_2 adapter belongs to multiple carry bits")
+            carry_members.add(di_driver)
+            assignments.append({
+                "instance": di_driver,
+                "cell_type": DUAL_OUTPUT_LUT_TYPE,
+                "bel": f"{letter}6LUT",
+            })
+        assignments.append({"instance": name, "cell_type": "CARRY8", "bel": "CARRY8"})
         clusters.append({
             "id": f"carry-{index:06d}",
             "kind": "carry",
             "site_templates": ["SLICEL", "SLICEM"],
             "control_set": None,
-            "assignments": [{"instance": name, "cell_type": "CARRY8", "bel": "CARRY8"}],
+            "assignments": assignments,
         })
 
     # One physical RAMB36 site supports either one RAMB36E2 or two independent
@@ -629,8 +656,30 @@ def validate_xilinx_packing(
                     if input_bels != {"F8MUX_BOT", "F8MUX_TOP"}:
                         raise ValidationError("MUXF9 packing topology is invalid")
         elif kind == "carry":
-            if [cells[name].get("type") for name in instances] != ["CARRY8"]:
+            carry_names = [
+                name for name in instances if cells[name].get("type") == "CARRY8"
+            ]
+            adapters = [
+                name for name in instances
+                if cells[name].get("type") == DUAL_OUTPUT_LUT_TYPE
+            ]
+            if len(carry_names) != 1 or len(adapters) != 8 or len(instances) != 9:
                 raise ValidationError("carry cluster is invalid")
+            carry_name = carry_names[0]
+            assignment_bels = {
+                assignment["instance"]: assignment.get("bel")
+                for assignment in assignments
+            }
+            for bit_index, letter in enumerate("ABCDEFGH"):
+                di_driver = drivers.get(_bits(cells[carry_name], "DI")[bit_index])
+                s_driver = drivers.get(_bits(cells[carry_name], "S")[bit_index])
+                if (
+                    di_driver is None
+                    or di_driver != s_driver
+                    or di_driver not in adapters
+                    or assignment_bels.get(di_driver) != f"{letter}6LUT"
+                ):
+                    raise ValidationError("CARRY8 LUT6_2 packing topology is invalid")
         elif kind == "hard":
             cell_types = [cells[name].get("type") for name in instances]
             if set(cell_types) == {"RAMB18E2"}:

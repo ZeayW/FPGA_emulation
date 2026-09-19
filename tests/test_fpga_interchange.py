@@ -50,6 +50,9 @@ class FpgaInterchangeArchitectureTest(unittest.TestCase):
         self.assertTrue(
             architecture.site_named("SLICE_X4Y7")["bels"]
         )
+        slice_bels = architecture.site_named("SLICE_X4Y7")["bels"]
+        six_lut = next(bel for bel in slice_bels if bel["name"] == "A6LUT")
+        self.assertIn("LUT6_2", six_lut["compatible_cells"])
         self.assertEqual(checked["status"], "pass")
         self.assertEqual(
             checked["physical_region_qualification"],

@@ -147,6 +147,27 @@ class XilinxPrimitiveContractTest(unittest.TestCase):
             cells["carry0"]["parameters"]["CARRY_TYPE"], "SINGLE_CY8"
         )
         self.assertNotIn("carry1", cells)
+        expected_di = [10, 11, 12, 13, 40, 41, 42, 43]
+        expected_s = [14, 15, 16, 17, 44, 45, 46, 47]
+        self.assertEqual(report["carry_route_through_lut6_2_cells"], 8)
+        for bit_index, (di_input, s_input) in enumerate(
+            zip(expected_di, expected_s)
+        ):
+            adapter = cells[f"carry0$carry_lut6_2_{bit_index}"]
+            self.assertEqual(adapter["type"], "LUT6_2")
+            self.assertEqual(
+                adapter["parameters"]["INIT"], "1100" * 8 + "10" * 16
+            )
+            self.assertEqual(adapter["connections"]["I0"], [di_input])
+            self.assertEqual(adapter["connections"]["I1"], [s_input])
+            self.assertEqual(
+                cells["carry0"]["connections"]["DI"][bit_index],
+                adapter["connections"]["O5"][0],
+            )
+            self.assertEqual(
+                cells["carry0"]["connections"]["S"][bit_index],
+                adapter["connections"]["O6"][0],
+            )
         self.assertEqual(cells["inv"]["type"], "LUT1")
         self.assertEqual(cells["inv"]["parameters"]["INIT"], "01")
         self.assertEqual(report["primitive_audit"]["resource_totals"]["carry8"], 1)
@@ -188,11 +209,15 @@ class XilinxPrimitiveContractTest(unittest.TestCase):
             normalized = json.loads(output.read_text(encoding="utf-8"))
         cells = normalized["modules"]["top"]["cells"]
         self.assertEqual(report["carry8_single_cells"], 1)
-        self.assertEqual(report["helper_lut_cells"], 1)
+        self.assertEqual(report["helper_lut_cells"], 9)
+        self.assertEqual(report["carry_route_through_lut6_2_cells"], 8)
         self.assertEqual(
             cells["carry"]["parameters"]["CARRY_TYPE"], "DUAL_CY4"
         )
         self.assertIn("carry$cyinit_or", cells)
+        self.assertEqual(
+            sum(cell["type"] == "LUT6_2" for cell in cells.values()), 8
+        )
 
     def test_unused_carry_output_is_materialized_as_dead_carry8_nets(self) -> None:
         value = {

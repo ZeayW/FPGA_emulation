@@ -43,7 +43,7 @@
         {
           "bels": [
             {
-              "compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"],
+              "compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6", "LUT6_2"],
               "name": "A6LUT",
               "type": "LUT6",
               "z": 0

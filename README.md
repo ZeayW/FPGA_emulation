@@ -4161,9 +4161,15 @@ compatible hard sites. Two RAMB18E2 cells are represented as the lower and
 upper halves of one explicit RAMB36 shared-site mode. MUXF9 is retained because
 AMD UG574 defines F9MUX as the in-slice resource joining F8MUX_BOT and
 F8MUX_TOP; the FPGA-Interchange importer preserves that compatibility instead
-of treating the primitive as zero-cost fabric logic. It deliberately does not claim LUT5/LUT6 dual-output
-sharing in v1; consuming an extra site is legal, while inventing an unsupported
-shared configuration is not. Dedicated carry, DSP, BRAM, and URAM cascade
+of treating the primitive as zero-cost fabric logic. General LUT5/LUT6
+dual-output sharing remains outside the v1 packing profile. The one required
+dual-output exception is not an optional density optimization: each CARRY8 bit
+receives a functionally transparent LUT6_2 in the same slice, with its original
+DI signal on O5 and S signal on O6, because those CARRY8 inputs are dedicated
+intra-site connections rather than routable inter-site pins. The packer binds
+the eight adapters to A6LUT through H6LUT, and the independent checker
+recomputes both signal topology and BEL position. Dedicated carry, DSP, BRAM,
+and URAM cascade
 connectivity is emitted as an exact non-branching adjacency certificate. The
 independent validator reloads the mapped design and ArchitectureDB and rejects
 duplicate ownership, capacity overflow, mixed control sets, incompatible BELs,

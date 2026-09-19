@@ -13,8 +13,32 @@ from emuflow.xilinx_packing import (
 
 def cell(cell_type, connections=None):
     connections = connections or {"I0": [1], "O": [2]}
-    directions = {name: ("output" if name in {"O", "Q", "CO"} else "input") for name in connections}
+    directions = {
+        name: ("output" if name in {"O", "O5", "O6", "Q", "CO"} else "input")
+        for name in connections
+    }
     return {"type": cell_type, "port_directions": directions, "connections": connections}
+
+
+def add_carry(cells, name, *, ci, co, net_base):
+    di = []
+    s = []
+    for index in range(8):
+        di_output = net_base + index * 2
+        s_output = di_output + 1
+        adapter = f"{name}$carry_lut6_2_{index}"
+        cells[adapter] = cell("LUT6_2", {
+            "I0": [net_base + 100 + index * 2],
+            "I1": [net_base + 101 + index * 2],
+            "I2": ["0"], "I3": ["0"], "I4": ["0"], "I5": ["1"],
+            "O5": [di_output], "O6": [s_output],
+        })
+        di.append(di_output)
+        s.append(s_output)
+    cells[name] = cell("CARRY8", {
+        "CI": [ci], "CI_TOP": ["0"], "DI": di, "S": s,
+        "CO": list(range(co, co + 8)), "O": list(range(co + 8, co + 16)),
+    })
 
 
 class XilinxPackingTest(unittest.TestCase):
@@ -25,7 +49,7 @@ class XilinxPackingTest(unittest.TestCase):
         }
         for i in range(17):
             cells[f"ff{i}"] = cell("FDRE", {"C": [10], "CE": ["1"], "R": ["0"], "D": [20+i], "Q": [50+i]})
-        cells["carry"] = cell("CARRY8", {"CI": [300], "CO": [301]})
+        add_carry(cells, "carry", ci=300, co=301, net_base=1000)
         cells["dsp"] = cell("DSP48E2", {"A": [310], "P": [311]})
         cells["bram"] = cell("RAMB36E2", {"ADDR": [320], "DO": [321]})
         cells["uram"] = cell("URAM288", {"ADDR": [330], "DOUT": [331]})
@@ -39,7 +63,7 @@ class XilinxPackingTest(unittest.TestCase):
             mapped.write_text(json.dumps(self._mapped()), encoding="utf-8")
             report = pack_xilinx_sites(mapped, packed, top="top")
             check = validate_xilinx_packing(mapped, packed, top="top")
-        self.assertEqual(report["summary"]["cells"], 31)
+        self.assertEqual(report["summary"]["cells"], 39)
         self.assertEqual(report["summary"]["cluster_kinds"]["slice"], 2)
         self.assertEqual(check["status"], "pass")
 
@@ -53,6 +77,24 @@ class XilinxPackingTest(unittest.TestCase):
             value["clusters"][1]["assignments"].append(value["clusters"][0]["assignments"][0])
             packed.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "more than once"):
+                validate_xilinx_packing(mapped, packed, top="top")
+
+    def test_checker_rejects_wrong_carry_adapter_bel(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            mapped = Path(temporary) / "mapped.json"
+            packed = Path(temporary) / "packed.json"
+            mapped.write_text(json.dumps(self._mapped()), encoding="utf-8")
+            pack_xilinx_sites(mapped, packed, top="top")
+            value = json.loads(packed.read_text(encoding="utf-8"))
+            carry = next(
+                cluster for cluster in value["clusters"]
+                if cluster["kind"] == "carry"
+            )
+            carry["assignments"][0]["bel"] = "A5LUT"
+            packed.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "CARRY8 LUT6_2 packing topology"
+            ):
                 validate_xilinx_packing(mapped, packed, top="top")
 
     def test_mux_cone_is_packed_into_dedicated_bels(self):
@@ -73,10 +115,10 @@ class XilinxPackingTest(unittest.TestCase):
         )
 
     def test_carry_cascade_is_certified_and_tampering_fails(self):
-        value = {"modules": {"top": {"attributes": {"top": "1"}, "cells": {
-            "carry0": cell("CARRY8", {"CI": [1], "CO": list(range(10, 18))}),
-            "carry1": cell("CARRY8", {"CI": [17], "CO": list(range(20, 28))}),
-        }}}}
+        cells = {}
+        add_carry(cells, "carry0", ci=1, co=10, net_base=1000)
+        add_carry(cells, "carry1", ci=17, co=40, net_base=2000)
+        value = {"modules": {"top": {"attributes": {"top": "1"}, "cells": cells}}}
         with tempfile.TemporaryDirectory() as temporary:
             mapped = Path(temporary) / "mapped.json"
             packed = Path(temporary) / "packed.json"

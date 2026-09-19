@@ -18,6 +18,7 @@
     "LUT4": {"category": "lut", "hard_block": false, "placement_required": true, "resources": {"lut": 1}},
     "LUT5": {"category": "lut", "hard_block": false, "placement_required": true, "resources": {"lut": 1}},
     "LUT6": {"category": "lut", "hard_block": false, "placement_required": true, "resources": {"lut": 1}},
+    "LUT6_2": {"category": "lut", "hard_block": false, "placement_required": true, "resources": {"lut": 1}},
     "MUXF7": {"category": "slice_mux", "hard_block": true, "placement_required": true, "resources": {}},
     "MUXF8": {"category": "slice_mux", "hard_block": true, "placement_required": true, "resources": {}},
     "MUXF9": {"category": "slice_mux", "hard_block": true, "placement_required": true, "resources": {}},

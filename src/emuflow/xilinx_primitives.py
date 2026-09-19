@@ -152,7 +152,11 @@ def normalize_xilinx_mapped_json(
     CARRY8 and LUT BELs instead.  This deterministic pass merges adjacent
     CARRY4 pairs into one SINGLE_CY8 and maps an unpaired CARRY4 to the lower
     half of one DUAL_CY4 CARRY8.  INV is exactly a LUT1 with INIT=2'b01.
-    Yosys may also prune a constant LUT leaf from a wide-LUT MUXF7 tree and
+    Every CARRY8 DI/S input is physically sourced by the paired O5/O6 outputs
+    of one slice LUT.  Materialize one functionally transparent LUT6_2 per
+    carry bit so an arbitrary fabric signal is not incorrectly treated as a
+    routable CARRY8 site input.  Yosys may also prune a constant LUT leaf from
+    a wide-LUT MUXF7 tree and
     connect the constant directly to I0/I1.  UltraScale+ dedicated F7 inputs
     are driven by their adjacent LUT BELs, so materialize those leaves as
     deterministic constant LUT1 cells instead of weakening site legality.
@@ -326,6 +330,42 @@ def normalize_xilinx_mapped_json(
             },
         }
 
+        # UltraScale+ exposes CARRY8 DI[i] through the corresponding LUT O5
+        # and S[i] through O6; neither is an inter-site sink pin.  A LUT6_2
+        # route-through makes that physical contract explicit while preserving
+        # both input signals exactly.  I5=1 selects the upper INIT half for O6;
+        # O5 always observes the lower half.
+        routed_di: List[Any] = []
+        routed_s: List[Any] = []
+        for bit_index, (di_input, s_input) in enumerate(zip(di, s)):
+            di_output = allocate_net()
+            s_output = allocate_net()
+            helper_name = f"{name}$carry_lut6_2_{bit_index}"
+            helpers[helper_name] = {
+                "hide_name": 1,
+                "type": "LUT6_2",
+                "parameters": {"INIT": "1100" * 8 + "10" * 16},
+                "attributes": {
+                    "emuflow_normalized": "carry8-di-s-lut6-2-v1",
+                    "emuflow_carry_owner": name,
+                    "emuflow_carry_bit": str(bit_index),
+                },
+                "port_directions": {
+                    "I0": "input", "I1": "input", "I2": "input",
+                    "I3": "input", "I4": "input", "I5": "input",
+                    "O5": "output", "O6": "output",
+                },
+                "connections": {
+                    "I0": [di_input], "I1": [s_input], "I2": ["0"],
+                    "I3": ["0"], "I4": ["0"], "I5": ["1"],
+                    "O5": [di_output], "O6": [s_output],
+                },
+            }
+            routed_di.append(di_output)
+            routed_s.append(s_output)
+        replacement[name]["connections"]["DI"] = routed_di
+        replacement[name]["connections"]["S"] = routed_s
+
     inv_count = 0
     for name, cell in sorted(cells.items()):
         if cell.get("type") != "INV":
@@ -412,6 +452,7 @@ def normalize_xilinx_mapped_json(
         "carry8_single_cells": single,
         "inv_lowered_cells": inv_count,
         "mux_constant_lut_cells": mux_constant_lut_count,
+        "carry_route_through_lut6_2_cells": 8 * (paired + single),
         "helper_lut_cells": len(helpers),
         "primitive_audit": audit,
     }

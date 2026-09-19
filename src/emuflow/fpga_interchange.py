@@ -40,6 +40,7 @@ SUPPORTED_PLACEMENT_CELLS = {
     "LUT4",
     "LUT5",
     "LUT6",
+    "LUT6_2",
     "MUXF7",
     "MUXF8",
     "MUXF9",

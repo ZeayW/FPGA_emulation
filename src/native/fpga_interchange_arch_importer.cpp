@@ -160,7 +160,7 @@ bool supported_cell(const std::string& cell) {
   static const std::set<std::string> kSupported = {
       "CARRY8",   "DSP48E2", "FDCE",     "FDPE",    "FDRE",
       "FDSE",     "LUT1",    "LUT2",     "LUT3",    "LUT4",
-      "LUT5",     "LUT6",    "RAM64X1S", "RAMB18E2",
+      "LUT5",     "LUT6",    "LUT6_2",   "RAM64X1S", "RAMB18E2",
       "RAMB36E2", "URAM288", "MUXF7",    "MUXF8", "MUXF9",
   };
   return kSupported.count(cell) != 0;

@@ -20,7 +20,7 @@ def compatible_cells_for_bel(bel_name: str, bel_type: str) -> List[str]:
     local_name = bel_name.rsplit("/", 1)[-1]
     upper_type = bel_type.upper()
     if _LUT_BEL_RE.fullmatch(local_name) or upper_type == "LUT6":
-        return [f"LUT{width}" for width in range(1, 7)]
+        return [*[f"LUT{width}" for width in range(1, 7)], "LUT6_2"]
     if _FF_BEL_RE.fullmatch(local_name) or upper_type in {"FDRE", "FF"}:
         return ["FDCE", "FDPE", "FDRE", "FDSE"]
     if local_name == "CARRY8" or upper_type == "CARRY8":
