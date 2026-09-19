@@ -152,6 +152,10 @@ def normalize_xilinx_mapped_json(
     CARRY8 and LUT BELs instead.  This deterministic pass merges adjacent
     CARRY4 pairs into one SINGLE_CY8 and maps an unpaired CARRY4 to the lower
     half of one DUAL_CY4 CARRY8.  INV is exactly a LUT1 with INIT=2'b01.
+    Yosys may also prune a constant LUT leaf from a wide-LUT MUXF7 tree and
+    connect the constant directly to I0/I1.  UltraScale+ dedicated F7 inputs
+    are driven by their adjacent LUT BELs, so materialize those leaves as
+    deterministic constant LUT1 cells instead of weakening site legality.
     """
 
     source = read_json(input_path)
@@ -353,6 +357,38 @@ def normalize_xilinx_mapped_json(
         }
         inv_count += 1
 
+    mux_constant_lut_count = 0
+    for name, cell in sorted(cells.items()):
+        if cell.get("type") != "MUXF7":
+            continue
+        connections = cell.get("connections")
+        if not isinstance(connections, dict):
+            raise ValidationError(f"mapped cell {name!r} connections are invalid")
+        replacement_cell = copy.deepcopy(cell)
+        replacement_connections = replacement_cell["connections"]
+        changed = False
+        for port in ("I0", "I1"):
+            bits = _connection(cell, port, 1, name)
+            if bits[0] not in {"0", "1"}:
+                continue
+            output = allocate_net()
+            helper_name = f"{name}${port.lower()}_constant_lut"
+            helpers[helper_name] = {
+                "hide_name": 1,
+                "type": "LUT1",
+                "parameters": {"INIT": "11" if bits[0] == "1" else "00"},
+                "attributes": {
+                    "emuflow_normalized": "muxf7-constant-leaf-lut-v1"
+                },
+                "port_directions": {"I0": "input", "O": "output"},
+                "connections": {"I0": ["0"], "O": [output]},
+            }
+            replacement_connections[port] = [output]
+            mux_constant_lut_count += 1
+            changed = True
+        if changed:
+            replacement[name] = replacement_cell
+
     final = {
         name: cell
         for name, cell in cells.items()
@@ -375,6 +411,7 @@ def normalize_xilinx_mapped_json(
         "carry8_paired_cells": paired,
         "carry8_single_cells": single,
         "inv_lowered_cells": inv_count,
+        "mux_constant_lut_cells": mux_constant_lut_count,
         "helper_lut_cells": len(helpers),
         "primitive_audit": audit,
     }

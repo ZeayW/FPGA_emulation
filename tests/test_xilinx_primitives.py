@@ -226,6 +226,47 @@ class XilinxPrimitiveContractTest(unittest.TestCase):
         self.assertEqual(carry["type"], "CARRY8")
         self.assertEqual(len(carry["connections"]["O"]), 8)
 
+    def test_muxf7_constant_leaf_is_materialized_as_a_lut(self) -> None:
+        value = {
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "cells": {
+                        "lut": {
+                            "type": "LUT6",
+                            "port_directions": {"I0": "input", "O": "output"},
+                            "connections": {"I0": [1], "O": [10]},
+                        },
+                        "mux": {
+                            "type": "MUXF7",
+                            "port_directions": {
+                                "I0": "input", "I1": "input",
+                                "S": "input", "O": "output",
+                            },
+                            "connections": {
+                                "I0": ["0"], "I1": [10],
+                                "S": [2], "O": [11],
+                            },
+                        },
+                    },
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "raw.json"
+            output = Path(temporary) / "normalized.json"
+            source.write_text(json.dumps(value), encoding="utf-8")
+            report = normalize_xilinx_mapped_json(source, output, top="top")
+            normalized = json.loads(output.read_text(encoding="utf-8"))
+        cells = normalized["modules"]["top"]["cells"]
+        helper = cells["mux$i0_constant_lut"]
+        self.assertEqual(report["mux_constant_lut_cells"], 1)
+        self.assertEqual(helper["type"], "LUT1")
+        self.assertEqual(helper["parameters"]["INIT"], "00")
+        self.assertEqual(
+            cells["mux"]["connections"]["I0"], helper["connections"]["O"]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
