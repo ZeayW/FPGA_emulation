@@ -133,6 +133,7 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "scripts/rapidwright/EmuFlowRouteResourceCertificate.java",
     "scripts/rapidwright/export_route_resource_certificate.py",
     "tests/test_xilinx_primitives.py",
+    "examples/rtl/xilinx_hard_blocks_smoke.v",
     "src/native/tlr_router.cpp",
     "src/native/hop_partition_refiner.cpp",
     "src/emuflow/partition_hops.py",

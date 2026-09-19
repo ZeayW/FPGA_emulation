@@ -71,6 +71,7 @@
         "schemas/xilinx-primitive-library-db-v1.schema.json",
         "resources/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
         "tests/test_xilinx_primitives.py",
+        "examples/rtl/xilinx_hard_blocks_smoke.v",
         "scripts/yosys/logic_only_map.v"
       ],
       "build_targets": [
