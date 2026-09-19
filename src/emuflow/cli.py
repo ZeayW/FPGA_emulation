@@ -189,6 +189,7 @@ from .xilinx_placement import (
     place_xilinx_clusters,
     validate_xilinx_placement,
 )
+from .xilinx_openparf import run_xilinx_openparf_guidance
 from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from .experiment_partition import (
     run_partition_checkpoint,
@@ -2669,6 +2670,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--placement", type=Path, required=True
     )
     arch_validate_xilinx_placement.add_argument("--constraints", type=Path)
+    arch_guide_xilinx = arch_subparsers.add_parser(
+        "guide-xilinx-openparf",
+        help="run OpenPARF for packed-cluster global placement guidance",
+    )
+    arch_guide_xilinx.add_argument("--mapped-json", type=Path, required=True)
+    arch_guide_xilinx.add_argument("--packed", type=Path, required=True)
+    arch_guide_xilinx.add_argument("--architecture", type=Path, required=True)
+    arch_guide_xilinx.add_argument("--out", type=Path, required=True)
+    arch_guide_xilinx.add_argument("--top")
+    arch_guide_xilinx.add_argument("--openparf-install", type=Path)
+    arch_guide_xilinx.add_argument("--openparf-python", type=Path)
     arch_capacity_fpgaif = arch_subparsers.add_parser(
         "check-capacity",
         help="check EmuIR primitive support and BEL capacity",
@@ -5068,11 +5080,15 @@ def _dispatch(args: argparse.Namespace) -> int:
                 require_physical_regions=args.require_physical_regions,
             )
         elif args.arch_command == "pack-xilinx":
-            report = pack_xilinx_sites(
+            result = pack_xilinx_sites(
                 args.mapped_json,
                 args.output,
                 top=args.top,
             )
+            report = {
+                "status": result["status"], "schema": result["schema"],
+                "output": str(args.output), **result["summary"],
+            }
         elif args.arch_command == "validate-xilinx-packing":
             report = validate_xilinx_packing(
                 args.mapped_json,
@@ -5081,19 +5097,30 @@ def _dispatch(args: argparse.Namespace) -> int:
                 architecture_path=args.architecture,
             )
         elif args.arch_command == "place-xilinx":
-            report = place_xilinx_clusters(
+            result = place_xilinx_clusters(
                 args.packed,
                 args.architecture,
                 args.output,
                 guidance_path=args.guidance,
                 constraints_path=args.constraints,
             )
+            report = {
+                "status": result["status"], "schema": result["schema"],
+                "part": result["part"], "output": str(args.output),
+                **result["summary"],
+            }
         elif args.arch_command == "validate-xilinx-placement":
             report = validate_xilinx_placement(
                 args.packed,
                 args.architecture,
                 args.placement,
                 constraints_path=args.constraints,
+            )
+        elif args.arch_command == "guide-xilinx-openparf":
+            report = run_xilinx_openparf_guidance(
+                args.mapped_json, args.packed, args.architecture, args.out,
+                top=args.top, openparf_install=args.openparf_install,
+                openparf_python=args.openparf_python,
             )
         elif args.arch_command == "check-capacity":
             architecture = ArchitectureDB.load(args.arch)

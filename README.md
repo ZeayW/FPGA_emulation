@@ -4177,6 +4177,11 @@ emuflow arch validate-xilinx-packing \
   --mapped-json build/xilinx/mapped.json \
   --packed build/xilinx/packed-sites.json \
   --architecture /external/xcvu19p.architecture.json
+emuflow arch guide-xilinx-openparf \
+  --mapped-json build/xilinx/mapped.json \
+  --packed build/xilinx/packed-sites.json \
+  --architecture /external/xcvu19p.architecture.json \
+  --out build/xilinx/openparf-guidance
 emuflow arch place-xilinx \
   --packed build/xilinx/packed-sites.json \
   --architecture /external/xcvu19p.architecture.json \
@@ -4192,8 +4197,9 @@ emuflow arch validate-xilinx-placement \
 
 The packed artifact contains cell ownership and compact constraints only; it
 does not copy vendor device data or a routing graph into the repository. This
-feeds a deterministic first-party exact site/BEL legalizer. Global-placement
-guidance is a cost input only: it cannot waive site compatibility, fixed-site,
+feeds a deterministic first-party exact site/BEL legalizer. OpenPARF places one
+node per already packed cluster and emits global coordinates; its guidance is
+a cost input only and cannot waive site compatibility, fixed-site,
 SLR, clock-region, non-overlap, or dedicated-cascade constraints. Cascade
 chains are placed on consecutive physical X/Y sites, while the independent
 checker reloads the ArchitectureDB and recomputes every ownership, BEL,

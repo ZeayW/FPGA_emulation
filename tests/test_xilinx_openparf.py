@@ -1,0 +1,51 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from emuflow.xilinx_openparf import (
+    export_xilinx_cluster_bookshelf,
+    import_xilinx_openparf_guidance,
+)
+
+
+class XilinxOpenparfTest(unittest.TestCase):
+    def test_cluster_export_and_guidance_import(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, arch = root / "mapped.json", root / "packed.json", root / "arch.json"
+            out = root / "openparf"
+            mapped.write_text(json.dumps({"modules": {"top": {
+                "attributes": {"top": "1"}, "cells": {
+                    "a": {"type": "LUT6", "port_directions": {"O": "output"}, "connections": {"O": [1]}},
+                    "b": {"type": "LUT6", "port_directions": {"I": "input"}, "connections": {"I": [1]}},
+                }}}}), encoding="utf-8")
+            packed.write_text(json.dumps({
+                "schema": "emuflow.packed-site-netlist/v1", "clusters": [
+                    {"id": "ca", "kind": "slice", "assignments": [{"instance": "a", "cell_type": "LUT6"}]},
+                    {"id": "cb", "kind": "slice", "assignments": [{"instance": "b", "cell_type": "LUT6"}]},
+                ]}), encoding="utf-8")
+            arch.write_text(json.dumps({
+                "schema": "emuflow.archdb/v1", "part": "test",
+                "source": {"format": "test/v1"}, "policy": {"name": "test"},
+                "site_templates": {"SLICEL": {"bels": [
+                    {"name": "A6LUT", "type": "LUT6", "z": 0, "compatible_cells": ["LUT6"]}
+                ], "alternative_templates": []}},
+                "sites": [
+                    {"name": "SLICE_X0Y0", "type": "SLICEL", "template": "SLICEL", "x": 0, "y": 0},
+                    {"name": "SLICE_X0Y1", "type": "SLICEL", "template": "SLICEL", "x": 0, "y": 1},
+                ]}), encoding="utf-8")
+            report = export_xilinx_cluster_bookshelf(mapped, packed, arch, out)
+            placement = out / "result.pl"
+            placement.write_text("c0 0.25 0.5 0\nc1 0.75 1.0 0\n", encoding="utf-8")
+            guidance = out / "guidance.json"
+            imported = import_xilinx_openparf_guidance(
+                placement, out / "name_map.json", guidance
+            )
+            value = json.loads(guidance.read_text(encoding="utf-8"))
+            nets_text = (out / "design.nets").read_text(encoding="utf-8")
+        self.assertEqual(report["clusters"], 2)
+        self.assertEqual(report["nets"], 1)
+        self.assertEqual(imported["clusters"], 2)
+        self.assertEqual(value["provider"], "openparf-global-guidance-v1")
+        self.assertIn("net n0 2", nets_text)
