@@ -11,7 +11,22 @@
       "required": ["name", "kind"],
       "properties": {
         "name": {"type": "string"},
-        "kind": {"enum": ["virtual", "hardware"]}
+        "kind": {"enum": ["virtual", "hardware"]},
+        "capacity_contract": {
+          "type": "object",
+          "required": ["capacity_field_semantics", "academic_capacity_axis", "reference_capacity_axis", "reference_target_granularity", "physical_device_identity", "physical_capacity_source", "physical_resource_capacity", "reference_flow_capacity_per_fpga"],
+          "properties": {
+            "capacity_field_semantics": {"const": "academic_mapper_equivalent_capacity_per_fpga"},
+            "academic_capacity_axis": {"const": "academic_mapper_equivalent"},
+            "reference_capacity_axis": {"const": "reference_flow_reported"},
+            "reference_target_granularity": {"const": "single_physical_fpga"},
+            "physical_device_identity": {"type": "string", "minLength": 1},
+            "physical_capacity_source": {"type": "string", "minLength": 1},
+            "physical_resource_capacity": {"type": "object", "minProperties": 1},
+            "reference_flow_capacity_per_fpga": {"type": "object", "minProperties": 1}
+          },
+          "additionalProperties": false
+        }
       }
     },
     "fpgas": {

@@ -233,6 +233,7 @@ class Platform:
     links: Tuple[BoardLink, ...]
     clocks: Tuple[BoardClockContract, ...] = ()
     resets: Tuple[BoardResetContract, ...] = ()
+    capacity_contract: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "Platform":
@@ -308,6 +309,81 @@ class Platform:
                     capacity=capacity,
                 )
             )
+
+        capacity_contract = None
+        raw_capacity_contract = metadata.get("capacity_contract")
+        if raw_capacity_contract is not None:
+            contract = _require_mapping(
+                raw_capacity_contract, "platform.capacity_contract"
+            )
+            allowed = {
+                "capacity_field_semantics",
+                "academic_capacity_axis",
+                "reference_capacity_axis",
+                "reference_target_granularity",
+                "physical_device_identity",
+                "physical_capacity_source",
+                "physical_resource_capacity",
+                "reference_flow_capacity_per_fpga",
+            }
+            unknown = sorted(set(contract) - allowed)
+            if unknown:
+                raise ValidationError(
+                    "platform.capacity_contract: unknown fields " + repr(unknown)
+                )
+            expected_strings = {
+                "capacity_field_semantics": (
+                    "academic_mapper_equivalent_capacity_per_fpga"
+                ),
+                "academic_capacity_axis": "academic_mapper_equivalent",
+                "reference_capacity_axis": "reference_flow_reported",
+                "reference_target_granularity": "single_physical_fpga",
+            }
+            normalized_contract: Dict[str, Any] = {}
+            for field, expected in expected_strings.items():
+                actual = _require_nonempty_string(
+                    contract.get(field), f"platform.capacity_contract.{field}"
+                )
+                if actual != expected:
+                    raise ValidationError(
+                        f"platform.capacity_contract.{field}: expected {expected!r}"
+                    )
+                normalized_contract[field] = actual
+            for field in ("physical_device_identity", "physical_capacity_source"):
+                normalized_contract[field] = _require_nonempty_string(
+                    contract.get(field), f"platform.capacity_contract.{field}"
+                )
+            axes = set(fpgas[0].capacity)
+            if any(set(fpga.capacity) != axes for fpga in fpgas):
+                raise ValidationError(
+                    "platform.capacity_contract requires identical FPGA resource axes"
+                )
+            for field in (
+                "physical_resource_capacity",
+                "reference_flow_capacity_per_fpga",
+            ):
+                raw_values = _require_mapping(
+                    contract.get(field), f"platform.capacity_contract.{field}"
+                )
+                if set(raw_values) != axes:
+                    raise ValidationError(
+                        f"platform.capacity_contract.{field}: resource axes must "
+                        "match FPGA capacity"
+                    )
+                values = {}
+                for resource, count in raw_values.items():
+                    if (
+                        isinstance(count, bool)
+                        or not isinstance(count, int)
+                        or count <= 0
+                    ):
+                        raise ValidationError(
+                            f"platform.capacity_contract.{field}.{resource}: "
+                            "expected a positive integer"
+                        )
+                    values[resource] = count
+                normalized_contract[field] = dict(sorted(values.items()))
+            capacity_contract = normalized_contract
 
         raw_links = value.get("links")
         if not isinstance(raw_links, list):
@@ -688,6 +764,7 @@ class Platform:
             links=tuple(links),
             clocks=tuple(sorted(clocks, key=lambda item: item.id)),
             resets=tuple(sorted(resets, key=lambda item: item.id)),
+            capacity_contract=capacity_contract,
         )
 
     @classmethod
@@ -705,6 +782,8 @@ class Platform:
             "fpgas": [fpga.to_dict() for fpga in self.fpgas],
             "links": [link.to_dict() for link in self.links],
         }
+        if self.capacity_contract is not None:
+            result["platform"]["capacity_contract"] = self.capacity_contract
         if self.clocks or self.resets:
             result["board_services"] = {
                 "clocks": [clock.to_dict() for clock in self.clocks],

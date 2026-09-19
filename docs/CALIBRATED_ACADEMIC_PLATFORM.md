@@ -55,14 +55,21 @@ monotone. Integer scheduling ratios between measured knots may be interpolated;
 ratios above the largest measured knot are rejected rather than extrapolated.
 The provider-declared maximum scheduling ratio is not itself timing evidence.
 
-Capacity is represented as a raw-device interval. Each controlled demand is
+Capacity is represented on three explicit axes. The physical axis records the
+public or authorized capacity of one named FPGA. The reference axis is the
+reference flow's independently fitted single-target interval. The academic
+axis is the mapper-equivalent capacity consumed by EmuFlow partitioning. Each
+controlled demand is
 normalized by the utilization limit used for that run, so a small probe at a
 1% limit identifies the same raw-capacity boundary without elaborating millions
 of synthetic cells merely to reach a 75% boundary. The greatest normalized
 passing demand is the lower bound and the smallest normalized capacity failure
 is the exclusive upper bound. Conservative, nominal, and aggressive profiles
 select raw capacities only inside this interval; BoardDB applies the model's
-separate utilization limit when deriving effective capacity.
+separate utilization limit when deriving effective capacity. The physical
+capacity must lie inside every fitted reference interval; otherwise the
+observations describe an aggregate target rather than one physical FPGA and
+the model is rejected.
 
 Reference-flow and open-flow resource counters are not assumed to share a
 universal unit.  The fitter converts each capacity axis with two or more
@@ -90,11 +97,11 @@ authorized reference flow
         |
         | controlled aggregate observations (outside repo)
         v
-platform-calibration-observations/v1  +  calibrated-platform-template/v1
+platform-calibration-observations/v1  +  calibrated-platform-template/v2
         |
         | calibrated-fit
         v
-calibrated-academic-platform/v1
+calibrated-academic-platform/v2
         |                         \
         | blind micro holdout       \ named configuration + profile
         v                           v
@@ -181,9 +188,12 @@ licensed topology files are never copied into Git.
 
 ### Stage 3 — parameter campaign
 
-Status: authorized internal controlled campaign complete for the current named
-three-FPGA configuration; publication of fitted numeric parameters remains out
-of scope for this branch.
+Status: authorized internal controlled campaigns complete for named two-FPGA
+and eight-FPGA configurations whose targets are independently identified as
+single XCVU19P devices. The former three-FPGA v1 model is withdrawn: its fitted
+per-target interval represented roughly two device capacities and fails the v2
+single-physical-FPGA contract. Publication of fitted numeric parameters remains
+out of scope for this branch.
 
 The completed campaign identifies all four modeled resource-capacity intervals,
 logical TDM service, physical serializer characteristics, endpoint/per-hop
@@ -195,8 +205,8 @@ controlled campaigns; topology is never extrapolated from a requested count.
 
 ### Stage 4 — blind application validation
 
-Status: complete for one authorized Koios DLA medium holdout excluded from
-fitting.
+Status: the v1 holdouts remain historical evidence, but v2 holdout receipts
+must be regenerated against the new model identities before qualification.
 
 `calibrated-application-holdout-validate` computes the minimum FPGA count from
 fitted raw capacities at the observation's declared utilization limit and
@@ -223,9 +233,8 @@ emuflow platform calibrated-application-holdout-validate \
 
 ### Stage 5 — full EmuFlow qualification
 
-Status: complete for one fresh Koios DLA medium Phase 1--7 qualification on the
-named three-FPGA nominal configuration, using an explicit 10% utilization
-stress override, baseline Phase 6, and physical seed 1.
+Status: pending under v2. The former three-FPGA Phase 1--7 result is retained
+only as historical experimental evidence and is not a qualified platform tier.
 
 Register qualified workload/platform combinations in the canonical validation
 matrix, run a fresh complete Phase 1--7 flow with one physical seed, and retain
@@ -233,7 +242,7 @@ only compact terminal evidence. Final claims use system-global WNS/TNS. The
 calibrated model is promoted only if holdout trends and algorithm ordering agree
 with the reference within declared error bounds.
 
-The completed one-shot qualification did not reuse a stage checkpoint. It
+The withdrawn v1 one-shot run did not reuse a stage checkpoint. It
 synthesized 379,357 instances, used all three FPGAs, cut 1,404 nets, scheduled
 1,867 board hops, and added 4,989 transport cells. All three VTR physical
 implementations passed; the aggregate physical result has zero DRC violations,
@@ -243,7 +252,8 @@ passed schedule legality and macro-cycle equivalence with no mismatches.
 The independent OpenSTA route covered all 195,532 original TimingPathDB paths
 (188,418 local and 7,114 cross-FPGA). At the realized 256-slot, 200 MHz fabric
 schedule, the virtual period is 1,280 ns and the runtime result is WNS
-+607.021434 ns / TNS 0 ns. The separate 10 ns source-clock target comparison is
++607.021434 ns / TNS 0 ns. These figures describe the withdrawn v1 experiment,
+not a currently qualified three-FPGA platform. The separate 10 ns source-clock target comparison is
 WNS -662.978550 ns / TNS -158,313.972324 ns; it is a target-frequency QoR
 diagnostic, not the actual emulation runtime frequency. The OpenSTA executable
 identity is sealed by SHA-256 when its build banner lacks a source revision.

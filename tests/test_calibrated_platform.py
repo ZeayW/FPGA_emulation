@@ -11,6 +11,7 @@ from emuflow.calibrated_platform import (
     materialize_calibrated_board_link_timing,
     materialize_calibrated_boarddb,
     measure_mapped_yosys_resource_units,
+    validate_calibrated_platform_model,
     validate_calibrated_partition_envelope,
     validate_calibrated_platform_application_holdout,
     validate_calibrated_platform_holdout,
@@ -27,7 +28,7 @@ from emuflow.calibrated_platform_family import (
 
 def template():
     return {
-        "schema": "emuflow.calibrated-platform-template/v1",
+        "schema": "emuflow.calibrated-platform-template/v2",
         "model": {
             "name": "synthetic_calibrated_reference",
             "description": "Unit-test-only behavior model",
@@ -39,6 +40,14 @@ def template():
         "device": {
             "part": "academic-calibrated-device",
             "utilization_limit": 0.75,
+            "capacity_contract": {
+                "academic_capacity_axis": "academic_mapper_equivalent",
+                "reference_capacity_axis": "reference_flow_reported",
+                "reference_target_granularity": "single_physical_fpga",
+                "physical_device_identity": "synthetic-unit-test-device",
+                "physical_capacity_source": "public unit-test fixture",
+                "physical_resource_capacity": {"lut": 1000, "ff": 2050},
+            },
         },
         "link": {
             "direction": "full_duplex",
@@ -744,6 +753,24 @@ class CalibratedPlatformTest(unittest.TestCase):
             )
             self.assertEqual(small["selected_maximum_frame_slots"], 4)
             self.assertEqual(small["candidates"][0]["maximum_frame_slots"], 4)
+            self.assertEqual(
+                small["candidates"][0]["capacity_axis"],
+                "academic_mapper_equivalent",
+            )
+            self.assertEqual(
+                small["candidates"][0]["physical_device_identity"],
+                "synthetic-unit-test-device",
+            )
+            self.assertEqual(
+                small["candidates"][0]["physical_capacity_per_fpga"],
+                {"ff": 2050, "lut": 1000},
+            )
+            self.assertEqual(
+                small["candidates"][0][
+                    "effective_academic_mapper_capacity_per_fpga"
+                ],
+                {"ff": 1550, "lut": 750},
+            )
             self.assertEqual(len(boarddb["fpgas"]), 2)
             self.assertEqual(len(timing["links"]), 2)
             medium, boarddb, _ = select_calibrated_platform(
@@ -965,7 +992,12 @@ class CalibratedPlatformTest(unittest.TestCase):
             model["calibration"]["reference_resource_raw_capacity_intervals"]["lut"],
             {"raw_lower": 987, "raw_upper_exclusive": 1015},
         )
-        self.assertEqual(model["profiles"]["nominal"]["device_capacity"]["lut"], 1000)
+        self.assertEqual(
+            model["profiles"]["nominal"][
+                "academic_mapper_equivalent_capacity"
+            ]["lut"],
+            1000,
+        )
         self.assertEqual(
             model["profiles"]["nominal"]["link_payload_bits_per_cycle_per_direction"],
             1,
@@ -1063,8 +1095,31 @@ class CalibratedPlatformTest(unittest.TestCase):
         self.assertEqual(boarddb["links"][0]["mode"], "abstract")
         self.assertTrue(boarddb["platform"]["name"].endswith("__nominal"))
         self.assertEqual(boarddb["fpgas"][0]["effective_capacity"]["lut"], 750)
+        contract = boarddb["platform"]["capacity_contract"]
+        self.assertEqual(
+            contract["capacity_field_semantics"],
+            "academic_mapper_equivalent_capacity_per_fpga",
+        )
+        self.assertEqual(
+            contract["physical_resource_capacity"], {"ff": 2050, "lut": 1000}
+        )
+        self.assertEqual(
+            contract["reference_flow_capacity_per_fpga"],
+            {"ff": 2067, "lut": 1000},
+        )
         with self.assertRaisesRegex(ValidationError, "not an explicitly supported"):
             materialize_calibrated_boarddb(model, "8fpga-invented", "nominal")
+
+    def test_rejects_aggregate_reference_capacity_as_one_fpga(self):
+        model = fit_calibrated_platform(template(), dataset())
+        invalid = copy.deepcopy(model)
+        invalid["calibration"]["reference_resource_raw_capacity_intervals"][
+            "lut"
+        ] = {"raw_lower": 2000, "raw_upper_exclusive": 2100}
+        with self.assertRaisesRegex(
+            ValidationError, "does not contain the declared single-FPGA"
+        ):
+            validate_calibrated_platform_model(invalid)
 
     def test_materialization_allows_only_explicit_lower_utilization_stress(self):
         model = fit_calibrated_platform(template(), dataset())

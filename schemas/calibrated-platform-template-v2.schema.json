@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/calibrated-platform-template-v2.schema.json",
+  "title": "EmuFlow calibrated academic platform template v2",
+  "type": "object",
+  "required": ["schema", "model", "device", "link", "configurations", "acceptance"],
+  "properties": {
+    "schema": {"const": "emuflow.calibrated-platform-template/v2"},
+    "model": {
+      "type": "object",
+      "required": ["name", "reference_alias", "source_class", "authorization_id", "publication_scope"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string"},
+        "reference_alias": {"type": "string", "minLength": 1},
+        "source_class": {"enum": ["authorized_reference_flow", "synthetic_fixture"]},
+        "authorization_id": {"type": "string", "minLength": 1},
+        "publication_scope": {"enum": ["internal", "aggregate_only", "public"]}
+      },
+      "additionalProperties": false
+    },
+    "device": {
+      "type": "object",
+      "required": ["part", "utilization_limit", "capacity_contract"],
+      "properties": {
+        "part": {"type": "string", "minLength": 1},
+        "utilization_limit": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "capacity_contract": {"$ref": "#/$defs/capacityContract"}
+      },
+      "additionalProperties": false
+    },
+    "link": {
+      "type": "object",
+      "required": ["direction", "capacity_sharing", "fabric_clock_mhz"],
+      "properties": {
+        "direction": {"enum": ["full_duplex", "half_duplex", "unidirectional"]},
+        "capacity_sharing": {"enum": ["per_direction", "shared_bidirectional"]},
+        "fabric_clock_mhz": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "configurations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "fpgas", "links"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "fpgas": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "endpoints"],
+              "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "endpoints": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "string", "minLength": 1}}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "required": ["capacity_outcome_accuracy_min", "link_outcome_accuracy_min", "delay_mean_relative_error_max", "delay_max_relative_error_max", "resource_unit_mapping_max_relative_error"],
+      "properties": {
+        "capacity_outcome_accuracy_min": {"type": "number", "minimum": 0, "maximum": 1},
+        "link_outcome_accuracy_min": {"type": "number", "minimum": 0, "maximum": 1},
+        "delay_mean_relative_error_max": {"type": "number", "minimum": 0},
+        "delay_max_relative_error_max": {"type": "number", "minimum": 0},
+        "resource_unit_mapping_max_relative_error": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "capacityContract": {
+      "type": "object",
+      "required": ["academic_capacity_axis", "reference_capacity_axis", "reference_target_granularity", "physical_device_identity", "physical_capacity_source", "physical_resource_capacity"],
+      "properties": {
+        "academic_capacity_axis": {"const": "academic_mapper_equivalent"},
+        "reference_capacity_axis": {"const": "reference_flow_reported"},
+        "reference_target_granularity": {"const": "single_physical_fpga"},
+        "physical_device_identity": {"type": "string", "minLength": 1},
+        "physical_capacity_source": {"type": "string", "minLength": 1},
+        "physical_resource_capacity": {"$ref": "#/$defs/resourceCapacity"}
+      },
+      "additionalProperties": false
+    },
+    "resourceCapacity": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"enum": ["lut", "ff", "bram", "dsp"]},
+      "additionalProperties": {"type": "integer", "minimum": 1}
+    }
+  },
+  "additionalProperties": false
+}

@@ -20,9 +20,9 @@ from .platform import Platform
 from .resources import RESOURCE_FIELDS, ResourceVector, classify_primitive_resources
 
 
-TEMPLATE_SCHEMA = "emuflow.calibrated-platform-template/v1"
+TEMPLATE_SCHEMA = "emuflow.calibrated-platform-template/v2"
 OBSERVATIONS_SCHEMA = "emuflow.platform-calibration-observations/v1"
-MODEL_SCHEMA = "emuflow.calibrated-academic-platform/v1"
+MODEL_SCHEMA = "emuflow.calibrated-academic-platform/v2"
 VALIDATION_SCHEMA = "emuflow.calibrated-academic-platform-validation/v1"
 APPLICATION_HOLDOUT_SCHEMA = (
     "emuflow.calibrated-academic-platform-application-holdout/v1"
@@ -44,6 +44,10 @@ _PUBLICATION_SCOPES = {"internal", "aggregate_only", "public"}
 _OUTCOMES = {"pass", "capacity_fail"}
 _PROFILES = ("conservative", "nominal", "aggressive")
 _PUBLICATION_RANK = {"internal": 0, "aggregate_only": 1, "public": 2}
+
+_ACADEMIC_CAPACITY_AXIS = "academic_mapper_equivalent"
+_REFERENCE_CAPACITY_AXIS = "reference_flow_reported"
+_REFERENCE_TARGET_GRANULARITY = "single_physical_fpga"
 
 
 def _attribute_is_true(value: Any) -> bool:
@@ -217,6 +221,70 @@ def _mapping(value: Any, context: str) -> Mapping[str, Any]:
     return value
 
 
+def _resource_capacity(value: Any, context: str) -> Dict[str, int]:
+    capacity = _mapping(value, context)
+    if not capacity:
+        raise ValidationError(f"{context}: expected at least one resource")
+    result = {}
+    for resource, count in capacity.items():
+        if resource not in {"lut", "ff", "bram", "dsp"}:
+            raise ValidationError(f"{context}: unsupported resource {resource!r}")
+        result[resource] = _integer(count, f"{context}.{resource}", minimum=1)
+    return dict(sorted(result.items()))
+
+
+def _capacity_contract(value: Any, context: str) -> Dict[str, Any]:
+    contract = _mapping(value, context)
+    _reject_unknown(
+        contract,
+        {
+            "academic_capacity_axis",
+            "reference_capacity_axis",
+            "reference_target_granularity",
+            "physical_device_identity",
+            "physical_capacity_source",
+            "physical_resource_capacity",
+        },
+        context,
+    )
+    if contract.get("academic_capacity_axis") != _ACADEMIC_CAPACITY_AXIS:
+        raise ValidationError(
+            f"{context}.academic_capacity_axis: expected "
+            f"{_ACADEMIC_CAPACITY_AXIS!r}"
+        )
+    if contract.get("reference_capacity_axis") != _REFERENCE_CAPACITY_AXIS:
+        raise ValidationError(
+            f"{context}.reference_capacity_axis: expected "
+            f"{_REFERENCE_CAPACITY_AXIS!r}"
+        )
+    if (
+        contract.get("reference_target_granularity")
+        != _REFERENCE_TARGET_GRANULARITY
+    ):
+        raise ValidationError(
+            f"{context}.reference_target_granularity: expected "
+            f"{_REFERENCE_TARGET_GRANULARITY!r}; aggregate or multi-device "
+            "capacity observations cannot define one selectable FPGA"
+        )
+    return {
+        "academic_capacity_axis": _ACADEMIC_CAPACITY_AXIS,
+        "reference_capacity_axis": _REFERENCE_CAPACITY_AXIS,
+        "reference_target_granularity": _REFERENCE_TARGET_GRANULARITY,
+        "physical_device_identity": _string(
+            contract.get("physical_device_identity"),
+            f"{context}.physical_device_identity",
+        ),
+        "physical_capacity_source": _string(
+            contract.get("physical_capacity_source"),
+            f"{context}.physical_capacity_source",
+        ),
+        "physical_resource_capacity": _resource_capacity(
+            contract.get("physical_resource_capacity"),
+            f"{context}.physical_resource_capacity",
+        ),
+    }
+
+
 def _array(value: Any, context: str, *, nonempty: bool = False) -> List[Any]:
     if not isinstance(value, list) or (nonempty and not value):
         qualifier = "non-empty " if nonempty else ""
@@ -385,7 +453,11 @@ def validate_calibration_template(value: Mapping[str, Any]) -> Dict[str, Any]:
         )
 
     device = _mapping(root.get("device"), "template.device")
-    _reject_unknown(device, {"part", "utilization_limit"}, "template.device")
+    _reject_unknown(
+        device,
+        {"part", "utilization_limit", "capacity_contract"},
+        "template.device",
+    )
     part = _string(device.get("part"), "template.device.part")
     utilization_limit = _number(
         device.get("utilization_limit"),
@@ -394,6 +466,9 @@ def validate_calibration_template(value: Mapping[str, Any]) -> Dict[str, Any]:
     )
     if utilization_limit > 1.0:
         raise ValidationError("template.device.utilization_limit: expected <= 1")
+    capacity_contract = _capacity_contract(
+        device.get("capacity_contract"), "template.device.capacity_contract"
+    )
 
     link = _mapping(root.get("link"), "template.link")
     _reject_unknown(
@@ -550,7 +625,11 @@ def validate_calibration_template(value: Mapping[str, Any]) -> Dict[str, Any]:
             "authorization_id": authorization_id,
             "publication_scope": publication_scope,
         },
-        "device": {"part": part, "utilization_limit": utilization_limit},
+        "device": {
+            "part": part,
+            "utilization_limit": utilization_limit,
+            "capacity_contract": capacity_contract,
+        },
         "link": {
             "direction": direction,
             "capacity_sharing": capacity_sharing,
@@ -1356,10 +1435,10 @@ def fit_calibrated_platform(
     for profile in _PROFILES:
         base_one_hop_ns = base_route_delay_ns
         profiles[profile] = {
-            "device_capacity": dict(
+            "academic_mapper_equivalent_capacity": dict(
                 sorted(academic_resource_profiles[profile].items())
             ),
-            "reference_device_capacity": dict(
+            "reference_flow_capacity": dict(
                 sorted(reference_resource_profiles[profile].items())
             ),
             "link_channels_per_direction": channels_per_direction,
@@ -1423,10 +1502,11 @@ def fit_calibrated_platform(
                 "fit_max_relative_error": maximum_relative_error,
             },
             "parameter_provenance": {
-                "device_capacity": (
+                "capacity_axes": (
                     "controlled fixed-assignment pass/fail boundaries normalized "
-                    "by the applied utilization limit, then converted into the "
-                    "academic mapper's units using disjoint isolated same-RTL probes"
+                    "by the applied utilization limit on one named physical FPGA; "
+                    "reference-flow capacity is then converted into the academic "
+                    "mapper-equivalent axis using disjoint isolated same-RTL probes"
                 ),
                 "link_capacity": (
                     "one independently schedulable logical bit per characterized "
@@ -1468,6 +1548,39 @@ def validate_calibrated_platform_model(value: Mapping[str, Any]) -> Dict[str, An
         raise ValidationError("calibrated model: missing academic-model qualification")
     if root["model"].get("not_a_hardware_clone") is not True:
         raise ValidationError("calibrated model: must explicitly state it is not a hardware clone")
+    device = _mapping(root["device"], "calibrated model.device")
+    contract = _capacity_contract(
+        device.get("capacity_contract"),
+        "calibrated model.device.capacity_contract",
+    )
+    physical_capacity = contract["physical_resource_capacity"]
+    calibration = _mapping(root["calibration"], "calibrated model.calibration")
+    intervals = _mapping(
+        calibration.get("reference_resource_raw_capacity_intervals"),
+        "calibrated model.calibration.reference_resource_raw_capacity_intervals",
+    )
+    if set(intervals) != set(physical_capacity):
+        raise ValidationError(
+            "calibrated model physical and fitted reference resource axes differ"
+        )
+    for resource, physical_count in physical_capacity.items():
+        interval = _mapping(
+            intervals[resource],
+            f"reference capacity interval {resource}",
+        )
+        lower = _integer(interval.get("raw_lower"), f"{resource}.raw_lower")
+        upper = _integer(
+            interval.get("raw_upper_exclusive"),
+            f"{resource}.raw_upper_exclusive",
+            minimum=1,
+        )
+        if not lower <= physical_count < upper:
+            raise ValidationError(
+                f"calibrated model {resource} reference interval [{lower}, {upper}) "
+                f"does not contain the declared single-FPGA physical capacity "
+                f"{physical_count}; the observations do not characterize one "
+                "instance of the named physical device"
+            )
     configurations = _array(
         root["configurations"], "calibrated model.configurations", nonempty=True
     )
@@ -1478,12 +1591,12 @@ def validate_calibrated_platform_model(value: Mapping[str, Any]) -> Dict[str, An
     for profile in _PROFILES:
         profile_value = _mapping(profiles[profile], f"profiles.{profile}")
         academic_capacity = _mapping(
-            profile_value.get("device_capacity"),
-            f"profiles.{profile}.device_capacity",
+            profile_value.get("academic_mapper_equivalent_capacity"),
+            f"profiles.{profile}.academic_mapper_equivalent_capacity",
         )
         reference_capacity = _mapping(
-            profile_value.get("reference_device_capacity"),
-            f"profiles.{profile}.reference_device_capacity",
+            profile_value.get("reference_flow_capacity"),
+            f"profiles.{profile}.reference_flow_capacity",
         )
         if set(academic_capacity) != set(reference_capacity):
             raise ValidationError(
@@ -1514,13 +1627,39 @@ def validate_calibrated_platform_model(value: Mapping[str, Any]) -> Dict[str, An
         for configuration in configurations:
             materialize_calibrated_boarddb(root, configuration["id"], profile)
     mapping = _mapping(
-        root["calibration"].get("resource_unit_mapping"),
+        calibration.get("resource_unit_mapping"),
         "calibrated model.calibration.resource_unit_mapping",
     )
-    if set(mapping) != set(profiles["nominal"]["device_capacity"]):
+    if set(mapping) != set(
+        profiles["nominal"]["academic_mapper_equivalent_capacity"]
+    ):
         raise ValidationError(
             "calibrated model resource-unit mapping does not cover device capacity"
         )
+    for profile in _PROFILES:
+        profile_value = profiles[profile]
+        for resource, reference_count in profile_value[
+            "reference_flow_capacity"
+        ].items():
+            scale = _number(
+                _mapping(mapping[resource], f"resource mapping {resource}").get(
+                    "academic_units_per_reference_unit"
+                ),
+                f"resource mapping {resource}.academic_units_per_reference_unit",
+                exclusive=True,
+            )
+            expected = max(1, math.floor(reference_count * scale))
+            actual = _integer(
+                profile_value["academic_mapper_equivalent_capacity"][resource],
+                f"profiles.{profile}.academic_mapper_equivalent_capacity.{resource}",
+                minimum=1,
+            )
+            if actual != expected:
+                raise ValidationError(
+                    f"profiles.{profile}.{resource}: academic mapper-equivalent "
+                    f"capacity {actual} does not equal floor(reference capacity "
+                    f"{reference_count} * mapping scale {scale}) = {expected}"
+                )
     delay_model = _mapping(
         root["calibration"].get("link_delay_model"),
         "calibrated model.calibration.link_delay_model",
@@ -1562,11 +1701,23 @@ def materialize_calibrated_boarddb(
     link = _mapping(root["link"], "calibrated model.link")
     model = _mapping(root["model"], "calibrated model.model")
     capacity = {
-        resource: _integer(count, f"profiles.{profile}.device_capacity.{resource}")
+        resource: _integer(
+            count,
+            f"profiles.{profile}.academic_mapper_equivalent_capacity.{resource}",
+        )
         for resource, count in _mapping(
-            profile_value.get("device_capacity"), f"profiles.{profile}.device_capacity"
+            profile_value.get("academic_mapper_equivalent_capacity"),
+            f"profiles.{profile}.academic_mapper_equivalent_capacity",
         ).items()
     }
+    reference_capacity = _resource_capacity(
+        profile_value.get("reference_flow_capacity"),
+        f"profiles.{profile}.reference_flow_capacity",
+    )
+    capacity_contract = _capacity_contract(
+        device.get("capacity_contract"),
+        "calibrated model.device.capacity_contract",
+    )
     declared_utilization_limit = _number(
         device.get("utilization_limit"),
         "calibrated model.device.utilization_limit",
@@ -1642,6 +1793,13 @@ def materialize_calibrated_boarddb(
                     else ""
                 )
             ),
+            "capacity_contract": {
+                "capacity_field_semantics": (
+                    "academic_mapper_equivalent_capacity_per_fpga"
+                ),
+                **capacity_contract,
+                "reference_flow_capacity_per_fpga": reference_capacity,
+            },
         },
         "fpgas": [
             {
@@ -1816,7 +1974,7 @@ def validate_calibrated_platform_holdout(
     nominal = model["profiles"]["nominal"]
     capacity_checks = []
     for item in observations["capacity_boundaries"]:
-        raw_capacity = nominal["reference_device_capacity"].get(item["resource"])
+        raw_capacity = nominal["reference_flow_capacity"].get(item["resource"])
         if raw_capacity is None:
             raise ValidationError(
                 f"holdout resource {item['resource']!r} was not identified during fitting"
@@ -2015,7 +2173,9 @@ def validate_calibrated_platform_application_holdout(
             "application holdout.resource_demand.academic",
         ).items()
     }
-    fitted_resources = set(model["profiles"]["nominal"]["device_capacity"])
+    fitted_resources = set(
+        model["profiles"]["nominal"]["academic_mapper_equivalent_capacity"]
+    )
     if set(reference_demand) != fitted_resources or set(academic_demand) != fitted_resources:
         raise ValidationError(
             "application holdout resource_demand reference and academic namespaces "
@@ -2074,7 +2234,7 @@ def validate_calibrated_platform_application_holdout(
     nominal = model["profiles"]["nominal"]
     reference_required_by_resource = {}
     for resource, amount in reference_demand.items():
-        raw_capacity = nominal["reference_device_capacity"].get(resource)
+        raw_capacity = nominal["reference_flow_capacity"].get(resource)
         if raw_capacity is None:
             raise ValidationError(
                 f"application holdout resource {resource!r} was not fitted"
@@ -2092,7 +2252,7 @@ def validate_calibrated_platform_application_holdout(
 
     academic_required_by_resource = {}
     for resource, amount in academic_demand.items():
-        raw_capacity = nominal["device_capacity"].get(resource)
+        raw_capacity = nominal["academic_mapper_equivalent_capacity"].get(resource)
         if raw_capacity is None:
             raise ValidationError(
                 f"application holdout academic resource {resource!r} was not fitted"

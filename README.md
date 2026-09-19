@@ -4258,6 +4258,17 @@ The current implementation fits:
 - conservative, nominal, and aggressive profiles within the measured
   intervals.
 
+Capacity uses three deliberately separate axes. `physical_resource_capacity`
+is the public or authorized datasheet capacity of one named FPGA;
+`reference_flow_capacity` is the independently fitted capacity reported by the
+reference flow; and `academic_mapper_equivalent_capacity` is the unit system
+consumed by EmuFlow partitioning after same-RTL mapper calibration. Generated
+BoardDB `capacity` is the last of these, and the BoardDB carries an explicit
+`platform.capacity_contract`; it must never be quoted as a physical LUT count.
+The fitted reference interval must contain the declared capacity of one
+physical FPGA on every resource axis. This rejects board-level, module-level,
+or otherwise aggregated observations masquerading as a single FPGA.
+
 It rejects free partitioning/routing observations during hardware-parameter
 fitting, non-identifiable timing experiments, reused fit observations in the
 holdout set, and arbitrary FPGA-count/topology generation. A model can produce
@@ -4377,7 +4388,7 @@ post-partition communication-envelope check remain authoritative. The family,
 demand, selection, and full-flow evidence contracts are respectively
 `emuflow.calibrated-platform-family/v2`,
 `emuflow.calibrated-platform-design-demand/v1`,
-`emuflow.calibrated-platform-selection/v2`, and
+`emuflow.calibrated-platform-selection/v3`, and
 `emuflow.calibrated-platform-full-flow-acceptance/v2`.
 The selected utilization limit is returned in the selection report and is used
 when materializing BoardDB capacity; it never silently reverts to the model
@@ -4426,9 +4437,9 @@ diagnostics in the reference flow's existing external reports. The manifest
 preserves the complete logical-FPGA-to-reference-target map so the external
 adapter can independently reconstruct and check direct and multi-hop routes. The
 schemas are
-`emuflow.calibrated-platform-template/v1`,
+`emuflow.calibrated-platform-template/v2`,
 `emuflow.platform-calibration-observations/v1`, and
-`emuflow.calibrated-academic-platform/v1`, with separate strict contracts for
+`emuflow.calibrated-academic-platform/v2`, with separate strict contracts for
 application holdout observations and their compact validation reports.
 Synthetic observations are limited to unit tests. The authorized internal
 campaign has completed controlled resource boundaries, link/TDM timing fitting,
@@ -4441,17 +4452,12 @@ application resource counts differ by as much as 34.96%; that value remains an e
 because mapper-dependent raw counts are not themselves hardware behavior. No reference-derived
 numeric parameter, raw report, or proprietary path is checked into Git.
 
-A fresh one-shot Koios DLA medium Phase 1--7 qualification is also complete on
-the named three-FPGA nominal model with an explicit 10% utilization stress
-override, baseline Phase 6, and physical seed 1. It used three FPGAs, cut 1,404
-nets, scheduled 1,867 board hops, and completed all three physical routes with
-zero DRC violations and zero unrouted nets. Phase 7C covered all 195,532
-original timing paths and passed schedule legality plus macro-cycle equivalence.
-At the realized 1,280 ns virtual period, independent OpenSTA reports runtime WNS
-+607.021434 ns and TNS 0 ns. The separate 10 ns target-frequency diagnostic is
-WNS -662.978550 ns / TNS -158,313.972324 ns and must not be reported as the
-runtime result. The final board-link timing remains a characterized academic
-model rather than measured-hardware sign-off. Reference-correlated transport
-overhead characterization remains future work; the open-flow qualification
-observed 4,989 added transport cells. See
+The earlier v1 three-FPGA qualification is withdrawn: its fitted per-target
+capacity represented roughly two physical FPGA capacities and therefore did
+not satisfy the v2 single-physical-FPGA granularity contract. Its historical
+logs remain experimental evidence, but it is not a selectable hardware tier
+and its QoR must not be presented as a qualified three-FPGA result. Every tier
+must be regenerated under v2 and receive fresh sealed Phase 1--7 acceptance
+before returning to the qualified family. Reference-correlated transport
+overhead characterization remains future work. See
 [the calibration plan](docs/CALIBRATED_ACADEMIC_PLATFORM.md).

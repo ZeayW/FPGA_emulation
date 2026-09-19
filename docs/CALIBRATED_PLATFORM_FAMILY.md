@@ -8,7 +8,9 @@ links from an FPGA count.
 
 Every selectable specification binds:
 
-1. one sealed `emuflow.calibrated-academic-platform/v1` model;
+1. one sealed `emuflow.calibrated-academic-platform/v2` model whose fitted
+   reference interval contains the declared capacity of one named physical
+   FPGA on every resource axis;
 2. one configuration already enumerated by that model;
 3. one conservative, nominal, or aggressive uncertainty profile;
 4. one explicit utilization limit no greater than the calibrated model limit;
@@ -58,7 +60,8 @@ must independently vary hop count so the two terms remain identifiable.
 
 The design demand contains the resource counts produced by the selected open
 mapping flow. For each qualified tier, EmuFlow applies the tier's admitted
-utilization limit to each per-FPGA capacity, computes the number of FPGAs
+utilization limit to each per-FPGA academic mapper-equivalent capacity,
+computes the number of FPGAs
 required independently for each resource, and chooses the lowest service rank
 whose explicit configuration has enough devices. Qualified ranks must increase
 capacity in every resource dimension, which prevents a guessed scalar score
@@ -68,6 +71,10 @@ This is an aggregate prefilter only. A selected topology can still fail because
 resources cannot be balanced or because its links cannot service the realized
 cut. Normal Phase 3 capacity checks and the calibrated post-partition
 communication-envelope gate therefore remain mandatory.
+
+Selection reports retain all three units: the named physical-device capacity,
+the reference-flow capacity, and the effective academic mapper-equivalent
+capacity used by the prefilter. The last value is never a physical LUT count.
 
 ## Publication boundary
 

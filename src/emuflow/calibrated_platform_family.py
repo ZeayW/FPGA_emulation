@@ -34,7 +34,7 @@ from .runtime import QOR_REPORT_SCHEMA
 
 FAMILY_SCHEMA = "emuflow.calibrated-platform-family/v2"
 DEMAND_SCHEMA = "emuflow.calibrated-platform-design-demand/v1"
-SELECTION_SCHEMA = "emuflow.calibrated-platform-selection/v2"
+SELECTION_SCHEMA = "emuflow.calibrated-platform-selection/v3"
 FULL_FLOW_SCHEMA = "emuflow.calibrated-platform-full-flow-acceptance/v2"
 QUALIFICATION_SPEC_SCHEMA = (
     "emuflow.calibrated-platform-family-qualification-spec/v2"
@@ -709,7 +709,11 @@ def load_calibrated_platform_family(
                 profile=profile,
                 utilization_limit=utilization_limit,
             )
-            resource_names = set(model["profiles"][profile]["device_capacity"])
+            resource_names = set(
+                model["profiles"][profile][
+                    "academic_mapper_equivalent_capacity"
+                ]
+            )
             if not resource_names or not resource_names <= _RESOURCES:
                 raise ValidationError("family model has unsupported resource dimensions")
             if qualified_resource_names is None:
@@ -748,8 +752,17 @@ def load_calibrated_platform_family(
         limit = float(item["utilization_limit"])
         aggregate = {
             resource: len(config["fpgas"])
-            * math.floor(int(model["profiles"][item["profile"]]["device_capacity"][resource]) * limit)
-            for resource in model["profiles"][item["profile"]]["device_capacity"]
+            * math.floor(
+                int(
+                    model["profiles"][item["profile"]][
+                        "academic_mapper_equivalent_capacity"
+                    ][resource]
+                )
+                * limit
+            )
+            for resource in model["profiles"][item["profile"]][
+                "academic_mapper_equivalent_capacity"
+            ]
         }
         if prior is not None and any(aggregate[k] < prior[k] for k in aggregate):
             raise ValidationError(
@@ -994,7 +1007,11 @@ def select_calibrated_platform(
     if not qualified:
         raise ValidationError("calibrated platform family has no qualified specifications")
     first_model = loaded[qualified[0]["id"]]["model"]
-    resources = set(first_model["profiles"][qualified[0]["profile"]]["device_capacity"])
+    resources = set(
+        first_model["profiles"][qualified[0]["profile"]][
+            "academic_mapper_equivalent_capacity"
+        ]
+    )
     demand = validate_design_demand(demand_value, expected_resources=resources)
     candidates = []
     selected = None
@@ -1006,9 +1023,13 @@ def select_calibrated_platform(
         fpga_count = len(configuration["fpgas"])
         limit = float(specification["utilization_limit"])
         effective_per_fpga = {
-            resource: math.floor(int(profile["device_capacity"][resource]) * limit)
+            resource: math.floor(
+                int(profile["academic_mapper_equivalent_capacity"][resource])
+                * limit
+            )
             for resource in sorted(resources)
         }
+        contract = model["device"]["capacity_contract"]
         required = {
             resource: (
                 math.ceil(demand["resources"][resource] / effective_per_fpga[resource])
@@ -1022,7 +1043,13 @@ def select_calibrated_platform(
             "specification": specification["id"],
             "service_rank": specification["service_rank"],
             "fpga_count": fpga_count,
-            "effective_capacity_per_fpga": effective_per_fpga,
+            "capacity_axis": contract["academic_capacity_axis"],
+            "physical_device_identity": contract["physical_device_identity"],
+            "physical_capacity_per_fpga": contract["physical_resource_capacity"],
+            "reference_flow_capacity_per_fpga": profile[
+                "reference_flow_capacity"
+            ],
+            "effective_academic_mapper_capacity_per_fpga": effective_per_fpga,
             "required_fpgas_by_resource": required,
             "resource_prefilter_pass": feasible,
             "maximum_frame_slots": _integer(
