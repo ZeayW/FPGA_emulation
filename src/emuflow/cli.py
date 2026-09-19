@@ -184,6 +184,7 @@ from .rapidwright_provider import (
     validate_rapidwright_architecture,
     validate_rapidwright_provider_manifest,
 )
+from .xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
 from .experiment_partition import (
     run_partition_checkpoint,
     validate_partition_checkpoint,
@@ -2617,6 +2618,23 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_validate_rapidwright_device.add_argument(
         "--require-physical-regions", action="store_true"
     )
+    arch_pack_xilinx = arch_subparsers.add_parser(
+        "pack-xilinx",
+        help="pack an audited UltraScale+ mapped JSON into physical site clusters",
+    )
+    arch_pack_xilinx.add_argument("--mapped-json", type=Path, required=True)
+    arch_pack_xilinx.add_argument("--output", "-o", type=Path, required=True)
+    arch_pack_xilinx.add_argument("--top")
+    arch_validate_xilinx_packing = arch_subparsers.add_parser(
+        "validate-xilinx-packing",
+        help="independently validate UltraScale+ site packing and cascade chains",
+    )
+    arch_validate_xilinx_packing.add_argument(
+        "--mapped-json", type=Path, required=True
+    )
+    arch_validate_xilinx_packing.add_argument("--packed", type=Path, required=True)
+    arch_validate_xilinx_packing.add_argument("--architecture", type=Path)
+    arch_validate_xilinx_packing.add_argument("--top")
     arch_capacity_fpgaif = arch_subparsers.add_parser(
         "check-capacity",
         help="check EmuIR primitive support and BEL capacity",
@@ -4998,6 +5016,19 @@ def _dispatch(args: argparse.Namespace) -> int:
                 manifest,
                 manifest_path=args.provider_manifest,
                 require_physical_regions=args.require_physical_regions,
+            )
+        elif args.arch_command == "pack-xilinx":
+            report = pack_xilinx_sites(
+                args.mapped_json,
+                args.output,
+                top=args.top,
+            )
+        elif args.arch_command == "validate-xilinx-packing":
+            report = validate_xilinx_packing(
+                args.mapped_json,
+                args.packed,
+                top=args.top,
+                architecture_path=args.architecture,
             )
         elif args.arch_command == "check-capacity":
             architecture = ArchitectureDB.load(args.arch)

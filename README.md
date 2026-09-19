@@ -4153,7 +4153,31 @@ Every final mapped cell must belong to the checked-in
 `xilinx-ultrascaleplus-open-v1.primitives.json` namespace; unknown cells,
 external macros, missing port metadata, and resource-accounting disagreements
 fail before Phase 1. A supplied Yosys JSON cannot bypass the same audit. This
-profile is opt-in until packing, placement, RWRoute, timing, and complete
+profile feeds the first-party conservative UltraScale+ site packer. It binds
+LUT/FF cells to legal SLICEL/SLICEM BELs, keeps one complete FF control set per
+slice, packs MUXF7/MUXF8 cones onto their dedicated BEL topology, reserves
+exclusive CARRY8 sites, and binds DSP48E2, RAMB18E2/RAMB36E2, and URAM288 to
+compatible hard sites. It deliberately does not claim LUT5/LUT6 dual-output
+sharing in v1; consuming an extra site is legal, while inventing an unsupported
+shared configuration is not. Dedicated carry, DSP, BRAM, and URAM cascade
+connectivity is emitted as an exact non-branching adjacency certificate. The
+independent validator reloads the mapped design and ArchitectureDB and rejects
+duplicate ownership, capacity overflow, mixed control sets, incompatible BELs,
+broken mux topology, or a modified cascade chain.
+
+```bash
+emuflow arch pack-xilinx \
+  --mapped-json build/xilinx/mapped.json \
+  --output build/xilinx/packed-sites.json
+emuflow arch validate-xilinx-packing \
+  --mapped-json build/xilinx/mapped.json \
+  --packed build/xilinx/packed-sites.json \
+  --architecture /external/xcvu19p.architecture.json
+```
+
+The packed artifact contains cell ownership and compact constraints only; it
+does not copy vendor device data or a routing graph into the repository. This
+profile remains opt-in until placement, RWRoute, timing, and complete
 small/medium Phase 1--7 acceptance gates pass; it does not silently replace
 the current default.
 RapidWright and its

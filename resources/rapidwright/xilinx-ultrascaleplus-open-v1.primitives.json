@@ -20,7 +20,6 @@
     "LUT6": {"category": "lut", "hard_block": false, "placement_required": true, "resources": {"lut": 1}},
     "MUXF7": {"category": "slice_mux", "hard_block": true, "placement_required": true, "resources": {}},
     "MUXF8": {"category": "slice_mux", "hard_block": true, "placement_required": true, "resources": {}},
-    "MUXF9": {"category": "slice_mux", "hard_block": true, "placement_required": true, "resources": {}},
     "RAMB18E2": {"category": "bram", "hard_block": true, "placement_required": true, "resources": {"bram18k": 1}},
     "RAMB36E2": {"category": "bram", "hard_block": true, "placement_required": true, "resources": {"bram18k": 2}},
     "URAM288": {"category": "uram", "hard_block": true, "placement_required": true, "resources": {"uram288": 1}},

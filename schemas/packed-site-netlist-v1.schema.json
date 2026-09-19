@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/packed-site-netlist-v1.schema.json",
+  "title": "EmuFlow PackedSiteNetlist v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "status", "mapping_profile", "top", "source", "policy", "clusters", "cascade_chains", "unplaced_constants", "summary"],
+  "properties": {
+    "schema": {"const": "emuflow.packed-site-netlist/v1"},
+    "status": {"const": "pass"},
+    "mapping_profile": {"const": "xilinx-ultrascaleplus-open-v1"},
+    "top": {"type": "string", "minLength": 1},
+    "source": {"type": "object"},
+    "policy": {"type": "object"},
+    "clusters": {"type": "array", "items": {"type": "object"}},
+    "cascade_chains": {"type": "array", "items": {"type": "object"}},
+    "unplaced_constants": {"type": "array", "items": {"type": "string"}},
+    "summary": {"type": "object"}
+  }
+}
