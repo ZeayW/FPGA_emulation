@@ -204,7 +204,8 @@ def export_xilinx_cluster_bookshelf(
     resources = {
         cluster["id"]: _cluster_resource(cluster) for cluster in packed["clusters"]
     }
-    nets = _cluster_nets(mapped, packed, top)
+    selected_top = top if top is not None else packed.get("top")
+    nets = _cluster_nets(mapped, packed, selected_top)
     demand = Counter(resources.values())
     capacity = Counter(
         resource for resource in (

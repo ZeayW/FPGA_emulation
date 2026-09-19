@@ -274,6 +274,10 @@ def place_xilinx_clusters(
 
     sites = {site["name"]: architecture.site_named(site["name"])
              for site in architecture.value["sites"]}
+    site_at_xy = {
+        (site["x"], site["y"]): site["name"]
+        for site in architecture.value["sites"]
+    }
     candidates: Dict[str, List[str]] = {}
     candidate_cache: Dict[
         Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...]], List[str]
@@ -374,13 +378,23 @@ def place_xilinx_clusters(
     for cluster_id in remaining:
         values = candidates[cluster_id]
         if cluster_id in guidance:
-            selected = min(
-                (name for name in values if name not in used_sites),
-                key=lambda name: _distance(
-                    [cluster_id], [sites[name]], guidance
-                ),
-                default=None,
-            )
+            target_x, target_y = guidance[cluster_id]
+            rounded = (int(round(target_x)), int(round(target_y)))
+            direct = site_at_xy.get(rounded)
+            if (
+                direct is not None
+                and direct not in used_sites
+                and direct in candidate_members(cluster_id)
+            ):
+                selected = direct
+            else:
+                selected = min(
+                    (name for name in values if name not in used_sites),
+                    key=lambda name: _distance(
+                        [cluster_id], [sites[name]], guidance
+                    ),
+                    default=None,
+                )
         else:
             key = id(values)
             cursor = cursors[key]
