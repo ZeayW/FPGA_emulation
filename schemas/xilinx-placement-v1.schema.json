@@ -33,7 +33,21 @@
           "y": {"type": "integer", "minimum": 0},
           "fixed": {"type": "boolean"},
           "physical_region": {"type": ["object", "null"]},
-          "assignments": {"type": "array", "items": {"type": "object"}}
+          "assignments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["instance", "cell_type", "bel", "placement_mode", "site"],
+              "properties": {
+                "instance": {"type": "string", "minLength": 1},
+                "cell_type": {"type": "string", "minLength": 1},
+                "bel": {"type": "string", "minLength": 1},
+                "placement_mode": {"type": "string", "minLength": 1},
+                "site": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": false
+            }
+          }
         },
         "additionalProperties": false
       }

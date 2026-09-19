@@ -4224,6 +4224,10 @@ checker reloads the ArchitectureDB and recomputes every ownership, BEL,
 constraint, overlap, and cascade decision. The result is a compact placement
 certificate and never embeds vendor device records. OpenPARF supplies global
 guidance only; it is not treated as the exact UltraScale+ legalizer.
+For split BRAM tiles, the placement certificate retains the FPGA-Interchange
+tile anchor and also materializes the exact RapidWright site of every
+RAMB18E2/RAMB36E2 assignment; this prevents the lower and upper BRAM views from
+being conflated at the pack/place-to-route boundary.
 RWRoute is likewise a physical routing provider, not the acceptance oracle.
 The adapter emits only a compact, source-sealed route certificate. An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every

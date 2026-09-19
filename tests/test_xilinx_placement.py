@@ -151,6 +151,59 @@ class XilinxPlacementTest(unittest.TestCase):
                     packed, arch, output, constraints_path=constraints
                 )
 
+    def test_bram_anchor_expands_to_exact_rapidwright_sites(self):
+        architecture = {
+            "schema": "emuflow.archdb/v1", "part": "xcvu19p-test",
+            "source": {"format": "unit-test/v1"},
+            "policy": {"name": "unit-test"},
+            "site_templates": {
+                "RAMB181": {
+                    "bels": [bel("RAMB18E2_U", "RAMB18E2")],
+                    "alternative_templates": ["RAMB180", "RAMB36"],
+                },
+                "RAMB180": {
+                    "bels": [bel("RAMB18E2_L", "RAMB18E2")],
+                    "alternative_templates": [],
+                },
+                "RAMB36": {
+                    "bels": [bel("RAMB36E2", "RAMB36E2")],
+                    "alternative_templates": [],
+                },
+            },
+            "sites": [{
+                "name": "RAMB18_X4Y241", "type": "RAMB181",
+                "template": "RAMB181", "x": 4, "y": 241,
+            }],
+        }
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "status": "pass",
+            "clusters": [{
+                "id": "bram", "kind": "hard",
+                "site_templates": ["RAMB180", "RAMB181"],
+                "assignments": [
+                    {"instance": "lo", "cell_type": "RAMB18E2", "bel": "RAMB18E2_L"},
+                    {"instance": "hi", "cell_type": "RAMB18E2", "bel": "RAMB18E2_U"},
+                ],
+            }], "cascade_chains": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch = root / "arch.json"
+            packed_path = root / "packed.json"
+            output = root / "place.json"
+            arch.write_text(json.dumps(architecture), encoding="utf-8")
+            packed_path.write_text(json.dumps(packed), encoding="utf-8")
+            place_xilinx_clusters(packed_path, arch, output)
+            value = json.loads(output.read_text(encoding="utf-8"))
+            validate_xilinx_placement(packed_path, arch, output)
+        sites = {
+            item["instance"]: item["site"]
+            for item in value["clusters"][0]["assignments"]
+        }
+        self.assertEqual(
+            sites, {"lo": "RAMB18_X4Y240", "hi": "RAMB18_X4Y241"}
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

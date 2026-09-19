@@ -47,6 +47,38 @@ def _physical_site_coordinate(name: str) -> Tuple[str, int, int]:
     return match.group("kind"), int(match.group("x")), int(match.group("y"))
 
 
+def _materialize_assignment_sites(
+    anchor_site: str, assignments: Sequence[Mapping[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Expand an Interchange BRAM tile anchor into RapidWright site names."""
+
+    kind, physical_x, physical_y = _physical_site_coordinate(anchor_site)
+    result: List[Dict[str, Any]] = []
+    for assignment in assignments:
+        physical_site = anchor_site
+        if kind == "RAMB18":
+            bel = assignment.get("bel")
+            cell_type = assignment.get("cell_type")
+            if cell_type == "RAMB18E2":
+                if bel == "RAMB18E2_U":
+                    physical_site = f"RAMB18_X{physical_x}Y{physical_y}"
+                elif bel == "RAMB18E2_L" and physical_y > 0:
+                    physical_site = f"RAMB18_X{physical_x}Y{physical_y - 1}"
+                else:
+                    raise ValidationError(
+                        f"BRAM anchor {anchor_site!r} has invalid RAMB18 BEL {bel!r}"
+                    )
+            elif cell_type == "RAMB36E2" and bel == "RAMB36E2":
+                physical_site = f"RAMB36_X{physical_x}Y{physical_y // 2}"
+            else:
+                raise ValidationError(
+                    f"BRAM anchor {anchor_site!r} cannot materialize "
+                    f"{cell_type!r} on {bel!r}"
+                )
+        result.append({**assignment, "site": physical_site})
+    return result
+
+
 def _load_guidance(
     path: Optional[Path], cluster_ids: Set[str]
 ) -> Tuple[Dict[str, Tuple[float, float]], Optional[str]]:
@@ -459,7 +491,9 @@ def place_xilinx_clusters(
         site_name = placed[cluster_id]
         site = sites[site_name]
         base = site_base[site_name]
-        assignments = resolved_by_cluster_template[(cluster_id, base)]
+        assignments = _materialize_assignment_sites(
+            site_name, resolved_by_cluster_template[(cluster_id, base)]
+        )
         target = guidance.get(cluster_id)
         if target is not None:
             displacement.append(
@@ -574,6 +608,8 @@ def validate_xilinx_placement(
         if not _site_satisfies_constraint(site, constraints.get(cluster_id, {})):
             raise ValidationError(f"{context}: placement constraint is violated")
         resolved = _resolve_cluster_bels(cluster, contracts[site_base[site_name]])
+        if resolved is not None:
+            resolved = _materialize_assignment_sites(site_name, resolved)
         if resolved is None or entry.get("assignments") != resolved:
             raise ValidationError(f"{context}: exact BEL assignment is invalid")
         for assignment in resolved:

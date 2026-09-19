@@ -57,7 +57,9 @@ def export_rwroute_input(
         raise ValidationError("PackedSiteNetlist top is invalid")
     cells = _select_module(mapped, top)["cells"]
     physical = {
-        assignment["instance"]: (entry["site"], assignment["bel"])
+        assignment["instance"]: (
+            assignment.get("site", entry["site"]), assignment["bel"]
+        )
         for entry in placement["clusters"]
         for assignment in entry["assignments"]
     }
