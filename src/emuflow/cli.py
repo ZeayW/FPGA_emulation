@@ -185,6 +185,7 @@ from .rapidwright_provider import (
     validate_rapidwright_provider_manifest,
 )
 from .xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
+from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from .experiment_partition import (
     run_partition_checkpoint,
     validate_partition_checkpoint,
@@ -1688,6 +1689,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--policy",
         choices=sorted(VALID_SYNTHESIS_POLICIES),
         default="native",
+    )
+    synthesis.add_argument(
+        "--mapping-profile",
+        choices=[XILINX_ULTRASCALEPLUS_OPEN_PROFILE],
+        help="enable the fail-closed Route A UltraScale+ primitive contract",
     )
 
     vpr_parser = subparsers.add_parser(
@@ -4784,6 +4790,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             log_path=args.log,
             include_dirs=args.include_dir,
             defines=args.define,
+            mapping_profile=args.mapping_profile,
         )
         _print_json(
             {

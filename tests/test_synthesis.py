@@ -1,12 +1,23 @@
 import unittest
 from pathlib import Path
 
+from emuflow.cli import _build_parser
 from emuflow.errors import EmuFlowError
 from emuflow.synthesis import build_generic_yosys_script, build_yosys_script
 from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 class SynthesisTest(unittest.TestCase):
+    def test_cli_exposes_fail_closed_mapping_profile(self) -> None:
+        args = _build_parser().parse_args([
+            "synth-yosys",
+            "rtl/counter.sv",
+            "--top", "counter",
+            "--output", "build/counter.json",
+            "--mapping-profile", XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+        ])
+        self.assertEqual(args.mapping_profile, XILINX_ULTRASCALEPLUS_OPEN_PROFILE)
+
     def test_xcup_script_is_board_independent(self) -> None:
         script = build_yosys_script(
             [Path("rtl/counter.sv")],
