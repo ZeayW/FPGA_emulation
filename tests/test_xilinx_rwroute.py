@@ -1,0 +1,96 @@
+import copy
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from emuflow.errors import ValidationError
+from emuflow.xilinx_rwroute import export_rwroute_input, validate_xilinx_route_db
+
+
+SHA = "0" * 64
+
+
+class XilinxRWRouteTest(unittest.TestCase):
+    def _route(self):
+        return {
+            "schema": "emuflow.xilinx-route-db/v1", "status": "candidate",
+            "provider": "rapidwright-rwroute-2026.1.0", "part": "xcvu19p-test",
+            "source": {
+                "mapped_sha256": SHA, "packed_sha256": SHA,
+                "placement_sha256": SHA, "rwroute_input_sha256": SHA,
+            },
+            "cells": 3, "excluded_nets": [], "summary": {},
+            "nets": [{
+                "net": "n1", "kind": "signal", "has_gap": False,
+                "pins": [
+                    {"site": "S0", "pin": "O", "is_output": True, "node": "A"},
+                    {"site": "S1", "pin": "I", "is_output": False, "node": "B"},
+                    {"site": "S2", "pin": "I", "is_output": False, "node": "C"},
+                ],
+                "pips": [
+                    {"tile": "T0", "start_wire": "W0", "end_wire": "W1", "start_node": "A", "end_node": "X"},
+                    {"tile": "T1", "start_wire": "W2", "end_wire": "W3", "start_node": "X", "end_node": "B"},
+                    {"tile": "T2", "start_wire": "W4", "end_wire": "W5", "start_node": "X", "end_node": "C"},
+                ],
+            }],
+        }
+
+    def test_checker_accepts_connected_tree_and_rejects_tampering(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "route.json"
+            path.write_text(json.dumps(self._route()), encoding="utf-8")
+            report = validate_xilinx_route_db(path)
+            self.assertEqual(report["nets"], 1)
+            broken = self._route()
+            broken["nets"][0]["pips"].pop()
+            path.write_text(json.dumps(broken), encoding="utf-8")
+            with self.assertRaises(ValidationError):
+                validate_xilinx_route_db(path)
+
+    def test_checker_rejects_cross_net_resource_conflict(self):
+        value = self._route()
+        other = copy.deepcopy(value["nets"][0])
+        other["net"] = "n2"
+        value["nets"].append(other)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "route.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaises(ValidationError):
+                validate_xilinx_route_db(path)
+
+    def test_exporter_excludes_intra_site_net(self):
+        mapped = {
+            "modules": {"top": {"cells": {
+                "a": {"type": "LUT1", "port_directions": {"O": "output"}, "connections": {"O": [1]}},
+                "b": {"type": "FDRE", "port_directions": {"D": "input"}, "connections": {"D": [1]}},
+            }}}
+        }
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+            "clusters": [{"assignments": [
+                {"instance": "a", "cell_type": "LUT1", "bel": "A6LUT"},
+                {"instance": "b", "cell_type": "FDRE", "bel": "AFF"},
+            ]}],
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
+                {"instance": "a", "bel": "A6LUT"},
+                {"instance": "b", "bel": "AFF"},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / name for name in ("mapped.json", "packed.json", "placement.json")]
+            for path, value in zip(paths, (mapped, packed, placement)):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            output = root / "route.tsv"
+            report = export_rwroute_input(*paths, output)
+            text = output.read_text(encoding="utf-8")
+        self.assertEqual(report["routable_nets"], 0)
+        self.assertIn("EXCLUDED\tn1\tintra_site", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

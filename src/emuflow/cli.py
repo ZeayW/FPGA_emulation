@@ -190,6 +190,11 @@ from .xilinx_placement import (
     validate_xilinx_placement,
 )
 from .xilinx_openparf import run_xilinx_openparf_guidance
+from .xilinx_rwroute import (
+    export_rwroute_input,
+    run_rwroute,
+    validate_xilinx_route_db,
+)
 from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from .experiment_partition import (
     run_partition_checkpoint,
@@ -2681,6 +2686,33 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_guide_xilinx.add_argument("--top")
     arch_guide_xilinx.add_argument("--openparf-install", type=Path)
     arch_guide_xilinx.add_argument("--openparf-python", type=Path)
+    arch_export_rwroute = arch_subparsers.add_parser(
+        "export-xilinx-rwroute-input",
+        help="export a sealed placed UltraScale+ netlist for RWRoute",
+    )
+    arch_export_rwroute.add_argument("--mapped-json", type=Path, required=True)
+    arch_export_rwroute.add_argument("--packed", type=Path, required=True)
+    arch_export_rwroute.add_argument("--placement", type=Path, required=True)
+    arch_export_rwroute.add_argument("--output", "-o", type=Path, required=True)
+    arch_run_rwroute = arch_subparsers.add_parser(
+        "run-xilinx-rwroute",
+        help="route a sealed placed UltraScale+ design with RapidWright RWRoute",
+    )
+    arch_run_rwroute.add_argument("--input", type=Path, required=True)
+    arch_run_rwroute.add_argument("--output", "-o", type=Path, required=True)
+    arch_run_rwroute.add_argument("--rapidwright-jar", type=Path, required=True)
+    arch_run_rwroute.add_argument("--java", type=Path, required=True)
+    arch_run_rwroute.add_argument("--classes", type=Path, required=True)
+    arch_run_rwroute.add_argument("--java-source", type=Path, required=True)
+    arch_run_rwroute.add_argument("--log", type=Path)
+    arch_validate_rwroute = arch_subparsers.add_parser(
+        "validate-xilinx-route",
+        help="independently validate a sealed RWRoute route certificate",
+    )
+    arch_validate_rwroute.add_argument("--route", type=Path, required=True)
+    arch_validate_rwroute.add_argument("--mapped-json", type=Path, required=True)
+    arch_validate_rwroute.add_argument("--packed", type=Path, required=True)
+    arch_validate_rwroute.add_argument("--placement", type=Path, required=True)
     arch_capacity_fpgaif = arch_subparsers.add_parser(
         "check-capacity",
         help="check EmuIR primitive support and BEL capacity",
@@ -5121,6 +5153,26 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.mapped_json, args.packed, args.architecture, args.out,
                 top=args.top, openparf_install=args.openparf_install,
                 openparf_python=args.openparf_python,
+            )
+        elif args.arch_command == "export-xilinx-rwroute-input":
+            report = export_rwroute_input(
+                args.mapped_json, args.packed, args.placement, args.output
+            )
+        elif args.arch_command == "run-xilinx-rwroute":
+            report = run_rwroute(
+                args.input, args.output,
+                rapidwright_jar=args.rapidwright_jar,
+                java=args.java,
+                classes_dir=args.classes,
+                java_source=args.java_source,
+                log_path=args.log,
+            )
+        elif args.arch_command == "validate-xilinx-route":
+            report = validate_xilinx_route_db(
+                args.route,
+                mapped_path=args.mapped_json,
+                packed_path=args.packed,
+                placement_path=args.placement,
             )
         elif args.arch_command == "check-capacity":
             architecture = ArchitectureDB.load(args.arch)

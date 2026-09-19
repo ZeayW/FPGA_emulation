@@ -4193,6 +4193,24 @@ emuflow arch validate-xilinx-placement \
   --architecture /external/xcvu19p.architecture.json \
   --constraints build/xilinx/placement-constraints.json \
   --placement build/xilinx/placement.json
+emuflow arch export-xilinx-rwroute-input \
+  --mapped-json build/xilinx/mapped.json \
+  --packed build/xilinx/packed-sites.json \
+  --placement build/xilinx/placement.json \
+  --output build/xilinx/rwroute-input.tsv
+emuflow arch run-xilinx-rwroute \
+  --input build/xilinx/rwroute-input.tsv \
+  --rapidwright-jar /external/rapidwright-standalone.jar \
+  --java /external/jdk17/bin/java \
+  --java-source scripts/rapidwright/EmuFlowRWRoute.java \
+  --classes build/xilinx/rwroute-classes \
+  --log build/xilinx/rwroute.log \
+  --output build/xilinx/xilinx-route.json
+emuflow arch validate-xilinx-route \
+  --route build/xilinx/xilinx-route.json \
+  --mapped-json build/xilinx/mapped.json \
+  --packed build/xilinx/packed-sites.json \
+  --placement build/xilinx/placement.json
 ```
 
 The packed artifact contains cell ownership and compact constraints only; it
@@ -4206,6 +4224,14 @@ checker reloads the ArchitectureDB and recomputes every ownership, BEL,
 constraint, overlap, and cascade decision. The result is a compact placement
 certificate and never embeds vendor device records. OpenPARF supplies global
 guidance only; it is not treated as the exact UltraScale+ legalizer.
+RWRoute is likewise a physical routing provider, not the acceptance oracle.
+The adapter emits only a compact, source-sealed route certificate. An
+independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
+directed source-to-sink route, rejects gaps and resource conflicts, and checks
+that the certificate belongs to the exact mapped, packed, and placed inputs.
+Purely intra-site nets remain in RapidWright site routing and are explicitly
+classified outside the inter-site certificate; driverless boundary/clock nets
+remain explicit exclusions rather than being silently invented.
 This
 profile remains opt-in until placement, RWRoute, timing, and complete
 small/medium Phase 1--7 acceptance gates pass; it does not silently replace

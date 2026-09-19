@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.org/schemas/xilinx-route-db-v1.schema.json",
+  "title": "EmuFlow RapidWright route certificate",
+  "type": "object",
+  "required": ["schema", "status", "provider", "part", "source", "cells", "nets", "excluded_nets", "summary"],
+  "properties": {
+    "schema": {"const": "emuflow.xilinx-route-db/v1"},
+    "status": {"enum": ["candidate", "pass"]},
+    "provider": {"const": "rapidwright-rwroute-2026.1.0"},
+    "part": {"type": "string", "minLength": 1},
+    "source": {
+      "type": "object",
+      "required": ["mapped_sha256", "packed_sha256", "placement_sha256", "rwroute_input_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "mapped_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "packed_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "placement_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "rwroute_input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "cells": {"type": "integer", "minimum": 0},
+    "nets": {"type": "array", "items": {"type": "object"}},
+    "excluded_nets": {"type": "array", "items": {"type": "object"}},
+    "summary": {"type": "object"}
+  },
+  "additionalProperties": false
+}
