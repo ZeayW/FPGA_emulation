@@ -47,10 +47,14 @@ from .sta import (
     project_sta_path_database_value,
     validate_sta_path_database_value,
 )
-from .synthesis import run_generic_yosys
+from .synthesis import run_generic_yosys, run_xilinx_ultrascaleplus_yosys
 from .tdm import TDM_BASELINE_PROVIDER, is_sampled_virtual_wire_schedule
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_netlist import normalize_vtr_hard_block_json
+from .xilinx_primitives import (
+    XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+    audit_xilinx_mapped_json,
+)
 
 
 EXPERIMENT_FRONTEND_SCHEMA = "emuflow.experiment-frontend-checkpoint/v1"
@@ -211,6 +215,15 @@ def run_frontend_checkpoint(
             record["sha256"] = _sha256(copied)
         source_records.append(record)
         mode = "provided-yosys-json"
+        if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+            synthesis_report = {
+                "status": "pass",
+                "provider": "provided-yosys-json",
+                "mapping_profile": mapping_profile,
+                "primitive_audit": audit_xilinx_mapped_json(
+                    synthesized, top=top
+                ),
+            }
     else:
         if not sources or top is None:
             raise EmuFlowError("frontend checkpoint requires RTL sources and --top")
@@ -238,6 +251,15 @@ def run_frontend_checkpoint(
                 log_path=output_dir / "yosys.log",
             )
             mode = "generic-lut6-ff"
+        elif mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+            synthesis_report = run_xilinx_ultrascaleplus_yosys(
+                sources,
+                top,
+                synthesized,
+                executable=yosys,
+                log_path=output_dir / "yosys.log",
+            )
+            mode = "xilinx-ultrascaleplus-open"
         else:
             raise ValidationError("frontend mapping profile is invalid")
     phase1 = run_phase1(

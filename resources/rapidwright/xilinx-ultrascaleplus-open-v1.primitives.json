@@ -1,0 +1,29 @@
+{
+  "schema": "emuflow.xilinx-primitive-library-db/v1",
+  "library_id": "xilinx-ultrascaleplus-open-v1",
+  "family": "UltraScale+",
+  "mapping_profile": "xilinx-ultrascaleplus-open-v1",
+  "unknown_cell_policy": "fail",
+  "cells": {
+    "CARRY8": {"category": "carry", "hard_block": true, "placement_required": true, "resources": {"carry8": 1}},
+    "DSP48E2": {"category": "dsp", "hard_block": true, "placement_required": true, "resources": {"dsp48": 1}},
+    "FDCE": {"category": "ff", "hard_block": false, "placement_required": true, "resources": {"ff": 1}},
+    "FDPE": {"category": "ff", "hard_block": false, "placement_required": true, "resources": {"ff": 1}},
+    "FDRE": {"category": "ff", "hard_block": false, "placement_required": true, "resources": {"ff": 1}},
+    "FDSE": {"category": "ff", "hard_block": false, "placement_required": true, "resources": {"ff": 1}},
+    "GND": {"category": "constant", "hard_block": false, "placement_required": false, "resources": {}},
+    "LUT1": {"category": "lut", "hard_block": false, "placement_required": true, "resources": {"lut": 1}},
+    "LUT2": {"category": "lut", "hard_block": false, "placement_required": true, "resources": {"lut": 1}},
+    "LUT3": {"category": "lut", "hard_block": false, "placement_required": true, "resources": {"lut": 1}},
+    "LUT4": {"category": "lut", "hard_block": false, "placement_required": true, "resources": {"lut": 1}},
+    "LUT5": {"category": "lut", "hard_block": false, "placement_required": true, "resources": {"lut": 1}},
+    "LUT6": {"category": "lut", "hard_block": false, "placement_required": true, "resources": {"lut": 1}},
+    "MUXF7": {"category": "slice_mux", "hard_block": true, "placement_required": true, "resources": {}},
+    "MUXF8": {"category": "slice_mux", "hard_block": true, "placement_required": true, "resources": {}},
+    "MUXF9": {"category": "slice_mux", "hard_block": true, "placement_required": true, "resources": {}},
+    "RAMB18E2": {"category": "bram", "hard_block": true, "placement_required": true, "resources": {"bram18k": 1}},
+    "RAMB36E2": {"category": "bram", "hard_block": true, "placement_required": true, "resources": {"bram18k": 2}},
+    "URAM288": {"category": "uram", "hard_block": true, "placement_required": true, "resources": {"uram288": 1}},
+    "VCC": {"category": "constant", "hard_block": false, "placement_required": false, "resources": {}}
+  }
+}

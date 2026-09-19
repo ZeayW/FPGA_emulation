@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/xilinx-primitive-library-db-v1.schema.json",
+  "title": "EmuFlow Xilinx primitive library DB v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "library_id",
+    "family",
+    "mapping_profile",
+    "unknown_cell_policy",
+    "cells"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.xilinx-primitive-library-db/v1"},
+    "library_id": {"type": "string", "minLength": 1},
+    "family": {"const": "UltraScale+"},
+    "mapping_profile": {"const": "xilinx-ultrascaleplus-open-v1"},
+    "unknown_cell_policy": {"const": "fail"},
+    "cells": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "category",
+          "hard_block",
+          "placement_required",
+          "resources"
+        ],
+        "properties": {
+          "category": {"type": "string", "minLength": 1},
+          "hard_block": {"type": "boolean"},
+          "placement_required": {"type": "boolean"},
+          "resources": {
+            "type": "object",
+            "additionalProperties": {"type": "integer", "minimum": 0}
+          }
+        }
+      }
+    }
+  }
+}

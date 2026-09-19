@@ -581,7 +581,11 @@ def _build_parser() -> argparse.ArgumentParser:
     frontend_run.add_argument("--yosys")
     frontend_run.add_argument(
         "--mapping-profile",
-        choices=("vtr-hard-blocks", "generic-soft"),
+        choices=(
+            "vtr-hard-blocks",
+            "generic-soft",
+            "xilinx-ultrascaleplus-open-v1",
+        ),
         default="vtr-hard-blocks",
     )
     frontend_run.add_argument("--allow-fabric-clock", action="store_true")
@@ -1848,11 +1852,16 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--yosys")
     multi_fpga_compile.add_argument(
         "--mapping-profile",
-        choices=("vtr-hard-blocks", "generic-soft"),
+        choices=(
+            "vtr-hard-blocks",
+            "generic-soft",
+            "xilinx-ultrascaleplus-open-v1",
+        ),
         default="vtr-hard-blocks",
         help=(
-            "RTL mapping profile; the default preserves public VTR "
-            "multiplier/RAM hard blocks"
+            "RTL mapping profile; vtr-hard-blocks preserves public VTR "
+            "multiplier/RAM blocks, while xilinx-ultrascaleplus-open-v1 "
+            "uses the fail-closed Route A primitive namespace"
         ),
     )
     multi_fpga_compile.add_argument("--partition-constraints", type=Path)

@@ -121,6 +121,8 @@ def classify_primitive_resources(cell_type: str) -> ResourceVector:
         return ResourceVector(io=1)
     if kind.startswith(("BUFG", "BUFH", "BUFMR", "MMCM", "PLLE", "STARTUPE")):
         return ResourceVector(clock=1)
+    if kind in {"GND", "VCC", "MUXF7", "MUXF8", "MUXF9"}:
+        return ResourceVector()
     return ResourceVector(other=1)
 
 

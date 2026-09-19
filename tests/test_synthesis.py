@@ -3,6 +3,7 @@ from pathlib import Path
 
 from emuflow.errors import EmuFlowError
 from emuflow.synthesis import build_generic_yosys_script, build_yosys_script
+from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 class SynthesisTest(unittest.TestCase):
@@ -40,6 +41,30 @@ class SynthesisTest(unittest.TestCase):
             self.assertIn(option, script)
         self.assertIn("techmap -map", script)
         self.assertIn("logic_only_map.v", script)
+
+    def test_route_a_profile_preserves_declared_hard_blocks(self) -> None:
+        script = build_yosys_script(
+            [Path("rtl/design.v")],
+            top="design",
+            output=Path("build/design.json"),
+            family="xcup",
+            policy="native",
+            mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+        )
+        for option in ("-uram", "-nolutram", "-nosrl"):
+            self.assertIn(option, script)
+        for option in ("-nocarry", "-nodsp", "-nobram"):
+            self.assertNotIn(option, script)
+
+    def test_route_a_profile_rejects_incompatible_family(self) -> None:
+        with self.assertRaisesRegex(EmuFlowError, "requires family"):
+            build_yosys_script(
+                [Path("rtl/design.v")],
+                top="design",
+                output=Path("build/design.json"),
+                family="xc7",
+                mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            )
 
     def test_include_directories_and_defines_are_explicit(self) -> None:
         script = build_yosys_script(

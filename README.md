@@ -4141,6 +4141,21 @@ The no-route `.device`, route certificate, imported ArchitectureDB, native
 RapidWright database, and physical-region sidecars are external run artifacts
 and must not be committed. The certificate contains counts, hashes, and a
 pass/fail result only; it contains no routing graph or vendor device records.
+Route A synthesis is equally explicit: selecting
+`--mapping-profile xilinx-ultrascaleplus-open-v1` runs Yosys
+`synth_xilinx -family xcup` with DSP48E2, RAMB18E2/RAMB36E2, URAM288, and
+dedicated carry mapping enabled. Yosys 0.57 represents that carry structure as
+CARRY4 macros even for `xcup`; the deterministic normalizer pairs connected
+CARRY4 macros into SINGLE_CY8 CARRY8 cells and maps an odd tail to the lower
+half of a DUAL_CY4 CARRY8. Its generic INV macro becomes a LUT1 with INIT=1.
+Distributed RAM and SRL inference are lowered in this first packer profile.
+Every final mapped cell must belong to the checked-in
+`xilinx-ultrascaleplus-open-v1.primitives.json` namespace; unknown cells,
+external macros, missing port metadata, and resource-accounting disagreements
+fail before Phase 1. A supplied Yosys JSON cannot bypass the same audit. This
+profile is opt-in until packing, placement, RWRoute, timing, and complete
+small/medium Phase 1--7 acceptance gates pass; it does not silently replace
+the current default.
 RapidWright and its
 Xilinx device data are therefore a mixed-license architecture/route-data
 provider around first-party EmuFlow contracts; they do not make Route A a

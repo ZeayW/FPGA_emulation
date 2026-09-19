@@ -4,10 +4,14 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from .errors import EmuFlowError
 from .native_tools import resolve_native_executable
+from .xilinx_primitives import (
+    XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+    normalize_xilinx_mapped_json,
+)
 
 
 VALID_XILINX_FAMILIES = {"xcup", "xcu", "xc7"}
@@ -50,6 +54,7 @@ def build_yosys_script(
     verilog_output: Optional[Path] = None,
     include_dirs: Iterable[Path] = (),
     defines: Iterable[str] = (),
+    mapping_profile: Optional[str] = None,
 ) -> str:
     source_list = list(sources)
     if not source_list:
@@ -64,6 +69,15 @@ def build_yosys_script(
             f"unsupported synthesis policy {policy!r}; "
             f"expected one of {sorted(VALID_SYNTHESIS_POLICIES)}"
         )
+    if mapping_profile is not None:
+        if mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+            raise EmuFlowError(
+                f"unsupported Xilinx mapping profile {mapping_profile!r}"
+            )
+        if family != "xcup" or policy != "native":
+            raise EmuFlowError(
+                f"{mapping_profile} requires family='xcup' and policy='native'"
+            )
     top_identifier = _yosys_identifier(top)
 
     include_list = list(include_dirs)
@@ -90,6 +104,11 @@ def build_yosys_script(
                 "-nosrl",
             ]
         )
+    elif mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+        # Route A v1 retains the hard resources consumed by real designs.
+        # Distributed RAM and SRLs are outside the v1 packer contract, so
+        # lower those structures to audited LUT/FF primitives explicitly.
+        synth_options.extend(["-uram", "-nolutram", "-nosrl"])
     post_mapping = []
     if policy == "logic-only":
         post_mapping.append(
@@ -213,6 +232,7 @@ def run_yosys(
     log_path: Optional[Path] = None,
     include_dirs: Iterable[Path] = (),
     defines: Iterable[str] = (),
+    mapping_profile: Optional[str] = None,
 ) -> None:
     source_list = list(sources)
     for source in source_list:
@@ -240,6 +260,7 @@ def run_yosys(
         verilog_output=verilog_output,
         include_dirs=include_list,
         defines=define_list,
+        mapping_profile=mapping_profile,
     )
     completed = subprocess.run(
         [command, "-p", script],
@@ -265,3 +286,45 @@ def run_yosys(
             "Yosys reported success but did not create expected mapped "
             f"Verilog: {verilog_output}"
         )
+
+
+def run_xilinx_ultrascaleplus_yosys(
+    sources: Iterable[Path],
+    top: str,
+    output: Path,
+    *,
+    executable: Optional[str] = None,
+    log_path: Optional[Path] = None,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
+) -> Dict[str, Any]:
+    """Run the explicit Route A mapping profile and audit every primitive."""
+
+    raw_output = output.with_name(f".{output.name}.pre-normalize")
+    try:
+        run_yosys(
+            sources,
+            top,
+            raw_output,
+            family="xcup",
+            policy="native",
+            executable=executable,
+            log_path=log_path,
+            include_dirs=include_dirs,
+            defines=defines,
+            mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+        )
+        normalization = normalize_xilinx_mapped_json(
+            raw_output, output, top=top
+        )
+    finally:
+        raw_output.unlink(missing_ok=True)
+    return {
+        "status": "pass",
+        "provider": "yosys-synth-xilinx",
+        "family": "xcup",
+        "policy": "native",
+        "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+        "normalization": normalization,
+        "primitive_audit": normalization["primitive_audit"],
+    }

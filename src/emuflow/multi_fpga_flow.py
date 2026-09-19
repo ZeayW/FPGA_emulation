@@ -60,17 +60,25 @@ from .sta import (
     derive_partition_net_weights,
     project_sta_path_database,
 )
-from .synthesis import run_generic_yosys
+from .synthesis import run_generic_yosys, run_xilinx_ultrascaleplus_yosys
 from .vivado_backend import run_vivado_timing_path_database
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_netlist import normalize_vtr_hard_block_json
+from .xilinx_primitives import (
+    XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+    audit_xilinx_mapped_json,
+)
 
 
 MULTI_FPGA_FLOW_SCHEMA = "emuflow.multi-fpga-flow/v2"
 MULTI_FPGA_FLOW_PROVIDER = (
     "profiled-yosys+partition+system-route+tdm+split-transport+runtime"
 )
-MULTI_FPGA_MAPPING_PROFILES = ("vtr-hard-blocks", "generic-soft")
+MULTI_FPGA_MAPPING_PROFILES = (
+    "vtr-hard-blocks",
+    "generic-soft",
+    XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+)
 MULTI_FPGA_PHASE6_PROVIDERS = ("auto", "chimew", "baseline")
 PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v2"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
@@ -1417,6 +1425,15 @@ def run_multi_fpga_flow(
             raise EmuFlowError(f"Yosys JSON does not exist: {source_json}")
         shutil.copyfile(source_json, synthesized_json)
         synthesis_mode = "provided-yosys-json"
+        if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+            synthesis_report = {
+                "status": "pass",
+                "provider": "provided-yosys-json",
+                "mapping_profile": mapping_profile,
+                "primitive_audit": audit_xilinx_mapped_json(
+                    synthesized_json, top=top
+                ),
+            }
     else:
         if not source_list:
             raise EmuFlowError(
@@ -1442,7 +1459,7 @@ def run_multi_fpga_flow(
                 top=top,
             )
             synthesis_mode = "vtr-lut6-ff-hard-blocks"
-        else:
+        elif mapping_profile == "generic-soft":
             synthesis_report = run_generic_yosys(
                 source_list,
                 top,
@@ -1452,6 +1469,18 @@ def run_multi_fpga_flow(
             )
             normalization_report = None
             synthesis_mode = "generic-lut6-ff"
+        elif mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+            synthesis_report = run_xilinx_ultrascaleplus_yosys(
+                source_list,
+                top,
+                synthesized_json,
+                executable=yosys,
+                log_path=frontend_root / "yosys.log",
+            )
+            normalization_report = None
+            synthesis_mode = "xilinx-ultrascaleplus-open"
+        else:
+            raise ValidationError("frontend mapping profile is invalid")
 
     phase1_root = frontend_root / "phase1"
     frontend_report = run_phase1(
