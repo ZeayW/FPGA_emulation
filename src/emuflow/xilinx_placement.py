@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from bisect import bisect_left
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
@@ -375,6 +376,55 @@ def place_xilinx_clusters(
         ),
     )
     cursors: Dict[int, int] = defaultdict(int)
+    row_index_cache: Dict[int, Dict[int, List[Tuple[int, str]]]] = {}
+
+    def nearest_available(
+        values: List[str], target: Tuple[float, float]
+    ) -> Optional[str]:
+        key = id(values)
+        rows = row_index_cache.get(key)
+        if rows is None:
+            mutable_rows: Dict[int, List[Tuple[int, str]]] = defaultdict(list)
+            for name in values:
+                site = sites[name]
+                mutable_rows[site["y"]].append((site["x"], name))
+            rows = {
+                y: sorted(entries) for y, entries in mutable_rows.items()
+            }
+            row_index_cache[key] = rows
+        target_x, target_y = target
+        best_name = None
+        best_cost = None
+        for y, entries in rows.items():
+            y_cost = abs(y - target_y)
+            if best_cost is not None and y_cost >= best_cost:
+                continue
+            position = bisect_left(entries, (target_x, ""))
+            left, right = position - 1, position
+            while left >= 0 or right < len(entries):
+                left_cost = (
+                    abs(entries[left][0] - target_x) if left >= 0 else None
+                )
+                right_cost = (
+                    abs(entries[right][0] - target_x)
+                    if right < len(entries) else None
+                )
+                if right_cost is None or (
+                    left_cost is not None and left_cost <= right_cost
+                ):
+                    x_cost, name = left_cost, entries[left][1]
+                    left -= 1
+                else:
+                    x_cost, name = right_cost, entries[right][1]
+                    right += 1
+                cost = y_cost + x_cost
+                if best_cost is not None and cost >= best_cost:
+                    break
+                if name not in used_sites:
+                    best_name, best_cost = name, cost
+                    break
+        return best_name
+
     for cluster_id in remaining:
         values = candidates[cluster_id]
         if cluster_id in guidance:
@@ -388,13 +438,7 @@ def place_xilinx_clusters(
             ):
                 selected = direct
             else:
-                selected = min(
-                    (name for name in values if name not in used_sites),
-                    key=lambda name: _distance(
-                        [cluster_id], [sites[name]], guidance
-                    ),
-                    default=None,
-                )
+                selected = nearest_available(values, guidance[cluster_id])
         else:
             key = id(values)
             cursor = cursors[key]

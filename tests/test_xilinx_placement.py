@@ -89,7 +89,7 @@ class XilinxPlacementTest(unittest.TestCase):
             "schema": "emuflow.xilinx-global-placement-guidance/v1",
             "clusters": [
                 {"cluster": "slice-a", "x": 0, "y": 1},
-                {"cluster": "slice-b", "x": 1, "y": 0},
+                {"cluster": "slice-b", "x": 0, "y": 1},
                 {"cluster": "dsp-a", "x": 2, "y": 1},
                 {"cluster": "dsp-b", "x": 2, "y": 2},
             ],
