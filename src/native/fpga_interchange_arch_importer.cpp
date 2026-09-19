@@ -161,7 +161,7 @@ bool supported_cell(const std::string& cell) {
       "CARRY8",   "DSP48E2", "FDCE",     "FDPE",    "FDRE",
       "FDSE",     "LUT1",    "LUT2",     "LUT3",    "LUT4",
       "LUT5",     "LUT6",    "RAM64X1S", "RAMB18E2",
-      "RAMB36E2", "URAM288", "MUXF7",    "MUXF8",
+      "RAMB36E2", "URAM288", "MUXF7",    "MUXF8", "MUXF9",
   };
   return kSupported.count(cell) != 0;
 }
@@ -181,6 +181,9 @@ std::string resource_class(
   }
   if (cells.count("MUXF8") != 0) {
     return "MUXF8";
+  }
+  if (cells.count("MUXF9") != 0) {
+    return "MUXF9";
   }
   if (cells.count("RAM64X1S") != 0) {
     return "RAM64X1S";

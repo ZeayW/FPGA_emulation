@@ -4155,9 +4155,13 @@ external macros, missing port metadata, and resource-accounting disagreements
 fail before Phase 1. A supplied Yosys JSON cannot bypass the same audit. This
 profile feeds the first-party conservative UltraScale+ site packer. It binds
 LUT/FF cells to legal SLICEL/SLICEM BELs, keeps one complete FF control set per
-slice, packs MUXF7/MUXF8 cones onto their dedicated BEL topology, reserves
+slice, packs MUXF7/MUXF8/MUXF9 cones onto their dedicated BEL topology, reserves
 exclusive CARRY8 sites, and binds DSP48E2, RAMB18E2/RAMB36E2, and URAM288 to
-compatible hard sites. It deliberately does not claim LUT5/LUT6 dual-output
+compatible hard sites. Two RAMB18E2 cells are represented as the lower and
+upper halves of one explicit RAMB36 shared-site mode. MUXF9 is retained because
+AMD UG574 defines F9MUX as the in-slice resource joining F8MUX_BOT and
+F8MUX_TOP; the FPGA-Interchange importer preserves that compatibility instead
+of treating the primitive as zero-cost fabric logic. It deliberately does not claim LUT5/LUT6 dual-output
 sharing in v1; consuming an extra site is legal, while inventing an unsupported
 shared configuration is not. Dedicated carry, DSP, BRAM, and URAM cascade
 connectivity is emitted as an exact non-branching adjacency certificate. The

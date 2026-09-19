@@ -257,6 +257,7 @@ from .synthesis import (
     VALID_SYNTHESIS_POLICIES,
     VALID_XILINX_FAMILIES,
     run_yosys,
+    run_xilinx_ultrascaleplus_yosys,
 )
 from .sta import (
     derive_partition_net_weights,
@@ -4779,21 +4780,37 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "synth-yosys":
-        run_yosys(
-            sources=args.sources,
-            top=args.top,
-            output=args.output,
-            family=args.family,
-            policy=args.policy,
-            verilog_output=args.verilog_output,
-            executable=args.yosys,
-            log_path=args.log,
-            include_dirs=args.include_dir,
-            defines=args.define,
-            mapping_profile=args.mapping_profile,
-        )
+        if args.mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+            if args.verilog_output is not None:
+                raise EmuFlowError(
+                    "Route A normalized synthesis does not yet emit mapped Verilog"
+                )
+            report = run_xilinx_ultrascaleplus_yosys(
+                sources=args.sources,
+                top=args.top,
+                output=args.output,
+                executable=args.yosys,
+                log_path=args.log,
+                include_dirs=args.include_dir,
+                defines=args.define,
+            )
+        else:
+            run_yosys(
+                sources=args.sources,
+                top=args.top,
+                output=args.output,
+                family=args.family,
+                policy=args.policy,
+                verilog_output=args.verilog_output,
+                executable=args.yosys,
+                log_path=args.log,
+                include_dirs=args.include_dir,
+                defines=args.define,
+            )
+            report = {"status": "pass"}
         _print_json(
             {
+                **report,
                 "family": args.family,
                 "policy": args.policy,
                 "output": str(args.output),
@@ -4805,7 +4822,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 "sources": [str(source) for source in args.sources],
                 "include_dirs": [str(path) for path in args.include_dir],
                 "defines": list(args.define),
-                "status": "pass",
                 "top": args.top,
             }
         )

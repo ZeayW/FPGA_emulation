@@ -24,10 +24,9 @@ SLICE_FF_BELS = tuple(
 FF_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
 LUT_TYPES = {f"LUT{width}" for width in range(1, 7)}
 CONSTANT_TYPES = {"GND", "VCC"}
-MUX_TYPES = {"MUXF7", "MUXF8"}
+MUX_TYPES = {"MUXF7", "MUXF8", "MUXF9"}
 HARD_BINDINGS = {
     "DSP48E2": (["DSP48E2"], ["DSP_ALU"]),
-    "RAMB18E2": (["RAMB180", "RAMB181"], ["RAMB18E2_L", "RAMB18E2_U"]),
     "RAMB36E2": (["RAMB36"], ["RAMB36E2"]),
     "URAM288": (["URAM288"], ["URAM_288K_INST"]),
 }
@@ -217,6 +216,37 @@ def _pack_mux_cone(
             ])
         assignments.append({"instance": root, "cell_type": "MUXF8", "bel": "F8MUX_BOT"})
         return assignments
+    if root_type == "MUXF9":
+        bottom = _mux_input_driver(cells, drivers, root, "I0")
+        top = _mux_input_driver(cells, drivers, root, "I1")
+        if cells[bottom].get("type") != "MUXF8" or cells[top].get("type") != "MUXF8":
+            raise ValidationError(f"MUXF9 {root!r} is not driven by two MUXF8 cells")
+        assignments = []
+        for mux8, halves, mux8_bel in (
+            (bottom, (("A", "B", "F7MUX_AB"), ("C", "D", "F7MUX_CD")), "F8MUX_BOT"),
+            (top, (("E", "F", "F7MUX_EF"), ("G", "H", "F7MUX_GH")), "F8MUX_TOP"),
+        ):
+            mux7s = [
+                _mux_input_driver(cells, drivers, mux8, port)
+                for port in ("I0", "I1")
+            ]
+            if any(cells[mux].get("type") != "MUXF7" for mux in mux7s):
+                raise ValidationError(f"MUXF8 {mux8!r} is not driven by two MUXF7 cells")
+            for mux7, (left_letter, right_letter, mux7_bel) in zip(mux7s, halves):
+                luts = [
+                    _mux_input_driver(cells, drivers, mux7, port)
+                    for port in ("I0", "I1")
+                ]
+                if any(cells[lut].get("type") not in LUT_TYPES for lut in luts):
+                    raise ValidationError(f"MUXF7 {mux7!r} is not driven by two LUTs")
+                assignments.extend([
+                    {"instance": luts[0], "cell_type": cells[luts[0]]["type"], "bel": f"{left_letter}6LUT"},
+                    {"instance": luts[1], "cell_type": cells[luts[1]]["type"], "bel": f"{right_letter}6LUT"},
+                    {"instance": mux7, "cell_type": "MUXF7", "bel": mux7_bel},
+                ])
+            assignments.append({"instance": mux8, "cell_type": "MUXF8", "bel": mux8_bel})
+        assignments.append({"instance": root, "cell_type": "MUXF9", "bel": "F9MUX"})
+        return assignments
     raise ValidationError(f"unsupported mux root type {root_type!r}")
 
 
@@ -359,6 +389,31 @@ def pack_xilinx_sites(
             "site_templates": ["SLICEL", "SLICEM"],
             "control_set": None,
             "assignments": [{"instance": name, "cell_type": "CARRY8", "bel": "CARRY8"}],
+        })
+
+    # One physical RAMB36 site supports either one RAMB36E2 or two independent
+    # RAMB18E2 halves.  DeviceResources exposes RAMB180/RAMB181/RAMB36 as
+    # alternate site modes, so a two-cell cluster explicitly consumes the
+    # lower and upper BEL together rather than pretending they are two sites.
+    ramb18_names = sorted(
+        name for name, cell in cells.items() if cell.get("type") == "RAMB18E2"
+    )
+    for index, offset in enumerate(range(0, len(ramb18_names), 2)):
+        names = ramb18_names[offset:offset + 2]
+        assignments = []
+        for name, bel in zip(names, ("RAMB18E2_L", "RAMB18E2_U")):
+            assignments.append({
+                "instance": name,
+                "cell_type": "RAMB18E2",
+                "bel": bel,
+            })
+        clusters.append({
+            "id": f"ramb18e2-{index:06d}",
+            "kind": "hard",
+            "site_templates": ["RAMB180", "RAMB181"],
+            "site_mode": f"RAMB18E2x{len(names)}",
+            "control_set": None,
+            "assignments": assignments,
         })
 
     for cell_type, (templates, bels) in HARD_BINDINGS.items():
@@ -564,11 +619,29 @@ def validate_xilinx_packing(
                     }
                     if expected is None or input_bels != expected:
                         raise ValidationError("MUXF8 packing topology is invalid")
+                elif cell_type == "MUXF9":
+                    input_bels = {
+                        assignment_bels.get(
+                            _mux_input_driver(cells, drivers, name, port)
+                        )
+                        for port in ("I0", "I1")
+                    }
+                    if input_bels != {"F8MUX_BOT", "F8MUX_TOP"}:
+                        raise ValidationError("MUXF9 packing topology is invalid")
         elif kind == "carry":
             if [cells[name].get("type") for name in instances] != ["CARRY8"]:
                 raise ValidationError("carry cluster is invalid")
         elif kind == "hard":
-            if len(instances) != 1 or cells[instances[0]].get("type") not in HARD_BINDINGS:
+            cell_types = [cells[name].get("type") for name in instances]
+            if set(cell_types) == {"RAMB18E2"}:
+                bels = {assignment.get("bel") for assignment in assignments}
+                if not 1 <= len(instances) <= 2 or len(bels) != len(instances):
+                    raise ValidationError("RAMB18E2 shared-site cluster is invalid")
+                if not bels.issubset({"RAMB18E2_L", "RAMB18E2_U"}):
+                    raise ValidationError("RAMB18E2 shared-site BEL is invalid")
+                if cluster.get("site_mode") != f"RAMB18E2x{len(instances)}":
+                    raise ValidationError("RAMB18E2 shared-site mode is invalid")
+            elif len(instances) != 1 or cell_types[0] not in HARD_BINDINGS:
                 raise ValidationError("hard cluster is invalid")
         else:
             raise ValidationError(f"unknown packing cluster kind {kind!r}")

@@ -1,7 +1,8 @@
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from emuflow.cli import _build_parser
+from emuflow.cli import _build_parser, main
 from emuflow.errors import EmuFlowError
 from emuflow.synthesis import build_generic_yosys_script, build_yosys_script
 from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
@@ -17,6 +18,22 @@ class SynthesisTest(unittest.TestCase):
             "--mapping-profile", XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
         ])
         self.assertEqual(args.mapping_profile, XILINX_ULTRASCALEPLUS_OPEN_PROFILE)
+
+    def test_cli_mapping_profile_runs_normalizing_wrapper(self) -> None:
+        with patch("emuflow.cli.run_xilinx_ultrascaleplus_yosys") as run:
+            run.return_value = {
+                "status": "pass",
+                "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            }
+            status = main([
+                "synth-yosys",
+                "rtl/counter.sv",
+                "--top", "counter",
+                "--output", "build/counter.json",
+                "--mapping-profile", XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            ])
+        self.assertEqual(status, 0)
+        run.assert_called_once()
 
     def test_xcup_script_is_board_independent(self) -> None:
         script = build_yosys_script(
