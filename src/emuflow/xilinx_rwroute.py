@@ -137,6 +137,8 @@ def run_rwroute(
     log_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     classes_dir.mkdir(parents=True, exist_ok=True)
+    runtime_home = classes_dir.parent / "rapidwright-runtime-home"
+    runtime_home.mkdir(parents=True, exist_ok=True)
     class_file = classes_dir / "EmuFlowRWRoute.class"
     if not class_file.is_file() or class_file.stat().st_mtime < java_source.stat().st_mtime:
         javac = java.with_name("javac")
@@ -147,7 +149,8 @@ def run_rwroute(
         if completed.returncode != 0:
             raise ValidationError("RWRoute adapter compilation failed:\n" + completed.stdout[-8000:])
     command = [
-        str(java), "-Xmx32g", "-cp", f"{classes_dir}:{rapidwright_jar}",
+        str(java), "-Xmx32g", f"-Duser.home={runtime_home}",
+        "-cp", f"{classes_dir}:{rapidwright_jar}",
         "EmuFlowRWRoute", str(input_path), str(output_path),
     ]
     completed = subprocess.run(

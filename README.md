@@ -4229,6 +4229,8 @@ The adapter emits only a compact, source-sealed route certificate. An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks
 that the certificate belongs to the exact mapped, packed, and placed inputs.
+RapidWright's extracted runtime database is isolated beside the requested
+class directory, so the provider never writes into a login home directory.
 Purely intra-site nets remain in RapidWright site routing and are explicitly
 classified outside the inter-site certificate; driverless boundary/clock nets
 remain explicit exclusions rather than being silently invented.
