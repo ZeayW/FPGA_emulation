@@ -67,6 +67,30 @@ public final class EmuFlowRWRoute {
         return value;
     }
 
+    private static void ensureLogicalPinMapping(Cell cell, String logicalPin) {
+        if (cell.getPinMappingsL2P().containsKey(logicalPin)) return;
+        String physicalPin = logicalPin.replace("[", "").replace("]", "");
+        if (cell.getBEL().getPin(physicalPin) == null) {
+            throw new IllegalStateException(
+                "logical pin has no BEL pin: " + cell.getName() + "/" + logicalPin
+            );
+        }
+        String existing = cell.getLogicalPinMapping(physicalPin);
+        if (existing != null && !existing.equals("GND") && !existing.equals("VCC")) {
+            throw new IllegalStateException(
+                "physical pin mapping conflict on " + cell.getName() + "/" + physicalPin
+                + ": " + existing + " vs " + logicalPin
+            );
+        }
+        if (existing != null) cell.removePinMapping(physicalPin);
+        cell.addPinMapping(physicalPin, logicalPin);
+        if (!cell.getPinMappingsL2P().containsKey(logicalPin)) {
+            throw new IllegalStateException(
+                "failed to materialize pin mapping " + cell.getName() + "/" + logicalPin
+            );
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length != 2) {
             throw new IllegalArgumentException("usage: EmuFlowRWRoute <input.tsv> <output.json>");
@@ -144,10 +168,7 @@ public final class EmuFlowRWRoute {
             for (String[] row : pins) {
                 Cell cell = cells.get(row[2]);
                 if (cell == null) throw new IllegalArgumentException("unknown cell " + row[2]);
-                if (!cell.getPinMappingsL2P().containsKey(row[3]))
-                    throw new IllegalStateException(
-                        "logical pin has no physical mapping: " + row[2] + "/" + row[3]
-                    );
+                ensureLogicalPinMapping(cell, row[3]);
                 try {
                     // A legal intra-site connection intentionally returns no
                     // SitePinInst; logical/physical pin mappings, not the
