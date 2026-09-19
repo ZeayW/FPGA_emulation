@@ -56,6 +56,27 @@ class FpgaInterchangeArchitectureTest(unittest.TestCase):
             "not-encoded-by-fpga-interchange-device-resources-v1",
         )
 
+    def test_extract_accepts_ultrascaleplus_f9mux_placement_bel(self) -> None:
+        extract = copy.deepcopy(read_json(EXTRACT))
+        slice_site = extract["tiles"][0]["sites"][0]
+        slice_site["bels"].append({
+            "name": "F9MUX",
+            "type": "F9MUX",
+            "z": 0,
+            "compatible_cells": ["MUXF9"],
+        })
+        architecture = architecture_from_fpga_interchange_extract(
+            extract,
+            part="xcvu3p-ffvc1517-2-e",
+            input_path=EXTRACT,
+            generator="fixture",
+        )
+        bels = architecture.site_named("SLICE_X4Y7")["bels"]
+        f9mux = next(bel for bel in bels if bel["name"] == "F9MUX")
+        self.assertEqual(f9mux["type"], "F9MUX")
+        self.assertEqual(f9mux["compatible_cells"], ["MUXF9"])
+        self.assertEqual(f9mux["placement_mode"], "SLICEL")
+
     def test_native_runner_is_reloaded_by_independent_checker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

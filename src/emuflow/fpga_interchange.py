@@ -42,6 +42,7 @@ SUPPORTED_PLACEMENT_CELLS = {
     "LUT6",
     "MUXF7",
     "MUXF8",
+    "MUXF9",
     "RAM64X1S",
     "RAMB18E2",
     "RAMB36E2",
