@@ -256,6 +256,7 @@ OPEN_SOURCE_COMPONENTS = "OPEN_SOURCE_COMPONENTS.json"
 OPEN_SOURCE_COMPONENTS_DOCUMENT = "OPEN_SOURCE_COMPONENTS.md"
 PINNED_ARCHITECTURE_SOURCES = (
     "resources/architectures/vtr/flagship-k6-n10-40nm.json",
+    "resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json",
 )
 RTL_CATALOG = "benchmarks/rtl_catalog.json"
 ALLOWED_INTEGRATIONS = {
