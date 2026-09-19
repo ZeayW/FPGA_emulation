@@ -118,10 +118,18 @@ public final class EmuFlowRWRoute {
         cellNames.sort(String::compareTo);
         for (String safeName : cellNames) {
             String[] row = cellRows.get(safeName);
-            Unisim unisim = Unisim.valueOf(row[3]);
-            Cell cell = design.createAndPlaceCell(
-                safeName, unisim, row[4] + "/" + row[5]
-            );
+            Cell cell;
+            try {
+                Unisim unisim = Unisim.valueOf(row[3]);
+                cell = design.createAndPlaceCell(
+                    safeName, unisim, row[4] + "/" + row[5]
+                );
+            } catch (RuntimeException error) {
+                throw new IllegalStateException(
+                    "failed to materialize " + safeName + " (" + row[2] + ") type="
+                    + row[3] + " at " + row[4] + "/" + row[5], error
+                );
+            }
             if (cell == null) throw new IllegalStateException("failed to place " + safeName);
             cells.put(safeName, cell);
         }
