@@ -8,6 +8,7 @@ from unittest import mock
 from emuflow.cut_segment_qualification import (
     CUT_SEGMENT_QUALIFICATION_SCHEMA,
     build_cut_segment_qualification,
+    build_cut_segment_qualification_value,
     validate_cut_segment_qualification,
 )
 from emuflow.io import write_json
@@ -108,3 +109,31 @@ class CutSegmentQualificationTest(unittest.TestCase):
                 validate_cut_segment_qualification(
                     artifact, ir_path, assignment_path, database_path
                 )
+
+    def test_single_fpga_zero_cut_qualification_is_explicit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            ir = import_yosys_json(
+                ROOT / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+            )
+            artifact = build_cut_segment_qualification_value(
+                ir,
+                {
+                    "cut_nets": [],
+                    "semantic_contract": {"cut_nodes": []},
+                },
+                {"paths": []},
+            )
+        self.assertEqual(artifact["status"], "pass")
+        self.assertEqual(artifact["cut_nets"], [])
+        self.assertEqual(
+            artifact["summary"],
+            {
+                "cut_nets": 0,
+                "timed_structural_nets": 0,
+                "no_timed_endpoint_nets": 0,
+                "enumerated_member_associations": 0,
+                "functional_only_nets": 0,
+            },
+        )

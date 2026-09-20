@@ -44,8 +44,7 @@ def _cut_nets(assignment: Mapping[str, Any]) -> list[str]:
         if isinstance(item, dict)
     ]
     if (
-        not nets
-        or any(not isinstance(net, str) or not net for net in nets)
+        any(not isinstance(net, str) or not net for net in nets)
         or len(nets) != len(set(nets))
     ):
         raise ValidationError(
