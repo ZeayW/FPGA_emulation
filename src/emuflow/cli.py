@@ -2728,6 +2728,13 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_run_rwroute.add_argument("--java", type=Path, required=True)
     arch_run_rwroute.add_argument("--classes", type=Path, required=True)
     arch_run_rwroute.add_argument("--java-source", type=Path, required=True)
+    arch_run_rwroute.add_argument(
+        "--timing-data-dir", type=Path, required=True,
+        help=(
+            "directory containing the two pinned RapidWright UltraScale+ "
+            "timing-data files"
+        ),
+    )
     arch_run_rwroute.add_argument("--log", type=Path)
     arch_validate_rwroute = arch_subparsers.add_parser(
         "validate-xilinx-route",
@@ -5224,6 +5231,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 java=args.java,
                 classes_dir=args.classes,
                 java_source=args.java_source,
+                timing_data_dir=args.timing_data_dir,
                 log_path=args.log,
             )
         elif args.arch_command == "validate-xilinx-route":

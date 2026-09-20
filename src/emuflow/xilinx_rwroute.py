@@ -6,6 +6,7 @@ import hashlib
 import math
 import os
 import re
+import shutil
 import subprocess
 from collections import defaultdict, deque
 from pathlib import Path
@@ -18,6 +19,17 @@ from .xilinx_placement import XILINX_PLACEMENT_SCHEMA
 
 
 XILINX_ROUTE_DB_SCHEMA = "emuflow.xilinx-route-db/v1"
+RAPIDWRIGHT_TIMING_DATA_REVISION = (
+    "127f55cd704c277372697e699f1559e1cdc91f34"
+)
+RAPIDWRIGHT_TIMING_DATA_SHA256 = {
+    "intersite_delay_terms.txt": (
+        "3b122837c4a1b5f3c212fc6353bee3a0854a204f2f69e2bc1cac4a2a1f9d7333"
+    ),
+    "intrasite_delay_terms.txt": (
+        "ff08ce9041da649f2bf886d900f033dd23de8ad54eb4db55d37ce032dc0ec0a0"
+    ),
+}
 
 
 def _sha256(path: Path) -> str:
@@ -182,6 +194,7 @@ def run_rwroute(
     java: Path,
     classes_dir: Path,
     java_source: Path,
+    timing_data_dir: Path,
     log_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     classes_dir.mkdir(parents=True, exist_ok=True)
@@ -189,6 +202,18 @@ def run_rwroute(
     runtime_home.mkdir(parents=True, exist_ok=True)
     rapidwright_path = runtime_home / "RapidWright"
     rapidwright_path.mkdir(parents=True, exist_ok=True)
+    runtime_timing_dir = rapidwright_path / "timing" / "ultrascaleplus"
+    runtime_timing_dir.mkdir(parents=True, exist_ok=True)
+    for name, expected_sha256 in RAPIDWRIGHT_TIMING_DATA_SHA256.items():
+        source = timing_data_dir / name
+        if not source.is_file() or _sha256(source) != expected_sha256:
+            raise ValidationError(
+                "RapidWright timing data is missing or does not match pinned "
+                f"revision {RAPIDWRIGHT_TIMING_DATA_REVISION}: {source}"
+            )
+        destination = runtime_timing_dir / name
+        if not destination.is_file() or _sha256(destination) != expected_sha256:
+            shutil.copyfile(source, destination)
     class_file = classes_dir / "EmuFlowRWRoute.class"
     if not class_file.is_file() or class_file.stat().st_mtime < java_source.stat().st_mtime:
         javac = java.with_name("javac")
@@ -216,6 +241,13 @@ def run_rwroute(
             f"RWRoute failed with exit code {completed.returncode}:\n"
             + "\n".join(completed.stdout.splitlines()[-80:])
         )
+    value = read_json(output_path)
+    timing = value.get("timing")
+    if not isinstance(timing, dict):
+        raise ValidationError("RWRoute output lacks its timing qualification")
+    timing["source_revision"] = RAPIDWRIGHT_TIMING_DATA_REVISION
+    timing["source_data_sha256"] = dict(RAPIDWRIGHT_TIMING_DATA_SHA256)
+    write_json(output_path, value, compact=True)
     report = validate_xilinx_route_db(output_path)
     return {**report, "output": str(output_path), "log": str(log_path) if log_path else None}
 
@@ -333,6 +365,8 @@ def validate_xilinx_route_db(
         "setup_route_delays": "available",
         "hold_analysis": "unavailable",
         "hard_block_clock_timing": "unqualified",
+        "source_revision": RAPIDWRIGHT_TIMING_DATA_REVISION,
+        "source_data_sha256": RAPIDWRIGHT_TIMING_DATA_SHA256,
     }
     if not isinstance(timing, dict):
         raise ValidationError("XilinxRouteDB timing qualification is missing")

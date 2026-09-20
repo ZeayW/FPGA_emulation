@@ -27,6 +27,11 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "setup_route_delays": "available",
                 "hold_analysis": "unavailable",
                 "hard_block_clock_timing": "unqualified",
+                "source_revision": "127f55cd704c277372697e699f1559e1cdc91f34",
+                "source_data_sha256": {
+                    "intersite_delay_terms.txt": "3b122837c4a1b5f3c212fc6353bee3a0854a204f2f69e2bc1cac4a2a1f9d7333",
+                    "intrasite_delay_terms.txt": "ff08ce9041da649f2bf886d900f033dd23de8ad54eb4db55d37ce032dc0ec0a0",
+                },
                 "routed_endpoints": 2,
                 "maximum_route_delay_ps": 27.5,
             },

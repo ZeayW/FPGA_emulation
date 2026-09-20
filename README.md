@@ -4227,6 +4227,7 @@ emuflow arch run-xilinx-rwroute \
   --rapidwright-jar /external/rapidwright-standalone.jar \
   --java /external/jdk17/bin/java \
   --java-source scripts/rapidwright/EmuFlowRWRoute.java \
+  --timing-data-dir /external/RapidWright/timing/ultrascaleplus \
   --classes build/xilinx/rwroute-classes \
   --log build/xilinx/rwroute.log \
   --output build/xilinx/xilinx-route.json
@@ -4278,7 +4279,10 @@ summary.  This is research-grade setup-route evidence, not vendor sign-off:
 the artifact explicitly reports hold analysis as unavailable and hard-block
 and clock timing as unqualified.  EmuFlow subsequently binds these single-FPGA
 segments to TX/RX, board-link, TDM, multi-hop, and frame events; OpenSTA remains
-the authority for global setup WNS/TNS.
+the authority for global setup WNS/TNS.  The two public timing-model data files
+must come from the pinned RapidWright revision; their exact SHA-256 values are
+checked before Java starts and sealed into the route artifact.  They are kept
+as external provider inputs rather than being copied into this repository.
 RapidWright's extracted runtime database is isolated beside the requested
 class directory, so the provider never writes into a login home directory.
 Purely intra-site nets remain in RapidWright site routing and are explicitly
