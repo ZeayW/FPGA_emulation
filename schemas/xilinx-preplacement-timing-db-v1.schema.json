@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/xilinx-preplacement-timing-db-v1.schema.json",
+  "title": "EmuFlow Xilinx Pre-placement TimingDB v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "family",
+    "mapping_profile",
+    "source",
+    "delays_ps",
+    "limitations"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.xilinx-preplacement-timing-db/v1"},
+    "family": {"const": "UltraScale+"},
+    "mapping_profile": {"const": "xilinx-ultrascaleplus-open-v1"},
+    "source": {
+      "type": "object",
+      "required": ["provider", "revision", "qualification", "files_sha256"],
+      "properties": {
+        "provider": {"const": "rapidwright-delay-model-v0.5"},
+        "revision": {"type": "string", "minLength": 40},
+        "qualification": {"const": "analytical_uncharacterized"},
+        "files_sha256": {
+          "type": "object",
+          "minProperties": 2,
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "delays_ps": {
+      "type": "object",
+      "minProperties": 18,
+      "additionalProperties": {"type": "number", "exclusiveMinimum": 0}
+    },
+    "limitations": {
+      "type": "object",
+      "required": ["purpose", "hold_analysis", "authoritative_setup"]
+    }
+  },
+  "additionalProperties": false
+}

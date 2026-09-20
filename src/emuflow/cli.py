@@ -205,6 +205,10 @@ from .xilinx_opensta import (
     run_xilinx_routed_opensta,
     validate_xilinx_routed_opensta_summary,
 )
+from .xilinx_preplacement_timing import (
+    build_xilinx_preplacement_timing_db,
+    validate_xilinx_preplacement_timing_db,
+)
 from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from .experiment_partition import (
     run_partition_checkpoint,
@@ -2024,8 +2028,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--architecture-timing-db",
         type=Path,
         help=(
-            "public VTR TimingDB used to construct the pre-placement "
-            "OpenSTA model"
+            "provider-matched Architecture TimingDB used to construct the "
+            "pre-placement OpenSTA model"
         ),
     )
     multi_fpga_compile.add_argument(
@@ -2643,6 +2647,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="validate a VTR academic TimingDB",
     )
     arch_validate_vtr_timing.add_argument("path", type=Path)
+    arch_build_xilinx_preplacement_timing = arch_subparsers.add_parser(
+        "build-xilinx-preplacement-timing",
+        help=(
+            "extract a compact pre-placement TimingDB from pinned "
+            "RapidWright UltraScale+ timing data"
+        ),
+    )
+    arch_build_xilinx_preplacement_timing.add_argument(
+        "--timing-data-dir", type=Path, required=True
+    )
+    arch_build_xilinx_preplacement_timing.add_argument(
+        "--output", "-o", type=Path, required=True
+    )
+    arch_validate_xilinx_preplacement_timing = arch_subparsers.add_parser(
+        "validate-xilinx-preplacement-timing",
+        help="validate a source-sealed RapidWright pre-placement TimingDB",
+    )
+    arch_validate_xilinx_preplacement_timing.add_argument(
+        "path", type=Path
+    )
     arch_validate_fpgaif = arch_subparsers.add_parser(
         "validate-fpga-interchange",
         help="independently validate FPGA Interchange ArchitectureDB metadata",
@@ -3209,8 +3233,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--architecture-timing-db",
         type=Path,
         help=(
-            "public VTR TimingDB; generates a design-specialized "
-            "pre-placement OpenSTA model"
+            "provider-matched Architecture TimingDB; generates a "
+            "design-specialized pre-placement OpenSTA model"
         ),
     )
     sta_opensta.add_argument(
@@ -5316,6 +5340,12 @@ def _dispatch(args: argparse.Namespace) -> int:
                 packed_path=args.packed,
                 placement_path=args.placement,
             )
+        elif args.arch_command == "build-xilinx-preplacement-timing":
+            report = build_xilinx_preplacement_timing_db(
+                args.timing_data_dir, args.output
+            )
+        elif args.arch_command == "validate-xilinx-preplacement-timing":
+            report = validate_xilinx_preplacement_timing_db(args.path)
         elif args.arch_command == "build-xilinx-routed-timing":
             report = build_xilinx_routed_timing(
                 args.mapped_json, args.packed, args.placement,

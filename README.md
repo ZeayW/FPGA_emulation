@@ -2886,7 +2886,10 @@ default OpenSTA provider, derives timing-critical partition weights, projects
 timing paths onto selected cut nets, and drives timing-aware system routing and
 TDM. Designs containing architecture-specific hard blocks must also provide the
 matching `--architecture-timing-db`; the flow rejects uncovered hard macros
-instead of inventing delay data. Pass `--no-timing-driven` only for a
+instead of inventing delay data. The VTR provider consumes the imported VTR
+TimingDB. The RapidWright provider consumes the source-sealed Xilinx
+pre-placement TimingDB described below; these provider contracts are not
+interchangeable. Pass `--no-timing-driven` only for a
 controlled algorithmic baseline.
 That switch disables use of timing in Phase 3--5 optimization, but still
 generates and projects TimingPathDB and still requires complete physical
@@ -4269,7 +4272,30 @@ demo pipeline: every partition is lowered from the Phase 6 EmuIR, packed,
 placed, routed by RWRoute, independently checked, and then exported through
 the same `physical-summary.json`, `BoundaryTimingDB`, and
 `LogicSegmentTimingDB` interfaces consumed by Phase 7C.  A complete invocation
-has the following additional arguments:
+has the following additional arguments.
+
+Before the first full Route A run, extract the compact pre-placement timing
+contract from the same pinned RapidWright UltraScale+ timing-data revision used
+by RWRoute:
+
+```bash
+emuflow arch build-xilinx-preplacement-timing \
+  --timing-data-dir /external/RapidWright/timing/ultrascaleplus \
+  --output build/xilinx/xilinx-preplacement-timing.json
+emuflow arch validate-xilinx-preplacement-timing \
+  build/xilinx/xilinx-preplacement-timing.json
+```
+
+The artifact contains source hashes and conservative scalar bounds, not the
+licensed upstream tables. OpenSTA specializes it to the mapped design's exact
+primitive pin sets. LUT, carry, FF, BRAM and URAM bounds are extracted from
+RapidWright DelayModel v0.5 data; DSP48E2 uses an explicit nonzero 5 ns research
+upper bound because that upstream model publishes no DSP logic arcs. MUXF8/9
+use an explicitly labelled F7/LUT surrogate. The contract is therefore
+`analytical_uncharacterized`, has no hold qualification, and is used only for
+pre-placement timing optimization. Route A's terminal setup result still comes
+from per-sink RWRoute delay extraction, Phase 7 timing binding and global
+OpenSTA. No hard macro is assigned a zero-delay placeholder.
 
 ```bash
 emuflow multi-fpga compile design.v \
@@ -4286,6 +4312,7 @@ emuflow multi-fpga compile design.v \
   --physical-rapidwright-device-data /external/RapidWright \
   --physical-rapidwright-timing-data /external/RapidWright/timing/ultrascaleplus \
   --physical-rapidwright-opensta /external/opensta/bin/sta \
+  --architecture-timing-db build/xilinx/xilinx-preplacement-timing.json \
   --out build/rapidwright-full-flow
 ```
 

@@ -7,6 +7,7 @@ import os
 import subprocess
 import tempfile
 from collections import defaultdict
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, DefaultDict, Dict, Iterable, Mapping, Optional, Sequence
 
@@ -23,6 +24,10 @@ from .verilog import mapped_verilog
 from .vtr_architecture import (
     ARCHITECTURE_TIMING_DB_SCHEMA,
     validate_vtr_timing_db,
+)
+from .xilinx_preplacement_timing import (
+    XILINX_PREPLACEMENT_TIMING_SCHEMA,
+    validate_xilinx_preplacement_timing_db,
 )
 
 
@@ -824,6 +829,145 @@ def build_vtr_opensta_timing_model(
     return model, instance_cell_types
 
 
+def build_xilinx_preplacement_opensta_timing_model(
+    ir: EmuIR,
+    timing_db_path: Path,
+    output_path: Optional[Path] = None,
+) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """Build design-specialized cells from pinned RapidWright delay bounds."""
+
+    timing_db = read_json(timing_db_path)
+    validate_xilinx_preplacement_timing_db(timing_db)
+    delays = {
+        name: float(value) / 1000.0
+        for name, value in timing_db["delays_ps"].items()
+    }
+    model = deepcopy(load_timing_model(DEFAULT_TIMING_MODEL))
+    for width in range(1, 7):
+        model["cells"][f"LUT{width}"]["delay_ns"] = (
+            delays[f"lut{width}"] + delays["sink_interconnect"]
+        )
+    for name in ("MUXF7", "MUXF8"):
+        model["cells"][name]["delay_ns"] = (
+            delays[name.lower()] + delays["sink_interconnect"]
+        )
+    for name in ("FDCE", "FDPE", "FDRE", "FDSE"):
+        model["cells"][name]["setup_ns"] = (
+            delays["ff_setup"] + delays["sink_interconnect"]
+        )
+        model["cells"][name]["clock_to_q_ns"] = delays["ff_clock_to_q"]
+
+    pin_sets = _instance_pin_sets(ir)
+    instance_cell_types = {
+        instance["id"]: instance["type"]
+        for instance in ir.value["instances"]
+    }
+    for instance in ir.value["instances"]:
+        cell_type = instance["type"]
+        if cell_type in model["cells"]:
+            continue
+        pins = pin_sets[instance["id"]]
+        inputs = _scalar_pin_names(pins["inputs"])
+        outputs = _scalar_pin_names(pins["outputs"])
+        if cell_type == "LUT6_2":
+            model["cells"][cell_type] = {
+                "kind": "combinational",
+                "inputs": inputs,
+                "outputs": outputs,
+                "delay_ns": delays["lut6_2"] + delays["sink_interconnect"],
+            }
+        elif cell_type in {"MUXF9", "CARRY8", "DSP48E2"}:
+            if not inputs or not outputs:
+                raise ValidationError(
+                    f"Xilinx timing cell {cell_type!r} lacks input/output pins"
+                )
+            delay_name = {
+                "MUXF9": "muxf9",
+                "CARRY8": "carry8",
+                "DSP48E2": "dsp48e2",
+            }[cell_type]
+            model["cells"][cell_type] = {
+                "kind": "combinational",
+                "inputs": inputs,
+                "outputs": outputs,
+                "delay_ns": delays[delay_name] + delays["sink_interconnect"],
+            }
+        elif cell_type in {"RAMB18E2", "RAMB36E2", "URAM288"}:
+            clocks = [pin for pin in inputs if "CLK" in pin.upper()]
+            if not clocks or not outputs:
+                raise ValidationError(
+                    f"Xilinx timing cell {cell_type!r} lacks clock/output pins"
+                )
+            primary_clock = clocks[0]
+            controls = [
+                pin for pin in inputs
+                if pin != primary_clock and (
+                    "CLK" in pin.upper()
+                    or "RST" in pin.upper()
+                    or pin.upper() == "SLEEP"
+                )
+            ]
+            data_inputs = [
+                pin for pin in inputs
+                if pin != primary_clock and pin not in controls
+            ]
+            if not data_inputs:
+                raise ValidationError(
+                    f"Xilinx timing cell {cell_type!r} lacks data inputs"
+                )
+            prefix = "uram" if cell_type == "URAM288" else "bram"
+            model["cells"][cell_type] = {
+                "kind": "rising_edge_bank",
+                "clock": primary_clock,
+                "inputs": data_inputs,
+                "controls": controls,
+                "outputs": outputs,
+                "setup_ns": delays[f"{prefix}_setup"] + delays["sink_interconnect"],
+                "clock_to_q_ns": delays[f"{prefix}_clock_to_q"],
+            }
+        else:
+            raise ValidationError(
+                f"RapidWright pre-placement TimingDB does not cover {cell_type!r}"
+            )
+    model.update({
+        "name": "rapidwright-ultrascaleplus-preplacement-v1",
+        "family": "xcup",
+        "source": {
+            "provider": "rapidwright-delay-model-preplacement-v1",
+            "qualification": "analytical_uncharacterized",
+            "architecture_timing_db": str(timing_db_path),
+            "rapidwright_revision": timing_db["source"]["revision"],
+            "sink_interconnect_delay_ns": delays["sink_interconnect"],
+            "hard_block_timing": "nonzero-conservative-scalar",
+            "hold_analysis": "unavailable",
+            "authoritative_setup": "Phase 7 routed timing plus global OpenSTA",
+        },
+    })
+    if output_path is not None:
+        write_json(output_path, model)
+        load_timing_model(output_path)
+    return model, instance_cell_types
+
+
+def build_architecture_opensta_timing_model(
+    ir: EmuIR,
+    timing_db_path: Path,
+    output_path: Optional[Path] = None,
+) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """Dispatch an Architecture TimingDB without guessing its provider."""
+
+    schema = read_json(timing_db_path).get("schema")
+    if schema == ARCHITECTURE_TIMING_DB_SCHEMA:
+        return build_vtr_opensta_timing_model(ir, timing_db_path, output_path)
+    if schema == XILINX_PREPLACEMENT_TIMING_SCHEMA:
+        return build_xilinx_preplacement_opensta_timing_model(
+            ir, timing_db_path, output_path
+        )
+    raise ValidationError(
+        f"unsupported Architecture TimingDB schema {schema!r}"
+    )
+
+
 def validate_timing_model_coverage(
     ir: EmuIR,
     model: Mapping[str, Any],
@@ -1153,7 +1297,7 @@ def run_opensta_path_database(
         )
     instance_cell_types: Optional[Dict[str, str]] = None
     if architecture_timing_db_path is not None:
-        model, instance_cell_types = build_vtr_opensta_timing_model(
+        model, instance_cell_types = build_architecture_opensta_timing_model(
             ir, architecture_timing_db_path
         )
     else:
