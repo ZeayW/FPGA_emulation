@@ -421,9 +421,34 @@ def validate_multi_fpga_physical_report(
                         f"physical timing for {fpga_id} disagrees with VPR"
                     )
             emitted_atoms += eblif["emitted_atoms"]
-        elif not {"mapped_verilog", "vivado_implementation"}.issubset(stages):
+        elif backend_id == "rapidwright":
+            implementation = stages.get("rapidwright_implementation")
+            rapidwright_required = {
+                "mapped_netlist",
+                "packing",
+                "placement",
+                "route",
+                "routed_timing",
+                "opensta",
+                "boundary_timing",
+            }
+            if (
+                not isinstance(implementation, dict)
+                or not rapidwright_required.issubset(implementation)
+            ):
+                raise ValidationError(
+                    f"RapidWright physical stages for {fpga_id} are incomplete"
+                )
+        elif backend_id == "vivado":
+            if not {"mapped_verilog", "vivado_implementation"}.issubset(
+                stages
+            ):
+                raise ValidationError(
+                    f"Vivado physical stages for {fpga_id} are incomplete"
+                )
+        else:  # The backend descriptor validator should make this unreachable.
             raise ValidationError(
-                f"Vivado physical stages for {fpga_id} are incomplete"
+                f"physical backend {backend_id!r} is unsupported"
             )
         original_cells += item["original_cells"]
         transport_cells += item["transport_cells"]

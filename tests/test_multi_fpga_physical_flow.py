@@ -9,6 +9,7 @@ from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.multi_fpga_physical_flow import (
+    MULTI_FPGA_PHYSICAL_SCHEMA,
     _partition_declares_dut_clock,
     _physical_clock_delays,
     _record_chimew_fixed_io_target,
@@ -16,6 +17,7 @@ from emuflow.multi_fpga_physical_flow import (
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
 )
+from emuflow.physical_backend import physical_backend_descriptor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +71,62 @@ def _merged_ir(fpga):
 
 
 class MultiFpgaPhysicalFlowTest(unittest.TestCase):
+    def test_validator_accepts_complete_rapidwright_stage(self):
+        implementation = {
+            "status": "pass",
+            "mapped_netlist": {},
+            "packing": {},
+            "placement": {},
+            "route": {},
+            "routed_timing": {},
+            "opensta": {},
+            "boundary_timing": {},
+        }
+        report = {
+            "schema": MULTI_FPGA_PHYSICAL_SCHEMA,
+            "status": "pass",
+            "backend": physical_backend_descriptor("rapidwright"),
+            "expected_fpgas": ["fpga0"],
+            "fpgas": [{
+                "fpga": "fpga0",
+                "status": "pass",
+                "part": "xcvu19p-fsva3824-2-e",
+                "original_cells": 1,
+                "transport_cells": 1,
+                "stages": {
+                    "transport_synthesis": {"status": "pass"},
+                    "placement_ir": {
+                        "status": "pass",
+                        "instances": 2,
+                        "boundary_identity": {
+                            "validation": {"status": "pass"}
+                        },
+                    },
+                    "rapidwright_implementation": implementation,
+                },
+                "physical_result": {
+                    "timing": {"critical_path_ns": 1.25}
+                },
+            }],
+            "physical_summary_ref": "physical-summary.json",
+        }
+        with patch(
+            "emuflow.multi_fpga_physical_flow."
+            "validate_physical_partition_result"
+        ):
+            validation = validate_multi_fpga_physical_report(report)
+        self.assertEqual(validation["backend"], "rapidwright")
+        self.assertEqual(validation["worst_critical_path_ns"], 1.25)
+
+        del implementation["route"]
+        with self.assertRaisesRegex(
+            ValidationError, "RapidWright physical stages"
+        ), patch(
+            "emuflow.multi_fpga_physical_flow."
+            "validate_physical_partition_result"
+        ):
+            validate_multi_fpga_physical_report(report)
+
     def test_partition_dut_clock_requirement_comes_from_split_ports(self):
         self.assertTrue(
             _partition_declares_dut_clock(
