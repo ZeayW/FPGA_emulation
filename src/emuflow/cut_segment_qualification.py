@@ -19,7 +19,7 @@ from .io import read_json
 from .ir import EmuIR
 from .opensta import (
     DEFAULT_TIMING_MODEL,
-    build_vtr_opensta_timing_model,
+    build_architecture_opensta_timing_model,
     classify_through_net_timing_endpoints,
     load_timing_model,
 )
@@ -139,7 +139,7 @@ def build_cut_segment_qualification_value(
     cut_nets = _cut_nets(assignment)
     segment_ids = _segment_ids_by_cut(assignment, cut_nets)
     if architecture_timing_db_path is not None:
-        model, instance_cell_types = build_vtr_opensta_timing_model(
+        model, instance_cell_types = build_architecture_opensta_timing_model(
             ir, architecture_timing_db_path
         )
     else:
