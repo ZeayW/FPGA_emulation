@@ -10,6 +10,47 @@ from emuflow.yosys import import_yosys_json
 
 
 class XilinxMappedNetlistTests(unittest.TestCase):
+    def test_split_partition_preserves_undriven_output_bits_as_x(self) -> None:
+        mapped = {
+            "modules": {"top": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "a": {"direction": "input", "bits": [2]},
+                    "y": {"direction": "output", "bits": [3]},
+                },
+                "cells": {"lut": {
+                    "type": "LUT1",
+                    "parameters": {"INIT": "10"},
+                    "attributes": {},
+                    "port_directions": {"I0": "input", "O": "output"},
+                    "connections": {"I0": [2], "O": [3]},
+                }},
+                "netnames": {
+                    "a": {"bits": [2]}, "y": {"bits": [3]},
+                },
+            }},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.json"
+            ir_path = root / "source.emuir.json"
+            output = root / "mapped.json"
+            source.write_text(json.dumps(mapped), encoding="utf-8")
+            ir = import_yosys_json(source)
+            value = ir.value
+            output_port = next(
+                port for port in value["ports"] if port["id"] == "y"
+            )
+            output_port["width"] = 2
+            write_json(ir_path, value)
+            report = emit_xilinx_mapped_json(ir_path, output)
+            emitted = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            emitted["modules"]["top"]["ports"]["y"]["bits"], [3, "x"]
+        )
+        self.assertEqual(report["unconnected_output_bits"], 1)
+
     def test_native_lut6_2_is_preserved(self) -> None:
         inputs = list(range(2, 8))
         mapped = {

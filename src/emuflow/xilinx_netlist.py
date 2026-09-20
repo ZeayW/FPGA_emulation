@@ -136,6 +136,7 @@ def emit_xilinx_mapped_json(
                             f"Xilinx mapped top pin {key!r} has multiple nets"
                         )
     ports = {}
+    unconnected_output_bits = 0
     for port in ir.value["ports"]:
         port_constants = {
             item["bit"]: item["value"]
@@ -148,6 +149,15 @@ def emit_xilinx_mapped_json(
                 bits.append(top_port_bits[key])
             elif bit in port_constants:
                 bits.append(port_constants[bit])
+            elif port["direction"] == "output":
+                # A split partition retains the original top-level vector
+                # shape even when another partition owns some output bits.
+                # Yosys JSON represents such genuinely undriven output bits
+                # with the constant ``x`` token.  They are not physical nets
+                # and therefore must not be fabricated merely to satisfy the
+                # vector width.
+                bits.append("x")
+                unconnected_output_bits += 1
             else:
                 raise ValidationError(
                     f"Xilinx mapped top pin {key!r} is unconnected"
@@ -190,6 +200,7 @@ def emit_xilinx_mapped_json(
         "cells": len(cells),
         "nets": len(netnames),
         "ports": len(ports),
+        "unconnected_output_bits": unconnected_output_bits,
         "output": str(output_path),
         "audit": audit,
     }
