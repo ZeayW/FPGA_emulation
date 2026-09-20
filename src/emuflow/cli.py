@@ -197,6 +197,10 @@ from .xilinx_rwroute import (
     run_rwroute,
     validate_xilinx_route_db,
 )
+from .xilinx_timing import (
+    build_xilinx_routed_timing,
+    validate_xilinx_routed_timing,
+)
 from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from .experiment_partition import (
     run_partition_checkpoint,
@@ -2744,6 +2748,25 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_validate_rwroute.add_argument("--mapped-json", type=Path, required=True)
     arch_validate_rwroute.add_argument("--packed", type=Path, required=True)
     arch_validate_rwroute.add_argument("--placement", type=Path, required=True)
+    arch_build_xilinx_timing = arch_subparsers.add_parser(
+        "build-xilinx-routed-timing",
+        help="bind RapidWright site-pin delays to mapped logical endpoints",
+    )
+    arch_build_xilinx_timing.add_argument("--mapped-json", type=Path, required=True)
+    arch_build_xilinx_timing.add_argument("--packed", type=Path, required=True)
+    arch_build_xilinx_timing.add_argument("--placement", type=Path, required=True)
+    arch_build_xilinx_timing.add_argument("--route", type=Path, required=True)
+    arch_build_xilinx_timing.add_argument("--output", "-o", type=Path, required=True)
+    arch_validate_xilinx_timing = arch_subparsers.add_parser(
+        "validate-xilinx-routed-timing",
+        help="independently validate logical endpoint timing bindings",
+    )
+    for option in (arch_validate_xilinx_timing,):
+        option.add_argument("--timing", type=Path, required=True)
+        option.add_argument("--mapped-json", type=Path, required=True)
+        option.add_argument("--packed", type=Path, required=True)
+        option.add_argument("--placement", type=Path, required=True)
+        option.add_argument("--route", type=Path, required=True)
     arch_capacity_fpgaif = arch_subparsers.add_parser(
         "check-capacity",
         help="check EmuIR primitive support and BEL capacity",
@@ -5240,6 +5263,19 @@ def _dispatch(args: argparse.Namespace) -> int:
                 mapped_path=args.mapped_json,
                 packed_path=args.packed,
                 placement_path=args.placement,
+            )
+        elif args.arch_command == "build-xilinx-routed-timing":
+            report = build_xilinx_routed_timing(
+                args.mapped_json, args.packed, args.placement,
+                args.route, args.output,
+            )
+        elif args.arch_command == "validate-xilinx-routed-timing":
+            report = validate_xilinx_routed_timing(
+                args.timing,
+                mapped_path=args.mapped_json,
+                packed_path=args.packed,
+                placement_path=args.placement,
+                route_path=args.route,
             )
         elif args.arch_command == "check-capacity":
             architecture = ArchitectureDB.load(args.arch)

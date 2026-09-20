@@ -67,8 +67,14 @@
       "stage": "Route A single-FPGA physical backend",
       "source_paths": [
         "src/emuflow/xilinx_packing.py",
+        "src/emuflow/xilinx_placement.py",
+        "src/emuflow/xilinx_rwroute.py",
+        "src/emuflow/xilinx_timing.py",
+        "scripts/rapidwright/EmuFlowRWRoute.java",
         "schemas/packed-site-netlist-v1.schema.json",
-        "tests/test_xilinx_packing.py"
+        "tests/test_xilinx_packing.py",
+        "tests/test_xilinx_placement.py",
+        "tests/test_xilinx_rwroute.py"
       ],
       "build_targets": [
         "emuflow_python"

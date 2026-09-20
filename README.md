@@ -4236,6 +4236,18 @@ emuflow arch validate-xilinx-route \
   --mapped-json build/xilinx/mapped.json \
   --packed build/xilinx/packed-sites.json \
   --placement build/xilinx/placement.json
+emuflow arch build-xilinx-routed-timing \
+  --mapped-json build/xilinx/mapped.json \
+  --packed build/xilinx/packed-sites.json \
+  --placement build/xilinx/placement.json \
+  --route build/xilinx/xilinx-route.json \
+  --output build/xilinx/xilinx-routed-timing.json
+emuflow arch validate-xilinx-routed-timing \
+  --timing build/xilinx/xilinx-routed-timing.json \
+  --mapped-json build/xilinx/mapped.json \
+  --packed build/xilinx/packed-sites.json \
+  --placement build/xilinx/placement.json \
+  --route build/xilinx/xilinx-route.json
 ```
 
 The packed artifact contains cell ownership and compact constraints only; it
@@ -4283,6 +4295,12 @@ the authority for global setup WNS/TNS.  The two public timing-model data files
 must come from the pinned RapidWright revision; their exact SHA-256 values are
 checked before Java starts and sealed into the route artifact.  They are kept
 as external provider inputs rather than being copied into this repository.
+The routed-timing binder then joins each physical sink site back to the exact
+mapped net and logical cell pin.  It emits zero inter-site delay only for a
+sink sharing the driver's physical site, uses a labelled conservative maximum
+if multiple site pins feed logical sinks at one site, and rejects every
+unbound off-site sink.  Thus OpenSTA staging never has to infer a logical
+endpoint from a RapidWright node string.
 RapidWright's extracted runtime database is isolated beside the requested
 class directory, so the provider never writes into a login home directory.
 Purely intra-site nets remain in RapidWright site routing and are explicitly

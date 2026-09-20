@@ -125,6 +125,7 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/emuflow/xilinx_openparf.py",
     "src/emuflow/xilinx_placement.py",
     "src/emuflow/xilinx_rwroute.py",
+    "src/emuflow/xilinx_timing.py",
     "src/emuflow/physical_regions.py",
     "schemas/archdb-v1.schema.json",
     "schemas/rapidwright-device-provider-v1.schema.json",
