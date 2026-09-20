@@ -20,11 +20,15 @@ proc emuflow_required_env {name} {
 }
 
 proc emuflow_hex_decode {value} {
-  return [encoding convertfrom utf-8 [binary decode hex $value]]
+  # OpenSTA can be linked against Tcl 8.5 on supported HPC hosts.  The
+  # `binary encode/decode` subcommands were only added in Tcl 8.6, while the
+  # H* format and scan forms have been available since Tcl 8.4.
+  return [encoding convertfrom utf-8 [binary format H* $value]]
 }
 
 proc emuflow_hex_encode {value} {
-  return [binary encode hex [encoding convertto utf-8 $value]]
+  binary scan [encoding convertto utf-8 $value] H* encoded
+  return $encoded
 }
 
 set liberty_path [file normalize [emuflow_required_env EMUFLOW_STA_LIBERTY]]

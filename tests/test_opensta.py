@@ -71,6 +71,13 @@ class OpenStaProviderTest(unittest.TestCase):
         script = (
             ROOT / "scripts/opensta/export_timing_path_database.tcl"
         ).read_text(encoding="utf-8")
+        # OpenSTA is still commonly linked against Tcl 8.5 on shared HPC
+        # systems.  Keep hexadecimal transport on the older H* API instead of
+        # Tcl 8.6-only `binary encode/decode` subcommands.
+        self.assertIn("binary format H* $value", script)
+        self.assertIn("binary scan [encoding convertto utf-8 $value] H*", script)
+        self.assertNotIn("binary decode hex", script)
+        self.assertNotIn("binary encode hex", script)
         self.assertIn("-group_count $max_paths", script)
         self.assertIn("EMUFLOW_STA_THROUGH_NETS", script)
         self.assertIn("get_pins -quiet -of_objects $through_net", script)
