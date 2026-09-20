@@ -8,6 +8,7 @@ from emuflow.errors import ValidationError
 from emuflow.logic_segment_timing import (
     _architectural_launch_endpoints,
     _boundary_tx_port,
+    _index_exact_logic_segments,
     _incoming_transported_cut_nets,
     _vivado_object,
     _vpr_atom_pin,
@@ -24,6 +25,45 @@ from emuflow.local_path_timing import (
 
 
 class LogicSegmentTimingTest(unittest.TestCase):
+    def test_exact_capture_index_distinguishes_memory_port_bits(self):
+        segment_by_key, captures = _index_exact_logic_segments(
+            {
+                "capture_requirements": [
+                    {
+                        "id": f"capture{bit}",
+                        "kind": "architectural-state",
+                        "endpoint": "ram0",
+                        "port": "WEBWE",
+                        "bit": bit,
+                    }
+                    for bit in range(2)
+                ],
+                "logic_segments": [
+                    {
+                        "id": f"segment{bit}",
+                        "kind": "rx_to_capture",
+                        "source_cut_net": "cut0",
+                        "fpga": "fpga0",
+                        "capture_requirement": f"capture{bit}",
+                    }
+                    for bit in range(2)
+                ],
+            }
+        )
+        self.assertEqual(len(captures), 2)
+        self.assertEqual(
+            segment_by_key[
+                ("capture", "cut0", None, "fpga0", ("ram0", "WEBWE", 0))
+            ],
+            "segment0",
+        )
+        self.assertEqual(
+            segment_by_key[
+                ("capture", "cut0", None, "fpga0", ("ram0", "WEBWE", 1))
+            ],
+            "segment1",
+        )
+
     def test_exact_launch_cone_keeps_all_local_launches_and_stops_at_cuts(self):
         ir = EmuIR(
             {

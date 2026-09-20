@@ -521,6 +521,74 @@ class LogicSegmentQueryInputs:
     exact_captures: Mapping[str, Mapping[str, Any]]
 
 
+def _exact_capture_identity(capture: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Return the pin-exact identity used to bind a capture segment.
+
+    Architectural state macros such as RAMB18E2 expose multi-bit control and
+    data ports.  The instance name alone is therefore not a capture identity:
+    two bits of ``WEBWE`` are distinct physical timing endpoints even when
+    they belong to the same memory instance.
+    """
+
+    endpoint = capture.get("endpoint")
+    if not isinstance(endpoint, str) or not endpoint:
+        raise ValidationError("static exact capture endpoint is invalid")
+    if capture.get("kind") == "architectural-state":
+        port = capture.get("port")
+        bit = capture.get("bit")
+        if (
+            not isinstance(port, str)
+            or not port
+            or isinstance(bit, bool)
+            or not isinstance(bit, int)
+            or bit < 0
+        ):
+            raise ValidationError(
+                "static exact architectural capture pin is invalid"
+            )
+        return endpoint, port, bit
+    return endpoint, None, None
+
+
+def _index_exact_logic_segments(
+    exact_contract: Mapping[str, Any],
+) -> tuple[Dict[Any, str], Dict[str, Mapping[str, Any]]]:
+    captures = {
+        item["id"]: item for item in exact_contract["capture_requirements"]
+    }
+    segment_by_key: Dict[Any, str] = {}
+    for item in exact_contract["logic_segments"]:
+        if item["kind"] == "launch_to_tx":
+            key = ("launch", None, item["sink_cut_net"], item["fpga"], None)
+        elif item["kind"] == "rx_to_tx":
+            key = (
+                "transition",
+                item["source_cut_net"],
+                item["sink_cut_net"],
+                item["fpga"],
+                None,
+            )
+        elif item["kind"] == "rx_to_capture":
+            capture = captures[item["capture_requirement"]]
+            key = (
+                "capture",
+                item["source_cut_net"],
+                None,
+                item["fpga"],
+                _exact_capture_identity(capture),
+            )
+        else:
+            raise ValidationError(
+                "static exact logic segment kind is invalid"
+            )
+        if key in segment_by_key:
+            raise ValidationError(
+                "logic segment exact contract mapping is ambiguous"
+            )
+        segment_by_key[key] = item["id"]
+    return segment_by_key, captures
+
+
 def prepare_logic_segment_query_inputs(
     original_ir_path: Path,
     assignment_path: Path,
@@ -557,35 +625,9 @@ def prepare_logic_segment_query_inputs(
             != exact_contract_sha256
         ):
             raise ValidationError("logic segment exact contract digest disagrees")
-        exact_captures = {
-            item["id"]: item
-            for item in exact_contract["capture_requirements"]
-        }
-        for item in exact_contract["logic_segments"]:
-            if item["kind"] == "launch_to_tx":
-                key = ("launch", None, item["sink_cut_net"], item["fpga"], None)
-            elif item["kind"] == "rx_to_tx":
-                key = (
-                    "transition",
-                    item["source_cut_net"],
-                    item["sink_cut_net"],
-                    item["fpga"],
-                    None,
-                )
-            else:
-                capture = exact_captures[item["capture_requirement"]]
-                key = (
-                    "capture",
-                    item["source_cut_net"],
-                    None,
-                    item["fpga"],
-                    capture["endpoint"],
-                )
-            if key in exact_segment_by_key:
-                raise ValidationError(
-                    "logic segment exact contract mapping is ambiguous"
-                )
-            exact_segment_by_key[key] = item["id"]
+        exact_segment_by_key, exact_captures = _index_exact_logic_segments(
+            exact_contract
+        )
 
     incoming_nets_by_instance: Dict[str, List[str]] = defaultdict(list)
     for net in original_ir.value["nets"]:
@@ -934,20 +976,37 @@ def _write_logic_segment_query(
                     "end_pin": end_pin,
                 }
                 if exact_contract_sha256 is not None:
-                    capture_endpoint_id = (
-                        end_instance
-                        if end_instance is not None
-                        else (
-                            f"top:{end_endpoint['port']}"
-                            f"[{end_endpoint['bit']}]"
-                        )
+                    capture_identity = _exact_capture_identity(
+                        {
+                            "kind": (
+                                "architectural-state"
+                                if end_instance is not None
+                                else "top-output"
+                            ),
+                            "endpoint": (
+                                end_instance
+                                if end_instance is not None
+                                else (
+                                    f"top:{end_endpoint['port']}"
+                                    f"[{end_endpoint['bit']}]"
+                                )
+                            ),
+                            **(
+                                {
+                                    "port": end_endpoint["port"],
+                                    "bit": end_endpoint["bit"],
+                                }
+                                if end_instance is not None
+                                else {}
+                            ),
+                        }
                     )
                     exact_key = (
                         "capture",
                         record["cut_nets"][-1],
                         None,
                         fpga,
-                        capture_endpoint_id,
+                        capture_identity,
                     )
                     exact_segment_id = exact_segment_by_key.get(exact_key)
                     if exact_segment_id is None:
