@@ -95,7 +95,7 @@ def export_rwroute_input(
         route_cells[o6_key] = (f"{name}$physical_o6", "LUT6", site, f"{letter}6LUT")
         pin_bindings[(name, "I0")] = (o5_key, "I0")
         pin_bindings[(name, "O5")] = (o5_key, "O")
-        pin_bindings[(name, "I1")] = (o6_key, "I0")
+        pin_bindings[(name, "I1")] = (o6_key, "I1")
         pin_bindings[(name, "O6")] = (o6_key, "O")
         expanded_lut6_2 += 1
     safe = {

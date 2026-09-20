@@ -169,7 +169,7 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertEqual((o6[3], o6[5]), ("LUT6", "C6LUT"))
         pin_rows = {(row[1], row[2], row[3], row[4]) for row in rows if row[0] == "PIN"}
         self.assertIn(("n1", o5[1], "I0", "sink"), pin_rows)
-        self.assertIn(("n2", o6[1], "I0", "sink"), pin_rows)
+        self.assertIn(("n2", o6[1], "I1", "sink"), pin_rows)
         self.assertIn(("n3", o5[1], "O", "driver"), pin_rows)
         self.assertIn(("n4", o6[1], "O", "driver"), pin_rows)
         self.assertEqual(report["logical_cells"], 5)
