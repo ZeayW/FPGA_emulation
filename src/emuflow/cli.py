@@ -246,6 +246,7 @@ from .physical_pins import (
 )
 from .physical_regions import (
     run_physical_region_merge,
+    run_physical_region_rebind,
     validate_fpga_interchange_architecture_regions,
 )
 from .placement import Placement
@@ -2749,6 +2750,20 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_merge_regions.add_argument("--arch", type=Path, required=True)
     arch_merge_regions.add_argument("--sidecar", type=Path, required=True)
     arch_merge_regions.add_argument("--output", "-o", type=Path, required=True)
+    arch_rebind_regions = arch_subparsers.add_parser(
+        "rebind-physical-regions",
+        help="rebind a sidecar across physically identical ArchitectureDBs",
+    )
+    arch_rebind_regions.add_argument(
+        "--old-arch", type=Path, required=True
+    )
+    arch_rebind_regions.add_argument(
+        "--new-arch", type=Path, required=True
+    )
+    arch_rebind_regions.add_argument("--sidecar", type=Path, required=True)
+    arch_rebind_regions.add_argument(
+        "--output", "-o", type=Path, required=True
+    )
     arch_validate_regions = arch_subparsers.add_parser(
         "validate-physical-regions",
         help="validate merged SLR, clock-region, and I/O-bank metadata",
@@ -5226,6 +5241,13 @@ def _dispatch(args: argparse.Namespace) -> int:
         elif args.arch_command == "merge-physical-regions":
             report = run_physical_region_merge(
                 architecture_path=args.arch,
+                sidecar_path=args.sidecar,
+                output_path=args.output,
+            )
+        elif args.arch_command == "rebind-physical-regions":
+            report = run_physical_region_rebind(
+                old_architecture_path=args.old_arch,
+                new_architecture_path=args.new_arch,
                 sidecar_path=args.sidecar,
                 output_path=args.output,
             )

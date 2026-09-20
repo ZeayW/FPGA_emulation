@@ -14,6 +14,14 @@ from .io import read_json, write_json
 
 
 PHYSICAL_REGION_SIDECAR_SCHEMA = "emuflow.physical-region-sidecar/v1"
+PHYSICAL_REGION_BINDING_FIELDS = (
+    "part",
+    "coordinate_transform",
+    "packages",
+    "physical_region_model",
+    "site_templates",
+    "sites",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -381,3 +389,55 @@ def run_physical_region_merge(
     return validate_fpga_interchange_architecture_regions(
         ArchitectureDB.load(output_path)
     )
+
+
+def run_physical_region_rebind(
+    *,
+    old_architecture_path: Path,
+    new_architecture_path: Path,
+    sidecar_path: Path,
+    output_path: Path,
+) -> Dict[str, Any]:
+    """Rebind a sidecar only across physically identical ArchitectureDBs."""
+    old_architecture = ArchitectureDB.load(old_architecture_path)
+    new_architecture = ArchitectureDB.load(new_architecture_path)
+    sidecar = read_json(sidecar_path)
+    old_sha256 = _sha256(old_architecture_path)
+    new_sha256 = _sha256(new_architecture_path)
+    bound_sha256 = sidecar.get("source", {}).get("architecture_sha256")
+    if bound_sha256 != old_sha256:
+        raise ValidationError(
+            "physical-region sidecar is not bound to the declared old "
+            "ArchitectureDB artifact"
+        )
+    validate_physical_region_sidecar(old_architecture, sidecar)
+    mismatches = [
+        field
+        for field in PHYSICAL_REGION_BINDING_FIELDS
+        if old_architecture.value.get(field)
+        != new_architecture.value.get(field)
+    ]
+    if mismatches:
+        raise ValidationError(
+            "physical-region sidecar cannot be rebound because physical "
+            f"ArchitectureDB fields differ: {', '.join(mismatches)}"
+        )
+
+    rebound = copy.deepcopy(sidecar)
+    rebound["source"]["architecture_sha256"] = new_sha256
+    rebound["source"]["architecture_rebind"] = {
+        "qualification": "physical-inventory-identical-v1",
+        "from_sha256": old_sha256,
+        "to_sha256": new_sha256,
+        "matched_fields": list(PHYSICAL_REGION_BINDING_FIELDS),
+    }
+    validate_physical_region_sidecar(new_architecture, rebound)
+    write_json(output_path, rebound)
+    return {
+        "status": "pass",
+        "schema": PHYSICAL_REGION_SIDECAR_SCHEMA,
+        "old_architecture_sha256": old_sha256,
+        "new_architecture_sha256": new_sha256,
+        "matched_fields": list(PHYSICAL_REGION_BINDING_FIELDS),
+        "output_sha256": _sha256(output_path),
+    }

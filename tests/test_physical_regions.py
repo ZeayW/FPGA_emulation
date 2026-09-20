@@ -1,3 +1,5 @@
+import copy
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +11,7 @@ from emuflow.io import read_json, write_json
 from emuflow.physical_regions import (
     merge_physical_regions,
     run_physical_region_merge,
+    run_physical_region_rebind,
     validate_fpga_interchange_architecture_regions,
     validate_physical_region_sidecar,
 )
@@ -97,6 +100,65 @@ class PhysicalRegionSidecarTest(unittest.TestCase):
             validate_fpga_interchange_architecture_regions(
                 type(self.architecture)(merged)
             )
+
+    def test_sidecar_rebind_accepts_metadata_only_architecture_change(self) -> None:
+        old = self.architecture.to_dict()
+        new = copy.deepcopy(old)
+        new["source"]["generator"] = "new importer metadata"
+        new["routing_resource_counts"]["nodes"] += 1
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            old_path = root / "old.json"
+            new_path = root / "new.json"
+            sidecar_path = root / "regions.json"
+            rebound_path = root / "rebound.json"
+            write_json(old_path, old)
+            write_json(new_path, new)
+            sidecar = read_json(SIDECAR)
+            sidecar["source"]["architecture_sha256"] = hashlib.sha256(
+                old_path.read_bytes()
+            ).hexdigest()
+            write_json(sidecar_path, sidecar)
+            report = run_physical_region_rebind(
+                old_architecture_path=old_path,
+                new_architecture_path=new_path,
+                sidecar_path=sidecar_path,
+                output_path=rebound_path,
+            )
+            self.assertEqual(report["status"], "pass")
+            rebound = read_json(rebound_path)
+            self.assertEqual(
+                rebound["source"]["architecture_sha256"],
+                hashlib.sha256(new_path.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                rebound["source"]["architecture_rebind"]["qualification"],
+                "physical-inventory-identical-v1",
+            )
+
+    def test_sidecar_rebind_rejects_physical_inventory_change(self) -> None:
+        old = self.architecture.to_dict()
+        new = copy.deepcopy(old)
+        new["sites"][0]["x"] += 1
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            old_path = root / "old.json"
+            new_path = root / "new.json"
+            sidecar_path = root / "regions.json"
+            write_json(old_path, old)
+            write_json(new_path, new)
+            sidecar = read_json(SIDECAR)
+            sidecar["source"]["architecture_sha256"] = hashlib.sha256(
+                old_path.read_bytes()
+            ).hexdigest()
+            write_json(sidecar_path, sidecar)
+            with self.assertRaisesRegex(Exception, "fields differ: sites"):
+                run_physical_region_rebind(
+                    old_architecture_path=old_path,
+                    new_architecture_path=new_path,
+                    sidecar_path=sidecar_path,
+                    output_path=root / "rebound.json",
+                )
 
 
 if __name__ == "__main__":
