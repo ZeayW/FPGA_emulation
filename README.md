@@ -4168,7 +4168,11 @@ receives a functionally transparent LUT6_2 in the same slice, with its original
 DI signal on O5 and S signal on O6, because those CARRY8 inputs are dedicated
 intra-site connections rather than routable inter-site pins. The packer binds
 the eight adapters to A6LUT through H6LUT, and the independent checker
-recomputes both signal topology and BEL position. Dedicated carry, DSP, BRAM,
+recomputes both signal topology and BEL position. At the RapidWright boundary,
+where transformed `LUT6_2` logical macros cannot be instantiated directly, the
+compact route-input exporter deterministically lowers each adapter to the
+corresponding shared `LUT5@*5LUT` and `LUT6@*6LUT` physical pair and rewrites
+only I0/O5 and I1/O6 pin identities. Dedicated carry, DSP, BRAM,
 and URAM cascade
 connectivity is emitted as an exact non-branching adjacency certificate. The
 independent validator reloads the mapped design and ArchitectureDB and rejects

@@ -69,18 +69,51 @@ def export_rwroute_input(
         for assignment in cluster["assignments"]
     }:
         raise ValidationError("placement and packing cell ownership disagree")
-    safe = {name: f"c{index}" for index, name in enumerate(sorted(physical))}
+    # RapidWright models LUT6_2 as a transformed primitive and deliberately
+    # rejects direct createAndPlaceCell(LUT6_2).  Preserve one logical/resource
+    # cell in EmuFlow, but lower it at this provider boundary to the documented
+    # shared A5LUT/A6LUT physical pair.  Only the four functional route-through
+    # pins may carry non-constant nets.
+    route_cells: Dict[str, Tuple[str, str, str, str]] = {}
+    pin_bindings: Dict[Tuple[str, str], Tuple[str, str]] = {}
+    expanded_lut6_2 = 0
+    for name in sorted(physical):
+        site, bel = physical[name]
+        cell_type = cells[name]["type"]
+        if cell_type != "LUT6_2":
+            route_cells[name] = (name, cell_type, site, bel)
+            continue
+        match = re.fullmatch(r"([A-H])6LUT", bel)
+        if match is None:
+            raise ValidationError(
+                f"LUT6_2 cell {name!r} is not assigned to a 6LUT BEL"
+            )
+        letter = match.group(1)
+        o5_key = f"{name}\0O5"
+        o6_key = f"{name}\0O6"
+        route_cells[o5_key] = (f"{name}$physical_o5", "LUT5", site, f"{letter}5LUT")
+        route_cells[o6_key] = (f"{name}$physical_o6", "LUT6", site, f"{letter}6LUT")
+        pin_bindings[(name, "I0")] = (o5_key, "I0")
+        pin_bindings[(name, "O5")] = (o5_key, "O")
+        pin_bindings[(name, "I1")] = (o6_key, "I0")
+        pin_bindings[(name, "O6")] = (o6_key, "O")
+        expanded_lut6_2 += 1
+    safe = {
+        name: f"c{index}" for index, name in enumerate(sorted(route_cells))
+    }
     lines = [
         f"META\tpart\t{placement['part']}",
         f"META\tmapped_sha256\t{_sha256(mapped_path)}",
         f"META\tpacked_sha256\t{_sha256(packed_path)}",
         f"META\tplacement_sha256\t{_sha256(placement_path)}",
     ]
-    for name in sorted(physical):
-        site, bel = physical[name]
-        if any(character in name for character in "\t\r\n"):
-            raise ValidationError(f"cell name {name!r} is not TSV-safe")
-        lines.append(f"CELL\t{safe[name]}\t{name}\t{cells[name]['type']}\t{site}\t{bel}")
+    for route_name in sorted(route_cells):
+        display_name, cell_type, site, bel = route_cells[route_name]
+        if any(character in display_name for character in "\t\r\n"):
+            raise ValidationError(f"cell name {display_name!r} is not TSV-safe")
+        lines.append(
+            f"CELL\t{safe[route_name]}\t{display_name}\t{cell_type}\t{site}\t{bel}"
+        )
 
     endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
     for name in sorted(physical):
@@ -119,12 +152,23 @@ def export_rwroute_input(
         kind = "clock" if any(pin in {"C", "CLK"} for _cell, pin, _role in sinks) else "signal"
         lines.append(f"NET\t{net_name}\t{kind}")
         for name, pin, role in [drivers[0], *sinks]:
-            lines.append(f"PIN\t{net_name}\t{safe[name]}\t{pin}\t{role}")
+            route_name, route_pin = pin_bindings.get(
+                (name, pin), (name, pin)
+            )
+            if route_name not in route_cells:
+                raise ValidationError(
+                    f"cell {name!r} pin {pin!r} has no RWRoute physical binding"
+                )
+            lines.append(
+                f"PIN\t{net_name}\t{safe[route_name]}\t{route_pin}\t{role}"
+            )
         included += 1
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {
-        "status": "pass", "cells": len(safe), "routable_nets": included,
+        "status": "pass", "cells": len(safe), "logical_cells": len(physical),
+        "expanded_lut6_2_cells": expanded_lut6_2,
+        "routable_nets": included,
         "excluded_nets": excluded, "output": str(output_path),
     }
 
