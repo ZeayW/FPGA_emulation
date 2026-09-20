@@ -114,6 +114,7 @@ def run_rapidwright_partition_backend(
         architecture_path,
         constraints_path,
         placement_path,
+        guidance_path=guidance_path,
     )
     placement_check = validate_xilinx_placement(
         packed_path,
