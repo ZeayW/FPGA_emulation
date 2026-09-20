@@ -21,12 +21,21 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "placement_sha256": SHA, "rwroute_input_sha256": SHA,
             },
             "cells": 3, "excluded_nets": [], "summary": {},
+            "timing": {
+                "provider": "rapidwright-lightweight",
+                "family": "UltraScalePlus", "units": "ps",
+                "setup_route_delays": "available",
+                "hold_analysis": "unavailable",
+                "hard_block_clock_timing": "unqualified",
+                "routed_endpoints": 2,
+                "maximum_route_delay_ps": 27.5,
+            },
             "nets": [{
                 "net": "n1", "kind": "signal", "has_gap": False,
                 "pins": [
                     {"site": "S0", "pin": "O", "is_output": True, "node": "A"},
-                    {"site": "S1", "pin": "I", "is_output": False, "node": "B"},
-                    {"site": "S2", "pin": "I", "is_output": False, "node": "C"},
+                    {"site": "S1", "pin": "I", "is_output": False, "node": "B", "route_delay_ps": 12.0},
+                    {"site": "S2", "pin": "I", "is_output": False, "node": "C", "route_delay_ps": 27.5},
                 ],
                 "pips": [
                     {"tile": "T0", "start_wire": "W0", "end_wire": "W1", "start_node": "A", "end_node": "X"},
@@ -42,6 +51,8 @@ class XilinxRWRouteTest(unittest.TestCase):
             path.write_text(json.dumps(self._route()), encoding="utf-8")
             report = validate_xilinx_route_db(path)
             self.assertEqual(report["nets"], 1)
+            self.assertEqual(report["timed_endpoints"], 2)
+            self.assertEqual(report["maximum_route_delay_ps"], 27.5)
             broken = self._route()
             broken["nets"][0]["pips"].pop()
             path.write_text(json.dumps(broken), encoding="utf-8")
@@ -57,6 +68,20 @@ class XilinxRWRouteTest(unittest.TestCase):
             path = Path(temporary) / "route.json"
             path.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaises(ValidationError):
+                validate_xilinx_route_db(path)
+
+    def test_checker_rejects_missing_or_tampered_timing(self):
+        value = self._route()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "route.json"
+            del value["nets"][0]["pins"][1]["route_delay_ps"]
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "route delay"):
+                validate_xilinx_route_db(path)
+            value = self._route()
+            value["timing"]["maximum_route_delay_ps"] = 99.0
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "maximum route delay"):
                 validate_xilinx_route_db(path)
 
     def test_exporter_excludes_intra_site_net(self):

@@ -4270,6 +4270,15 @@ The adapter emits only a compact, source-sealed route certificate. An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks
 that the certificate belongs to the exact mapped, packed, and placed inputs.
+The same live routed design is evaluated once with RapidWright's lightweight
+UltraScale+ timing model.  Every routed sink carries its route delay in
+picoseconds; the independent checker requires complete sink coverage and
+recomputes the endpoint count and maximum delay instead of trusting the
+summary.  This is research-grade setup-route evidence, not vendor sign-off:
+the artifact explicitly reports hold analysis as unavailable and hard-block
+and clock timing as unqualified.  EmuFlow subsequently binds these single-FPGA
+segments to TX/RX, board-link, TDM, multi-hop, and frame events; OpenSTA remains
+the authority for global setup WNS/TNS.
 RapidWright's extracted runtime database is isolated beside the requested
 class directory, so the provider never writes into a login home directory.
 Purely intra-site nets remain in RapidWright site routing and are explicitly

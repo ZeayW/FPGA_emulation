@@ -13,6 +13,7 @@ import com.xilinx.rapidwright.design.Unisim;
 import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.rwroute.RWRoute;
+import com.xilinx.rapidwright.timing.TimingModel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -186,16 +187,48 @@ public final class EmuFlowRWRoute {
         design.routeSites();
         RWRoute.routeDesignFullNonTimingDriven(design);
 
+        // RapidWright's lightweight timing model evaluates the concrete
+        // routed PIP tree in picoseconds.  Keep this deliberately separate
+        // from global setup analysis: EmuFlow binds these per-FPGA route
+        // segments to transport/TDM events and delegates global setup WNS/TNS
+        // to OpenSTA.  RapidWright's model is not a hold/sign-off engine.
+        TimingModel timingModel = new TimingModel(design.getDevice());
+        timingModel.build();
+
         JSONArray routeNets = new JSONArray();
         int routed = 0;
         int pips = 0;
+        int timedEndpoints = 0;
+        float maximumRouteDelayPs = 0.0f;
         for (String netName : netNames) {
             Net net = nets.get(netName);
             JSONObject record = new JSONObject();
             record.put("net", netName);
             record.put("kind", netKinds.get(netName));
             JSONArray pins = new JSONArray();
-            for (SitePinInst pin : net.getPins()) pins.put(pinRecord(pin));
+            SitePinInst source = net.getSource();
+            for (SitePinInst pin : net.getPins()) {
+                JSONObject pinValue = pinRecord(pin);
+                if (!pin.isOutPin()) {
+                    if (source == null) {
+                        throw new IllegalStateException(
+                            "routed net has no timing source: " + netName
+                        );
+                    }
+                    float delayPs = timingModel.calcDelay(source, pin, net);
+                    if (!Float.isFinite(delayPs) || delayPs < 0.0f) {
+                        throw new IllegalStateException(
+                            "invalid RapidWright route delay for " + netName
+                            + "/" + pin.getSiteInstName() + "/" + pin.getName()
+                            + ": " + delayPs
+                        );
+                    }
+                    pinValue.put("route_delay_ps", delayPs);
+                    timedEndpoints++;
+                    maximumRouteDelayPs = Math.max(maximumRouteDelayPs, delayPs);
+                }
+                pins.put(pinValue);
+            }
             record.put("pins", pins);
             JSONArray netPips = new JSONArray();
             List<PIP> sortedPips = new ArrayList<>(net.getPIPs());
@@ -222,6 +255,15 @@ public final class EmuFlowRWRoute {
         output.put("cells", cells.size());
         output.put("nets", routeNets);
         output.put("excluded_nets", excluded);
+        output.put("timing", new JSONObject()
+            .put("provider", "rapidwright-lightweight")
+            .put("family", "UltraScalePlus")
+            .put("units", "ps")
+            .put("setup_route_delays", "available")
+            .put("hold_analysis", "unavailable")
+            .put("hard_block_clock_timing", "unqualified")
+            .put("routed_endpoints", timedEndpoints)
+            .put("maximum_route_delay_ps", maximumRouteDelayPs));
         output.put("summary", new JSONObject()
             .put("candidate_nets", netNames.size())
             .put("nets_with_pips", routed)

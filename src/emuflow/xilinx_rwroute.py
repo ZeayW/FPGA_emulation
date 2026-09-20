@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import re
 import subprocess
@@ -251,6 +252,7 @@ def validate_xilinx_route_db(
     used_pips: Dict[Tuple[str, str, str], str] = {}
     checked_nets = 0
     checked_sinks = 0
+    route_delays_ps: List[float] = []
     for index, net in enumerate(value.get("nets", [])):
         context = f"route.nets[{index}]"
         if not isinstance(net, dict) or not isinstance(net.get("net"), str):
@@ -267,6 +269,24 @@ def validate_xilinx_route_db(
             raise ValidationError(f"{context}: routed net lacks one source and sinks")
         if any(pin.get("node") is None for pin in pins):
             raise ValidationError(f"{context}: site pin lacks a connected route node")
+        for pin_index, pin in enumerate(pins):
+            delay = pin.get("route_delay_ps")
+            if pin.get("is_output"):
+                if delay is not None:
+                    raise ValidationError(
+                        f"{context}.pins[{pin_index}]: source has a route delay"
+                    )
+                continue
+            if (
+                isinstance(delay, bool)
+                or not isinstance(delay, (int, float))
+                or not math.isfinite(float(delay))
+                or float(delay) < 0.0
+            ):
+                raise ValidationError(
+                    f"{context}.pins[{pin_index}]: route delay is invalid"
+                )
+            route_delays_ps.append(float(delay))
         graph: Dict[str, Set[str]] = defaultdict(set)
         for pip_index, pip in enumerate(pips):
             if not isinstance(pip, dict):
@@ -305,6 +325,33 @@ def validate_xilinx_route_db(
             )
         checked_nets += 1
         checked_sinks += len(sinks)
+    timing = value.get("timing")
+    expected_timing = {
+        "provider": "rapidwright-lightweight",
+        "family": "UltraScalePlus",
+        "units": "ps",
+        "setup_route_delays": "available",
+        "hold_analysis": "unavailable",
+        "hard_block_clock_timing": "unqualified",
+    }
+    if not isinstance(timing, dict):
+        raise ValidationError("XilinxRouteDB timing qualification is missing")
+    for key, expected in expected_timing.items():
+        if timing.get(key) != expected:
+            raise ValidationError(f"XilinxRouteDB timing.{key} is invalid")
+    if timing.get("routed_endpoints") != len(route_delays_ps):
+        raise ValidationError("XilinxRouteDB timed endpoint count disagrees")
+    maximum_route_delay_ps = max(route_delays_ps, default=0.0)
+    reported_maximum = timing.get("maximum_route_delay_ps")
+    if (
+        isinstance(reported_maximum, bool)
+        or not isinstance(reported_maximum, (int, float))
+        or not math.isclose(
+            float(reported_maximum), maximum_route_delay_ps,
+            rel_tol=1.0e-6, abs_tol=1.0e-3,
+        )
+    ):
+        raise ValidationError("XilinxRouteDB maximum route delay disagrees")
     value["status"] = "pass"
     write_json(path, value, compact=True)
     return {
@@ -312,4 +359,8 @@ def validate_xilinx_route_db(
         "nets": checked_nets, "sinks": checked_sinks,
         "pips": len(used_pips), "route_sha256": _sha256(path),
         "excluded_nets": len(value.get("excluded_nets", [])),
+        "timed_endpoints": len(route_delays_ps),
+        "maximum_route_delay_ps": maximum_route_delay_ps,
+        "timing_provider": timing["provider"],
+        "hold_analysis": timing["hold_analysis"],
     }
