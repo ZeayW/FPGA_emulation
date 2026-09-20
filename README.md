@@ -4262,6 +4262,40 @@ emuflow arch validate-xilinx-opensta \
   --routed-timing build/xilinx/xilinx-routed-timing.json
 ```
 
+The same implementation is also available through the ordinary Phase 7
+contract as the opt-in `rapidwright` physical backend.  It is not a parallel
+demo pipeline: every partition is lowered from the Phase 6 EmuIR, packed,
+placed, routed by RWRoute, independently checked, and then exported through
+the same `physical-summary.json`, `BoundaryTimingDB`, and
+`LogicSegmentTimingDB` interfaces consumed by Phase 7C.  A complete invocation
+has the following additional arguments:
+
+```bash
+emuflow multi-fpga compile design.v \
+  --top design \
+  --mapping-profile xilinx-ultrascaleplus-open-v1 \
+  --platform platforms/virtual/rapidwright_xcvu19p_2fpga_p2p.json \
+  --physical \
+  --physical-backend rapidwright \
+  --physical-architecture /external/xcvu19p.architecture.json \
+  --physical-rapidwright-jar /external/rapidwright-standalone.jar \
+  --physical-rapidwright-java /external/jdk17/bin/java \
+  --physical-rapidwright-timing-data /external/RapidWright/timing/ultrascaleplus \
+  --physical-rapidwright-opensta /external/opensta/bin/sta \
+  --out build/rapidwright-full-flow
+```
+
+`rapidwright_xcvu19p_2fpga_p2p` uses the public XCVU19P LUT, FF, BRAM,
+DSP, and URAM inventory, derives its CARRY8 capacity from the eight-LUT slice
+structure, and applies the same 75% planning limit to both devices.  Its
+32-lane, 250 MHz, two-cycle point-to-point board link is explicitly an
+academic system-link model; it is not claimed to be an AMD or PPro board.
+Consequently this backend supplies real XCVU19P single-device placement and
+routing evidence while the board link remains a declared research assumption.
+The current timing qualification is setup-only RapidWright lightweight route
+timing plus OpenSTA.  Hold, package-pin/interface binding, and vendor sign-off
+remain outside Route A and are reported rather than silently inferred.
+
 The packed artifact contains cell ownership and compact constraints only; it
 does not copy vendor device data or a routing graph into the repository. This
 feeds a deterministic first-party exact site/BEL legalizer. OpenPARF places one

@@ -1,0 +1,47 @@
+{
+  "schema": "emuflow.boarddb/v1",
+  "platform": {
+    "name": "rapidwright_xcvu19p_2fpga_p2p",
+    "kind": "virtual",
+    "description": "Two-XCVU19P research platform using exact per-device resources and an explicitly academic point-to-point board link"
+  },
+  "fpgas": [
+    {
+      "id": "fpga0",
+      "part": "xcvu19p-fsva3824-2-e",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 4085760,
+        "ff": 8171520,
+        "bram18k": 4320,
+        "dsp48": 3840,
+        "carry8": 510720,
+        "uram288": 320
+      }
+    },
+    {
+      "id": "fpga1",
+      "part": "xcvu19p-fsva3824-2-e",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 4085760,
+        "ff": 8171520,
+        "bram18k": 4320,
+        "dsp48": 3840,
+        "carry8": 510720,
+        "uram288": 320
+      }
+    }
+  ],
+  "links": [
+    {
+      "id": "link_0_1",
+      "endpoints": ["fpga0", "fpga1"],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 32,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 2
+    }
+  ]
+}

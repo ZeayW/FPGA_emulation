@@ -2179,7 +2179,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument(
         "--physical-backend",
-        choices=("open", "vivado"),
+        choices=("open", "rapidwright", "vivado"),
         default="open",
         help="select the provider behind the common physical/timing contract",
     )
@@ -2207,6 +2207,16 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--physical-vivado-route-directive", default="Default"
     )
+    multi_fpga_compile.add_argument("--physical-rapidwright-jar", type=Path)
+    multi_fpga_compile.add_argument("--physical-rapidwright-java", type=Path)
+    multi_fpga_compile.add_argument("--physical-rapidwright-classes", type=Path)
+    multi_fpga_compile.add_argument(
+        "--physical-rapidwright-java-source", type=Path
+    )
+    multi_fpga_compile.add_argument(
+        "--physical-rapidwright-timing-data", type=Path
+    )
+    multi_fpga_compile.add_argument("--physical-rapidwright-opensta")
     multi_fpga_compile.add_argument(
         "--physical-workers",
         type=int,
@@ -2278,7 +2288,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     multi_fpga_physical.add_argument(
-        "--backend", choices=("open", "vivado"), default="open"
+        "--backend", choices=("open", "rapidwright", "vivado"), default="open"
     )
     multi_fpga_physical.add_argument("--architecture", type=Path)
     multi_fpga_physical.add_argument(
@@ -2305,6 +2315,12 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_physical.add_argument(
         "--vivado-route-directive", default="Default"
     )
+    multi_fpga_physical.add_argument("--rapidwright-jar", type=Path)
+    multi_fpga_physical.add_argument("--rapidwright-java", type=Path)
+    multi_fpga_physical.add_argument("--rapidwright-classes", type=Path)
+    multi_fpga_physical.add_argument("--rapidwright-java-source", type=Path)
+    multi_fpga_physical.add_argument("--rapidwright-timing-data", type=Path)
+    multi_fpga_physical.add_argument("--rapidwright-opensta")
     multi_fpga_physical.add_argument(
         "--workers",
         type=int,
@@ -5500,6 +5516,12 @@ def _dispatch(args: argparse.Namespace) -> int:
                 vivado_max_timing_paths=args.vivado_max_timing_paths,
                 vivado_place_directive=args.vivado_place_directive,
                 vivado_route_directive=args.vivado_route_directive,
+                rapidwright_jar=args.rapidwright_jar,
+                rapidwright_java=args.rapidwright_java,
+                rapidwright_classes=args.rapidwright_classes,
+                rapidwright_java_source=args.rapidwright_java_source,
+                rapidwright_timing_data=args.rapidwright_timing_data,
+                rapidwright_opensta=args.rapidwright_opensta,
                 original_ir_path=args.original_ir,
                 assignment_path=args.assignment,
                 routes_path=args.routes,
@@ -5637,6 +5659,16 @@ def _dispatch(args: argparse.Namespace) -> int:
             physical_vivado_route_directive=(
                 args.physical_vivado_route_directive
             ),
+            physical_rapidwright_jar=args.physical_rapidwright_jar,
+            physical_rapidwright_java=args.physical_rapidwright_java,
+            physical_rapidwright_classes=args.physical_rapidwright_classes,
+            physical_rapidwright_java_source=(
+                args.physical_rapidwright_java_source
+            ),
+            physical_rapidwright_timing_data=(
+                args.physical_rapidwright_timing_data
+            ),
+            physical_rapidwright_opensta=args.physical_rapidwright_opensta,
             physical_workers=args.physical_workers,
             global_sta_executable=args.global_sta_executable,
             global_timing_engine=args.global_timing_engine,

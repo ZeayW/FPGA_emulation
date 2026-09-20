@@ -227,6 +227,21 @@ def build_xilinx_routed_opensta_inputs(
             }
             hard_blocks.append(cell_type)
             continue
+        if cell_type == "DSP48E2":
+            if not inputs or not outputs:
+                raise ValidationError("DSP48E2 lacks timing inputs or outputs")
+            model["cells"][cell_type] = {
+                "kind": "combinational",
+                "inputs": inputs,
+                "outputs": outputs,
+                # RapidWright lightweight timing does not publish a complete
+                # DSP48E2 internal arc model. Keep the graph connected with a
+                # deliberately conservative research bound and preserve the
+                # unqualified hard-block marker in the summary.
+                "delay_ns": 5.0,
+            }
+            hard_blocks.append(cell_type)
+            continue
         if cell_type.startswith("EMUFLOW_RW_ROUTE_DELAY_"):
             delay = float(instance["attributes"]["emuflow_route_delay_ns"])
             model["cells"][cell_type] = {

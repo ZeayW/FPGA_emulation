@@ -1,0 +1,71 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from emuflow.io import write_json
+from emuflow.xilinx_netlist import emit_xilinx_mapped_json
+from emuflow.yosys import import_yosys_json
+
+
+class XilinxMappedNetlistTests(unittest.TestCase):
+    def test_emuir_roundtrip_preserves_cells_ports_and_nets(self) -> None:
+        mapped = {
+            "creator": "fixture",
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "clk": {"direction": "input", "bits": [2]},
+                        "a": {"direction": "input", "bits": [3]},
+                        "y": {"direction": "output", "bits": [5]},
+                    },
+                    "cells": {
+                        "lut": {
+                            "type": "LUT1",
+                            "parameters": {"INIT": "10"},
+                            "attributes": {},
+                            "port_directions": {"I0": "input", "O": "output"},
+                            "connections": {"I0": [3], "O": [4]},
+                        },
+                        "ff": {
+                            "type": "FDRE",
+                            "parameters": {"INIT": "0"},
+                            "attributes": {},
+                            "port_directions": {
+                                "C": "input", "CE": "input", "D": "input",
+                                "R": "input", "Q": "output",
+                            },
+                            "connections": {
+                                "C": [2], "CE": ["1"], "D": [4],
+                                "R": ["0"], "Q": [5],
+                            },
+                        },
+                    },
+                    "netnames": {
+                        "clk": {"bits": [2]}, "a": {"bits": [3]},
+                        "comb": {"bits": [4]}, "y": {"bits": [5]},
+                    },
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.json"
+            ir_path = root / "source.emuir.json"
+            output = root / "mapped.json"
+            source.write_text(json.dumps(mapped), encoding="utf-8")
+            ir = import_yosys_json(source, clocks=("clk",))
+            write_json(ir_path, ir.value)
+            report = emit_xilinx_mapped_json(ir_path, output)
+            roundtrip = import_yosys_json(output, clocks=("clk",))
+            self.assertEqual(report["cells"], 2)
+            self.assertEqual(
+                [(item["id"], item["type"]) for item in roundtrip.value["instances"]],
+                [("ff", "FDRE"), ("lut", "LUT1")],
+            )
+            self.assertEqual(len(roundtrip.value["nets"]), 4)
+
+
+if __name__ == "__main__":
+    unittest.main()

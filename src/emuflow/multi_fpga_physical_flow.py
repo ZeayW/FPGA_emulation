@@ -21,6 +21,7 @@ from .logic_segment_timing import (
     prepare_logic_segment_query_inputs,
     validate_logic_segment_timing,
     write_vivado_logic_segment_query,
+    write_xilinx_logic_segment_query,
     write_vpr_logic_segment_query,
 )
 from .local_path_timing import (
@@ -62,6 +63,7 @@ from .vtr_eblif import emit_vtr_eblif
 from .vivado_backend import run_vivado_partition_backend
 from .vivado_netlist import emit_vivado_mapped_verilog
 from .yosys import import_yosys_json
+from .xilinx_physical_backend import run_rapidwright_partition_backend
 
 
 MULTI_FPGA_PHYSICAL_SCHEMA = "emuflow.multi-fpga-physical-flow/v1"
@@ -485,6 +487,12 @@ def run_multi_fpga_physical_flow(
     vivado_max_timing_paths: int = 10000,
     vivado_place_directive: str = "Default",
     vivado_route_directive: str = "Default",
+    rapidwright_jar: Optional[Path] = None,
+    rapidwright_java: Optional[Path] = None,
+    rapidwright_classes: Optional[Path] = None,
+    rapidwright_java_source: Optional[Path] = None,
+    rapidwright_timing_data: Optional[Path] = None,
+    rapidwright_opensta: Optional[str] = None,
     original_ir_path: Optional[Path] = None,
     assignment_path: Optional[Path] = None,
     routes_path: Optional[Path] = None,
@@ -616,10 +624,63 @@ def run_multi_fpga_physical_flow(
                 "sha256": _sha256(architecture_path),
                 "input_path": str(architecture_input),
             }
+    elif backend == "rapidwright":
+        if architecture is None:
+            raise ValidationError(
+                "RapidWright backend requires --physical-architecture with "
+                "the imported Xilinx ArchitectureDB"
+            )
+        architecture_path = architecture.resolve()
+        if not architecture_path.is_file():
+            raise EmuFlowError(
+                f"RapidWright architecture does not exist: {architecture_path}"
+            )
+        required_runtime = {
+            "rapidwright_jar": rapidwright_jar,
+            "rapidwright_java": rapidwright_java,
+            "rapidwright_timing_data": rapidwright_timing_data,
+        }
+        missing_runtime = sorted(
+            name
+            for name, path in required_runtime.items()
+            if (
+                path is None
+                or (
+                    name == "rapidwright_timing_data"
+                    and not path.is_dir()
+                )
+                or (
+                    name != "rapidwright_timing_data"
+                    and not path.is_file()
+                )
+            )
+        )
+        if missing_runtime:
+            raise ValidationError(
+                "RapidWright backend runtime is incomplete: "
+                + ", ".join(sorted(set(missing_runtime)))
+            )
+        if rapidwright_java_source is None:
+            rapidwright_java_source = (
+                Path(__file__).resolve().parents[2]
+                / "scripts/rapidwright/EmuFlowRWRoute.java"
+            )
+        if not rapidwright_java_source.is_file():
+            raise ValidationError("RapidWright Java adapter source is missing")
+        if rapidwright_classes is None:
+            rapidwright_classes = output_dir / ".rapidwright-classes"
+        architecture_source = {
+            "status": "pass",
+            "mode": "provided-xilinx-architecture-db",
+            "path": str(architecture_path),
+            "sha256": _sha256(architecture_path),
+            "provider": "rapidwright-xilinx-device-v1",
+        }
     else:
         if architecture is not None:
             raise ValidationError(
-                "--physical-architecture applies only to backend=open"
+                "--physical-architecture applies only to backend=open or "
+                "backend=rapidwright"
             )
         architecture_source = {
             "status": "pass",
@@ -1046,6 +1107,62 @@ def run_multi_fpga_physical_flow(
                 }
             )
             provider_fields["array"] = {"width": width, "height": height}
+        elif backend == "rapidwright":
+            if architecture_path is None:
+                raise ValidationError("RapidWright architecture is missing")
+            boundary_identity_path = Path(
+                lowering_report["boundary_identity"]["output"]
+            )
+            logic_identity_path = None
+            logic_query_report = None
+            if all(path is not None for path in logic_context):
+                logic_identity_path = fpga_root / "logic-segment-identity.json"
+                logic_query_report = write_xilinx_logic_segment_query(
+                    original_ir_path,
+                    assignment_path,
+                    effective_logic_path_database_path,
+                    routes_path,
+                    schedule_path,
+                    platform,
+                    merged_ir,
+                    boundary_identity_path,
+                    fpga_id,
+                    fpga_root / "xilinx-logic-segment-query.tsv",
+                    logic_identity_path,
+                    prepared_inputs=prepared_logic_inputs,
+                )
+            assert rapidwright_jar is not None
+            assert rapidwright_java is not None
+            assert rapidwright_classes is not None
+            assert rapidwright_java_source is not None
+            assert rapidwright_timing_data is not None
+            rapidwright_report = run_rapidwright_partition_backend(
+                fpga=fpga_id,
+                part=fpga_part,
+                merged_ir_path=merged_ir,
+                architecture_path=architecture_path,
+                runtime=runtime,
+                original_cells=original_cells,
+                transport_cells=transport_cells,
+                output_dir=fpga_root / "rapidwright",
+                boundary_identity_path=boundary_identity_path,
+                rapidwright_jar=rapidwright_jar,
+                java=rapidwright_java,
+                # Each worker receives an isolated class/runtime-data root.
+                # RapidWright may extract device data beneath user.home, so a
+                # shared directory would introduce cross-partition races.
+                classes_dir=rapidwright_classes / fpga_id,
+                java_source=rapidwright_java_source,
+                timing_data_dir=rapidwright_timing_data,
+                opensta=rapidwright_opensta,
+                logic_identity_path=logic_identity_path,
+            )
+            if logic_query_report is not None:
+                rapidwright_report["logic_segment_timing"][
+                    "query"
+                ] = logic_query_report
+            physical_result = rapidwright_report["result"]
+            stages["rapidwright_implementation"] = rapidwright_report
         else:
             boundary_identity_path = Path(
                 lowering_report["boundary_identity"]["output"]
@@ -1194,17 +1311,18 @@ def run_multi_fpga_physical_flow(
         validate_boundary_identity_database(
             database, transports_by_fpga[fpga_id]
         )
+    def implementation_stage(
+        item: Mapping[str, Any], stage: str
+    ) -> Mapping[str, Any]:
+        if backend == "vivado":
+            return item["stages"]["vivado_implementation"][stage]
+        if backend == "rapidwright":
+            return item["stages"]["rapidwright_implementation"][stage]
+        return item["stages"][stage]
+
     physical_summary["boundary_timing"] = {
         item["fpga"]: read_json(
-            Path(
-                (
-                    item["stages"]["vivado_implementation"][
-                        "boundary_timing"
-                    ]
-                    if backend == "vivado"
-                    else item["stages"]["boundary_timing"]
-                )["import"]["output"]
-            )
+            Path(implementation_stage(item, "boundary_timing")["import"]["output"])
         )
         for item in records
     }
@@ -1219,13 +1337,9 @@ def run_multi_fpga_physical_flow(
         physical_summary["logic_segment_timing"] = {
             item["fpga"]: read_json(
                 Path(
-                    (
-                        item["stages"]["vivado_implementation"][
-                            "logic_segment_timing"
-                        ]
-                        if backend == "vivado"
-                        else item["stages"]["logic_segment_timing"]
-                    )["import"]["output"]
+                    implementation_stage(item, "logic_segment_timing")[
+                        "import"
+                    ]["output"]
                 )
             )
             for item in records

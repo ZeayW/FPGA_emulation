@@ -19,7 +19,7 @@ PHYSICAL_BACKEND_SCHEMA = "emuflow.physical-backend/v1"
 PHYSICAL_PARTITION_RESULT_SCHEMA = (
     "emuflow.physical-partition-result/v1"
 )
-PHYSICAL_BACKENDS = ("open", "vivado")
+PHYSICAL_BACKENDS = ("open", "rapidwright", "vivado")
 
 
 _DESCRIPTORS: Dict[str, Dict[str, Any]] = {
@@ -47,6 +47,22 @@ _DESCRIPTORS: Dict[str, Dict[str, Any]] = {
         "architecture_class": "xilinx-commercial-device",
         "source_model": "external-proprietary-provider",
         "qualification": "vendor-device-implementation-not-board-signoff",
+        "capabilities": {
+            "packing": True,
+            "placement": True,
+            "routing": True,
+            "timing": True,
+            "bitstream": False,
+        },
+    },
+    "rapidwright": {
+        "schema": PHYSICAL_BACKEND_SCHEMA,
+        "id": "rapidwright",
+        "implementation_engine": "emuflow-pack-place+rapidwright-rwroute",
+        "timing_engine": "rapidwright-lightweight+opensta",
+        "architecture_class": "xilinx-commercial-device",
+        "source_model": "external-mixed-license-provider",
+        "qualification": "research-timing-not-vivado-signoff",
         "capabilities": {
             "packing": True,
             "placement": True,
@@ -223,7 +239,9 @@ def validate_physical_partition_result(
             "failing_endpoint_constraints"
         ),
     }
-    if backend == "open" or any(value is not None for value in endpoint_timing.values()):
+    if backend in {"open", "rapidwright"} or any(
+        value is not None for value in endpoint_timing.values()
+    ):
         tns = endpoint_timing["tns_ns"]
         failing_endpoints = endpoint_timing["failing_endpoints"]
         failing_constraints = endpoint_timing["failing_endpoint_constraints"]

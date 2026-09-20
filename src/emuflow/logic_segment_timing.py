@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from .boundary_timing import BOUNDARY_IDENTITY_SCHEMA
+from .equivalence import _lut_definition
 from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
@@ -368,6 +369,54 @@ def _vivado_object(
     return "pin", f"{_vivado_mapped_name(instance_id)}/{pin_name}"
 
 
+def _xilinx_object(
+    ir: EmuIR,
+    endpoint: Mapping[str, Any],
+    pins: Mapping[str, set[tuple[str, int]]],
+    instances: Mapping[str, Mapping[str, Any]],
+) -> tuple[str, str]:
+    """Return a provider-independent Xilinx logical pin identity."""
+    instance_id = endpoint["instance"]
+    port = endpoint["port"]
+    bit = endpoint["bit"]
+    if instance_id is None:
+        ports = {item["id"]: item for item in ir.value["ports"]}
+        if port not in ports or bit >= ports[port]["width"]:
+            raise ValidationError(f"Xilinx top endpoint {port}[{bit}] is absent")
+        suffix = port if ports[port]["width"] == 1 else f"{port}[{bit}]"
+        return "port", f"top:{suffix}"
+    if instance_id not in instances or (port, bit) not in pins[instance_id]:
+        raise ValidationError(
+            f"Xilinx logical endpoint {instance_id}.{port}[{bit}] is absent"
+        )
+    instance = instances[instance_id]
+    cell_type = instance["type"]
+    if cell_type in {"$lut", "$_LUT_"}:
+        _width, input_port, output_port, _truth = _lut_definition(instance)
+        if port == input_port:
+            port, bit = f"I{bit}", 0
+        elif port == output_port:
+            port, bit = "O", 0
+        else:
+            raise ValidationError(
+                f"Xilinx LUT endpoint {instance_id}.{port}[{bit}] is invalid"
+            )
+        pins = {
+            **pins,
+            instance_id: {
+                *((f"I{index}", 0) for index in range(_width)),
+                ("O", 0),
+            },
+        }
+    width = max(
+        (candidate_bit + 1 for candidate_port, candidate_bit in pins[instance_id]
+         if candidate_port == port),
+        default=0,
+    )
+    suffix = port if width == 1 else f"{port}[{bit}]"
+    return "pin", f"cell:{instance_id}/{suffix}"
+
+
 def _boundary_maps(
     identity: Mapping[str, Any],
 ) -> tuple[Dict[str, Mapping[str, Any]], Dict[str, Mapping[str, Any]]]:
@@ -662,7 +711,7 @@ def _write_logic_segment_query(
                     "logic segment eBLIF top-port map is inconsistent"
                 )
             eblif_top_ports[identity] = top_port_record
-    if object_provider not in {"vpr", "vivado"}:
+    if object_provider not in {"vpr", "vivado", "xilinx"}:
         raise ValidationError("logic segment object provider is invalid")
 
     def endpoint_object(endpoint: Mapping[str, Any]) -> tuple[str, str]:
@@ -677,7 +726,11 @@ def _write_logic_segment_query(
                     eblif_top_ports,
                 ),
             )
-        return _vivado_object(
+        if object_provider == "vivado":
+            return _vivado_object(
+                merged_ir, endpoint, merged_pins, merged_instances
+            )
+        return _xilinx_object(
             merged_ir, endpoint, merged_pins, merged_instances
         )
 
@@ -698,15 +751,17 @@ def _write_logic_segment_query(
         if endpoint is None or endpoint.get("kind") != "tx":
             raise ValidationError(f"logic segment TX {endpoint_id!r} is absent")
         merged = endpoint["merged_ir"]
-        return _vivado_object(
-            merged_ir,
-            {
-                "instance": None,
-                "port": merged["external_port"],
-                "bit": merged["external_port_bit"],
-            },
-            merged_pins,
-            merged_instances,
+        external = {
+            "instance": None,
+            "port": merged["external_port"],
+            "bit": merged["external_port_bit"],
+        }
+        if object_provider == "vivado":
+            return _vivado_object(
+                merged_ir, external, merged_pins, merged_instances
+            )
+        return _xilinx_object(
+            merged_ir, external, merged_pins, merged_instances
         )
 
     def rx_object(endpoint_id: str) -> tuple[str, str]:
@@ -729,11 +784,13 @@ def _write_logic_segment_query(
             raise ValidationError(
                 f"logic segment RX {endpoint_id!r} is ambiguous"
             )
-        return _vivado_object(
-            merged_ir,
-            {"instance": registers[0], "port": "Q", "bit": 0},
-            merged_pins,
-            merged_instances,
+        register_q = {"instance": registers[0], "port": "Q", "bit": 0}
+        if object_provider == "vivado":
+            return _vivado_object(
+                merged_ir, register_q, merged_pins, merged_instances
+            )
+        return _xilinx_object(
+            merged_ir, register_q, merged_pins, merged_instances
         )
 
     def cone_anchor_object(net_id: str) -> tuple[str, str]:
@@ -1150,7 +1207,7 @@ def _write_logic_segment_query(
     identity_path.parent.mkdir(parents=True, exist_ok=True)
     write_json(identity_path, identity)
     query_path.parent.mkdir(parents=True, exist_ok=True)
-    if object_provider == "vpr":
+    if object_provider in {"vpr", "xilinx"}:
         rows = [
             LOGIC_SEGMENT_QUERY_HEADER,
             *(
@@ -1258,6 +1315,38 @@ def write_vivado_logic_segment_query(
         query_path,
         identity_path,
         object_provider="vivado",
+        prepared_inputs=prepared_inputs,
+    )
+
+
+def write_xilinx_logic_segment_query(
+    original_ir_path: Path,
+    assignment_path: Path,
+    path_database_path: Path,
+    routes_path: Path,
+    schedule_path: Path,
+    platform: Platform,
+    merged_ir_path: Path,
+    boundary_identity_path: Path,
+    fpga: str,
+    query_path: Path,
+    identity_path: Path,
+    *,
+    prepared_inputs: Optional[LogicSegmentQueryInputs] = None,
+) -> Dict[str, Any]:
+    return _write_logic_segment_query(
+        original_ir_path,
+        assignment_path,
+        path_database_path,
+        routes_path,
+        schedule_path,
+        platform,
+        merged_ir_path,
+        boundary_identity_path,
+        fpga,
+        query_path,
+        identity_path,
+        object_provider="xilinx",
         prepared_inputs=prepared_inputs,
     )
 

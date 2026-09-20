@@ -47,10 +47,21 @@ class PhysicalBackendContractTest(unittest.TestCase):
 
     def test_descriptors_expose_the_same_capability_interface(self):
         open_backend = physical_backend_descriptor("open")
+        rapidwright_backend = physical_backend_descriptor("rapidwright")
         vivado_backend = physical_backend_descriptor("vivado")
         self.assertEqual(
             set(open_backend["capabilities"]),
             set(vivado_backend["capabilities"]),
+        )
+        self.assertEqual(
+            set(open_backend["capabilities"]),
+            set(rapidwright_backend["capabilities"]),
+        )
+        self.assertEqual(
+            validate_physical_backend_descriptor(rapidwright_backend)[
+                "backend"
+            ],
+            "rapidwright",
         )
         self.assertEqual(
             validate_physical_backend_descriptor(vivado_backend)["backend"],

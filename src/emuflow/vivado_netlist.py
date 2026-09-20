@@ -11,6 +11,7 @@ from .equivalence import _lut_definition
 from .errors import ValidationError
 from .io import write_json
 from .ir import EmuIR
+from .xilinx_primitives import load_xilinx_primitive_library
 from .verilog import mapped_verilog
 
 
@@ -91,6 +92,8 @@ def lower_vivado_primitives(ir: EmuIR) -> EmuIR:
     value = deepcopy(ir.value)
     instances = {item["id"]: item for item in value["instances"]}
     pin_remap: Dict[tuple[str, str, int], tuple[str, int]] = {}
+    _library, library_contract = load_xilinx_primitive_library()
+    native_xilinx_cells = set(library_contract["cells"])
     unsupported = []
     for instance in value["instances"]:
         instance_id = instance["id"]
@@ -126,7 +129,11 @@ def lower_vivado_primitives(ir: EmuIR) -> EmuIR:
                     {"port": "R", "bit": 0, "value": "0"},
                 )
             )
-        elif cell_type in _NATIVE_FFS or cell_type in _VTR_HARD_MACROS:
+        elif (
+            cell_type in _NATIVE_FFS
+            or cell_type in _VTR_HARD_MACROS
+            or cell_type in native_xilinx_cells
+        ):
             continue
         else:
             unsupported.append(cell_type)
