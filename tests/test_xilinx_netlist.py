@@ -9,6 +9,49 @@ from emuflow.yosys import import_yosys_json
 
 
 class XilinxMappedNetlistTests(unittest.TestCase):
+    def test_native_lut6_2_is_preserved(self) -> None:
+        inputs = list(range(2, 8))
+        mapped = {
+            "modules": {"top": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "a": {"direction": "input", "bits": inputs},
+                    "o5": {"direction": "output", "bits": [8]},
+                    "o6": {"direction": "output", "bits": [9]},
+                },
+                "cells": {"lut": {
+                    "type": "LUT6_2",
+                    "parameters": {"INIT": "0" * 64},
+                    "attributes": {},
+                    "port_directions": {
+                        **{f"I{index}": "input" for index in range(6)},
+                        "O5": "output", "O6": "output",
+                    },
+                    "connections": {
+                        **{f"I{index}": [inputs[index]] for index in range(6)},
+                        "O5": [8], "O6": [9],
+                    },
+                }},
+                "netnames": {
+                    **{f"a{index}": {"bits": [bit]}
+                       for index, bit in enumerate(inputs)},
+                    "o5": {"bits": [8]}, "o6": {"bits": [9]},
+                },
+            }},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.json"
+            ir_path = root / "source.emuir.json"
+            output = root / "mapped.json"
+            source.write_text(json.dumps(mapped), encoding="utf-8")
+            write_json(ir_path, import_yosys_json(source).value)
+            emit_xilinx_mapped_json(ir_path, output)
+            emitted = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(
+            emitted["modules"]["top"]["cells"]["lut"]["type"], "LUT6_2"
+        )
+
     def test_emuir_roundtrip_preserves_cells_ports_and_nets(self) -> None:
         mapped = {
             "creator": "fixture",

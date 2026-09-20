@@ -98,6 +98,8 @@ def lower_vivado_primitives(ir: EmuIR) -> EmuIR:
     for instance in value["instances"]:
         instance_id = instance["id"]
         cell_type = instance["type"]
+        if cell_type in native_xilinx_cells:
+            continue
         if cell_type.startswith("LUT") or cell_type in {"$lut", "$_LUT_"}:
             width, input_port, output_port, truth = _lut_definition(instance)
             if width < 1 or width > 6:
@@ -132,7 +134,6 @@ def lower_vivado_primitives(ir: EmuIR) -> EmuIR:
         elif (
             cell_type in _NATIVE_FFS
             or cell_type in _VTR_HARD_MACROS
-            or cell_type in native_xilinx_cells
         ):
             continue
         else:
