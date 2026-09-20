@@ -2980,8 +2980,9 @@ original-target-clock WNS/TNS remains a reported physical QoR metric rather
 than the pausible-clock execution gate; `timing_met=false` is therefore a
 meaningful result, not a malformed artifact.
 
-For the open backend, Phase 7 additionally queries every original same-FPGA
-TimingPathDB launch/capture pair in the routed VPR timing graph and publishes
+For the open and RapidWright backends, Phase 7 additionally queries every
+original same-FPGA TimingPathDB launch/capture pair in the routed physical
+timing graph and publishes
 `local-path-timing/v1`; its data-path delay includes routed launch clock-to-Q,
 combinational/interconnect delay, and the capture setup arc. Clock skew remains
 outside this target-period composition and is reported through the backend's
@@ -2992,10 +2993,12 @@ disjoint and their count plus canonical set hash exactly matches the sealed
 source TimingPathDB. Without that proof it reports
 `cross-fpga-path-subset`, and the final A/B validator rejects a global claim.
 
-The local-path query uses the ordered net chain already sealed in each
+The VPR local-path query uses the ordered net chain already sealed in each
 original TimingPathDB member. When that chain maps unambiguously to adjacent
 VPR atom pins, VPR sums the selected routed timing edges directly instead of
-re-running a whole timing-DAG traversal for every launch/capture pair. An
+re-running a whole timing-DAG traversal for every launch/capture pair. The
+RapidWright query binds the same source identity to Xilinx logical pins and
+uses the routed endpoint-to-endpoint longest-path upper bound. An
 ambiguous pin transition is never guessed: it is explicitly labelled and
 retains the conservative endpoint-longest-path traversal. The identity bundle
 records the selected pin chain or fallback for every path, and the independent
@@ -4401,8 +4404,15 @@ published LUT, carry, and FF clock-to-Q coefficients provide the qualified
 lightweight logic terms; FF setup remains analytical, hold is unavailable,
 and RAM/DSP/URAM timing is explicitly reported as an unqualified surrogate.
 The compact summary records those limits and the full OpenSTA path database
-remains the sole WNS/TNS authority.  Its independent validator recomputes WNS,
-TNS, failing endpoint count, and the path population from that database.
+remains the sole per-partition WNS/TNS authority. Its independent validator
+recomputes WNS, TNS, failing endpoint count, and the path population from that
+database. Route A also binds every original same-FPGA TimingPathDB member to
+its Xilinx logical launch/capture pins and measures a conservative longest
+path on the same routed graph. Those source-sealed local paths and the
+cross-FPGA logic/transport segments together cover the canonical original
+path-ID set; only then may global OpenSTA report `whole-original-design`
+WNS/TNS. Missing, duplicate, or differently sealed members fail closed rather
+than falling back to a cross-FPGA-only timing claim.
 RapidWright's extracted runtime database is isolated beside the requested
 class directory, so the provider never writes into a login home directory.
 Purely intra-site nets remain in RapidWright site routing and are explicitly

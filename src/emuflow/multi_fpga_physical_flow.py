@@ -29,6 +29,7 @@ from .local_path_timing import (
     prepare_vpr_local_path_query_inputs,
     validate_local_path_timing,
     write_vpr_local_path_query,
+    write_xilinx_local_path_query,
 )
 from .lowering import run_placement_ir_lowering
 from .netlist import SPLIT_MANIFEST_SCHEMA
@@ -589,7 +590,7 @@ def run_multi_fpga_physical_flow(
             schedule_path,
             platform,
         )
-        if backend == "open":
+        if backend in {"open", "rapidwright"}:
             prepared_local_inputs = prepare_vpr_local_path_query_inputs(
                 original_ir_path,
                 assignment_path,
@@ -1152,6 +1153,8 @@ def run_multi_fpga_physical_flow(
             )
             logic_identity_path = None
             logic_query_report = None
+            local_identity_path = None
+            local_query_report = None
             if all(path is not None for path in logic_context):
                 logic_identity_path = fpga_root / "logic-segment-identity.json"
                 logic_query_report = write_xilinx_logic_segment_query(
@@ -1167,6 +1170,18 @@ def run_multi_fpga_physical_flow(
                     fpga_root / "xilinx-logic-segment-query.tsv",
                     logic_identity_path,
                     prepared_inputs=prepared_logic_inputs,
+                )
+                local_identity_path = fpga_root / "local-path-identity.json"
+                local_query_report = write_xilinx_local_path_query(
+                    original_ir_path,
+                    assignment_path,
+                    path_database_path,
+                    routes_path,
+                    merged_ir,
+                    fpga_id,
+                    fpga_root / "xilinx-local-path-query.tsv",
+                    local_identity_path,
+                    prepared_inputs=prepared_local_inputs,
                 )
             assert rapidwright_jar is not None
             assert rapidwright_java is not None
@@ -1197,11 +1212,16 @@ def run_multi_fpga_physical_flow(
                 openparf_python=openparf_python,
                 opensta=rapidwright_opensta,
                 logic_identity_path=logic_identity_path,
+                local_identity_path=local_identity_path,
             )
             if logic_query_report is not None:
                 rapidwright_report["logic_segment_timing"][
                     "query"
                 ] = logic_query_report
+            if local_query_report is not None:
+                rapidwright_report["local_path_timing"][
+                    "query"
+                ] = local_query_report
             physical_result = rapidwright_report["result"]
             stages["rapidwright_implementation"] = rapidwright_report
         else:
@@ -1387,7 +1407,7 @@ def run_multi_fpga_physical_flow(
         }
         for database in physical_summary["logic_segment_timing"].values():
             validate_logic_segment_timing(database)
-        if backend == "open":
+        if backend in {"open", "rapidwright"}:
             physical_summary["local_path_timing"] = {
                 item["fpga"]: read_json(
                     Path(

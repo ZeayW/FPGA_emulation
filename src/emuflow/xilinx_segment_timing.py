@@ -18,6 +18,11 @@ from .logic_segment_timing import (
     validate_logic_segment_identity,
     validate_logic_segment_timing,
 )
+from .local_path_timing import (
+    LOCAL_PATH_TIMING_SCHEMA,
+    validate_local_path_identity,
+    validate_local_path_timing,
+)
 from .xilinx_timing import validate_xilinx_routed_timing
 
 
@@ -291,5 +296,41 @@ def build_xilinx_logic_segment_timing(
         ),
     }
     validation = validate_logic_segment_timing(database)
+    write_json(output_path, database)
+    return {**validation, "output": str(output_path)}
+
+
+def build_xilinx_local_path_timing(
+    identity_path: Path,
+    mapped_path: Path,
+    timing_path: Path,
+    output_path: Path,
+) -> Dict[str, Any]:
+    """Measure all original same-FPGA paths on the routed Xilinx graph."""
+    identity = read_json(identity_path)
+    validate_local_path_identity(identity)
+    graph = _graph(mapped_path, timing_path)
+    records = []
+    for path in identity["paths"]:
+        delay, _actual_start = graph.longest(
+            [path["start_pin"]], path["end_pin"]
+        )
+        records.append({**path, "delay_ns": delay})
+    database = {
+        "schema": LOCAL_PATH_TIMING_SCHEMA,
+        "status": "pass",
+        "design": identity["design"],
+        "fpga": identity["fpga"],
+        "provider": "rapidwright-lightweight-local-path-graph-v1",
+        "qualification": (
+            "source-bound-routed-endpoint-longest-path-upper-bound-"
+            "with-launch-clock-to-q-and-capture-setup"
+        ),
+        "source": identity["source"],
+        "identity_schema": identity["schema"],
+        "coverage": identity["coverage"],
+        "paths": records,
+    }
+    validation = validate_local_path_timing(database)
     write_json(output_path, database)
     return {**validation, "output": str(output_path)}

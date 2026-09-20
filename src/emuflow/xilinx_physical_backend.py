@@ -27,6 +27,7 @@ from .xilinx_rwroute import (
 )
 from .xilinx_segment_timing import (
     build_xilinx_boundary_timing,
+    build_xilinx_local_path_timing,
     build_xilinx_logic_segment_timing,
 )
 from .xilinx_timing import (
@@ -85,6 +86,7 @@ def run_rapidwright_partition_backend(
     openparf_python: Optional[Path] = None,
     opensta: Optional[str] = None,
     logic_identity_path: Optional[Path] = None,
+    local_identity_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Pack, place, route, time, and independently check one partition."""
 
@@ -209,6 +211,19 @@ def run_rapidwright_partition_backend(
             "status": "pass",
             "import": logic_import,
         }
+    local_stage = None
+    if local_identity_path is not None:
+        local_timing_path = output_dir / "local-path-timing.json"
+        local_import = build_xilinx_local_path_timing(
+            local_identity_path,
+            mapped_path,
+            routed_timing_path,
+            local_timing_path,
+        )
+        local_stage = {
+            "status": "pass",
+            "import": local_import,
+        }
 
     opensta_database = read_json(path_database_path)
     critical_path_ns = max(
@@ -303,5 +318,6 @@ def run_rapidwright_partition_backend(
             "import": boundary_import,
         },
         **({"logic_segment_timing": logic_stage} if logic_stage else {}),
+        **({"local_path_timing": local_stage} if local_stage else {}),
         "result": result,
     }

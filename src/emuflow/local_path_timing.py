@@ -14,7 +14,9 @@ from .io import read_json, write_json
 from .ir import EmuIR
 from .logic_segment_timing import (
     LOGIC_SEGMENT_TIMING_HEADER,
+    _instance_pin_inventory,
     _vpr_atom_pin,
+    _xilinx_object,
 )
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .sta import (
@@ -342,7 +344,7 @@ def prepare_vpr_local_path_query_inputs(
     )
 
 
-def write_vpr_local_path_query(
+def _write_local_path_query(
     original_ir_path: Path,
     assignment_path: Path,
     path_database_path: Path,
@@ -352,9 +354,12 @@ def write_vpr_local_path_query(
     query_path: Path,
     identity_path: Path,
     *,
+    object_provider: str,
     prepared_inputs: LocalPathQueryInputs | None = None,
 ) -> Dict[str, Any]:
-    """Materialize every original same-partition path as a routed VPR query."""
+    """Materialize every original same-partition path for one backend."""
+    if object_provider not in {"vpr", "xilinx"}:
+        raise ValidationError("local path object provider is invalid")
     prepared = prepared_inputs or prepare_vpr_local_path_query_inputs(
         original_ir_path,
         assignment_path,
@@ -379,7 +384,18 @@ def write_vpr_local_path_query(
     merged_instances = {
         item["id"]: item for item in merged_ir.value["instances"]
     }
+    merged_pins = _instance_pin_inventory(merged_ir)
     original_nets = prepared.original_nets
+
+    def endpoint_pin(endpoint: Mapping[str, Any]) -> str:
+        if object_provider == "vpr":
+            return _vpr_atom_pin(
+                merged_ir, merged_index, endpoint, merged_instances
+            )
+        return _xilinx_object(
+            merged_ir, endpoint, merged_pins, merged_instances
+        )[1]
+
     records = []
     unresolved = []
     for path in database["paths"]:
@@ -414,21 +430,21 @@ def write_vpr_local_path_query(
             "clock_period_ns": float(path["clock_period_ns"]),
             "required_time_ns": float(path["fixed_delay_ns"])
             + float(path["slack_ns"]),
-            "start_pin": _vpr_atom_pin(
-                merged_ir, merged_index, start, merged_instances
-            ),
-            "end_pin": _vpr_atom_pin(
-                merged_ir, merged_index, end, merged_instances
-            ),
+            "start_pin": endpoint_pin(start),
+            "end_pin": endpoint_pin(end),
         }
-        path_pins = _explicit_vpr_path_pins(
-            path,
-            original_nets,
-            merged_ir,
-            merged_index,
-            merged_instances,
-            start,
-            end,
+        path_pins = (
+            _explicit_vpr_path_pins(
+                path,
+                original_nets,
+                merged_ir,
+                merged_index,
+                merged_instances,
+                start,
+                end,
+            )
+            if object_provider == "vpr"
+            else []
         )
         record.update(
             {
@@ -452,7 +468,11 @@ def write_vpr_local_path_query(
         "status": "pass",
         "design": assignment["design"],
         "fpga": fpga,
-        "provider": "original-timing-pathdb-to-vpr-selected-chain-v2",
+        "provider": (
+            "original-timing-pathdb-to-vpr-selected-chain-v2"
+            if object_provider == "vpr"
+            else "original-timing-pathdb-to-xilinx-endpoint-bound-v1"
+        ),
         "source": dict(prepared.source_manifest),
         "coverage": {"local_paths": len(records)},
         "paths": records,
@@ -495,6 +515,60 @@ def write_vpr_local_path_query(
         "query": str(query_path),
         "identity": str(identity_path),
     }
+
+
+def write_vpr_local_path_query(
+    original_ir_path: Path,
+    assignment_path: Path,
+    path_database_path: Path,
+    routes_path: Path,
+    merged_ir_path: Path,
+    fpga: str,
+    query_path: Path,
+    identity_path: Path,
+    *,
+    prepared_inputs: LocalPathQueryInputs | None = None,
+) -> Dict[str, Any]:
+    """Materialize every original same-partition path as a routed VPR query."""
+    return _write_local_path_query(
+        original_ir_path,
+        assignment_path,
+        path_database_path,
+        routes_path,
+        merged_ir_path,
+        fpga,
+        query_path,
+        identity_path,
+        object_provider="vpr",
+        prepared_inputs=prepared_inputs,
+    )
+
+
+def write_xilinx_local_path_query(
+    original_ir_path: Path,
+    assignment_path: Path,
+    path_database_path: Path,
+    routes_path: Path,
+    merged_ir_path: Path,
+    fpga: str,
+    query_path: Path,
+    identity_path: Path,
+    *,
+    prepared_inputs: LocalPathQueryInputs | None = None,
+) -> Dict[str, Any]:
+    """Bind every original same-partition path to Xilinx logical pins."""
+    return _write_local_path_query(
+        original_ir_path,
+        assignment_path,
+        path_database_path,
+        routes_path,
+        merged_ir_path,
+        fpga,
+        query_path,
+        identity_path,
+        object_provider="xilinx",
+        prepared_inputs=prepared_inputs,
+    )
 
 
 def import_vpr_local_path_timing(
