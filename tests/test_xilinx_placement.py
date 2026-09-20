@@ -5,7 +5,9 @@ from pathlib import Path
 
 from emuflow.errors import ValidationError
 from emuflow.xilinx_placement import (
+    plan_xilinx_single_slr,
     place_xilinx_clusters,
+    validate_xilinx_single_slr_plan,
     validate_xilinx_placement,
 )
 
@@ -46,6 +48,11 @@ class XilinxPlacementTest(unittest.TestCase):
                 "name": f"DSP48E2_X0Y{y}", "type": "DSP48E2",
                 "template": "DSP48E2", "x": 2, "y": y,
                 "physical_region": {"slr": "SLR0", "clock_region": "X2Y0"},
+            })
+            sites.append({
+                "name": f"DSP48E2_X1Y{y}", "type": "DSP48E2",
+                "template": "DSP48E2", "x": 3, "y": y,
+                "physical_region": {"slr": "SLR1", "clock_region": "X3Y0"},
             })
         return {
             "schema": "emuflow.archdb/v1", "part": "xcvu19p-test",
@@ -203,6 +210,87 @@ class XilinxPlacementTest(unittest.TestCase):
         self.assertEqual(
             sites, {"lo": "RAMB18_X4Y240", "hi": "RAMB18_X4Y241"}
         )
+
+    def test_single_slr_planner_uses_legal_guidance_not_slr_name(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch, packed, guidance, _constraints = self._write_inputs(root)
+            guidance.write_text(json.dumps({
+                "schema": "emuflow.xilinx-global-placement-guidance/v1",
+                "clusters": [
+                    {"cluster": "slice-a", "x": 1, "y": 0},
+                    {"cluster": "slice-b", "x": 1, "y": 1},
+                    {"cluster": "dsp-a", "x": 3, "y": 1},
+                    {"cluster": "dsp-b", "x": 3, "y": 2},
+                ],
+            }), encoding="utf-8")
+            first = root / "single-slr-first.json"
+            second = root / "single-slr-second.json"
+            result = plan_xilinx_single_slr(
+                packed, arch, first, guidance_path=guidance
+            )
+            plan_xilinx_single_slr(
+                packed, arch, second, guidance_path=guidance
+            )
+            checked = validate_xilinx_single_slr_plan(
+                packed, arch, first, guidance_path=guidance
+            )
+            first_value = json.loads(first.read_text(encoding="utf-8"))
+            second_value = json.loads(second.read_text(encoding="utf-8"))
+        self.assertEqual(result["selected_slr"], "SLR1")
+        self.assertEqual(checked["selected_slr"], "SLR1")
+        self.assertEqual(first_value, second_value)
+        self.assertEqual(
+            {entry["slr"] for entry in first_value["clusters"]}, {"SLR1"}
+        )
+        self.assertEqual(
+            [entry["status"] for entry in first_value["candidates"]],
+            ["feasible", "feasible"],
+        )
+
+    def test_single_slr_planner_fails_when_no_slr_has_capacity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch, _packed, _guidance, _constraints = self._write_inputs(root)
+            packed = root / "overfull.json"
+            packed.write_text(json.dumps({
+                "schema": "emuflow.packed-site-netlist/v1",
+                "status": "pass",
+                "clusters": [
+                    {
+                        "id": f"slice-{index}", "kind": "slice",
+                        "site_templates": ["SLICEL"],
+                        "assignments": [{
+                            "instance": f"lut-{index}", "cell_type": "LUT6",
+                            "bel": "A6LUT", "bel_candidates": ["A6LUT"],
+                        }],
+                    }
+                    for index in range(3)
+                ],
+                "cascade_chains": [],
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "no single SLR"):
+                plan_xilinx_single_slr(
+                    packed, arch, root / "impossible.json"
+                )
+
+    def test_single_slr_plan_validator_rejects_tampering(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch, packed, guidance, _constraints = self._write_inputs(root)
+            output = root / "single-slr.json"
+            plan_xilinx_single_slr(
+                packed, arch, output, guidance_path=guidance
+            )
+            value = json.loads(output.read_text(encoding="utf-8"))
+            value["clusters"][0]["slr"] = (
+                "SLR1" if value["selected_slr"] == "SLR0" else "SLR0"
+            )
+            output.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "mixes regions"):
+                validate_xilinx_single_slr_plan(
+                    packed, arch, output, guidance_path=guidance
+                )
 
 
 if __name__ == "__main__":

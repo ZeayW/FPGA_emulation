@@ -186,7 +186,9 @@ from .rapidwright_provider import (
 )
 from .xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
 from .xilinx_placement import (
+    plan_xilinx_single_slr,
     place_xilinx_clusters,
+    validate_xilinx_single_slr_plan,
     validate_xilinx_placement,
 )
 from .xilinx_openparf import run_xilinx_openparf_guidance
@@ -2661,6 +2663,22 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_place_xilinx.add_argument("--guidance", type=Path)
     arch_place_xilinx.add_argument("--constraints", type=Path)
     arch_place_xilinx.add_argument("--output", "-o", type=Path, required=True)
+    arch_plan_xilinx_slr = arch_subparsers.add_parser(
+        "plan-xilinx-single-slr",
+        help="select one exactly feasible SLR using legal placement guidance",
+    )
+    arch_plan_xilinx_slr.add_argument("--packed", type=Path, required=True)
+    arch_plan_xilinx_slr.add_argument("--architecture", type=Path, required=True)
+    arch_plan_xilinx_slr.add_argument("--guidance", type=Path)
+    arch_plan_xilinx_slr.add_argument("--output", "-o", type=Path, required=True)
+    arch_validate_xilinx_slr = arch_subparsers.add_parser(
+        "validate-xilinx-single-slr-plan",
+        help="validate a single-SLR constraint certificate and legal witness",
+    )
+    arch_validate_xilinx_slr.add_argument("--packed", type=Path, required=True)
+    arch_validate_xilinx_slr.add_argument("--architecture", type=Path, required=True)
+    arch_validate_xilinx_slr.add_argument("--guidance", type=Path)
+    arch_validate_xilinx_slr.add_argument("--constraints", type=Path, required=True)
     arch_validate_xilinx_placement = arch_subparsers.add_parser(
         "validate-xilinx-placement",
         help="independently validate exact UltraScale+ site/BEL placement",
@@ -5141,6 +5159,25 @@ def _dispatch(args: argparse.Namespace) -> int:
                 "part": result["part"], "output": str(args.output),
                 **result["summary"],
             }
+        elif args.arch_command == "plan-xilinx-single-slr":
+            result = plan_xilinx_single_slr(
+                args.packed,
+                args.architecture,
+                args.output,
+                guidance_path=args.guidance,
+            )
+            report = {
+                "status": result["status"], "schema": result["schema"],
+                "part": result["part"], "output": str(args.output),
+                "selected_slr": result["selected_slr"], **result["summary"],
+            }
+        elif args.arch_command == "validate-xilinx-single-slr-plan":
+            report = validate_xilinx_single_slr_plan(
+                args.packed,
+                args.architecture,
+                args.constraints,
+                guidance_path=args.guidance,
+            )
         elif args.arch_command == "validate-xilinx-placement":
             report = validate_xilinx_placement(
                 args.packed,

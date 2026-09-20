@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import tempfile
 from bisect import bisect_left
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -18,6 +19,7 @@ from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 XILINX_PLACEMENT_SCHEMA = "emuflow.xilinx-placement/v1"
 XILINX_GUIDANCE_SCHEMA = "emuflow.xilinx-global-placement-guidance/v1"
 XILINX_CONSTRAINTS_SCHEMA = "emuflow.xilinx-placement-constraints/v1"
+XILINX_SINGLE_SLR_PLAN_PROVIDER = "emuflow-xilinx-single-slr-planner-v1"
 _SITE_XY_RE = re.compile(r"^(?P<kind>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 
 
@@ -269,6 +271,246 @@ def _cascade_cluster_chains(
             occupied[cluster_id] = chain_index
         chains.append(clusters)
     return chains
+
+
+def _architecture_slrs(architecture: ArchitectureDB) -> List[str]:
+    slrs = {
+        region["slr"]
+        for site in architecture.value["sites"]
+        for region in [site.get("physical_region")]
+        if isinstance(region, dict)
+        and isinstance(region.get("slr"), str)
+        and region["slr"]
+    }
+    if not slrs:
+        raise ValidationError("ArchitectureDB does not expose any physical SLR")
+    return sorted(slrs)
+
+
+def plan_xilinx_single_slr(
+    packed_path: Path,
+    architecture_path: Path,
+    output_path: Path,
+    *,
+    guidance_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Select one SLR only after proving exact placement feasibility.
+
+    This is intentionally an explicit planning step rather than a hidden placer
+    fallback.  Every candidate SLR is exercised through the exact site/BEL and
+    cascade legalizer.  OpenPARF guidance ranks the resulting legal placements;
+    an SLR name is only the final deterministic tie-breaker.
+    """
+
+    packed = read_json(packed_path)
+    if not isinstance(packed, dict) or packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA:
+        raise ValidationError("PackedSiteNetlist header is invalid")
+    clusters = packed.get("clusters")
+    if not isinstance(clusters, list) or not clusters:
+        raise ValidationError("PackedSiteNetlist clusters are invalid or empty")
+    cluster_ids = []
+    seen = set()
+    for index, cluster in enumerate(clusters):
+        if not isinstance(cluster, dict):
+            raise ValidationError(f"packed.clusters[{index}]: expected an object")
+        cluster_id = _nonempty(cluster.get("id"), f"packed.clusters[{index}].id")
+        if cluster_id in seen:
+            raise ValidationError(f"duplicate packed cluster {cluster_id!r}")
+        seen.add(cluster_id)
+        cluster_ids.append(cluster_id)
+
+    architecture = ArchitectureDB.load(architecture_path)
+    # Parse the guidance up front so an invalid or incomplete identity cannot be
+    # mistaken for a placement failure on every SLR.
+    _guidance, guidance_sha = _load_guidance(guidance_path, set(cluster_ids))
+    candidate_reports: List[Dict[str, Any]] = []
+    feasible: List[Tuple[Tuple[float, float, str], str, Dict[str, Any]]] = []
+    with tempfile.TemporaryDirectory(prefix="emuflow-single-slr-") as temporary:
+        root = Path(temporary)
+        for slr in _architecture_slrs(architecture):
+            constraints_path = root / f"{slr}.constraints.json"
+            placement_path = root / f"{slr}.placement.json"
+            write_json(
+                constraints_path,
+                {
+                    "schema": XILINX_CONSTRAINTS_SCHEMA,
+                    "clusters": [
+                        {"cluster": cluster_id, "slr": slr}
+                        for cluster_id in sorted(cluster_ids)
+                    ],
+                },
+                compact=True,
+            )
+            try:
+                placement = place_xilinx_clusters(
+                    packed_path,
+                    architecture_path,
+                    placement_path,
+                    guidance_path=guidance_path,
+                    constraints_path=constraints_path,
+                )
+            except ValidationError as error:
+                candidate_reports.append({
+                    "slr": slr,
+                    "status": "infeasible",
+                    "reason": str(error),
+                })
+                continue
+            summary = placement["summary"]
+            mean = summary.get("mean_guidance_displacement")
+            maximum = summary.get("max_guidance_displacement")
+            # With no guidance every exact placement has equal geometric rank.
+            rank = (
+                float(mean) if mean is not None else 0.0,
+                float(maximum) if maximum is not None else 0.0,
+                slr,
+            )
+            report = {
+                "slr": slr,
+                "status": "feasible",
+                "mean_guidance_displacement": mean,
+                "max_guidance_displacement": maximum,
+                "site_types": summary.get("site_types", {}),
+                "cascade_chains": summary.get("cascade_chains", 0),
+            }
+            candidate_reports.append(report)
+            feasible.append((rank, slr, report))
+
+    if not feasible:
+        details = "; ".join(
+            f"{entry['slr']}: {entry.get('reason', 'infeasible')}"
+            for entry in candidate_reports
+        )
+        raise ValidationError(
+            "no single SLR can exactly place all packed clusters: " + details
+        )
+    _rank, selected_slr, _selected_report = min(feasible, key=lambda item: item[0])
+    result = {
+        "schema": XILINX_CONSTRAINTS_SCHEMA,
+        "status": "pass",
+        "provider": XILINX_SINGLE_SLR_PLAN_PROVIDER,
+        "part": architecture.part,
+        "selected_slr": selected_slr,
+        "source": {
+            "packed_sha256": _sha256(packed_path),
+            "architecture_sha256": _sha256(architecture_path),
+            "guidance_sha256": guidance_sha,
+        },
+        "policy": {
+            "scope": "single-slr",
+            "feasibility": "exact-site-bel-cascade-legalization",
+            "ranking": (
+                "mean-then-max-legal-guidance-displacement"
+                if guidance_path is not None else "deterministic-slr-name"
+            ),
+        },
+        "clusters": [
+            {"cluster": cluster_id, "slr": selected_slr}
+            for cluster_id in sorted(cluster_ids)
+        ],
+        "candidates": sorted(candidate_reports, key=lambda entry: entry["slr"]),
+        "summary": {
+            "clusters": len(cluster_ids),
+            "candidate_slrs": len(candidate_reports),
+            "feasible_slrs": len(feasible),
+        },
+    }
+    write_json(output_path, result, compact=True)
+    validate_xilinx_single_slr_plan(
+        packed_path,
+        architecture_path,
+        output_path,
+        guidance_path=guidance_path,
+    )
+    return result
+
+
+def validate_xilinx_single_slr_plan(
+    packed_path: Path,
+    architecture_path: Path,
+    constraints_path: Path,
+    *,
+    guidance_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Validate identity, coverage, and exact feasibility of an SLR plan."""
+
+    packed = read_json(packed_path)
+    value = read_json(constraints_path)
+    architecture = ArchitectureDB.load(architecture_path)
+    if not isinstance(packed, dict) or packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA:
+        raise ValidationError("PackedSiteNetlist header is invalid")
+    if not isinstance(value, dict) or value.get("schema") != XILINX_CONSTRAINTS_SCHEMA:
+        raise ValidationError("Xilinx single-SLR plan header is invalid")
+    if value.get("status") != "pass":
+        raise ValidationError("Xilinx single-SLR plan status is invalid")
+    if value.get("provider") != XILINX_SINGLE_SLR_PLAN_PROVIDER:
+        raise ValidationError("Xilinx single-SLR plan provider is invalid")
+    if value.get("part") != architecture.part:
+        raise ValidationError("Xilinx single-SLR plan part is invalid")
+    source = value.get("source")
+    if not isinstance(source, dict):
+        raise ValidationError("Xilinx single-SLR plan source is invalid")
+    if source.get("packed_sha256") != _sha256(packed_path):
+        raise ValidationError("Xilinx single-SLR plan packed digest is invalid")
+    if source.get("architecture_sha256") != _sha256(architecture_path):
+        raise ValidationError("Xilinx single-SLR plan architecture digest is invalid")
+    cluster_ids = {
+        _nonempty(cluster.get("id"), "packed cluster id")
+        for cluster in packed.get("clusters", [])
+    }
+    _guidance, guidance_sha = _load_guidance(guidance_path, cluster_ids)
+    if source.get("guidance_sha256") != guidance_sha:
+        raise ValidationError("Xilinx single-SLR plan guidance digest is invalid")
+    selected_slr = value.get("selected_slr")
+    if selected_slr not in _architecture_slrs(architecture):
+        raise ValidationError("Xilinx single-SLR plan selected SLR is invalid")
+    constraints, _constraints_sha = _load_constraints(constraints_path, cluster_ids)
+    if set(constraints) != cluster_ids:
+        raise ValidationError("Xilinx single-SLR plan cluster coverage is incomplete")
+    if any(contract != {"slr": selected_slr} for contract in constraints.values()):
+        raise ValidationError("Xilinx single-SLR plan mixes regions or constraint kinds")
+    candidates = value.get("candidates")
+    if (
+        not isinstance(candidates, list)
+        or any(not isinstance(entry, dict) for entry in candidates)
+    ):
+        raise ValidationError("Xilinx single-SLR plan candidates are invalid")
+    candidate_slrs = [entry.get("slr") for entry in candidates]
+    if candidate_slrs != _architecture_slrs(architecture):
+        raise ValidationError("Xilinx single-SLR plan candidate coverage is invalid")
+    selected = [
+        entry for entry in candidates
+        if entry.get("slr") == selected_slr and entry.get("status") == "feasible"
+    ]
+    if len(selected) != 1:
+        raise ValidationError("Xilinx single-SLR plan selected candidate is not feasible")
+
+    # Re-run the exact legalizer into ephemeral storage.  This proves that the
+    # persisted constraint certificate still has a legal witness without
+    # retaining a duplicate placement artifact.
+    with tempfile.TemporaryDirectory(prefix="emuflow-check-single-slr-") as temporary:
+        witness = Path(temporary) / "placement.json"
+        placement = place_xilinx_clusters(
+            packed_path,
+            architecture_path,
+            witness,
+            guidance_path=guidance_path,
+            constraints_path=constraints_path,
+        )
+    selected_report = selected[0]
+    for key in ("mean_guidance_displacement", "max_guidance_displacement"):
+        if selected_report.get(key) != placement["summary"].get(key):
+            raise ValidationError(
+                f"Xilinx single-SLR plan selected {key} is invalid"
+            )
+    return {
+        "status": "pass",
+        "schema": "emuflow.xilinx-single-slr-plan-validation/v1",
+        "part": architecture.part,
+        "selected_slr": selected_slr,
+        "clusters": len(cluster_ids),
+        "constraints_sha256": _sha256(constraints_path),
+    }
 
 
 def place_xilinx_clusters(

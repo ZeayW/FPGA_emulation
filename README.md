@@ -4192,6 +4192,16 @@ emuflow arch guide-xilinx-openparf \
   --packed build/xilinx/packed-sites.json \
   --architecture /external/xcvu19p.architecture.json \
   --out build/xilinx/openparf-guidance
+emuflow arch plan-xilinx-single-slr \
+  --packed build/xilinx/packed-sites.json \
+  --architecture /external/xcvu19p.architecture.json \
+  --guidance build/xilinx/global-guidance.json \
+  --output build/xilinx/placement-constraints.json
+emuflow arch validate-xilinx-single-slr-plan \
+  --packed build/xilinx/packed-sites.json \
+  --architecture /external/xcvu19p.architecture.json \
+  --guidance build/xilinx/global-guidance.json \
+  --constraints build/xilinx/placement-constraints.json
 emuflow arch place-xilinx \
   --packed build/xilinx/packed-sites.json \
   --architecture /external/xcvu19p.architecture.json \
@@ -4234,6 +4244,16 @@ checker reloads the ArchitectureDB and recomputes every ownership, BEL,
 constraint, overlap, and cascade decision. The result is a compact placement
 certificate and never embeds vendor device records. OpenPARF supplies global
 guidance only; it is not treated as the exact UltraScale+ legalizer.
+When a design must remain inside one SLR for the first RWRoute qualification,
+that restriction is produced by the explicit single-SLR planner rather than a
+handwritten or alphabetically selected constraint. The planner exercises the
+exact site/BEL/cascade legalizer independently in every device SLR, rejects
+infeasible regions, and ranks the surviving legal witnesses by OpenPARF
+guidance displacement. Its compact constraint certificate is hash-bound to
+the packed netlist, ArchitectureDB, and optional guidance, and the validator
+reconstructs a legal witness before accepting it. This command intentionally
+fails when no single SLR fits; a future multi-SLR policy must be a separately
+named planner rather than a hidden fallback.
 For split BRAM tiles, the placement certificate retains the FPGA-Interchange
 tile anchor and also materializes the exact RapidWright site of every
 RAMB18E2/RAMB36E2 assignment; this prevents the lower and upper BRAM views from
