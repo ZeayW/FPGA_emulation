@@ -4145,9 +4145,10 @@ When importer metadata or route-certificate fields change without changing the
 physical device inventory, `emuflow arch rebind-physical-regions` can rebind an
 existing sidecar to the new ArchitectureDB. It fails closed unless the part,
 coordinate transform, package inventory, physical-region model, site
-templates, and every site record are exactly identical; the output records the
-old and new ArchitectureDB hashes. This is not a geometry-conversion or
-best-effort migration command.
+template BEL structure, and every site record are exactly identical; logical
+cell-compatibility annotations may change without changing that physical
+structure. The output records the old and new ArchitectureDB hashes. This is
+not a geometry-conversion or best-effort migration command.
 Route A synthesis is equally explicit: selecting
 `--mapping-profile xilinx-ultrascaleplus-open-v1` runs Yosys
 `synth_xilinx -family xcup` with DSP48E2, RAMB18E2/RAMB36E2, URAM288, and

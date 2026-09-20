@@ -24,6 +24,22 @@ PHYSICAL_REGION_BINDING_FIELDS = (
 )
 
 
+def _physical_region_binding_value(
+    architecture: ArchitectureDB, field: str
+) -> Any:
+    value = architecture.value.get(field)
+    if field != "site_templates" or not isinstance(value, dict):
+        return value
+    templates = copy.deepcopy(value)
+    for template in templates.values():
+        if not isinstance(template, dict):
+            continue
+        for bel in template.get("bels", []):
+            if isinstance(bel, dict):
+                bel.pop("compatible_cells", None)
+    return templates
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -414,8 +430,8 @@ def run_physical_region_rebind(
     mismatches = [
         field
         for field in PHYSICAL_REGION_BINDING_FIELDS
-        if old_architecture.value.get(field)
-        != new_architecture.value.get(field)
+        if _physical_region_binding_value(old_architecture, field)
+        != _physical_region_binding_value(new_architecture, field)
     ]
     if mismatches:
         raise ValidationError(

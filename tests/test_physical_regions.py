@@ -106,6 +106,9 @@ class PhysicalRegionSidecarTest(unittest.TestCase):
         new = copy.deepcopy(old)
         new["source"]["generator"] = "new importer metadata"
         new["routing_resource_counts"]["nodes"] += 1
+        new["site_templates"]["SLICEL"]["bels"][0][
+            "compatible_cells"
+        ].remove("LUT1")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             old_path = root / "old.json"
@@ -153,6 +156,32 @@ class PhysicalRegionSidecarTest(unittest.TestCase):
             ).hexdigest()
             write_json(sidecar_path, sidecar)
             with self.assertRaisesRegex(Exception, "fields differ: sites"):
+                run_physical_region_rebind(
+                    old_architecture_path=old_path,
+                    new_architecture_path=new_path,
+                    sidecar_path=sidecar_path,
+                    output_path=root / "rebound.json",
+                )
+
+    def test_sidecar_rebind_rejects_site_template_structure_change(self) -> None:
+        old = self.architecture.to_dict()
+        new = copy.deepcopy(old)
+        new["site_templates"]["SLICEL"]["bels"][0]["type"] = "BROKEN"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            old_path = root / "old.json"
+            new_path = root / "new.json"
+            sidecar_path = root / "regions.json"
+            write_json(old_path, old)
+            write_json(new_path, new)
+            sidecar = read_json(SIDECAR)
+            sidecar["source"]["architecture_sha256"] = hashlib.sha256(
+                old_path.read_bytes()
+            ).hexdigest()
+            write_json(sidecar_path, sidecar)
+            with self.assertRaisesRegex(
+                Exception, "fields differ: site_templates"
+            ):
                 run_physical_region_rebind(
                     old_architecture_path=old_path,
                     new_architecture_path=new_path,
