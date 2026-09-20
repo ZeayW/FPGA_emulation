@@ -43,9 +43,15 @@ class XilinxOpenparfTest(unittest.TestCase):
                 placement, out / "name_map.json", guidance
             )
             value = json.loads(guidance.read_text(encoding="utf-8"))
+            config = json.loads(
+                (out / "openparf.json").read_text(encoding="utf-8")
+            )
             nets_text = (out / "design.nets").read_text(encoding="utf-8")
         self.assertEqual(report["clusters"], 2)
         self.assertEqual(report["nets"], 1)
         self.assertEqual(imported["clusters"], 2)
         self.assertEqual(value["provider"], "openparf-global-guidance-v1")
         self.assertIn("net n0 2", nets_text)
+        self.assertEqual(config["global_place_flag"], 1)
+        self.assertEqual(config["legalize_flag"], 0)
+        self.assertEqual(config["detailed_place_flag"], 0)

@@ -244,7 +244,14 @@ def export_xilinx_cluster_bookshelf(
         "gpu": 0, "dtype": "float64",
         "target_density": max(0.8, min(0.995, utilization + 0.005)),
         "random_seed": 1000, "max_global_place_iters": 1000,
-        "global_place_flag": 1, "legalize_flag": 1,
+        # OpenPARF is a continuous global-guidance provider here.  The
+        # architecture-aware Xilinx legalizer below this stage is the sole
+        # owner of exact site/BEL/cascade legality, so running OpenPARF's
+        # generic min-cost-flow legalizer would repeat expensive work and its
+        # discrete result would be discarded.  The in-tree OpenPARF producer
+        # explicitly publishes final global coordinates when legalization is
+        # disabled.
+        "global_place_flag": 1, "legalize_flag": 0,
         "generic_cluster_placement_flag": 1,
         "logic_area_type_names": sorted(demand),
         "detailed_place_flag": 0, "plot_flag": 0,

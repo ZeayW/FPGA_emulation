@@ -4357,7 +4357,12 @@ chains are placed on consecutive physical X/Y sites, while the independent
 checker reloads the ArchitectureDB and recomputes every ownership, BEL,
 constraint, overlap, and cascade decision. The result is a compact placement
 certificate and never embeds vendor device records. OpenPARF supplies global
-guidance only; it is not treated as the exact UltraScale+ legalizer.
+guidance only; it is not treated as the exact UltraScale+ legalizer. The
+OpenPARF invocation therefore stops after continuous global placement and
+publishes those coordinates directly. Its generic min-cost-flow legalization
+and detailed placement are disabled because their discrete result is discarded
+and exact Xilinx legality is established once, downstream, by the first-party
+legalizer and its independent checker.
 When a design must remain inside one SLR for the first RWRoute qualification,
 that restriction is produced by the explicit single-SLR planner rather than a
 handwritten or alphabetically selected constraint. The planner first proves
