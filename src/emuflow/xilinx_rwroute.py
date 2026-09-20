@@ -30,6 +30,12 @@ RAPIDWRIGHT_TIMING_DATA_SHA256 = {
         "ff08ce9041da649f2bf886d900f033dd23de8ad54eb4db55d37ce032dc0ec0a0"
     ),
 }
+RAPIDWRIGHT_DEVICE_DATA_MD5 = {
+    "data/parts.db": "58dd6f20c37798322b6904a8a786a3de",
+    "data/devices/virtexuplus/xcvu19p_db.dat": (
+        "5ad01490fe442f360aa67d7dfe0fa1c3"
+    ),
+}
 
 
 def _sha256(path: Path) -> str:
@@ -38,6 +44,28 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _md5(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_rapidwright_device_data(root: Path) -> Dict[str, str]:
+    observed: Dict[str, str] = {}
+    for relative, expected_md5 in RAPIDWRIGHT_DEVICE_DATA_MD5.items():
+        path = root / relative
+        actual_md5 = _md5(path) if path.is_file() else "missing"
+        if actual_md5 != expected_md5:
+            raise ValidationError(
+                "RapidWright device data is missing or does not match the "
+                f"pinned XCVU19P provider: {path}"
+            )
+        observed[relative] = actual_md5
+    return observed
 
 
 def _select_module(mapped: Mapping[str, Any], top: str) -> Mapping[str, Any]:
@@ -194,6 +222,7 @@ def run_rwroute(
     java: Path,
     classes_dir: Path,
     java_source: Path,
+    device_data_root: Path,
     timing_data_dir: Path,
     log_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -202,6 +231,16 @@ def run_rwroute(
     runtime_home.mkdir(parents=True, exist_ok=True)
     rapidwright_path = runtime_home / "RapidWright"
     rapidwright_path.mkdir(parents=True, exist_ok=True)
+    device_data_md5 = _validate_rapidwright_device_data(device_data_root)
+    runtime_data = rapidwright_path / "data"
+    provider_data = (device_data_root / "data").resolve()
+    if runtime_data.is_symlink():
+        if runtime_data.resolve() != provider_data:
+            runtime_data.unlink()
+    elif runtime_data.exists():
+        shutil.rmtree(runtime_data)
+    if not runtime_data.exists():
+        runtime_data.symlink_to(provider_data, target_is_directory=True)
     runtime_timing_dir = rapidwright_path / "timing" / "ultrascaleplus"
     runtime_timing_dir.mkdir(parents=True, exist_ok=True)
     for name, expected_sha256 in RAPIDWRIGHT_TIMING_DATA_SHA256.items():
@@ -247,6 +286,7 @@ def run_rwroute(
         raise ValidationError("RWRoute output lacks its timing qualification")
     timing["source_revision"] = RAPIDWRIGHT_TIMING_DATA_REVISION
     timing["source_data_sha256"] = dict(RAPIDWRIGHT_TIMING_DATA_SHA256)
+    timing["device_data_md5"] = device_data_md5
     write_json(output_path, value, compact=True)
     report = validate_xilinx_route_db(output_path)
     return {**report, "output": str(output_path), "log": str(log_path) if log_path else None}

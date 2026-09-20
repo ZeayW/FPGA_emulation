@@ -61,6 +61,7 @@ def run_rapidwright_partition_backend(
     java: Path,
     classes_dir: Path,
     java_source: Path,
+    device_data_root: Path,
     timing_data_dir: Path,
     opensta: Optional[str] = None,
     logic_identity_path: Optional[Path] = None,
@@ -117,6 +118,7 @@ def run_rapidwright_partition_backend(
         java=java,
         classes_dir=classes_dir,
         java_source=java_source,
+        device_data_root=device_data_root,
         timing_data_dir=timing_data_dir,
         log_path=output_dir / "rwroute.log",
     )

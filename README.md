@@ -4227,6 +4227,7 @@ emuflow arch run-xilinx-rwroute \
   --rapidwright-jar /external/rapidwright-standalone.jar \
   --java /external/jdk17/bin/java \
   --java-source scripts/rapidwright/EmuFlowRWRoute.java \
+  --device-data-root /external/RapidWright \
   --timing-data-dir /external/RapidWright/timing/ultrascaleplus \
   --classes build/xilinx/rwroute-classes \
   --log build/xilinx/rwroute.log \
@@ -4280,6 +4281,7 @@ emuflow multi-fpga compile design.v \
   --physical-architecture /external/xcvu19p.architecture.json \
   --physical-rapidwright-jar /external/rapidwright-standalone.jar \
   --physical-rapidwright-java /external/jdk17/bin/java \
+  --physical-rapidwright-device-data /external/RapidWright \
   --physical-rapidwright-timing-data /external/RapidWright/timing/ultrascaleplus \
   --physical-rapidwright-opensta /external/opensta/bin/sta \
   --out build/rapidwright-full-flow
@@ -4292,6 +4294,10 @@ structure, and applies the same 75% planning limit to both devices.  Its
 academic system-link model; it is not claimed to be an AMD or PPro board.
 Consequently this backend supplies real XCVU19P single-device placement and
 routing evidence while the board link remains a declared research assumption.
+RapidWright's external `data/parts.db` and XCVU19P device database are checked
+against the provider-pinned digests and mounted read-only into each isolated
+partition runtime. Missing or mismatched data fails closed; the backend never
+downloads device data or silently selects another part database at runtime.
 The current timing qualification is setup-only RapidWright lightweight route
 timing plus OpenSTA.  Hold, package-pin/interface binding, and vendor sign-off
 remain outside Route A and are reported rather than silently inferred.

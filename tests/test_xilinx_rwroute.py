@@ -6,7 +6,11 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.xilinx_rwroute import export_rwroute_input, validate_xilinx_route_db
+from emuflow.xilinx_rwroute import (
+    _validate_rapidwright_device_data,
+    export_rwroute_input,
+    validate_xilinx_route_db,
+)
 from emuflow.xilinx_timing import (
     build_xilinx_routed_timing,
     validate_xilinx_routed_timing,
@@ -17,6 +21,15 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_device_data_provider_fails_closed_on_unpinned_database(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "data/parts.db"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"not-the-pinned-provider")
+            with self.assertRaisesRegex(ValidationError, "pinned XCVU19P"):
+                _validate_rapidwright_device_data(root)
+
     def _route(self):
         return {
             "schema": "emuflow.xilinx-route-db/v1", "status": "candidate",

@@ -2214,6 +2214,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--physical-rapidwright-java-source", type=Path
     )
     multi_fpga_compile.add_argument(
+        "--physical-rapidwright-device-data", type=Path
+    )
+    multi_fpga_compile.add_argument(
         "--physical-rapidwright-timing-data", type=Path
     )
     multi_fpga_compile.add_argument("--physical-rapidwright-opensta")
@@ -2319,6 +2322,7 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_physical.add_argument("--rapidwright-java", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-classes", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-java-source", type=Path)
+    multi_fpga_physical.add_argument("--rapidwright-device-data", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-timing-data", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-opensta")
     multi_fpga_physical.add_argument(
@@ -2752,6 +2756,10 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_run_rwroute.add_argument("--java", type=Path, required=True)
     arch_run_rwroute.add_argument("--classes", type=Path, required=True)
     arch_run_rwroute.add_argument("--java-source", type=Path, required=True)
+    arch_run_rwroute.add_argument(
+        "--device-data-root", type=Path, required=True,
+        help="external pinned RapidWright root containing data/parts.db",
+    )
     arch_run_rwroute.add_argument(
         "--timing-data-dir", type=Path, required=True,
         help=(
@@ -5297,6 +5305,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 java=args.java,
                 classes_dir=args.classes,
                 java_source=args.java_source,
+                device_data_root=args.device_data_root,
                 timing_data_dir=args.timing_data_dir,
                 log_path=args.log,
             )
@@ -5520,6 +5529,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 rapidwright_java=args.rapidwright_java,
                 rapidwright_classes=args.rapidwright_classes,
                 rapidwright_java_source=args.rapidwright_java_source,
+                rapidwright_device_data=args.rapidwright_device_data,
                 rapidwright_timing_data=args.rapidwright_timing_data,
                 rapidwright_opensta=args.rapidwright_opensta,
                 original_ir_path=args.original_ir,
@@ -5664,6 +5674,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             physical_rapidwright_classes=args.physical_rapidwright_classes,
             physical_rapidwright_java_source=(
                 args.physical_rapidwright_java_source
+            ),
+            physical_rapidwright_device_data=(
+                args.physical_rapidwright_device_data
             ),
             physical_rapidwright_timing_data=(
                 args.physical_rapidwright_timing_data

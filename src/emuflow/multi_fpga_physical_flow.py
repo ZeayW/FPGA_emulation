@@ -491,6 +491,7 @@ def run_multi_fpga_physical_flow(
     rapidwright_java: Optional[Path] = None,
     rapidwright_classes: Optional[Path] = None,
     rapidwright_java_source: Optional[Path] = None,
+    rapidwright_device_data: Optional[Path] = None,
     rapidwright_timing_data: Optional[Path] = None,
     rapidwright_opensta: Optional[str] = None,
     original_ir_path: Optional[Path] = None,
@@ -638,6 +639,7 @@ def run_multi_fpga_physical_flow(
         required_runtime = {
             "rapidwright_jar": rapidwright_jar,
             "rapidwright_java": rapidwright_java,
+            "rapidwright_device_data": rapidwright_device_data,
             "rapidwright_timing_data": rapidwright_timing_data,
         }
         missing_runtime = sorted(
@@ -646,11 +648,17 @@ def run_multi_fpga_physical_flow(
             if (
                 path is None
                 or (
-                    name == "rapidwright_timing_data"
+                    name in {
+                        "rapidwright_device_data",
+                        "rapidwright_timing_data",
+                    }
                     and not path.is_dir()
                 )
                 or (
-                    name != "rapidwright_timing_data"
+                    name not in {
+                        "rapidwright_device_data",
+                        "rapidwright_timing_data",
+                    }
                     and not path.is_file()
                 )
             )
@@ -1135,6 +1143,7 @@ def run_multi_fpga_physical_flow(
             assert rapidwright_java is not None
             assert rapidwright_classes is not None
             assert rapidwright_java_source is not None
+            assert rapidwright_device_data is not None
             assert rapidwright_timing_data is not None
             rapidwright_report = run_rapidwright_partition_backend(
                 fpga=fpga_id,
@@ -1153,6 +1162,7 @@ def run_multi_fpga_physical_flow(
                 # shared directory would introduce cross-partition races.
                 classes_dir=rapidwright_classes / fpga_id,
                 java_source=rapidwright_java_source,
+                device_data_root=rapidwright_device_data,
                 timing_data_dir=rapidwright_timing_data,
                 opensta=rapidwright_opensta,
                 logic_identity_path=logic_identity_path,
