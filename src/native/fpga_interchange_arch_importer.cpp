@@ -453,6 +453,10 @@ SiteTemplates build_site_templates(
         [](const auto& left, const auto& right) {
           return left.first < right.first;
         });
+    std::set<std::string> bel_names;
+    for (const auto& item : ordered_bels) {
+      bel_names.insert(item.first);
+    }
     std::map<std::string, std::uint32_t> next_z;
     std::vector<BelRecord> records;
     std::string dsp_representative_type;
@@ -470,6 +474,19 @@ SiteTemplates build_site_templates(
         continue;
       }
       std::set<std::string> cells = found->second;
+      if (item.first.size() == 5 && item.first[1] == '6' &&
+          item.first.substr(2) == "LUT" && cells.count("LUT6") != 0) {
+        std::string shared_lut_bel = item.first;
+        shared_lut_bel[1] = '5';
+        if (bel_names.count(shared_lut_bel) != 0) {
+          // FPGA Interchange exposes the O5 and O6 resources as paired
+          // physical LUT5/LUT6 BELs, while Route A represents the required
+          // dual-output carry adapter as one logical LUT6_2 placement unit.
+          // Admit that composite view only when both component BELs exist;
+          // the RWRoute boundary expands it back to the exact physical pair.
+          cells.insert("LUT6_2");
+        }
+      }
       if (site_type_name == "SLICEM" &&
           item.first.size() == 5 && item.first[1] == '6' &&
           item.first.substr(2) == "LUT") {
