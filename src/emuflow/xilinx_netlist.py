@@ -137,6 +137,8 @@ def emit_xilinx_mapped_json(
                         )
     ports = {}
     unconnected_output_bits = 0
+    unconnected_input_bits = 0
+    next_dead_input_bit = max(net_bits.values(), default=1) + 1
     for port in ir.value["ports"]:
         port_constants = {
             item["bit"]: item["value"]
@@ -158,6 +160,14 @@ def emit_xilinx_mapped_json(
                 # vector width.
                 bits.append("x")
                 unconnected_output_bits += 1
+            elif port["direction"] == "input":
+                # An unused input bit is still a legal top-level input in
+                # Yosys JSON.  Give it a private, sinkless signal identifier;
+                # physical routing only consumes cell-to-cell nets, so this
+                # preserves the interface without inventing a routed load.
+                bits.append(next_dead_input_bit)
+                next_dead_input_bit += 1
+                unconnected_input_bits += 1
             else:
                 raise ValidationError(
                     f"Xilinx mapped top pin {key!r} is unconnected"
@@ -200,6 +210,7 @@ def emit_xilinx_mapped_json(
         "cells": len(cells),
         "nets": len(netnames),
         "ports": len(ports),
+        "unconnected_input_bits": unconnected_input_bits,
         "unconnected_output_bits": unconnected_output_bits,
         "output": str(output_path),
         "audit": audit,
