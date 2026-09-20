@@ -626,6 +626,10 @@ def run_multi_fpga_physical_flow(
                 "input_path": str(architecture_input),
             }
     elif backend == "rapidwright":
+        validate_openparf_runtime(
+            install_root=openparf_install,
+            python_executable=openparf_python,
+        )
         if architecture is None:
             raise ValidationError(
                 "RapidWright backend requires --physical-architecture with "
@@ -1164,6 +1168,8 @@ def run_multi_fpga_physical_flow(
                 java_source=rapidwright_java_source,
                 device_data_root=rapidwright_device_data,
                 timing_data_dir=rapidwright_timing_data,
+                openparf_install=openparf_install,
+                openparf_python=openparf_python,
                 opensta=rapidwright_opensta,
                 logic_identity_path=logic_identity_path,
             )

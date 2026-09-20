@@ -4279,6 +4279,8 @@ emuflow multi-fpga compile design.v \
   --physical \
   --physical-backend rapidwright \
   --physical-architecture /external/xcvu19p.architecture.json \
+  --physical-openparf-install /external/openparf-install \
+  --physical-openparf-python /external/openparf-python \
   --physical-rapidwright-jar /external/rapidwright-standalone.jar \
   --physical-rapidwright-java /external/jdk17/bin/java \
   --physical-rapidwright-device-data /external/RapidWright \
@@ -4305,8 +4307,10 @@ remain outside Route A and are reported rather than silently inferred.
 The packed artifact contains cell ownership and compact constraints only; it
 does not copy vendor device data or a routing graph into the repository. This
 feeds a deterministic first-party exact site/BEL legalizer. OpenPARF places one
-node per already packed cluster and emits global coordinates; its guidance is
-a cost input only and cannot waive site compatibility, fixed-site,
+node per already packed cluster and emits global coordinates through the
+official Phase 7 RapidWright backend; this mandatory guidance is never
+silently replaced by first-fit placement. It is a cost input only and cannot
+waive site compatibility, fixed-site,
 SLR, clock-region, non-overlap, or dedicated-cascade constraints. Cascade
 chains are placed on consecutive physical X/Y sites, while the independent
 checker reloads the ArchitectureDB and recomputes every ownership, BEL,

@@ -12,6 +12,7 @@ from .errors import ValidationError
 from .io import read_json
 from .physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA
 from .xilinx_netlist import emit_xilinx_mapped_json
+from .xilinx_openparf import run_xilinx_openparf_guidance
 from .xilinx_opensta import run_xilinx_routed_opensta
 from .xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
 from .xilinx_placement import (
@@ -63,6 +64,8 @@ def run_rapidwright_partition_backend(
     java_source: Path,
     device_data_root: Path,
     timing_data_dir: Path,
+    openparf_install: Optional[Path] = None,
+    openparf_python: Optional[Path] = None,
     opensta: Optional[str] = None,
     logic_identity_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -86,6 +89,17 @@ def run_rapidwright_partition_backend(
     packing_check = validate_xilinx_packing(
         mapped_path, packed_path, architecture_path=architecture_path
     )
+    guidance_root = output_dir / "openparf-guidance"
+    guidance_report = run_xilinx_openparf_guidance(
+        mapped_path,
+        packed_path,
+        architecture_path,
+        guidance_root,
+        top=mapped_report["top"],
+        openparf_install=openparf_install,
+        openparf_python=openparf_python,
+    )
+    guidance_path = guidance_root / "guidance.json"
     constraints_path = output_dir / "single-slr-constraints.json"
     placement_path = output_dir / "placement.json"
     slr_plan = plan_xilinx_single_slr(
@@ -93,6 +107,7 @@ def run_rapidwright_partition_backend(
         architecture_path,
         constraints_path,
         placement_path,
+        guidance_path=guidance_path,
     )
     slr_check = validate_xilinx_single_slr_plan(
         packed_path,
@@ -252,6 +267,7 @@ def run_rapidwright_partition_backend(
         "mapped_netlist": mapped_report,
         "packing": {"result": packed["summary"], "validation": packing_check},
         "placement": {
+            "global_guidance": guidance_report,
             "plan": slr_plan,
             "plan_validation": slr_check,
             "validation": placement_check,
