@@ -295,6 +295,79 @@ def _load_json(
     return value
 
 
+def _is_lower_hex(value: object, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _audit_architecture_source(
+    relative_path: str, source: dict, errors: list[str]
+) -> None:
+    """Audit either an open pinned file or an external device provider.
+
+    A RapidWright provider manifest is deliberately not a downloadable
+    architecture blob: it pins an external mixed-license generator, database,
+    public resource evidence, and redistribution boundary.  Requiring the
+    generic pinned-file fields would encourage fake URLs or hashes and would
+    lose the actual provider contract.
+    """
+
+    schema = source.get("schema")
+    if schema == "emuflow.pinned-architecture-source/v1":
+        if not str(source.get("upstream", "")).startswith("https://"):
+            errors.append(f"{relative_path}: no HTTPS upstream source link")
+        if not source.get("commit"):
+            errors.append(f"{relative_path}: no pinned source revision")
+        if not source.get("sha256"):
+            errors.append(f"{relative_path}: no pinned source SHA-256")
+        if not source.get("license"):
+            errors.append(f"{relative_path}: no source license attribution")
+        return
+    if schema != "emuflow.rapidwright-device-provider/v1":
+        errors.append(f"{relative_path}: unsupported source schema")
+        return
+
+    release = source.get("release")
+    interchange = source.get("fpga_interchange")
+    database = source.get("rapidwright_device_database")
+    license_contract = source.get("license")
+    evidence = source.get("resource_evidence")
+    if not isinstance(release, dict) or not _is_lower_hex(
+        release.get("revision"), 40
+    ):
+        errors.append(f"{relative_path}: no pinned RapidWright revision")
+    if not isinstance(interchange, dict) or not _is_lower_hex(
+        interchange.get("schema_revision"), 40
+    ):
+        errors.append(f"{relative_path}: no pinned Interchange revision")
+    if not isinstance(database, dict) or not _is_lower_hex(
+        database.get("md5"), 32
+    ):
+        errors.append(f"{relative_path}: no pinned external device database digest")
+    if (
+        not isinstance(database, dict)
+        or database.get("redistribution")
+        != "external-dependency-not-redistributed"
+    ):
+        errors.append(f"{relative_path}: external database boundary is invalid")
+    if (
+        not isinstance(license_contract, dict)
+        or license_contract.get("source_code") != "Apache-2.0"
+        or license_contract.get("device_data") != "Xilinx-EULA"
+        or license_contract.get("generated_device_data_committable") is not False
+    ):
+        errors.append(f"{relative_path}: mixed-license contract is invalid")
+    if (
+        not isinstance(evidence, dict)
+        or not str(evidence.get("url", "")).startswith("https://")
+        or not evidence.get("revision")
+    ):
+        errors.append(f"{relative_path}: public resource evidence is incomplete")
+
+
 def _audit_open_source_provenance(
     repo_root: Path, errors: list[str]
 ) -> None:
@@ -401,19 +474,7 @@ def _audit_open_source_provenance(
         )
     for relative_path in PINNED_ARCHITECTURE_SOURCES:
         source = _load_json(repo_root, relative_path, errors)
-        if (
-            source.get("schema")
-            != "emuflow.pinned-architecture-source/v1"
-        ):
-            errors.append(f"{relative_path}: unsupported source schema")
-        if not str(source.get("upstream", "")).startswith("https://"):
-            errors.append(f"{relative_path}: no HTTPS upstream source link")
-        if not source.get("commit"):
-            errors.append(f"{relative_path}: no pinned source revision")
-        if not source.get("sha256"):
-            errors.append(f"{relative_path}: no pinned source SHA-256")
-        if not source.get("license"):
-            errors.append(f"{relative_path}: no source license attribution")
+        _audit_architecture_source(relative_path, source, errors)
     benchmark_ids: set[str] = set()
     for design in catalog.get("designs", []):
         if not isinstance(design, dict):
