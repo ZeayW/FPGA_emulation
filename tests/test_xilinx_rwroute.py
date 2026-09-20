@@ -50,6 +50,10 @@ class XilinxRWRouteTest(unittest.TestCase):
                     "intersite_delay_terms.txt": "3b122837c4a1b5f3c212fc6353bee3a0854a204f2f69e2bc1cac4a2a1f9d7333",
                     "intrasite_delay_terms.txt": "ff08ce9041da649f2bf886d900f033dd23de8ad54eb4db55d37ce032dc0ec0a0",
                 },
+                "device_data_md5": {
+                    "data/parts.db": "58dd6f20c37798322b6904a8a786a3de",
+                    "data/devices/virtexuplus/xcvu19p_db.dat": "5ad01490fe442f360aa67d7dfe0fa1c3",
+                },
                 "logic_coefficients_ps": {
                     "ff_clock_to_q": 25.0, "carry_co": 10.0,
                     "lut_a1": 70.0, "lut_a2": 65.0,

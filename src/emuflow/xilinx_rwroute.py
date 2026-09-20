@@ -407,6 +407,7 @@ def validate_xilinx_route_db(
         "hard_block_clock_timing": "unqualified",
         "source_revision": RAPIDWRIGHT_TIMING_DATA_REVISION,
         "source_data_sha256": RAPIDWRIGHT_TIMING_DATA_SHA256,
+        "device_data_md5": RAPIDWRIGHT_DEVICE_DATA_MD5,
     }
     if not isinstance(timing, dict):
         raise ValidationError("XilinxRouteDB timing qualification is missing")
