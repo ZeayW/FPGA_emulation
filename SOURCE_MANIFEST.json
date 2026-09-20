@@ -70,11 +70,13 @@
         "src/emuflow/xilinx_placement.py",
         "src/emuflow/xilinx_rwroute.py",
         "src/emuflow/xilinx_timing.py",
+        "src/emuflow/xilinx_opensta.py",
         "scripts/rapidwright/EmuFlowRWRoute.java",
         "schemas/packed-site-netlist-v1.schema.json",
         "tests/test_xilinx_packing.py",
         "tests/test_xilinx_placement.py",
-        "tests/test_xilinx_rwroute.py"
+        "tests/test_xilinx_rwroute.py",
+        "tests/test_xilinx_opensta.py"
       ],
       "build_targets": [
         "emuflow_python"

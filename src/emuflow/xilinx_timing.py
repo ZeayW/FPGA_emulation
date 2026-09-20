@@ -154,6 +154,9 @@ def _build_payload(
             "analysis": "setup-route-only",
             "hold_analysis": "unavailable",
             "hard_block_clock_timing": "unqualified",
+            "logic_coefficients_ps": dict(
+                route["timing"]["logic_coefficients_ps"]
+            ),
         },
         "endpoints": records,
         "summary": {
@@ -241,6 +244,26 @@ def validate_xilinx_routed_timing(
             raise ValidationError(f"XilinxRoutedTimingDB endpoint {index} delay is invalid")
         seen.add(endpoint_id)
         maximum = max(maximum, float(delay))
+    qualification = value.get("qualification")
+    if not isinstance(qualification, dict):
+        raise ValidationError("XilinxRoutedTimingDB qualification is invalid")
+    coefficients = qualification.get("logic_coefficients_ps")
+    expected_coefficients = {
+        "ff_clock_to_q", "carry_co", "lut_a1", "lut_a2", "lut_a3",
+        "lut_a4", "lut_a5", "lut_a6",
+    }
+    if not isinstance(coefficients, dict) or set(coefficients) != expected_coefficients:
+        raise ValidationError("XilinxRoutedTimingDB logic coefficients are invalid")
+    for name, delay in coefficients.items():
+        if (
+            isinstance(delay, bool)
+            or not isinstance(delay, (int, float))
+            or not math.isfinite(float(delay))
+            or float(delay) < 0.0
+        ):
+            raise ValidationError(
+                f"XilinxRoutedTimingDB logic coefficient {name!r} is invalid"
+            )
     summary = value.get("summary", {})
     if summary.get("logical_endpoints") != len(endpoints) or not math.isclose(
         float(summary.get("maximum_route_delay_ns", -1.0)), maximum,

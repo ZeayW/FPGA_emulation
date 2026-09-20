@@ -37,6 +37,12 @@ class XilinxRWRouteTest(unittest.TestCase):
                     "intersite_delay_terms.txt": "3b122837c4a1b5f3c212fc6353bee3a0854a204f2f69e2bc1cac4a2a1f9d7333",
                     "intrasite_delay_terms.txt": "ff08ce9041da649f2bf886d900f033dd23de8ad54eb4db55d37ce032dc0ec0a0",
                 },
+                "logic_coefficients_ps": {
+                    "ff_clock_to_q": 25.0, "carry_co": 10.0,
+                    "lut_a1": 70.0, "lut_a2": 65.0,
+                    "lut_a3": 60.0, "lut_a4": 55.0,
+                    "lut_a5": 50.0, "lut_a6": 45.0,
+                },
                 "routed_endpoints": 2,
                 "maximum_route_delay_ps": 27.5,
             },

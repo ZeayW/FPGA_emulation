@@ -4248,6 +4248,18 @@ emuflow arch validate-xilinx-routed-timing \
   --packed build/xilinx/packed-sites.json \
   --placement build/xilinx/placement.json \
   --route build/xilinx/xilinx-route.json
+emuflow arch run-xilinx-opensta \
+  --mapped-json build/xilinx/mapped.json \
+  --routed-timing build/xilinx/xilinx-routed-timing.json \
+  --clock-period clk=10.0 \
+  --output build/xilinx/routed-paths.json \
+  --summary build/xilinx/routed-opensta-summary.json \
+  --log build/xilinx/routed-opensta.log
+emuflow arch validate-xilinx-opensta \
+  --summary build/xilinx/routed-opensta-summary.json \
+  --output build/xilinx/routed-paths.json \
+  --mapped-json build/xilinx/mapped.json \
+  --routed-timing build/xilinx/xilinx-routed-timing.json
 ```
 
 The packed artifact contains cell ownership and compact constraints only; it
@@ -4301,6 +4313,14 @@ sink sharing the driver's physical site, uses a labelled conservative maximum
 if multiple site pins feed logical sinks at one site, and rejects every
 unbound off-site sink.  Thus OpenSTA staging never has to infer a logical
 endpoint from a RapidWright node string.
+OpenSTA staging inserts one ephemeral, exact route-delay arc per bound logical
+sink and keeps that expanded graph out of persistent artifacts.  RapidWright's
+published LUT, carry, and FF clock-to-Q coefficients provide the qualified
+lightweight logic terms; FF setup remains analytical, hold is unavailable,
+and RAM/DSP/URAM timing is explicitly reported as an unqualified surrogate.
+The compact summary records those limits and the full OpenSTA path database
+remains the sole WNS/TNS authority.  Its independent validator recomputes WNS,
+TNS, failing endpoint count, and the path population from that database.
 RapidWright's extracted runtime database is isolated beside the requested
 class directory, so the provider never writes into a login home directory.
 Purely intra-site nets remain in RapidWright site routing and are explicitly

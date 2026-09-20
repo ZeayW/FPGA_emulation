@@ -201,6 +201,10 @@ from .xilinx_timing import (
     build_xilinx_routed_timing,
     validate_xilinx_routed_timing,
 )
+from .xilinx_opensta import (
+    run_xilinx_routed_opensta,
+    validate_xilinx_routed_opensta_summary,
+)
 from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from .experiment_partition import (
     run_partition_checkpoint,
@@ -2767,6 +2771,29 @@ def _build_parser() -> argparse.ArgumentParser:
         option.add_argument("--packed", type=Path, required=True)
         option.add_argument("--placement", type=Path, required=True)
         option.add_argument("--route", type=Path, required=True)
+    arch_run_xilinx_opensta = arch_subparsers.add_parser(
+        "run-xilinx-opensta",
+        help="run OpenSTA over RapidWright-routed logical endpoints",
+    )
+    arch_run_xilinx_opensta.add_argument("--mapped-json", type=Path, required=True)
+    arch_run_xilinx_opensta.add_argument("--routed-timing", type=Path, required=True)
+    arch_run_xilinx_opensta.add_argument("--output", "-o", type=Path, required=True)
+    arch_run_xilinx_opensta.add_argument("--summary", type=Path, required=True)
+    arch_run_xilinx_opensta.add_argument(
+        "--clock-period", action="append", default=[], required=True,
+        metavar="CLOCK=PERIOD_NS",
+    )
+    arch_run_xilinx_opensta.add_argument("--opensta")
+    arch_run_xilinx_opensta.add_argument("--max-paths", type=int, default=200000)
+    arch_run_xilinx_opensta.add_argument("--log", type=Path)
+    arch_validate_xilinx_opensta = arch_subparsers.add_parser(
+        "validate-xilinx-opensta",
+        help="independently recompute RapidWright/OpenSTA WNS and TNS",
+    )
+    arch_validate_xilinx_opensta.add_argument("--summary", type=Path, required=True)
+    arch_validate_xilinx_opensta.add_argument("--output", type=Path, required=True)
+    arch_validate_xilinx_opensta.add_argument("--mapped-json", type=Path)
+    arch_validate_xilinx_opensta.add_argument("--routed-timing", type=Path)
     arch_capacity_fpgaif = arch_subparsers.add_parser(
         "check-capacity",
         help="check EmuIR primitive support and BEL capacity",
@@ -5276,6 +5303,24 @@ def _dispatch(args: argparse.Namespace) -> int:
                 packed_path=args.packed,
                 placement_path=args.placement,
                 route_path=args.route,
+            )
+        elif args.arch_command == "run-xilinx-opensta":
+            report = run_xilinx_routed_opensta(
+                args.mapped_json,
+                args.routed_timing,
+                args.output,
+                args.summary,
+                clocks=parse_clock_definitions(args.clock_period),
+                executable=args.opensta,
+                max_paths=args.max_paths,
+                log_path=args.log,
+            )
+        elif args.arch_command == "validate-xilinx-opensta":
+            report = validate_xilinx_routed_opensta_summary(
+                args.summary,
+                output_path=args.output,
+                mapped_path=args.mapped_json,
+                timing_path=args.routed_timing,
             )
         elif args.arch_command == "check-capacity":
             architecture = ArchitectureDB.load(args.arch)

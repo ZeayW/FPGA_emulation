@@ -102,6 +102,7 @@ def load_timing_model(path: Path) -> Dict[str, Any]:
         if kind == "combinational":
             inputs = raw_cell.get("inputs")
             outputs = raw_cell.get("outputs")
+            controls = raw_cell.get("controls", [])
             if outputs is None and isinstance(raw_cell.get("output"), str):
                 outputs = [raw_cell["output"]]
             if (
@@ -113,7 +114,11 @@ def load_timing_model(path: Path) -> Dict[str, Any]:
                 or not outputs
                 or not all(isinstance(pin, str) and pin for pin in outputs)
                 or len(outputs) != len(set(outputs))
-                or set(outputs) & set(inputs)
+                or not isinstance(controls, list)
+                or not all(isinstance(pin, str) and pin for pin in controls)
+                or len(controls) != len(set(controls))
+                or set(outputs) & (set(inputs) | set(controls))
+                or set(inputs) & set(controls)
             ):
                 raise ValidationError(f"{context}: invalid pin definition")
             _finite_nonnegative(raw_cell.get("delay_ns"), f"{context}.delay_ns")
@@ -146,6 +151,7 @@ def load_timing_model(path: Path) -> Dict[str, Any]:
             clock = raw_cell.get("clock")
             inputs = raw_cell.get("inputs")
             outputs = raw_cell.get("outputs")
+            controls = raw_cell.get("controls", [])
             if (
                 not isinstance(clock, str)
                 or not clock
@@ -157,9 +163,14 @@ def load_timing_model(path: Path) -> Dict[str, Any]:
                 or not outputs
                 or not all(isinstance(pin, str) and pin for pin in outputs)
                 or len(outputs) != len(set(outputs))
+                or not isinstance(controls, list)
+                or not all(isinstance(pin, str) and pin for pin in controls)
+                or len(controls) != len(set(controls))
                 or clock in inputs
                 or clock in outputs
+                or clock in controls
                 or set(inputs) & set(outputs)
+                or set(controls) & (set(inputs) | set(outputs))
             ):
                 raise ValidationError(f"{context}: invalid pin definition")
             _finite_nonnegative(
@@ -220,6 +231,15 @@ def render_opensta_liberty(model: Mapping[str, Any]) -> str:
         kind = cell["kind"]
         if kind == "combinational":
             for pin in cell["inputs"]:
+                lines.extend(
+                    [
+                        f"    pin ({pin}) {{",
+                        "      direction : input;",
+                        "      capacitance : 0.001;",
+                        "    }",
+                    ]
+                )
+            for pin in cell.get("controls", []):
                 lines.extend(
                     [
                         f"    pin ({pin}) {{",
@@ -363,6 +383,15 @@ def render_opensta_liberty(model: Mapping[str, Any]) -> str:
                             "        ",
                         ),
                         "      }",
+                        "    }",
+                    ]
+                )
+            for pin in cell.get("controls", []):
+                lines.extend(
+                    [
+                        f"    pin ({pin}) {{",
+                        "      direction : input;",
+                        "      capacitance : 0.001;",
                         "    }",
                     ]
                 )
@@ -935,6 +964,8 @@ def classify_through_net_timing_endpoints(
             pin = _scalar_endpoint_pin(sink, pin_sets)
             kind = cell["kind"]
             if kind == "combinational":
+                if pin in cell.get("controls", []):
+                    continue
                 if pin not in cell["inputs"]:
                     raise ValidationError(
                         "OpenSTA combinational sink pin is absent from the "
@@ -958,7 +989,7 @@ def classify_through_net_timing_endpoints(
                     direct_timed.add(net_id)
                     direct_timed_counts[net_id] += 1
                     direct_timed_pins[net_id].add(f"{instance_id}/{pin}")
-                elif pin != cell["clock"]:
+                elif pin != cell["clock"] and pin not in cell.get("controls", []):
                     raise ValidationError(
                         "OpenSTA sequential-bank sink pin is unmodelled: "
                         f"{cell_type}.{pin}"

@@ -375,6 +375,28 @@ def validate_xilinx_route_db(
             raise ValidationError(f"XilinxRouteDB timing.{key} is invalid")
     if timing.get("routed_endpoints") != len(route_delays_ps):
         raise ValidationError("XilinxRouteDB timed endpoint count disagrees")
+    logic_coefficients = timing.get("logic_coefficients_ps")
+    expected_logic_coefficients = {
+        "ff_clock_to_q", "carry_co", "lut_a1", "lut_a2", "lut_a3",
+        "lut_a4", "lut_a5", "lut_a6",
+    }
+    if (
+        not isinstance(logic_coefficients, dict)
+        or set(logic_coefficients) != expected_logic_coefficients
+    ):
+        raise ValidationError(
+            "XilinxRouteDB logic timing coefficients are invalid"
+        )
+    for name, delay in logic_coefficients.items():
+        if (
+            isinstance(delay, bool)
+            or not isinstance(delay, (int, float))
+            or not math.isfinite(float(delay))
+            or float(delay) < 0.0
+        ):
+            raise ValidationError(
+                f"XilinxRouteDB logic timing coefficient {name!r} is invalid"
+            )
     maximum_route_delay_ps = max(route_delays_ps, default=0.0)
     reported_maximum = timing.get("maximum_route_delay_ps")
     if (
