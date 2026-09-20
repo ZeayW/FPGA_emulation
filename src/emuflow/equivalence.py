@@ -59,11 +59,77 @@ def _is_ff_type(cell_type: str) -> bool:
 
 
 def _is_multiply_type(cell_type: str) -> bool:
-    return cell_type == "VTR_MULTIPLY"
+    return cell_type in {"VTR_MULTIPLY", "DSP48E2"}
 
 
 def _is_ram_type(cell_type: str) -> bool:
-    return cell_type in {"VTR_SP_RAM", "VTR_DP_RAM"}
+    return cell_type in {
+        "VTR_SP_RAM",
+        "VTR_DP_RAM",
+        "RAMB18E2",
+        "RAMB36E2",
+    }
+
+
+def _is_muxf_type(cell_type: str) -> bool:
+    return cell_type in {"MUXF7", "MUXF8", "MUXF9"}
+
+
+def _is_carry_type(cell_type: str) -> bool:
+    return cell_type == "CARRY8"
+
+
+def _is_combinational_type(cell_type: str) -> bool:
+    return (
+        _is_lut_type(cell_type)
+        or _is_multiply_type(cell_type)
+        or _is_muxf_type(cell_type)
+        or _is_carry_type(cell_type)
+    )
+
+
+def _signed(value: int, width: int) -> int:
+    value &= (1 << width) - 1
+    return value - (1 << width) if value & (1 << (width - 1)) else value
+
+
+def _parameter_text(instance: Mapping[str, Any], name: str) -> str:
+    value = instance.get("parameters", {}).get(name)
+    if value is None:
+        raise ValidationError(
+            f"instance {instance['id']!r} lacks parameter {name}"
+        )
+    return str(value).strip()
+
+
+def _parameter_bits(value: Any) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    text = str(value).strip().lower().replace("_", "")
+    if not text:
+        return 0
+    if set(text) <= {"0", "1", "x", "z"}:
+        return int(text.replace("x", "0").replace("z", "0"), 2)
+    return int(text, 0)
+
+
+def _interleaved_word(data: int, parity: int, lanes: int) -> int:
+    value = 0
+    for lane in range(lanes):
+        value |= ((data >> (8 * lane)) & 0xFF) << (9 * lane)
+        value |= ((parity >> lane) & 1) << (9 * lane + 8)
+    return value
+
+
+def _split_interleaved_word(value: int, lanes: int) -> Tuple[int, int]:
+    data = 0
+    parity = 0
+    for lane in range(lanes):
+        data |= ((value >> (9 * lane)) & 0xFF) << (8 * lane)
+        parity |= ((value >> (9 * lane + 8)) & 1) << lane
+    return data, parity
 
 
 def _parameter_int(instance: Mapping[str, Any], name: str) -> int:
@@ -125,9 +191,8 @@ class _MappedModel:
                 instance["type"]
                 for instance in self.instances.values()
                 if not (
-                    _is_lut_type(instance["type"])
+                    _is_combinational_type(instance["type"])
                     or _is_ff_type(instance["type"])
-                    or _is_multiply_type(instance["type"])
                     or _is_ram_type(instance["type"])
                 )
             }
@@ -192,7 +257,22 @@ class _MappedModel:
             for instance_id, instance in self.instances.items()
             if _is_ram_type(instance["type"])
         )
-        self.combinational_ids = sorted(self.lut_ids + self.multiply_ids)
+        self.muxf_ids = sorted(
+            instance_id
+            for instance_id, instance in self.instances.items()
+            if _is_muxf_type(instance["type"])
+        )
+        self.carry_ids = sorted(
+            instance_id
+            for instance_id, instance in self.instances.items()
+            if _is_carry_type(instance["type"])
+        )
+        self.combinational_ids = sorted(
+            self.lut_ids
+            + self.multiply_ids
+            + self.muxf_ids
+            + self.carry_ids
+        )
         self.combinational_id_set = frozenset(self.combinational_ids)
         output_nets_by_instance: Dict[str, List[str]] = defaultdict(list)
         for (owner, _port, _bit_index), net in self.output_net.items():
@@ -250,6 +330,144 @@ class _MappedModel:
             for index, instance_id in enumerate(self.combinational_order)
         }
 
+    def _evaluate_dsp48e2(
+        self,
+        values: Dict[str, int],
+        instance_id: str,
+        overrides: Optional[Mapping[Tuple[str, str], int]],
+    ) -> None:
+        instance = self.instances[instance_id]
+        for parameter in (
+            "ACASCREG",
+            "ADREG",
+            "ALUMODEREG",
+            "AREG",
+            "BCASCREG",
+            "BREG",
+            "CARRYINREG",
+            "CARRYINSELREG",
+            "CREG",
+            "DREG",
+            "INMODEREG",
+            "MREG",
+            "OPMODEREG",
+            "PREG",
+        ):
+            if _parameter_int(instance, parameter) != 0:
+                raise ValidationError(
+                    f"DSP48E2 {instance_id!r} uses unsupported registered "
+                    f"parameter {parameter}"
+                )
+        required_text = {
+            "A_INPUT": "DIRECT",
+            "B_INPUT": "DIRECT",
+            "USE_MULT": "MULTIPLY",
+            "USE_SIMD": "ONE48",
+            "AMULTSEL": "A",
+            "BMULTSEL": "B",
+        }
+        for parameter, expected in required_text.items():
+            if _parameter_text(instance, parameter).upper() != expected:
+                raise ValidationError(
+                    f"DSP48E2 {instance_id!r} parameter {parameter} is not "
+                    f"the Yosys combinational-multiply contract"
+                )
+        output_ports = {
+            port
+            for owner, port, _bit in self.output_net
+            if owner == instance_id
+        }
+        if output_ports - {"P"}:
+            raise ValidationError(
+                f"DSP48E2 {instance_id!r} exposes unsupported outputs "
+                f"{sorted(output_ports - {'P'})}"
+            )
+        controls = {
+            "INMODE": (5, 0),
+            "ALUMODE": (4, 0),
+            "OPMODE": (9, 5),
+            "CARRYINSEL": (3, 0),
+            "CARRYIN": (1, 0),
+        }
+        for port, (width, expected) in controls.items():
+            actual = self._bus(
+                values, instance_id, port, width, overrides
+            )
+            if actual != expected:
+                raise ValidationError(
+                    f"DSP48E2 {instance_id!r} port {port} is outside the "
+                    "Yosys combinational-multiply contract"
+                )
+        left = self._bus(values, instance_id, "A", 30, overrides)
+        right = self._bus(values, instance_id, "B", 18, overrides)
+        if left is None or right is None:
+            raise ValidationError(
+                f"DSP48E2 {instance_id!r} has unresolved multiplier inputs"
+            )
+        product = _signed(left, 27) * _signed(right, 18)
+        self._drive_bus(
+            values, instance_id, "P", product & ((1 << 48) - 1), 48
+        )
+
+    def _evaluate_muxf(
+        self,
+        values: Dict[str, int],
+        instance_id: str,
+        overrides: Optional[Mapping[Tuple[str, str], int]],
+    ) -> None:
+        selected = self._pin(
+            values, instance_id, "S", overrides=overrides
+        )
+        low = self._pin(
+            values, instance_id, "I0", overrides=overrides
+        )
+        high = self._pin(
+            values, instance_id, "I1", overrides=overrides
+        )
+        if selected is None or low is None or high is None:
+            raise ValidationError(
+                f"{self.instances[instance_id]['type']} {instance_id!r} "
+                "has unresolved inputs"
+            )
+        output = self.output_net.get((instance_id, "O", 0))
+        if output is not None:
+            values[output] = int(high if selected else low)
+
+    def _evaluate_carry8(
+        self,
+        values: Dict[str, int],
+        instance_id: str,
+        overrides: Optional[Mapping[Tuple[str, str], int]],
+    ) -> None:
+        instance = self.instances[instance_id]
+        carry_type = _parameter_text(instance, "CARRY_TYPE").upper()
+        if carry_type not in {"SINGLE_CY8", "DUAL_CY4"}:
+            raise ValidationError(
+                f"CARRY8 {instance_id!r} has unsupported CARRY_TYPE "
+                f"{carry_type!r}"
+            )
+        ci = self._pin(values, instance_id, "CI", overrides=overrides)
+        ci_top = self._pin(
+            values, instance_id, "CI_TOP", overrides=overrides
+        )
+        select = self._bus(values, instance_id, "S", 8, overrides)
+        data = self._bus(values, instance_id, "DI", 8, overrides)
+        if None in {ci, ci_top, select, data}:
+            raise ValidationError(
+                f"CARRY8 {instance_id!r} has unresolved inputs"
+            )
+        carry = int(ci)
+        carry_outputs = 0
+        sum_outputs = 0
+        for bit in range(8):
+            if bit == 4 and carry_type == "DUAL_CY4":
+                carry = int(ci_top)
+            sum_outputs |= (((select >> bit) & 1) ^ carry) << bit
+            carry = carry if (select >> bit) & 1 else (data >> bit) & 1
+            carry_outputs |= carry << bit
+        self._drive_bus(values, instance_id, "CO", carry_outputs, 8)
+        self._drive_bus(values, instance_id, "O", sum_outputs, 8)
+
     def _evaluate_combinational_instance(
         self,
         values: Dict[str, int],
@@ -257,7 +475,10 @@ class _MappedModel:
         overrides: Optional[Mapping[Tuple[str, str], int]] = None,
     ) -> None:
         instance = self.instances[instance_id]
-        if _is_multiply_type(instance["type"]):
+        if instance["type"] == "DSP48E2":
+            self._evaluate_dsp48e2(values, instance_id, overrides)
+            return
+        if instance["type"] == "VTR_MULTIPLY":
             a_width = _parameter_int(instance, "A_WIDTH")
             b_width = _parameter_int(instance, "B_WIDTH")
             output_width = _parameter_int(instance, "Y_WIDTH")
@@ -279,6 +500,41 @@ class _MappedModel:
                 (left * right) & ((1 << output_width) - 1),
                 output_width,
             )
+            return
+        if _is_muxf_type(instance["type"]):
+            self._evaluate_muxf(values, instance_id, overrides)
+            return
+        if _is_carry_type(instance["type"]):
+            self._evaluate_carry8(values, instance_id, overrides)
+            return
+        if instance["type"] == "LUT6_2":
+            inputs = [
+                self._pin(
+                    values,
+                    instance_id,
+                    f"I{index}",
+                    overrides=overrides,
+                )
+                for index in range(6)
+            ]
+            if any(value is None for value in inputs):
+                raise ValidationError(
+                    "mapped primitive simulation found unresolved "
+                    f"combinational cells {[instance_id]}"
+                )
+            truth = _parameter_bits(
+                instance.get("parameters", {}).get("INIT")
+            )
+            address = sum(
+                int(value) << offset
+                for offset, value in enumerate(inputs)
+            )
+            o5_net = self.output_net.get((instance_id, "O5", 0))
+            if o5_net is not None:
+                values[o5_net] = (truth >> (address & 0x1F)) & 1
+            o6_net = self.output_net.get((instance_id, "O6", 0))
+            if o6_net is not None:
+                values[o6_net] = (truth >> address) & 1
             return
         width, input_port, output_port, truth = _lut_definition(instance)
         inputs = [
@@ -304,6 +560,345 @@ class _MappedModel:
         if output_net is not None:
             values[output_net] = (truth >> address) & 1
 
+    def _xilinx_ram_shape(
+        self, instance_id: str
+    ) -> Dict[str, Any]:
+        instance = self.instances[instance_id]
+        cell_type = instance["type"]
+        if cell_type == "RAMB18E2":
+            half_width, address_width = 18, 14
+            write_enable_widths = {"A": 2, "B": 4}
+        elif cell_type == "RAMB36E2":
+            half_width, address_width = 36, 15
+            write_enable_widths = {"A": 4, "B": 8}
+        else:
+            raise ValidationError(
+                f"instance {instance_id!r} is not a modeled Xilinx BRAM"
+            )
+        widths = {
+            "read_a": _parameter_int(instance, "READ_WIDTH_A"),
+            "read_b": _parameter_int(instance, "READ_WIDTH_B"),
+            "write_a": _parameter_int(instance, "WRITE_WIDTH_A"),
+            "write_b": _parameter_int(instance, "WRITE_WIDTH_B"),
+        }
+        allowed = {0, 1, 2, 4, 9, 18}
+        if half_width == 36:
+            allowed.add(36)
+        allowed.add(2 * half_width)
+        invalid = {
+            name: width
+            for name, width in widths.items()
+            if width not in allowed
+        }
+        if invalid:
+            raise ValidationError(
+                f"{cell_type} {instance_id!r} has unsupported widths "
+                f"{invalid}"
+            )
+        wide = 2 * half_width
+        if any(width == wide for width in widths.values()) and not (
+            widths["read_a"] == wide
+            and widths["write_b"] == wide
+            and widths["read_b"] == 0
+            and widths["write_a"] == 0
+        ):
+            raise ValidationError(
+                f"{cell_type} {instance_id!r} uses an unsupported wide-port "
+                "configuration"
+            )
+        for parameter in ("DOA_REG", "DOB_REG"):
+            if _parameter_int(instance, parameter) != 0:
+                raise ValidationError(
+                    f"{cell_type} {instance_id!r} uses unsupported output "
+                    f"register {parameter}"
+                )
+        for parameter in ("WRITE_MODE_A", "WRITE_MODE_B"):
+            if _parameter_text(instance, parameter).upper() not in {
+                "READ_FIRST",
+                "WRITE_FIRST",
+                "NO_CHANGE",
+            }:
+                raise ValidationError(
+                    f"{cell_type} {instance_id!r} has unsupported "
+                    f"{parameter}"
+                )
+        output_ports = {
+            port
+            for owner, port, _bit in self.output_net
+            if owner == instance_id
+        }
+        supported_outputs = {
+            "DOUTADOUT",
+            "DOUTBDOUT",
+            "DOUTPADOUTP",
+            "DOUTPBDOUTP",
+        }
+        if output_ports - supported_outputs:
+            raise ValidationError(
+                f"{cell_type} {instance_id!r} exposes unsupported outputs "
+                f"{sorted(output_ports - supported_outputs)}"
+            )
+        for name, value in instance.get("parameters", {}).items():
+            if (
+                (name.startswith("INIT_") and len(name) == 7)
+                or (name.startswith("INITP_") and len(name) == 8)
+            ) and _parameter_bits(value) != 0:
+                raise ValidationError(
+                    f"{cell_type} {instance_id!r} has initialized contents; "
+                    "the cycle checker only accepts zero/unknown Yosys BRAM "
+                    "initialization"
+                )
+        return {
+            "cell_type": cell_type,
+            "half_width": half_width,
+            "address_width": address_width,
+            "write_enable_widths": write_enable_widths,
+            "widths": widths,
+        }
+
+    def _xilinx_ram_half_input(
+        self,
+        values: Mapping[str, int],
+        instance_id: str,
+        port: str,
+        shape: Mapping[str, Any],
+        overrides: Optional[Mapping[Tuple[str, str], int]],
+    ) -> int:
+        half_width = int(shape["half_width"])
+        lanes = half_width // 9
+        suffix = "A" if port == "A" else "B"
+        data_port = "DINADIN" if port == "A" else "DINBDIN"
+        parity_port = "DINPADINP" if port == "A" else "DINPBDINP"
+        data = self._bus(
+            values,
+            instance_id,
+            data_port,
+            8 * lanes,
+            overrides,
+        )
+        parity = self._bus(
+            values,
+            instance_id,
+            parity_port,
+            lanes,
+            overrides,
+        )
+        if data is None or parity is None:
+            raise ValidationError(
+                f"{shape['cell_type']} {instance_id!r} port {suffix} has "
+                "unresolved write data"
+            )
+        return _interleaved_word(data, parity, lanes)
+
+    def _drive_xilinx_ram_outputs(
+        self,
+        values: Dict[str, int],
+        instance_id: str,
+        ram_state: Mapping[str, Any],
+        shape: Mapping[str, Any],
+    ) -> None:
+        lanes = int(shape["half_width"]) // 9
+        for port, data_port, parity_port in (
+            ("a", "DOUTADOUT", "DOUTPADOUTP"),
+            ("b", "DOUTBDOUT", "DOUTPBDOUTP"),
+        ):
+            data, parity = _split_interleaved_word(
+                int(ram_state[f"out_{port}"]), lanes
+            )
+            self._drive_bus(
+                values, instance_id, data_port, data, 8 * lanes
+            )
+            self._drive_bus(
+                values, instance_id, parity_port, parity, lanes
+            )
+
+    @staticmethod
+    def _xilinx_ram_masked_write(
+        old_word: int,
+        data: int,
+        width: int,
+        enables: int,
+    ) -> Tuple[int, int]:
+        lanes = (width + 8) // 9
+        mask = 0
+        for lane in range(lanes):
+            if (enables >> lane) & 1:
+                lane_width = min(9, width - 9 * lane)
+                mask |= ((1 << lane_width) - 1) << (9 * lane)
+        word_mask = (1 << width) - 1
+        mask &= word_mask
+        return ((old_word & ~mask) | (data & mask)) & word_mask, mask
+
+    def _xilinx_ram_next_state(
+        self,
+        values: Mapping[str, int],
+        instance_id: str,
+        ram_state: Mapping[str, Any],
+        overrides: Optional[Mapping[Tuple[str, str], int]],
+    ) -> Dict[str, Any]:
+        instance = self.instances[instance_id]
+        shape = self._xilinx_ram_shape(instance_id)
+        half_width = int(shape["half_width"])
+        widths = shape["widths"]
+        address_width = int(shape["address_width"])
+        contents = dict(ram_state["contents"])
+        out_a = int(ram_state["out_a"])
+        out_b = int(ram_state["out_b"])
+        sleep = self._pin(
+            values, instance_id, "SLEEP", overrides=overrides
+        )
+        if sleep:
+            return {
+                "contents": contents,
+                "out_a": out_a,
+                "out_b": out_b,
+            }
+        addresses = {
+            "A": self._bus(
+                values,
+                instance_id,
+                "ADDRARDADDR",
+                address_width,
+                overrides,
+            ),
+            "B": self._bus(
+                values,
+                instance_id,
+                "ADDRBWRADDR",
+                address_width,
+                overrides,
+            ),
+        }
+        if any(value is None for value in addresses.values()):
+            raise ValidationError(
+                f"{shape['cell_type']} {instance_id!r} has unresolved address"
+            )
+        addresses = {key: int(value) for key, value in addresses.items()}
+        halves = {
+            port: self._xilinx_ram_half_input(
+                values, instance_id, port, shape, overrides
+            )
+            for port in ("A", "B")
+        }
+        enables = {
+            "A": self._bus(
+                values,
+                instance_id,
+                "WEA",
+                shape["write_enable_widths"]["A"],
+                overrides,
+            ),
+            "B": self._bus(
+                values,
+                instance_id,
+                "WEBWE",
+                shape["write_enable_widths"]["B"],
+                overrides,
+            ),
+        }
+        writes = []
+        if widths["write_a"]:
+            writes.append((
+                "A",
+                addresses["A"],
+                widths["write_a"],
+                halves["A"],
+                int(enables["A"] or 0),
+            ))
+        if widths["write_b"]:
+            write_data = halves["B"]
+            if widths["write_b"] > half_width:
+                write_data = halves["A"] | (halves["B"] << half_width)
+            writes.append((
+                "B",
+                addresses["B"],
+                widths["write_b"],
+                write_data,
+                int(enables["B"] or 0),
+            ))
+        updated_contents = dict(contents)
+        write_masks: Dict[Tuple[str, int], int] = {}
+        for port, address, width, data, write_enable in writes:
+            old_word = int(updated_contents.get(address, 0))
+            new_word, mask = self._xilinx_ram_masked_write(
+                old_word, data, width, write_enable
+            )
+            if mask:
+                for (other_port, other_address), other_mask in write_masks.items():
+                    if (
+                        other_address == address
+                        and other_mask & mask
+                        and other_port != port
+                    ):
+                        raise ValidationError(
+                            f"{shape['cell_type']} {instance_id!r} has an "
+                            "ambiguous simultaneous dual-port write"
+                        )
+                updated_contents[address] = new_word
+                write_masks[(port, address)] = mask
+
+        def read_value(port: str, width: int, current: int) -> int:
+            if not width:
+                return current
+            enable_port = "ENARDEN" if port == "A" else "ENBWREN"
+            reset_port = "RSTRAMARSTRAM" if port == "A" else "RSTRAMB"
+            enabled = self._pin(
+                values, instance_id, enable_port, overrides=overrides
+            )
+            reset = self._pin(
+                values, instance_id, reset_port, overrides=overrides
+            )
+            reset ^= _bit(
+                instance.get("parameters", {}).get(
+                    "IS_RSTRAMARSTRAM_INVERTED"
+                    if port == "A"
+                    else "IS_RSTRAMB_INVERTED",
+                    0,
+                )
+            )
+            if reset:
+                return _parameter_bits(
+                    instance.get("parameters", {}).get(
+                        "SRVAL_A" if port == "A" else "SRVAL_B", 0
+                    )
+                ) & ((1 << min(width, half_width)) - 1)
+            if not enabled:
+                return current
+            address = addresses[port]
+            old_word = int(contents.get(address, 0))
+            matching_write = any(
+                write_address == address and write_mask
+                for (_write_port, write_address), write_mask in write_masks.items()
+            )
+            mode = _parameter_text(
+                instance, "WRITE_MODE_A" if port == "A" else "WRITE_MODE_B"
+            ).upper()
+            if matching_write and mode == "NO_CHANGE":
+                return current
+            source = (
+                updated_contents.get(address, 0)
+                if matching_write and mode == "WRITE_FIRST"
+                else old_word
+            )
+            return int(source) & ((1 << width) - 1)
+
+        if widths["read_a"] > half_width:
+            wide_value = read_value(
+                "A",
+                widths["read_a"],
+                out_a | (out_b << half_width),
+            )
+            out_a = wide_value & ((1 << half_width) - 1)
+            out_b = (wide_value >> half_width) & ((1 << half_width) - 1)
+        else:
+            out_a = read_value("A", widths["read_a"], out_a)
+            out_b = read_value("B", widths["read_b"], out_b)
+        return {
+            "contents": updated_contents,
+            "out_a": out_a,
+            "out_b": out_b,
+        }
+
     def initial_state(self) -> Dict[str, Any]:
         state: Dict[str, Any] = {
             instance_id: _bit(
@@ -315,6 +910,19 @@ class _MappedModel:
         }
         for instance_id in self.ram_ids:
             instance = self.instances[instance_id]
+            if instance["type"] in {"RAMB18E2", "RAMB36E2"}:
+                shape = self._xilinx_ram_shape(instance_id)
+                half_width = int(shape["half_width"])
+                state[instance_id] = {
+                    "contents": {},
+                    "out_a": _parameter_bits(
+                        instance.get("parameters", {}).get("INIT_A", 0)
+                    ) & ((1 << half_width) - 1),
+                    "out_b": _parameter_bits(
+                        instance.get("parameters", {}).get("INIT_B", 0)
+                    ) & ((1 << half_width) - 1),
+                }
+                continue
             width = _parameter_int(instance, "DATA_WIDTH")
             state[instance_id] = {
                 "contents": {},
@@ -397,8 +1005,13 @@ class _MappedModel:
                 values[q_net] = state[instance_id]
         for instance_id in self.ram_ids:
             instance = self.instances[instance_id]
-            width = _parameter_int(instance, "DATA_WIDTH")
             ram_state = state[instance_id]
+            if instance["type"] in {"RAMB18E2", "RAMB36E2"}:
+                self._drive_xilinx_ram_outputs(
+                    values, instance_id, ram_state, self._xilinx_ram_shape(instance_id)
+                )
+                continue
+            width = _parameter_int(instance, "DATA_WIDTH")
             if instance["type"] == "VTR_SP_RAM":
                 self._drive_bus(
                     values,
@@ -507,6 +1120,11 @@ class _MappedModel:
         for instance_id in self.ram_ids:
             instance = self.instances[instance_id]
             ram_state = state[instance_id]
+            if instance["type"] in {"RAMB18E2", "RAMB36E2"}:
+                next_state[instance_id] = self._xilinx_ram_next_state(
+                    values, instance_id, ram_state, overrides
+                )
+                continue
             contents = dict(ram_state["contents"])
             address_width = _parameter_int(instance, "ADDR_WIDTH")
             data_width = _parameter_int(instance, "DATA_WIDTH")
@@ -602,15 +1220,22 @@ class _MappedModel:
         return next_state, outputs
 
     def state_bit_count(self) -> int:
-        return len(self.ff_ids) + sum(
-            _parameter_int(self.instances[instance_id], "DATA_WIDTH")
-            * (
-                1
-                if self.instances[instance_id]["type"] == "VTR_SP_RAM"
-                else 2
-            )
-            for instance_id in self.ram_ids
-        )
+        ram_output_bits = 0
+        for instance_id in self.ram_ids:
+            instance = self.instances[instance_id]
+            if instance["type"] in {"RAMB18E2", "RAMB36E2"}:
+                shape = self._xilinx_ram_shape(instance_id)
+                widths = shape["widths"]
+                ram_output_bits += max(
+                    widths["read_a"],
+                    widths["read_b"],
+                    int(shape["half_width"]),
+                )
+            else:
+                ram_output_bits += _parameter_int(
+                    instance, "DATA_WIDTH"
+                ) * (1 if instance["type"] == "VTR_SP_RAM" else 2)
+        return len(self.ff_ids) + ram_output_bits
 
     def evaluate_lut_subset(
         self,
@@ -632,6 +1257,50 @@ class _MappedModel:
             progressed = False
             for instance_id in sorted(pending):
                 instance = self.instances[instance_id]
+                if instance["type"] == "LUT6_2":
+                    inputs = []
+                    unresolved = False
+                    for index in range(6):
+                        net = self.input_net.get(
+                            (instance_id, f"I{index}", 0)
+                        )
+                        if net is None:
+                            value = self.constants.get(
+                                (instance_id, f"I{index}", 0), 0
+                            )
+                        elif (instance_id, net) in overrides:
+                            value = overrides[(instance_id, net)]
+                        elif net in values:
+                            value = values[net]
+                        else:
+                            value = reference_values.get(net)
+                        if value is None:
+                            unresolved = True
+                            break
+                        inputs.append(value)
+                    if unresolved:
+                        continue
+                    truth = _parameter_bits(
+                        instance.get("parameters", {}).get("INIT")
+                    )
+                    address = sum(
+                        int(value) << offset
+                        for offset, value in enumerate(inputs)
+                    )
+                    for output_port, output_address in (
+                        ("O5", address & 0x1F),
+                        ("O6", address),
+                    ):
+                        output_net = self.output_net.get(
+                            (instance_id, output_port, 0)
+                        )
+                        if output_net is not None:
+                            values[output_net] = (
+                                truth >> output_address
+                            ) & 1
+                    pending.remove(instance_id)
+                    progressed = True
+                    continue
                 width, input_port, output_port, truth = _lut_definition(
                     instance
                 )
@@ -816,7 +1485,7 @@ def _static_exact_equivalence_context(
     combinational_ids = {
         item["id"]
         for item in ir.value["instances"]
-        if _is_lut_type(item["type"]) or _is_multiply_type(item["type"])
+        if _is_combinational_type(item["type"])
     }
     override_pins_by_shadow: Dict[
         Tuple[str, str], List[Tuple[str, str]]

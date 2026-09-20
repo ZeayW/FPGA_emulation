@@ -4331,6 +4331,17 @@ The current timing qualification is setup-only RapidWright lightweight route
 timing plus OpenSTA.  Hold, package-pin/interface binding, and vendor sign-off
 remain outside Route A and are reported rather than silently inferred.
 
+Route A's Phase 6 macro-cycle checker evaluates the Xilinx primitives emitted
+by the pinned open Yosys mapping rather than accepting a generic-LUT surrogate.
+Its fail-closed model covers LUT1--LUT6_2, FDCE/FDPE/FDRE/FDSE, MUXF7/8/9,
+CARRY8, the combinational DSP48E2 multiply contract, and the unregistered
+RAMB18E2/RAMB36E2 modes used by that mapping.  BRAM byte/parity enables,
+read-first/write-first/no-change behavior, sparse state, and SDP wide ports are
+checked directly.  Registered DSP/BRAM modes, nonzero initialized BRAM images,
+URAM, or any unrecognized primitive configuration remain explicit errors until
+an exact model and focused regression exist; they are never skipped to obtain a
+passing equivalence report.
+
 The packed artifact contains cell ownership and compact constraints only; it
 does not copy vendor device data or a routing graph into the repository. This
 feeds a deterministic first-party exact site/BEL legalizer. OpenPARF places one
