@@ -153,6 +153,15 @@ def import_yosys_json(
         bits = raw_port.get("bits", [])
         if not isinstance(bits, list) or not bits:
             raise ImportError(f"port {port_name!r}: expected a non-empty bits array")
+        constant_connections = [
+            {"bit": bit_index, "value": bit.lower()}
+            for bit_index, bit in enumerate(bits)
+            if isinstance(bit, str)
+        ]
+        if constant_connections and direction not in {"output", "inout"}:
+            raise ImportError(
+                f"port {port_name!r}: input bits cannot be constants"
+            )
         ports.append(
             {
                 "id": port_name,
@@ -161,6 +170,7 @@ def import_yosys_json(
                 "width": len(bits),
                 "clock": port_name in clock_ports,
                 "reset": port_name in reset_ports,
+                "constant_connections": constant_connections,
             }
         )
         for bit_index, bit in enumerate(bits):

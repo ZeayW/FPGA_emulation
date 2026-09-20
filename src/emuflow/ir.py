@@ -75,6 +75,39 @@ class EmuIR:
                 raise ValidationError(
                     f"ports[{index}].width: expected a positive integer"
                 )
+            constant_connections = port.get("constant_connections", [])
+            if not isinstance(constant_connections, list):
+                raise ValidationError(
+                    f"ports[{index}].constant_connections: expected an array"
+                )
+            seen_constant_bits = set()
+            for connection_index, connection in enumerate(
+                constant_connections
+            ):
+                context = (
+                    f"ports[{index}].constant_connections"
+                    f"[{connection_index}]"
+                )
+                if not isinstance(connection, dict):
+                    raise ValidationError(f"{context}: expected an object")
+                bit = connection.get("bit")
+                if (
+                    isinstance(bit, bool)
+                    or not isinstance(bit, int)
+                    or bit < 0
+                    or bit >= width
+                    or bit in seen_constant_bits
+                ):
+                    raise ValidationError(f"{context}.bit: invalid port bit")
+                seen_constant_bits.add(bit)
+                if connection.get("value") not in {"0", "1", "x", "z"}:
+                    raise ValidationError(
+                        f"{context}.value: expected 0, 1, x, or z"
+                    )
+            if constant_connections and direction not in {"output", "inout"}:
+                raise ValidationError(
+                    f"ports[{index}]: only output ports may be constant"
+                )
 
         for index, instance in enumerate(instances):
             if not isinstance(instance.get("type"), str) or not instance["type"]:

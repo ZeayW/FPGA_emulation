@@ -144,6 +144,14 @@ def mapped_verilog(
                     else f"[{endpoint['bit']}]"
                 )
                 lines.append(f"  assign {port}{select} = {wire};")
+    for port in ir.value["ports"]:
+        identifier = _identifier(port["id"])
+        for connection in port.get("constant_connections", []):
+            select = "" if port["width"] == 1 else f"[{connection['bit']}]"
+            lines.append(
+                f"  assign {identifier}{select} = "
+                f"1'b{connection['value']};"
+            )
     lines.append("")
 
     for instance in ir.value["instances"]:

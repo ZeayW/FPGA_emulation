@@ -137,14 +137,21 @@ def emit_xilinx_mapped_json(
                         )
     ports = {}
     for port in ir.value["ports"]:
+        port_constants = {
+            item["bit"]: item["value"]
+            for item in port.get("constant_connections", [])
+        }
         bits = []
         for bit in range(port["width"]):
             key = (port["id"], bit)
-            if key not in top_port_bits:
+            if key in top_port_bits:
+                bits.append(top_port_bits[key])
+            elif bit in port_constants:
+                bits.append(port_constants[bit])
+            else:
                 raise ValidationError(
                     f"Xilinx mapped top pin {key!r} is unconnected"
                 )
-            bits.append(top_port_bits[key])
         ports[port["id"]] = {
             "direction": port["direction"],
             "bits": bits,

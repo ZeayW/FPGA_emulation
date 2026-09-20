@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.io import write_json
+from emuflow.verilog import mapped_verilog
 from emuflow.xilinx_netlist import emit_xilinx_mapped_json
 from emuflow.yosys import import_yosys_json
 
@@ -62,6 +63,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                         "clk": {"direction": "input", "bits": [2]},
                         "a": {"direction": "input", "bits": [3]},
                         "y": {"direction": "output", "bits": [5]},
+                        "zero": {"direction": "output", "bits": ["0"]},
                     },
                     "cells": {
                         "lut": {
@@ -104,10 +106,16 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             roundtrip = import_yosys_json(output, clocks=("clk",))
             self.assertEqual(report["cells"], 2)
             self.assertEqual(
+                json.loads(output.read_text(encoding="utf-8"))["modules"]
+                ["top"]["ports"]["zero"]["bits"],
+                ["0"],
+            )
+            self.assertEqual(
                 [(item["id"], item["type"]) for item in roundtrip.value["instances"]],
                 [("ff", "FDRE"), ("lut", "LUT1")],
             )
             self.assertEqual(len(roundtrip.value["nets"]), 4)
+            self.assertIn("assign \\zero  = 1'b0;", mapped_verilog(roundtrip))
 
 
 if __name__ == "__main__":
