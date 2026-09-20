@@ -77,6 +77,17 @@ _TRANSPORT_MODULE = re.compile(r"^module\s+([A-Za-z_][A-Za-z0-9_$]*)", re.M)
 _VPR_SDC_MAX_TIME_NS = 2_000_000.0
 
 
+def _implementation_stage(
+    item: Mapping[str, Any], backend: str, stage: str
+) -> Mapping[str, Any]:
+    """Return one physical stage from its backend-specific report owner."""
+    if backend == "vivado":
+        return item["stages"]["vivado_implementation"][stage]
+    if backend == "rapidwright":
+        return item["stages"]["rapidwright_implementation"][stage]
+    return item["stages"][stage]
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -1372,18 +1383,13 @@ def run_multi_fpga_physical_flow(
         validate_boundary_identity_database(
             database, transports_by_fpga[fpga_id]
         )
-    def implementation_stage(
-        item: Mapping[str, Any], stage: str
-    ) -> Mapping[str, Any]:
-        if backend == "vivado":
-            return item["stages"]["vivado_implementation"][stage]
-        if backend == "rapidwright":
-            return item["stages"]["rapidwright_implementation"][stage]
-        return item["stages"][stage]
-
     physical_summary["boundary_timing"] = {
         item["fpga"]: read_json(
-            Path(implementation_stage(item, "boundary_timing")["import"]["output"])
+            Path(
+                _implementation_stage(item, backend, "boundary_timing")[
+                    "import"
+                ]["output"]
+            )
         )
         for item in records
     }
@@ -1398,7 +1404,9 @@ def run_multi_fpga_physical_flow(
         physical_summary["logic_segment_timing"] = {
             item["fpga"]: read_json(
                 Path(
-                    implementation_stage(item, "logic_segment_timing")[
+                    _implementation_stage(
+                        item, backend, "logic_segment_timing"
+                    )[
                         "import"
                     ]["output"]
                 )
@@ -1411,9 +1419,11 @@ def run_multi_fpga_physical_flow(
             physical_summary["local_path_timing"] = {
                 item["fpga"]: read_json(
                     Path(
-                        item["stages"]["local_path_timing"]["import"][
-                            "output"
-                        ]
+                        _implementation_stage(
+                            item, backend, "local_path_timing"
+                        )[
+                            "import"
+                        ]["output"]
                     )
                 )
                 for item in records

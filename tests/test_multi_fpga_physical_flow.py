@@ -10,6 +10,7 @@ from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.multi_fpga_physical_flow import (
     MULTI_FPGA_PHYSICAL_SCHEMA,
+    _implementation_stage,
     _partition_declares_dut_clock,
     _physical_clock_delays,
     _record_chimew_fixed_io_target,
@@ -71,6 +72,37 @@ def _merged_ir(fpga):
 
 
 class MultiFpgaPhysicalFlowTest(unittest.TestCase):
+    def test_backend_specific_implementation_stage_owner(self):
+        item = {
+            "stages": {
+                "local_path_timing": {"owner": "open"},
+                "rapidwright_implementation": {
+                    "local_path_timing": {"owner": "rapidwright"}
+                },
+                "vivado_implementation": {
+                    "local_path_timing": {"owner": "vivado"}
+                },
+            }
+        }
+        self.assertEqual(
+            _implementation_stage(item, "open", "local_path_timing")[
+                "owner"
+            ],
+            "open",
+        )
+        self.assertEqual(
+            _implementation_stage(item, "rapidwright", "local_path_timing")[
+                "owner"
+            ],
+            "rapidwright",
+        )
+        self.assertEqual(
+            _implementation_stage(item, "vivado", "local_path_timing")[
+                "owner"
+            ],
+            "vivado",
+        )
+
     def test_validator_accepts_complete_rapidwright_stage(self):
         implementation = {
             "status": "pass",
