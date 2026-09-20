@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import tempfile
 from bisect import bisect_left
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -287,20 +286,117 @@ def _architecture_slrs(architecture: ArchitectureDB) -> List[str]:
     return sorted(slrs)
 
 
+def _capacity_flow_feasible(
+    cluster_bases: Mapping[str, Sequence[str]],
+    capacities: Mapping[str, int],
+) -> bool:
+    """Solve cluster-to-site-template capacity exactly with a small max-flow."""
+
+    cluster_ids = sorted(cluster_bases)
+    bases = sorted(base for base, capacity in capacities.items() if capacity > 0)
+    source = 0
+    first_cluster = 1
+    first_base = first_cluster + len(cluster_ids)
+    sink = first_base + len(bases)
+    graph: List[List[List[int]]] = [[] for _ in range(sink + 1)]
+
+    def add_edge(left: int, right: int, capacity: int) -> None:
+        graph[left].append([right, capacity, len(graph[right])])
+        graph[right].append([left, 0, len(graph[left]) - 1])
+
+    base_nodes = {base: first_base + index for index, base in enumerate(bases)}
+    for index, cluster_id in enumerate(cluster_ids):
+        node = first_cluster + index
+        add_edge(source, node, 1)
+        for base in sorted(cluster_bases[cluster_id]):
+            if base in base_nodes:
+                add_edge(node, base_nodes[base], 1)
+    for base, node in base_nodes.items():
+        add_edge(node, sink, capacities[base])
+
+    flow = 0
+    while True:
+        levels = [-1] * len(graph)
+        levels[source] = 0
+        queue = [source]
+        for node in queue:
+            for right, capacity, _reverse in graph[node]:
+                if capacity > 0 and levels[right] < 0:
+                    levels[right] = levels[node] + 1
+                    queue.append(right)
+        if levels[sink] < 0:
+            break
+        cursors = [0] * len(graph)
+
+        def augment(node: int, available: int) -> int:
+            if node == sink:
+                return available
+            while cursors[node] < len(graph[node]):
+                edge = graph[node][cursors[node]]
+                right, capacity, reverse = edge
+                if capacity > 0 and levels[right] == levels[node] + 1:
+                    amount = augment(right, min(available, capacity))
+                    if amount:
+                        edge[1] -= amount
+                        graph[right][reverse][1] += amount
+                        return amount
+                cursors[node] += 1
+            return 0
+
+        while True:
+            amount = augment(source, len(cluster_ids) - flow)
+            if not amount:
+                break
+            flow += amount
+            if flow == len(cluster_ids):
+                return True
+    return flow == len(cluster_ids)
+
+
+def _site_coordinate_rows(
+    site_names: Sequence[str],
+    sites: Mapping[str, Mapping[str, Any]],
+) -> Dict[int, Tuple[int, ...]]:
+    rows: Dict[int, List[int]] = defaultdict(list)
+    for name in site_names:
+        site = sites[name]
+        rows[site["y"]].append(site["x"])
+    return {y: tuple(sorted(values)) for y, values in rows.items()}
+
+
+def _nearest_site_lower_bound(
+    rows: Mapping[int, Sequence[int]], target: Tuple[float, float]
+) -> float:
+    target_x, target_y = target
+    best: Optional[float] = None
+    for y, values in rows.items():
+        y_cost = abs(y - target_y)
+        if best is not None and y_cost >= best:
+            continue
+        position = bisect_left(values, target_x)
+        x_costs = []
+        if position < len(values):
+            x_costs.append(abs(values[position] - target_x))
+        if position:
+            x_costs.append(abs(values[position - 1] - target_x))
+        if x_costs:
+            cost = y_cost + min(x_costs)
+            if best is None or cost < best:
+                best = cost
+    if best is None:
+        raise ValidationError("compatible SLR site inventory is empty")
+    return best
+
+
 def plan_xilinx_single_slr(
     packed_path: Path,
     architecture_path: Path,
     output_path: Path,
+    placement_output_path: Path,
     *,
     guidance_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Select one SLR only after proving exact placement feasibility.
-
-    This is intentionally an explicit planning step rather than a hidden placer
-    fallback.  Every candidate SLR is exercised through the exact site/BEL and
-    cascade legalizer.  OpenPARF guidance ranks the resulting legal placements;
-    an SLR name is only the final deterministic tie-breaker.
-    """
+    """Select one capacity-feasible SLR and materialize its legal placement."""
 
     packed = read_json(packed_path)
     if not isinstance(packed, dict) or packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA:
@@ -320,115 +416,173 @@ def plan_xilinx_single_slr(
         cluster_ids.append(cluster_id)
 
     architecture = ArchitectureDB.load(architecture_path)
-    # Parse the guidance up front so an invalid or incomplete identity cannot be
-    # mistaken for a placement failure on every SLR.
-    _guidance, guidance_sha = _load_guidance(guidance_path, set(cluster_ids))
-    candidate_reports: List[Dict[str, Any]] = []
-    feasible: List[Tuple[Tuple[float, float, str], str, Dict[str, Any]]] = []
-    with tempfile.TemporaryDirectory(prefix="emuflow-single-slr-") as temporary:
-        root = Path(temporary)
-        for slr in _architecture_slrs(architecture):
-            constraints_path = root / f"{slr}.constraints.json"
-            placement_path = root / f"{slr}.placement.json"
-            write_json(
-                constraints_path,
-                {
-                    "schema": XILINX_CONSTRAINTS_SCHEMA,
-                    "clusters": [
-                        {"cluster": cluster_id, "slr": slr}
-                        for cluster_id in sorted(cluster_ids)
-                    ],
-                },
-                compact=True,
-            )
-            try:
-                placement = place_xilinx_clusters(
-                    packed_path,
-                    architecture_path,
-                    placement_path,
-                    guidance_path=guidance_path,
-                    constraints_path=constraints_path,
-                )
-            except ValidationError as error:
-                candidate_reports.append({
-                    "slr": slr,
-                    "status": "infeasible",
-                    "reason": str(error),
-                })
-                continue
-            summary = placement["summary"]
-            mean = summary.get("mean_guidance_displacement")
-            maximum = summary.get("max_guidance_displacement")
-            # With no guidance every exact placement has equal geometric rank.
-            rank = (
-                float(mean) if mean is not None else 0.0,
-                float(maximum) if maximum is not None else 0.0,
-                slr,
-            )
-            report = {
-                "slr": slr,
-                "status": "feasible",
-                "mean_guidance_displacement": mean,
-                "max_guidance_displacement": maximum,
-                "site_types": summary.get("site_types", {}),
-                "cascade_chains": summary.get("cascade_chains", 0),
-            }
-            candidate_reports.append(report)
-            feasible.append((rank, slr, report))
+    guidance, guidance_sha = _load_guidance(guidance_path, set(cluster_ids))
+    contracts, sites_by_template = _template_contracts(architecture)
+    sites = {
+        site["name"]: architecture.site_named(site["name"])
+        for site in architecture.value["sites"]
+    }
+    legal_bases = {
+        cluster_id: tuple(sorted(
+            base for base in sites_by_template
+            if _resolve_cluster_bels(cluster, contracts[base]) is not None
+        ))
+        for cluster_id, cluster in (
+            (cluster["id"], cluster) for cluster in clusters
+        )
+    }
+    slrs = _architecture_slrs(architecture)
+    sites_by_slr_base: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+    for base, site_names in sites_by_template.items():
+        for site_name in site_names:
+            region = sites[site_name].get("physical_region")
+            if isinstance(region, dict) and region.get("slr") in slrs:
+                sites_by_slr_base[(region["slr"], base)].append(site_name)
 
-    if not feasible:
+    candidate_reports: List[Dict[str, Any]] = []
+    ranked: List[Tuple[Tuple[float, float, str], str]] = []
+    distance_cache: Dict[
+        Tuple[str, Tuple[str, ...]], Dict[int, Tuple[int, ...]]
+    ] = {}
+    for slr in slrs:
+        capacities = {
+            base: len(sites_by_slr_base[(slr, base)])
+            for base in sites_by_template
+        }
+        cluster_bases = {
+            cluster_id: tuple(
+                base for base in legal_bases[cluster_id]
+                if capacities[base] > 0
+            )
+            for cluster_id in cluster_ids
+        }
+        if (
+            any(not bases for bases in cluster_bases.values())
+            or not _capacity_flow_feasible(cluster_bases, capacities)
+        ):
+            candidate_reports.append({
+                "slr": slr,
+                "status": "capacity-infeasible",
+            })
+            continue
+        distances = []
+        if guidance:
+            for cluster_id in cluster_ids:
+                signature = cluster_bases[cluster_id]
+                cache_key = (slr, signature)
+                coordinate_rows = distance_cache.get(cache_key)
+                if coordinate_rows is None:
+                    compatible_sites = sorted({
+                        site_name
+                        for base in signature
+                        for site_name in sites_by_slr_base[(slr, base)]
+                    })
+                    coordinate_rows = _site_coordinate_rows(
+                        compatible_sites, sites
+                    )
+                    distance_cache[cache_key] = coordinate_rows
+                distances.append(_nearest_site_lower_bound(
+                    coordinate_rows, guidance[cluster_id]
+                ))
+        mean = sum(distances) / len(distances) if distances else None
+        maximum = max(distances) if distances else None
+        candidate_reports.append({
+            "slr": slr,
+            "status": "capacity-feasible",
+            "mean_nearest_site_lower_bound": mean,
+            "max_nearest_site_lower_bound": maximum,
+        })
+        ranked.append(((
+            float(mean) if mean is not None else 0.0,
+            float(maximum) if maximum is not None else 0.0,
+            slr,
+        ), slr))
+
+    if not ranked:
         details = "; ".join(
-            f"{entry['slr']}: {entry.get('reason', 'infeasible')}"
+            f"{entry['slr']}: {entry['status']}"
             for entry in candidate_reports
         )
         raise ValidationError(
-            "no single SLR can exactly place all packed clusters: " + details
+            "no single SLR has sufficient exact site-template capacity: " + details
         )
-    _rank, selected_slr, _selected_report = min(feasible, key=lambda item: item[0])
-    result = {
-        "schema": XILINX_CONSTRAINTS_SCHEMA,
-        "status": "pass",
-        "provider": XILINX_SINGLE_SLR_PLAN_PROVIDER,
-        "part": architecture.part,
-        "selected_slr": selected_slr,
-        "source": {
-            "packed_sha256": _sha256(packed_path),
-            "architecture_sha256": _sha256(architecture_path),
-            "guidance_sha256": guidance_sha,
-        },
-        "policy": {
-            "scope": "single-slr",
-            "feasibility": "exact-site-bel-cascade-legalization",
-            "ranking": (
-                "mean-then-max-legal-guidance-displacement"
-                if guidance_path is not None else "deterministic-slr-name"
+
+    exact_failures = []
+    for _rank, selected_slr in sorted(ranked):
+        reports = []
+        for report in candidate_reports:
+            report = dict(report)
+            if report["slr"] == selected_slr:
+                report["status"] = "selected"
+            reports.append(report)
+        result = {
+            "schema": XILINX_CONSTRAINTS_SCHEMA,
+            "status": "pass",
+            "provider": XILINX_SINGLE_SLR_PLAN_PROVIDER,
+            "part": architecture.part,
+            "selected_slr": selected_slr,
+            "source": {
+                "packed_sha256": _sha256(packed_path),
+                "architecture_sha256": _sha256(architecture_path),
+                "guidance_sha256": guidance_sha,
+            },
+            "policy": {
+                "scope": "single-slr",
+                "capacity_feasibility": "exact-cluster-to-site-template-max-flow",
+                "ranking": (
+                    "mean-then-max-compatible-nearest-site-lower-bound"
+                    if guidance_path is not None else "deterministic-slr-name"
+                ),
+                "final_feasibility": "exact-site-bel-cascade-legalization",
+            },
+            "clusters": [
+                {"cluster": cluster_id, "slr": selected_slr}
+                for cluster_id in sorted(cluster_ids)
+            ],
+            "candidates": sorted(reports, key=lambda entry: entry["slr"]),
+            "summary": {
+                "clusters": len(cluster_ids),
+                "candidate_slrs": len(candidate_reports),
+                "capacity_feasible_slrs": len(ranked),
+            },
+        }
+        write_json(output_path, result, compact=True)
+        try:
+            placement = place_xilinx_clusters(
+                packed_path,
+                architecture_path,
+                placement_output_path,
+                guidance_path=guidance_path,
+                constraints_path=output_path,
+            )
+        except ValidationError as error:
+            exact_failures.append(f"{selected_slr}: {error}")
+            continue
+        result["placement"] = {
+            "path": str(placement_output_path),
+            "sha256": _sha256(placement_output_path),
+            "mean_guidance_displacement": placement["summary"].get(
+                "mean_guidance_displacement"
             ),
-        },
-        "clusters": [
-            {"cluster": cluster_id, "slr": selected_slr}
-            for cluster_id in sorted(cluster_ids)
-        ],
-        "candidates": sorted(candidate_reports, key=lambda entry: entry["slr"]),
-        "summary": {
-            "clusters": len(cluster_ids),
-            "candidate_slrs": len(candidate_reports),
-            "feasible_slrs": len(feasible),
-        },
-    }
-    write_json(output_path, result, compact=True)
-    validate_xilinx_single_slr_plan(
-        packed_path,
-        architecture_path,
-        output_path,
-        guidance_path=guidance_path,
+            "max_guidance_displacement": placement["summary"].get(
+                "max_guidance_displacement"
+            ),
+        }
+        # The placement identity is returned in the CLI report rather than
+        # written back into the constraints file, whose digest is already bound
+        # into that placement certificate.
+        return result
+    raise ValidationError(
+        "capacity-feasible SLRs failed exact cascade legalization: "
+        + "; ".join(exact_failures)
     )
-    return result
 
 
 def validate_xilinx_single_slr_plan(
     packed_path: Path,
     architecture_path: Path,
     constraints_path: Path,
+    placement_path: Path,
     *,
     guidance_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -480,35 +634,23 @@ def validate_xilinx_single_slr_plan(
         raise ValidationError("Xilinx single-SLR plan candidate coverage is invalid")
     selected = [
         entry for entry in candidates
-        if entry.get("slr") == selected_slr and entry.get("status") == "feasible"
+        if entry.get("slr") == selected_slr and entry.get("status") == "selected"
     ]
     if len(selected) != 1:
-        raise ValidationError("Xilinx single-SLR plan selected candidate is not feasible")
-
-    # Re-run the exact legalizer into ephemeral storage.  This proves that the
-    # persisted constraint certificate still has a legal witness without
-    # retaining a duplicate placement artifact.
-    with tempfile.TemporaryDirectory(prefix="emuflow-check-single-slr-") as temporary:
-        witness = Path(temporary) / "placement.json"
-        placement = place_xilinx_clusters(
-            packed_path,
-            architecture_path,
-            witness,
-            guidance_path=guidance_path,
-            constraints_path=constraints_path,
-        )
-    selected_report = selected[0]
-    for key in ("mean_guidance_displacement", "max_guidance_displacement"):
-        if selected_report.get(key) != placement["summary"].get(key):
-            raise ValidationError(
-                f"Xilinx single-SLR plan selected {key} is invalid"
-            )
+        raise ValidationError("Xilinx single-SLR plan selected candidate is invalid")
+    placement_report = validate_xilinx_placement(
+        packed_path,
+        architecture_path,
+        placement_path,
+        constraints_path=constraints_path,
+    )
     return {
         "status": "pass",
         "schema": "emuflow.xilinx-single-slr-plan-validation/v1",
         "part": architecture.part,
         "selected_slr": selected_slr,
         "clusters": len(cluster_ids),
+        "placement_sha256": placement_report["placement_sha256"],
         "constraints_sha256": _sha256(constraints_path),
     }
 

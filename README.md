@@ -4196,18 +4196,14 @@ emuflow arch plan-xilinx-single-slr \
   --packed build/xilinx/packed-sites.json \
   --architecture /external/xcvu19p.architecture.json \
   --guidance build/xilinx/global-guidance.json \
-  --output build/xilinx/placement-constraints.json
+  --output build/xilinx/placement-constraints.json \
+  --placement-output build/xilinx/placement.json
 emuflow arch validate-xilinx-single-slr-plan \
   --packed build/xilinx/packed-sites.json \
   --architecture /external/xcvu19p.architecture.json \
   --guidance build/xilinx/global-guidance.json \
-  --constraints build/xilinx/placement-constraints.json
-emuflow arch place-xilinx \
-  --packed build/xilinx/packed-sites.json \
-  --architecture /external/xcvu19p.architecture.json \
-  --guidance build/xilinx/global-guidance.json \
   --constraints build/xilinx/placement-constraints.json \
-  --output build/xilinx/placement.json
+  --placement build/xilinx/placement.json
 emuflow arch validate-xilinx-placement \
   --packed build/xilinx/packed-sites.json \
   --architecture /external/xcvu19p.architecture.json \
@@ -4246,14 +4242,17 @@ certificate and never embeds vendor device records. OpenPARF supplies global
 guidance only; it is not treated as the exact UltraScale+ legalizer.
 When a design must remain inside one SLR for the first RWRoute qualification,
 that restriction is produced by the explicit single-SLR planner rather than a
-handwritten or alphabetically selected constraint. The planner exercises the
-exact site/BEL/cascade legalizer independently in every device SLR, rejects
-infeasible regions, and ranks the surviving legal witnesses by OpenPARF
-guidance displacement. Its compact constraint certificate is hash-bound to
-the packed netlist, ArchitectureDB, and optional guidance, and the validator
-reconstructs a legal witness before accepting it. This command intentionally
-fails when no single SLR fits; a future multi-SLR policy must be a separately
-named planner rather than a hidden fallback.
+handwritten or alphabetically selected constraint. The planner first proves
+cluster-to-site-template capacity with an exact max-flow, ranks the surviving
+regions by a compatibility-aware nearest-site lower bound on the OpenPARF
+guidance displacement, and invokes the full site/BEL/cascade legalizer only
+until it obtains one exact witness. It emits that placement together with the
+compact constraint certificate, avoiding repeated full-device legalization in
+the production path. Both artifacts are hash-bound to the packed netlist,
+ArchitectureDB, and optional guidance, and the validator independently checks
+the persisted witness. This command intentionally fails when no single SLR
+fits; a future multi-SLR policy must be a separately named planner rather than
+a hidden fallback.
 For split BRAM tiles, the placement certificate retains the FPGA-Interchange
 tile anchor and also materializes the exact RapidWright site of every
 RAMB18E2/RAMB36E2 assignment; this prevents the lower and upper BRAM views from

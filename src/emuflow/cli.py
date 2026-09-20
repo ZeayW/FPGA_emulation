@@ -2671,6 +2671,10 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_plan_xilinx_slr.add_argument("--architecture", type=Path, required=True)
     arch_plan_xilinx_slr.add_argument("--guidance", type=Path)
     arch_plan_xilinx_slr.add_argument("--output", "-o", type=Path, required=True)
+    arch_plan_xilinx_slr.add_argument(
+        "--placement-output", type=Path, required=True,
+        help="write the exact legal placement selected by the planner",
+    )
     arch_validate_xilinx_slr = arch_subparsers.add_parser(
         "validate-xilinx-single-slr-plan",
         help="validate a single-SLR constraint certificate and legal witness",
@@ -2679,6 +2683,7 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_validate_xilinx_slr.add_argument("--architecture", type=Path, required=True)
     arch_validate_xilinx_slr.add_argument("--guidance", type=Path)
     arch_validate_xilinx_slr.add_argument("--constraints", type=Path, required=True)
+    arch_validate_xilinx_slr.add_argument("--placement", type=Path, required=True)
     arch_validate_xilinx_placement = arch_subparsers.add_parser(
         "validate-xilinx-placement",
         help="independently validate exact UltraScale+ site/BEL placement",
@@ -5164,6 +5169,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.packed,
                 args.architecture,
                 args.output,
+                args.placement_output,
                 guidance_path=args.guidance,
             )
             report = {
@@ -5176,6 +5182,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.packed,
                 args.architecture,
                 args.constraints,
+                args.placement,
                 guidance_path=args.guidance,
             )
         elif args.arch_command == "validate-xilinx-placement":

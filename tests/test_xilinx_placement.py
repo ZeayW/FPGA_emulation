@@ -226,14 +226,16 @@ class XilinxPlacementTest(unittest.TestCase):
             }), encoding="utf-8")
             first = root / "single-slr-first.json"
             second = root / "single-slr-second.json"
+            first_placement = root / "single-slr-first-placement.json"
+            second_placement = root / "single-slr-second-placement.json"
             result = plan_xilinx_single_slr(
-                packed, arch, first, guidance_path=guidance
+                packed, arch, first, first_placement, guidance_path=guidance
             )
             plan_xilinx_single_slr(
-                packed, arch, second, guidance_path=guidance
+                packed, arch, second, second_placement, guidance_path=guidance
             )
             checked = validate_xilinx_single_slr_plan(
-                packed, arch, first, guidance_path=guidance
+                packed, arch, first, first_placement, guidance_path=guidance
             )
             first_value = json.loads(first.read_text(encoding="utf-8"))
             second_value = json.loads(second.read_text(encoding="utf-8"))
@@ -245,7 +247,7 @@ class XilinxPlacementTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["status"] for entry in first_value["candidates"]],
-            ["feasible", "feasible"],
+            ["capacity-feasible", "selected"],
         )
 
     def test_single_slr_planner_fails_when_no_slr_has_capacity(self):
@@ -271,7 +273,8 @@ class XilinxPlacementTest(unittest.TestCase):
             }), encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "no single SLR"):
                 plan_xilinx_single_slr(
-                    packed, arch, root / "impossible.json"
+                    packed, arch, root / "impossible.json",
+                    root / "impossible-placement.json",
                 )
 
     def test_single_slr_plan_validator_rejects_tampering(self):
@@ -279,8 +282,9 @@ class XilinxPlacementTest(unittest.TestCase):
             root = Path(temporary)
             arch, packed, guidance, _constraints = self._write_inputs(root)
             output = root / "single-slr.json"
+            placement = root / "single-slr-placement.json"
             plan_xilinx_single_slr(
-                packed, arch, output, guidance_path=guidance
+                packed, arch, output, placement, guidance_path=guidance
             )
             value = json.loads(output.read_text(encoding="utf-8"))
             value["clusters"][0]["slr"] = (
@@ -289,7 +293,7 @@ class XilinxPlacementTest(unittest.TestCase):
             output.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "mixes regions"):
                 validate_xilinx_single_slr_plan(
-                    packed, arch, output, guidance_path=guidance
+                    packed, arch, output, placement, guidance_path=guidance
                 )
 
 
