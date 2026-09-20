@@ -47,6 +47,23 @@ def _artifact(path: Path) -> Dict[str, str]:
     return {"path": str(path), "sha256": _sha256(path)}
 
 
+def _physical_clock_periods(
+    mapped_ir: Mapping[str, Any], runtime: Mapping[str, Any]
+) -> Dict[str, float]:
+    clocks: Dict[str, float] = {}
+    for clock in mapped_ir.get("clocks", []):
+        name = clock.get("id")
+        if not isinstance(name, str) or not name:
+            continue
+        if name == "fabric_clk":
+            clocks[name] = float(runtime["fabric_clock"]["period_ns"])
+        else:
+            clocks[name] = float(
+                runtime["virtual_dut_clock"]["nominal_period_ns"]
+            )
+    return clocks
+
+
 def run_rapidwright_partition_backend(
     *,
     fpga: str,
@@ -159,14 +176,8 @@ def run_rapidwright_partition_backend(
         placement_path=placement_path,
         route_path=route_path,
     )
-    clocks = {"fabric_clk": float(runtime["fabric_clock"]["period_ns"])}
     mapped_ir = read_json(merged_ir_path)
-    for clock in mapped_ir.get("clocks", []):
-        name = clock.get("id")
-        if isinstance(name, str) and name and name != "fabric_clk":
-            clocks[name] = float(
-                runtime["virtual_dut_clock"]["nominal_period_ns"]
-            )
+    clocks = _physical_clock_periods(mapped_ir, runtime)
     path_database_path = output_dir / "opensta-paths.json"
     opensta_summary_path = output_dir / "opensta-summary.json"
     opensta_check = run_xilinx_routed_opensta(

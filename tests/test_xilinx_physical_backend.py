@@ -4,10 +4,30 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from emuflow.xilinx_physical_backend import run_rapidwright_partition_backend
+from emuflow.xilinx_physical_backend import (
+    _physical_clock_periods,
+    run_rapidwright_partition_backend,
+)
 
 
 class XilinxPhysicalBackendTest(unittest.TestCase):
+    def test_physical_clocks_only_include_emuir_clocks(self):
+        runtime = {
+            "fabric_clock": {"period_ns": 4.0},
+            "virtual_dut_clock": {"nominal_period_ns": 40.0},
+        }
+        self.assertEqual(
+            _physical_clock_periods({"clocks": [{"id": "clk"}]}, runtime),
+            {"clk": 40.0},
+        )
+        self.assertEqual(
+            _physical_clock_periods(
+                {"clocks": [{"id": "clk"}, {"id": "fabric_clk"}]},
+                runtime,
+            ),
+            {"clk": 40.0, "fabric_clk": 4.0},
+        )
+
     def test_single_slr_certificate_is_checked_against_openparf_guidance(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
