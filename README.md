@@ -4364,7 +4364,11 @@ SLR, clock-region, non-overlap, or dedicated-cascade constraints. Cascade
 chains are placed on consecutive physical X/Y sites, while the independent
 checker reloads the ArchitectureDB and recomputes every ownership, BEL,
 constraint, overlap, and cascade decision. The result is a compact placement
-certificate and never embeds vendor device records. OpenPARF supplies global
+certificate and never embeds vendor device records. Exact cascade search
+indexes the shared legal windows once and prunes only with conservative
+Manhattan lower bounds; it therefore preserves exhaustive-search results and
+tie-breaking without rescanning every VU19P site for every short carry chain.
+OpenPARF supplies global
 guidance only; it is not treated as the exact UltraScale+ legalizer. The
 OpenPARF invocation therefore stops after continuous global placement and
 publishes those coordinates through a dedicated continuous-coordinate adapter;

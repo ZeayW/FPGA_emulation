@@ -741,6 +741,15 @@ def place_xilinx_clusters(
         _physical_site_coordinate(name): name for name in site_base
     }
     membership_cache: Dict[int, Set[str]] = {}
+    cascade_window_cache: Dict[
+        Tuple[int, int],
+        List[Tuple[
+            Tuple[str, int],
+            List[Tuple[str, ...]],
+            List[Set[int]],
+            List[Tuple[int, int, List[Tuple[int, int, int, int]]]],
+        ]],
+    ] = {}
 
     def candidate_members(cluster_id: str) -> Set[str]:
         values = candidates[cluster_id]
@@ -749,31 +758,153 @@ def place_xilinx_clusters(
             membership_cache[key] = set(values)
         return membership_cache[key]
 
-    # The tightest chain is placed first. Windows are evaluated as a stream;
-    # retaining every possible window for a VU19P slice column would duplicate
-    # hundreds of thousands of site names in the hot path.
-    for chain in sorted(chains, key=lambda item: (len(candidates[item[0]]), item)):
-        best = None
-        best_cost = None
-        for first_name in candidates[chain[0]]:
+    def cascade_windows(
+        values: List[str], length: int
+    ) -> List[
+        Tuple[
+            Tuple[str, int],
+            List[Tuple[str, ...]],
+            List[Set[int]],
+            List[Tuple[int, int, List[Tuple[int, int, int, int]]]],
+        ]
+    ]:
+        """Index physical cascade starts once per shared candidate contract.
+
+        The prior legalizer rescanned every candidate site for every carry/DSP
+        chain.  A VU19P SLR has more than 100k slice sites, so thousands of
+        short chains turned that exact search into hundreds of millions of
+        Python dictionary operations.  Candidate lists are deliberately shared
+        by clusters with the same placement contract; cache their contiguous
+        physical windows and prune exact search with conservative column and
+        fixed-size-block Manhattan lower bounds instead.
+        """
+
+        cache_key = (id(values), length)
+        cached = cascade_window_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        grouped: Dict[Tuple[str, int], List[Tuple[int, Tuple[str, ...]]]] = (
+            defaultdict(list)
+        )
+        for first_name in values:
             kind, physical_x, physical_y = _physical_site_coordinate(first_name)
-            names = []
+            names = tuple(
+                physical_sites.get((kind, physical_x, physical_y + offset), "")
+                for offset in range(length)
+            )
+            if all(names):
+                grouped[(kind, physical_x)].append((physical_y, names))
+
+        result = []
+        for column, entries in grouped.items():
+            windows = [names for _physical_y, names in sorted(entries)]
+            x_values = [
+                {int(sites[names[offset]]["x"]) for names in windows}
+                for offset in range(length)
+            ]
+            blocks = []
+            for start in range(0, len(windows), 32):
+                end = min(start + 32, len(windows))
+                bounds = []
+                for offset in range(length):
+                    xs = [
+                        int(sites[windows[index][offset]]["x"])
+                        for index in range(start, end)
+                    ]
+                    ys = [
+                        int(sites[windows[index][offset]]["y"])
+                        for index in range(start, end)
+                    ]
+                    bounds.append((min(xs), max(xs), min(ys), max(ys)))
+                blocks.append((start, end, bounds))
+            result.append((column, windows, x_values, blocks))
+        result.sort(key=lambda item: item[0])
+        cascade_window_cache[cache_key] = result
+        return result
+
+    def best_cascade_window(chain: Sequence[str]) -> Optional[Tuple[str, ...]]:
+        guided = [cluster_id for cluster_id in chain if cluster_id in guidance]
+        if not guided:
+            return None
+
+        columns = []
+        for column, windows, x_values, blocks in cascade_windows(
+            candidates[chain[0]], len(chain)
+        ):
+            x_lower_bound = 0.0
             for offset, cluster_id in enumerate(chain):
-                name = physical_sites.get((kind, physical_x, physical_y + offset))
-                if (
-                    name is None
-                    or name not in candidate_members(cluster_id)
-                    or name in used_sites
-                ):
+                target = guidance.get(cluster_id)
+                if target is not None:
+                    x_lower_bound += min(
+                        abs(value - target[0]) for value in x_values[offset]
+                    )
+            columns.append((x_lower_bound, column, windows, blocks))
+        columns.sort(key=lambda item: (item[0], item[1]))
+
+        member_sets = [candidate_members(cluster_id) for cluster_id in chain]
+        best_names: Optional[Tuple[str, ...]] = None
+        best_key: Optional[Tuple[float, Tuple[str, ...]]] = None
+
+        def window_key(names: Tuple[str, ...]) -> Tuple[float, Tuple[str, ...]]:
+            return _distance(chain, [sites[name] for name in names], guidance)
+
+        def feasible(names: Tuple[str, ...]) -> bool:
+            return all(
+                name in member_sets[offset] and name not in used_sites
+                for offset, name in enumerate(names)
+            )
+
+        for x_lower_bound, _column, windows, blocks in columns:
+            if best_key is not None and x_lower_bound > best_key[0]:
+                break
+            ranked_blocks = []
+            for start, end, bounds in blocks:
+                lower_bound = 0.0
+                for offset, cluster_id in enumerate(chain):
+                    target = guidance.get(cluster_id)
+                    if target is None:
+                        continue
+                    min_x, max_x, min_y, max_y = bounds[offset]
+                    if target[0] < min_x:
+                        lower_bound += min_x - target[0]
+                    elif target[0] > max_x:
+                        lower_bound += target[0] - max_x
+                    if target[1] < min_y:
+                        lower_bound += min_y - target[1]
+                    elif target[1] > max_y:
+                        lower_bound += target[1] - max_y
+                ranked_blocks.append((lower_bound, start, end))
+            ranked_blocks.sort()
+            for lower_bound, start, end in ranked_blocks:
+                if best_key is not None and lower_bound > best_key[0]:
                     break
-                names.append(name)
-            if len(names) != len(chain):
-                continue
-            cost = _distance(chain, [sites[name] for name in names], guidance)
-            if best_cost is None or cost < best_cost:
-                best = names
-                best_cost = cost
-                if not any(cluster_id in guidance for cluster_id in chain):
+                for names in windows[start:end]:
+                    if feasible(names):
+                        key = window_key(names)
+                        if best_key is None or key < best_key:
+                            best_names, best_key = names, key
+        return best_names
+
+    # The tightest chain is placed first. Shared candidate contracts reuse a
+    # compact column/window index, while every selected site still comes from
+    # the exact deterministic minimum over all currently feasible windows.
+    for chain in sorted(chains, key=lambda item: (len(candidates[item[0]]), item)):
+        best = best_cascade_window(chain)
+        if best is None:
+            # Unguided chains retain the prior lexicographic first-fit rule.
+            for first_name in candidates[chain[0]]:
+                kind, physical_x, physical_y = _physical_site_coordinate(first_name)
+                names = tuple(
+                    physical_sites.get((kind, physical_x, physical_y + offset), "")
+                    for offset in range(len(chain))
+                )
+                if all(
+                    name
+                    and name in candidate_members(cluster_id)
+                    and name not in used_sites
+                    for cluster_id, name in zip(chain, names)
+                ):
+                    best = names
                     break
         if best is None:
             raise ValidationError(

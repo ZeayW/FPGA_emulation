@@ -137,6 +137,118 @@ class XilinxPlacementTest(unittest.TestCase):
         self.assertEqual(placed["dsp-b"], "DSP48E2_X0Y2")
         self.assertEqual(placed["dsp-a"], "DSP48E2_X0Y1")
 
+    def test_indexed_cascade_search_matches_exhaustive_reference(self):
+        sites = []
+        site_by_name = {}
+        for physical_x in range(5):
+            for physical_y in range(30):
+                site = {
+                    "name": f"DSP48E2_X{physical_x}Y{physical_y}",
+                    "type": "DSP48E2", "template": "DSP48E2",
+                    "x": 1000 - physical_x * 7,
+                    "y": 500 - physical_y * 2 + physical_y // 7,
+                    "physical_region": {"slr": "SLR0", "clock_region": "X0Y0"},
+                }
+                sites.append(site)
+                site_by_name[site["name"]] = site
+        architecture = {
+            "schema": "emuflow.archdb/v1", "part": "xcvu19p-index-test",
+            "source": {"format": "unit-test/v1"},
+            "policy": {"name": "unit-test"},
+            "site_templates": {
+                "DSP48E2": {
+                    "bels": [bel("DSP48E2", "DSP48E2")],
+                    "alternative_templates": [],
+                },
+            },
+            "sites": sites,
+        }
+        clusters = []
+        cascade_chains = []
+        guidance_entries = []
+        chain_ids = []
+        for chain_index, length in enumerate((4, 2, 3, 4, 2, 3, 2, 4)):
+            ids = []
+            instances = []
+            for offset in range(length):
+                cluster_id = f"chain-{chain_index:02d}-{offset}"
+                instance = f"dsp_{chain_index:02d}_{offset}"
+                ids.append(cluster_id)
+                instances.append(instance)
+                clusters.append({
+                    "id": cluster_id, "kind": "dsp",
+                    "site_templates": ["DSP48E2"],
+                    "assignments": [{
+                        "instance": instance, "cell_type": "DSP48E2",
+                        "bel": "DSP48E2", "bel_candidates": ["DSP48E2"],
+                    }],
+                })
+                guidance_entries.append({
+                    "cluster": cluster_id,
+                    "x": 1000 - ((chain_index * 3 + offset) % 5) * 7 + 0.25,
+                    "y": 500 - ((chain_index * 4 + offset * 3) % 25) * 2 + 0.5,
+                })
+            chain_ids.append(ids)
+            cascade_chains.append({
+                "kind": "DSP48E2", "instances": instances, "links": [],
+            })
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "status": "pass",
+            "clusters": clusters, "cascade_chains": cascade_chains,
+        }
+        guidance_value = {
+            "schema": "emuflow.xilinx-global-placement-guidance/v1",
+            "clusters": guidance_entries,
+        }
+        guidance = {
+            item["cluster"]: (item["x"], item["y"])
+            for item in guidance_entries
+        }
+
+        # This is the original exhaustive rule: process chains in their stable
+        # order and select the minimum (Manhattan cost, site-name tuple).
+        all_names = sorted(site_by_name)
+        used = set()
+        expected = {}
+        for chain in sorted(chain_ids, key=lambda item: (len(all_names), item)):
+            best = None
+            for first_name in all_names:
+                prefix, physical_y = first_name.rsplit("Y", 1)
+                names = tuple(
+                    f"{prefix}Y{int(physical_y) + offset}"
+                    for offset in range(len(chain))
+                )
+                if any(name not in site_by_name or name in used for name in names):
+                    continue
+                cost = sum(
+                    abs(site_by_name[name]["x"] - guidance[cluster_id][0])
+                    + abs(site_by_name[name]["y"] - guidance[cluster_id][1])
+                    for cluster_id, name in zip(chain, names)
+                )
+                key = (cost, names)
+                if best is None or key < best:
+                    best = key
+            self.assertIsNotNone(best)
+            for cluster_id, name in zip(chain, best[1]):
+                expected[cluster_id] = name
+                used.add(name)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch_path = root / "arch.json"
+            packed_path = root / "packed.json"
+            guidance_path = root / "guidance.json"
+            output = root / "placement.json"
+            arch_path.write_text(json.dumps(architecture), encoding="utf-8")
+            packed_path.write_text(json.dumps(packed), encoding="utf-8")
+            guidance_path.write_text(json.dumps(guidance_value), encoding="utf-8")
+            place_xilinx_clusters(
+                packed_path, arch_path, output, guidance_path=guidance_path
+            )
+            value = json.loads(output.read_text(encoding="utf-8"))
+        actual = {item["cluster"]: item["site"] for item in value["clusters"]}
+        self.assertEqual(actual, expected)
+
     def test_independent_checker_rejects_site_overlap(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
