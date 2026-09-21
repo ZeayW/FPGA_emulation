@@ -2,7 +2,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
+from emuflow.openparf_continuous_driver import write_continuous_placement
 from emuflow.xilinx_openparf import (
     export_xilinx_cluster_bookshelf,
     import_xilinx_openparf_guidance,
@@ -55,3 +57,39 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertEqual(config["global_place_flag"], 1)
         self.assertEqual(config["legalize_flag"], 0)
         self.assertEqual(config["detailed_place_flag"], 0)
+        self.assertTrue(config["emuflow_continuous_global_guidance"])
+
+    def test_continuous_writer_does_not_require_discrete_sites(self):
+        class Tensor:
+            shape = (2, 2)
+
+            def __getitem__(self, _key):
+                return self
+
+            def detach(self):
+                return self
+
+            def cpu(self):
+                return self
+
+            def tolist(self):
+                return [[0.25, 1.5], [12.75, 8.125]]
+
+        class PlaceDB:
+            @staticmethod
+            def instName(index):
+                return f"c{index}"
+
+        engine = SimpleNamespace(
+            data_cls=SimpleNamespace(
+                pos=[Tensor()], inst_locs_xyz=SimpleNamespace(shape=(2, 3))
+            ),
+            placedb=PlaceDB(),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "global.pl"
+            write_continuous_placement(engine, output)
+            self.assertEqual(
+                output.read_text(encoding="utf-8").splitlines()[1:],
+                ["c0 0.25 1.5 0", "c1 12.75 8.125 0"],
+            )

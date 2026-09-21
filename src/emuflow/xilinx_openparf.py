@@ -252,6 +252,7 @@ def export_xilinx_cluster_bookshelf(
         # explicitly publishes final global coordinates when legalization is
         # disabled.
         "global_place_flag": 1, "legalize_flag": 0,
+        "emuflow_continuous_global_guidance": True,
         "generic_cluster_placement_flag": 1,
         "logic_area_type_names": sorted(demand),
         "detailed_place_flag": 0, "plot_flag": 0,

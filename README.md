@@ -4359,7 +4359,9 @@ constraint, overlap, and cascade decision. The result is a compact placement
 certificate and never embeds vendor device records. OpenPARF supplies global
 guidance only; it is not treated as the exact UltraScale+ legalizer. The
 OpenPARF invocation therefore stops after continuous global placement and
-publishes those coordinates directly. Its generic min-cost-flow legalization
+publishes those coordinates through a dedicated continuous-coordinate adapter;
+the upstream Bookshelf writer is intentionally bypassed because it accepts only
+already legalized discrete sites. Its generic min-cost-flow legalization
 and detailed placement are disabled because their discrete result is discarded
 and exact Xilinx legality is established once, downstream, by the first-party
 legalizer and its independent checker.

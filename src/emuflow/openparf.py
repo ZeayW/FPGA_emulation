@@ -168,14 +168,30 @@ def run_openparf(
         f"{log_path.stem}.console{log_path.suffix}"
     )
     environment = _openparf_environment(installation)
+    continuous_guidance = config.get("emuflow_continuous_global_guidance", False)
+    if not isinstance(continuous_guidance, bool):
+        raise EmuFlowError(
+            "emuflow_continuous_global_guidance must be a boolean"
+        )
+    command = (
+        [
+            str(python.absolute()),
+            "-m",
+            "emuflow.openparf_continuous_driver",
+        ]
+        if continuous_guidance
+        else [
+            str(python.absolute()),
+            str(installation / "openparf.py"),
+        ]
+    )
     with console_log_path.open("w", encoding="utf-8") as console_log:
         completed = subprocess.run(
             [
                 # Preserve a virtual-environment launcher path. Resolving its
                 # symlink to /usr/bin/python bypasses pyvenv.cfg and silently
                 # loses the PyTorch environment used to build OpenPARF.
-                str(python.absolute()),
-                str(installation / "openparf.py"),
+                *command,
                 "--config",
                 str(config_path),
                 "--log",
