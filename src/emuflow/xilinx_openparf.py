@@ -243,7 +243,11 @@ def export_xilinx_cluster_bookshelf(
         "aux_input": str((output_dir / "design.aux").resolve()),
         "gpu": 0, "dtype": "float64",
         "target_density": max(0.8, min(0.995, utilization + 0.005)),
-        "random_seed": 1000, "max_global_place_iters": 1000,
+        # A fixed, bounded analytical budget is sufficient for guidance.  The
+        # exact Xilinx legalizer and checker below this stage own convergence
+        # to legal sites; OpenPARF must not turn sparse devices into an
+        # unbounded pre-legalization job.
+        "random_seed": 1000, "max_global_place_iters": 100,
         # OpenPARF is a continuous global-guidance provider here.  The
         # architecture-aware Xilinx legalizer below this stage is the sole
         # owner of exact site/BEL/cascade legality, so running OpenPARF's

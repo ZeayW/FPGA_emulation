@@ -56,6 +56,10 @@ def skip_internal_site_legalization(engine: Any, _metric: Any) -> bool:
     return False
 
 
+def skip_diagnostic_plot(*_arguments: Any, **_keywords: Any) -> None:
+    """Suppress upstream bitmap diagnostics in the production hot path."""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run OpenPARF and export continuous global coordinates"
@@ -92,6 +96,7 @@ def main() -> int:
     placer.Placer._ssir_legalization_condition = (
         skip_internal_site_legalization
     )
+    placer.Placer.plot = skip_diagnostic_plot
     placer.Placer.write = _write
     output = Path(params.result_dir) / f"{params.design_name()}.pl"
     place(params, str(output))

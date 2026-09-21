@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from emuflow.openparf_continuous_driver import (
+    skip_diagnostic_plot,
     skip_internal_site_legalization,
     write_continuous_placement,
 )
@@ -61,6 +62,7 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertEqual(config["legalize_flag"], 0)
         self.assertEqual(config["detailed_place_flag"], 0)
         self.assertTrue(config["emuflow_continuous_global_guidance"])
+        self.assertEqual(config["max_global_place_iters"], 100)
 
     def test_continuous_writer_does_not_require_discrete_sites(self):
         class Tensor:
@@ -104,3 +106,4 @@ class XilinxOpenparfTest(unittest.TestCase):
         )
         self.assertFalse(skip_internal_site_legalization(engine, object()))
         self.assertEqual(engine.last_ssr_legalize_iter, -101)
+        self.assertIsNone(skip_diagnostic_plot(object(), filename="unused.bmp"))
