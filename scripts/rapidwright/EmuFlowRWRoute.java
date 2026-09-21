@@ -280,6 +280,12 @@ public final class EmuFlowRWRoute {
                     "failed to materialize DSP48E2 component " + component
                 );
             }
+            // The physical transform deliberately has no EDIF parent, but
+            // RWRoute's preprocessing still classifies every Cell by type
+            // before routing.  createAndPlaceCell(EDIFCell=null, ...) leaves
+            // that lightweight classification unset, so preserve the exact
+            // transformed primitive identity explicitly.
+            child.setType(component);
             if (siteInst == null) siteInst = child.getSiteInst();
             if (child.getSiteInst() != siteInst) {
                 throw new IllegalStateException("DSP48E2 components do not share one SiteInst");
