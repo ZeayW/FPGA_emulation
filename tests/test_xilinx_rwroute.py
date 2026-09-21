@@ -355,6 +355,74 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertEqual(report["transformed_dsp48e2_cells"], 1)
         self.assertEqual(report["physical_cells"], 10)
 
+    def test_exporter_seals_ramb_mode_parameters_without_init_payloads(self):
+        mapped = {
+            "modules": {"top": {"cells": {
+                "src": {
+                    "type": "LUT1", "port_directions": {"O": "output"},
+                    "connections": {"O": [1]},
+                },
+                "memory": {
+                    "type": "RAMB36E2",
+                    "parameters": {
+                        "READ_WIDTH_A": "00001001",
+                        "WRITE_WIDTH_B": "01001000",
+                        "DOA_REG": "0",
+                        "WRITE_MODE_B": "READ_FIRST",
+                        "INIT_00": "1" * 256,
+                    },
+                    "port_directions": {"WEBWE": "input", "DOUTADOUT": "output"},
+                    "connections": {
+                        "WEBWE": [1] + ["0"] * 7,
+                        "DOUTADOUT": [2] + ["0"] * 31,
+                    },
+                },
+                "sink": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [2]},
+                },
+            }}}
+        }
+        assignments = [
+            {"instance": "src", "cell_type": "LUT1", "bel": "A6LUT"},
+            {"instance": "memory", "cell_type": "RAMB36E2", "bel": "RAMB36E2"},
+            {"instance": "sink", "cell_type": "FDRE", "bel": "AFF"},
+        ]
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+            "clusters": [{"assignments": assignments}],
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
+                {"instance": "src", "bel": "A6LUT", "site": "SLICE_X0Y0"},
+                {"instance": "memory", "bel": "RAMB36E2", "site": "RAMB36_X0Y0"},
+                {"instance": "sink", "bel": "AFF", "site": "SLICE_X0Y1"},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / name for name in (
+                "mapped.json", "packed.json", "placement.json"
+            )]
+            for path, value in zip(paths, (mapped, packed, placement)):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            output = root / "route.tsv"
+            export_rwroute_input(*paths, output)
+            rows = [line.split("\t") for line in output.read_text().splitlines()]
+        memory_safe = next(
+            row[1] for row in rows if row[0] == "CELL" and row[2] == "memory"
+        )
+        parameters = {
+            (row[2], row[3]) for row in rows
+            if row[0] == "PARAM" and row[1] == memory_safe
+        }
+        self.assertIn(("READ_WIDTH_A", "9"), parameters)
+        self.assertIn(("WRITE_WIDTH_B", "72"), parameters)
+        self.assertIn(("DOA_REG", "0"), parameters)
+        self.assertIn(("WRITE_MODE_B", "READ_FIRST"), parameters)
+        self.assertFalse(any(row[0] == "PARAM" and row[2].startswith("INIT") for row in rows))
+
 
 if __name__ == "__main__":
     unittest.main()

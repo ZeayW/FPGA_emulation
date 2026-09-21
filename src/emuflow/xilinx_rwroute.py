@@ -80,6 +80,30 @@ def _logical_pin(port: str, index: int, width: int) -> str:
     return port if width == 1 else f"{port}[{index}]"
 
 
+def _primitive_parameter(parameters: Mapping[str, Any], name: str) -> Optional[str]:
+    """Return a compact RapidWright property value for a routed hard primitive.
+
+    Yosys JSON writes integer parameters as binary strings.  RWRoute needs the
+    decoded width/register value before the primitive is placed because the
+    physical pin expansion of a RAMB36 write-enable depends on TDP versus SDP
+    mode.  Large INIT payloads are deliberately excluded from this hot path.
+    """
+    value = parameters.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, int):
+        return str(value)
+    if not isinstance(value, str):
+        raise ValidationError(f"primitive parameter {name!r} has invalid type")
+    if value and set(value) <= {"0", "1"}:
+        return str(int(value, 2))
+    if any(character in value for character in "\t\r\n"):
+        raise ValidationError(f"primitive parameter {name!r} is not TSV-safe")
+    return value
+
+
 def export_rwroute_input(
     mapped_path: Path,
     packed_path: Path,
@@ -158,6 +182,22 @@ def export_rwroute_input(
         lines.append(
             f"CELL\t{safe[route_name]}\t{display_name}\t{cell_type}\t{site}\t{bel}"
         )
+        if cell_type in {"RAMB18E2", "RAMB36E2"}:
+            parameters = cells[route_name].get("parameters", {})
+            if not isinstance(parameters, dict):
+                raise ValidationError(
+                    f"hard primitive {display_name!r} parameters are invalid"
+                )
+            for parameter in (
+                "READ_WIDTH_A", "READ_WIDTH_B", "WRITE_WIDTH_A",
+                "WRITE_WIDTH_B", "DOA_REG", "DOB_REG", "WRITE_MODE_A",
+                "WRITE_MODE_B", "RAM_MODE",
+            ):
+                value = _primitive_parameter(parameters, parameter)
+                if value is not None:
+                    lines.append(
+                        f"PARAM\t{safe[route_name]}\t{parameter}\t{value}"
+                    )
 
     endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
     for name in sorted(physical):

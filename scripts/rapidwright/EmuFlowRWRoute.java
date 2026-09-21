@@ -24,8 +24,10 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -41,14 +43,17 @@ public final class EmuFlowRWRoute {
         final Cell regularCell;
         final SiteInst siteInst;
         final int physicalCells;
+        final Map<String, String> parameters;
 
         MaterializedCell(
-            String logicalType, Cell regularCell, SiteInst siteInst, int physicalCells
+            String logicalType, Cell regularCell, SiteInst siteInst, int physicalCells,
+            Map<String, String> parameters
         ) {
             this.logicalType = logicalType;
             this.regularCell = regularCell;
             this.siteInst = siteInst;
             this.physicalCells = physicalCells;
+            this.parameters = parameters;
         }
 
         boolean isTransformedDSP48E2() {
@@ -96,23 +101,107 @@ public final class EmuFlowRWRoute {
         return value;
     }
 
-    private static void ensureLogicalPinMapping(Cell cell, String logicalPin) {
-        if (cell.getPinMappingsL2P().containsKey(logicalPin)) return;
+    private static int integerParameter(MaterializedCell cell, String name) {
+        String value = cell.parameters.get(name);
+        if (value == null) return 0;
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException error) {
+            throw new IllegalStateException(
+                cell.logicalType + " parameter " + name + " is not an integer: " + value,
+                error
+            );
+        }
+    }
+
+    private static List<String> hardBlockPhysicalPins(
+        MaterializedCell materialized, String logicalPin
+    ) {
+        Cell cell = materialized.regularCell;
+        String type = materialized.logicalType;
         String physicalPin = logicalPin.replace("[", "").replace("]", "");
-        if (cell.getBEL().getPin(physicalPin) == null) {
+        List<String> result = new ArrayList<>();
+        if (type.equals("RAMB18E2")) {
+            if (cell.getBEL().getPin(physicalPin) != null) result.add(physicalPin);
+            return result;
+        }
+        if (!type.equals("RAMB36E2")) return result;
+
+        int open = logicalPin.indexOf('[');
+        int close = logicalPin.indexOf(']');
+        String port = open < 0 ? logicalPin : logicalPin.substring(0, open);
+        Integer index = open < 0 || close < open
+            ? null : Integer.valueOf(logicalPin.substring(open + 1, close));
+        if (index != null && (port.equals("ADDRARDADDR") || port.equals("ADDRBWRADDR"))) {
+            String prefix = port.equals("ADDRARDADDR") ? "ADDRARDADDR" : "ADDRBWRADDR";
+            result.add(prefix + "L" + index);
+            result.add(prefix + "U" + index);
+        } else if (index != null && port.equals("WEA")) {
+            if (index < 0 || index > 3) {
+                throw new IllegalStateException("RAMB36E2 WEA index is out of range");
+            }
+            result.add("WEAL" + index);
+            result.add("WEAU" + index);
+        } else if (index != null && port.equals("WEBWE")) {
+            if (index < 0 || index > 7) {
+                throw new IllegalStateException("RAMB36E2 WEBWE index is out of range");
+            }
+            boolean simpleDualPort = integerParameter(materialized, "WRITE_WIDTH_B") > 36;
+            if (simpleDualPort) {
+                result.add((index < 4 ? "WEBWEL" : "WEBWEU") + (index % 4));
+            } else {
+                if (index > 3) {
+                    throw new IllegalStateException(
+                        "RAMB36E2 TDP mode cannot use WEBWE[" + index + "]"
+                    );
+                }
+                result.add("WEBWEL" + index);
+                result.add("WEBWEU" + index);
+            }
+        } else if (port.equals("CLKARDCLK") || port.equals("CLKBWRCLK")) {
+            result.add(port + "L");
+            result.add(port + "U");
+        } else if (port.equals("RSTREGB")) {
+            result.add("RSTREGBL");
+            result.add("RSTREGBU");
+        } else if (cell.getBEL().getPin(physicalPin) != null) {
+            result.add(physicalPin);
+        }
+        return result;
+    }
+
+    private static void ensureLogicalPinMapping(
+        MaterializedCell materialized, String logicalPin
+    ) {
+        Cell cell = materialized.regularCell;
+        if (cell.getPinMappingsL2P().containsKey(logicalPin)) return;
+        List<String> physicalPins = hardBlockPhysicalPins(materialized, logicalPin);
+        if (physicalPins.isEmpty()) {
+            String physicalPin = logicalPin.replace("[", "").replace("]", "");
+            if (cell.getBEL().getPin(physicalPin) != null) physicalPins.add(physicalPin);
+        }
+        if (physicalPins.isEmpty()) {
             throw new IllegalStateException(
                 "logical pin has no BEL pin: " + cell.getName() + "/" + logicalPin
             );
         }
-        String existing = cell.getLogicalPinMapping(physicalPin);
-        if (existing != null && !existing.equals("GND") && !existing.equals("VCC")) {
-            throw new IllegalStateException(
-                "physical pin mapping conflict on " + cell.getName() + "/" + physicalPin
-                + ": " + existing + " vs " + logicalPin
-            );
+        for (String physicalPin : physicalPins) {
+            if (cell.getBEL().getPin(physicalPin) == null) {
+                throw new IllegalStateException(
+                    "logical pin maps to absent BEL pin: " + cell.getName() + "/"
+                    + logicalPin + " -> " + physicalPin
+                );
+            }
+            String existing = cell.getLogicalPinMapping(physicalPin);
+            if (existing != null && !existing.equals("GND") && !existing.equals("VCC")) {
+                throw new IllegalStateException(
+                    "physical pin mapping conflict on " + cell.getName() + "/" + physicalPin
+                    + ": " + existing + " vs " + logicalPin
+                );
+            }
+            if (existing != null) cell.removePinMapping(physicalPin);
+            cell.addPinMapping(physicalPin, logicalPin);
         }
-        if (existing != null) cell.removePinMapping(physicalPin);
-        cell.addPinMapping(physicalPin, logicalPin);
         if (!cell.getPinMappingsL2P().containsKey(logicalPin)) {
             throw new IllegalStateException(
                 "failed to materialize pin mapping " + cell.getName() + "/" + logicalPin
@@ -137,15 +226,25 @@ public final class EmuFlowRWRoute {
     }
 
     private static MaterializedCell materializeCell(
-        Design design, String safeName, String[] row
+        Design design, String safeName, String[] row, Map<String, String> parameters
     ) {
         String logicalType = row[3];
         if (!logicalType.equals("DSP48E2")) {
+            List<String> propertyPairs = new ArrayList<>();
+            List<String> propertyNames = new ArrayList<>(parameters.keySet());
+            propertyNames.sort(String::compareTo);
+            for (String name : propertyNames) {
+                propertyPairs.add(name);
+                propertyPairs.add(parameters.get(name));
+            }
             Cell cell = design.createAndPlaceCell(
-                safeName, Unisim.valueOf(logicalType), row[4] + "/" + row[5]
+                safeName, Unisim.valueOf(logicalType), row[4] + "/" + row[5],
+                propertyPairs.toArray(new String[0])
             );
             if (cell == null) throw new IllegalStateException("failed to place " + safeName);
-            return new MaterializedCell(logicalType, cell, cell.getSiteInst(), 1);
+            return new MaterializedCell(
+                logicalType, cell, cell.getSiteInst(), 1, parameters
+            );
         }
 
         Site site = design.getDevice().getSite(row[4]);
@@ -184,7 +283,7 @@ public final class EmuFlowRWRoute {
         }
         if (siteInst == null) throw new IllegalStateException("empty DSP48E2 transform");
         return new MaterializedCell(
-            logicalType, null, siteInst, DSP48E2_COMPONENTS.length
+            logicalType, null, siteInst, DSP48E2_COMPONENTS.length, parameters
         );
     }
 
@@ -196,6 +295,7 @@ public final class EmuFlowRWRoute {
         String part = null;
         Map<String, String> metadata = new HashMap<>();
         Map<String, String[]> cellRows = new HashMap<>();
+        Map<String, Map<String, String>> cellParameters = new HashMap<>();
         Map<String, String> netKinds = new HashMap<>();
         Map<String, List<String[]>> pinRows = new HashMap<>();
         JSONArray excluded = new JSONArray();
@@ -211,6 +311,12 @@ public final class EmuFlowRWRoute {
                 case "CELL":
                     if (fields.length != 6 || cellRows.put(fields[1], fields) != null)
                         throw new IllegalArgumentException("invalid CELL record");
+                    cellParameters.put(fields[1], new HashMap<>());
+                    break;
+                case "PARAM":
+                    if (fields.length != 4 || !cellParameters.containsKey(fields[1])
+                        || cellParameters.get(fields[1]).put(fields[2], fields[3]) != null)
+                        throw new IllegalArgumentException("invalid PARAM record");
                     break;
                 case "NET":
                     if (fields.length != 3 || netKinds.put(fields[1], fields[2]) != null)
@@ -243,7 +349,9 @@ public final class EmuFlowRWRoute {
             String[] row = cellRows.get(safeName);
             MaterializedCell cell;
             try {
-                cell = materializeCell(design, safeName, row);
+                cell = materializeCell(
+                    design, safeName, row, cellParameters.get(safeName)
+                );
             } catch (RuntimeException error) {
                 throw new IllegalStateException(
                     "failed to materialize " + safeName + " (" + row[2] + ") type="
@@ -266,7 +374,7 @@ public final class EmuFlowRWRoute {
                 MaterializedCell cell = cells.get(row[2]);
                 if (cell == null) throw new IllegalArgumentException("unknown cell " + row[2]);
                 try {
-                    SitePinInst connected;
+                    List<SitePinInst> connected = new ArrayList<>();
                     if (cell.isTransformedDSP48E2()) {
                         String physicalPin = dsp48e2SitePin(row[3]);
                         if (!cell.siteInst.getSite().hasPin(physicalPin)) {
@@ -275,17 +383,32 @@ public final class EmuFlowRWRoute {
                                 + " has no physical site pin " + physicalPin
                             );
                         }
-                        connected = net.createPin(physicalPin, cell.siteInst);
+                        connected.add(net.createPin(physicalPin, cell.siteInst));
                     } else {
-                        ensureLogicalPinMapping(cell.regularCell, row[3]);
-                        // A legal intra-site connection intentionally returns no
-                        // SitePinInst; logical/physical pin mappings, not the
-                        // nullable return value, establish pin validity.
-                        connected = net.connect(cell.regularCell, row[3]);
+                        ensureLogicalPinMapping(cell, row[3]);
+                        Set<String> sitePins = new LinkedHashSet<>(
+                            cell.regularCell.getAllCorrespondingSitePinNames(row[3])
+                        );
+                        if (sitePins.isEmpty()) {
+                            throw new IllegalStateException(
+                                "logical pin has no physical site pin: "
+                                + row[2] + "/" + row[3]
+                            );
+                        }
+                        if (row[4].equals("driver") && sitePins.size() != 1) {
+                            throw new IllegalStateException(
+                                "logical driver expands to multiple physical sources: "
+                                + row[2] + "/" + row[3] + " -> " + sitePins
+                            );
+                        }
+                        for (String sitePin : sitePins) {
+                            connected.add(net.createPin(sitePin, cell.siteInst));
+                        }
                     }
-                    if (connected != null) {
+                    for (SitePinInst pin : connected) {
+                        if (pin == null) continue;
                         boolean expectedOutput = row[4].equals("driver");
-                        if (connected.isOutPin() != expectedOutput) {
+                        if (pin.isOutPin() != expectedOutput) {
                             throw new IllegalStateException(
                                 "pin direction disagrees with route role: "
                                 + row[2] + "/" + row[3]

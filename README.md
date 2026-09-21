@@ -4196,6 +4196,13 @@ Missing components, unsupported macro pins, or direction mismatches fail
 closed; no DSP is omitted or replaced by a fabric surrogate. The route
 certificate records both logical route-cell and expanded physical-cell counts,
 which the independent checker reconciles against the source mapped netlist.
+RAMB18E2/RAMB36E2 route endpoints are materialized from the mapped primitive
+mode before placement.  In particular, one logical RAMB36 address, clock, or
+TDP write-enable can bind both lower and upper physical half pins; RWRoute
+receives every resulting sink site pin instead of retaining only the first.
+The compact route contract carries only the width/register/mode properties
+needed for that lowering and deliberately excludes large INIT payloads.
+Unsupported or ambiguous BRAM modes and multi-source expansions fail closed.
 Dedicated carry, DSP, BRAM,
 and URAM cascade
 connectivity is emitted as an exact non-branching adjacency certificate. The
