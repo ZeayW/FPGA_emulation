@@ -349,6 +349,7 @@ public final class EmuFlowRWRoute {
         cellNames.sort(String::compareTo);
         int physicalCells = 0;
         int transformedDsp48e2Cells = 0;
+        Set<SiteInst> transformedDspSites = new LinkedHashSet<>();
         for (String safeName : cellNames) {
             String[] row = cellRows.get(safeName);
             MaterializedCell cell;
@@ -364,7 +365,10 @@ public final class EmuFlowRWRoute {
             }
             cells.put(safeName, cell);
             physicalCells += cell.physicalCells;
-            if (cell.isTransformedDSP48E2()) transformedDsp48e2Cells++;
+            if (cell.isTransformedDSP48E2()) {
+                transformedDsp48e2Cells++;
+                transformedDspSites.add(cell.siteInst);
+            }
         }
 
         Map<String, Net> nets = new HashMap<>();
@@ -390,6 +394,8 @@ public final class EmuFlowRWRoute {
                         connected.add(net.createPin(physicalPin, cell.siteInst));
                     } else if (cell.isBlockRam()) {
                         ensureLogicalPinMapping(cell, row[3]);
+                        SitePinInst primary = net.connect(cell.regularCell, row[3]);
+                        if (primary != null) connected.add(primary);
                         Set<String> sitePins = new LinkedHashSet<>(
                             cell.regularCell.getAllCorrespondingSitePinNames(row[3])
                         );
@@ -406,7 +412,15 @@ public final class EmuFlowRWRoute {
                             );
                         }
                         for (String sitePin : sitePins) {
-                            connected.add(net.createPin(sitePin, cell.siteInst));
+                            SitePinInst existing = cell.siteInst.getSitePinInst(sitePin);
+                            if (existing == null) {
+                                connected.add(net.createPin(sitePin, cell.siteInst));
+                            } else if (existing.getNet() != net) {
+                                throw new IllegalStateException(
+                                    "physical site pin already belongs to another net: "
+                                    + cell.siteInst.getName() + "/" + sitePin
+                                );
+                            }
                         }
                     } else {
                         ensureLogicalPinMapping(cell, row[3]);
@@ -436,7 +450,14 @@ public final class EmuFlowRWRoute {
             nets.put(netName, net);
         }
 
-        design.routeSites();
+        // Transformed DSP component cells intentionally have no logical EDIF
+        // parent.  Route every ordinary/BRAM site normally, while keeping DSP
+        // endpoints as already-materialized physical site pins.  Calling the
+        // blanket Design.routeSites() would ask EDIF to resolve a nonexistent
+        // logical parent for those documented transformed primitives.
+        for (SiteInst siteInst : design.getSiteInsts()) {
+            if (!transformedDspSites.contains(siteInst)) siteInst.routeSite();
+        }
         RWRoute.routeDesignFullNonTimingDriven(design);
 
         // RapidWright's lightweight timing model evaluates the concrete
