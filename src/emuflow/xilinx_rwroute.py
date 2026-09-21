@@ -118,11 +118,14 @@ def export_rwroute_input(
     route_cells: Dict[str, Tuple[str, str, str, str]] = {}
     pin_bindings: Dict[Tuple[str, str], Tuple[str, str]] = {}
     expanded_lut6_2 = 0
+    transformed_dsp48e2 = 0
     for name in sorted(physical):
         site, bel = physical[name]
         cell_type = cells[name]["type"]
         if cell_type != "LUT6_2":
             route_cells[name] = (name, cell_type, site, bel)
+            if cell_type == "DSP48E2":
+                transformed_dsp48e2 += 1
             continue
         match = re.fullmatch(r"([A-H])6LUT", bel)
         if match is None:
@@ -209,6 +212,8 @@ def export_rwroute_input(
     return {
         "status": "pass", "cells": len(safe), "logical_cells": len(physical),
         "expanded_lut6_2_cells": expanded_lut6_2,
+        "transformed_dsp48e2_cells": transformed_dsp48e2,
+        "physical_cells": len(safe) + 7 * transformed_dsp48e2,
         "routable_nets": included,
         "excluded_nets": excluded, "output": str(output_path),
     }
@@ -304,6 +309,28 @@ def validate_xilinx_route_db(
         raise ValidationError("XilinxRouteDB header is invalid")
     if value.get("status") not in {"candidate", "pass"}:
         raise ValidationError("XilinxRouteDB status is invalid")
+    route_cells = value.get("cells")
+    materialization = value.get("materialization")
+    if (
+        isinstance(route_cells, bool)
+        or not isinstance(route_cells, int)
+        or route_cells < 0
+        or not isinstance(materialization, dict)
+        or materialization.get("route_cells") != route_cells
+    ):
+        raise ValidationError("XilinxRouteDB materialized route-cell count is invalid")
+    physical_cells = materialization.get("physical_cells")
+    transformed_dsp48e2 = materialization.get("transformed_dsp48e2_cells")
+    if (
+        isinstance(physical_cells, bool)
+        or not isinstance(physical_cells, int)
+        or isinstance(transformed_dsp48e2, bool)
+        or not isinstance(transformed_dsp48e2, int)
+        or transformed_dsp48e2 < 0
+        or transformed_dsp48e2 > route_cells
+        or physical_cells != route_cells + 7 * transformed_dsp48e2
+    ):
+        raise ValidationError("XilinxRouteDB transformed-cell accounting is invalid")
     source = value.get("source")
     if not isinstance(source, dict):
         raise ValidationError("XilinxRouteDB source seal is missing")
@@ -318,6 +345,24 @@ def validate_xilinx_route_db(
             raise ValidationError(f"XilinxRouteDB source.{key} is invalid")
         if source_path is not None and digest != _sha256(source_path):
             raise ValidationError(f"XilinxRouteDB source.{key} does not match input")
+    if mapped_path is not None and packed_path is not None:
+        mapped = read_json(mapped_path)
+        packed = read_json(packed_path)
+        top = packed.get("top")
+        if not isinstance(top, str):
+            raise ValidationError("PackedSiteNetlist top is invalid")
+        mapped_cells = _select_module(mapped, top)["cells"]
+        expected_lut6_2 = sum(
+            cell.get("type") == "LUT6_2" for cell in mapped_cells.values()
+        )
+        expected_dsp48e2 = sum(
+            cell.get("type") == "DSP48E2" for cell in mapped_cells.values()
+        )
+        expected_route_cells = len(mapped_cells) + expected_lut6_2
+        if route_cells != expected_route_cells:
+            raise ValidationError("XilinxRouteDB route-cell accounting disagrees")
+        if transformed_dsp48e2 != expected_dsp48e2:
+            raise ValidationError("XilinxRouteDB DSP48E2 transform count disagrees")
     input_digest = source.get("rwroute_input_sha256")
     if not isinstance(input_digest, str) or re.fullmatch(r"[0-9a-f]{64}", input_digest) is None:
         raise ValidationError("XilinxRouteDB source.rwroute_input_sha256 is invalid")
@@ -460,4 +505,7 @@ def validate_xilinx_route_db(
         "maximum_route_delay_ps": maximum_route_delay_ps,
         "timing_provider": timing["provider"],
         "hold_analysis": timing["hold_analysis"],
+        "route_cells": route_cells,
+        "physical_cells": physical_cells,
+        "transformed_dsp48e2_cells": transformed_dsp48e2,
     }

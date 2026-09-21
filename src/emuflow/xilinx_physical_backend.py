@@ -237,7 +237,10 @@ def run_rapidwright_partition_backend(
         cell["type"]
         for cell in read_json(mapped_path)["modules"][mapped_report["top"]]["cells"].values()
     )
-    expansion_cells = int(route_input_report["expanded_lut6_2_cells"])
+    expansion_cells = (
+        int(route_input_report["expanded_lut6_2_cells"])
+        + 7 * int(route_input_report["transformed_dsp48e2_cells"])
+    )
     result = {
         "schema": PHYSICAL_PARTITION_RESULT_SCHEMA,
         "status": "pass",

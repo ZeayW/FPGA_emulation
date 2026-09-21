@@ -38,7 +38,13 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "mapped_sha256": SHA, "packed_sha256": SHA,
                 "placement_sha256": SHA, "rwroute_input_sha256": SHA,
             },
-            "cells": 3, "excluded_nets": [], "summary": {},
+            "cells": 3,
+            "materialization": {
+                "route_cells": 3,
+                "physical_cells": 3,
+                "transformed_dsp48e2_cells": 0,
+            },
+            "excluded_nets": [], "summary": {},
             "timing": {
                 "provider": "rapidwright-lightweight",
                 "family": "UltraScalePlus", "units": "ps",
@@ -134,7 +140,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                 },
             }}}
         }
-        packed = {"schema": "emuflow.packed-site-netlist/v1"}
+        packed = {"schema": "emuflow.packed-site-netlist/v1", "top": "top"}
         placement = {
             "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
             "clusters": [
@@ -293,6 +299,61 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertEqual(report["logical_cells"], 5)
         self.assertEqual(report["cells"], 6)
         self.assertEqual(report["expanded_lut6_2_cells"], 1)
+
+    def test_exporter_accounts_for_rapidwright_dsp48e2_transform(self):
+        mapped = {
+            "modules": {"top": {"cells": {
+                "src": {
+                    "type": "LUT1", "port_directions": {"O": "output"},
+                    "connections": {"O": [1]},
+                },
+                "multiply": {
+                    "type": "DSP48E2",
+                    "port_directions": {"A": "input", "P": "output"},
+                    "connections": {
+                        "A": [1] + ["0"] * 29,
+                        "P": [2] + ["0"] * 47,
+                    },
+                },
+                "sink": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [2]},
+                },
+            }}}
+        }
+        assignments = [
+            {"instance": "src", "cell_type": "LUT1", "bel": "A6LUT"},
+            {"instance": "multiply", "cell_type": "DSP48E2", "bel": "DSP_ALU"},
+            {"instance": "sink", "cell_type": "FDRE", "bel": "AFF"},
+        ]
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+            "clusters": [{"assignments": assignments}],
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
+                {"instance": "src", "bel": "A6LUT", "site": "SLICE_X0Y0"},
+                {"instance": "multiply", "bel": "DSP_ALU", "site": "DSP48E2_X0Y0"},
+                {"instance": "sink", "bel": "AFF", "site": "SLICE_X0Y1"},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / name for name in (
+                "mapped.json", "packed.json", "placement.json"
+            )]
+            for path, value in zip(paths, (mapped, packed, placement)):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            output = root / "route.tsv"
+            report = export_rwroute_input(*paths, output)
+            rows = [line.split("\t") for line in output.read_text().splitlines()]
+        dsp_rows = [row for row in rows if row[0] == "CELL" and row[3] == "DSP48E2"]
+        self.assertEqual(len(dsp_rows), 1)
+        self.assertEqual(report["cells"], 3)
+        self.assertEqual(report["logical_cells"], 3)
+        self.assertEqual(report["transformed_dsp48e2_cells"], 1)
+        self.assertEqual(report["physical_cells"], 10)
 
 
 if __name__ == "__main__":

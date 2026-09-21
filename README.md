@@ -4186,7 +4186,17 @@ recomputes both signal topology and BEL position. At the RapidWright boundary,
 where transformed `LUT6_2` logical macros cannot be instantiated directly, the
 compact route-input exporter deterministically lowers each adapter to the
 corresponding shared `LUT5@*5LUT` and `LUT6@*6LUT` physical pair and rewrites
-only I0/O5 and I1/O6 pin identities. Dedicated carry, DSP, BRAM,
+only I0/O5 and I1/O6 pin identities. RapidWright likewise represents one
+logical `DSP48E2` as eight transformed physical primitives. The RWRoute
+adapter therefore materializes the documented `DSP_PREADD_DATA`,
+`DSP_A_B_DATA`, `DSP_C_DATA`, `DSP_MULTIPLIER`, `DSP_ALU`, `DSP_M_DATA`,
+`DSP_OUTPUT`, and `DSP_PREADD` BEL cells at the exact assigned DSP site and
+binds every routable macro port to the corresponding physical site pin.
+Missing components, unsupported macro pins, or direction mismatches fail
+closed; no DSP is omitted or replaced by a fabric surrogate. The route
+certificate records both logical route-cell and expanded physical-cell counts,
+which the independent checker reconciles against the source mapped netlist.
+Dedicated carry, DSP, BRAM,
 and URAM cascade
 connectivity is emitted as an exact non-branching adjacency certificate. The
 independent validator reloads the mapped design and ArchitectureDB and rejects

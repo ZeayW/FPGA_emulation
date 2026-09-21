@@ -8,10 +8,14 @@
 import com.xilinx.rapidwright.design.Cell;
 import com.xilinx.rapidwright.design.Design;
 import com.xilinx.rapidwright.design.Net;
+import com.xilinx.rapidwright.design.SiteInst;
 import com.xilinx.rapidwright.design.SitePinInst;
 import com.xilinx.rapidwright.design.Unisim;
+import com.xilinx.rapidwright.device.BEL;
 import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
+import com.xilinx.rapidwright.device.Site;
+import com.xilinx.rapidwright.edif.EDIFCell;
 import com.xilinx.rapidwright.rwroute.RWRoute;
 import com.xilinx.rapidwright.timing.TimingModel;
 import java.nio.file.Files;
@@ -27,6 +31,30 @@ import org.json.JSONObject;
 
 public final class EmuFlowRWRoute {
     private static final String SCHEMA = "emuflow.xilinx-route-db/v1";
+    private static final String[] DSP48E2_COMPONENTS = new String[] {
+        "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
+        "DSP_ALU", "DSP_M_DATA", "DSP_OUTPUT", "DSP_PREADD"
+    };
+
+    private static final class MaterializedCell {
+        final String logicalType;
+        final Cell regularCell;
+        final SiteInst siteInst;
+        final int physicalCells;
+
+        MaterializedCell(
+            String logicalType, Cell regularCell, SiteInst siteInst, int physicalCells
+        ) {
+            this.logicalType = logicalType;
+            this.regularCell = regularCell;
+            this.siteInst = siteInst;
+            this.physicalCells = physicalCells;
+        }
+
+        boolean isTransformedDSP48E2() {
+            return logicalType.equals("DSP48E2");
+        }
+    }
 
     private static String sha256(Path path) throws Exception {
         byte[] digest = MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path));
@@ -92,6 +120,74 @@ public final class EmuFlowRWRoute {
         }
     }
 
+    private static String dsp48e2SitePin(String logicalPin) {
+        String physicalPin = logicalPin.replace("[", "").replace("]", "");
+        if (physicalPin.startsWith("D") && logicalPin.startsWith("D[")) {
+            physicalPin = "DIN" + physicalPin.substring(1);
+        } else if (physicalPin.startsWith("ACOUT")) {
+            physicalPin = physicalPin.replace("ACOUT", "ACOUT_B");
+        } else if (physicalPin.startsWith("BCOUT")) {
+            physicalPin = physicalPin.replace("BCOUT", "BCOUT_B");
+        } else if (physicalPin.startsWith("PATTERNBDETECT")) {
+            physicalPin = physicalPin.replace("PATTERNBDETECT", "PATTERN_B_DETECT");
+        } else if (physicalPin.startsWith("PATTERNDETECT")) {
+            physicalPin = physicalPin.replace("PATTERNDETECT", "PATTERN_DETECT");
+        }
+        return physicalPin;
+    }
+
+    private static MaterializedCell materializeCell(
+        Design design, String safeName, String[] row
+    ) {
+        String logicalType = row[3];
+        if (!logicalType.equals("DSP48E2")) {
+            Cell cell = design.createAndPlaceCell(
+                safeName, Unisim.valueOf(logicalType), row[4] + "/" + row[5]
+            );
+            if (cell == null) throw new IllegalStateException("failed to place " + safeName);
+            return new MaterializedCell(logicalType, cell, cell.getSiteInst(), 1);
+        }
+
+        Site site = design.getDevice().getSite(row[4]);
+        if (site == null || !site.getSiteTypeEnum().name().equals("DSP48E2")) {
+            throw new IllegalStateException("DSP48E2 has invalid site " + row[4]);
+        }
+        if (!row[5].equals("DSP_ALU")) {
+            throw new IllegalStateException(
+                "DSP48E2 representative BEL must be DSP_ALU, not " + row[5]
+            );
+        }
+        SiteInst siteInst = null;
+        for (String component : DSP48E2_COMPONENTS) {
+            BEL bel = site.getBEL(component);
+            if (bel == null) {
+                throw new IllegalStateException(
+                    "DSP48E2 site " + row[4] + " lacks component BEL " + component
+                );
+            }
+            Cell child = design.createAndPlaceCell(
+                (EDIFCell) null,
+                safeName + "$" + component,
+                Unisim.valueOf(component),
+                site,
+                bel
+            );
+            if (child == null) {
+                throw new IllegalStateException(
+                    "failed to materialize DSP48E2 component " + component
+                );
+            }
+            if (siteInst == null) siteInst = child.getSiteInst();
+            if (child.getSiteInst() != siteInst) {
+                throw new IllegalStateException("DSP48E2 components do not share one SiteInst");
+            }
+        }
+        if (siteInst == null) throw new IllegalStateException("empty DSP48E2 transform");
+        return new MaterializedCell(
+            logicalType, null, siteInst, DSP48E2_COMPONENTS.length
+        );
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length != 2) {
             throw new IllegalArgumentException("usage: EmuFlowRWRoute <input.tsv> <output.json>");
@@ -138,25 +234,25 @@ public final class EmuFlowRWRoute {
 
         Design design = new Design("emuflow_rwroute", part);
         design.setDesignOutOfContext(true);
-        Map<String, Cell> cells = new HashMap<>();
+        Map<String, MaterializedCell> cells = new HashMap<>();
         List<String> cellNames = new ArrayList<>(cellRows.keySet());
         cellNames.sort(String::compareTo);
+        int physicalCells = 0;
+        int transformedDsp48e2Cells = 0;
         for (String safeName : cellNames) {
             String[] row = cellRows.get(safeName);
-            Cell cell;
+            MaterializedCell cell;
             try {
-                Unisim unisim = Unisim.valueOf(row[3]);
-                cell = design.createAndPlaceCell(
-                    safeName, unisim, row[4] + "/" + row[5]
-                );
+                cell = materializeCell(design, safeName, row);
             } catch (RuntimeException error) {
                 throw new IllegalStateException(
                     "failed to materialize " + safeName + " (" + row[2] + ") type="
                     + row[3] + " at " + row[4] + "/" + row[5], error
                 );
             }
-            if (cell == null) throw new IllegalStateException("failed to place " + safeName);
             cells.put(safeName, cell);
+            physicalCells += cell.physicalCells;
+            if (cell.isTransformedDSP48E2()) transformedDsp48e2Cells++;
         }
 
         Map<String, Net> nets = new HashMap<>();
@@ -167,14 +263,35 @@ public final class EmuFlowRWRoute {
             List<String[]> pins = pinRows.get(netName);
             pins.sort(Comparator.comparing(row -> row[4].equals("driver") ? "0" : "1"));
             for (String[] row : pins) {
-                Cell cell = cells.get(row[2]);
+                MaterializedCell cell = cells.get(row[2]);
                 if (cell == null) throw new IllegalArgumentException("unknown cell " + row[2]);
-                ensureLogicalPinMapping(cell, row[3]);
                 try {
-                    // A legal intra-site connection intentionally returns no
-                    // SitePinInst; logical/physical pin mappings, not the
-                    // nullable return value, establish pin validity.
-                    net.connect(cell, row[3]);
+                    SitePinInst connected;
+                    if (cell.isTransformedDSP48E2()) {
+                        String physicalPin = dsp48e2SitePin(row[3]);
+                        if (!cell.siteInst.getSite().hasPin(physicalPin)) {
+                            throw new IllegalStateException(
+                                "DSP48E2 logical pin " + row[3]
+                                + " has no physical site pin " + physicalPin
+                            );
+                        }
+                        connected = net.createPin(physicalPin, cell.siteInst);
+                    } else {
+                        ensureLogicalPinMapping(cell.regularCell, row[3]);
+                        // A legal intra-site connection intentionally returns no
+                        // SitePinInst; logical/physical pin mappings, not the
+                        // nullable return value, establish pin validity.
+                        connected = net.connect(cell.regularCell, row[3]);
+                    }
+                    if (connected != null) {
+                        boolean expectedOutput = row[4].equals("driver");
+                        if (connected.isOutPin() != expectedOutput) {
+                            throw new IllegalStateException(
+                                "pin direction disagrees with route role: "
+                                + row[2] + "/" + row[3]
+                            );
+                        }
+                    }
                 } catch (RuntimeException error) {
                     throw new IllegalStateException(
                         "failed to connect " + row[2] + "/" + row[3], error
@@ -253,6 +370,10 @@ public final class EmuFlowRWRoute {
             .put("placement_sha256", metadata.get("placement_sha256"))
             .put("rwroute_input_sha256", sha256(Path.of(args[0]))));
         output.put("cells", cells.size());
+        output.put("materialization", new JSONObject()
+            .put("route_cells", cells.size())
+            .put("physical_cells", physicalCells)
+            .put("transformed_dsp48e2_cells", transformedDsp48e2Cells));
         output.put("nets", routeNets);
         output.put("excluded_nets", excluded);
         output.put("timing", new JSONObject()
