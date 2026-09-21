@@ -4462,6 +4462,9 @@ WNS/TNS. Missing, duplicate, or differently sealed members fail closed rather
 than falling back to a cross-FPGA-only timing claim.
 RapidWright's extracted runtime database is isolated beside the requested
 class directory, so the provider never writes into a login home directory.
+RWRoute console output is streamed directly to its run-local log instead of
+being accumulated in Python memory; only a bounded tail is read back when the
+external router fails.
 Purely intra-site nets are explicitly classified outside the inter-site
 certificate and covered by the primitive/internal timing model; the compact
 RWRoute adapter therefore routes only the materialized site-pin-to-site-pin

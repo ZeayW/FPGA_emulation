@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
@@ -312,18 +313,35 @@ def run_rwroute(
         "-cp", f"{classes_dir}:{rapidwright_jar}",
         "EmuFlowRWRoute", str(input_path), str(output_path),
     ]
-    completed = subprocess.run(
-        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, check=False,
-        env={**os.environ, "RAPIDWRIGHT_PATH": str(rapidwright_path)},
-    )
-    if log_path is not None:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(completed.stdout, encoding="utf-8")
+    temporary_log = log_path is None
+    if temporary_log:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix="emuflow-rwroute-", suffix=".log"
+        )
+        os.close(descriptor)
+        route_log_path = Path(temporary_name)
+    else:
+        route_log_path = log_path
+        assert route_log_path is not None
+        route_log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with route_log_path.open("w", encoding="utf-8") as route_log:
+            completed = subprocess.run(
+                command, stdout=route_log, stderr=subprocess.STDOUT,
+                text=True, check=False,
+                env={**os.environ, "RAPIDWRIGHT_PATH": str(rapidwright_path)},
+            )
+        with route_log_path.open("rb") as route_log:
+            route_log.seek(0, os.SEEK_END)
+            route_log.seek(max(0, route_log.tell() - 8000), os.SEEK_SET)
+            failure_tail = route_log.read().decode("utf-8", errors="replace")
+    finally:
+        if temporary_log:
+            route_log_path.unlink(missing_ok=True)
     if completed.returncode != 0:
         raise ValidationError(
             f"RWRoute failed with exit code {completed.returncode}:\n"
-            + "\n".join(completed.stdout.splitlines()[-80:])
+            + "\n".join(failure_tail.splitlines()[-80:])
         )
     value = read_json(output_path)
     timing = value.get("timing")
