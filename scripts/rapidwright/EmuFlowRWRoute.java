@@ -59,6 +59,10 @@ public final class EmuFlowRWRoute {
         boolean isTransformedDSP48E2() {
             return logicalType.equals("DSP48E2");
         }
+
+        boolean isBlockRam() {
+            return logicalType.equals("RAMB18E2") || logicalType.equals("RAMB36E2");
+        }
     }
 
     private static String sha256(Path path) throws Exception {
@@ -384,7 +388,7 @@ public final class EmuFlowRWRoute {
                             );
                         }
                         connected.add(net.createPin(physicalPin, cell.siteInst));
-                    } else {
+                    } else if (cell.isBlockRam()) {
                         ensureLogicalPinMapping(cell, row[3]);
                         Set<String> sitePins = new LinkedHashSet<>(
                             cell.regularCell.getAllCorrespondingSitePinNames(row[3])
@@ -404,6 +408,14 @@ public final class EmuFlowRWRoute {
                         for (String sitePin : sitePins) {
                             connected.add(net.createPin(sitePin, cell.siteInst));
                         }
+                    } else {
+                        ensureLogicalPinMapping(cell, row[3]);
+                        // General logic can expose alternative dedicated and
+                        // fabric exits (for example CARRY8 CO[7] via COUT or
+                        // HMUX).  RapidWright selects the legal physical exit;
+                        // only BRAM's true lower/upper sink expansion is
+                        // explicitly materialized above.
+                        connected.add(net.connect(cell.regularCell, row[3]));
                     }
                     for (SitePinInst pin : connected) {
                         if (pin == null) continue;
