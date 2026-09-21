@@ -39,6 +39,23 @@ def write_continuous_placement(engine: Any, output_path: Path) -> None:
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def skip_internal_site_legalization(engine: Any, _metric: Any) -> bool:
+    """Keep OpenPARF in analytical global-placement mode.
+
+    OpenPARF's generic flow unconditionally runs its single-site-resource
+    min-cost-flow lookahead during global placement.  Route A deliberately
+    classifies packed Xilinx slice/BRAM clusters as single-site resources, so
+    that lookahead would snap the complete design to generic Bookshelf sites
+    and can dominate runtime.  Exact Xilinx legality belongs to EmuFlow's
+    architecture-aware legalizer.  Mark the lookahead lock interval as already
+    elapsed and leave every cluster in the continuous optimization.
+    """
+
+    lock_iterations = int(engine.params.ssr_legalize_lock_iters)
+    engine.last_ssr_legalize_iter = -lock_iterations - 1
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run OpenPARF and export continuous global coordinates"
@@ -72,6 +89,9 @@ def main() -> int:
     def _write(engine: Any, filename: str) -> None:
         write_continuous_placement(engine, Path(filename))
 
+    placer.Placer._ssir_legalization_condition = (
+        skip_internal_site_legalization
+    )
     placer.Placer.write = _write
     output = Path(params.result_dir) / f"{params.design_name()}.pl"
     place(params, str(output))

@@ -4326,6 +4326,12 @@ structure, and applies the same 75% planning limit to both devices.  Its
 academic system-link model; it is not claimed to be an AMD or PPro board.
 Consequently this backend supplies real XCVU19P single-device placement and
 routing evidence while the board link remains a declared research assumption.
+OpenPARF is used only for continuous analytical global-placement guidance in
+this backend.  Its generic single-site min-cost-flow lookahead and final
+Bookshelf legalization are disabled; the first-party Xilinx legalizer performs
+the exact site/BEL assignment and independently checks legality before
+RWRoute.  This keeps placement guidance separate from architecture legality
+and avoids paying for two different legalizers.
 RapidWright's external `data/parts.db` and XCVU19P device database are checked
 against the provider-pinned digests and mounted read-only into each isolated
 partition runtime. Missing or mismatched data fails closed; the backend never

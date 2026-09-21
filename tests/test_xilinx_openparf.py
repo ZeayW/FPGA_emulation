@@ -4,7 +4,10 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from emuflow.openparf_continuous_driver import write_continuous_placement
+from emuflow.openparf_continuous_driver import (
+    skip_internal_site_legalization,
+    write_continuous_placement,
+)
 from emuflow.xilinx_openparf import (
     export_xilinx_cluster_bookshelf,
     import_xilinx_openparf_guidance,
@@ -93,3 +96,11 @@ class XilinxOpenparfTest(unittest.TestCase):
                 output.read_text(encoding="utf-8").splitlines()[1:],
                 ["c0 0.25 1.5 0", "c1 12.75 8.125 0"],
             )
+
+    def test_continuous_driver_disables_generic_site_legalization(self):
+        engine = SimpleNamespace(
+            params=SimpleNamespace(ssr_legalize_lock_iters=100),
+            last_ssr_legalize_iter=0,
+        )
+        self.assertFalse(skip_internal_site_legalization(engine, object()))
+        self.assertEqual(engine.last_ssr_legalize_iter, -101)
