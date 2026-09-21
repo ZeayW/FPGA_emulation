@@ -8,6 +8,7 @@ for exact site, BEL, fixed-region, and cascade legality.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
@@ -15,11 +16,16 @@ from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
 from .io import read_json, write_json
 from .openparf import run_openparf
+from .openparf_continuous_driver import OPENPARF_CONTINUOUS_METRICS_SCHEMA
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from .xilinx_placement import XILINX_GUIDANCE_SCHEMA
 
 
-XILINX_OPENPARF_MANIFEST_SCHEMA = "emuflow.xilinx-openparf-manifest/v1"
+XILINX_OPENPARF_MANIFEST_SCHEMA = "emuflow.xilinx-openparf-manifest/v2"
+XILINX_OPENPARF_NAME_MAP_SCHEMA = "emuflow.xilinx-openparf-name-map/v2"
+XILINX_OPENPARF_COORDINATE_SYSTEM_SCHEMA = (
+    "emuflow.xilinx-openparf-dense-axis/v1"
+)
 
 
 def _cluster_resource(cluster: Mapping[str, Any]) -> str:
@@ -154,7 +160,20 @@ def _render_nets(
     return "\n".join(lines) + "\n"
 
 
-def _render_sites(architecture: ArchitectureDB, used: Set[str]) -> str:
+def _coordinate_axes(architecture: ArchitectureDB) -> Tuple[List[int], List[int]]:
+    sites = architecture.value["sites"]
+    return (
+        sorted({int(site["x"]) for site in sites}),
+        sorted({int(site["y"]) for site in sites}),
+    )
+
+
+def _render_sites(
+    architecture: ArchitectureDB,
+    used: Set[str],
+    x_axis: List[int],
+    y_axis: List[int],
+) -> str:
     resources_by_type: Dict[str, Optional[str]] = {}
     for site in architecture.value["sites"]:
         resource = _site_resource(site["type"])
@@ -171,11 +190,11 @@ def _render_sites(architecture: ArchitectureDB, used: Set[str]) -> str:
     for resource in sorted(used):
         lines.append(f"  {resource} {resource}")
     lines.extend(["END RESOURCES", ""])
-    width = max(site["x"] for site in architecture.value["sites"]) + 1
-    height = max(site["y"] for site in architecture.value["sites"]) + 1
-    lines.append(f"SITEMAP {width} {height}")
+    x_index = {coordinate: index for index, coordinate in enumerate(x_axis)}
+    y_index = {coordinate: index for index, coordinate in enumerate(y_axis)}
+    lines.append(f"SITEMAP {len(x_axis)} {len(y_axis)}")
     lines.extend(
-        f"{site['x']} {site['y']} {site['type']}"
+        f"{x_index[int(site['x'])]} {y_index[int(site['y'])]} {site['type']}"
         for site in sorted(
             architecture.value["sites"], key=lambda item: (item["x"], item["y"])
         )
@@ -204,6 +223,7 @@ def export_xilinx_cluster_bookshelf(
     resources = {
         cluster["id"]: _cluster_resource(cluster) for cluster in packed["clusters"]
     }
+    x_axis, y_axis = _coordinate_axes(architecture)
     selected_top = top if top is not None else packed.get("top")
     nets = _cluster_nets(mapped, packed, selected_top)
     demand = Counter(resources.values())
@@ -224,7 +244,9 @@ def export_xilinx_cluster_bookshelf(
         ),
         "design.lib": _render_library(resources, nets),
         "design.nets": _render_nets(names, nets),
-        "design.scl": _render_sites(architecture, set(demand)),
+        "design.scl": _render_sites(
+            architecture, set(demand), x_axis, y_axis
+        ),
         "design.pl": "",
         "design.aux": "design : design.nodes design.nets design.pl design.scl design.lib\n",
     }
@@ -276,7 +298,12 @@ def export_xilinx_cluster_bookshelf(
     }
     write_json(output_dir / "openparf.json", config, compact=True)
     write_json(output_dir / "name_map.json", {
-        "schema": "emuflow.xilinx-openparf-name-map/v1",
+        "schema": XILINX_OPENPARF_NAME_MAP_SCHEMA,
+        "coordinate_system": {
+            "schema": XILINX_OPENPARF_COORDINATE_SYSTEM_SCHEMA,
+            "x_axis": x_axis,
+            "y_axis": y_axis,
+        },
         "clusters": [
             {"openparf": names[cluster], "cluster": cluster}
             for cluster in sorted(names)
@@ -293,12 +320,46 @@ def export_xilinx_cluster_bookshelf(
     return manifest
 
 
+def _interpolate_axis(coordinate: float, axis: List[float]) -> float:
+    """Map one continuous dense-grid coordinate to a physical coordinate."""
+
+    if coordinate <= 0.0 or len(axis) == 1:
+        return axis[0]
+    upper_index = len(axis) - 1
+    if coordinate >= upper_index:
+        return axis[-1]
+    lower_index = int(math.floor(coordinate))
+    fraction = coordinate - lower_index
+    return (
+        axis[lower_index]
+        + fraction * (axis[lower_index + 1] - axis[lower_index])
+    )
+
+
 def import_xilinx_openparf_guidance(
     placement_path: Path, name_map_path: Path, output_path: Path
 ) -> Dict[str, Any]:
     name_map = read_json(name_map_path)
-    if name_map.get("schema") != "emuflow.xilinx-openparf-name-map/v1":
+    if name_map.get("schema") != XILINX_OPENPARF_NAME_MAP_SCHEMA:
         raise ValidationError("Xilinx OpenPARF name map is invalid")
+    coordinate_system = name_map.get("coordinate_system")
+    if (
+        not isinstance(coordinate_system, dict)
+        or coordinate_system.get("schema")
+        != XILINX_OPENPARF_COORDINATE_SYSTEM_SCHEMA
+    ):
+        raise ValidationError("Xilinx OpenPARF coordinate system is invalid")
+    axes = {}
+    for name in ("x_axis", "y_axis"):
+        axis = coordinate_system.get(name)
+        if (
+            not isinstance(axis, list)
+            or not axis
+            or any(not isinstance(value, (int, float)) for value in axis)
+            or any(float(left) >= float(right) for left, right in zip(axis, axis[1:]))
+        ):
+            raise ValidationError(f"Xilinx OpenPARF {name} is invalid")
+        axes[name] = [float(value) for value in axis]
     safe_to_cluster = {
         entry["openparf"]: entry["cluster"] for entry in name_map["clusters"]
     }
@@ -315,7 +376,13 @@ def import_xilinx_openparf_guidance(
             if cluster in coordinates:
                 raise ImportError(f"{placement_path}:{line_number}: duplicate cluster")
             try:
-                coordinates[cluster] = (float(fields[1]), float(fields[2]))
+                dense_x, dense_y = float(fields[1]), float(fields[2])
+                if not math.isfinite(dense_x) or not math.isfinite(dense_y):
+                    raise ValueError
+                coordinates[cluster] = (
+                    _interpolate_axis(dense_x, axes["x_axis"]),
+                    _interpolate_axis(dense_y, axes["y_axis"]),
+                )
             except ValueError as error:
                 raise ImportError(
                     f"{placement_path}:{line_number}: non-numeric coordinate"
@@ -324,7 +391,7 @@ def import_xilinx_openparf_guidance(
         raise ImportError("OpenPARF placement does not cover every packed cluster")
     result = {
         "schema": XILINX_GUIDANCE_SCHEMA,
-        "provider": "openparf-global-guidance-v1",
+        "provider": "openparf-global-guidance-v2-dense-grid",
         "clusters": [
             {"cluster": cluster, "x": coordinates[cluster][0], "y": coordinates[cluster][1]}
             for cluster in sorted(coordinates)
@@ -353,7 +420,23 @@ def run_xilinx_openparf_guidance(
         install_root=openparf_install,
         python_executable=openparf_python,
     )
+    convergence_path = placement.with_suffix(".continuous-metrics.json")
+    convergence = read_json(convergence_path)
+    if (
+        not isinstance(convergence, dict)
+        or convergence.get("schema") != OPENPARF_CONTINUOUS_METRICS_SCHEMA
+        or convergence.get("status") != "pass"
+    ):
+        raise ValidationError(
+            "OpenPARF continuous-placement convergence certificate is invalid"
+        )
     report = import_xilinx_openparf_guidance(
         placement, output_dir / "name_map.json", output_dir / "guidance.json"
     )
-    return {**report, "manifest": manifest["schema"], "placement": str(placement)}
+    return {
+        **report,
+        "manifest": manifest["schema"],
+        "placement": str(placement),
+        "convergence": str(convergence_path),
+        "maximum_checked_overflow": convergence["maximum_checked_overflow"],
+    }

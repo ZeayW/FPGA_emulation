@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from emuflow.openparf_continuous_driver import (
+    build_convergence_certificate,
     skip_diagnostic_plot,
     skip_internal_site_legalization,
     write_continuous_placement,
@@ -38,8 +39,8 @@ class XilinxOpenparfTest(unittest.TestCase):
                     {"name": "A6LUT", "type": "LUT6", "z": 0, "compatible_cells": ["LUT6"]}
                 ], "alternative_templates": []}},
                 "sites": [
-                    {"name": "SLICE_X0Y0", "type": "SLICEL", "template": "SLICEL", "x": 0, "y": 0},
-                    {"name": "SLICE_X0Y1", "type": "SLICEL", "template": "SLICEL", "x": 0, "y": 1},
+                    {"name": "SLICE_X0Y0", "type": "SLICEL", "template": "SLICEL", "x": 100, "y": 100},
+                    {"name": "SLICE_X0Y1", "type": "SLICEL", "template": "SLICEL", "x": 300, "y": 500},
                 ]}), encoding="utf-8")
             report = export_xilinx_cluster_bookshelf(mapped, packed, arch, out)
             placement = out / "result.pl"
@@ -53,11 +54,21 @@ class XilinxOpenparfTest(unittest.TestCase):
                 (out / "openparf.json").read_text(encoding="utf-8")
             )
             nets_text = (out / "design.nets").read_text(encoding="utf-8")
+            sites_text = (out / "design.scl").read_text(encoding="utf-8")
         self.assertEqual(report["clusters"], 2)
         self.assertEqual(report["nets"], 1)
         self.assertEqual(imported["clusters"], 2)
-        self.assertEqual(value["provider"], "openparf-global-guidance-v1")
+        self.assertEqual(
+            value["provider"], "openparf-global-guidance-v2-dense-grid"
+        )
+        self.assertEqual(
+            [(item["x"], item["y"]) for item in value["clusters"]],
+            [(150.0, 300.0), (250.0, 500.0)],
+        )
         self.assertIn("net n0 2", nets_text)
+        self.assertIn("SITEMAP 2 2", sites_text)
+        self.assertIn("0 0 SLICEL", sites_text)
+        self.assertIn("1 1 SLICEL", sites_text)
         self.assertEqual(config["global_place_flag"], 1)
         self.assertEqual(config["legalize_flag"], 0)
         self.assertEqual(config["detailed_place_flag"], 0)
@@ -107,3 +118,44 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertFalse(skip_internal_site_legalization(engine, object()))
         self.assertEqual(engine.last_ssr_legalize_iter, -101)
         self.assertIsNone(skip_diagnostic_plot(object(), filename="unused.bmp"))
+
+    def test_convergence_certificate_fails_closed_on_overflow(self):
+        class Tensor:
+            def __init__(self, value):
+                self.value = value
+
+            def __getitem__(self, _key):
+                return self
+
+            def detach(self):
+                return self
+
+            def cpu(self):
+                return self
+
+            def tolist(self):
+                return self.value
+
+        engine = SimpleNamespace(
+            data_cls=SimpleNamespace(
+                pos=[Tensor([[0.0, 1.0], [2.0, 3.0]])],
+                inst_locs_xyz=SimpleNamespace(shape=(2, 3)),
+                area_type_inst_groups=[list(range(11)), list(range(4))],
+            ),
+            op_cls=SimpleNamespace(
+                normalized_overflow_op=lambda _pos: Tensor([0.25, 0.9]),
+                hpwl_op=lambda _pos: Tensor([4.0, 5.0]),
+            ),
+            placedb=SimpleNamespace(
+                getAreaTypeIndexFromName=lambda _name: 99
+            ),
+            params=SimpleNamespace(io_at_names=[], stop_overflow=0.1),
+            cur_metric_record=SimpleNamespace(
+                opt_iter=SimpleNamespace(iteration=123)
+            ),
+        )
+        certificate = build_convergence_certificate(engine)
+        self.assertEqual(certificate["status"], "fail")
+        self.assertEqual(certificate["checked_area_types"], [0])
+        self.assertEqual(certificate["maximum_checked_overflow"], 0.25)
+        self.assertEqual(certificate["iterations"], 123)

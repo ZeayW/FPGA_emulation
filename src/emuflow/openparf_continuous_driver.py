@@ -11,11 +11,17 @@ architecture-aware legalizer.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import os
 from pathlib import Path
 from typing import Any
+
+
+OPENPARF_CONTINUOUS_METRICS_SCHEMA = (
+    "emuflow.openparf-continuous-metrics/v1"
+)
 
 
 def write_continuous_placement(engine: Any, output_path: Path) -> None:
@@ -37,6 +43,78 @@ def write_continuous_placement(engine: Any, output_path: Path) -> None:
         lines.append(f"{engine.placedb.instName(index)} {x:.17g} {y:.17g} 0")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_convergence_certificate(engine: Any) -> dict[str, Any]:
+    """Return a compact, independently inspectable global-placement gate."""
+
+    positions = engine.data_cls.pos[0]
+    instances = int(engine.data_cls.inst_locs_xyz.shape[0])
+    xy = positions[:instances, :2].detach().cpu().tolist()
+    finite = all(
+        math.isfinite(float(coordinate))
+        for point in xy
+        for coordinate in point
+    )
+    overflow = [
+        float(value)
+        for value in engine.op_cls.normalized_overflow_op(positions)
+        .detach()
+        .cpu()
+        .tolist()
+    ]
+    io_area_types = {
+        int(engine.placedb.getAreaTypeIndexFromName(name))
+        for name in engine.params.io_at_names
+    }
+    checked_area_types = [
+        area_type
+        for area_type, group in enumerate(engine.data_cls.area_type_inst_groups)
+        if len(group) > 10 and area_type not in io_area_types
+    ]
+    stop_overflow = float(engine.params.stop_overflow)
+    maximum_checked_overflow = max(
+        (overflow[area_type] for area_type in checked_area_types),
+        default=0.0,
+    )
+    hpwl = [
+        float(value)
+        for value in engine.op_cls.hpwl_op(positions).detach().cpu().tolist()
+    ]
+    metric = getattr(engine, "cur_metric_record", None)
+    opt_iter = getattr(metric, "opt_iter", None)
+    iteration = int(getattr(opt_iter, "iteration", -1))
+    x_values = [float(point[0]) for point in xy]
+    y_values = [float(point[1]) for point in xy]
+    passed = finite and maximum_checked_overflow <= stop_overflow
+    return {
+        "schema": OPENPARF_CONTINUOUS_METRICS_SCHEMA,
+        "status": "pass" if passed else "fail",
+        "iterations": iteration,
+        "instances": instances,
+        "checked_area_types": checked_area_types,
+        "normalized_overflow": overflow,
+        "maximum_checked_overflow": maximum_checked_overflow,
+        "stop_overflow": stop_overflow,
+        "hpwl": hpwl,
+        "coordinate_bbox": {
+            "min_x": min(x_values, default=0.0),
+            "max_x": max(x_values, default=0.0),
+            "min_y": min(y_values, default=0.0),
+            "max_y": max(y_values, default=0.0),
+        },
+        "finite_coordinates": finite,
+    }
+
+
+def write_convergence_certificate(engine: Any, output_path: Path) -> dict[str, Any]:
+    certificate = build_convergence_certificate(engine)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(certificate, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    return certificate
 
 
 def skip_internal_site_legalization(engine: Any, _metric: Any) -> bool:
@@ -91,7 +169,17 @@ def main() -> int:
     os.environ["OMP_NUM_THREADS"] = str(params.num_threads)
 
     def _write(engine: Any, filename: str) -> None:
-        write_continuous_placement(engine, Path(filename))
+        output = Path(filename)
+        certificate = write_convergence_certificate(
+            engine, output.with_suffix(".continuous-metrics.json")
+        )
+        if certificate["status"] != "pass":
+            raise RuntimeError(
+                "OpenPARF global placement did not converge: maximum checked "
+                f"overflow {certificate['maximum_checked_overflow']:.6g} exceeds "
+                f"{certificate['stop_overflow']:.6g}"
+            )
+        write_continuous_placement(engine, output)
 
     placer.Placer._ssir_legalization_condition = (
         skip_internal_site_legalization
