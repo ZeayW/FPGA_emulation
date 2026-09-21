@@ -4354,9 +4354,14 @@ piecewise-linearly mapped back afterward.  This prevents the sparse physical
 coordinate gaps in a RapidWright ArchitectureDB from creating a mostly empty,
 ill-scaled analytical grid.  The continuous driver emits a compact convergence
 certificate and fails closed when any populated non-I/O area type remains
-above OpenPARF's declared overflow threshold; reaching an iteration limit is
-not accepted as successful guidance.  Upstream bitmap plots remain suppressed,
-so diagnostic rendering is not part of the physical hot path.
+above OpenPARF's declared guidance limit.  This preserves OpenPARF's own
+two-tier rule: packed slice logic must reach `stop_overflow`, while sparse
+single-site DSP/BRAM resources may use at most twice that value before the
+exact Xilinx legalizer.  The driver stops at the first valid point so continued
+augmented-multiplier growth cannot turn a converged guidance solution into a
+late numerical divergence; reaching the 1000-iteration ceiling is not accepted
+as successful guidance.  Upstream bitmap plots remain suppressed, so
+diagnostic rendering is not part of the physical hot path.
 RapidWright's external `data/parts.db` and XCVU19P device database are checked
 against the provider-pinned digests and mounted read-only into each isolated
 partition runtime. Missing or mismatched data fails closed; the backend never

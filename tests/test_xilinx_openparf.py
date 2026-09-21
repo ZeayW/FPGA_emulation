@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from emuflow.openparf_continuous_driver import (
     build_convergence_certificate,
+    guidance_stop_condition,
     skip_diagnostic_plot,
     skip_internal_site_legalization,
     write_continuous_placement,
@@ -73,7 +74,8 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertEqual(config["legalize_flag"], 0)
         self.assertEqual(config["detailed_place_flag"], 0)
         self.assertTrue(config["emuflow_continuous_global_guidance"])
-        self.assertEqual(config["max_global_place_iters"], 100)
+        self.assertEqual(config["max_global_place_iters"], 1000)
+        self.assertEqual(config["logic_area_type_names"], ["X_SLICE"])
 
     def test_continuous_writer_does_not_require_discrete_sites(self):
         class Tensor:
@@ -146,10 +148,11 @@ class XilinxOpenparfTest(unittest.TestCase):
                 normalized_overflow_op=lambda _pos: Tensor([0.25, 0.9]),
                 hpwl_op=lambda _pos: Tensor([4.0, 5.0]),
             ),
-            placedb=SimpleNamespace(
-                getAreaTypeIndexFromName=lambda _name: 99
+            placedb=SimpleNamespace(getAreaTypeIndexFromName=lambda _name: 0),
+            params=SimpleNamespace(
+                io_at_names=[], logic_area_type_names=["X_SLICE"],
+                stop_overflow=0.1,
             ),
-            params=SimpleNamespace(io_at_names=[], stop_overflow=0.1),
             cur_metric_record=SimpleNamespace(
                 opt_iter=SimpleNamespace(iteration=123)
             ),
@@ -158,4 +161,54 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertEqual(certificate["status"], "fail")
         self.assertEqual(certificate["checked_area_types"], [0])
         self.assertEqual(certificate["maximum_checked_overflow"], 0.25)
+        self.assertEqual(certificate["overflow_limits"], [0.1])
+        self.assertEqual(certificate["maximum_limit_ratio"], 2.5)
         self.assertEqual(certificate["iterations"], 123)
+
+    def test_hard_resource_guidance_uses_openparf_two_x_limit(self):
+        class Tensor:
+            def __init__(self, value):
+                self.value = value
+
+            def __getitem__(self, _key):
+                return self
+
+            def detach(self):
+                return self
+
+            def cpu(self):
+                return self
+
+            def tolist(self):
+                return self.value
+
+        names = {"X_DSP": 0, "X_BRAM": 1, "X_SLICE": 2}
+        overflow = Tensor([0.35, 0.3, 0.19])
+        engine = SimpleNamespace(
+            data_cls=SimpleNamespace(
+                pos=[Tensor([[0.0, 0.0]])],
+                inst_locs_xyz=SimpleNamespace(shape=(1, 3)),
+                area_type_inst_groups=[list(range(11)) for _ in range(3)],
+            ),
+            op_cls=SimpleNamespace(
+                normalized_overflow_op=lambda _pos: overflow,
+                hpwl_op=lambda _pos: Tensor([1.0, 2.0]),
+            ),
+            placedb=SimpleNamespace(
+                getAreaTypeIndexFromName=lambda name: names[name]
+            ),
+            params=SimpleNamespace(
+                io_at_names=[], logic_area_type_names=["X_SLICE"],
+                stop_overflow=0.2, max_global_place_iters=1000,
+            ),
+            cur_metric_record=SimpleNamespace(
+                opt_iter=SimpleNamespace(iteration=600)
+            ),
+        )
+        certificate = build_convergence_certificate(engine)
+        self.assertEqual(certificate["status"], "pass")
+        self.assertEqual(certificate["overflow_limits"], [0.4, 0.4, 0.2])
+        metric = SimpleNamespace(
+            opt_iter=SimpleNamespace(iteration=600), overflow=overflow
+        )
+        self.assertTrue(guidance_stop_condition(engine, [metric]))
