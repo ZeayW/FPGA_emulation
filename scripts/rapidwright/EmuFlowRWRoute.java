@@ -349,7 +349,6 @@ public final class EmuFlowRWRoute {
         cellNames.sort(String::compareTo);
         int physicalCells = 0;
         int transformedDsp48e2Cells = 0;
-        Set<SiteInst> transformedDspSites = new LinkedHashSet<>();
         for (String safeName : cellNames) {
             String[] row = cellRows.get(safeName);
             MaterializedCell cell;
@@ -367,7 +366,6 @@ public final class EmuFlowRWRoute {
             physicalCells += cell.physicalCells;
             if (cell.isTransformedDSP48E2()) {
                 transformedDsp48e2Cells++;
-                transformedDspSites.add(cell.siteInst);
             }
         }
 
@@ -450,14 +448,13 @@ public final class EmuFlowRWRoute {
             nets.put(netName, net);
         }
 
-        // Transformed DSP component cells intentionally have no logical EDIF
-        // parent.  Route every ordinary/BRAM site normally, while keeping DSP
-        // endpoints as already-materialized physical site pins.  Calling the
-        // blanket Design.routeSites() would ask EDIF to resolve a nonexistent
-        // logical parent for those documented transformed primitives.
-        for (SiteInst siteInst : design.getSiteInsts()) {
-            if (!transformedDspSites.contains(siteInst)) siteInst.routeSite();
-        }
+        // This certificate begins and ends at physical site pins; purely
+        // intra-site nets were excluded by the sealed exporter.  Do not call
+        // Design.routeSites(): transformed DSP component cells intentionally
+        // have no logical EDIF parent, and asking EDIF to reconstruct one
+        // would conflate the inter-site route certificate with a vendor
+        // bitstream-complete site implementation.  Primitive/internal timing
+        // is modeled separately by EmuFlow's sealed primitive timing stage.
         RWRoute.routeDesignFullNonTimingDriven(design);
 
         // RapidWright's lightweight timing model evaluates the concrete

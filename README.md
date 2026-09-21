@@ -4451,8 +4451,11 @@ WNS/TNS. Missing, duplicate, or differently sealed members fail closed rather
 than falling back to a cross-FPGA-only timing claim.
 RapidWright's extracted runtime database is isolated beside the requested
 class directory, so the provider never writes into a login home directory.
-Purely intra-site nets remain in RapidWright site routing and are explicitly
-classified outside the inter-site certificate; driverless boundary/clock nets
+Purely intra-site nets are explicitly classified outside the inter-site
+certificate and covered by the primitive/internal timing model; the compact
+RWRoute adapter therefore routes only the materialized site-pin-to-site-pin
+graph and does not attempt to turn transformed logical macros into a
+bitstream-complete EDIF site implementation. Driverless boundary/clock nets
 remain explicit exclusions rather than being silently invented.
 This
 profile remains opt-in until placement, RWRoute, timing, and complete
