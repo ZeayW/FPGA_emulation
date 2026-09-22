@@ -17,6 +17,8 @@ import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.edif.EDIFCell;
 import com.xilinx.rapidwright.rwroute.CUFR;
+import com.xilinx.rapidwright.rwroute.Connection;
+import com.xilinx.rapidwright.rwroute.RWRouteConfig;
 import com.xilinx.rapidwright.timing.TimingModel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -28,6 +30,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -62,6 +65,80 @@ public final class EmuFlowRWRoute {
 
         boolean isBlockRam() {
             return logicalType.equals("RAMB18E2") || logicalType.equals("RAMB36E2");
+        }
+    }
+
+    private static final class DiagnosedCUFR extends CUFR {
+        private static final class ActiveConnection {
+            final Connection connection;
+            final long startNanoseconds;
+            boolean reported;
+
+            ActiveConnection(Connection connection) {
+                this.connection = connection;
+                this.startNanoseconds = System.nanoTime();
+            }
+        }
+
+        private final Map<Thread, ActiveConnection> active =
+            new ConcurrentHashMap<>();
+        private volatile boolean monitorRunning = true;
+
+        DiagnosedCUFR(Design design, RWRouteConfig config) {
+            super(design, config);
+        }
+
+        @Override
+        protected void routeIndirectConnection(Connection connection) {
+            Thread worker = Thread.currentThread();
+            active.put(worker, new ActiveConnection(connection));
+            try {
+                super.routeIndirectConnection(connection);
+            } finally {
+                active.remove(worker);
+            }
+        }
+
+        private void monitorSlowConnections() {
+            while (monitorRunning) {
+                long now = System.nanoTime();
+                for (Map.Entry<Thread, ActiveConnection> entry : active.entrySet()) {
+                    ActiveConnection value = entry.getValue();
+                    double elapsedSeconds =
+                        (now - value.startNanoseconds) / 1_000_000_000.0;
+                    if (!value.reported && elapsedSeconds >= 5.0) {
+                        value.reported = true;
+                        System.err.printf(
+                            "EMUFLOW_SLOW_CONNECTION thread=%s elapsed_s=%.3f %s%n",
+                            entry.getKey().getName(), elapsedSeconds, value.connection
+                        );
+                    }
+                }
+                try {
+                    Thread.sleep(1000L);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+
+        static Design routeDesignWithProbe(Design design, String[] arguments) {
+            DiagnosedCUFR router = new DiagnosedCUFR(
+                design, new RWRouteConfig(arguments)
+            );
+            Thread monitor = new Thread(
+                router::monitorSlowConnections,
+                "EmuFlow-RWRoute-slow-connection-monitor"
+            );
+            monitor.setDaemon(true);
+            monitor.start();
+            try {
+                return routeDesign(router);
+            } finally {
+                router.monitorRunning = false;
+                monitor.interrupt();
+            }
         }
     }
 
@@ -482,13 +559,11 @@ public final class EmuFlowRWRoute {
         // RWRoute.  HUS is its upstream strategy for large, difficult
         // negotiated-congestion problems; keep it enabled once placement has
         // selected the smallest feasible physical region for this partition.
-        CUFR.routeDesignWithUserDefinedArguments(
-            design,
-            new String[] {
-                "--hus", "--nonTimingDriven", "--useUTurnNodes",
-                "--enlargeBoundingBox"
-            }
-        );
+        String[] routeArguments = new String[] {
+            "--hus", "--nonTimingDriven", "--useUTurnNodes",
+            "--enlargeBoundingBox"
+        };
+        DiagnosedCUFR.routeDesignWithProbe(design, routeArguments);
 
         // RapidWright's lightweight timing model evaluates the concrete
         // routed PIP tree in picoseconds.  Keep this deliberately separate
