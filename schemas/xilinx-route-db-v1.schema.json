@@ -3,7 +3,7 @@
   "$id": "https://emuflow.org/schemas/xilinx-route-db-v1.schema.json",
   "title": "EmuFlow RapidWright route certificate",
   "type": "object",
-  "required": ["schema", "status", "provider", "part", "source", "cells", "nets", "excluded_nets", "summary"],
+  "required": ["schema", "status", "provider", "part", "source", "cells", "materialization", "nets", "excluded_nets", "timing", "summary"],
   "properties": {
     "schema": {"const": "emuflow.xilinx-route-db/v1"},
     "status": {"enum": ["candidate", "pass"]},
@@ -21,9 +21,68 @@
       }
     },
     "cells": {"type": "integer", "minimum": 0},
-    "nets": {"type": "array", "items": {"type": "object"}},
-    "excluded_nets": {"type": "array", "items": {"type": "object"}},
-    "summary": {"type": "object"}
+    "materialization": {
+      "type": "object",
+      "required": ["route_cells", "physical_cells", "transformed_dsp48e2_cells", "router"],
+      "additionalProperties": false,
+      "properties": {
+        "route_cells": {"type": "integer", "minimum": 0},
+        "physical_cells": {"type": "integer", "minimum": 0},
+        "transformed_dsp48e2_cells": {"type": "integer", "minimum": 0},
+        "router": {"const": "CUFR"}
+      }
+    },
+    "nets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["net", "kind", "qualification", "pins", "pips", "has_gap", "source_present", "sink_count"],
+        "properties": {
+          "net": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["signal", "clock", "static_gnd", "static_vcc"]},
+          "qualification": {"enum": ["ordinary-fabric-signal", "fabric-routed-clock", "device-tied-static"]},
+          "pins": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+          "pips": {"type": "array", "items": {"type": "object"}},
+          "roots": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+          "has_gap": {"const": false},
+          "source_present": {"type": "boolean"},
+          "sink_count": {"type": "integer", "minimum": 1}
+        },
+        "allOf": [
+          {"if": {"properties": {"kind": {"const": "signal"}}}, "then": {"properties": {"qualification": {"const": "ordinary-fabric-signal"}}, "not": {"required": ["roots"]}}},
+          {"if": {"properties": {"kind": {"const": "clock"}}}, "then": {"properties": {"qualification": {"const": "fabric-routed-clock"}}, "not": {"required": ["roots"]}}},
+          {"if": {"properties": {"kind": {"enum": ["static_gnd", "static_vcc"]}}}, "then": {"required": ["roots"], "properties": {"qualification": {"const": "device-tied-static"}, "source_present": {"const": false}}}}
+        ],
+        "additionalProperties": false
+      }
+    },
+    "excluded_nets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["net", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "net": {"type": "string", "minLength": 1},
+          "reason": {"enum": ["boundary_or_driverless", "multiple_driver_or_sinkless", "intra_site"]}
+        }
+      }
+    },
+    "timing": {"type": "object"},
+    "summary": {
+      "type": "object",
+      "required": ["candidate_nets", "certificate_nets", "static_nets", "static_sinks", "nets_with_pips", "pips", "excluded_nets"],
+      "additionalProperties": false,
+      "properties": {
+        "candidate_nets": {"type": "integer", "minimum": 0},
+        "certificate_nets": {"type": "integer", "minimum": 0},
+        "static_nets": {"type": "integer", "minimum": 0, "maximum": 2},
+        "static_sinks": {"type": "integer", "minimum": 0},
+        "nets_with_pips": {"type": "integer", "minimum": 0},
+        "pips": {"type": "integer", "minimum": 0},
+        "excluded_nets": {"type": "integer", "minimum": 0}
+      }
+    }
   },
   "additionalProperties": false
 }

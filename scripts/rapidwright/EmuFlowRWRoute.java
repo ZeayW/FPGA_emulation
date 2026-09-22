@@ -105,6 +105,28 @@ public final class EmuFlowRWRoute {
         return value;
     }
 
+    private static JSONArray sortedStaticRoots(Net net, boolean vcc) {
+        Set<String> roots = new LinkedHashSet<>();
+        for (PIP pip : net.getPIPs()) {
+            Node start = pip.isReversed() ? pip.getEndNode() : pip.getStartNode();
+            Node end = pip.isReversed() ? pip.getStartNode() : pip.getEndNode();
+            for (Node node : new Node[] {start, end}) {
+                if (node != null && (vcc ? node.isTiedToVcc() : node.isTiedToGnd())) {
+                    roots.add(node.toString());
+                }
+            }
+        }
+        for (SitePinInst pin : net.getPins()) {
+            Node node = pin.getConnectedNode();
+            if (node != null && (vcc ? node.isTiedToVcc() : node.isTiedToGnd())) {
+                roots.add(node.toString());
+            }
+        }
+        List<String> sorted = new ArrayList<>(roots);
+        sorted.sort(String::compareTo);
+        return new JSONArray(sorted);
+    }
+
     private static int integerParameter(MaterializedCell cell, String name) {
         String value = cell.parameters.get(name);
         if (value == null) return 0;
@@ -478,7 +500,15 @@ public final class EmuFlowRWRoute {
             Net net = nets.get(netName);
             JSONObject record = new JSONObject();
             record.put("net", netName);
-            record.put("kind", netKinds.get(netName));
+            String kind = netKinds.get(netName);
+            if (!kind.equals("signal") && !kind.equals("clock")) {
+                throw new IllegalStateException("unsupported routed net kind: " + kind);
+            }
+            record.put("kind", kind);
+            record.put(
+                "qualification",
+                kind.equals("clock") ? "fabric-routed-clock" : "ordinary-fabric-signal"
+            );
             JSONArray pins = new JSONArray();
             SitePinInst source = net.getSource();
             for (SitePinInst pin : net.getPins()) {
@@ -514,6 +544,42 @@ public final class EmuFlowRWRoute {
             record.put("sink_count", net.getSinkPins().size());
             if (net.hasPIPs()) routed++;
             pips += sortedPips.size();
+            routeNets.put(record);
+        }
+        int staticNets = 0;
+        int staticSinks = 0;
+        for (Net net : new Net[] {design.getGndNet(), design.getVccNet()}) {
+            if (net == null || net.getSinkPins().isEmpty()) continue;
+            boolean vcc = net.isVCCNet();
+            if (!vcc && !net.isGNDNet()) {
+                throw new IllegalStateException("unexpected non-static global net " + net.getName());
+            }
+            JSONObject record = new JSONObject();
+            record.put("net", net.getName());
+            record.put("kind", vcc ? "static_vcc" : "static_gnd");
+            record.put("qualification", "device-tied-static");
+            JSONArray pins = new JSONArray();
+            for (SitePinInst pin : net.getPins()) pins.put(pinRecord(pin));
+            record.put("pins", pins);
+            JSONArray netPips = new JSONArray();
+            List<PIP> sortedPips = new ArrayList<>(net.getPIPs());
+            sortedPips.sort(Comparator.comparing(PIP::toString));
+            for (PIP pip : sortedPips) netPips.put(pipRecord(pip));
+            record.put("pips", netPips);
+            JSONArray roots = sortedStaticRoots(net, vcc);
+            if (roots.isEmpty()) {
+                throw new IllegalStateException(
+                    "static net has sinks but no device-tied route root: " + net.getName()
+                );
+            }
+            record.put("roots", roots);
+            record.put("has_gap", net.hasGapRouting());
+            record.put("source_present", net.getSource() != null);
+            record.put("sink_count", net.getSinkPins().size());
+            if (net.hasPIPs()) routed++;
+            pips += sortedPips.size();
+            staticNets++;
+            staticSinks += net.getSinkPins().size();
             routeNets.put(record);
         }
         JSONObject output = new JSONObject();
@@ -554,6 +620,9 @@ public final class EmuFlowRWRoute {
             .put("maximum_route_delay_ps", maximumRouteDelayPs));
         output.put("summary", new JSONObject()
             .put("candidate_nets", netNames.size())
+            .put("certificate_nets", routeNets.length())
+            .put("static_nets", staticNets)
+            .put("static_sinks", staticSinks)
             .put("nets_with_pips", routed)
             .put("pips", pips)
             .put("excluded_nets", excluded.length()));

@@ -367,6 +367,8 @@ def validate_xilinx_route_db(
         raise ValidationError("XilinxRouteDB header is invalid")
     if value.get("status") not in {"candidate", "pass"}:
         raise ValidationError("XilinxRouteDB status is invalid")
+    if value.get("provider") != "rapidwright-rwroute-2026.1.0":
+        raise ValidationError("XilinxRouteDB provider identity is invalid")
     route_cells = value.get("cells")
     materialization = value.get("materialization")
     if (
@@ -426,29 +428,100 @@ def validate_xilinx_route_db(
     input_digest = source.get("rwroute_input_sha256")
     if not isinstance(input_digest, str) or re.fullmatch(r"[0-9a-f]{64}", input_digest) is None:
         raise ValidationError("XilinxRouteDB source.rwroute_input_sha256 is invalid")
+    route_nets = value.get("nets")
+    excluded_nets = value.get("excluded_nets")
+    summary = value.get("summary")
+    if (
+        not isinstance(route_nets, list)
+        or not isinstance(excluded_nets, list)
+        or not isinstance(summary, dict)
+    ):
+        raise ValidationError("XilinxRouteDB net collections are invalid")
     used_pips: Dict[Tuple[str, str, str], str] = {}
+    seen_nets: Set[str] = set()
     checked_nets = 0
     checked_sinks = 0
+    static_nets = 0
+    static_sinks = 0
+    clock_nets = 0
+    nets_with_pips = 0
     route_delays_ps: List[float] = []
-    for index, net in enumerate(value.get("nets", [])):
+    for index, net in enumerate(route_nets):
         context = f"route.nets[{index}]"
         if not isinstance(net, dict) or not isinstance(net.get("net"), str):
             raise ValidationError(f"{context}: invalid net")
-        if net.get("has_gap"):
+        net_name = net["net"]
+        if not net_name or net_name in seen_nets:
+            raise ValidationError(f"{context}: duplicate or empty net identity")
+        seen_nets.add(net_name)
+        if net.get("has_gap") is not False:
             raise ValidationError(f"{context}: RWRoute reports gap routing")
         pins = net.get("pins")
         pips = net.get("pips")
         if not isinstance(pins, list) or not isinstance(pips, list):
             raise ValidationError(f"{context}: pins/PIPs are invalid")
-        sources = [pin for pin in pins if pin.get("is_output")]
-        sinks = [pin for pin in pins if not pin.get("is_output")]
-        if len(sources) != 1 or not sinks:
-            raise ValidationError(f"{context}: routed net lacks one source and sinks")
-        if any(pin.get("node") is None for pin in pins):
-            raise ValidationError(f"{context}: site pin lacks a connected route node")
+        if not pins:
+            raise ValidationError(f"{context}: routed net has no site pins")
+        for pin_index, pin in enumerate(pins):
+            if (
+                not isinstance(pin, dict)
+                or not isinstance(pin.get("site"), str)
+                or not pin["site"]
+                or not isinstance(pin.get("pin"), str)
+                or not pin["pin"]
+                or not isinstance(pin.get("is_output"), bool)
+                or not isinstance(pin.get("node"), str)
+                or not pin["node"]
+            ):
+                raise ValidationError(f"{context}.pins[{pin_index}]: invalid site pin")
+        sources = [pin for pin in pins if pin["is_output"]]
+        sinks = [pin for pin in pins if not pin["is_output"]]
+        kind = net.get("kind")
+        qualification = net.get("qualification")
+        static = kind in {"static_gnd", "static_vcc"}
+        if kind == "signal":
+            if qualification != "ordinary-fabric-signal":
+                raise ValidationError(f"{context}: signal qualification is invalid")
+        elif kind == "clock":
+            if qualification != "fabric-routed-clock":
+                raise ValidationError(f"{context}: clock qualification is invalid")
+            clock_nets += 1
+        elif static:
+            if qualification != "device-tied-static":
+                raise ValidationError(f"{context}: static qualification is invalid")
+            static_nets += 1
+            static_sinks += len(sinks)
+        else:
+            raise ValidationError(f"{context}: unsupported routed net kind")
+        if static:
+            roots = net.get("roots")
+            if (
+                sources
+                or not sinks
+                or not isinstance(roots, list)
+                or not roots
+                or any(not isinstance(root, str) or not root for root in roots)
+                or len(set(roots)) != len(roots)
+            ):
+                raise ValidationError(f"{context}: static route roots/sinks are invalid")
+            source_nodes = set(roots)
+        else:
+            if len(sources) != 1 or not sinks or "roots" in net:
+                raise ValidationError(f"{context}: routed net lacks one source and sinks")
+            source_nodes = {sources[0]["node"]}
+        if net.get("source_present") is not bool(sources):
+            raise ValidationError(f"{context}: source-presence summary disagrees")
+        if net.get("sink_count") != len(sinks):
+            raise ValidationError(f"{context}: sink-count summary disagrees")
         for pin_index, pin in enumerate(pins):
             delay = pin.get("route_delay_ps")
-            if pin.get("is_output"):
+            if static:
+                if delay is not None:
+                    raise ValidationError(
+                        f"{context}.pins[{pin_index}]: static pin has a route delay"
+                    )
+                continue
+            if pin["is_output"]:
                 if delay is not None:
                     raise ValidationError(
                         f"{context}.pins[{pin_index}]: source has a route delay"
@@ -465,6 +538,7 @@ def validate_xilinx_route_db(
                 )
             route_delays_ps.append(float(delay))
         graph: Dict[str, Set[str]] = defaultdict(set)
+        local_pips: Set[Tuple[str, str, str]] = set()
         for pip_index, pip in enumerate(pips):
             if not isinstance(pip, dict):
                 raise ValidationError(f"{context}.pips[{pip_index}]: invalid PIP")
@@ -481,14 +555,18 @@ def validate_xilinx_route_db(
                 raise ValidationError(f"{context}.pips[{pip_index}]: invalid PIP identity")
             wires = sorted([start_wire, end_wire])
             key = (tile, wires[0], wires[1])
+            if key in local_pips:
+                raise ValidationError(f"{context}: duplicate PIP {key}")
+            local_pips.add(key)
             previous = used_pips.get(key)
-            if previous is not None and previous != net["net"]:
+            if previous is not None and previous != net_name:
                 raise ValidationError(f"routing conflict on PIP {key}")
-            used_pips[key] = net["net"]
+            used_pips[key] = net_name
             graph[start].add(end)
-        source_node = sources[0]["node"]
-        reachable = {source_node}
-        work = deque([source_node])
+        if pips:
+            nets_with_pips += 1
+        reachable = set(source_nodes)
+        work = deque(sorted(source_nodes))
         while work:
             current = work.popleft()
             for following in graph.get(current, set()):
@@ -502,6 +580,35 @@ def validate_xilinx_route_db(
             )
         checked_nets += 1
         checked_sinks += len(sinks)
+    excluded_names: Set[str] = set()
+    allowed_exclusions = {
+        "boundary_or_driverless", "multiple_driver_or_sinkless", "intra_site"
+    }
+    for index, excluded in enumerate(excluded_nets):
+        context = f"route.excluded_nets[{index}]"
+        if not isinstance(excluded, dict) or set(excluded) != {"net", "reason"}:
+            raise ValidationError(f"{context}: invalid exclusion record")
+        net_name, reason = excluded.get("net"), excluded.get("reason")
+        if (
+            not isinstance(net_name, str)
+            or not net_name
+            or net_name in seen_nets
+            or net_name in excluded_names
+            or reason not in allowed_exclusions
+        ):
+            raise ValidationError(f"{context}: invalid or conflicting exclusion")
+        excluded_names.add(net_name)
+    expected_summary = {
+        "candidate_nets": checked_nets - static_nets,
+        "certificate_nets": checked_nets,
+        "static_nets": static_nets,
+        "static_sinks": static_sinks,
+        "nets_with_pips": nets_with_pips,
+        "pips": len(used_pips),
+        "excluded_nets": len(excluded_nets),
+    }
+    if summary != expected_summary:
+        raise ValidationError("XilinxRouteDB summary disagrees with route certificate")
     timing = value.get("timing")
     expected_timing = {
         "provider": "rapidwright-lightweight",
@@ -568,4 +675,7 @@ def validate_xilinx_route_db(
         "route_cells": route_cells,
         "physical_cells": physical_cells,
         "transformed_dsp48e2_cells": transformed_dsp48e2,
+        "static_nets": static_nets,
+        "static_sinks": static_sinks,
+        "clock_nets": clock_nets,
     }

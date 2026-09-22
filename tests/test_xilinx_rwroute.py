@@ -45,7 +45,12 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "transformed_dsp48e2_cells": 0,
                 "router": "CUFR",
             },
-            "excluded_nets": [], "summary": {},
+            "excluded_nets": [],
+            "summary": {
+                "candidate_nets": 1, "certificate_nets": 1,
+                "static_nets": 0, "static_sinks": 0,
+                "nets_with_pips": 1, "pips": 3, "excluded_nets": 0,
+            },
             "timing": {
                 "provider": "rapidwright-lightweight",
                 "family": "UltraScalePlus", "units": "ps",
@@ -71,7 +76,9 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "maximum_route_delay_ps": 27.5,
             },
             "nets": [{
-                "net": "n1", "kind": "signal", "has_gap": False,
+                "net": "n1", "kind": "signal",
+                "qualification": "ordinary-fabric-signal", "has_gap": False,
+                "source_present": True, "sink_count": 2,
                 "pins": [
                     {"site": "S0", "pin": "O", "is_output": True, "node": "A"},
                     {"site": "S1", "pin": "I", "is_output": False, "node": "B", "route_delay_ps": 12.0},
@@ -97,6 +104,51 @@ class XilinxRWRouteTest(unittest.TestCase):
             broken["nets"][0]["pips"].pop()
             path.write_text(json.dumps(broken), encoding="utf-8")
             with self.assertRaises(ValidationError):
+                validate_xilinx_route_db(path)
+
+    def test_checker_accepts_device_tied_static_forest(self):
+        value = self._route()
+        value["nets"].append({
+            "net": "GLOBAL_LOGIC1", "kind": "static_vcc",
+            "qualification": "device-tied-static", "has_gap": False,
+            "source_present": False, "sink_count": 2,
+            "roots": ["VCC0", "VCC1"],
+            "pins": [
+                {"site": "S3", "pin": "A1", "is_output": False, "node": "D"},
+                {"site": "S4", "pin": "CE", "is_output": False, "node": "E"},
+            ],
+            "pips": [
+                {"tile": "T3", "start_wire": "W6", "end_wire": "W7", "start_node": "VCC0", "end_node": "D"},
+                {"tile": "T4", "start_wire": "W8", "end_wire": "W9", "start_node": "VCC1", "end_node": "E"},
+            ],
+        })
+        value["summary"].update({
+            "certificate_nets": 2, "static_nets": 1, "static_sinks": 2,
+            "nets_with_pips": 2, "pips": 5,
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "route.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            report = validate_xilinx_route_db(path)
+            self.assertEqual(report["static_nets"], 1)
+            self.assertEqual(report["static_sinks"], 2)
+            broken = copy.deepcopy(value)
+            broken["nets"][1]["roots"] = ["NOT_CONNECTED"]
+            path.write_text(json.dumps(broken), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "source-connected"):
+                validate_xilinx_route_db(path)
+
+    def test_checker_requires_explicit_clock_qualification(self):
+        value = self._route()
+        value["nets"][0]["kind"] = "clock"
+        value["nets"][0]["qualification"] = "fabric-routed-clock"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "route.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            self.assertEqual(validate_xilinx_route_db(path)["clock_nets"], 1)
+            value["nets"][0]["qualification"] = "global-clock"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "clock qualification"):
                 validate_xilinx_route_db(path)
 
     def test_checker_rejects_cross_net_resource_conflict(self):

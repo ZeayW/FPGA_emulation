@@ -4436,7 +4436,12 @@ RWRoute: it retains RWRoute's negotiated-congestion legality model while
 partitioning general-signal routing across CPU workers.  The sealed route
 certificate identifies CUFR explicitly; there is no silent fallback to the
 serial router.  Static A6/CE/SR obligations remain real RapidWright static-net
-sinks and are checked rather than discarded.
+sinks and are checked rather than discarded.  The certificate includes the
+routed VCC/GND forests, identifies every root that RapidWright's device
+database marks as tied to the corresponding value, and requires every static
+sink to be reachable from one of those roots.  Clock nets in this Route A
+adapter are explicitly qualified as fabric-routed clocks; the certificate
+makes no unsupported global clock-network claim.
 The adapter emits only a compact, source-sealed route certificate. An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks
