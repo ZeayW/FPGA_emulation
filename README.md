@@ -4441,13 +4441,17 @@ and does not silently acquire a region constraint.
 The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.
-The production RapidWright backend uses the unrestricted whole-device mode:
-OpenPARF optimizes over the complete XCVU19P site grid and the exact legalizer
-may use all physical SLRs.  Every dedicated cascade chain is nevertheless
-required to remain within one SLR, and the independent validator rechecks that
-boundary explicitly.  The single-SLR planner remains an explicit standalone
-qualification tool; production does not silently discard three quarters of a
-multi-SLR device.
+The production RapidWright backend chooses the smallest exact feasible physical
+region.  It first proves whether the packed partition fits one SLR under the
+same site-template, clock-region, cascade, and 75% local-capacity contracts used
+by the exact legalizer.  If it does, OpenPARF and final legalization both use
+that named SLR; this avoids expanding every RWRoute connection search over four
+SLRs.  If no SLR passes the exact feasibility proof, production retains the
+unrestricted whole-device problem and therefore does not discard usable device
+capacity.  Unexpected planning or validation errors fail closed rather than
+triggering the full-device path.  Every dedicated cascade chain must remain
+within one SLR in both modes, and the independent validator rechecks that
+boundary explicitly.
 For split BRAM tiles, the placement certificate retains the FPGA-Interchange
 tile anchor and also materializes the exact RapidWright site of every
 RAMB18E2/RAMB36E2 assignment; this prevents the lower and upper BRAM views from

@@ -25,6 +25,10 @@ XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 0.75
 _SITE_XY_RE = re.compile(r"^(?P<kind>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 
 
+class XilinxSingleSlrInfeasible(ValidationError):
+    """The packed partition cannot be legally contained in any one SLR."""
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -555,7 +559,7 @@ def plan_xilinx_single_slr(
             f"{entry['slr']}: {entry['status']}"
             for entry in candidate_reports
         )
-        raise ValidationError(
+        raise XilinxSingleSlrInfeasible(
             "no single SLR has sufficient exact site-template capacity: " + details
         )
 
@@ -637,7 +641,7 @@ def plan_xilinx_single_slr(
         # written back into the constraints file, whose digest is already bound
         # into that placement certificate.
         return result
-    raise ValidationError(
+    raise XilinxSingleSlrInfeasible(
         "capacity-feasible SLRs failed exact cascade legalization: "
         + "; ".join(exact_failures)
     )

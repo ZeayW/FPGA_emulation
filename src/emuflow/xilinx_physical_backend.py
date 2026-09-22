@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
@@ -16,8 +17,11 @@ from .xilinx_openparf import run_xilinx_openparf_guidance
 from .xilinx_opensta import run_xilinx_routed_opensta
 from .xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
 from .xilinx_placement import (
+    XilinxSingleSlrInfeasible,
+    plan_xilinx_single_slr,
     place_xilinx_clusters,
     validate_xilinx_placement,
+    validate_xilinx_single_slr_plan,
 )
 from .xilinx_rwroute import (
     export_rwroute_input,
@@ -107,6 +111,39 @@ def run_rapidwright_partition_backend(
     packing_check = validate_xilinx_packing(
         mapped_path, packed_path, architecture_path=architecture_path
     )
+    # Routing a partition over the whole four-SLR device when it already fits
+    # one SLR needlessly enlarges every connection search.  Prove exact
+    # single-SLR feasibility first (including the 75% clock-region/site caps),
+    # then solve OpenPARF inside that region.  A partition that genuinely does
+    # not fit one SLR retains the complete-device placement problem.
+    region_plan_path = output_dir / "placement-region.json"
+    region_plan = None
+    with tempfile.TemporaryDirectory(
+        prefix=".placement-region-preflight-", dir=output_dir
+    ) as preflight_root:
+        preflight_placement_path = Path(preflight_root) / "placement.json"
+        try:
+            planned_region = plan_xilinx_single_slr(
+                packed_path,
+                architecture_path,
+                region_plan_path,
+                preflight_placement_path,
+            )
+            selected_slr = planned_region["selected_slr"]
+            region_plan_check = validate_xilinx_single_slr_plan(
+                packed_path,
+                architecture_path,
+                region_plan_path,
+                preflight_placement_path,
+            )
+            # Persist only the compact constraints certificate.  The planner's
+            # returned preflight-placement path is intentionally temporary.
+            region_plan = read_json(region_plan_path)
+        except XilinxSingleSlrInfeasible:
+            selected_slr = None
+            region_plan_check = None
+            region_plan_path.unlink(missing_ok=True)
+
     guidance_root = output_dir / "openparf-guidance"
     guidance_report = run_xilinx_openparf_guidance(
         mapped_path,
@@ -116,6 +153,7 @@ def run_rapidwright_partition_backend(
         top=mapped_report["top"],
         openparf_install=openparf_install,
         openparf_python=openparf_python,
+        slr=selected_slr,
     )
     guidance_path = guidance_root / "guidance.json"
     placement_path = output_dir / "placement.json"
@@ -124,11 +162,13 @@ def run_rapidwright_partition_backend(
         architecture_path,
         placement_path,
         guidance_path=guidance_path,
+        constraints_path=(region_plan_path if selected_slr is not None else None),
     )
     placement_check = validate_xilinx_placement(
         packed_path,
         architecture_path,
         placement_path,
+        constraints_path=(region_plan_path if selected_slr is not None else None),
     )
     rwroute_input = output_dir / "rwroute.tsv"
     route_input_report = export_rwroute_input(
@@ -277,6 +317,10 @@ def run_rapidwright_partition_backend(
             "route": _artifact(route_path),
             "routed_timing": _artifact(routed_timing_path),
             "opensta_summary": _artifact(opensta_summary_path),
+            **(
+                {"placement_region": _artifact(region_plan_path)}
+                if selected_slr is not None else {}
+            ),
         },
     }
     return {
@@ -286,6 +330,12 @@ def run_rapidwright_partition_backend(
         "mapped_netlist": mapped_report,
         "packing": {"result": packed["summary"], "validation": packing_check},
         "placement": {
+            "region": {
+                "scope": "single-slr" if selected_slr is not None else "full-device",
+                "selected_slr": selected_slr,
+                "plan": region_plan,
+                "validation": region_plan_check,
+            },
             "global_guidance": guidance_report,
             "result": placement["summary"],
             "validation": placement_check,
