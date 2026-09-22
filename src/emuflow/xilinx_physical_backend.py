@@ -16,7 +16,11 @@ from .xilinx_netlist import emit_xilinx_mapped_json
 from .xilinx_openparf import run_xilinx_openparf_guidance
 from .xilinx_opensta import run_xilinx_routed_opensta
 from .xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
-from .xilinx_placement import place_xilinx_clusters, validate_xilinx_placement
+from .xilinx_placement import (
+    XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT,
+    place_xilinx_clusters,
+    validate_xilinx_placement,
+)
 from .xilinx_rwroute import (
     export_rwroute_input,
     run_rwroute,
@@ -91,7 +95,11 @@ def _select_xilinx_slr_window(
         for start in range(len(ordered) - width + 1):
             window = tuple(ordered[start:start + width])
             capacity = sum((capacities[name] for name in window), Counter())
-            if any(demand[key] > math.floor(0.75 * capacity[key]) for key in demand):
+            if any(
+                demand[key]
+                > math.floor(XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT * capacity[key])
+                for key in demand
+            ):
                 continue
             center = sum(sum(rows[name]) / len(rows[name]) for name in window) / width
             feasible.append((abs(center - device_center), window))

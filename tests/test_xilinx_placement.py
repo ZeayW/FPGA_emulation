@@ -468,19 +468,19 @@ class XilinxPlacementTest(unittest.TestCase):
                 )
             self.assertEqual(
                 {key: len(entries) for key, entries in placed_by_region.items()},
-                {"X0Y0": 6, "X1Y0": 1},
+                {"X0Y0": 5, "X1Y0": 2},
             )
             self.assertEqual(
                 result["summary"]["maximum_clock_region_site_utilization"],
-                0.75,
+                0.625,
             )
             self.assertEqual(
                 result["summary"]["maximum_clock_region_site_reservation"],
                 1.0,
             )
 
-            # Move the spill cluster into the only unused site in the already
-            # full clock region. It remains a legal, non-overlapping SLICEL,
+            # Move a spill cluster into an unused site in the already full
+            # clock region. It remains a legal, non-overlapping SLICEL,
             # so only the independent routability policy should reject it.
             spill = placed_by_region["X1Y0"][0]
             used = {entry["site"] for entry in placed_by_region["X0Y0"]}

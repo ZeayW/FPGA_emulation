@@ -29,7 +29,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             {"clk": 40.0, "fabric_clk": 4.0},
         )
 
-    def test_slr_window_uses_central_pair_and_expands_for_capacity(self):
+    def test_slr_window_uses_central_window_and_expands_for_capacity(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             arch = root / "arch.json"
@@ -64,7 +64,8 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 ],
             }), encoding="utf-8")
             self.assertEqual(
-                _select_xilinx_slr_window(packed, arch), ("SLR1", "SLR2")
+                _select_xilinx_slr_window(packed, arch),
+                ("SLR0", "SLR1", "SLR2"),
             )
 
     def test_production_backend_uses_compact_two_slr_window(self):
