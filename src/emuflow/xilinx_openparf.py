@@ -368,7 +368,7 @@ def export_xilinx_cluster_bookshelf(
         # at the first solution satisfying OpenPARF's logic and sparse-hard-
         # resource guidance limits, before augmented multipliers can overshoot
         # that valid point.
-        "random_seed": 1000, "max_global_place_iters": 1000,
+        "random_seed": 1000, "max_global_place_iters": 2000,
         # OpenPARF is a continuous global-guidance provider here.  Its
         # single-site-resource lookahead is retained for sparse hard columns,
         # while the architecture-aware Xilinx legalizer below this stage is

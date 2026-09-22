@@ -4464,9 +4464,12 @@ global `allowed_slrs` constraint; it is not duplicated into every cluster
 record. OpenPARF guidance uses its native RUDY- and pin-utilization-driven area
 inflation for packed slice clusters before exact legalization: this preserves
 the bounded routing search region while preventing one-site density alone from
-hiding large differences in external routing demand. Every dedicated cascade
-chain must remain within one SLR, and the independent validator checks that
-physical boundary explicitly.
+hiding large differences in external routing demand. Its continuous
+convergence certificate gates the inflated slice density; sparse hard-macro
+pseudo-density is not treated as physical legality because the downstream
+architecture-aware legalizer checks every DSP/BRAM/URAM site exactly. Every
+dedicated cascade chain must remain within one SLR, and the independent
+validator checks that physical boundary explicitly.
 For split BRAM tiles, the placement certificate retains the FPGA-Interchange
 tile anchor and also materializes the exact RapidWright site of every
 RAMB18E2/RAMB36E2 assignment; this prevents the lower and upper BRAM views from

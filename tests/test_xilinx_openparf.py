@@ -75,7 +75,7 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertEqual(config["legalize_flag"], 0)
         self.assertEqual(config["detailed_place_flag"], 0)
         self.assertTrue(config["emuflow_continuous_global_guidance"])
-        self.assertEqual(config["max_global_place_iters"], 1000)
+        self.assertEqual(config["max_global_place_iters"], 2000)
         self.assertEqual(config["logic_area_type_names"], ["X_SLICE"])
         self.assertEqual(config["target_density"], 0.80)
         self.assertEqual(config["gp_adjust_area"], 1)
@@ -394,6 +394,7 @@ class XilinxOpenparfTest(unittest.TestCase):
                 io_at_names=[], logic_area_type_names=["X_SLICE"],
                 stop_overflow=0.2, max_global_place_iters=1000,
                 gp_adjust_area=False,
+                generic_cluster_placement_flag=False,
             ),
             cur_metric_record=SimpleNamespace(
                 opt_iter=SimpleNamespace(iteration=600)
@@ -406,6 +407,12 @@ class XilinxOpenparfTest(unittest.TestCase):
             opt_iter=SimpleNamespace(iteration=600), overflow=overflow
         )
         self.assertTrue(guidance_stop_condition(engine, [metric]))
+
+        engine.params.generic_cluster_placement_flag = True
+        certificate = build_convergence_certificate(engine)
+        self.assertEqual(certificate["status"], "pass")
+        self.assertEqual(certificate["checked_area_types"], [2])
+        self.assertEqual(certificate["overflow_limits"], [0.2])
 
     def test_routability_adjustment_must_converge_before_guidance_stops(self):
         class Tensor:
@@ -431,6 +438,7 @@ class XilinxOpenparfTest(unittest.TestCase):
                 io_at_names=[], logic_area_type_names=["X_SLICE"],
                 stop_overflow=0.2, max_global_place_iters=1000,
                 gp_adjust_area=True,
+                generic_cluster_placement_flag=True,
             ),
             num_gp_adjust_area=0,
             gp_adjust_area=True,

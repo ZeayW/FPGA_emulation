@@ -27,11 +27,11 @@ OPENPARF_CONTINUOUS_METRICS_SCHEMA = (
 def _overflow_limits(engine: Any, overflow: list[float]) -> tuple[list[int], list[float]]:
     """Return checked area types and their OpenPARF-compatible limits.
 
-    OpenPARF requires logic to reach ``stop_overflow`` but permits sparse
-    single-site resources such as DSP and BRAM to remain below twice that
-    value before discrete legalization.  Route A delegates that legalization
-    to its architecture-aware Xilinx legalizer and preserves the same global
-    guidance contract here.
+    OpenPARF requires logic to reach ``stop_overflow``. Generic upstream
+    flows permit sparse single-site resources such as DSP and BRAM to remain
+    below twice that value before discrete legalization. Route A delegates
+    all hard-macro legality to its exact architecture-aware Xilinx legalizer,
+    so its continuous certificate gates only the slice area type.
     """
 
     io_area_types = {
@@ -42,10 +42,19 @@ def _overflow_limits(engine: Any, overflow: list[float]) -> tuple[list[int], lis
         int(engine.placedb.getAreaTypeIndexFromName(name))
         for name in engine.params.logic_area_type_names
     }
+    generic_clusters = bool(
+        getattr(engine.params, "generic_cluster_placement_flag", False)
+    )
     checked_area_types = [
         area_type
         for area_type, group in enumerate(engine.data_cls.area_type_inst_groups)
-        if len(group) > 10 and area_type not in io_area_types
+        if len(group) > 10
+        and area_type not in io_area_types
+        # In Route A, sparse hard macros are intentionally left to the exact
+        # architecture-aware legalizer. Requiring their continuous pseudo-
+        # density to converge after slice-area inflation rejects otherwise
+        # legal guidance and says nothing about final DSP/BRAM/URAM sites.
+        and (not generic_clusters or area_type in logic_area_types)
     ]
     stop_overflow = float(engine.params.stop_overflow)
     limits = [
