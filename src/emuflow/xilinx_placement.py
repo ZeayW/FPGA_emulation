@@ -180,16 +180,32 @@ def _load_guidance(
 
 def _load_constraints(
     path: Optional[Path], cluster_ids: Set[str]
-) -> Tuple[Dict[str, Dict[str, str]], Optional[str]]:
+) -> Tuple[Dict[str, Dict[str, Any]], Optional[str]]:
     if path is None:
         return {}, None
     value = read_json(path)
     if not isinstance(value, dict) or value.get("schema") != XILINX_CONSTRAINTS_SCHEMA:
         raise ValidationError("Xilinx placement constraints header is invalid")
-    entries = value.get("clusters")
+    entries = value.get("clusters", [])
     if not isinstance(entries, list):
         raise ValidationError("Xilinx placement constraints clusters are invalid")
-    result: Dict[str, Dict[str, str]] = {}
+    result: Dict[str, Dict[str, Any]] = {}
+    global_entry = value.get("global")
+    if global_entry is not None:
+        if not isinstance(global_entry, dict):
+            raise ValidationError("Xilinx placement global constraint is invalid")
+        allowed_slrs = global_entry.get("allowed_slrs")
+        if (
+            not isinstance(allowed_slrs, list) or not allowed_slrs
+            or any(not isinstance(item, str) or not item for item in allowed_slrs)
+            or len(set(allowed_slrs)) != len(allowed_slrs)
+        ):
+            raise ValidationError(
+                "Xilinx placement global allowed_slrs constraint is invalid"
+            )
+        if set(global_entry) != {"allowed_slrs"}:
+            raise ValidationError("Xilinx placement global constraint has unknown fields")
+        result["@global"] = {"allowed_slrs": tuple(sorted(allowed_slrs))}
     for index, entry in enumerate(entries):
         context = f"constraints.clusters[{index}]"
         if not isinstance(entry, dict):
@@ -207,6 +223,14 @@ def _load_constraints(
             raise ValidationError(f"{context}: empty constraint")
         result[cluster_id] = contract
     return result, _sha256(path)
+
+
+def _cluster_constraint(
+    constraints: Mapping[str, Mapping[str, Any]], cluster_id: str
+) -> Dict[str, Any]:
+    result = dict(constraints.get("@global", {}))
+    result.update(constraints.get(cluster_id, {}))
+    return result
 
 
 def _template_contracts(
@@ -288,13 +312,16 @@ def _resolve_cluster_bels(
 
 
 def _site_satisfies_constraint(
-    site: Mapping[str, Any], constraint: Mapping[str, str]
+    site: Mapping[str, Any], constraint: Mapping[str, Any]
 ) -> bool:
     if constraint.get("site") not in {None, site["name"]}:
         return False
     region = site.get("physical_region")
     if not isinstance(region, dict):
         region = {}
+    allowed_slrs = constraint.get("allowed_slrs")
+    if allowed_slrs is not None and region.get("slr") not in allowed_slrs:
+        return False
     for key in ("slr", "clock_region"):
         if constraint.get(key) is not None and region.get(key) != constraint[key]:
             return False
@@ -799,7 +826,7 @@ def place_xilinx_clusters(
             local_usage[key] += 1
     candidates: Dict[str, List[str]] = {}
     candidate_cache: Dict[
-        Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...]], List[str]
+        Tuple[Tuple[str, ...], Tuple[Tuple[str, Any], ...]], List[str]
     ] = {}
     resolved_by_cluster_template: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for cluster_id, cluster in cluster_by_id.items():
@@ -812,7 +839,7 @@ def place_xilinx_clusters(
             legal_bases.append(base)
         cache_key = (
             tuple(sorted(legal_bases)),
-            tuple(sorted(constraints.get(cluster_id, {}).items())),
+            tuple(sorted(_cluster_constraint(constraints, cluster_id).items())),
         )
         legal_sites = candidate_cache.get(cache_key)
         if legal_sites is None:
@@ -821,7 +848,7 @@ def place_xilinx_clusters(
                 for base in legal_bases
                 for site_name in sites_by_template[base]
                 if _site_satisfies_constraint(
-                    sites[site_name], constraints.get(cluster_id, {})
+                    sites[site_name], _cluster_constraint(constraints, cluster_id)
                 )
             })
             candidate_cache[cache_key] = legal_sites
@@ -1274,7 +1301,9 @@ def validate_xilinx_placement(
                 )
         if (entry.get("x"), entry.get("y")) != (site["x"], site["y"]):
             raise ValidationError(f"{context}: coordinates do not match site")
-        if not _site_satisfies_constraint(site, constraints.get(cluster_id, {})):
+        if not _site_satisfies_constraint(
+            site, _cluster_constraint(constraints, cluster_id)
+        ):
             raise ValidationError(f"{context}: placement constraint is violated")
         resolved = _resolve_cluster_bels(cluster, contracts[site_base[site_name]])
         if resolved is not None:

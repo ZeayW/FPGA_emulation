@@ -137,6 +137,31 @@ class XilinxPlacementTest(unittest.TestCase):
         self.assertEqual(placed["dsp-b"], "DSP48E2_X0Y2")
         self.assertEqual(placed["dsp-a"], "DSP48E2_X0Y1")
 
+    def test_global_allowed_slr_window_is_compact_and_validated(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch, packed, guidance, _constraints = self._write_inputs(root)
+            constraints = root / "window.json"
+            constraints.write_text(json.dumps({
+                "schema": "emuflow.xilinx-placement-constraints/v1",
+                "global": {"allowed_slrs": ["SLR1"]},
+                "clusters": [],
+            }), encoding="utf-8")
+            output = root / "placement.json"
+            place_xilinx_clusters(
+                packed, arch, output,
+                guidance_path=guidance, constraints_path=constraints,
+            )
+            checked = validate_xilinx_placement(
+                packed, arch, output, constraints_path=constraints
+            )
+            value = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(checked["status"], "pass")
+        self.assertEqual(
+            {entry["physical_region"]["slr"] for entry in value["clusters"]},
+            {"SLR1"},
+        )
+
     def test_guidance_distance_uses_physical_tile_grid(self):
         architecture = {
             "schema": "emuflow.archdb/v1", "part": "physical-grid-test",

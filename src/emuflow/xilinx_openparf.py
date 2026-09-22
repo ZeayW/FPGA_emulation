@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
@@ -263,6 +263,7 @@ def export_xilinx_cluster_bookshelf(
     *,
     top: Optional[str] = None,
     slr: Optional[str] = None,
+    slrs: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     mapped = read_json(mapped_path)
     packed = read_json(packed_path)
@@ -270,7 +271,16 @@ def export_xilinx_cluster_bookshelf(
         raise ValidationError("PackedSiteNetlist header is invalid")
     architecture = ArchitectureDB.load(architecture_path)
     architecture_sites = architecture.value["sites"]
-    if slr is None:
+    if slr is not None and slrs is not None:
+        raise ValidationError("slr and slrs placement regions are mutually exclusive")
+    selected_slrs = None
+    if slrs is not None:
+        selected_slrs = tuple(sorted(set(slrs)))
+        if not selected_slrs:
+            raise ValidationError("physical SLR window is empty")
+    elif slr is not None:
+        selected_slrs = (slr,)
+    if selected_slrs is None:
         placement_sites = architecture_sites
     else:
         known_slrs = {
@@ -279,15 +289,18 @@ def export_xilinx_cluster_bookshelf(
             for region in [site.get("physical_region")]
             if isinstance(region, dict) and isinstance(region.get("slr"), str)
         }
-        if slr not in known_slrs:
-            raise ValidationError(f"ArchitectureDB has no physical SLR {slr!r}")
+        unknown = set(selected_slrs) - known_slrs
+        if unknown:
+            raise ValidationError(
+                f"ArchitectureDB has no physical SLR(s) {sorted(unknown)!r}"
+            )
         placement_sites = [
             site for site in architecture_sites
             if isinstance(site.get("physical_region"), dict)
-            and site["physical_region"].get("slr") == slr
+            and site["physical_region"].get("slr") in selected_slrs
         ]
         if not placement_sites:
-            raise ValidationError(f"physical SLR {slr!r} contains no sites")
+            raise ValidationError("physical SLR window contains no sites")
     names = {
         cluster["id"]: f"c{index}"
         for index, cluster in enumerate(sorted(packed["clusters"], key=lambda x: x["id"]))
@@ -399,7 +412,10 @@ def export_xilinx_cluster_bookshelf(
         "schema": XILINX_OPENPARF_MANIFEST_SCHEMA,
         "status": "pass", "part": architecture.part,
         "clusters": len(names), "nets": len(nets),
-        "placement_region": {"slr": slr} if slr is not None else None,
+        "placement_region": (
+            ({"slr": slr} if slr is not None else {"allowed_slrs": list(selected_slrs)})
+            if selected_slrs is not None else None
+        ),
         "resources": dict(sorted(demand.items())),
         "files": sorted([*files, "openparf.json", "name_map.json"]),
     }
@@ -496,12 +512,13 @@ def run_xilinx_openparf_guidance(
     *,
     top: Optional[str] = None,
     slr: Optional[str] = None,
+    slrs: Optional[Sequence[str]] = None,
     openparf_install: Optional[Path] = None,
     openparf_python: Optional[Path] = None,
 ) -> Dict[str, Any]:
     manifest = export_xilinx_cluster_bookshelf(
         mapped_path, packed_path, architecture_path, output_dir, top=top,
-        slr=slr,
+        slr=slr, slrs=slrs,
     )
     placement = run_openparf(
         output_dir / "openparf.json",

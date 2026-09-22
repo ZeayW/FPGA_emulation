@@ -4432,7 +4432,7 @@ reconstructs these local capacities from ArchitectureDB and rejects a
 certificate that exceeds the reservation; this prevents a low-total-
 utilization design from silently saturating a few clock regions before
 RWRoute.
-When a design must remain inside one SLR for the first RWRoute qualification,
+When an experiment explicitly requires a design to remain inside one SLR,
 that restriction is produced by the explicit single-SLR planner rather than a
 handwritten or alphabetically selected constraint. The planner first proves
 cluster-to-site-template capacity with an exact max-flow, ranks the surviving
@@ -4456,17 +4456,16 @@ and does not silently acquire a region constraint.
 The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.
-The production RapidWright backend chooses the smallest exact feasible physical
-region.  It first proves whether the packed partition fits one SLR under the
-same site-template, clock-region, cascade, and 75% local-capacity contracts used
-by the exact legalizer.  If it does, OpenPARF and final legalization both use
-that named SLR; this avoids expanding every RWRoute connection search over four
-SLRs.  If no SLR passes the exact feasibility proof, production retains the
-unrestricted whole-device problem and therefore does not discard usable device
-capacity.  Unexpected planning or validation errors fail closed rather than
-triggering the full-device path.  Every dedicated cascade chain must remain
-within one SLR in both modes, and the independent validator rechecks that
-boundary explicitly.
+The production RapidWright backend selects the smallest capacity-feasible
+contiguous SLR window, with a minimum of two SLRs on a multi-SLR device. This
+keeps CUFR's search region bounded without compressing a routability-sensitive
+partition into one SLR merely because its cells fit there. Equal-size feasible
+windows are ranked by distance from the physical device center. The selected
+window is recorded once as a global `allowed_slrs` constraint; it is not
+duplicated into every cluster record. The single-SLR planner remains an
+explicit standalone research tool. Every dedicated cascade chain must remain
+within one SLR, and the independent validator checks that physical boundary
+explicitly.
 For split BRAM tiles, the placement certificate retains the FPGA-Interchange
 tile anchor and also materializes the exact RapidWright site of every
 RAMB18E2/RAMB36E2 assignment; this prevents the lower and upper BRAM views from
@@ -4476,8 +4475,9 @@ Large designs use RapidWright CUFR, the parallel full-design specialization of
 RWRoute: it retains RWRoute's negotiated-congestion legality model while
 partitioning general-signal routing across CPU workers.  Route A selects its
 non-timing-driven HUS mode explicitly.  HUS is CUFR's upstream update strategy
-for large, difficult negotiated-congestion problems; the placement stage is
-responsible for selecting a compact feasible physical region before routing.
+for large, difficult negotiated-congestion problems; placement uses the
+certified contiguous SLR window and satisfies the explicit local headroom
+contract.
 The sealed route certificate records the exact
 `CUFR-HUS-non-timing-driven-uturn-enabled-adaptive-bbox` strategy; there is no silent
 fallback to the serial router.  U-turn routing resources are enabled because

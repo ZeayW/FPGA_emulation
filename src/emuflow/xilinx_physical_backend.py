@@ -3,26 +3,20 @@
 from __future__ import annotations
 
 import hashlib
-import tempfile
+import math
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .architecture import ArchitectureDB
 from .errors import ValidationError
-from .io import read_json
+from .io import read_json, write_json
 from .physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA
 from .xilinx_netlist import emit_xilinx_mapped_json
 from .xilinx_openparf import run_xilinx_openparf_guidance
 from .xilinx_opensta import run_xilinx_routed_opensta
 from .xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
-from .xilinx_placement import (
-    XilinxSingleSlrInfeasible,
-    plan_xilinx_single_slr,
-    place_xilinx_clusters,
-    validate_xilinx_placement,
-    validate_xilinx_single_slr_plan,
-)
+from .xilinx_placement import place_xilinx_clusters, validate_xilinx_placement
 from .xilinx_rwroute import (
     export_rwroute_input,
     run_rwroute,
@@ -37,6 +31,74 @@ from .xilinx_timing import (
     build_xilinx_routed_timing,
     validate_xilinx_routed_timing,
 )
+
+
+def _cluster_resource(cluster: Mapping[str, Any]) -> str:
+    kind = cluster.get("kind")
+    if kind in {"slice", "carry"}:
+        return "slice"
+    types = {item.get("cell_type") for item in cluster.get("assignments", [])}
+    if types == {"DSP48E2"}:
+        return "dsp"
+    if types and all(str(cell_type).startswith("RAMB") for cell_type in types):
+        return "bram"
+    if types == {"URAM288"}:
+        return "uram"
+    raise ValidationError(f"packed cluster {cluster.get('id')!r} has no region resource")
+
+
+def _site_resource(site_type: str) -> Optional[str]:
+    upper = site_type.upper()
+    if upper.startswith("SLICE"):
+        return "slice"
+    if upper.startswith("DSP"):
+        return "dsp"
+    if upper.startswith("RAMB"):
+        return "bram"
+    if upper.startswith("URAM"):
+        return "uram"
+    return None
+
+
+def _select_xilinx_slr_window(
+    packed_path: Path, architecture_path: Path
+) -> Tuple[str, ...]:
+    """Choose the smallest central contiguous window with routing headroom."""
+
+    packed = read_json(packed_path)
+    architecture = ArchitectureDB.load(architecture_path)
+    demand = Counter(_cluster_resource(cluster) for cluster in packed["clusters"])
+    capacities: Dict[str, Counter] = {}
+    rows: Dict[str, list[int]] = {}
+    for site in architecture.value["sites"]:
+        region = site.get("physical_region")
+        if not isinstance(region, dict) or not isinstance(region.get("slr"), str):
+            continue
+        slr = region["slr"]
+        resource = _site_resource(site["type"])
+        if resource is not None:
+            capacities.setdefault(slr, Counter())[resource] += 1
+        tile = site.get("tile")
+        row = tile.get("grid_row") if isinstance(tile, dict) else site.get("y")
+        if isinstance(row, int):
+            rows.setdefault(slr, []).append(row)
+    if not capacities or set(capacities) != set(rows):
+        raise ValidationError("ArchitectureDB has no complete physical SLR inventory")
+    ordered = sorted(capacities, key=lambda name: (sum(rows[name]) / len(rows[name]), name))
+    minimum = min(2, len(ordered))
+    device_center = (min(min(value) for value in rows.values()) + max(max(value) for value in rows.values())) / 2
+    for width in range(minimum, len(ordered) + 1):
+        feasible = []
+        for start in range(len(ordered) - width + 1):
+            window = tuple(ordered[start:start + width])
+            capacity = sum((capacities[name] for name in window), Counter())
+            if any(demand[key] > math.floor(0.75 * capacity[key]) for key in demand):
+                continue
+            center = sum(sum(rows[name]) / len(rows[name]) for name in window) / width
+            feasible.append((abs(center - device_center), window))
+        if feasible:
+            return min(feasible)[1]
+    raise ValidationError("packed partition exceeds the complete Xilinx device capacity")
 
 
 def _sha256(path: Path) -> str:
@@ -111,43 +173,13 @@ def run_rapidwright_partition_backend(
     packing_check = validate_xilinx_packing(
         mapped_path, packed_path, architecture_path=architecture_path
     )
-    # Routing a partition over the whole four-SLR device when it already fits
-    # one SLR needlessly enlarges every connection search.  Prove exact
-    # single-SLR feasibility first (including the 75% clock-region/site caps),
-    # then solve OpenPARF inside that region.  A partition that genuinely does
-    # not fit one SLR retains the complete-device placement problem.
-    region_plan_path = output_dir / "placement-region.json"
-    region_plan = None
-    with tempfile.TemporaryDirectory(
-        prefix=".placement-region-preflight-", dir=output_dir
-    ) as preflight_root:
-        preflight_placement_path = Path(preflight_root) / "placement.json"
-        try:
-            planned_region = plan_xilinx_single_slr(
-                packed_path,
-                architecture_path,
-                region_plan_path,
-                preflight_placement_path,
-            )
-            selected_slr = planned_region["selected_slr"]
-            region_plan_check = validate_xilinx_single_slr_plan(
-                packed_path,
-                architecture_path,
-                region_plan_path,
-                preflight_placement_path,
-            )
-            # Retain only the compact constraints certificate.  The planner's
-            # returned preflight-placement path is intentionally temporary.
-            region_plan = {
-                key: value
-                for key, value in planned_region.items()
-                if key != "placement"
-            }
-        except XilinxSingleSlrInfeasible:
-            selected_slr = None
-            region_plan_check = None
-            region_plan_path.unlink(missing_ok=True)
-
+    selected_slrs = _select_xilinx_slr_window(packed_path, architecture_path)
+    region_path = output_dir / "placement-region.json"
+    write_json(region_path, {
+        "schema": "emuflow.xilinx-placement-constraints/v1",
+        "global": {"allowed_slrs": list(selected_slrs)},
+        "clusters": [],
+    }, compact=True)
     guidance_root = output_dir / "openparf-guidance"
     guidance_report = run_xilinx_openparf_guidance(
         mapped_path,
@@ -157,7 +189,7 @@ def run_rapidwright_partition_backend(
         top=mapped_report["top"],
         openparf_install=openparf_install,
         openparf_python=openparf_python,
-        slr=selected_slr,
+        slrs=selected_slrs,
     )
     guidance_path = guidance_root / "guidance.json"
     placement_path = output_dir / "placement.json"
@@ -166,13 +198,13 @@ def run_rapidwright_partition_backend(
         architecture_path,
         placement_path,
         guidance_path=guidance_path,
-        constraints_path=(region_plan_path if selected_slr is not None else None),
+        constraints_path=region_path,
     )
     placement_check = validate_xilinx_placement(
         packed_path,
         architecture_path,
         placement_path,
-        constraints_path=(region_plan_path if selected_slr is not None else None),
+        constraints_path=region_path,
     )
     rwroute_input = output_dir / "rwroute.tsv"
     route_input_report = export_rwroute_input(
@@ -317,14 +349,11 @@ def run_rapidwright_partition_backend(
         "artifacts": {
             "mapped": _artifact(mapped_path),
             "packed": _artifact(packed_path),
+            "placement_region": _artifact(region_path),
             "placement": _artifact(placement_path),
             "route": _artifact(route_path),
             "routed_timing": _artifact(routed_timing_path),
             "opensta_summary": _artifact(opensta_summary_path),
-            **(
-                {"placement_region": _artifact(region_plan_path)}
-                if selected_slr is not None else {}
-            ),
         },
     }
     return {
@@ -335,10 +364,8 @@ def run_rapidwright_partition_backend(
         "packing": {"result": packed["summary"], "validation": packing_check},
         "placement": {
             "region": {
-                "scope": "single-slr" if selected_slr is not None else "full-device",
-                "selected_slr": selected_slr,
-                "plan": region_plan,
-                "validation": region_plan_check,
+                "scope": "contiguous-slr-window",
+                "allowed_slrs": list(selected_slrs),
             },
             "global_guidance": guidance_report,
             "result": placement["summary"],

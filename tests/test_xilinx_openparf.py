@@ -144,6 +144,36 @@ class XilinxOpenparfTest(unittest.TestCase):
             name_map["coordinate_system"]["y_axis"], [40]
         )
 
+    def test_cluster_export_can_limit_guidance_to_an_slr_window(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped = root / "mapped.json"
+            packed = root / "packed.json"
+            arch = root / "arch.json"
+            mapped.write_text(json.dumps({"modules": {"top": {
+                "attributes": {"top": "1"},
+                "cells": {"a": {"type": "LUT6", "port_directions": {"O": "output"}, "connections": {"O": [1]}}},
+            }}}), encoding="utf-8")
+            packed.write_text(json.dumps({
+                "schema": "emuflow.packed-site-netlist/v1",
+                "clusters": [{"id": "ca", "kind": "slice", "assignments": [{"instance": "a", "cell_type": "LUT6"}]}],
+            }), encoding="utf-8")
+            arch.write_text(json.dumps({
+                "schema": "emuflow.archdb/v1", "part": "test",
+                "source": {"format": "test/v1"}, "policy": {"name": "test"},
+                "site_templates": {"SLICEL": {"bels": [{"name": "A6LUT", "type": "LUT6", "z": 0, "compatible_cells": ["LUT6"]}], "alternative_templates": []}},
+                "sites": [
+                    {"name": f"SLICE_X0Y{i}", "type": "SLICEL", "template": "SLICEL", "x": 0, "y": i, "physical_region": {"slr": f"SLR{i}"}}
+                    for i in range(3)
+                ],
+            }), encoding="utf-8")
+            report = export_xilinx_cluster_bookshelf(
+                mapped, packed, arch, root / "out", slrs=("SLR0", "SLR1")
+            )
+            name_map = json.loads((root / "out" / "name_map.json").read_text())
+        self.assertEqual(report["placement_region"], {"allowed_slrs": ["SLR0", "SLR1"]})
+        self.assertEqual(name_map["coordinate_system"]["y_axis"], [0, 1])
+
     def test_cluster_export_aggregates_multiple_sites_in_one_physical_tile(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
