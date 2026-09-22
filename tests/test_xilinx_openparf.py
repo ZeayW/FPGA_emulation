@@ -78,6 +78,10 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertEqual(config["max_global_place_iters"], 1000)
         self.assertEqual(config["logic_area_type_names"], ["X_SLICE"])
         self.assertEqual(config["target_density"], 0.80)
+        self.assertEqual(config["gp_adjust_area"], 1)
+        self.assertEqual(config["gp_adjust_area_types"], ["X_SLICE"])
+        self.assertEqual(config["gp_adjust_route_area"], 1)
+        self.assertEqual(config["gp_adjust_pin_area"], 1)
 
     def test_cluster_export_can_limit_guidance_to_one_physical_slr(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -389,6 +393,7 @@ class XilinxOpenparfTest(unittest.TestCase):
             params=SimpleNamespace(
                 io_at_names=[], logic_area_type_names=["X_SLICE"],
                 stop_overflow=0.2, max_global_place_iters=1000,
+                gp_adjust_area=False,
             ),
             cur_metric_record=SimpleNamespace(
                 opt_iter=SimpleNamespace(iteration=600)
@@ -400,4 +405,38 @@ class XilinxOpenparfTest(unittest.TestCase):
         metric = SimpleNamespace(
             opt_iter=SimpleNamespace(iteration=600), overflow=overflow
         )
+        self.assertTrue(guidance_stop_condition(engine, [metric]))
+
+    def test_routability_adjustment_must_converge_before_guidance_stops(self):
+        class Tensor:
+            def __init__(self, value):
+                self.value = value
+
+            def detach(self):
+                return self
+
+            def cpu(self):
+                return self
+
+            def tolist(self):
+                return self.value
+
+        metric = SimpleNamespace(
+            opt_iter=SimpleNamespace(iteration=600), overflow=Tensor([0.19])
+        )
+        engine = SimpleNamespace(
+            data_cls=SimpleNamespace(area_type_inst_groups=[list(range(11))]),
+            placedb=SimpleNamespace(getAreaTypeIndexFromName=lambda _name: 0),
+            params=SimpleNamespace(
+                io_at_names=[], logic_area_type_names=["X_SLICE"],
+                stop_overflow=0.2, max_global_place_iters=1000,
+                gp_adjust_area=True,
+            ),
+            num_gp_adjust_area=0,
+            gp_adjust_area=True,
+        )
+        self.assertFalse(guidance_stop_condition(engine, [metric]))
+        engine.num_gp_adjust_area = 1
+        self.assertFalse(guidance_stop_condition(engine, [metric]))
+        engine.gp_adjust_area = False
         self.assertTrue(guidance_stop_condition(engine, [metric]))

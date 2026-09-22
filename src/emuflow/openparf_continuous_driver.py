@@ -158,6 +158,16 @@ def guidance_stop_condition(engine: Any, metrics: list[Any]) -> bool:
     current = metrics[-1]
     if current.opt_iter.iteration >= engine.params.max_global_place_iters:
         return True
+    # The normal density gate can be reached before OpenPARF's routability
+    # adjustment threshold.  When adjustment is requested, do not publish a
+    # superficially legal but pin/RUDY-blind placement: wait until at least
+    # one adjustment stage has run and the upstream adjustment loop has
+    # converged (it clears ``gp_adjust_area`` when further inflation is below
+    # its configured stop ratios).
+    if engine.params.gp_adjust_area and (
+        engine.num_gp_adjust_area == 0 or engine.gp_adjust_area
+    ):
+        return False
     overflow = [
         float(value)
         for value in current.overflow.detach().cpu().tolist()

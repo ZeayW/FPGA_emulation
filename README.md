@@ -4457,15 +4457,16 @@ The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.
 The production RapidWright backend selects the smallest capacity-feasible
-contiguous SLR window, with a minimum of two SLRs on a multi-SLR device. This
-keeps CUFR's search region bounded without compressing a routability-sensitive
-partition into one SLR merely because its cells fit there. Equal-size feasible
-windows are ranked by distance from the physical device center. The selected
-window is recorded once as a global `allowed_slrs` constraint; it is not
-duplicated into every cluster record. The single-SLR planner remains an
-explicit standalone research tool. Every dedicated cascade chain must remain
-within one SLR, and the independent validator checks that physical boundary
-explicitly.
+contiguous SLR window, including one SLR when it satisfies the explicit 75%
+resource-headroom contract. Equal-size feasible windows are ranked by distance
+from the physical device center. The selected window is recorded once as a
+global `allowed_slrs` constraint; it is not duplicated into every cluster
+record. OpenPARF guidance uses its native RUDY- and pin-utilization-driven area
+inflation for packed slice clusters before exact legalization: this preserves
+the bounded routing search region while preventing one-site density alone from
+hiding large differences in external routing demand. Every dedicated cascade
+chain must remain within one SLR, and the independent validator checks that
+physical boundary explicitly.
 For split BRAM tiles, the placement certificate retains the FPGA-Interchange
 tile anchor and also materializes the exact RapidWright site of every
 RAMB18E2/RAMB36E2 assignment; this prevents the lower and upper BRAM views from

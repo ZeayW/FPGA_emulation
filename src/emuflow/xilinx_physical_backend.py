@@ -63,7 +63,7 @@ def _site_resource(site_type: str) -> Optional[str]:
 def _select_xilinx_slr_window(
     packed_path: Path, architecture_path: Path
 ) -> Tuple[str, ...]:
-    """Choose the smallest central contiguous window with routing headroom."""
+    """Choose the smallest central contiguous capacity-feasible window."""
 
     packed = read_json(packed_path)
     architecture = ArchitectureDB.load(architecture_path)
@@ -85,9 +85,8 @@ def _select_xilinx_slr_window(
     if not capacities or set(capacities) != set(rows):
         raise ValidationError("ArchitectureDB has no complete physical SLR inventory")
     ordered = sorted(capacities, key=lambda name: (sum(rows[name]) / len(rows[name]), name))
-    minimum = min(2, len(ordered))
     device_center = (min(min(value) for value in rows.values()) + max(max(value) for value in rows.values())) / 2
-    for width in range(minimum, len(ordered) + 1):
+    for width in range(1, len(ordered) + 1):
         feasible = []
         for start in range(len(ordered) - width + 1):
             window = tuple(ordered[start:start + width])
