@@ -4347,6 +4347,10 @@ OpenPARF is used only for analytical global-placement guidance in this
 backend. Packed slice clusters are classified as logic and remain continuous;
 DSP, BRAM, and URAM clusters retain OpenPARF's single-site-resource lookahead
 so their sparse physical columns participate in a feasible global solution.
+The Bookshelf model records a zero-demand auxiliary resource in every slice
+tile because a real UltraScale+ slice is a multi-resource logic site; this
+prevents OpenPARF's structural single-resource detector from sending all packed
+slice clusters through the hard-column min-cost-flow legalizer.
 Final Bookshelf legalization remains disabled: the first-party Xilinx
 legalizer performs the authoritative site/BEL/cascade assignment and
 independently checks it before RWRoute. This keeps global hard-column guidance

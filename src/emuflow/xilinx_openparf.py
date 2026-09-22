@@ -21,7 +21,7 @@ from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from .xilinx_placement import XILINX_GUIDANCE_SCHEMA
 
 
-XILINX_OPENPARF_MANIFEST_SCHEMA = "emuflow.xilinx-openparf-manifest/v3"
+XILINX_OPENPARF_MANIFEST_SCHEMA = "emuflow.xilinx-openparf-manifest/v4"
 XILINX_OPENPARF_NAME_MAP_SCHEMA = "emuflow.xilinx-openparf-name-map/v3"
 XILINX_OPENPARF_COORDINATE_SYSTEM_SCHEMA = (
     "emuflow.xilinx-openparf-physical-tile-grid/v2"
@@ -205,6 +205,16 @@ def _render_sites(
         if resource in used:
             tile_resources[_physical_tile_coordinate(site)][resource] += 1
 
+    # OpenPARF identifies a single-site/single-resource site type purely from
+    # the number of nonzero resources in its Bookshelf SITE record.  A packed
+    # Xilinx slice is nevertheless a multi-resource logic site (LUTs, FFs,
+    # carry, and muxes).  Add a zero-demand analytical marker so slice columns
+    # stay in continuous logic placement instead of the min-cost-flow
+    # legalizer reserved for genuinely sparse DSP/BRAM/URAM columns.
+    for resources in tile_resources.values():
+        if resources.get("X_SLICE", 0) > 0:
+            resources["X_SLICE_AUX"] = 1
+
     signatures = sorted({
         tuple(sorted(resources.items()))
         for resources in tile_resources.values()
@@ -223,6 +233,8 @@ def _render_sites(
     lines.append("RESOURCES")
     for resource in sorted(used):
         lines.append(f"  {resource} {resource}")
+    if "X_SLICE" in used:
+        lines.append("  X_SLICE_AUX X_SLICE_AUX")
     lines.extend(["END RESOURCES", ""])
     x_index = {coordinate: index for index, coordinate in enumerate(x_axis)}
     y_index = {coordinate: index for index, coordinate in enumerate(y_axis)}

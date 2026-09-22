@@ -225,6 +225,8 @@ class XilinxOpenparfTest(unittest.TestCase):
             )
         self.assertIn("  X_DSP 1", sites_text)
         self.assertIn("  X_SLICE 1", sites_text)
+        self.assertIn("  X_SLICE_AUX 1", sites_text)
+        self.assertIn("  X_SLICE_AUX X_SLICE_AUX", sites_text)
         self.assertIn("SITEMAP 1 1", sites_text)
         self.assertEqual(sites_text.count("0 0 EMUFLOW_TILE_0"), 1)
         self.assertEqual(config["resource_categories"]["X_SLICE"], "LUTL")
