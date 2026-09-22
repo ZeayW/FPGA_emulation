@@ -108,10 +108,11 @@ public final class EmuFlowRWRoute {
                         (now - value.startNanoseconds) / 1_000_000_000.0;
                     if (!value.reported && elapsedSeconds >= 5.0) {
                         value.reported = true;
-                        System.err.printf(
+                        System.out.printf(
                             "EMUFLOW_SLOW_CONNECTION thread=%s elapsed_s=%.3f %s%n",
                             entry.getKey().getName(), elapsedSeconds, value.connection
                         );
+                        System.out.flush();
                     }
                 }
                 try {
