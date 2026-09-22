@@ -22,6 +22,7 @@ import com.xilinx.rapidwright.rwroute.RWRouteConfig;
 import com.xilinx.rapidwright.timing.TimingModel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -108,10 +109,22 @@ public final class EmuFlowRWRoute {
                         (now - value.startNanoseconds) / 1_000_000_000.0;
                     if (!value.reported && elapsedSeconds >= 5.0) {
                         value.reported = true;
-                        System.out.printf(
-                            "EMUFLOW_SLOW_CONNECTION thread=%s elapsed_s=%.3f %s%n",
+                        String line = String.format(
+                            "EMUFLOW_SLOW_CONNECTION thread=%s elapsed_s=%.3f %s",
                             entry.getKey().getName(), elapsedSeconds, value.connection
                         );
+                        String probePath = System.getenv("EMUFLOW_SLOW_CONNECTION_LOG");
+                        if (probePath != null && !probePath.isBlank()) {
+                            try {
+                                Files.writeString(
+                                    Path.of(probePath), line + System.lineSeparator(),
+                                    StandardOpenOption.CREATE, StandardOpenOption.APPEND
+                                );
+                            } catch (Exception error) {
+                                throw new RuntimeException(error);
+                            }
+                        }
+                        System.out.println(line);
                         System.out.flush();
                     }
                 }
