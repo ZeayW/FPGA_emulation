@@ -4490,6 +4490,12 @@ RapidWright explicitly requires those resources for boundary routability.
 Bounding boxes expand across negotiated-congestion iterations because this
 dense physical partition begins with substantial resource overlap; the
 upstream router explicitly provides adaptive expansion for such placements.
+Routed timing binds ordinary signal/clock nets to their mapped integer bits.
+Certified `GLOBAL_LOGIC1`/`static_vcc` and `GLOBAL_LOGIC0`/`static_gnd` nets are
+device-tied constants, not timed data endpoints. They remain in the route
+certificate and pass the same root, reachability, and resource-conflict checks
+before timing binding; malformed signal names are still rejected.
+
 Static A6/CE/SR obligations remain real RapidWright static-net
 sinks and are checked rather than discarded.  The certificate includes the
 routed VCC/GND forests, identifies every root that RapidWright's device
