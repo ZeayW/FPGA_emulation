@@ -249,6 +249,56 @@ class XilinxPlacementTest(unittest.TestCase):
         actual = {item["cluster"]: item["site"] for item in value["clusters"]}
         self.assertEqual(actual, expected)
 
+    def test_cascade_chain_cannot_cross_an_slr_boundary(self):
+        architecture = {
+            "schema": "emuflow.archdb/v1", "part": "xcvu19p-slr-test",
+            "source": {"format": "unit-test/v1"},
+            "policy": {"name": "unit-test"},
+            "site_templates": {
+                "DSP48E2": {
+                    "bels": [bel("DSP48E2", "DSP48E2")],
+                    "alternative_templates": [],
+                },
+            },
+            "sites": [
+                {
+                    "name": f"DSP48E2_X0Y{y}", "type": "DSP48E2",
+                    "template": "DSP48E2", "x": 0, "y": y,
+                    "physical_region": {
+                        "slr": f"SLR{y}", "clock_region": f"X0Y{y}",
+                    },
+                }
+                for y in range(2)
+            ],
+        }
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "status": "pass",
+            "clusters": [
+                {
+                    "id": f"dsp-{index}", "kind": "dsp",
+                    "site_templates": ["DSP48E2"],
+                    "assignments": [{
+                        "instance": f"dsp_{index}", "cell_type": "DSP48E2",
+                        "bel": "DSP48E2", "bel_candidates": ["DSP48E2"],
+                    }],
+                }
+                for index in range(2)
+            ],
+            "cascade_chains": [{
+                "kind": "DSP48E2", "instances": ["dsp_0", "dsp_1"],
+                "links": [{"source": "dsp_0", "sink": "dsp_1"}],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch_path = root / "arch.json"
+            packed_path = root / "packed.json"
+            output = root / "placement.json"
+            arch_path.write_text(json.dumps(architecture), encoding="utf-8")
+            packed_path.write_text(json.dumps(packed), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "cascade windows"):
+                place_xilinx_clusters(packed_path, arch_path, output)
+
     def test_independent_checker_rejects_site_overlap(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

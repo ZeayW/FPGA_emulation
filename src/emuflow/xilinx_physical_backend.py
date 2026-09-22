@@ -16,9 +16,8 @@ from .xilinx_openparf import run_xilinx_openparf_guidance
 from .xilinx_opensta import run_xilinx_routed_opensta
 from .xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
 from .xilinx_placement import (
-    plan_xilinx_single_slr,
+    place_xilinx_clusters,
     validate_xilinx_placement,
-    validate_xilinx_single_slr_plan,
 )
 from .xilinx_rwroute import (
     export_rwroute_input,
@@ -108,31 +107,6 @@ def run_rapidwright_partition_backend(
     packing_check = validate_xilinx_packing(
         mapped_path, packed_path, architecture_path=architecture_path
     )
-    whole_guidance_root = output_dir / "openparf-whole-device-guidance"
-    whole_guidance_report = run_xilinx_openparf_guidance(
-        mapped_path,
-        packed_path,
-        architecture_path,
-        whole_guidance_root,
-        top=mapped_report["top"],
-        openparf_install=openparf_install,
-        openparf_python=openparf_python,
-    )
-    provisional_constraints_path = output_dir / "provisional-single-slr-constraints.json"
-    provisional_placement_path = output_dir / "provisional-placement.json"
-    provisional_plan = plan_xilinx_single_slr(
-        packed_path,
-        architecture_path,
-        provisional_constraints_path,
-        provisional_placement_path,
-        guidance_path=whole_guidance_root / "guidance.json",
-    )
-    selected_slr = provisional_plan["selected_slr"]
-
-    # The whole-device solution selects the physical region only. Re-optimize
-    # the actual coordinate problem inside that region so the exact legalizer
-    # never has to squeeze coordinates optimized for other SLRs into the final
-    # placement. This regional guidance is the sole final placement cost.
     guidance_root = output_dir / "openparf-guidance"
     guidance_report = run_xilinx_openparf_guidance(
         mapped_path,
@@ -140,25 +114,14 @@ def run_rapidwright_partition_backend(
         architecture_path,
         guidance_root,
         top=mapped_report["top"],
-        slr=selected_slr,
         openparf_install=openparf_install,
         openparf_python=openparf_python,
     )
     guidance_path = guidance_root / "guidance.json"
-    constraints_path = output_dir / "single-slr-constraints.json"
     placement_path = output_dir / "placement.json"
-    slr_plan = plan_xilinx_single_slr(
+    placement = place_xilinx_clusters(
         packed_path,
         architecture_path,
-        constraints_path,
-        placement_path,
-        guidance_path=guidance_path,
-        required_slr=selected_slr,
-    )
-    slr_check = validate_xilinx_single_slr_plan(
-        packed_path,
-        architecture_path,
-        constraints_path,
         placement_path,
         guidance_path=guidance_path,
     )
@@ -166,7 +129,6 @@ def run_rapidwright_partition_backend(
         packed_path,
         architecture_path,
         placement_path,
-        constraints_path=constraints_path,
     )
     rwroute_input = output_dir / "rwroute.tsv"
     route_input_report = export_rwroute_input(
@@ -324,11 +286,8 @@ def run_rapidwright_partition_backend(
         "mapped_netlist": mapped_report,
         "packing": {"result": packed["summary"], "validation": packing_check},
         "placement": {
-            "whole_device_guidance": whole_guidance_report,
-            "provisional_plan": provisional_plan,
             "global_guidance": guidance_report,
-            "plan": slr_plan,
-            "plan_validation": slr_check,
+            "result": placement["summary"],
             "validation": placement_check,
         },
         "route": {

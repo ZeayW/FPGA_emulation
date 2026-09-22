@@ -877,7 +877,12 @@ def place_xilinx_clusters(
                 physical_sites.get((kind, physical_x, physical_y + offset), "")
                 for offset in range(length)
             )
-            if all(names):
+            slrs = {
+                sites[name].get("physical_region", {}).get("slr")
+                for name in names
+                if name
+            }
+            if all(names) and len(slrs) == 1 and None not in slrs:
                 grouped[(kind, physical_x)].append((physical_y, names))
 
         result = []
@@ -983,12 +988,17 @@ def place_xilinx_clusters(
                     physical_sites.get((kind, physical_x, physical_y + offset), "")
                     for offset in range(len(chain))
                 )
+                slrs = {
+                    sites[name].get("physical_region", {}).get("slr")
+                    for name in names
+                    if name
+                }
                 if all(
                     name
                     and name in candidate_members(cluster_id)
                     and name not in used_sites
                     for cluster_id, name in zip(chain, names)
-                ) and can_reserve_sites(names):
+                ) and len(slrs) == 1 and None not in slrs and can_reserve_sites(names):
                     best = names
                     break
         if best is None:
@@ -1282,6 +1292,17 @@ def validate_xilinx_placement(
     chains = _cascade_cluster_chains(packed, owner)
     for chain in chains:
         coordinates = [_physical_site_coordinate(placed[cluster]) for cluster in chain]
+        slrs = {
+            architecture_sites[placed[cluster]].get(
+                "physical_region", {}
+            ).get("slr")
+            for cluster in chain
+        }
+        if len(slrs) != 1 or None in slrs:
+            raise ValidationError(
+                "dedicated cascade placement crosses an SLR boundary: "
+                + " -> ".join(chain)
+            )
         first_kind, first_x, first_y = coordinates[0]
         expected = [
             (first_kind, first_x, first_y + offset)

@@ -28,7 +28,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             {"clk": 40.0, "fabric_clk": 4.0},
         )
 
-    def test_single_slr_certificate_is_checked_against_openparf_guidance(self):
+    def test_full_device_placement_is_checked_against_openparf_guidance(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             guidance = root / "physical" / "openparf-guidance" / "guidance.json"
@@ -38,17 +38,19 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 guide_calls.append(kwargs.get("slr"))
                 return {}
 
-            plan_calls = []
+            placement_calls = []
 
-            def record_plan(*_args, **kwargs):
-                plan_calls.append(kwargs.get("required_slr"))
-                return {"selected_slr": "SLR1"}
+            def record_placement(*_args, **kwargs):
+                placement_calls.append(kwargs)
+                return {"summary": {"clusters": 1}}
 
-            def stop_after_certificate_check(*_args, **kwargs):
-                self.assertEqual(kwargs["guidance_path"], guidance)
-                self.assertEqual(guide_calls, [None, "SLR1"])
-                self.assertEqual(plan_calls, [None, "SLR1"])
-                raise RuntimeError("certificate-check-observed")
+            def stop_after_placement_check(*_args, **kwargs):
+                self.assertEqual(guide_calls, [None])
+                self.assertEqual(len(placement_calls), 1)
+                self.assertEqual(placement_calls[0]["guidance_path"], guidance)
+                self.assertNotIn("constraints_path", placement_calls[0])
+                self.assertNotIn("constraints_path", kwargs)
+                raise RuntimeError("placement-check-observed")
 
             patches = (
                 mock.patch(
@@ -72,16 +74,16 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     side_effect=record_guidance,
                 ),
                 mock.patch(
-                    "emuflow.xilinx_physical_backend.plan_xilinx_single_slr",
-                    side_effect=record_plan,
+                    "emuflow.xilinx_physical_backend.place_xilinx_clusters",
+                    side_effect=record_placement,
                 ),
                 mock.patch(
-                    "emuflow.xilinx_physical_backend.validate_xilinx_single_slr_plan",
-                    side_effect=stop_after_certificate_check,
+                    "emuflow.xilinx_physical_backend.validate_xilinx_placement",
+                    side_effect=stop_after_placement_check,
                 ),
             )
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
-                with self.assertRaisesRegex(RuntimeError, "certificate-check-observed"):
+                with self.assertRaisesRegex(RuntimeError, "placement-check-observed"):
                     run_rapidwright_partition_backend(
                         fpga="fpga0",
                         part="xcvu19p-test",
