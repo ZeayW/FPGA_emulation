@@ -479,9 +479,16 @@ public final class EmuFlowRWRoute {
         // This certificate begins and ends at physical site pins; purely
         // intra-site nets remain outside the inter-site route certificate.
         // CUFR is RapidWright's parallel full-design specialization of
-        // RWRoute.  It keeps RWRoute's legality and negotiated-congestion
-        // machinery while partitioning each iteration across CPU workers.
-        CUFR.routeDesignFullNonTimingDriven(design);
+        // RWRoute.  Keep its negotiated-congestion updates synchronous for
+        // this dense, explicitly placed design: RapidWright's convenience
+        // method also enables HUS, whose stale parallel cost updates leave
+        // this graph with essentially the same first-iteration overlap while
+        // making the following update phase disproportionately expensive.
+        // This remains the same non-timing-driven CUFR legality engine; only
+        // the optional hybrid updating strategy is disabled.
+        CUFR.routeDesignWithUserDefinedArguments(
+            design, new String[] {"--nonTimingDriven"}
+        );
 
         // RapidWright's lightweight timing model evaluates the concrete
         // routed PIP tree in picoseconds.  Keep this deliberately separate
@@ -597,7 +604,7 @@ public final class EmuFlowRWRoute {
             .put("route_cells", cells.size())
             .put("physical_cells", physicalCells)
             .put("transformed_dsp48e2_cells", transformedDsp48e2Cells)
-            .put("router", "CUFR"));
+            .put("router", "CUFR-no-HUS-non-timing-driven"));
         output.put("nets", routeNets);
         output.put("excluded_nets", excluded);
         output.put("timing", new JSONObject()
