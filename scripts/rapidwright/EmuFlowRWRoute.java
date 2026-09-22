@@ -7,11 +7,13 @@
  */
 import com.xilinx.rapidwright.design.Cell;
 import com.xilinx.rapidwright.design.Design;
+import com.xilinx.rapidwright.design.DesignTools;
 import com.xilinx.rapidwright.design.Net;
 import com.xilinx.rapidwright.design.SiteInst;
 import com.xilinx.rapidwright.design.SitePinInst;
 import com.xilinx.rapidwright.design.Unisim;
 import com.xilinx.rapidwright.device.BEL;
+import com.xilinx.rapidwright.device.BELPin;
 import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
@@ -125,6 +127,39 @@ public final class EmuFlowRWRoute {
         List<String> sorted = new ArrayList<>(roots);
         sorted.sort(String::compareTo);
         return new JSONArray(sorted);
+    }
+
+    private static BELPin timingBELPin(SitePinInst sitePin) {
+        List<BELPin> connected = new ArrayList<>();
+        List<BELPin> mapped = new ArrayList<>();
+        for (BELPin belPin : DesignTools.getConnectedBELPins(sitePin)) {
+            Cell cell = sitePin.getSiteInst().getCell(belPin.getBELName());
+            if (cell == null || belPin.isOutput() != sitePin.isOutPin()) continue;
+            connected.add(belPin);
+            if (cell.usesPhysicalPin(belPin.getName())) mapped.add(belPin);
+        }
+        List<BELPin> candidates = mapped.isEmpty() ? connected : mapped;
+        candidates.sort(
+            Comparator.comparing(BELPin::getBELName).thenComparing(BELPin::getName)
+        );
+        if (candidates.isEmpty()) {
+            throw new IllegalStateException(
+                "physical endpoint has no connected cell BEL pin: "
+                + sitePin.getSiteInstName() + "/" + sitePin.getName()
+            );
+        }
+        if (sitePin.isOutPin() && candidates.size() != 1) {
+            throw new IllegalStateException(
+                "physical source endpoint has ambiguous cell BEL pins: "
+                + sitePin.getSiteInstName() + "/" + sitePin.getName()
+                + " -> " + candidates
+            );
+        }
+        // A single input site pin may legitimately fan out to multiple cells
+        // inside its site.  The pinned RapidWright timing model only uses the
+        // sink BEL pin to select its EDIF-free physical-endpoint path; route
+        // delay remains defined by this SitePinInst and its routed PIP tree.
+        return candidates.get(0);
     }
 
     private static int integerParameter(MaterializedCell cell, String name) {
@@ -517,16 +552,30 @@ public final class EmuFlowRWRoute {
                 kind.equals("clock") ? "fabric-routed-clock" : "ordinary-fabric-signal"
             );
             JSONArray pins = new JSONArray();
+            JSONArray alternateSources = new JSONArray();
             SitePinInst source = net.getSource();
+            BELPin sourceBELPin = source == null ? null : timingBELPin(source);
             for (SitePinInst pin : net.getPins()) {
                 JSONObject pinValue = pinRecord(pin);
+                if (pin.isOutPin() && pin != source) {
+                    // RapidWright may route one logical driver through more
+                    // than one equivalent physical site exit (for example a
+                    // LUT O pin and its HMUX exit).  Preserve those roots for
+                    // connectivity checking without misreporting multiple
+                    // logical drivers.
+                    alternateSources.put(pinValue);
+                    continue;
+                }
                 if (!pin.isOutPin()) {
                     if (source == null) {
                         throw new IllegalStateException(
                             "routed net has no timing source: " + netName
                         );
                     }
-                    float delayPs = timingModel.calcDelay(source, pin, net);
+                    BELPin sinkBELPin = timingBELPin(pin);
+                    float delayPs = timingModel.calcDelay(
+                        source, pin, sourceBELPin, sinkBELPin, net
+                    );
                     if (!Float.isFinite(delayPs) || delayPs < 0.0f) {
                         throw new IllegalStateException(
                             "invalid RapidWright route delay for " + netName
@@ -541,6 +590,9 @@ public final class EmuFlowRWRoute {
                 pins.put(pinValue);
             }
             record.put("pins", pins);
+            if (alternateSources.length() > 0) {
+                record.put("alternate_sources", alternateSources);
+            }
             JSONArray netPips = new JSONArray();
             List<PIP> sortedPips = new ArrayList<>(net.getPIPs());
             sortedPips.sort(Comparator.comparing(PIP::toString));

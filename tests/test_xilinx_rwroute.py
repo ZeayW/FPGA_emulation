@@ -108,6 +108,23 @@ class XilinxRWRouteTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 validate_xilinx_route_db(path)
 
+    def test_checker_accepts_equivalent_alternate_physical_source(self):
+        value = self._route()
+        net = value["nets"][0]
+        net["alternate_sources"] = [{
+            "site": "S0", "pin": "OMUX", "is_output": True, "node": "A2",
+        }]
+        net["pips"][1]["start_node"] = "A2"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "route.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            self.assertEqual(validate_xilinx_route_db(path)["nets"], 1)
+            broken = copy.deepcopy(value)
+            broken["nets"][0]["alternate_sources"][0]["is_output"] = False
+            path.write_text(json.dumps(broken), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "alternate_sources"):
+                validate_xilinx_route_db(path)
+
     def test_checker_accepts_device_tied_static_forest(self):
         value = self._route()
         value["nets"].append({

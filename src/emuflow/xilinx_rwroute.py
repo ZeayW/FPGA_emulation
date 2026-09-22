@@ -458,8 +458,13 @@ def validate_xilinx_route_db(
         if net.get("has_gap") is not False:
             raise ValidationError(f"{context}: RWRoute reports gap routing")
         pins = net.get("pins")
+        alternate_sources = net.get("alternate_sources", [])
         pips = net.get("pips")
-        if not isinstance(pins, list) or not isinstance(pips, list):
+        if (
+            not isinstance(pins, list)
+            or not isinstance(alternate_sources, list)
+            or not isinstance(pips, list)
+        ):
             raise ValidationError(f"{context}: pins/PIPs are invalid")
         if not pins:
             raise ValidationError(f"{context}: routed net has no site pins")
@@ -475,6 +480,21 @@ def validate_xilinx_route_db(
                 or not pin["node"]
             ):
                 raise ValidationError(f"{context}.pins[{pin_index}]: invalid site pin")
+        for pin_index, pin in enumerate(alternate_sources):
+            if (
+                not isinstance(pin, dict)
+                or not isinstance(pin.get("site"), str)
+                or not pin["site"]
+                or not isinstance(pin.get("pin"), str)
+                or not pin["pin"]
+                or pin.get("is_output") is not True
+                or not isinstance(pin.get("node"), str)
+                or not pin["node"]
+                or "route_delay_ps" in pin
+            ):
+                raise ValidationError(
+                    f"{context}.alternate_sources[{pin_index}]: invalid physical source"
+                )
         sources = [pin for pin in pins if pin["is_output"]]
         sinks = [pin for pin in pins if not pin["is_output"]]
         kind = net.get("kind")
@@ -498,6 +518,7 @@ def validate_xilinx_route_db(
             roots = net.get("roots")
             if (
                 sources
+                or alternate_sources
                 or not sinks
                 or not isinstance(roots, list)
                 or not roots
@@ -509,7 +530,17 @@ def validate_xilinx_route_db(
         else:
             if len(sources) != 1 or not sinks or "roots" in net:
                 raise ValidationError(f"{context}: routed net lacks one source and sinks")
-            source_nodes = {sources[0]["node"]}
+            source_nodes = {
+                sources[0]["node"],
+                *(pin["node"] for pin in alternate_sources),
+            }
+            if (
+                len(source_nodes) != 1 + len(alternate_sources)
+                or source_nodes.intersection(pin["node"] for pin in sinks)
+            ):
+                raise ValidationError(
+                    f"{context}: duplicate or conflicting physical route source"
+                )
         if net.get("source_present") is not bool(sources):
             raise ValidationError(f"{context}: source-presence summary disagrees")
         if net.get("sink_count") != len(sinks):
