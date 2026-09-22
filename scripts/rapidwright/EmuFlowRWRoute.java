@@ -16,8 +16,7 @@ import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.edif.EDIFCell;
-import com.xilinx.rapidwright.edif.EDIFCellInst;
-import com.xilinx.rapidwright.rwroute.RWRoute;
+import com.xilinx.rapidwright.rwroute.CUFR;
 import com.xilinx.rapidwright.timing.TimingModel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -42,18 +41,16 @@ public final class EmuFlowRWRoute {
     private static final class MaterializedCell {
         final String logicalType;
         final Cell regularCell;
-        final EDIFCellInst logicalCellInst;
         final SiteInst siteInst;
         final int physicalCells;
         final Map<String, String> parameters;
 
         MaterializedCell(
-            String logicalType, Cell regularCell, EDIFCellInst logicalCellInst,
-            SiteInst siteInst, int physicalCells, Map<String, String> parameters
+            String logicalType, Cell regularCell, SiteInst siteInst, int physicalCells,
+            Map<String, String> parameters
         ) {
             this.logicalType = logicalType;
             this.regularCell = regularCell;
-            this.logicalCellInst = logicalCellInst;
             this.siteInst = siteInst;
             this.physicalCells = physicalCells;
             this.parameters = parameters;
@@ -250,7 +247,7 @@ public final class EmuFlowRWRoute {
             );
             if (cell == null) throw new IllegalStateException("failed to place " + safeName);
             return new MaterializedCell(
-                logicalType, cell, cell.getEDIFCellInst(), cell.getSiteInst(), 1, parameters
+                logicalType, cell, cell.getSiteInst(), 1, parameters
             );
         }
 
@@ -263,15 +260,6 @@ public final class EmuFlowRWRoute {
                 "DSP48E2 representative BEL must be DSP_ALU, not " + row[5]
             );
         }
-        // DSP48E2 is a logical macro whose physical implementation comprises
-        // several component BELs.  Keep one logical EDIF instance so ordinary
-        // nets retain a complete parent/driver graph, while the component
-        // cells below remain the actual placed physical implementation.
-        // Design.routeSites() and RWRoute both consult that EDIF graph when
-        // resolving a physical net from a site pin.
-        EDIFCellInst logicalCellInst = design.getTopEDIFCell().createChildCellInst(
-            safeName, design.getNetlist().getHDIPrimitive(Unisim.DSP48E2)
-        );
         SiteInst siteInst = null;
         for (String component : DSP48E2_COMPONENTS) {
             BEL bel = site.getBEL(component);
@@ -305,8 +293,7 @@ public final class EmuFlowRWRoute {
         }
         if (siteInst == null) throw new IllegalStateException("empty DSP48E2 transform");
         return new MaterializedCell(
-            logicalType, null, logicalCellInst, siteInst,
-            DSP48E2_COMPONENTS.length, parameters
+            logicalType, null, siteInst, DSP48E2_COMPONENTS.length, parameters
         );
     }
 
@@ -401,7 +388,6 @@ public final class EmuFlowRWRoute {
                 try {
                     List<SitePinInst> connected = new ArrayList<>();
                     if (cell.isTransformedDSP48E2()) {
-                        net.getLogicalNet().createPortInst(row[3], cell.logicalCellInst);
                         String physicalPin = dsp48e2SitePin(row[3]);
                         if (!cell.siteInst.getSite().hasPin(physicalPin)) {
                             throw new IllegalStateException(
@@ -468,21 +454,12 @@ public final class EmuFlowRWRoute {
             nets.put(netName, net);
         }
 
-        // Complete ordinary SLICE intra-site routing before RWRoute.  Leaving
-        // these sites unrouted makes RWRoute's preprocessor expose every
-        // default LUT A6 and FF CE/SR connection as a separate inter-site
-        // static-net sink.  Besides misclassifying an intra-site obligation,
-        // that turns the official serial static router into the dominant hot
-        // path on large designs.  The transformed DSP48E2 component sites are
-        // deliberately excluded: their physical helper cells have no EDIF
-        // parent, and primitive-internal DSP timing remains owned by the
-        // sealed primitive timing stage.
-        int routedSites = design.getSiteInsts().size();
-        design.routeSites();
-
         // This certificate begins and ends at physical site pins; purely
         // intra-site nets remain outside the inter-site route certificate.
-        RWRoute.routeDesignFullNonTimingDriven(design);
+        // CUFR is RapidWright's parallel full-design specialization of
+        // RWRoute.  It keeps RWRoute's legality and negotiated-congestion
+        // machinery while partitioning each iteration across CPU workers.
+        CUFR.routeDesignFullNonTimingDriven(design);
 
         // RapidWright's lightweight timing model evaluates the concrete
         // routed PIP tree in picoseconds.  Keep this deliberately separate
@@ -554,7 +531,7 @@ public final class EmuFlowRWRoute {
             .put("route_cells", cells.size())
             .put("physical_cells", physicalCells)
             .put("transformed_dsp48e2_cells", transformedDsp48e2Cells)
-            .put("routed_sites", routedSites));
+            .put("router", "CUFR"));
         output.put("nets", routeNets);
         output.put("excluded_nets", excluded);
         output.put("timing", new JSONObject()
