@@ -144,7 +144,7 @@ def _render_library(
     if "X_SLICE" in maxima:
         # Zero-instance marker used only to describe a slice as a
         # multi-resource SITE to OpenPARF's structural SSSR detector.
-        blocks.append("CELL X_SLICE_AUX\nEND CELL")
+        blocks.append("CELL X_SLICE_AUX\n  PIN UNUSED INPUT\nEND CELL")
     return "\n\n".join(blocks) + "\n"
 
 
