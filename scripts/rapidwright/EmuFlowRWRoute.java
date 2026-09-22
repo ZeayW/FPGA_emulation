@@ -16,6 +16,7 @@ import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.edif.EDIFCell;
+import com.xilinx.rapidwright.edif.EDIFCellInst;
 import com.xilinx.rapidwright.rwroute.RWRoute;
 import com.xilinx.rapidwright.timing.TimingModel;
 import java.nio.file.Files;
@@ -41,16 +42,18 @@ public final class EmuFlowRWRoute {
     private static final class MaterializedCell {
         final String logicalType;
         final Cell regularCell;
+        final EDIFCellInst logicalCellInst;
         final SiteInst siteInst;
         final int physicalCells;
         final Map<String, String> parameters;
 
         MaterializedCell(
-            String logicalType, Cell regularCell, SiteInst siteInst, int physicalCells,
-            Map<String, String> parameters
+            String logicalType, Cell regularCell, EDIFCellInst logicalCellInst,
+            SiteInst siteInst, int physicalCells, Map<String, String> parameters
         ) {
             this.logicalType = logicalType;
             this.regularCell = regularCell;
+            this.logicalCellInst = logicalCellInst;
             this.siteInst = siteInst;
             this.physicalCells = physicalCells;
             this.parameters = parameters;
@@ -247,7 +250,7 @@ public final class EmuFlowRWRoute {
             );
             if (cell == null) throw new IllegalStateException("failed to place " + safeName);
             return new MaterializedCell(
-                logicalType, cell, cell.getSiteInst(), 1, parameters
+                logicalType, cell, cell.getEDIFCellInst(), cell.getSiteInst(), 1, parameters
             );
         }
 
@@ -260,6 +263,15 @@ public final class EmuFlowRWRoute {
                 "DSP48E2 representative BEL must be DSP_ALU, not " + row[5]
             );
         }
+        // DSP48E2 is a logical macro whose physical implementation comprises
+        // several component BELs.  Keep one logical EDIF instance so ordinary
+        // nets retain a complete parent/driver graph, while the component
+        // cells below remain the actual placed physical implementation.
+        // Design.routeSites() and RWRoute both consult that EDIF graph when
+        // resolving a physical net from a site pin.
+        EDIFCellInst logicalCellInst = design.getTopEDIFCell().createChildCellInst(
+            safeName, design.getNetlist().getHDIPrimitive(Unisim.DSP48E2)
+        );
         SiteInst siteInst = null;
         for (String component : DSP48E2_COMPONENTS) {
             BEL bel = site.getBEL(component);
@@ -293,7 +305,8 @@ public final class EmuFlowRWRoute {
         }
         if (siteInst == null) throw new IllegalStateException("empty DSP48E2 transform");
         return new MaterializedCell(
-            logicalType, null, siteInst, DSP48E2_COMPONENTS.length, parameters
+            logicalType, null, logicalCellInst, siteInst,
+            DSP48E2_COMPONENTS.length, parameters
         );
     }
 
@@ -388,6 +401,7 @@ public final class EmuFlowRWRoute {
                 try {
                     List<SitePinInst> connected = new ArrayList<>();
                     if (cell.isTransformedDSP48E2()) {
+                        net.getLogicalNet().createPortInst(row[3], cell.logicalCellInst);
                         String physicalPin = dsp48e2SitePin(row[3]);
                         if (!cell.siteInst.getSite().hasPin(physicalPin)) {
                             throw new IllegalStateException(

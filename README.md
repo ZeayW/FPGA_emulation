@@ -4439,6 +4439,10 @@ without an EDIF parent are ignored by RapidWright's site router as intended;
 their primitive-internal behavior and delay remain owned by the sealed DSP
 model.  The route certificate records the exact number of intra-site-routed
 sites, and the independent checker recomputes that count from the placement.
+The DSP48E2 transform retains a logical EDIF macro instance alongside its
+placed component BELs.  This preserves a complete logical parent/driver graph
+for nets that enter or leave a DSP while keeping the component cells as the
+only physical implementation consumed by RWRoute.
 The adapter emits only a compact, source-sealed route certificate. An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks
