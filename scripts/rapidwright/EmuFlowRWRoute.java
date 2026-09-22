@@ -585,8 +585,10 @@ public final class EmuFlowRWRoute {
         // negotiated-congestion problems; keep it enabled once placement has
         // selected the smallest feasible physical region for this partition.
         String[] routeArguments = new String[] {
-            "--hus", "--nonTimingDriven", "--useUTurnNodes",
-            "--enlargeBoundingBox"
+            "--nonTimingDriven", "--useUTurnNodes",
+            "--initialPresentCongestionFactor", "5.0",
+            "--presentCongestionMultiplier", "1.5",
+            "--historicalCongestionFactor", "1.0"
         };
         DiagnosedCUFR.routeDesignWithProbe(design, routeArguments);
 
