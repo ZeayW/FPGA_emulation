@@ -71,6 +71,21 @@ class PlatformTest(unittest.TestCase):
             3_546_720,
         )
 
+    def test_four_fpga_rapidwright_research_platform(self) -> None:
+        platform = Platform.load(
+            ROOT / "platforms/virtual/rapidwright_xcvu19p_4fpga_mesh.json"
+        )
+        self.assertEqual(platform.name, "rapidwright_xcvu19p_4fpga_mesh")
+        self.assertEqual(len(platform.fpgas), 4)
+        self.assertEqual(len(platform.links), 4)
+        self.assertTrue(
+            all(fpga.part == "xcvu19p-fsva3824-2-e" for fpga in platform.fpgas)
+        )
+        self.assertEqual(
+            sum(fpga.effective_capacity["lut"] for fpga in platform.fpgas),
+            12_257_280,
+        )
+
     def test_unknown_endpoint_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValidationError, "unknown FPGA IDs"):
             Platform.from_dict(

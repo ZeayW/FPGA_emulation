@@ -4343,6 +4343,13 @@ structure, and applies the same 75% planning limit to both devices.  Its
 academic system-link model; it is not claimed to be an AMD or PPro board.
 Consequently this backend supplies real XCVU19P single-device placement and
 routing evidence while the board link remains a declared research assumption.
+The companion `rapidwright_xcvu19p_4fpga_mesh` keeps the identical part,
+per-device capacity, 75% device limit, lane width, clock, and link latency, but
+provides an explicit 2x2 academic mesh for designs whose per-partition detailed
+routing demand is too large for the two-device configuration.  It is a named
+complete platform configuration, not an arbitrary subset of a larger board.
+Both interconnects remain declared academic models; changing the FPGA count is
+not reported as an algorithmic QoR improvement.
 OpenPARF is used only for analytical global-placement guidance in this
 backend. Packed slice clusters are classified as logic and remain continuous;
 DSP, BRAM, and URAM clusters retain OpenPARF's single-site-resource lookahead

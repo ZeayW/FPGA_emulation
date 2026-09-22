@@ -1,0 +1,100 @@
+{
+  "schema": "emuflow.boarddb/v1",
+  "platform": {
+    "name": "rapidwright_xcvu19p_4fpga_mesh",
+    "kind": "virtual",
+    "description": "Four-XCVU19P research platform using exact per-device resources and an explicitly academic 2x2 mesh"
+  },
+  "fpgas": [
+    {
+      "id": "fpga0",
+      "part": "xcvu19p-fsva3824-2-e",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 4085760,
+        "ff": 8171520,
+        "bram18k": 4320,
+        "dsp48": 3840,
+        "carry8": 510720,
+        "uram288": 320
+      }
+    },
+    {
+      "id": "fpga1",
+      "part": "xcvu19p-fsva3824-2-e",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 4085760,
+        "ff": 8171520,
+        "bram18k": 4320,
+        "dsp48": 3840,
+        "carry8": 510720,
+        "uram288": 320
+      }
+    },
+    {
+      "id": "fpga2",
+      "part": "xcvu19p-fsva3824-2-e",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 4085760,
+        "ff": 8171520,
+        "bram18k": 4320,
+        "dsp48": 3840,
+        "carry8": 510720,
+        "uram288": 320
+      }
+    },
+    {
+      "id": "fpga3",
+      "part": "xcvu19p-fsva3824-2-e",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 4085760,
+        "ff": 8171520,
+        "bram18k": 4320,
+        "dsp48": 3840,
+        "carry8": 510720,
+        "uram288": 320
+      }
+    }
+  ],
+  "links": [
+    {
+      "id": "link_0_1",
+      "endpoints": ["fpga0", "fpga1"],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 32,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 2
+    },
+    {
+      "id": "link_2_3",
+      "endpoints": ["fpga2", "fpga3"],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 32,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 2
+    },
+    {
+      "id": "link_0_2",
+      "endpoints": ["fpga0", "fpga2"],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 32,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 2
+    },
+    {
+      "id": "link_1_3",
+      "endpoints": ["fpga1", "fpga3"],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 32,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 2
+    }
+  ]
+}
