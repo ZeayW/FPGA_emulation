@@ -160,8 +160,9 @@ def _render_nets(
     return "\n".join(lines) + "\n"
 
 
-def _coordinate_axes(architecture: ArchitectureDB) -> Tuple[List[int], List[int]]:
-    sites = architecture.value["sites"]
+def _coordinate_axes(
+    sites: List[Mapping[str, Any]],
+) -> Tuple[List[int], List[int]]:
     return (
         sorted({int(site["x"]) for site in sites}),
         sorted({int(site["y"]) for site in sites}),
@@ -169,13 +170,13 @@ def _coordinate_axes(architecture: ArchitectureDB) -> Tuple[List[int], List[int]
 
 
 def _render_sites(
-    architecture: ArchitectureDB,
+    sites: List[Mapping[str, Any]],
     used: Set[str],
     x_axis: List[int],
     y_axis: List[int],
 ) -> str:
     resources_by_type: Dict[str, Optional[str]] = {}
-    for site in architecture.value["sites"]:
+    for site in sites:
         resource = _site_resource(site["type"])
         existing = resources_by_type.setdefault(site["type"], resource)
         if existing != resource:
@@ -196,7 +197,7 @@ def _render_sites(
     lines.extend(
         f"{x_index[int(site['x'])]} {y_index[int(site['y'])]} {site['type']}"
         for site in sorted(
-            architecture.value["sites"], key=lambda item: (item["x"], item["y"])
+            sites, key=lambda item: (item["x"], item["y"])
         )
     )
     lines.append("END SITEMAP")
@@ -210,12 +211,32 @@ def export_xilinx_cluster_bookshelf(
     output_dir: Path,
     *,
     top: Optional[str] = None,
+    slr: Optional[str] = None,
 ) -> Dict[str, Any]:
     mapped = read_json(mapped_path)
     packed = read_json(packed_path)
     if not isinstance(packed, dict) or packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA:
         raise ValidationError("PackedSiteNetlist header is invalid")
     architecture = ArchitectureDB.load(architecture_path)
+    architecture_sites = architecture.value["sites"]
+    if slr is None:
+        placement_sites = architecture_sites
+    else:
+        known_slrs = {
+            region.get("slr")
+            for site in architecture_sites
+            for region in [site.get("physical_region")]
+            if isinstance(region, dict) and isinstance(region.get("slr"), str)
+        }
+        if slr not in known_slrs:
+            raise ValidationError(f"ArchitectureDB has no physical SLR {slr!r}")
+        placement_sites = [
+            site for site in architecture_sites
+            if isinstance(site.get("physical_region"), dict)
+            and site["physical_region"].get("slr") == slr
+        ]
+        if not placement_sites:
+            raise ValidationError(f"physical SLR {slr!r} contains no sites")
     names = {
         cluster["id"]: f"c{index}"
         for index, cluster in enumerate(sorted(packed["clusters"], key=lambda x: x["id"]))
@@ -223,13 +244,13 @@ def export_xilinx_cluster_bookshelf(
     resources = {
         cluster["id"]: _cluster_resource(cluster) for cluster in packed["clusters"]
     }
-    x_axis, y_axis = _coordinate_axes(architecture)
+    x_axis, y_axis = _coordinate_axes(placement_sites)
     selected_top = top if top is not None else packed.get("top")
     nets = _cluster_nets(mapped, packed, selected_top)
     demand = Counter(resources.values())
     capacity = Counter(
         resource for resource in (
-            _site_resource(site["type"]) for site in architecture.value["sites"]
+            _site_resource(site["type"]) for site in placement_sites
         ) if resource is not None
     )
     for resource, count in demand.items():
@@ -245,7 +266,7 @@ def export_xilinx_cluster_bookshelf(
         "design.lib": _render_library(resources, nets),
         "design.nets": _render_nets(names, nets),
         "design.scl": _render_sites(
-            architecture, set(demand), x_axis, y_axis
+            placement_sites, set(demand), x_axis, y_axis
         ),
         "design.pl": "",
         "design.aux": "design : design.nodes design.nets design.pl design.scl design.lib\n",
@@ -313,6 +334,7 @@ def export_xilinx_cluster_bookshelf(
         "schema": XILINX_OPENPARF_MANIFEST_SCHEMA,
         "status": "pass", "part": architecture.part,
         "clusters": len(names), "nets": len(nets),
+        "placement_region": {"slr": slr} if slr is not None else None,
         "resources": dict(sorted(demand.items())),
         "files": sorted([*files, "openparf.json", "name_map.json"]),
     }
@@ -408,11 +430,13 @@ def run_xilinx_openparf_guidance(
     output_dir: Path,
     *,
     top: Optional[str] = None,
+    slr: Optional[str] = None,
     openparf_install: Optional[Path] = None,
     openparf_python: Optional[Path] = None,
 ) -> Dict[str, Any]:
     manifest = export_xilinx_cluster_bookshelf(
-        mapped_path, packed_path, architecture_path, output_dir, top=top
+        mapped_path, packed_path, architecture_path, output_dir, top=top,
+        slr=slr,
     )
     placement = run_openparf(
         output_dir / "openparf.json",

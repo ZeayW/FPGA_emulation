@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from emuflow.errors import ValidationError
 from emuflow.openparf_continuous_driver import (
     build_convergence_certificate,
     guidance_stop_condition,
@@ -76,6 +77,71 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertTrue(config["emuflow_continuous_global_guidance"])
         self.assertEqual(config["max_global_place_iters"], 1000)
         self.assertEqual(config["logic_area_type_names"], ["X_SLICE"])
+
+    def test_cluster_export_can_limit_guidance_to_one_physical_slr(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped = root / "mapped.json"
+            packed = root / "packed.json"
+            arch = root / "arch.json"
+            out = root / "openparf"
+            mapped.write_text(json.dumps({"modules": {"top": {
+                "attributes": {"top": "1"},
+                "cells": {"a": {
+                    "type": "LUT6", "port_directions": {"O": "output"},
+                    "connections": {"O": [1]},
+                }},
+            }}}), encoding="utf-8")
+            packed.write_text(json.dumps({
+                "schema": "emuflow.packed-site-netlist/v1",
+                "clusters": [{
+                    "id": "ca", "kind": "slice",
+                    "assignments": [{"instance": "a", "cell_type": "LUT6"}],
+                }],
+            }), encoding="utf-8")
+            arch.write_text(json.dumps({
+                "schema": "emuflow.archdb/v1", "part": "test",
+                "source": {"format": "test/v1"},
+                "policy": {"name": "test"},
+                "site_templates": {"SLICEL": {
+                    "bels": [{
+                        "name": "A6LUT", "type": "LUT6", "z": 0,
+                        "compatible_cells": ["LUT6"],
+                    }],
+                    "alternative_templates": [],
+                }},
+                "sites": [
+                    {
+                        "name": "SLICE_X0Y0", "type": "SLICEL",
+                        "template": "SLICEL", "x": 10, "y": 20,
+                        "physical_region": {"slr": "SLR0"},
+                    },
+                    {
+                        "name": "SLICE_X0Y1", "type": "SLICEL",
+                        "template": "SLICEL", "x": 30, "y": 40,
+                        "physical_region": {"slr": "SLR1"},
+                    },
+                ],
+            }), encoding="utf-8")
+            report = export_xilinx_cluster_bookshelf(
+                mapped, packed, arch, out, slr="SLR1"
+            )
+            sites_text = (out / "design.scl").read_text(encoding="utf-8")
+            name_map = json.loads(
+                (out / "name_map.json").read_text(encoding="utf-8")
+            )
+            with self.assertRaisesRegex(ValidationError, "no physical SLR"):
+                export_xilinx_cluster_bookshelf(
+                    mapped, packed, arch, root / "bad", slr="SLR9"
+                )
+        self.assertEqual(report["placement_region"], {"slr": "SLR1"})
+        self.assertIn("SITEMAP 1 1", sites_text)
+        self.assertEqual(
+            name_map["coordinate_system"]["x_axis"], [30]
+        )
+        self.assertEqual(
+            name_map["coordinate_system"]["y_axis"], [40]
+        )
 
     def test_continuous_writer_does_not_require_discrete_sites(self):
         class Tensor:

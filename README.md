@@ -4418,6 +4418,14 @@ ArchitectureDB, and optional guidance, and the validator independently checks
 the persisted witness. This command intentionally fails when no single SLR
 fits; a future multi-SLR policy must be a separately named planner rather than
 a hidden fallback.
+OpenPARF's Xilinx guidance exporter can likewise receive that exact SLR as an
+explicit region contract.  In that mode its dense coordinate axes, site map,
+resource capacity, and convergence problem contain only sites from the named
+SLR; an unknown or under-capacity SLR fails before placement.  This prevents a
+full-device analytical solution from being squeezed into one SLR by the exact
+legalizer after half of its clusters have already been optimized for a
+different SLR.  The unrestricted whole-device guidance mode remains distinct
+and does not silently acquire a region constraint.
 For split BRAM tiles, the placement certificate retains the FPGA-Interchange
 tile anchor and also materializes the exact RapidWright site of every
 RAMB18E2/RAMB36E2 assignment; this prevents the lower and upper BRAM views from
