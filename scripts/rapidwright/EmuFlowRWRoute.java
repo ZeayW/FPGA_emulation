@@ -482,7 +482,10 @@ public final class EmuFlowRWRoute {
         // RWRoute.  HUS is its upstream strategy for large, difficult
         // negotiated-congestion problems; keep it enabled once placement has
         // selected the smallest feasible physical region for this partition.
-        CUFR.routeDesignFullNonTimingDriven(design);
+        CUFR.routeDesignWithUserDefinedArguments(
+            design,
+            new String[] {"--hus", "--nonTimingDriven", "--useUTurnNodes"}
+        );
 
         // RapidWright's lightweight timing model evaluates the concrete
         // routed PIP tree in picoseconds.  Keep this deliberately separate
@@ -598,7 +601,7 @@ public final class EmuFlowRWRoute {
             .put("route_cells", cells.size())
             .put("physical_cells", physicalCells)
             .put("transformed_dsp48e2_cells", transformedDsp48e2Cells)
-            .put("router", "CUFR-HUS-non-timing-driven"));
+            .put("router", "CUFR-HUS-non-timing-driven-uturn-enabled"));
         output.put("nets", routeNets);
         output.put("excluded_nets", excluded);
         output.put("timing", new JSONObject()

@@ -136,9 +136,13 @@ def run_rapidwright_partition_backend(
                 region_plan_path,
                 preflight_placement_path,
             )
-            # Persist only the compact constraints certificate.  The planner's
+            # Retain only the compact constraints certificate.  The planner's
             # returned preflight-placement path is intentionally temporary.
-            region_plan = read_json(region_plan_path)
+            region_plan = {
+                key: value
+                for key, value in planned_region.items()
+                if key != "placement"
+            }
         except XilinxSingleSlrInfeasible:
             selected_slr = None
             region_plan_check = None
