@@ -2763,6 +2763,9 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_guide_xilinx.add_argument("--architecture", type=Path, required=True)
     arch_guide_xilinx.add_argument("--out", type=Path, required=True)
     arch_guide_xilinx.add_argument("--top")
+    arch_guide_xilinx.add_argument(
+        "--slr", help="restrict the OpenPARF guidance problem to one SLR"
+    )
     arch_guide_xilinx.add_argument("--openparf-install", type=Path)
     arch_guide_xilinx.add_argument("--openparf-python", type=Path)
     arch_export_rwroute = arch_subparsers.add_parser(
@@ -5319,7 +5322,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         elif args.arch_command == "guide-xilinx-openparf":
             report = run_xilinx_openparf_guidance(
                 args.mapped_json, args.packed, args.architecture, args.out,
-                top=args.top, openparf_install=args.openparf_install,
+                top=args.top, slr=args.slr,
+                openparf_install=args.openparf_install,
                 openparf_python=args.openparf_python,
             )
         elif args.arch_command == "export-xilinx-rwroute-input":
