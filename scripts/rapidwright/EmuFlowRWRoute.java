@@ -454,13 +454,20 @@ public final class EmuFlowRWRoute {
             nets.put(netName, net);
         }
 
+        // Complete ordinary SLICE intra-site routing before RWRoute.  Leaving
+        // these sites unrouted makes RWRoute's preprocessor expose every
+        // default LUT A6 and FF CE/SR connection as a separate inter-site
+        // static-net sink.  Besides misclassifying an intra-site obligation,
+        // that turns the official serial static router into the dominant hot
+        // path on large designs.  The transformed DSP48E2 component sites are
+        // deliberately excluded: their physical helper cells have no EDIF
+        // parent, and primitive-internal DSP timing remains owned by the
+        // sealed primitive timing stage.
+        int routedSites = design.getSiteInsts().size();
+        design.routeSites();
+
         // This certificate begins and ends at physical site pins; purely
-        // intra-site nets were excluded by the sealed exporter.  Do not call
-        // Design.routeSites(): transformed DSP component cells intentionally
-        // have no logical EDIF parent, and asking EDIF to reconstruct one
-        // would conflate the inter-site route certificate with a vendor
-        // bitstream-complete site implementation.  Primitive/internal timing
-        // is modeled separately by EmuFlow's sealed primitive timing stage.
+        // intra-site nets remain outside the inter-site route certificate.
         RWRoute.routeDesignFullNonTimingDriven(design);
 
         // RapidWright's lightweight timing model evaluates the concrete
@@ -532,7 +539,8 @@ public final class EmuFlowRWRoute {
         output.put("materialization", new JSONObject()
             .put("route_cells", cells.size())
             .put("physical_cells", physicalCells)
-            .put("transformed_dsp48e2_cells", transformedDsp48e2Cells));
+            .put("transformed_dsp48e2_cells", transformedDsp48e2Cells)
+            .put("routed_sites", routedSites));
         output.put("nets", routeNets);
         output.put("excluded_nets", excluded);
         output.put("timing", new JSONObject()

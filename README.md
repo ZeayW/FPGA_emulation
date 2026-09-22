@@ -4431,6 +4431,14 @@ tile anchor and also materializes the exact RapidWright site of every
 RAMB18E2/RAMB36E2 assignment; this prevents the lower and upper BRAM views from
 being conflated at the pack/place-to-route boundary.
 RWRoute is likewise a physical routing provider, not the acceptance oracle.
+Before RWRoute starts, RapidWright completes the ordinary primitive intra-site
+routing for every materialized site.  This keeps LUT A6 and FF CE/SR defaults
+inside their architectural site instead of expanding them into tens of
+thousands of artificial inter-site static sinks.  Transformed DSP helper cells
+without an EDIF parent are ignored by RapidWright's site router as intended;
+their primitive-internal behavior and delay remain owned by the sealed DSP
+model.  The route certificate records the exact number of intra-site-routed
+sites, and the independent checker recomputes that count from the placement.
 The adapter emits only a compact, source-sealed route certificate. An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks

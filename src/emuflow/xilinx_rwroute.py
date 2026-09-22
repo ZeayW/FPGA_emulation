@@ -379,6 +379,7 @@ def validate_xilinx_route_db(
         raise ValidationError("XilinxRouteDB materialized route-cell count is invalid")
     physical_cells = materialization.get("physical_cells")
     transformed_dsp48e2 = materialization.get("transformed_dsp48e2_cells")
+    routed_sites = materialization.get("routed_sites")
     if (
         isinstance(physical_cells, bool)
         or not isinstance(physical_cells, int)
@@ -387,6 +388,9 @@ def validate_xilinx_route_db(
         or transformed_dsp48e2 < 0
         or transformed_dsp48e2 > route_cells
         or physical_cells != route_cells + 7 * transformed_dsp48e2
+        or isinstance(routed_sites, bool)
+        or not isinstance(routed_sites, int)
+        or routed_sites < 0
     ):
         raise ValidationError("XilinxRouteDB transformed-cell accounting is invalid")
     source = value.get("source")
@@ -421,6 +425,15 @@ def validate_xilinx_route_db(
             raise ValidationError("XilinxRouteDB route-cell accounting disagrees")
         if transformed_dsp48e2 != expected_dsp48e2:
             raise ValidationError("XilinxRouteDB DSP48E2 transform count disagrees")
+    if placement_path is not None:
+        placement = read_json(placement_path)
+        expected_sites = {
+            assignment.get("site", cluster.get("site"))
+            for cluster in placement.get("clusters", [])
+            for assignment in cluster.get("assignments", [])
+        }
+        if None in expected_sites or routed_sites != len(expected_sites):
+            raise ValidationError("XilinxRouteDB intra-site routing count disagrees")
     input_digest = source.get("rwroute_input_sha256")
     if not isinstance(input_digest, str) or re.fullmatch(r"[0-9a-f]{64}", input_digest) is None:
         raise ValidationError("XilinxRouteDB source.rwroute_input_sha256 is invalid")
