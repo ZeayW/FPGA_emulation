@@ -567,7 +567,7 @@ public final class EmuFlowRWRoute {
             for (PIP pip : sortedPips) netPips.put(pipRecord(pip));
             record.put("pips", netPips);
             JSONArray roots = sortedStaticRoots(net, vcc);
-            if (roots.isEmpty()) {
+            if (roots.length() == 0) {
                 throw new IllegalStateException(
                     "static net has sinks but no device-tied route root: " + net.getName()
                 );
