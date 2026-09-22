@@ -137,6 +137,61 @@ class XilinxPlacementTest(unittest.TestCase):
         self.assertEqual(placed["dsp-b"], "DSP48E2_X0Y2")
         self.assertEqual(placed["dsp-a"], "DSP48E2_X0Y1")
 
+    def test_guidance_distance_uses_physical_tile_grid(self):
+        architecture = {
+            "schema": "emuflow.archdb/v1", "part": "physical-grid-test",
+            "source": {"format": "unit-test/v1"},
+            "policy": {"name": "unit-test"},
+            "site_templates": {
+                "SLICEL": {
+                    "bels": [bel("A6LUT", "LUT6")],
+                    "alternative_templates": [],
+                },
+            },
+            "sites": [
+                {
+                    "name": "SLICE_X0Y0", "type": "SLICEL",
+                    "template": "SLICEL", "x": 0, "y": 0,
+                    "tile": {"grid_col": 100, "grid_row": 0,
+                             "site_index": 0},
+                },
+                {
+                    "name": "SLICE_X1Y0", "type": "SLICEL",
+                    "template": "SLICEL", "x": 27, "y": 0,
+                    "tile": {"grid_col": 1, "grid_row": 0,
+                             "site_index": 0},
+                },
+            ],
+        }
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "status": "pass",
+            "clusters": [{
+                "id": "logic", "kind": "slice",
+                "site_templates": ["SLICEL"],
+                "assignments": [{
+                    "instance": "lut", "cell_type": "LUT6",
+                    "bel": "A6LUT", "bel_candidates": ["A6LUT"],
+                }],
+            }],
+            "cascade_chains": [],
+        }
+        guidance = {
+            "schema": "emuflow.xilinx-global-placement-guidance/v1",
+            "clusters": [{"cluster": "logic", "x": 2, "y": 0}],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch_path, packed_path = root / "arch.json", root / "packed.json"
+            guidance_path, output = root / "guidance.json", root / "placed.json"
+            arch_path.write_text(json.dumps(architecture), encoding="utf-8")
+            packed_path.write_text(json.dumps(packed), encoding="utf-8")
+            guidance_path.write_text(json.dumps(guidance), encoding="utf-8")
+            result = place_xilinx_clusters(
+                packed_path, arch_path, output, guidance_path=guidance_path
+            )
+        self.assertEqual(result["clusters"][0]["site"], "SLICE_X1Y0")
+        self.assertEqual(result["summary"]["mean_guidance_displacement"], 1)
+
     def test_indexed_cascade_search_matches_exhaustive_reference(self):
         sites = []
         site_by_name = {}

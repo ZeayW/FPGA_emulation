@@ -20,7 +20,9 @@ XILINX_PLACEMENT_SCHEMA = "emuflow.xilinx-placement/v1"
 XILINX_GUIDANCE_SCHEMA = "emuflow.xilinx-global-placement-guidance/v1"
 XILINX_CONSTRAINTS_SCHEMA = "emuflow.xilinx-placement-constraints/v1"
 XILINX_SINGLE_SLR_PLAN_PROVIDER = "emuflow-xilinx-single-slr-planner-v1"
-XILINX_EXACT_SITE_LEGALIZER_PROVIDER = "emuflow-xilinx-exact-site-legalizer-v2"
+XILINX_EXACT_SITE_LEGALIZER_PROVIDER = (
+    "emuflow-xilinx-exact-site-legalizer-v3-physical-grid"
+)
 XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 0.75
 _SITE_XY_RE = re.compile(r"^(?P<kind>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 
@@ -53,6 +55,20 @@ def _physical_site_coordinate(name: str) -> Tuple[str, int, int]:
             f"site {name!r} does not expose an exact physical X/Y identity"
         )
     return match.group("kind"), int(match.group("x")), int(match.group("y"))
+
+
+def _placer_coordinate(site: Mapping[str, Any]) -> Tuple[int, int]:
+    """Return physical tile geometry instead of the unique site database key."""
+
+    tile = site.get("tile")
+    if isinstance(tile, Mapping):
+        col, row = tile.get("grid_col"), tile.get("grid_row")
+        if (
+            isinstance(col, int) and not isinstance(col, bool) and col >= 0
+            and isinstance(row, int) and not isinstance(row, bool) and row >= 0
+        ):
+            return col, row
+    return int(site["x"]), int(site["y"])
 
 
 def _clock_region_site_key(site: Mapping[str, Any]) -> Optional[Tuple[str, str, str]]:
@@ -293,7 +309,8 @@ def _distance(
     for cluster_id, site in zip(cluster_ids, sites):
         target = guidance.get(cluster_id)
         if target is not None:
-            cost += abs(site["x"] - target[0]) + abs(site["y"] - target[1])
+            x, y = _placer_coordinate(site)
+            cost += abs(x - target[0]) + abs(y - target[1])
     return cost, tuple(site["name"] for site in sites)
 
 
@@ -410,8 +427,8 @@ def _site_coordinate_rows(
 ) -> Dict[int, Tuple[int, ...]]:
     rows: Dict[int, List[int]] = defaultdict(list)
     for name in site_names:
-        site = sites[name]
-        rows[site["y"]].append(site["x"])
+        x, y = _placer_coordinate(sites[name])
+        rows[y].append(x)
     return {y: tuple(sorted(values)) for y, values in rows.items()}
 
 
@@ -780,10 +797,6 @@ def place_xilinx_clusters(
         key = _clock_region_site_key(sites[site_name])
         if key is not None:
             local_usage[key] += 1
-    site_at_xy = {
-        (site["x"], site["y"]): site["name"]
-        for site in architecture.value["sites"]
-    }
     candidates: Dict[str, List[str]] = {}
     candidate_cache: Dict[
         Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...]], List[str]
@@ -893,7 +906,10 @@ def place_xilinx_clusters(
         for column, entries in grouped.items():
             windows = [names for _physical_y, names in sorted(entries)]
             x_values = [
-                {int(sites[names[offset]]["x"]) for names in windows}
+                {
+                    _placer_coordinate(sites[names[offset]])[0]
+                    for names in windows
+                }
                 for offset in range(length)
             ]
             blocks = []
@@ -901,14 +917,12 @@ def place_xilinx_clusters(
                 end = min(start + 32, len(windows))
                 bounds = []
                 for offset in range(length):
-                    xs = [
-                        int(sites[windows[index][offset]]["x"])
+                    coordinates = [
+                        _placer_coordinate(sites[windows[index][offset]])
                         for index in range(start, end)
                     ]
-                    ys = [
-                        int(sites[windows[index][offset]]["y"])
-                        for index in range(start, end)
-                    ]
+                    xs = [coordinate[0] for coordinate in coordinates]
+                    ys = [coordinate[1] for coordinate in coordinates]
                     bounds.append((min(xs), max(xs), min(ys), max(ys)))
                 blocks.append((start, end, bounds))
             result.append((column, windows, x_values, blocks))
@@ -1033,8 +1047,8 @@ def place_xilinx_clusters(
         if rows is None:
             mutable_rows: Dict[int, List[Tuple[int, str]]] = defaultdict(list)
             for name in values:
-                site = sites[name]
-                mutable_rows[site["y"]].append((site["x"], name))
+                x, y = _placer_coordinate(sites[name])
+                mutable_rows[y].append((x, name))
             rows = {
                 y: sorted(entries) for y, entries in mutable_rows.items()
             }
@@ -1075,18 +1089,7 @@ def place_xilinx_clusters(
     for cluster_id in remaining:
         values = candidates[cluster_id]
         if cluster_id in guidance:
-            target_x, target_y = guidance[cluster_id]
-            rounded = (int(round(target_x)), int(round(target_y)))
-            direct = site_at_xy.get(rounded)
-            if (
-                direct is not None
-                and direct not in used_sites
-                and direct in candidate_members(cluster_id)
-                and can_reserve_sites((direct,))
-            ):
-                selected = direct
-            else:
-                selected = nearest_available(values, guidance[cluster_id])
+            selected = nearest_available(values, guidance[cluster_id])
         else:
             key = id(values)
             cursor = cursors[key]
@@ -1116,8 +1119,10 @@ def place_xilinx_clusters(
         )
         target = guidance.get(cluster_id)
         if target is not None:
+            physical_x, physical_y = _placer_coordinate(site)
             displacement.append(
-                abs(site["x"] - target[0]) + abs(site["y"] - target[1])
+                abs(physical_x - target[0])
+                + abs(physical_y - target[1])
             )
         placements.append({
             "cluster": cluster_id,

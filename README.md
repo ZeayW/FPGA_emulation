@@ -4348,11 +4348,15 @@ this backend.  Its generic single-site min-cost-flow lookahead and final
 Bookshelf legalization are disabled; the first-party Xilinx legalizer performs
 the exact site/BEL assignment and independently checks legality before
 RWRoute.  This keeps placement guidance separate from architecture legality
-and avoids paying for two different legalizers.  Architecture coordinates are
-compressed onto contiguous X/Y site axes before OpenPARF optimization and are
-piecewise-linearly mapped back afterward.  This prevents the sparse physical
-coordinate gaps in a RapidWright ArchitectureDB from creating a mostly empty,
-ill-scaled analytical grid.  The continuous driver emits a compact convergence
+and avoids paying for two different legalizers.  Each physical FPGA tile
+becomes one OpenPARF site whose capacity is the sum of the supported slice,
+DSP, BRAM, and URAM sites in that tile.  Physical tile columns and rows are
+compressed onto contiguous analytical axes and mapped piecewise-linearly back
+to the same tile grid afterward.  The exporter never uses ArchitectureDB's
+unique site key `tile_col * site_stride + site_index` as a geometric
+coordinate: that key distinguishes multiple sites in one tile but would
+stretch horizontal distance by `site_stride` and corrupt the wirelength
+objective.  The continuous driver emits a compact convergence
 certificate and fails closed when any populated non-I/O area type remains
 above OpenPARF's declared guidance limit.  This preserves OpenPARF's own
 two-tier rule: packed slice logic must reach `stop_overflow`, while sparse
@@ -4404,7 +4408,12 @@ the upstream Bookshelf writer is intentionally bypassed because it accepts only
 already legalized discrete sites. Its generic min-cost-flow legalization
 and detailed placement are disabled because their discrete result is discarded
 and exact Xilinx legality is established once, downstream, by the first-party
-legalizer and its independent checker.
+legalizer and its independent checker.  The exact legalizer measures guidance
+displacement on the same physical `(tile.grid_col, tile.grid_row)` geometry.
+It retains the unique ArchitectureDB site coordinates only as persisted site
+identities, never as Manhattan-cost coordinates.  This keeps OpenPARF, exact
+site selection, and RapidWright routing on one geometric coordinate system
+while still allowing multiple physical sites to share a tile.
 The placement path reserves routing headroom instead of interpreting global
 device capacity as sufficient physical feasibility. OpenPARF uses an 80%
 continuous target density that passes its unmodified convergence gate; this is

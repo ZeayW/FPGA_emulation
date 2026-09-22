@@ -69,8 +69,8 @@ class XilinxOpenparfTest(unittest.TestCase):
         )
         self.assertIn("net n0 2", nets_text)
         self.assertIn("SITEMAP 2 2", sites_text)
-        self.assertIn("0 0 SLICEL", sites_text)
-        self.assertIn("1 1 SLICEL", sites_text)
+        self.assertIn("0 0 EMUFLOW_TILE_0", sites_text)
+        self.assertIn("1 1 EMUFLOW_TILE_0", sites_text)
         self.assertEqual(config["global_place_flag"], 1)
         self.assertEqual(config["legalize_flag"], 0)
         self.assertEqual(config["detailed_place_flag"], 0)
@@ -143,6 +143,90 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertEqual(
             name_map["coordinate_system"]["y_axis"], [40]
         )
+
+    def test_cluster_export_aggregates_multiple_sites_in_one_physical_tile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped = root / "mapped.json"
+            packed = root / "packed.json"
+            arch = root / "arch.json"
+            out = root / "openparf"
+            mapped.write_text(json.dumps({"modules": {"top": {
+                "attributes": {"top": "1"},
+                "cells": {
+                    "logic": {
+                        "type": "LUT6", "port_directions": {},
+                        "connections": {},
+                    },
+                    "multiply": {
+                        "type": "DSP48E2", "port_directions": {},
+                        "connections": {},
+                    },
+                },
+            }}}), encoding="utf-8")
+            packed.write_text(json.dumps({
+                "schema": "emuflow.packed-site-netlist/v1",
+                "clusters": [
+                    {
+                        "id": "logic-cluster", "kind": "slice",
+                        "assignments": [{
+                            "instance": "logic", "cell_type": "LUT6",
+                        }],
+                    },
+                    {
+                        "id": "dsp-cluster", "kind": "dsp",
+                        "assignments": [{
+                            "instance": "multiply", "cell_type": "DSP48E2",
+                        }],
+                    },
+                ],
+            }), encoding="utf-8")
+            arch.write_text(json.dumps({
+                "schema": "emuflow.archdb/v1", "part": "test",
+                "source": {"format": "test/v1"},
+                "policy": {"name": "test"},
+                "site_templates": {
+                    "SLICEL": {
+                        "bels": [{
+                            "name": "A6LUT", "type": "LUT6", "z": 0,
+                            "compatible_cells": ["LUT6"],
+                        }],
+                        "alternative_templates": [],
+                    },
+                    "DSP48E2": {
+                        "bels": [{
+                            "name": "DSP_ALU", "type": "DSP48E2", "z": 0,
+                            "compatible_cells": ["DSP48E2"],
+                        }],
+                        "alternative_templates": [],
+                    },
+                },
+                "sites": [
+                    {
+                        "name": "SLICE_X0Y0", "type": "SLICEL",
+                        "template": "SLICEL", "x": 0, "y": 0,
+                        "tile": {"grid_col": 7, "grid_row": 11,
+                                 "site_index": 0},
+                    },
+                    {
+                        "name": "DSP48E2_X0Y0", "type": "DSP48E2",
+                        "template": "DSP48E2", "x": 1, "y": 0,
+                        "tile": {"grid_col": 7, "grid_row": 11,
+                                 "site_index": 1},
+                    },
+                ],
+            }), encoding="utf-8")
+            export_xilinx_cluster_bookshelf(mapped, packed, arch, out)
+            sites_text = (out / "design.scl").read_text(encoding="utf-8")
+            name_map = json.loads(
+                (out / "name_map.json").read_text(encoding="utf-8")
+            )
+        self.assertIn("  X_DSP 1", sites_text)
+        self.assertIn("  X_SLICE 1", sites_text)
+        self.assertIn("SITEMAP 1 1", sites_text)
+        self.assertEqual(sites_text.count("0 0 EMUFLOW_TILE_0"), 1)
+        self.assertEqual(name_map["coordinate_system"]["x_axis"], [7])
+        self.assertEqual(name_map["coordinate_system"]["y_axis"], [11])
 
     def test_continuous_writer_does_not_require_discrete_sites(self):
         class Tensor:

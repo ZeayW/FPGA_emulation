@@ -21,10 +21,10 @@ from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from .xilinx_placement import XILINX_GUIDANCE_SCHEMA
 
 
-XILINX_OPENPARF_MANIFEST_SCHEMA = "emuflow.xilinx-openparf-manifest/v2"
-XILINX_OPENPARF_NAME_MAP_SCHEMA = "emuflow.xilinx-openparf-name-map/v2"
+XILINX_OPENPARF_MANIFEST_SCHEMA = "emuflow.xilinx-openparf-manifest/v3"
+XILINX_OPENPARF_NAME_MAP_SCHEMA = "emuflow.xilinx-openparf-name-map/v3"
 XILINX_OPENPARF_COORDINATE_SYSTEM_SCHEMA = (
-    "emuflow.xilinx-openparf-dense-axis/v1"
+    "emuflow.xilinx-openparf-physical-tile-grid/v2"
 )
 XILINX_OPENPARF_TARGET_DENSITY = 0.80
 
@@ -164,10 +164,33 @@ def _render_nets(
 def _coordinate_axes(
     sites: List[Mapping[str, Any]],
 ) -> Tuple[List[int], List[int]]:
+    coordinates = [_physical_tile_coordinate(site) for site in sites]
     return (
-        sorted({int(site["x"]) for site in sites}),
-        sorted({int(site["y"]) for site in sites}),
+        sorted({coordinate[0] for coordinate in coordinates}),
+        sorted({coordinate[1] for coordinate in coordinates}),
     )
+
+
+def _physical_tile_coordinate(site: Mapping[str, Any]) -> Tuple[int, int]:
+    """Return physical tile-grid geometry, never the unique site key.
+
+    FPGA-Interchange ArchitectureDB sites use ``x = tile_col * stride +
+    site_index`` so every site has a unique database coordinate.  That key is
+    deliberately *not* a geometric distance: using it in placement stretches
+    the horizontal axis by the maximum sites-per-tile stride.  Production
+    devices expose the authoritative grid coordinate in ``site.tile``.  The
+    fallback keeps small hand-written unit fixtures usable.
+    """
+
+    tile = site.get("tile")
+    if isinstance(tile, Mapping):
+        col, row = tile.get("grid_col"), tile.get("grid_row")
+        if (
+            isinstance(col, int) and not isinstance(col, bool) and col >= 0
+            and isinstance(row, int) and not isinstance(row, bool) and row >= 0
+        ):
+            return col, row
+    return int(site["x"]), int(site["y"])
 
 
 def _render_sites(
@@ -176,17 +199,26 @@ def _render_sites(
     x_axis: List[int],
     y_axis: List[int],
 ) -> str:
-    resources_by_type: Dict[str, Optional[str]] = {}
+    tile_resources: Dict[Tuple[int, int], Counter[str]] = defaultdict(Counter)
     for site in sites:
         resource = _site_resource(site["type"])
-        existing = resources_by_type.setdefault(site["type"], resource)
-        if existing != resource:
-            raise ValidationError(f"inconsistent resource class for {site['type']}")
-    lines = []
-    for site_type, resource in sorted(resources_by_type.items()):
-        lines.append(f"SITE {site_type}")
         if resource in used:
-            lines.append(f"  {resource} 1")
+            tile_resources[_physical_tile_coordinate(site)][resource] += 1
+
+    signatures = sorted({
+        tuple(sorted(resources.items()))
+        for resources in tile_resources.values()
+        if resources
+    })
+    signature_names = {
+        signature: f"EMUFLOW_TILE_{index}"
+        for index, signature in enumerate(signatures)
+    }
+    lines = []
+    for signature in signatures:
+        lines.append(f"SITE {signature_names[signature]}")
+        for resource, count in signature:
+            lines.append(f"  {resource} {count}")
         lines.extend(["END SITE", ""])
     lines.append("RESOURCES")
     for resource in sorted(used):
@@ -195,12 +227,14 @@ def _render_sites(
     x_index = {coordinate: index for index, coordinate in enumerate(x_axis)}
     y_index = {coordinate: index for index, coordinate in enumerate(y_axis)}
     lines.append(f"SITEMAP {len(x_axis)} {len(y_axis)}")
-    lines.extend(
-        f"{x_index[int(site['x'])]} {y_index[int(site['y'])]} {site['type']}"
-        for site in sorted(
-            sites, key=lambda item: (item["x"], item["y"])
+    for coordinate in sorted(tile_resources):
+        signature = tuple(sorted(tile_resources[coordinate].items()))
+        if not signature:
+            continue
+        lines.append(
+            f"{x_index[coordinate[0]]} {y_index[coordinate[1]]} "
+            f"{signature_names[signature]}"
         )
-    )
     lines.append("END SITEMAP")
     return "\n".join(lines) + "\n"
 
