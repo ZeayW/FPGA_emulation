@@ -103,29 +103,40 @@ public final class EmuFlowRWRoute {
         private void monitorSlowConnections() {
             while (monitorRunning) {
                 long now = System.nanoTime();
+                String probePath = System.getenv("EMUFLOW_SLOW_CONNECTION_LOG");
+                StringBuilder snapshot = new StringBuilder();
+                snapshot.append("active=").append(active.size()).append(System.lineSeparator());
                 for (Map.Entry<Thread, ActiveConnection> entry : active.entrySet()) {
                     ActiveConnection value = entry.getValue();
                     double elapsedSeconds =
                         (now - value.startNanoseconds) / 1_000_000_000.0;
+                    Connection connection = value.connection;
+                    snapshot.append(String.format(
+                        "thread=%s elapsed_s=%.3f net=%s source=%s sink=%s bb=%s hpwl=%d direct=%s%n",
+                        entry.getKey().getName(), elapsedSeconds,
+                        connection.getNet().getName(), connection.getSource(),
+                        connection.getSink(), connection.bbRectangleString(),
+                        connection.getHpwl(), connection.isDirect()
+                    ));
                     if (!value.reported && elapsedSeconds >= 5.0) {
                         value.reported = true;
                         String line = String.format(
                             "EMUFLOW_SLOW_CONNECTION thread=%s elapsed_s=%.3f %s",
                             entry.getKey().getName(), elapsedSeconds, value.connection
                         );
-                        String probePath = System.getenv("EMUFLOW_SLOW_CONNECTION_LOG");
-                        if (probePath != null && !probePath.isBlank()) {
-                            try {
-                                Files.writeString(
-                                    Path.of(probePath), line + System.lineSeparator(),
-                                    StandardOpenOption.CREATE, StandardOpenOption.APPEND
-                                );
-                            } catch (Exception error) {
-                                throw new RuntimeException(error);
-                            }
-                        }
                         System.out.println(line);
                         System.out.flush();
+                    }
+                }
+                if (probePath != null && !probePath.isBlank()) {
+                    try {
+                        Files.writeString(
+                            Path.of(probePath), snapshot.toString(),
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.TRUNCATE_EXISTING
+                        );
+                    } catch (Exception error) {
+                        throw new RuntimeException(error);
                     }
                 }
                 try {
