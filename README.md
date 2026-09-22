@@ -4456,11 +4456,11 @@ RWRoute is likewise a physical routing provider, not the acceptance oracle.
 Large designs use RapidWright CUFR, the parallel full-design specialization of
 RWRoute: it retains RWRoute's negotiated-congestion legality model while
 partitioning general-signal routing across CPU workers.  Route A selects its
-non-timing-driven synchronous update mode explicitly; the optional HUS mode is
-not used because it preserved essentially all first-iteration overlap on the
-medium acceptance design while making the subsequent update phase much more
-expensive.  The sealed route certificate records the exact
-`CUFR-no-HUS-non-timing-driven` strategy; there is no silent fallback to the
+non-timing-driven HUS mode explicitly.  HUS is CUFR's upstream update strategy
+for large, difficult negotiated-congestion problems; the placement stage is
+responsible for selecting a compact feasible physical region before routing.
+The sealed route certificate records the exact
+`CUFR-HUS-non-timing-driven` strategy; there is no silent fallback to the
 serial router.  Static A6/CE/SR obligations remain real RapidWright static-net
 sinks and are checked rather than discarded.  The certificate includes the
 routed VCC/GND forests, identifies every root that RapidWright's device

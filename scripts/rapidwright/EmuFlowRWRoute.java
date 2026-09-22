@@ -17,8 +17,6 @@ import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.edif.EDIFCell;
 import com.xilinx.rapidwright.rwroute.CUFR;
-import com.xilinx.rapidwright.rwroute.Connection;
-import com.xilinx.rapidwright.rwroute.RWRouteConfig;
 import com.xilinx.rapidwright.timing.TimingModel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,7 +28,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -65,87 +62,6 @@ public final class EmuFlowRWRoute {
 
         boolean isBlockRam() {
             return logicalType.equals("RAMB18E2") || logicalType.equals("RAMB36E2");
-        }
-    }
-
-    /**
-     * Opt-in probe for a single unexpectedly expensive CUFR connection.
-     *
-     * Normal production runs never instantiate this class.  Setting
-     * EMUFLOW_RWROUTE_DIAGNOSE_SLOW_CONNECTIONS=1 reports only connections
-     * that remain inside RapidWright's search for at least five seconds; it
-     * does not emit the complete move/search trace into the hot path.
-     */
-    private static final class DiagnosedCUFR extends CUFR {
-        private static final class ActiveConnection {
-            final Connection connection;
-            final long startNanoseconds;
-            boolean reported;
-
-            ActiveConnection(Connection connection) {
-                this.connection = connection;
-                this.startNanoseconds = System.nanoTime();
-            }
-        }
-
-        private final Map<Thread, ActiveConnection> active =
-            new ConcurrentHashMap<>();
-        private volatile boolean monitorRunning = true;
-
-        DiagnosedCUFR(Design design, RWRouteConfig config) {
-            super(design, config);
-        }
-
-        @Override
-        protected void routeIndirectConnection(Connection connection) {
-            Thread worker = Thread.currentThread();
-            active.put(worker, new ActiveConnection(connection));
-            try {
-                super.routeIndirectConnection(connection);
-            } finally {
-                active.remove(worker);
-            }
-        }
-
-        private void monitorSlowConnections() {
-            while (monitorRunning) {
-                long now = System.nanoTime();
-                for (Map.Entry<Thread, ActiveConnection> entry : active.entrySet()) {
-                    ActiveConnection value = entry.getValue();
-                    double elapsedSeconds =
-                        (now - value.startNanoseconds) / 1_000_000_000.0;
-                    if (!value.reported && elapsedSeconds >= 5.0) {
-                        value.reported = true;
-                        System.err.printf(
-                            "EMUFLOW_SLOW_CONNECTION thread=%s elapsed_s=%.3f %s%n",
-                            entry.getKey().getName(), elapsedSeconds, value.connection
-                        );
-                    }
-                }
-                try {
-                    Thread.sleep(1000L);
-                } catch (InterruptedException ignored) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-            }
-        }
-
-        static Design routeDesignWithProbe(Design design, String[] arguments) {
-            DiagnosedCUFR router = new DiagnosedCUFR(
-                design, new RWRouteConfig(arguments)
-            );
-            Thread monitor = new Thread(
-                router::monitorSlowConnections, "EmuFlow-RWRoute-slow-connection-monitor"
-            );
-            monitor.setDaemon(true);
-            monitor.start();
-            try {
-                return routeDesign(router);
-            } finally {
-                router.monitorRunning = false;
-                monitor.interrupt();
-            }
         }
     }
 
@@ -563,21 +479,10 @@ public final class EmuFlowRWRoute {
         // This certificate begins and ends at physical site pins; purely
         // intra-site nets remain outside the inter-site route certificate.
         // CUFR is RapidWright's parallel full-design specialization of
-        // RWRoute.  Keep its negotiated-congestion updates synchronous for
-        // this dense, explicitly placed design: RapidWright's convenience
-        // method also enables HUS, whose stale parallel cost updates leave
-        // this graph with essentially the same first-iteration overlap while
-        // making the following update phase disproportionately expensive.
-        // This remains the same non-timing-driven CUFR legality engine; only
-        // the optional hybrid updating strategy is disabled.
-        String[] routeArguments = new String[] {"--nonTimingDriven"};
-        if ("1".equals(
-            System.getenv("EMUFLOW_RWROUTE_DIAGNOSE_SLOW_CONNECTIONS")
-        )) {
-            DiagnosedCUFR.routeDesignWithProbe(design, routeArguments);
-        } else {
-            CUFR.routeDesignWithUserDefinedArguments(design, routeArguments);
-        }
+        // RWRoute.  HUS is its upstream strategy for large, difficult
+        // negotiated-congestion problems; keep it enabled once placement has
+        // selected the smallest feasible physical region for this partition.
+        CUFR.routeDesignFullNonTimingDriven(design);
 
         // RapidWright's lightweight timing model evaluates the concrete
         // routed PIP tree in picoseconds.  Keep this deliberately separate
@@ -693,7 +598,7 @@ public final class EmuFlowRWRoute {
             .put("route_cells", cells.size())
             .put("physical_cells", physicalCells)
             .put("transformed_dsp48e2_cells", transformedDsp48e2Cells)
-            .put("router", "CUFR-no-HUS-non-timing-driven"));
+            .put("router", "CUFR-HUS-non-timing-driven"));
         output.put("nets", routeNets);
         output.put("excluded_nets", excluded);
         output.put("timing", new JSONObject()
