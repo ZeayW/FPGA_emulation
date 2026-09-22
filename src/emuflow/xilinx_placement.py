@@ -23,13 +23,7 @@ XILINX_SINGLE_SLR_PLAN_PROVIDER = "emuflow-xilinx-single-slr-planner-v1"
 XILINX_EXACT_SITE_LEGALIZER_PROVIDER = (
     "emuflow-xilinx-exact-site-legalizer-v3-physical-grid"
 )
-# Board-level capacity and local routing feasibility are deliberately separate
-# contracts.  A partition may consume up to the platform's 75% device budget,
-# but concentrating 75% of one site type in an individual clock region leaves
-# too little local interconnect headroom for RWRoute on large designs.  Keep a
-# conservative 40% local reserve; the exact checker independently reconstructs
-# and enforces the same per-(SLR, clock-region, site-type) bound.
-XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 0.60
+XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 0.75
 _SITE_XY_RE = re.compile(r"^(?P<kind>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 
 

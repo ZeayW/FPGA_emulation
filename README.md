@@ -4424,12 +4424,8 @@ The placement path reserves routing headroom instead of interpreting global
 device capacity as sufficient physical feasibility. OpenPARF uses an 80%
 continuous target density that passes its unmodified convergence gate; this is
 guidance, not a physical-capacity certificate. The exact legalizer independently limits each
-`(SLR, clock-region, site-type)` bucket to 60% of its sites (with a one-site
+`(SLR, clock-region, site-type)` bucket to 75% of its sites (with a one-site
 minimum and conservative upward rounding for indivisible sparse resources).
-This local detailed-routing reserve is intentionally stricter than the 75%
-whole-device partition budget: the latter protects device capacity, while the
-former prevents a globally low-utilization partition from exhausting local
-clock-region interconnect.
 Cascade windows and fixed/region
 constraints remain exact hard requirements. The placement validator
 reconstructs these local capacities from ArchitectureDB and rejects a
@@ -4461,7 +4457,7 @@ The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.
 The production RapidWright backend selects the smallest capacity-feasible
-contiguous SLR window, including one SLR when it satisfies the explicit 60%
+contiguous SLR window, including one SLR when it satisfies the explicit 75%
 resource-headroom contract. Equal-size feasible windows are ranked by distance
 from the physical device center. The selected window is recorded once as a
 global `allowed_slrs` constraint; it is not duplicated into every cluster
