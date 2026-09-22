@@ -52,6 +52,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "candidate_nets": 1, "certificate_nets": 1,
                 "static_nets": 0, "static_sinks": 0,
                 "nets_with_pips": 1, "pips": 3, "excluded_nets": 0,
+                "boundary_clock_nets": 0,
             },
             "timing": {
                 "provider": "rapidwright-lightweight",
@@ -166,6 +167,24 @@ class XilinxRWRouteTest(unittest.TestCase):
             path.write_text(json.dumps(value), encoding="utf-8")
             self.assertEqual(validate_xilinx_route_db(path)["clock_nets"], 1)
             value["nets"][0]["qualification"] = "global-clock"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "clock qualification"):
+                validate_xilinx_route_db(path)
+
+    def test_checker_requires_explicit_boundary_clock_qualification(self):
+        value = self._route()
+        value["excluded_nets"] = [{
+            "net": "nclk", "reason": "boundary_clock",
+            "qualification": "ideal-boundary-clock",
+        }]
+        value["summary"]["excluded_nets"] = 1
+        value["summary"]["boundary_clock_nets"] = 1
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "route.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            report = validate_xilinx_route_db(path)
+            self.assertEqual(report["boundary_clock_nets"], 1)
+            value["excluded_nets"][0]["qualification"] = "unknown"
             path.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "clock qualification"):
                 validate_xilinx_route_db(path)
@@ -286,6 +305,39 @@ class XilinxRWRouteTest(unittest.TestCase):
             text = output.read_text(encoding="utf-8")
         self.assertEqual(report["routable_nets"], 0)
         self.assertIn("EXCLUDED\tn1\tintra_site", text)
+
+    def test_exporter_qualifies_driverless_boundary_clock(self):
+        mapped = {
+            "modules": {"top": {"cells": {
+                "ff": {
+                    "type": "FDRE", "port_directions": {"C": "input"},
+                    "connections": {"C": [1]},
+                },
+            }}}
+        }
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+            "clusters": [{"assignments": [
+                {"instance": "ff", "cell_type": "FDRE", "bel": "AFF"},
+            ]}],
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
+                {"instance": "ff", "bel": "AFF"},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / name for name in ("mapped.json", "packed.json", "placement.json")]
+            for path, value in zip(paths, (mapped, packed, placement)):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            output = root / "route.tsv"
+            export_rwroute_input(*paths, output)
+            text = output.read_text(encoding="utf-8")
+        self.assertIn(
+            "EXCLUDED\tn1\tboundary_clock\tideal-boundary-clock", text
+        )
 
     def test_exporter_physically_expands_lut6_2_for_rapidwright(self):
         mapped = {

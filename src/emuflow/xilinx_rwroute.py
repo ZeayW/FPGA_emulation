@@ -224,9 +224,21 @@ def export_rwroute_input(
         drivers = [value for value in values if value[2] == "driver"]
         sinks = [value for value in values if value[2] == "sink"]
         net_name = f"n{bit}"
+        boundary_clock = any(
+            pin in {"C", "CLK"} for _cell, pin, _role in sinks
+        )
         if len(drivers) != 1 or not sinks:
-            reason = "boundary_or_driverless" if not drivers else "multiple_driver_or_sinkless"
-            lines.append(f"EXCLUDED\t{net_name}\t{reason}")
+            if not drivers and sinks and boundary_clock:
+                lines.append(
+                    f"EXCLUDED\t{net_name}\tboundary_clock"
+                    "\tideal-boundary-clock"
+                )
+            else:
+                reason = (
+                    "boundary_or_driverless"
+                    if not drivers else "multiple_driver_or_sinkless"
+                )
+                lines.append(f"EXCLUDED\t{net_name}\t{reason}")
             excluded += 1
             continue
         sites = {physical[name][0] for name, _pin, _role in [drivers[0], *sinks]}
@@ -234,7 +246,7 @@ def export_rwroute_input(
             lines.append(f"EXCLUDED\t{net_name}\tintra_site")
             excluded += 1
             continue
-        kind = "clock" if any(pin in {"C", "CLK"} for _cell, pin, _role in sinks) else "signal"
+        kind = "clock" if boundary_clock else "signal"
         lines.append(f"NET\t{net_name}\t{kind}")
         for name, pin, role in [drivers[0], *sinks]:
             route_name, route_pin = pin_bindings.get(
@@ -613,20 +625,31 @@ def validate_xilinx_route_db(
         checked_nets += 1
         checked_sinks += len(sinks)
     excluded_names: Set[str] = set()
+    boundary_clock_nets = 0
     allowed_exclusions = {
         "boundary_or_driverless", "multiple_driver_or_sinkless", "intra_site"
     }
     for index, excluded in enumerate(excluded_nets):
         context = f"route.excluded_nets[{index}]"
-        if not isinstance(excluded, dict) or set(excluded) != {"net", "reason"}:
+        if not isinstance(excluded, dict):
             raise ValidationError(f"{context}: invalid exclusion record")
         net_name, reason = excluded.get("net"), excluded.get("reason")
+        if reason == "boundary_clock":
+            if (
+                set(excluded) != {"net", "reason", "qualification"}
+                or excluded.get("qualification") != "ideal-boundary-clock"
+            ):
+                raise ValidationError(
+                    f"{context}: boundary clock qualification is invalid"
+                )
+            boundary_clock_nets += 1
+        elif set(excluded) != {"net", "reason"} or reason not in allowed_exclusions:
+            raise ValidationError(f"{context}: invalid exclusion record")
         if (
             not isinstance(net_name, str)
             or not net_name
             or net_name in seen_nets
             or net_name in excluded_names
-            or reason not in allowed_exclusions
         ):
             raise ValidationError(f"{context}: invalid or conflicting exclusion")
         excluded_names.add(net_name)
@@ -638,6 +661,7 @@ def validate_xilinx_route_db(
         "nets_with_pips": nets_with_pips,
         "pips": len(used_pips),
         "excluded_nets": len(excluded_nets),
+        "boundary_clock_nets": boundary_clock_nets,
     }
     if summary != expected_summary:
         raise ValidationError("XilinxRouteDB summary disagrees with route certificate")
@@ -700,6 +724,7 @@ def validate_xilinx_route_db(
         "nets": checked_nets, "sinks": checked_sinks,
         "pips": len(used_pips), "route_sha256": _sha256(path),
         "excluded_nets": len(value.get("excluded_nets", [])),
+        "boundary_clock_nets": boundary_clock_nets,
         "timed_endpoints": len(route_delays_ps),
         "maximum_route_delay_ps": maximum_route_delay_ps,
         "timing_provider": timing["provider"],

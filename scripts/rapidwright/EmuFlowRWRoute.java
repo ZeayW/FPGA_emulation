@@ -396,8 +396,14 @@ public final class EmuFlowRWRoute {
                     pinRows.get(fields[1]).add(fields);
                     break;
                 case "EXCLUDED":
-                    if (fields.length != 3) throw new IllegalArgumentException("invalid EXCLUDED record");
-                    excluded.put(new JSONObject().put("net", fields[1]).put("reason", fields[2]));
+                    if (fields.length != 3 && fields.length != 4)
+                        throw new IllegalArgumentException("invalid EXCLUDED record");
+                    JSONObject excludedRecord = new JSONObject()
+                        .put("net", fields[1]).put("reason", fields[2]);
+                    if (fields.length == 4) {
+                        excludedRecord.put("qualification", fields[3]);
+                    }
+                    excluded.put(excludedRecord);
                     break;
                 default:
                     throw new IllegalArgumentException("unknown route-input record " + fields[0]);
@@ -607,6 +613,13 @@ public final class EmuFlowRWRoute {
         }
         int staticNets = 0;
         int staticSinks = 0;
+        int boundaryClockNets = 0;
+        for (Object item : excluded) {
+            JSONObject excludedRecord = (JSONObject)item;
+            if (excludedRecord.getString("reason").equals("boundary_clock")) {
+                boundaryClockNets++;
+            }
+        }
         for (Net net : new Net[] {design.getGndNet(), design.getVccNet()}) {
             if (net == null || net.getSinkPins().isEmpty()) continue;
             boolean vcc = net.isVCCNet();
@@ -687,7 +700,8 @@ public final class EmuFlowRWRoute {
             .put("static_sinks", staticSinks)
             .put("nets_with_pips", routed)
             .put("pips", pips)
-            .put("excluded_nets", excluded.length()));
+            .put("excluded_nets", excluded.length())
+            .put("boundary_clock_nets", boundaryClockNets));
         Files.writeString(Path.of(args[1]), output.toString());
     }
 }

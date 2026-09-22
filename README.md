@@ -4494,9 +4494,11 @@ Static A6/CE/SR obligations remain real RapidWright static-net
 sinks and are checked rather than discarded.  The certificate includes the
 routed VCC/GND forests, identifies every root that RapidWright's device
 database marks as tied to the corresponding value, and requires every static
-sink to be reachable from one of those roots.  Clock nets in this Route A
-adapter are explicitly qualified as fabric-routed clocks; the certificate
-makes no unsupported global clock-network claim.
+sink to be reachable from one of those roots.  Internally driven clock nets
+in this Route A adapter are explicitly qualified as fabric-routed clocks.
+Top-level clocks have no physical source primitive in the out-of-context
+partition, so they are separately qualified as `ideal-boundary-clock` rather
+than being silently counted as routed or invented as a global clock network.
 The adapter emits only a compact, source-sealed route certificate. An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks
@@ -4543,8 +4545,9 @@ Purely intra-site nets are explicitly classified outside the inter-site
 certificate and covered by the primitive/internal timing model; the compact
 RWRoute adapter therefore routes only the materialized site-pin-to-site-pin
 graph and does not attempt to turn transformed logical macros into a
-bitstream-complete EDIF site implementation. Driverless boundary/clock nets
-remain explicit exclusions rather than being silently invented.
+bitstream-complete EDIF site implementation. Generic driverless boundaries
+remain explicit exclusions; top-level driverless clocks additionally carry
+their explicit `ideal-boundary-clock` qualification.
 This
 profile remains opt-in until placement, RWRoute, timing, and complete
 small/medium Phase 1--7 acceptance gates pass; it does not silently replace
