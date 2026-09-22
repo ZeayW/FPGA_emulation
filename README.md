@@ -4405,6 +4405,17 @@ already legalized discrete sites. Its generic min-cost-flow legalization
 and detailed placement are disabled because their discrete result is discarded
 and exact Xilinx legality is established once, downstream, by the first-party
 legalizer and its independent checker.
+Both stages reserve routing headroom instead of interpreting global device
+capacity as sufficient physical feasibility. OpenPARF uses a 75% target
+density, and the exact legalizer independently limits each
+`(SLR, clock-region, site-type)` bucket to 75% of its sites (with a one-site
+minimum and conservative upward rounding for indivisible sparse resources).
+Cascade windows and fixed/region
+constraints remain exact hard requirements. The placement validator
+reconstructs these local capacities from ArchitectureDB and rejects a
+certificate that exceeds the reservation; this prevents a low-total-
+utilization design from silently saturating a few clock regions before
+RWRoute.
 When a design must remain inside one SLR for the first RWRoute qualification,
 that restriction is produced by the explicit single-SLR planner rather than a
 handwritten or alphabetically selected constraint. The planner first proves

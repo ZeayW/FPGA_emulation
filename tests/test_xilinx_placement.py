@@ -270,6 +270,107 @@ class XilinxPlacementTest(unittest.TestCase):
                     packed, arch, output, constraints_path=constraints
                 )
 
+    def test_clock_region_headroom_spreads_guidance_and_is_validated(self):
+        architecture = {
+            "schema": "emuflow.archdb/v1", "part": "xcvu19p-density-test",
+            "source": {"format": "unit-test/v1"},
+            "policy": {"name": "unit-test"},
+            "site_templates": {
+                "SLICEL": {
+                    "bels": [bel("A6LUT", "LUT6")],
+                    "alternative_templates": [],
+                },
+            },
+            "sites": [
+                {
+                    "name": f"SLICE_X{x}Y{y}", "type": "SLICEL",
+                    "template": "SLICEL", "x": x, "y": y,
+                    "physical_region": {
+                        "slr": "SLR0",
+                        "clock_region": "X0Y0" if x == 0 else "X1Y0",
+                    },
+                }
+                for x in range(2)
+                for y in range(8)
+            ],
+        }
+        clusters = [
+            {
+                "id": f"slice-{index}", "kind": "slice",
+                "site_templates": ["SLICEL"],
+                "assignments": [{
+                    "instance": f"lut-{index}", "cell_type": "LUT6",
+                    "bel": "A6LUT", "bel_candidates": ["A6LUT"],
+                }],
+            }
+            for index in range(7)
+        ]
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "status": "pass",
+            "clusters": clusters, "cascade_chains": [],
+        }
+        guidance = {
+            "schema": "emuflow.xilinx-global-placement-guidance/v1",
+            "clusters": [
+                {"cluster": cluster["id"], "x": 0, "y": index}
+                for index, cluster in enumerate(clusters)
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch_path = root / "arch.json"
+            packed_path = root / "packed.json"
+            guidance_path = root / "guidance.json"
+            output = root / "placement.json"
+            arch_path.write_text(json.dumps(architecture), encoding="utf-8")
+            packed_path.write_text(json.dumps(packed), encoding="utf-8")
+            guidance_path.write_text(json.dumps(guidance), encoding="utf-8")
+            result = place_xilinx_clusters(
+                packed_path, arch_path, output, guidance_path=guidance_path
+            )
+            value = json.loads(output.read_text(encoding="utf-8"))
+            validate_xilinx_placement(packed_path, arch_path, output)
+
+            placed_by_region = {"X0Y0": [], "X1Y0": []}
+            for entry in value["clusters"]:
+                placed_by_region[entry["physical_region"]["clock_region"]].append(
+                    entry
+                )
+            self.assertEqual(
+                {key: len(entries) for key, entries in placed_by_region.items()},
+                {"X0Y0": 6, "X1Y0": 1},
+            )
+            self.assertEqual(
+                result["summary"]["maximum_clock_region_site_utilization"],
+                0.75,
+            )
+            self.assertEqual(
+                result["summary"]["maximum_clock_region_site_reservation"],
+                1.0,
+            )
+
+            # Move the spill cluster into the only unused site in the already
+            # full clock region. It remains a legal, non-overlapping SLICEL,
+            # so only the independent routability policy should reject it.
+            spill = placed_by_region["X1Y0"][0]
+            used = {entry["site"] for entry in placed_by_region["X0Y0"]}
+            replacement = next(
+                site for site in architecture["sites"]
+                if site["physical_region"]["clock_region"] == "X0Y0"
+                and site["name"] not in used
+            )
+            spill.update({
+                "site": replacement["name"],
+                "site_type": replacement["type"],
+                "x": replacement["x"], "y": replacement["y"],
+                "physical_region": replacement["physical_region"],
+            })
+            output.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "clock-region site utilization limit"
+            ):
+                validate_xilinx_placement(packed_path, arch_path, output)
+
     def test_bram_anchor_expands_to_exact_rapidwright_sites(self):
         architecture = {
             "schema": "emuflow.archdb/v1", "part": "xcvu19p-test",

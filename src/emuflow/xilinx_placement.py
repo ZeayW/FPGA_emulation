@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from bisect import bisect_left
 from collections import Counter, defaultdict
@@ -19,6 +20,8 @@ XILINX_PLACEMENT_SCHEMA = "emuflow.xilinx-placement/v1"
 XILINX_GUIDANCE_SCHEMA = "emuflow.xilinx-global-placement-guidance/v1"
 XILINX_CONSTRAINTS_SCHEMA = "emuflow.xilinx-placement-constraints/v1"
 XILINX_SINGLE_SLR_PLAN_PROVIDER = "emuflow-xilinx-single-slr-planner-v1"
+XILINX_EXACT_SITE_LEGALIZER_PROVIDER = "emuflow-xilinx-exact-site-legalizer-v2"
+XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 0.75
 _SITE_XY_RE = re.compile(r"^(?P<kind>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 
 
@@ -46,6 +49,50 @@ def _physical_site_coordinate(name: str) -> Tuple[str, int, int]:
             f"site {name!r} does not expose an exact physical X/Y identity"
         )
     return match.group("kind"), int(match.group("x")), int(match.group("y"))
+
+
+def _clock_region_site_key(site: Mapping[str, Any]) -> Optional[Tuple[str, str, str]]:
+    """Return the local-capacity bucket owned by ArchitectureDB.
+
+    Route A reserves capacity independently for each physical site type in a
+    clock region. Older synthetic fixtures without physical-region metadata
+    remain placeable, but real Xilinx ArchitectureDBs always carry this key.
+    """
+
+    region = site.get("physical_region")
+    if not isinstance(region, Mapping):
+        return None
+    clock_region = region.get("clock_region")
+    if not isinstance(clock_region, str) or not clock_region:
+        return None
+    slr = region.get("slr")
+    if not isinstance(slr, str) or not slr:
+        slr = "@unspecified-slr"
+    site_type = site.get("type")
+    if not isinstance(site_type, str) or not site_type:
+        raise ValidationError("ArchitectureDB site type is invalid")
+    return slr, clock_region, site_type
+
+
+def _local_site_limits(
+    sites: Mapping[str, Mapping[str, Any]], utilization_limit: float
+) -> Tuple[Counter, Dict[Tuple[str, str, str], int]]:
+    if (
+        isinstance(utilization_limit, bool)
+        or not isinstance(utilization_limit, (int, float))
+        or not 0.0 < float(utilization_limit) <= 1.0
+    ):
+        raise ValidationError("Xilinx local site utilization limit is invalid")
+    capacity = Counter(
+        key
+        for site in sites.values()
+        if (key := _clock_region_site_key(site)) is not None
+    )
+    limits = {
+        key: max(1, int(math.ceil(count * float(utilization_limit))))
+        for key, count in capacity.items()
+    }
+    return capacity, limits
 
 
 def _materialize_assignment_sites(
@@ -691,6 +738,26 @@ def place_xilinx_clusters(
 
     sites = {site["name"]: architecture.site_named(site["name"])
              for site in architecture.value["sites"]}
+    local_capacity, local_limits = _local_site_limits(
+        sites, XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT
+    )
+    local_usage: Counter = Counter()
+
+    def can_reserve_sites(site_names: Sequence[str]) -> bool:
+        added = Counter(
+            key
+            for site_name in site_names
+            if (key := _clock_region_site_key(sites[site_name])) is not None
+        )
+        return all(
+            local_usage[key] + count <= local_limits[key]
+            for key, count in added.items()
+        )
+
+    def reserve_site(site_name: str) -> None:
+        key = _clock_region_site_key(sites[site_name])
+        if key is not None:
+            local_usage[key] += 1
     site_at_xy = {
         (site["x"], site["y"]): site["name"]
         for site in architecture.value["sites"]
@@ -852,7 +919,7 @@ def place_xilinx_clusters(
             return all(
                 name in member_sets[offset] and name not in used_sites
                 for offset, name in enumerate(names)
-            )
+            ) and can_reserve_sites(names)
 
         for x_lower_bound, _column, windows, blocks in columns:
             if best_key is not None and x_lower_bound > best_key[0]:
@@ -903,7 +970,7 @@ def place_xilinx_clusters(
                     and name in candidate_members(cluster_id)
                     and name not in used_sites
                     for cluster_id, name in zip(chain, names)
-                ):
+                ) and can_reserve_sites(names):
                     best = names
                     break
         if best is None:
@@ -913,6 +980,7 @@ def place_xilinx_clusters(
         for cluster_id, site_name in zip(chain, best):
             placed[cluster_id] = site_name
             used_sites.add(site_name)
+            reserve_site(site_name)
 
     remaining = sorted(
         (cluster_id for cluster_id in cluster_ids if cluster_id not in placed),
@@ -967,7 +1035,7 @@ def place_xilinx_clusters(
                 cost = y_cost + x_cost
                 if best_cost is not None and cost >= best_cost:
                     break
-                if name not in used_sites:
+                if name not in used_sites and can_reserve_sites((name,)):
                     best_name, best_cost = name, cost
                     break
         return best_name
@@ -982,6 +1050,7 @@ def place_xilinx_clusters(
                 direct is not None
                 and direct not in used_sites
                 and direct in candidate_members(cluster_id)
+                and can_reserve_sites((direct,))
             ):
                 selected = direct
             else:
@@ -989,7 +1058,10 @@ def place_xilinx_clusters(
         else:
             key = id(values)
             cursor = cursors[key]
-            while cursor < len(values) and values[cursor] in used_sites:
+            while cursor < len(values) and (
+                values[cursor] in used_sites
+                or not can_reserve_sites((values[cursor],))
+            ):
                 cursor += 1
             cursors[key] = cursor + 1
             selected = values[cursor] if cursor < len(values) else None
@@ -999,6 +1071,7 @@ def place_xilinx_clusters(
             )
         placed[cluster_id] = selected
         used_sites.add(selected)
+        reserve_site(selected)
 
     placements = []
     displacement = []
@@ -1029,7 +1102,13 @@ def place_xilinx_clusters(
         "schema": XILINX_PLACEMENT_SCHEMA,
         "status": "pass",
         "part": architecture.part,
-        "provider": "emuflow-xilinx-exact-site-legalizer-v1",
+        "provider": XILINX_EXACT_SITE_LEGALIZER_PROVIDER,
+        "policy": {
+            "clock_region_site_utilization_limit": (
+                XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT
+            ),
+            "capacity_rounding": "ceil-with-one-site-minimum",
+        },
         "source": {
             "packed_sha256": _sha256(packed_path),
             "architecture_sha256": _sha256(architecture_path),
@@ -1046,6 +1125,21 @@ def place_xilinx_clusters(
                 sum(displacement) / len(displacement) if displacement else None
             ),
             "max_guidance_displacement": max(displacement) if displacement else None,
+            "clock_region_site_groups": len(local_capacity),
+            "maximum_clock_region_site_utilization": max(
+                (
+                    local_usage[key] / capacity
+                    for key, capacity in local_capacity.items()
+                ),
+                default=None,
+            ),
+            "maximum_clock_region_site_reservation": max(
+                (
+                    local_usage[key] / local_limits[key]
+                    for key in local_capacity
+                ),
+                default=None,
+            ),
             "site_types": dict(sorted(Counter(
                 item["site_type"] for item in placements
             ).items())),
@@ -1079,6 +1173,14 @@ def validate_xilinx_placement(
         raise ValidationError("Xilinx placement header is invalid")
     if placement.get("status") != "pass" or placement.get("part") != architecture.part:
         raise ValidationError("Xilinx placement identity is invalid")
+    if placement.get("provider") != XILINX_EXACT_SITE_LEGALIZER_PROVIDER:
+        raise ValidationError("Xilinx placement provider is invalid")
+    policy = placement.get("policy")
+    if policy != {
+        "clock_region_site_utilization_limit": XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT,
+        "capacity_rounding": "ceil-with-one-site-minimum",
+    }:
+        raise ValidationError("Xilinx placement routability policy is invalid")
     source = placement.get("source", {})
     if source.get("packed_sha256") != _sha256(packed_path):
         raise ValidationError("Xilinx placement packed digest is invalid")
@@ -1092,6 +1194,14 @@ def validate_xilinx_placement(
     if source.get("constraints_sha256") != constraints_sha:
         raise ValidationError("Xilinx placement constraint digest is invalid")
     contracts, _sites_by_template = _template_contracts(architecture)
+    architecture_sites = {
+        site["name"]: architecture.site_named(site["name"])
+        for site in architecture.value["sites"]
+    }
+    local_capacity, local_limits = _local_site_limits(
+        architecture_sites, XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT
+    )
+    local_usage: Counter = Counter()
     site_base = {}
     for site in architecture.value["sites"]:
         base = site.get("template", f"@site:{site['name']}")
@@ -1118,6 +1228,13 @@ def validate_xilinx_placement(
         if site_name in occupied:
             raise ValidationError(f"{context}: physical site overlap")
         occupied.add(site_name)
+        local_key = _clock_region_site_key(site)
+        if local_key is not None:
+            local_usage[local_key] += 1
+            if local_usage[local_key] > local_limits[local_key]:
+                raise ValidationError(
+                    f"{context}: clock-region site utilization limit is violated"
+                )
         if (entry.get("x"), entry.get("y")) != (site["x"], site["y"]):
             raise ValidationError(f"{context}: coordinates do not match site")
         if not _site_satisfies_constraint(site, constraints.get(cluster_id, {})):
@@ -1157,6 +1274,29 @@ def validate_xilinx_placement(
                 "dedicated cascade placement is not physically contiguous: "
                 + " -> ".join(chain)
             )
+    expected_local_summary = {
+        "clock_region_site_groups": len(local_capacity),
+        "maximum_clock_region_site_utilization": max(
+            (
+                local_usage[key] / capacity
+                for key, capacity in local_capacity.items()
+            ),
+            default=None,
+        ),
+        "maximum_clock_region_site_reservation": max(
+            (
+                local_usage[key] / local_limits[key]
+                for key in local_capacity
+            ),
+            default=None,
+        ),
+    }
+    summary = placement.get("summary")
+    if not isinstance(summary, dict) or any(
+        summary.get(key) != expected
+        for key, expected in expected_local_summary.items()
+    ):
+        raise ValidationError("Xilinx placement local-utilization summary is invalid")
     return {
         "status": "pass",
         "schema": "emuflow.xilinx-placement-validation/v1",
