@@ -4437,6 +4437,9 @@ full-device analytical solution from being squeezed into one SLR by the exact
 legalizer after half of its clusters have already been optimized for a
 different SLR.  The unrestricted whole-device guidance mode remains distinct
 and does not silently acquire a region constraint.
+The standalone entry point expresses this contract explicitly as
+`emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
+whole-device selection problem.
 The production RapidWright backend applies both modes in a defined two-step
 sequence: whole-device guidance selects a capacity-feasible SLR, then a fresh
 OpenPARF problem containing only that SLR produces the final guidance and the
