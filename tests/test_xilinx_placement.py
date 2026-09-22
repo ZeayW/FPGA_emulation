@@ -509,6 +509,22 @@ class XilinxPlacementTest(unittest.TestCase):
                     packed, arch, output, placement, guidance_path=guidance
                 )
 
+    def test_single_slr_planner_honors_required_region(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch, packed, guidance, _constraints = self._write_inputs(root)
+            result = plan_xilinx_single_slr(
+                packed, arch, root / "plan.json", root / "placement.json",
+                guidance_path=guidance, required_slr="SLR1",
+            )
+            self.assertEqual(result["selected_slr"], "SLR1")
+            self.assertEqual(result["policy"]["selection"], "required-slr")
+            with self.assertRaisesRegex(ValidationError, "not present"):
+                plan_xilinx_single_slr(
+                    packed, arch, root / "bad.json", root / "bad-placement.json",
+                    guidance_path=guidance, required_slr="SLR9",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

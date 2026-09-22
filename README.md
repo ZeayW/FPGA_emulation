@@ -4437,6 +4437,11 @@ full-device analytical solution from being squeezed into one SLR by the exact
 legalizer after half of its clusters have already been optimized for a
 different SLR.  The unrestricted whole-device guidance mode remains distinct
 and does not silently acquire a region constraint.
+The production RapidWright backend applies both modes in a defined two-step
+sequence: whole-device guidance selects a capacity-feasible SLR, then a fresh
+OpenPARF problem containing only that SLR produces the final guidance and the
+exact legalizer is required to stay in the selected region. The provisional
+whole-device placement is selection evidence only and is never routed.
 For split BRAM tiles, the placement certificate retains the FPGA-Interchange
 tile anchor and also materializes the exact RapidWright site of every
 RAMB18E2/RAMB36E2 assignment; this prevents the lower and upper BRAM views from

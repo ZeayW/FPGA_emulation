@@ -442,6 +442,7 @@ def plan_xilinx_single_slr(
     placement_output_path: Path,
     *,
     guidance_path: Optional[Path] = None,
+    required_slr: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Select one capacity-feasible SLR and materialize its legal placement."""
 
@@ -479,6 +480,10 @@ def plan_xilinx_single_slr(
         )
     }
     slrs = _architecture_slrs(architecture)
+    if required_slr is not None and required_slr not in slrs:
+        raise ValidationError(
+            f"required Xilinx SLR {required_slr!r} is not present in ArchitectureDB"
+        )
     sites_by_slr_base: Dict[Tuple[str, str], List[str]] = defaultdict(list)
     for base, site_names in sites_by_template.items():
         for site_name in site_names:
@@ -554,8 +559,17 @@ def plan_xilinx_single_slr(
             "no single SLR has sufficient exact site-template capacity: " + details
         )
 
+    selected_ranks = [
+        item for item in sorted(ranked)
+        if required_slr is None or item[1] == required_slr
+    ]
+    if not selected_ranks:
+        raise ValidationError(
+            f"required Xilinx SLR {required_slr!r} is not capacity feasible"
+        )
+
     exact_failures = []
-    for _rank, selected_slr in sorted(ranked):
+    for _rank, selected_slr in selected_ranks:
         reports = []
         for report in candidate_reports:
             report = dict(report)
@@ -581,6 +595,10 @@ def plan_xilinx_single_slr(
                     if guidance_path is not None else "deterministic-slr-name"
                 ),
                 "final_feasibility": "exact-site-bel-cascade-legalization",
+                "selection": (
+                    "required-slr" if required_slr is not None
+                    else "best-guidance-compatible-slr"
+                ),
             },
             "clusters": [
                 {"cluster": cluster_id, "slr": selected_slr}

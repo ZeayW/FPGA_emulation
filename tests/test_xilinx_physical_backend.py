@@ -32,9 +32,22 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             guidance = root / "physical" / "openparf-guidance" / "guidance.json"
+            guide_calls = []
+
+            def record_guidance(*_args, **kwargs):
+                guide_calls.append(kwargs.get("slr"))
+                return {}
+
+            plan_calls = []
+
+            def record_plan(*_args, **kwargs):
+                plan_calls.append(kwargs.get("required_slr"))
+                return {"selected_slr": "SLR1"}
 
             def stop_after_certificate_check(*_args, **kwargs):
                 self.assertEqual(kwargs["guidance_path"], guidance)
+                self.assertEqual(guide_calls, [None, "SLR1"])
+                self.assertEqual(plan_calls, [None, "SLR1"])
                 raise RuntimeError("certificate-check-observed")
 
             patches = (
@@ -56,11 +69,11 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.run_xilinx_openparf_guidance",
-                    return_value={},
+                    side_effect=record_guidance,
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.plan_xilinx_single_slr",
-                    return_value={},
+                    side_effect=record_plan,
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.validate_xilinx_single_slr_plan",

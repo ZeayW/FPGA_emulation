@@ -2723,6 +2723,9 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_plan_xilinx_slr.add_argument("--packed", type=Path, required=True)
     arch_plan_xilinx_slr.add_argument("--architecture", type=Path, required=True)
     arch_plan_xilinx_slr.add_argument("--guidance", type=Path)
+    arch_plan_xilinx_slr.add_argument(
+        "--slr", help="require this physical SLR instead of ranking all SLRs"
+    )
     arch_plan_xilinx_slr.add_argument("--output", "-o", type=Path, required=True)
     arch_plan_xilinx_slr.add_argument(
         "--placement-output", type=Path, required=True,
@@ -5291,6 +5294,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.output,
                 args.placement_output,
                 guidance_path=args.guidance,
+                required_slr=args.slr,
             )
             report = {
                 "status": result["status"], "schema": result["schema"],
