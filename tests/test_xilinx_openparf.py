@@ -230,7 +230,7 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertEqual(config["resource_categories"]["X_SLICE"], "LUTL")
         self.assertEqual(config["resource_categories"]["X_DSP"], "SSSIR")
         self.assertEqual(
-            config["gp_model2area_types_map"]["X_SLICE"]["isLUT"], 1
+            config["gp_model2area_types_map"]["X_SLICE"]["isLUT"], 6
         )
         self.assertEqual(name_map["coordinate_system"]["x_axis"], [7])
         self.assertEqual(name_map["coordinate_system"]["y_axis"], [11])

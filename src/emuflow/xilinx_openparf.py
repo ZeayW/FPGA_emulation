@@ -315,7 +315,11 @@ def export_xilinx_cluster_bookshelf(
             # it as logic so OpenPARF keeps it in the continuous density
             # solve; DSP/BRAM/URAM remain single-site resources and use the
             # upstream hard-resource lookahead legalizer.
-            "isLUT": int(resource == "X_SLICE"),
+            # OpenPARF encodes logic categories as LUT sizes 2--6 (there is
+            # deliberately no LUT1 code).  Six is the neutral UltraScale+
+            # representative for our already packed one-site cluster; the
+            # actual occupied area remains the explicit 1x1 X_SLICE model.
+            "isLUT": 6 if resource == "X_SLICE" else 0,
             "isFF": 0,
         }
         for resource in sorted(demand)
