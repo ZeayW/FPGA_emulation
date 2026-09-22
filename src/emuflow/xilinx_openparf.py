@@ -309,7 +309,15 @@ def export_xilinx_cluster_bookshelf(
     for name, content in files.items():
         (output_dir / name).write_text(content, encoding="utf-8")
     model_map = {
-        resource: {resource: ["1", "1"], "isLUT": 0, "isFF": 0}
+        resource: {
+            resource: ["1", "1"],
+            # A packed slice cluster occupies one complete logic site.  Mark
+            # it as logic so OpenPARF keeps it in the continuous density
+            # solve; DSP/BRAM/URAM remain single-site resources and use the
+            # upstream hard-resource lookahead legalizer.
+            "isLUT": int(resource == "X_SLICE"),
+            "isFF": 0,
+        }
         for resource in sorted(demand)
     }
     config = {
@@ -328,13 +336,10 @@ def export_xilinx_cluster_bookshelf(
         # resource guidance limits, before augmented multipliers can overshoot
         # that valid point.
         "random_seed": 1000, "max_global_place_iters": 1000,
-        # OpenPARF is a continuous global-guidance provider here.  The
-        # architecture-aware Xilinx legalizer below this stage is the sole
-        # owner of exact site/BEL/cascade legality, so running OpenPARF's
-        # generic min-cost-flow legalizer would repeat expensive work and its
-        # discrete result would be discarded.  The in-tree OpenPARF producer
-        # explicitly publishes final global coordinates when legalization is
-        # disabled.
+        # OpenPARF is a continuous global-guidance provider here.  Its
+        # single-site-resource lookahead is retained for sparse hard columns,
+        # while the architecture-aware Xilinx legalizer below this stage is
+        # the sole owner of final site/BEL/cascade legality.
         "global_place_flag": 1, "legalize_flag": 0,
         "emuflow_continuous_global_guidance": True,
         "generic_cluster_placement_flag": 1,
@@ -345,7 +350,10 @@ def export_xilinx_cluster_bookshelf(
         "gp_resource2area_types_map": {
             resource: [resource] for resource in sorted(demand)
         },
-        "resource_categories": {resource: "SSSIR" for resource in sorted(demand)},
+        "resource_categories": {
+            resource: ("LUTL" if resource == "X_SLICE" else "SSSIR")
+            for resource in sorted(demand)
+        },
         "CLB_capacity": 1, "BLE_capacity": 1, "num_ControlSets_per_CLB": 1,
         "gp_adjust_area": 0, "gp_adjust_area_types": [],
         "gp_adjust_route_area": 0, "gp_adjust_pin_area": 0,

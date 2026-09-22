@@ -9,7 +9,6 @@ from emuflow.openparf_continuous_driver import (
     build_convergence_certificate,
     guidance_stop_condition,
     skip_diagnostic_plot,
-    skip_internal_site_legalization,
     write_continuous_placement,
 )
 from emuflow.xilinx_openparf import (
@@ -218,6 +217,9 @@ class XilinxOpenparfTest(unittest.TestCase):
             }), encoding="utf-8")
             export_xilinx_cluster_bookshelf(mapped, packed, arch, out)
             sites_text = (out / "design.scl").read_text(encoding="utf-8")
+            config = json.loads(
+                (out / "openparf.json").read_text(encoding="utf-8")
+            )
             name_map = json.loads(
                 (out / "name_map.json").read_text(encoding="utf-8")
             )
@@ -225,6 +227,11 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertIn("  X_SLICE 1", sites_text)
         self.assertIn("SITEMAP 1 1", sites_text)
         self.assertEqual(sites_text.count("0 0 EMUFLOW_TILE_0"), 1)
+        self.assertEqual(config["resource_categories"]["X_SLICE"], "LUTL")
+        self.assertEqual(config["resource_categories"]["X_DSP"], "SSSIR")
+        self.assertEqual(
+            config["gp_model2area_types_map"]["X_SLICE"]["isLUT"], 1
+        )
         self.assertEqual(name_map["coordinate_system"]["x_axis"], [7])
         self.assertEqual(name_map["coordinate_system"]["y_axis"], [11])
 
@@ -263,13 +270,7 @@ class XilinxOpenparfTest(unittest.TestCase):
                 ["c0 0.25 1.5 0", "c1 12.75 8.125 0"],
             )
 
-    def test_continuous_driver_disables_generic_site_legalization(self):
-        engine = SimpleNamespace(
-            params=SimpleNamespace(ssr_legalize_lock_iters=100),
-            last_ssr_legalize_iter=0,
-        )
-        self.assertFalse(skip_internal_site_legalization(engine, object()))
-        self.assertEqual(engine.last_ssr_legalize_iter, -101)
+    def test_continuous_driver_suppresses_diagnostic_plots(self):
         self.assertIsNone(skip_diagnostic_plot(object(), filename="unused.bmp"))
 
     def test_convergence_certificate_fails_closed_on_overflow(self):

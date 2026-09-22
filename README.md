@@ -4343,12 +4343,14 @@ structure, and applies the same 75% planning limit to both devices.  Its
 academic system-link model; it is not claimed to be an AMD or PPro board.
 Consequently this backend supplies real XCVU19P single-device placement and
 routing evidence while the board link remains a declared research assumption.
-OpenPARF is used only for continuous analytical global-placement guidance in
-this backend.  Its generic single-site min-cost-flow lookahead and final
-Bookshelf legalization are disabled; the first-party Xilinx legalizer performs
-the exact site/BEL assignment and independently checks legality before
-RWRoute.  This keeps placement guidance separate from architecture legality
-and avoids paying for two different legalizers.  Each physical FPGA tile
+OpenPARF is used only for analytical global-placement guidance in this
+backend. Packed slice clusters are classified as logic and remain continuous;
+DSP, BRAM, and URAM clusters retain OpenPARF's single-site-resource lookahead
+so their sparse physical columns participate in a feasible global solution.
+Final Bookshelf legalization remains disabled: the first-party Xilinx
+legalizer performs the authoritative site/BEL/cascade assignment and
+independently checks it before RWRoute. This keeps global hard-column guidance
+without duplicating final architecture legalization. Each physical FPGA tile
 becomes one OpenPARF site whose capacity is the sum of the supported slice,
 DSP, BRAM, and URAM sites in that tile.  Physical tile columns and rows are
 compressed onto contiguous analytical axes and mapped piecewise-linearly back
@@ -4400,15 +4402,15 @@ certificate and never embeds vendor device records. Exact cascade search
 indexes the shared legal windows once and prunes only with conservative
 Manhattan lower bounds; it therefore preserves exhaustive-search results and
 tie-breaking without rescanning every VU19P site for every short carry chain.
-OpenPARF supplies global
-guidance only; it is not treated as the exact UltraScale+ legalizer. The
+OpenPARF supplies global guidance only; it is not treated as the exact
+UltraScale+ legalizer. The
 OpenPARF invocation therefore stops after continuous global placement and
 publishes those coordinates through a dedicated continuous-coordinate adapter;
 the upstream Bookshelf writer is intentionally bypassed because it accepts only
-already legalized discrete sites. Its generic min-cost-flow legalization
-and detailed placement are disabled because their discrete result is discarded
-and exact Xilinx legality is established once, downstream, by the first-party
-legalizer and its independent checker.  The exact legalizer measures guidance
+already legalized discrete sites. OpenPARF's sparse hard-resource lookahead is
+retained, but its final generic legalization and detailed placement are
+disabled because exact Xilinx legality is established once, downstream, by the
+first-party legalizer and its independent checker. The exact legalizer measures guidance
 displacement on the same physical `(tile.grid_col, tile.grid_row)` geometry.
 It retains the unique ArchitectureDB site coordinates only as persisted site
 identities, never as Manhattan-cost coordinates.  This keeps OpenPARF, exact

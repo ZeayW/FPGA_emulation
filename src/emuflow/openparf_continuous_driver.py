@@ -179,23 +179,6 @@ def write_convergence_certificate(engine: Any, output_path: Path) -> dict[str, A
     return certificate
 
 
-def skip_internal_site_legalization(engine: Any, _metric: Any) -> bool:
-    """Keep OpenPARF in analytical global-placement mode.
-
-    OpenPARF's generic flow unconditionally runs its single-site-resource
-    min-cost-flow lookahead during global placement.  Route A deliberately
-    classifies packed Xilinx slice/BRAM clusters as single-site resources, so
-    that lookahead would snap the complete design to generic Bookshelf sites
-    and can dominate runtime.  Exact Xilinx legality belongs to EmuFlow's
-    architecture-aware legalizer.  Mark the lookahead lock interval as already
-    elapsed and leave every cluster in the continuous optimization.
-    """
-
-    lock_iterations = int(engine.params.ssr_legalize_lock_iters)
-    engine.last_ssr_legalize_iter = -lock_iterations - 1
-    return False
-
-
 def skip_diagnostic_plot(*_arguments: Any, **_keywords: Any) -> None:
     """Suppress upstream bitmap diagnostics in the production hot path."""
 
@@ -242,9 +225,6 @@ def main() -> int:
             )
         write_continuous_placement(engine, output)
 
-    placer.Placer._ssir_legalization_condition = (
-        skip_internal_site_legalization
-    )
     placer.Placer.stop_condition = guidance_stop_condition
     placer.Placer.plot = skip_diagnostic_plot
     placer.Placer.write = _write
