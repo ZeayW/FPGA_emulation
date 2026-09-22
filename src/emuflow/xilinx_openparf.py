@@ -18,10 +18,7 @@ from .io import read_json, write_json
 from .openparf import run_openparf
 from .openparf_continuous_driver import OPENPARF_CONTINUOUS_METRICS_SCHEMA
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
-from .xilinx_placement import (
-    XILINX_GUIDANCE_SCHEMA,
-    XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT,
-)
+from .xilinx_placement import XILINX_GUIDANCE_SCHEMA
 
 
 XILINX_OPENPARF_MANIFEST_SCHEMA = "emuflow.xilinx-openparf-manifest/v2"
@@ -29,6 +26,7 @@ XILINX_OPENPARF_NAME_MAP_SCHEMA = "emuflow.xilinx-openparf-name-map/v2"
 XILINX_OPENPARF_COORDINATE_SYSTEM_SCHEMA = (
     "emuflow.xilinx-openparf-dense-axis/v1"
 )
+XILINX_OPENPARF_TARGET_DENSITY = 0.80
 
 
 def _cluster_resource(cluster: Mapping[str, Any]) -> str:
@@ -285,11 +283,12 @@ def export_xilinx_cluster_bookshelf(
         "architecture_name": "ultrascale",
         "aux_input": str((output_dir / "design.aux").resolve()),
         "gpu": 0, "dtype": "float64",
-        # Reserve the same 25% local site headroom that the exact Xilinx
-        # legalizer certifies. A high minimum density compacted a globally
-        # sparse VU19P design into a handful of nearly full clock regions and
-        # made its otherwise legal placement physically unroutable.
-        "target_density": XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT,
+        # This is a continuous-guidance convergence parameter, not the final
+        # physical utilization contract. The exact legalizer independently
+        # reserves 25% in every clock-region/site-type bucket; 0.80 is the
+        # lowest XCVU19P guidance density that passes OpenPARF's unmodified
+        # convergence gate on the medium qualification design.
+        "target_density": XILINX_OPENPARF_TARGET_DENSITY,
         # Use OpenPARF's normal analytical budget.  The Route-A driver stops
         # at the first solution satisfying OpenPARF's logic and sparse-hard-
         # resource guidance limits, before augmented multipliers can overshoot

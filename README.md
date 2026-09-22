@@ -4405,9 +4405,10 @@ already legalized discrete sites. Its generic min-cost-flow legalization
 and detailed placement are disabled because their discrete result is discarded
 and exact Xilinx legality is established once, downstream, by the first-party
 legalizer and its independent checker.
-Both stages reserve routing headroom instead of interpreting global device
-capacity as sufficient physical feasibility. OpenPARF uses a 75% target
-density, and the exact legalizer independently limits each
+The placement path reserves routing headroom instead of interpreting global
+device capacity as sufficient physical feasibility. OpenPARF uses an 80%
+continuous target density that passes its unmodified convergence gate; this is
+guidance, not a physical-capacity certificate. The exact legalizer independently limits each
 `(SLR, clock-region, site-type)` bucket to 75% of its sites (with a one-site
 minimum and conservative upward rounding for indivisible sparse resources).
 Cascade windows and fixed/region

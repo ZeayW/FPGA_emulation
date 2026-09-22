@@ -77,7 +77,7 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertTrue(config["emuflow_continuous_global_guidance"])
         self.assertEqual(config["max_global_place_iters"], 1000)
         self.assertEqual(config["logic_area_type_names"], ["X_SLICE"])
-        self.assertEqual(config["target_density"], 0.75)
+        self.assertEqual(config["target_density"], 0.80)
 
     def test_cluster_export_can_limit_guidance_to_one_physical_slr(self):
         with tempfile.TemporaryDirectory() as temporary:
