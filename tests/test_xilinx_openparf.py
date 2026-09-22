@@ -56,6 +56,7 @@ class XilinxOpenparfTest(unittest.TestCase):
             )
             nets_text = (out / "design.nets").read_text(encoding="utf-8")
             sites_text = (out / "design.scl").read_text(encoding="utf-8")
+            library_text = (out / "design.lib").read_text(encoding="utf-8")
         self.assertEqual(report["clusters"], 2)
         self.assertEqual(report["nets"], 1)
         self.assertEqual(imported["clusters"], 2)
@@ -217,6 +218,7 @@ class XilinxOpenparfTest(unittest.TestCase):
             }), encoding="utf-8")
             export_xilinx_cluster_bookshelf(mapped, packed, arch, out)
             sites_text = (out / "design.scl").read_text(encoding="utf-8")
+            library_text = (out / "design.lib").read_text(encoding="utf-8")
             config = json.loads(
                 (out / "openparf.json").read_text(encoding="utf-8")
             )
@@ -227,6 +229,7 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertIn("  X_SLICE 1", sites_text)
         self.assertIn("  X_SLICE_AUX 1", sites_text)
         self.assertIn("  X_SLICE_AUX X_SLICE_AUX", sites_text)
+        self.assertIn("CELL X_SLICE_AUX\nEND CELL", library_text)
         self.assertIn("SITEMAP 1 1", sites_text)
         self.assertEqual(sites_text.count("0 0 EMUFLOW_TILE_0"), 1)
         self.assertEqual(config["resource_categories"]["X_SLICE"], "LUTL")

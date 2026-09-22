@@ -141,6 +141,10 @@ def _render_library(
         lines.append("  PIN EMUFLOW_CONST INPUT CTRL_SR")
         lines.append("END CELL")
         blocks.append("\n".join(lines))
+    if "X_SLICE" in maxima:
+        # Zero-instance marker used only to describe a slice as a
+        # multi-resource SITE to OpenPARF's structural SSSR detector.
+        blocks.append("CELL X_SLICE_AUX\nEND CELL")
     return "\n\n".join(blocks) + "\n"
 
 
