@@ -484,7 +484,10 @@ public final class EmuFlowRWRoute {
         // selected the smallest feasible physical region for this partition.
         CUFR.routeDesignWithUserDefinedArguments(
             design,
-            new String[] {"--hus", "--nonTimingDriven", "--useUTurnNodes"}
+            new String[] {
+                "--hus", "--nonTimingDriven", "--useUTurnNodes",
+                "--enlargeBoundingBox"
+            }
         );
 
         // RapidWright's lightweight timing model evaluates the concrete
@@ -601,7 +604,10 @@ public final class EmuFlowRWRoute {
             .put("route_cells", cells.size())
             .put("physical_cells", physicalCells)
             .put("transformed_dsp48e2_cells", transformedDsp48e2Cells)
-            .put("router", "CUFR-HUS-non-timing-driven-uturn-enabled"));
+            .put(
+                "router",
+                "CUFR-HUS-non-timing-driven-uturn-enabled-adaptive-bbox"
+            ));
         output.put("nets", routeNets);
         output.put("excluded_nets", excluded);
         output.put("timing", new JSONObject()

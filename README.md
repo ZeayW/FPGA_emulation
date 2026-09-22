@@ -4464,10 +4464,13 @@ non-timing-driven HUS mode explicitly.  HUS is CUFR's upstream update strategy
 for large, difficult negotiated-congestion problems; the placement stage is
 responsible for selecting a compact feasible physical region before routing.
 The sealed route certificate records the exact
-`CUFR-HUS-non-timing-driven-uturn-enabled` strategy; there is no silent
+`CUFR-HUS-non-timing-driven-uturn-enabled-adaptive-bbox` strategy; there is no silent
 fallback to the serial router.  U-turn routing resources are enabled because
 the complete XCVU19P site grid includes legal placements near device edges;
 RapidWright explicitly requires those resources for boundary routability.
+Bounding boxes expand across negotiated-congestion iterations because this
+dense physical partition begins with substantial resource overlap; the
+upstream router explicitly provides adaptive expansion for such placements.
 Static A6/CE/SR obligations remain real RapidWright static-net
 sinks and are checked rather than discarded.  The certificate includes the
 routed VCC/GND forests, identifies every root that RapidWright's device
