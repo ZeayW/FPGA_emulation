@@ -44,7 +44,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "physical_cells": 3,
                 "transformed_dsp48e2_cells": 0,
                 "router": (
-                    "CUFR-HUS-non-timing-driven-uturn-enabled-adaptive-bbox"
+                    "CUFR-HUS-non-timing-driven-uturn-enabled-fixed-bbox"
                 ),
             },
             "excluded_nets": [],

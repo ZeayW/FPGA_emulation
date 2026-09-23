@@ -4491,16 +4491,18 @@ RWRoute: it retains RWRoute's negotiated-congestion legality model while
 partitioning general-signal routing across CPU workers.  Route A selects its
 non-timing-driven HUS mode explicitly.  HUS is CUFR's upstream update strategy
 for large, difficult negotiated-congestion problems; placement uses the
-certified contiguous SLR window and satisfies the explicit local headroom
-contract.
+complete certified device and preserves routing headroom outside the exact
+site-capacity footprint.
 The sealed route certificate records the exact
-`CUFR-HUS-non-timing-driven-uturn-enabled-adaptive-bbox` strategy; there is no silent
+`CUFR-HUS-non-timing-driven-uturn-enabled-fixed-bbox` strategy; there is no silent
 fallback to the serial router.  U-turn routing resources are enabled because
 the complete XCVU19P site grid includes legal placements near device edges;
 RapidWright explicitly requires those resources for boundary routability.
-Bounding boxes expand across negotiated-congestion iterations because this
-dense physical partition begins with substantial resource overlap; the
-upstream router explicitly provides adaptive expansion for such placements.
+The bounding box remains fixed across negotiated-congestion iterations, which
+is RapidWright's full-design default.  Adaptive expansion is intended for
+partial-routing or exceptional congestion cases; enabling it unconditionally
+rebuilds CUFR's partition tree and can make a difficult complete design's
+second iteration dominate runtime.
 Routed timing binds ordinary signal/clock nets to their mapped integer bits.
 Certified `GLOBAL_LOGIC1`/`static_vcc` and `GLOBAL_LOGIC0`/`static_gnd` nets are
 device-tied constants, not timed data endpoints. They remain in the route

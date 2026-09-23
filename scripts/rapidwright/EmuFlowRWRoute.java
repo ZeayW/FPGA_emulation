@@ -521,13 +521,15 @@ public final class EmuFlowRWRoute {
         // intra-site nets remain outside the inter-site route certificate.
         // CUFR is RapidWright's parallel full-design specialization of
         // RWRoute.  HUS is its upstream strategy for large, difficult
-        // negotiated-congestion problems; keep it enabled once placement has
-        // selected the smallest feasible physical region for this partition.
+        // negotiated-congestion problems.  Keep the full-design default of a
+        // fixed bounding box: rebuilding an ever larger CUFR partition tree
+        // on every negotiated-congestion iteration makes difficult complete
+        // designs needlessly super-linear.  U-turn resources remain required
+        // for legal placements at the complete XCVU19P device boundary.
         CUFR.routeDesignWithUserDefinedArguments(
             design,
             new String[] {
-                "--hus", "--nonTimingDriven", "--useUTurnNodes",
-                "--enlargeBoundingBox"
+                "--hus", "--nonTimingDriven", "--useUTurnNodes"
             }
         );
 
@@ -671,7 +673,7 @@ public final class EmuFlowRWRoute {
             .put("transformed_dsp48e2_cells", transformedDsp48e2Cells)
             .put(
                 "router",
-                "CUFR-HUS-non-timing-driven-uturn-enabled-adaptive-bbox"
+                "CUFR-HUS-non-timing-driven-uturn-enabled-fixed-bbox"
             ));
         output.put("nets", routeNets);
         output.put("excluded_nets", excluded);

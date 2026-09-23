@@ -403,7 +403,7 @@ def validate_xilinx_route_db(
         or transformed_dsp48e2 > route_cells
         or physical_cells != route_cells + 7 * transformed_dsp48e2
         or router
-        != "CUFR-HUS-non-timing-driven-uturn-enabled-adaptive-bbox"
+        != "CUFR-HUS-non-timing-driven-uturn-enabled-fixed-bbox"
     ):
         raise ValidationError("XilinxRouteDB transformed-cell accounting is invalid")
     source = value.get("source")
