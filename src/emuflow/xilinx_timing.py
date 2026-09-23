@@ -83,6 +83,20 @@ def _build_payload(
 
     route_by_bit: Dict[int, Mapping[str, Any]] = {}
     for net in route.get("nets", []):
+        # build_xilinx_routed_timing validates the complete physical route
+        # certificate first, including static roots, reachability and conflicts.
+        # Device-tied constants have no mapped integer bit/timed data endpoint.
+        # Never use an arbitrary kind/name as permission to drop a signal.
+        if net.get("kind") in {"static_vcc", "static_gnd"}:
+            expected_name = (
+                "GLOBAL_LOGIC1" if net["kind"] == "static_vcc" else "GLOBAL_LOGIC0"
+            )
+            if (
+                net.get("net") != expected_name
+                or net.get("qualification") != "device-tied-static"
+            ):
+                raise ValidationError("Xilinx static route identity is invalid")
+            continue
         match = re.fullmatch(r"n([0-9]+)", str(net.get("net", "")))
         if match is None:
             raise ValidationError("Xilinx route net does not encode a mapped bit")
