@@ -63,7 +63,14 @@ def _site_resource(site_type: str) -> Optional[str]:
 def _select_xilinx_slr_window(
     packed_path: Path, architecture_path: Path
 ) -> Tuple[str, ...]:
-    """Choose the smallest central contiguous window with routing headroom."""
+    """Certify full-device SLR capacity for production implementation.
+
+    Capacity proves that the packed sites fit, but it does not prove that a
+    smaller SLR subset has enough routing resources for the post-split design.
+    Production implementation therefore exposes the complete physical device
+    to OpenPARF and RWRoute.  Explicit regional experiments continue to use
+    the separately named single-SLR planning path.
+    """
 
     packed = read_json(packed_path)
     architecture = ArchitectureDB.load(architecture_path)
@@ -85,25 +92,15 @@ def _select_xilinx_slr_window(
     if not capacities or set(capacities) != set(rows):
         raise ValidationError("ArchitectureDB has no complete physical SLR inventory")
     ordered = sorted(capacities, key=lambda name: (sum(rows[name]) / len(rows[name]), name))
-    # A capacity-only single-SLR choice is not a valid routing-headroom proxy.
-    # Large split designs can fit the sites in one SLR while their transport
-    # fanout creates substantially more route connections than the original
-    # DUT.  Keep at least a central adjacent SLR pair on multi-SLR devices;
-    # wider windows remain selected by the exact resource-capacity test below.
-    minimum_width = min(2, len(ordered))
-    device_center = (min(min(value) for value in rows.values()) + max(max(value) for value in rows.values())) / 2
-    for width in range(minimum_width, len(ordered) + 1):
-        feasible = []
-        for start in range(len(ordered) - width + 1):
-            window = tuple(ordered[start:start + width])
-            capacity = sum((capacities[name] for name in window), Counter())
-            if any(demand[key] > math.floor(0.75 * capacity[key]) for key in demand):
-                continue
-            center = sum(sum(rows[name]) / len(rows[name]) for name in window) / width
-            feasible.append((abs(center - device_center), window))
-        if feasible:
-            return min(feasible)[1]
-    raise ValidationError("packed partition exceeds the complete Xilinx device capacity")
+    device_capacity = sum((capacities[name] for name in ordered), Counter())
+    if any(
+        demand[key] > math.floor(0.75 * device_capacity[key])
+        for key in demand
+    ):
+        raise ValidationError(
+            "packed partition exceeds the complete Xilinx device capacity"
+        )
+    return tuple(ordered)
 
 
 def _sha256(path: Path) -> str:
