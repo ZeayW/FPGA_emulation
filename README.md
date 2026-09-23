@@ -4549,6 +4549,11 @@ cross-FPGA logic/transport segments together cover the canonical original
 path-ID set; only then may global OpenSTA report `whole-original-design`
 WNS/TNS. Missing, duplicate, or differently sealed members fail closed rather
 than falling back to a cross-FPGA-only timing claim.
+Boundary timing shares one invocation-local multi-source
+longest-path solution across TX endpoints; RX queries retain their distinct
+sources. This avoids repeated graph traversal without changing timing coverage,
+source offsets, path-origin selection, or cycle/unreachable-path validation.
+No graph solution is persisted or reused between physical runs.
 RapidWright's extracted runtime database is isolated beside the requested
 class directory, so the provider never writes into a login home directory.
 RWRoute console output is streamed directly to its run-local log instead of

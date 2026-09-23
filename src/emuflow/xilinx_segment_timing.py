@@ -148,6 +148,13 @@ class _TimingGraph:
         self.reverse[target].append((source, delay))
 
     def longest(self, starts: Sequence[str], target: str) -> Tuple[float, str]:
+        arrival, origin = self._solve_longest(starts, target)
+        return arrival[target], origin[target]
+
+    def _solve_longest(
+        self, starts: Sequence[str], target: str
+    ) -> Tuple[Dict[str, float], Dict[str, str]]:
+        """Solve one start set; retain the original target/error ordering."""
         start_values = {
             start: self.source_offsets.get(start, 0.0) for start in starts
         }
@@ -192,7 +199,7 @@ class _TimingGraph:
                 if candidate > arrival.get(successor, float("-inf")):
                     arrival[successor] = candidate
                     origin[successor] = origin[node]
-        return arrival[target], origin[target]
+        return arrival, origin
 
     def architectural_sources(self) -> list[str]:
         return sorted(self.source_offsets)
@@ -212,21 +219,34 @@ def build_xilinx_boundary_timing(
     identity = read_json(identity_path)
     graph = _graph(mapped_path, timing_path)
     measurements = {}
+    graph_nodes = set(graph.edges) | set(graph.reverse)
+    tx_solution = None
     for endpoint in identity["endpoints"]:
         merged = endpoint["merged_ir"]
         port = merged["external_port"]
         bit = merged["external_port_bit"]
         # The width is encoded in the mapped top-port contract; accept either
         # scalar or indexed spelling by matching the exact prefix.
-        candidates = [node for node in set(graph.edges) | set(graph.reverse)
-                      if node == f"top:{port}" or node == f"top:{port}[{bit}]"]
+        candidates = [node for node in (f"top:{port}", f"top:{port}[{bit}]")
+                      if node in graph_nodes]
         if len(candidates) != 1:
             raise ValidationError(
                 f"RapidWright boundary {endpoint['id']!r} top port is ambiguous"
             )
         top_node = candidates[0]
         if endpoint["kind"] == "tx":
-            delay, start = graph.longest(graph.architectural_sources(), top_node)
+            # All TX queries have the same graph and architectural sources.
+            # Keep only this invocation's solution; RX has different sources.
+            if tx_solution is None:
+                tx_solution = graph._solve_longest(
+                    graph.architectural_sources(), top_node
+                )
+            arrival, origin = tx_solution
+            if top_node not in arrival:
+                raise ValidationError(
+                    f"RapidWright timing graph has no path to {top_node!r}"
+                )
+            delay, start = arrival[top_node], origin[top_node]
             end = top_node
         else:
             registers = merged["boundary_register_instances"]
