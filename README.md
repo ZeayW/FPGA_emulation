@@ -4464,11 +4464,13 @@ The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.
 The production RapidWright backend selects the smallest capacity-feasible
-contiguous SLR window, including one SLR when it satisfies the explicit 75%
-resource-headroom contract. Equal-size feasible windows are ranked by distance
-from the physical device center. The selected window is recorded once as a
-global `allowed_slrs` constraint; it is not duplicated into every cluster
-record. OpenPARF guidance uses its native RUDY- and pin-utilization-driven area
+contiguous SLR window, with a minimum of two adjacent SLRs on a multi-SLR
+device. A capacity-only single-SLR fit is not accepted as a routing-headroom
+certificate because Phase 6 transport fanout can add far more physical
+connections than the original DUT resource vector records. Equal-size feasible
+windows are ranked by distance from the physical device center. The selected
+window is recorded once as a global `allowed_slrs` constraint; it is not
+duplicated into every cluster record. OpenPARF guidance uses its native RUDY- and pin-utilization-driven area
 inflation for packed slice clusters before exact legalization: this preserves
 the bounded routing search region while preventing one-site density alone from
 hiding large differences in external routing demand. Its continuous

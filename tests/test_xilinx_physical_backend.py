@@ -67,6 +67,43 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 _select_xilinx_slr_window(packed, arch), ("SLR1", "SLR2")
             )
 
+    def test_slr_window_keeps_routing_headroom_for_small_design(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch = root / "arch.json"
+            packed = root / "packed.json"
+            sites = []
+            for index in range(4):
+                for x in range(4):
+                    sites.append({
+                        "name": f"SLICE_X{x}Y{index}", "type": "SLICEL",
+                        "template": "SLICEL",
+                        "x": x, "y": index,
+                        "tile": {"grid_col": x, "grid_row": index * 10},
+                        "physical_region": {"slr": f"SLR{index}"},
+                    })
+            arch.write_text(__import__("json").dumps({
+                "schema": "emuflow.archdb/v1", "part": "test",
+                "source": {"format": "test/v1"}, "policy": {"name": "test"},
+                "site_templates": {"SLICEL": {
+                    "bels": [{
+                        "name": "A6LUT", "type": "LUT6", "z": 0,
+                        "compatible_cells": ["LUT6"],
+                    }],
+                    "alternative_templates": [],
+                }},
+                "sites": sites,
+            }), encoding="utf-8")
+            packed.write_text(__import__("json").dumps({
+                "schema": "emuflow.packed-site-netlist/v1",
+                "clusters": [
+                    {"id": "c0", "kind": "slice", "assignments": []}
+                ],
+            }), encoding="utf-8")
+            self.assertEqual(
+                _select_xilinx_slr_window(packed, arch), ("SLR1", "SLR2")
+            )
+
     def test_production_backend_uses_compact_two_slr_window(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
