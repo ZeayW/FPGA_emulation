@@ -38,7 +38,7 @@ class AMFPlacerCapabilityTest(unittest.TestCase):
             self.assertEqual(cells[cell_type]["status"], "native_supported")
         for cell_type in ("GND", "VCC"):
             self.assertEqual(cells[cell_type]["status"], "adapter_required")
-            self.assertEqual(cells[cell_type]["adapter_validation"], "missing")
+            self.assertEqual(cells[cell_type]["adapter_validation"], "pass")
         for cell_type in ("MUXF9", "URAM288"):
             self.assertEqual(cells[cell_type]["status"], "core_missing")
 
@@ -46,21 +46,31 @@ class AMFPlacerCapabilityTest(unittest.TestCase):
         capability = classify_amf_primitive("FUTURE_PRIMITIVE")
         self.assertEqual(capability["status"], "unverified")
 
-    def test_common_qualification_fails_closed(self) -> None:
+    def test_fixture_qualification_passes_but_production_fails_closed(self) -> None:
         report = probe_amf_placer_capabilities()
-        decision = qualify_xilinx_placer_capabilities(
+        fixture = qualify_xilinx_placer_capabilities(
             report,
             required_primitives=("LUT6", "FDRE"),
             required_constraints=("design_netlist_import",),
         )
-        self.assertEqual(decision["status"], "fail")
-        self.assertIn(
-            "stages.physical_export", decision["blocked_entries"]
+        self.assertEqual(fixture["status"], "pass")
+
+        production = qualify_xilinx_placer_capabilities(
+            report,
+            required_primitives=("LUT6", "FDRE", "MUXF9", "URAM288"),
+            required_constraints=(
+                "design_netlist_import",
+                "xilinx_ultrascaleplus_xcvu19p",
+                "multi_slr",
+                "clock_legality",
+            ),
         )
+        self.assertEqual(production["status"], "fail")
         self.assertIn(
-            "constraints.design_netlist_import",
-            decision["blocked_entries"],
+            "constraints.xilinx_ultrascaleplus_xcvu19p",
+            production["blocked_entries"],
         )
+        self.assertIn("primitives.MUXF9", production["blocked_entries"])
 
     def test_adapter_contract_roundtrip_is_stable_and_disabled(self) -> None:
         contract = build_amf_placer_adapter_contract()
@@ -69,6 +79,18 @@ class AMFPlacerCapabilityTest(unittest.TestCase):
         restored = json.loads(serialized)
         self.assertEqual(validate_amf_placer_adapter_contract(restored), contract)
         self.assertFalse(contract["production_provider_ready"])
+        self.assertEqual(
+            set(contract["inputs"]),
+            {"mapped_netlist", "architecture", "packed_netlist"},
+        )
+        self.assertEqual(
+            set(contract["outputs"]),
+            {"fixed_constraints", "assignment_seal"},
+        )
+        self.assertTrue(all(
+            item["adapter_validation"] == "pass"
+            for item in contract["required_adapters"]
+        ))
 
         bad = copy.deepcopy(contract)
         bad["production_provider_ready"] = True
@@ -135,6 +157,10 @@ class AMFPlacerCapabilityTest(unittest.TestCase):
         self.assertEqual(
             constraints["vivado_free_runtime"]["status"],
             "adapter_required",
+        )
+        self.assertEqual(
+            constraints["vivado_free_runtime"]["adapter_validation"],
+            "missing",
         )
 
 
