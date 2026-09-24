@@ -1024,6 +1024,16 @@ graph. Long virtual DUT periods produced by large emulation frame ratios are
 preserved in the provider-neutral runtime and system-timing contracts; the
 VPR-only runtime SDC records its bounded effective values explicitly. Additional
 architecture mapping profiles remain open gates.
+An internal, non-default qualification path also supports OpenPARF's native
+direct legalization/ISM flow for unconstrained LUT/FF atoms and independent
+singleton DSP48E2, RAMB36E2, and URAM288 resources.  Its result is converted,
+without rerunning EmuFlow's legacy packer or site legalizer, into the standard
+PackedSiteNetlist and `emuflow.xilinx-placement/v1` contracts accepted by the
+RWRoute exporter.  The bridge rechecks mapped-netlist and ArchitectureDB
+digests, complete cell ownership, site/BEL compatibility, and exact physical
+site grouping.  CARRY8, LUT6_2/paired-LUT use, RAMB18 half sites, cascades,
+relative placement, and mixed-resource site groups remain fail-closed; this
+path is not yet a public placer selection or the default Phase 7 provider.
 EmuFlow does not claim an open Xilinx bitstream flow. The Vivado provider ends
 at routed checkpoints and timing reports; success there cannot satisfy the
 default open-flow completion gate or replace board-level sign-off.
