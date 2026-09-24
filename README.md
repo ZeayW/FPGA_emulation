@@ -1044,6 +1044,20 @@ native-cascade adjacency graph, device binding is explicitly
 `adapter_required`; the contract never invents a `y+1` relationship. This
 contract is audited infrastructure and is not yet consumed by the OpenPARF
 runtime.
+The pinned OpenPARF carry route has now been audited at source level and is
+explicitly `core_missing` for that contract rather than merely awaiting an
+adapter.  Its native extractor and legalizer implement an XArch CLA4 unit with
+four `PROP[0:3]` LUTs and half-site occupancy; they cannot preserve one
+UltraScale+ CARRY8 plus eight coupled LUT6_2 O5/O6 adapters.  In addition, the
+Bookshelf grammar currently sends `OUTPUT CAS` through the input-cascade
+callback, parsed `.shape` carry constraints have no placement/legalization/DP
+consumer, and ISM carry locking is gated by the unrelated IO-legalization
+branch.  The internal
+`probe_xilinx_openparf_carry_native_support` qualification API records these
+exact source-backed blockers against a real two-CARRY8 macro contract and
+forbids runtime launch, fallback, or preplacement.  No compiled carry result is
+claimed: native GP-to-chain-legalization-to-DP qualification remains blocked
+until the upstream core/input contract gains true CARRY8/LUT6_2 semantics.
 The internal `run_rapidwright_openparf_native_candidate_backend` entry point
 uses that native placement and then rejoins the existing RWRoute, routed-
 timing, boundary-timing, and OpenSTA tail.  It never invokes the legacy Xilinx

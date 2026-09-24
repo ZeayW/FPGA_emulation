@@ -18,6 +18,10 @@ from .architecture import ArchitectureDB
 from .errors import ValidationError
 from .io import read_json, write_json
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
+from .xilinx_physical_macros import (
+    XILINX_PHYSICAL_MACRO_CONTRACT_SCHEMA,
+    validate_xilinx_physical_macro_contract,
+)
 from .xilinx_placer_capability import (
     XILINX_PLACER_CAPABILITY_SCHEMA,
     XILINX_PLACER_CAPABILITY_STATUSES,
@@ -151,6 +155,317 @@ def audit_pinned_openparf_source(source_root: Path) -> Dict[str, Any]:
         "revision": f"SOURCE-SHA256:{digest.hexdigest()}",
         "checks": checks,
     }
+
+
+def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
+    """Audit the actual native carry input/legalization/DP implementation.
+
+    The pinned core contains a carry-chain legalizer, but it is an XArch CLA4
+    implementation.  A class name or configuration switch is therefore not
+    sufficient evidence that it can preserve an UltraScale+ CARRY8 macro.
+    """
+
+    root = source_root.resolve()
+    paths = {
+        "parser": root / "openparf/io/bookshelf/bookshelf_parser.yy",
+        "shape_db": root / "openparf/database/database.cpp",
+        "chain_info": (
+            root / "openparf/custom_data/chain_info/src/chain_info.cpp"
+        ),
+        "chain_legalizer": (
+            root / "openparf/ops/chain_legalizer/src/chain_legalizer.cpp"
+        ),
+        "placer": root / "openparf/placement/placer.py",
+    }
+    texts: Dict[str, Optional[str]] = {}
+    for name, path in paths.items():
+        try:
+            texts[name] = path.read_text(encoding="utf-8")
+        except OSError:
+            texts[name] = None
+
+    def evidence(
+        name: str,
+        *,
+        status: str,
+        reason: str,
+        markers: Sequence[str],
+    ) -> Dict[str, Any]:
+        return {
+            "status": status,
+            "reason": reason,
+            "path": str(paths[name]),
+            "markers": [
+                marker for marker in markers
+                if texts[name] is not None and marker in texts[name]
+            ],
+        }
+
+    missing = [name for name, text in texts.items() if text is None]
+    if missing:
+        checks = {
+            name: evidence(
+                name,
+                status="unverified",
+                reason="pinned OpenPARF source file is unavailable",
+                markers=(),
+            )
+            for name in paths
+        }
+    else:
+        shape_consumers = []
+        for directory_name in ("placement", "ops"):
+            directory = root / "openparf" / directory_name
+            for path in sorted(directory.rglob("*")):
+                if path.suffix not in {".py", ".cpp", ".h", ".hpp"}:
+                    continue
+                try:
+                    candidate = path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                if "shapeConstr" in candidate or "shape_constr" in candidate:
+                    shape_consumers.append(str(path.relative_to(root)))
+        output_cas_bug = (
+            "KWD_OUTPUT KWD_CAS ENDL    { driver.addCellInputCasPinCbk"
+            in texts["parser"]
+        )
+        four_lut_extractor = all(marker in texts["chain_info"] for marker in (
+            "ordinal_lut_ids.resize(current_size + 4)",
+            "prop_id < 4",
+            'name.rfind("PROP")',
+        ))
+        four_lut_legalizer = all(
+            marker in texts["chain_legalizer"] for marker in (
+                "for (int j = 0; j < 4; j++)",
+                "(i - cla_st) * 4 + j",
+                "z + j * 2",
+                "0.5 * len",
+            )
+        )
+        shape_only_loaded = (
+            "addShapeCbk" in texts["shape_db"]
+            and "addShapeNodeCbk" in texts["shape_db"]
+            and not shape_consumers
+        )
+        dp_mask_is_io_gated = all(marker in texts["placer"] for marker in (
+            "if self.params.io_legalization_flag:",
+            "fixed_mask[inst_ids] = 1",
+            "self.op_cls.ism_dp_op.fixed_mask = fixed_mask",
+        ))
+        checks = {
+            "parser": evidence(
+                "parser",
+                status="core_missing" if output_cas_bug else "unverified",
+                reason=(
+                    "Bookshelf OUTPUT CAS invokes the input-cascade callback; "
+                    "the native chain extractor therefore cannot observe a "
+                    "directed CARRY8 cascade through this input format"
+                    if output_cas_bug else
+                    "Bookshelf cascade output semantics were not proven"
+                ),
+                markers=(
+                    "KWD_INPUT KWD_CAS",
+                    "KWD_OUTPUT KWD_CAS",
+                    "driver.addCellInputCasPinCbk",
+                ),
+            ),
+            "shape_db": evidence(
+                "shape_db",
+                status="core_missing" if shape_only_loaded else "unverified",
+                reason=(
+                    "Bookshelf Carry-chain shape records are loaded into the "
+                    "database, but no placement/legalization/DP consumer exists"
+                    if shape_only_loaded else
+                    "shape-constraint ingestion was not proven"
+                ),
+                markers=("addShapeCbk", "addShapeNodeCbk"),
+            ),
+            "chain_info": evidence(
+                "chain_info",
+                status="core_missing" if four_lut_extractor else "unverified",
+                reason=(
+                    "native chain extraction is fixed to four PROP[0:3] LUTs "
+                    "per chain unit, not eight LUT6_2 O5/O6 adapters"
+                    if four_lut_extractor else
+                    "native carry-chain member arity was not proven"
+                ),
+                markers=(
+                    "ordinal_lut_ids.resize(current_size + 4)",
+                    "prop_id < 4",
+                    'name.rfind("PROP")',
+                ),
+            ),
+            "chain_legalizer": evidence(
+                "chain_legalizer",
+                status="core_missing" if four_lut_legalizer else "unverified",
+                reason=(
+                    "native chain legalization packs one half-site CLA plus "
+                    "four LUT slots; it has no CARRY8 plus eight paired-LUT model"
+                    if four_lut_legalizer else
+                    "native carry-chain legalization geometry was not proven"
+                ),
+                markers=(
+                    "for (int j = 0; j < 4; j++)",
+                    "(i - cla_st) * 4 + j",
+                    "z + j * 2",
+                    "0.5 * len",
+                ),
+            ),
+            "placer": evidence(
+                "placer",
+                status="core_missing" if dp_mask_is_io_gated else "unverified",
+                reason=(
+                    "ISM fixes the carry area type only inside the unrelated "
+                    "io_legalization_flag branch; macro preservation through DP "
+                    "is not an independent carry contract"
+                    if dp_mask_is_io_gated else
+                    "carry preservation through detailed placement was not proven"
+                ),
+                markers=(
+                    "if self.params.io_legalization_flag:",
+                    "fixed_mask[inst_ids] = 1",
+                    "self.op_cls.ism_dp_op.fixed_mask = fixed_mask",
+                ),
+            ),
+        }
+        checks["shape_db"]["placement_or_operator_consumers"] = shape_consumers
+
+    digest = hashlib.sha256()
+    for name, path in sorted(paths.items()):
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes() if path.is_file() else b"MISSING")
+        digest.update(b"\0")
+    return {
+        "root": str(root),
+        "revision": f"SOURCE-SHA256:{digest.hexdigest()}",
+        "status": (
+            "unverified" if missing else
+            "core_missing" if any(
+                check["status"] == "core_missing" for check in checks.values()
+            ) else "unverified"
+        ),
+        "checks": checks,
+    }
+
+
+def probe_xilinx_openparf_carry_native_support(
+    mapped_path: Path,
+    macro_contract_path: Path,
+    *,
+    top: Optional[str] = None,
+    source_root: Optional[Path] = None,
+    output_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Fail closed on the pinned core's CARRY8/LUT6_2 incompatibility.
+
+    This is a qualification gate, not a placer.  It never emits Bookshelf
+    input, calls OpenPARF, chooses sites, or preplaces macro members.
+    """
+
+    validate_xilinx_physical_macro_contract(
+        mapped_path, macro_contract_path, top=top
+    )
+    contract = read_json(macro_contract_path)
+    if contract.get("schema") != XILINX_PHYSICAL_MACRO_CONTRACT_SCHEMA:
+        raise ValidationError("physical macro contract schema is invalid")
+    carry_macros = [
+        item for item in contract.get("site_macros", [])
+        if item.get("kind") == "carry8-lut6_2"
+    ]
+    carry_chains = [
+        item for item in contract.get("cascade_chains", [])
+        if item.get("cell_type") == "CARRY8"
+    ]
+    if not carry_macros:
+        raise ValidationError("carry qualification requires at least one CARRY8 macro")
+    for macro in carry_macros:
+        counts = Counter(member.get("cell_type") for member in macro["members"])
+        if counts != Counter({"CARRY8": 1, "LUT6_2": 8}):
+            raise ValidationError("CARRY8 qualification macro membership is invalid")
+        if len(macro.get("connections", [])) != 16:
+            raise ValidationError("CARRY8 qualification macro connectivity is invalid")
+
+    if source_root is None:
+        source_root = Path(__file__).resolve().parents[2] / "engines/openparf"
+    source_audit = audit_pinned_openparf_carry_path(source_root)
+    status = source_audit["status"]
+    evidence = [
+        str(Path(check["path"]).relative_to(Path(source_audit["root"])))
+        for check in source_audit["checks"].values()
+    ]
+
+    def entry(entry_status: str, *paths: str) -> Dict[str, Any]:
+        return {"status": entry_status, "evidence": list(paths)}
+
+    report = {
+        "schema": XILINX_PLACER_CAPABILITY_SCHEMA,
+        "provider": "openparf-native-carry8-lut6_2-probe-v1",
+        "revision": source_audit["revision"],
+        "stages": {
+            "global_placement": entry(
+                status,
+                "openparf/placement/placer.py",
+                "openparf/custom_data/chain_info/src/chain_info.cpp",
+            ),
+            "packing": {
+                "status": "adapter_required",
+                "evidence": [
+                    "src/emuflow/xilinx_physical_macros.py",
+                    "tests/test_xilinx_physical_macros.py",
+                ],
+                "adapter_validation": "pass",
+            },
+            "legalization": entry(
+                status,
+                "openparf/ops/chain_legalizer/src/chain_legalizer.cpp",
+            ),
+            "detailed_placement": entry(
+                status, "openparf/placement/placer.py"
+            ),
+            "physical_export": {
+                "status": "adapter_required",
+                "evidence": ["src/emuflow/xilinx_openparf_bridge.py"],
+                "adapter_validation": "missing",
+            },
+        },
+        "primitives": {
+            "CARRY8": entry(status, *evidence),
+            "LUT6_2": entry(status, *evidence),
+        },
+        "constraints": {
+            "indivisible_carry8_lut6_2_macro": entry(status, *evidence),
+            "ordered_carry8_chain": entry(status, *evidence),
+        },
+        "qualification": {
+            "status": status,
+            "runtime_launched": False,
+            "fallback": "forbidden",
+            "preplacement": "forbidden",
+            "reason": (
+                "the pinned native core cannot represent or legalize the "
+                "required CARRY8 plus eight LUT6_2 macro semantics"
+                if status == "core_missing" else
+                "the pinned carry implementation could not be verified"
+            ),
+        },
+        "minimum_reproduction": {
+            "carry8_units": len(carry_macros),
+            "lut6_2_adapters": 8 * len(carry_macros),
+            "carry_chain_lengths": [
+                len(chain["members"]) for chain in carry_chains
+            ],
+            "required_lut_adapters_per_unit": 8,
+            "native_prop_luts_per_unit": 4,
+            "required_lut_outputs": ["O5", "O6"],
+            "native_lut_interface": "PROP[0:3]",
+        },
+        "source_audit": source_audit,
+    }
+    validate_xilinx_placer_capability_report(report)
+    if output_path is not None:
+        write_json(output_path, report)
+    return report
 
 
 def _select_cells(mapped: Mapping[str, Any], top: Optional[str]) -> Mapping[str, Any]:
@@ -349,6 +664,20 @@ def probe_openparf_native_capabilities(
                     if atomic_ready else atomic_adapter["reason"]
                 ),
             }
+    for primitive in ("CARRY8", "LUT6_2"):
+        if primitive in primitive_capabilities:
+            primitive_capabilities[primitive] = {
+                "status": "core_missing",
+                "evidence": [
+                    "openparf/custom_data/chain_info/src/chain_info.cpp",
+                    "openparf/ops/chain_legalizer/src/chain_legalizer.cpp",
+                    "src/emuflow/openparf_native_capabilities.py",
+                ],
+                "reason": (
+                    "the pinned carry path is a four-PROP-LUT CLA4 model and "
+                    "cannot preserve an UltraScale+ CARRY8 with eight dual-output LUT6_2 adapters"
+                ),
+            }
 
     def feature(name: str, status: str, reason: str, evidence: Sequence[str]) -> Dict[str, Any]:
         if status not in CAPABILITY_STATUSES:
@@ -424,9 +753,15 @@ def probe_openparf_native_capabilities(
         ),
         feature(
             "dedicated_cascade_legalization",
-            "adapter_required" if chain else "core_missing",
-            "chain legalization requires native chain metadata that the current packed Bookshelf adapter does not emit",
-            ("openparf/ops/chain_legalizer/chain_legalizer.py",),
+            "core_missing" if chain else "unverified",
+            (
+                "the available native chain legalizer is fixed to CLA4 plus "
+                "four PROP LUTs and cannot represent CARRY8/LUT6_2 macros"
+            ),
+            (
+                "openparf/custom_data/chain_info/src/chain_info.cpp",
+                "openparf/ops/chain_legalizer/src/chain_legalizer.cpp",
+            ),
         ),
         feature(
             "exact_site_bel_and_site_mode_legality",
@@ -513,9 +848,11 @@ def probe_openparf_native_capabilities(
             "adapter_validation": "missing",
         },
         "dedicated_cascade": {
-            "status": "adapter_required" if chain else "core_missing",
-            "evidence": ["openparf/ops/chain_legalizer/chain_legalizer.py"],
-            **({"adapter_validation": "missing"} if chain else {}),
+            "status": "core_missing" if chain else "unverified",
+            "evidence": [
+                "openparf/custom_data/chain_info/src/chain_info.cpp",
+                "openparf/ops/chain_legalizer/src/chain_legalizer.cpp",
+            ],
         },
         "bel_site_mode": {
             "status": "adapter_required" if atomic_ready else (
