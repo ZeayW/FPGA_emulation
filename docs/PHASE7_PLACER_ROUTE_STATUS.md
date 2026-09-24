@@ -25,7 +25,7 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 
 | Route | Implemented evidence | Remaining production blockers | Decision |
 |---|---|---|---|
-| OpenPARF native (`feature/phase7-openparf-native`) | Pinned-source probe; packed-cluster MCF smoke contract; ordinary LUT1–LUT6/FD* atomization; native direct-legalization/ISM configuration; independently validated placement certificate | Real compiled-runtime smoke; carry/MUX/LUT6_2; DSP/RAMB/URAM; clock/half-column/SLR constraints; complete RapidWright export and routed Phase 7 | Primary implementation route, still fail-closed outside the audited LUT/FF subset |
+| OpenPARF native (`feature/phase7-openparf-native`) | Pinned-source probe; ordinary LUT1–LUT6/FD* atomization; singleton DSP48E2/RAMB36E2/URAM288 support; one real compiled GP → hard-resource MCF/direct-LG → ISM run; independently validated placement certificate | carry/MUX/LUT6_2; RAMB18 half-sites; cascade, clock/half-column/SLR constraints; standard packed/placement conversion; complete RapidWright export and routed Phase 7 | Primary implementation route; native runtime is proven for the audited LUT/FF plus independent hard-resource subset, and remains fail-closed elsewhere |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga`) | Pinned-source probe; Yosys mapped JSON to official FPGA Interchange logical netlist; physical netlist to validated placement certificate; real Cap'n Proto schema roundtrip | Upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
 | AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result |
 
@@ -53,3 +53,11 @@ the default provider yet.
 
 Large DLA work remains gated by the small real-runtime and resource fixtures.
 There is no hidden fallback to the old greedy legalizer.
+
+The real-runtime gate has now passed twice: first for a connected 64-LUT/64-FF
+fixture, then for the same connected ring with one DSP48E2, one RAMB36E2, and
+one URAM288.  The mixed run covered 131 atoms and 132 non-degenerate nets in a
+single native OpenPARF invocation; every atom and final site/BEL assignment was
+independently re-imported.  This proves the compiled placement path for that
+bounded subset.  It does not yet prove RapidWright routing, global OpenSTA
+timing, cascades, clock legality, or DLA support.
