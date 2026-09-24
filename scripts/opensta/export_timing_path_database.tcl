@@ -5,6 +5,7 @@
 #   EMUFLOW_STA_VERILOG
 #   EMUFLOW_STA_TOP
 #   EMUFLOW_STA_NET_MAP
+#   EMUFLOW_STA_PIN_MAP
 #   EMUFLOW_STA_CLOCKS
 #   EMUFLOW_STA_OUTPUT
 #   EMUFLOW_STA_MAX_PATHS
@@ -96,23 +97,29 @@ foreach line [lrange $map_lines 1 end] {
   set emuir_by_mapped_net($mapped_name) $emuir_name
 }
 
-# Resolve mapped nets to their connected pins before any timing path handles
-# exist.  OpenSTA 2.6 owns PathEnd/PathVertex handles returned through Tcl; a
-# nested `get_nets -of_objects $pin` while walking those handles can corrupt
-# its collection arena on larger designs.  A timing pin belongs to one net, so
-# this immutable reverse index preserves the same ordered EmuIR-net recovery
-# without issuing object-graph queries while a PathEnd is live.
+# Load the pin/net identity produced directly from sealed EmuIR connectivity.
+# OpenSTA 2.6 can corrupt its Tcl collection arena both when resolving a large
+# set of nets to pins and when nesting that lookup under live PathEnd handles.
+# The static map keeps path export independent of those unsafe object queries.
 array set emuir_by_pin_full_name {}
-foreach mapped_name [array names emuir_by_mapped_net] {
-  set mapped_net [get_nets -quiet [list $mapped_name]]
-  if {[llength $mapped_net] != 1} {
+set pin_map_path [file normalize [emuflow_required_env EMUFLOW_STA_PIN_MAP]]
+set pin_map_input [open $pin_map_path r]
+set pin_map_lines [split [read $pin_map_input] "\n"]
+close $pin_map_input
+if {[lindex $pin_map_lines 0] ne "pin_full_name_hex\temuir_net_hex"} {
+  error "invalid OpenSTA pin-map header"
+}
+foreach line [lrange $pin_map_lines 1 end] {
+  if {$line eq ""} {
     continue
   }
-  foreach mapped_pin [get_pins -quiet -of_objects $mapped_net] {
-    set pin_full_name [get_property $mapped_pin full_name]
-    set emuir_by_pin_full_name($pin_full_name) \
-      $emuir_by_mapped_net($mapped_name)
+  set fields [split $line "\t"]
+  if {[llength $fields] != 2} {
+    error "malformed OpenSTA pin-map row"
   }
+  set pin_full_name [emuflow_hex_decode [lindex $fields 0]]
+  set emuir_name [emuflow_hex_decode [lindex $fields 1]]
+  set emuir_by_pin_full_name($pin_full_name) $emuir_name
 }
 
 set output [open $output_path w]

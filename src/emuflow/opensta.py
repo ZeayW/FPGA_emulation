@@ -68,6 +68,71 @@ def _finite_nonnegative(value: Any, context: str) -> float:
     return float(value)
 
 
+def _write_emuir_timing_pin_map(ir: EmuIR, output_path: Path) -> None:
+    """Write the immutable OpenSTA timing-pin to EmuIR-net identity map.
+
+    OpenSTA 2.6 can corrupt its Tcl collection arena when object-graph queries
+    are nested under live PathEnd handles.  Connectivity is already exact in
+    EmuIR, so materialize it once before launching OpenSTA instead of asking
+    the timing engine to rediscover each point's net while exporting paths.
+    """
+
+    pins_by_instance: DefaultDict[str, set[tuple[str, int]]] = defaultdict(set)
+    for net in ir.value["nets"]:
+        for collection in ("drivers", "sinks"):
+            for endpoint in net[collection]:
+                if endpoint["instance"] is not None:
+                    pins_by_instance[endpoint["instance"]].add(
+                        (endpoint["port"], endpoint["bit"])
+                    )
+    for instance in ir.value["instances"]:
+        for endpoint in instance.get("constant_connections", []):
+            pins_by_instance[instance["id"]].add(
+                (endpoint["port"], endpoint["bit"])
+            )
+
+    port_widths = {
+        port["id"]: int(port["width"]) for port in ir.value["ports"]
+    }
+    mapping: Dict[str, str] = {}
+
+    def bind(pin_name: str, net_id: str) -> None:
+        previous = mapping.get(pin_name)
+        if previous is not None and previous != net_id:
+            raise ValidationError(
+                f"OpenSTA timing pin {pin_name!r} maps to multiple EmuIR nets"
+            )
+        mapping[pin_name] = net_id
+
+    for net in ir.value["nets"]:
+        net_id = net["id"]
+        for collection in ("drivers", "sinks"):
+            for endpoint in net[collection]:
+                instance = endpoint["instance"]
+                port = endpoint["port"]
+                bit = int(endpoint["bit"])
+                if instance is None:
+                    width = port_widths[port]
+                    bind(port if width == 1 else f"{port}[{bit}]", net_id)
+                    continue
+                pins = pins_by_instance[instance]
+                width = 1 + max(
+                    candidate_bit
+                    for candidate_port, candidate_bit in pins
+                    if candidate_port == port
+                )
+                scalar_pin = port if width == 1 else f"{port}__{bit}"
+                bind(f"{instance}/{scalar_pin}", net_id)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as stream:
+        stream.write("pin_full_name_hex\temuir_net_hex\n")
+        for pin_name, net_id in sorted(mapping.items()):
+            stream.write(
+                f"{pin_name.encode().hex()}\t{net_id.encode().hex()}\n"
+            )
+
+
 def load_timing_model(path: Path) -> Dict[str, Any]:
     value = read_json(path)
     if value.get("schema") not in {
@@ -1321,6 +1386,7 @@ def run_opensta_path_database(
         verilog_path = root / "mapped.v"
         liberty_path = root / "timing.lib"
         net_map_path = root / "net-map.tsv"
+        pin_map_path = root / "pin-map.tsv"
         clock_path = root / "clocks.tsv"
         raw_path = root / "paths.tsv"
         through_path = root / "through-nets.tsv"
@@ -1341,6 +1407,7 @@ def run_opensta_path_database(
             render_opensta_liberty(model), encoding="utf-8"
         )
         write_emuir_net_map(ir_path, net_map_path)
+        _write_emuir_timing_pin_map(ir, pin_map_path)
         if through_net_ids:
             with through_path.open("w", encoding="utf-8") as stream:
                 stream.write("mapped_net_hex\temuir_net_hex\n")
@@ -1368,6 +1435,7 @@ def run_opensta_path_database(
                 "EMUFLOW_STA_VERILOG": str(verilog_path),
                 "EMUFLOW_STA_TOP": ir.value["design"]["top"],
                 "EMUFLOW_STA_NET_MAP": str(net_map_path),
+                "EMUFLOW_STA_PIN_MAP": str(pin_map_path),
                 "EMUFLOW_STA_CLOCKS": str(clock_path),
                 "EMUFLOW_STA_OUTPUT": str(raw_path),
                 "EMUFLOW_STA_MAX_PATHS": str(max_paths),
