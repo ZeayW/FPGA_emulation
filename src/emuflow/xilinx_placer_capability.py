@@ -70,7 +70,6 @@ def _validate_capability_entry(value: object, field: str) -> Dict[str, Any]:
         ),
     }
 
-
 def validate_xilinx_placer_capability_report(
     report: Mapping[str, Any],
 ) -> Dict[str, Any]:
@@ -158,4 +157,3 @@ def qualify_xilinx_placer_capabilities(
         "missing_entries": missing_entries,
         "blocked_entries": sorted(blocked_entries),
     }
-
