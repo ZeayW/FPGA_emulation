@@ -49,6 +49,22 @@ _FF_ENABLE = "CE"
 _FF_SR = {"FDCE": "R", "FDRE": "R", "FDPE": "S", "FDSE": "S"}
 
 
+def _resource_sort_key(resource: str) -> Tuple[int, str]:
+    if resource == "LUT":
+        return (0, resource)
+    if resource == "FF":
+        return (1, resource)
+    return (2, resource)
+
+
+def _primitive_sort_key(primitive: str) -> Tuple[int, str]:
+    if primitive in LUT_TYPES:
+        return (0, primitive)
+    if primitive in FF_TYPES:
+        return (1, primitive)
+    return (2, primitive)
+
+
 def _select_module(
     mapped: Mapping[str, Any], top: Optional[str]
 ) -> Tuple[str, Mapping[str, Any]]:
@@ -388,7 +404,8 @@ def _render_sites(
     x_index = {value: index for index, value in enumerate(x_axis)}
     y_index = {value: index for index, value in enumerate(y_axis)}
     signatures = sorted({
-        tuple(sorted(resources.items())) for _site, resources in sites
+        tuple(sorted(resources.items(), key=lambda item: _resource_sort_key(item[0])))
+        for _site, resources in sites
     })
     signature_names = {
         signature: f"EMUFLOW_SITE_{index}"
@@ -403,7 +420,9 @@ def _render_sites(
     for atom in atoms:
         models_by_resource[atom["resource"]].add(atom["cell_type"])
     lines.append("RESOURCES")
-    for resource, models in sorted(models_by_resource.items()):
+    for resource, models in sorted(
+        models_by_resource.items(), key=lambda item: _resource_sort_key(item[0])
+    ):
         lines.append(f"  {resource} {' '.join(sorted(models))}")
     lines.extend([
         "END RESOURCES", "", f"SITEMAP {len(x_axis)} {len(y_axis)}",
@@ -414,7 +433,9 @@ def _render_sites(
     ):
         coordinate = _physical_coordinate(site)
         dense = (x_index[coordinate[0]], y_index[coordinate[1]])
-        signature = tuple(sorted(resources.items()))
+        signature = tuple(sorted(
+            resources.items(), key=lambda item: _resource_sort_key(item[0])
+        ))
         lines.append(f"{dense[0]} {dense[1]} {signature_names[signature]}")
         site_map.append({
             "dense_x": dense[0], "dense_y": dense[1],
@@ -485,20 +506,38 @@ def export_xilinx_openparf_atomic(
     }
     for name, text in files.items():
         (output_dir / name).write_text(text, encoding="utf-8")
+    per_site_capacity = {
+        resource: max(
+            resources.get(resource, 0) for _site, resources in sites
+        )
+        for resource in demand
+    }
     model_map = {}
-    for primitive in sorted({atom["cell_type"] for atom in atoms}):
+    for primitive in sorted(
+        {atom["cell_type"] for atom in atoms}, key=_primitive_sort_key
+    ):
+        resource = (
+            "LUT" if primitive in LUT_TYPES
+            else "FF" if primitive in FF_TYPES
+            else _HARD_RESOURCES[primitive]
+        )
+        unit_dimension = 1.0 / math.sqrt(per_site_capacity[resource])
         if primitive in FF_TYPES:
-            model_map[primitive] = {"FF": ["1", "1"], "isFF": 1}
+            model_map[primitive] = {
+                "FF": [unit_dimension, unit_dimension], "isFF": 1,
+            }
         elif primitive in LUT_TYPES:
             model_map[primitive] = {
-                "LUT": ["1", "1"], "isLUT": int(primitive[3:]),
+                "LUT": [unit_dimension, unit_dimension],
+                "isLUT": int(primitive[3:]),
             }
         else:
             model_map[primitive] = {
-                _HARD_RESOURCES[primitive]: ["1", "1"]
+                _HARD_RESOURCES[primitive]: [unit_dimension, unit_dimension]
             }
     resource_map = {
-        resource: [resource] for resource in sorted(demand)
+        resource: [resource]
+        for resource in sorted(demand, key=_resource_sort_key)
     }
     resource_categories = {
         resource: (
@@ -506,7 +545,7 @@ def export_xilinx_openparf_atomic(
             else "FF" if resource == "FF"
             else "SSSIR"
         )
-        for resource in sorted(demand)
+        for resource in sorted(demand, key=_resource_sort_key)
     }
     config = {
         "benchmark_name": "xilinx_atomic_mixed_resource",
@@ -517,7 +556,8 @@ def export_xilinx_openparf_atomic(
         "global_place_flag": 1, "legalize_flag": 1,
         "detailed_place_flag": 1, "generic_cluster_placement_flag": 0,
         "logic_area_type_names": ["LUT", "FF"],
-        "plot_flag": 0, "plot_target_at_names": sorted(demand),
+        "plot_flag": 0,
+        "plot_target_at_names": sorted(demand, key=_resource_sort_key),
         "io_at_names": [], "num_threads": 8,
         "gp_model2area_types_map": model_map,
         "gp_resource2area_types_map": resource_map,
@@ -532,7 +572,12 @@ def export_xilinx_openparf_atomic(
         "route_flag": 0, "slr_aware_flag": 0,
         "result_dir": str((output_dir / "results").resolve()),
     }
-    write_json(output_dir / "openparf.json", config, compact=True)
+    # OpenPARF assigns area-type IDs by first appearance in this mapping and
+    # its DataCollections currently requires FF to be area type 1.  Preserve
+    # the deliberate LUT, FF, then stable hard-resource model order.
+    write_json(
+        output_dir / "openparf.json", config, compact=True, sort_keys=False
+    )
     write_json(output_dir / "name_map.json", {
         "schema": OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
         "top": selected_top,
@@ -550,6 +595,10 @@ def export_xilinx_openparf_atomic(
             "dropped_single_endpoint": dropped_single_endpoint_nets,
         },
         "resources": dict(sorted(demand.items())),
+        "resource_unit_capacity": {
+            resource: per_site_capacity[resource]
+            for resource in sorted(per_site_capacity, key=_resource_sort_key)
+        },
         "runtime_validation": "unverified",
         "constraint_policy": {
             "ordinary_slice_clusters_are_repackable": True,
