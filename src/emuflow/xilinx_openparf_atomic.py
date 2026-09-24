@@ -51,6 +51,7 @@ _ALLOWED_ASSIGNMENT_KEYS = {
 _FF_CLOCK = "C"
 _FF_ENABLE = "CE"
 _FF_SR = {"FDCE": "R", "FDRE": "R", "FDPE": "S", "FDSE": "S"}
+_TARGET_DENSITY = 0.75
 
 
 def _sha256(path: Path) -> str:
@@ -216,6 +217,105 @@ def _placement_sites(
             f"ArchitectureDB has no unique sites for hard resources {missing!r}"
         )
     return result
+
+
+def _validate_native_placement_region(
+    sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
+) -> Dict[str, Any]:
+    """Reject logic regions that cannot support OpenPARF's 2-D density model.
+
+    The Bookshelf adapter intentionally compresses physical tile coordinates,
+    but it must not fold a one-dimensional or disconnected crop into a fake
+    rectangular device.  Such a crop gives the nonlinear global placer a
+    degenerate density domain and can turn finite net coordinates into NaN or
+    infinite wirelength before direct legalization.
+    """
+
+    coordinates = [
+        _physical_coordinate(site)
+        for site, resources in sites
+        if "LUT" in resources and "FF" in resources
+    ]
+    if not coordinates:
+        raise ValidationError("OpenPARF atomic placement has no logic sites")
+    x_axis = sorted({coordinate[0] for coordinate in coordinates})
+    y_axis = sorted({coordinate[1] for coordinate in coordinates})
+    if len(x_axis) < 2 or len(y_axis) < 2:
+        raise ValidationError(
+            "OpenPARF atomic placement requires a non-degenerate two-dimensional "
+            "logic-site region; provide a crop spanning at least two physical "
+            "rows and two physical columns"
+        )
+    x_index = {value: index for index, value in enumerate(x_axis)}
+    y_index = {value: index for index, value in enumerate(y_axis)}
+    occupied = {
+        (x_index[coordinate[0]], y_index[coordinate[1]])
+        for coordinate in coordinates
+    }
+    frontier = [next(iter(occupied))]
+    reached = set(frontier)
+    while frontier:
+        x, y = frontier.pop()
+        for neighbor in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+            if neighbor in occupied and neighbor not in reached:
+                reached.add(neighbor)
+                frontier.append(neighbor)
+    if reached != occupied:
+        raise ValidationError(
+            "OpenPARF atomic placement requires one connected logic-site region; "
+            "the supplied ArchitectureDB crop has disconnected islands"
+        )
+    return {
+        "logic_sites": len(occupied),
+        "dense_width": len(x_axis),
+        "dense_height": len(y_axis),
+        "occupied_fraction": len(occupied) / (len(x_axis) * len(y_axis)),
+    }
+
+
+def _validate_native_density_contract(
+    sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
+    atoms: Sequence[Mapping[str, str]],
+) -> Tuple[Dict[str, int], Dict[str, Dict[str, float]]]:
+    """Prove every active area type has finite density and filler headroom."""
+
+    demand = Counter(atom["resource"] for atom in atoms)
+    per_site_capacity = {
+        resource: max(resources.get(resource, 0) for _site, resources in sites)
+        for resource in demand
+    }
+    result: Dict[str, Dict[str, float]] = {}
+    for resource in sorted(demand, key=_resource_sort_key):
+        unit_capacity = per_site_capacity[resource]
+        if unit_capacity <= 0:
+            raise ValidationError(
+                f"OpenPARF atomic placement has no {resource} model capacity"
+            )
+        available_units = sum(
+            resources.get(resource, 0) for _site, resources in sites
+        )
+        movable_area = demand[resource] / unit_capacity
+        placeable_area = available_units / unit_capacity
+        target_area = _TARGET_DENSITY * placeable_area
+        filler_units = available_units - demand[resource]
+        if not (
+            math.isfinite(movable_area)
+            and math.isfinite(placeable_area)
+            and 0.0 < movable_area < target_area
+            and filler_units > 0
+        ):
+            raise ValidationError(
+                "OpenPARF atomic placement density domain has no finite headroom "
+                f"for {resource}: demand={demand[resource]}, "
+                f"capacity={available_units}, target_density={_TARGET_DENSITY}"
+            )
+        result[resource] = {
+            "movable_area": movable_area,
+            "placeable_area": placeable_area,
+            "target_area": target_area,
+            "filler_units": filler_units,
+        }
+    return per_site_capacity, result
 
 
 def _collect_atoms(
@@ -406,6 +506,8 @@ def probe_xilinx_openparf_atomic_eligibility(
             if atom["cell_type"] in _HARD_RESOURCES
         })
         sites = _placement_sites(architecture, hard)
+        _validate_native_placement_region(sites)
+        _validate_native_density_contract(sites, atoms)
         resources = Counter(atom["resource"] for atom in atoms)
         slice_count = sum("LUT" in capacity for _site, capacity in sites)
         if resources["LUT"] > 8 * slice_count or resources["FF"] > 16 * slice_count:
@@ -577,6 +679,10 @@ def export_xilinx_openparf_atomic(
         if atom["cell_type"] in _HARD_RESOURCES
     })
     sites = _placement_sites(architecture, hard)
+    placement_region = _validate_native_placement_region(sites)
+    per_site_capacity, density_contract = _validate_native_density_contract(
+        sites, atoms
+    )
     demand = Counter(atom["resource"] for atom in atoms)
     capacity = Counter()
     for _site, resources in sites:
@@ -611,12 +717,6 @@ def export_xilinx_openparf_atomic(
     }
     for name, text in files.items():
         (output_dir / name).write_text(text, encoding="utf-8")
-    per_site_capacity = {
-        resource: max(
-            resources.get(resource, 0) for _site, resources in sites
-        )
-        for resource in demand
-    }
     model_map = {}
     for primitive in sorted(
         {atom["cell_type"] for atom in atoms}, key=_primitive_sort_key
@@ -656,7 +756,7 @@ def export_xilinx_openparf_atomic(
         "benchmark_name": "xilinx_atomic_mixed_resource",
         "benchmark_format": "bookshelf", "architecture_name": "ultrascale",
         "aux_input": str((output_dir / "design.aux").resolve()),
-        "gpu": 0, "dtype": "float64", "target_density": 0.75,
+        "gpu": 0, "dtype": "float64", "target_density": _TARGET_DENSITY,
         "random_seed": 1000, "max_global_place_iters": 2000,
         "global_place_flag": 1, "legalize_flag": 1,
         "detailed_place_flag": 1, "generic_cluster_placement_flag": 0,
@@ -704,6 +804,8 @@ def export_xilinx_openparf_atomic(
             resource: per_site_capacity[resource]
             for resource in sorted(per_site_capacity, key=_resource_sort_key)
         },
+        "placement_region": placement_region,
+        "density_contract": density_contract,
         "runtime_validation": "unverified",
         "constraint_policy": {
             "ordinary_slice_clusters_are_repackable": True,
