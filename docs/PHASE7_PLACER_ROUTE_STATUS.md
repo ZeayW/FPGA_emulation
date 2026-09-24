@@ -51,6 +51,72 @@ the default provider yet.
    better intermediate HPWL but incomplete physical or timing evidence cannot
    be promoted.
 
+## Updated implementation plan
+
+OpenPARF remains the primary route.  The parallel branches are controlled
+alternatives and independent implementation probes; they do not replace the
+OpenPARF work merely because an interchange adapter can be made to roundtrip.
+
+### Route A1: OpenPARF atomic qualification
+
+This route qualifies the real compiled engine and the complete downstream
+handoff using ordinary LUT/FF atoms plus singleton DSP48E2, RAMB36E2, and
+URAM288 atoms.  It must pass all of the following without a placement fallback:
+
+1. connected two-dimensional device-region and density admission;
+2. native global placement, resource legalization, and detailed placement;
+3. exact placement-certificate re-import;
+4. RapidWright routing with zero missing logical sinks;
+5. routed-delay extraction and independent OpenSTA endpoint timing.
+
+Passing A1 proves the engine and handoff, but cannot by itself qualify a DLA
+backend because it intentionally excludes physical macros and cascade chains.
+
+### Route A2: OpenPARF native macro production route
+
+The production route extends the pinned OpenPARF core rather than adding a
+post-placement site search.  Work is ordered by the first unsupported DLA
+primitive or constraint:
+
+1. represent one `CARRY8 + 8xLUT6_2` group as an indivisible full-slice unit,
+   including ordered inter-site carry-chain adjacency;
+2. add MUXF7/MUXF8/MUXF9 relative placement and RAMB18 pair/mode constraints;
+3. add DSP48E2, BRAM, and URAM cascade ordering from typed native adjacency;
+4. consume authoritative clock-region and SLR membership/capacity during
+   global placement and legalization;
+5. retain fail-closed behavior for half-column clock capacity until an
+   authoritative device source is available;
+6. preserve every macro through native detailed placement, then independently
+   verify exact BEL roles, offsets, adjacency, coverage, and non-overlap.
+
+The bridge may translate and verify OpenPARF's answer, but it may not choose a
+different legal site, repack a macro, or invoke the retired greedy legalizer.
+
+### Route B: DREAMPlaceFPGA research control
+
+The DREAMPlaceFPGA branch is retained to measure its official Interchange
+front end and analytical placement behavior.  Because upstream does not
+provide the required UltraScale+ detailed placement and macro/clock/SLR
+contracts, this route remains ineligible for default promotion unless those
+missing core capabilities are implemented and independently verified.
+
+### Route C: AMF-Placer secondary candidate
+
+The AMF branch first establishes typed UltraScale+ physical constraints and a
+bounded adapter.  It becomes a real candidate only after the public AMF
+optimization core, configuration, and result path run end to end; an adapter
+roundtrip alone is not placement evidence.  It is subject to the same
+RapidWright routing and OpenSTA gates as Route A.
+
+### Final comparison
+
+Only routes surviving their small real-runtime and resource/macro fixtures are
+run on Koios DLA medium.  The comparison freezes Phase 1--6, architecture,
+resource limits, timing model, router, and one physical seed.  The decision is
+based on complete routed legality, runtime, and global OpenSTA WNS/TNS; HPWL,
+density, or legalization cost are diagnostic metrics rather than promotion
+criteria.
+
 Large DLA work remains gated by the small real-runtime and resource fixtures.
 There is no hidden fallback to the old greedy legalizer.
 
