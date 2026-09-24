@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 from .architecture import ARCHDB_SCHEMA
 from .errors import ValidationError
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
-from .xilinx_placement import XILINX_CONSTRAINTS_SCHEMA, XILINX_PLACEMENT_SCHEMA
+from .xilinx_placement import XILINX_CONSTRAINTS_SCHEMA
 from .xilinx_placer_capability import (
     XILINX_PLACER_CAPABILITY_SCHEMA,
     XILINX_PLACER_CAPABILITY_STATUSES,
@@ -44,8 +44,9 @@ _NATIVE_PRIMITIVES = frozenset(
     }
 )
 
-# AMF models constants as nets. A future adapter may lower these physical
-# helper cells, but that transform is not implemented or validated today.
+# AMF models constants as nets. The fixture adapter lowers these physical
+# helper cells and validates exact ownership without promoting the production
+# provider.
 _ADAPTER_PRIMITIVES = frozenset({"GND", "VCC"})
 
 # Neither is a public DesignCellType and no public packing/legalization core was
@@ -89,6 +90,7 @@ def classify_amf_primitive(cell_type: str) -> Dict[str, Any]:
                 "public AMF represents constants as nets; EmuFlow physical "
                 "constant cells need validated lossless lowering",
             ),
+            adapter_validation="pass",
         )
     if cell_type in _CORE_MISSING_PRIMITIVES:
         return _capability(
@@ -174,24 +176,29 @@ def build_amf_placer_adapter_contract() -> Dict[str, Any]:
             "mapped_netlist": {
                 "format": f"yosys-json/{XILINX_ULTRASCALEPLUS_OPEN_PROFILE}",
                 "status": "adapter_required",
+                "adapter_validation": "pass",
             },
             "architecture": {
                 "schema": ARCHDB_SCHEMA,
                 "status": "adapter_required",
+                "adapter_validation": "pass",
             },
-            "constraints": {
-                "schema": XILINX_CONSTRAINTS_SCHEMA,
-                "status": "adapter_required",
-            },
-        },
-        "outputs": {
             "packed_netlist": {
                 "schema": PACKED_SITE_NETLIST_SCHEMA,
                 "status": "adapter_required",
+                "adapter_validation": "pass",
             },
-            "placement": {
-                "schema": XILINX_PLACEMENT_SCHEMA,
+        },
+        "outputs": {
+            "fixed_constraints": {
+                "schema": XILINX_CONSTRAINTS_SCHEMA,
                 "status": "adapter_required",
+                "adapter_validation": "pass",
+            },
+            "assignment_seal": {
+                "schema": "emuflow.amf-result-adapter/v1",
+                "status": "adapter_required",
+                "adapter_validation": "pass",
             },
         },
         "required_adapters": [
@@ -199,16 +206,22 @@ def build_amf_placer_adapter_contract() -> Dict[str, Any]:
                 "id": "emuflow-to-amf-design-v1",
                 "purpose": "emit AMF cells, pins, and nets without Vivado",
                 "status": "adapter_required",
+                "adapter_validation": "pass",
             },
             {
                 "id": "archdb-to-amf-device-v1",
                 "purpose": "emit sites, BEL compatibility, and clock regions",
                 "status": "adapter_required",
+                "adapter_validation": "pass",
             },
             {
                 "id": "amf-result-to-emuflow-v1",
-                "purpose": "import exact site/BEL packing without Tcl",
+                "purpose": (
+                    "parse exact site/BEL packing as data and emit fixed "
+                    "constraints plus an assignment seal"
+                ),
                 "status": "adapter_required",
+                "adapter_validation": "pass",
             },
         ],
         "fail_closed_if": [
@@ -248,6 +261,10 @@ def validate_amf_placer_adapter_contract(
                     f"AMF placer adapter {group} entry {name!r} must remain "
                     "adapter_required"
                 )
+            if entry.get("adapter_validation") != "pass":
+                raise ValidationError(
+                    f"AMF placer adapter {group} entry {name!r} is unvalidated"
+                )
     adapters = value.get("required_adapters")
     expected = {
         "emuflow-to-amf-design-v1",
@@ -261,6 +278,7 @@ def validate_amf_placer_adapter_contract(
     if any(
         not isinstance(item, Mapping)
         or item.get("status") != "adapter_required"
+        or item.get("adapter_validation") != "pass"
         for item in adapters
     ):
         raise ValidationError("AMF placer required adapter status is invalid")
@@ -307,24 +325,29 @@ def probe_amf_placer_capabilities(
         "physical_export": _capability(
             "adapter_required",
             ("public output is a Vivado place_cell Tcl script",),
+            adapter_validation="pass",
         ),
     }
     constraints = {
         "design_netlist_import": _capability(
             "adapter_required",
             ("DesignInfo.cc consumes a Vivado-extracted archive",),
+            adapter_validation="pass",
         ),
         "device_import": _capability(
             "adapter_required",
             ("DeviceInfo consumes extracted sites/BELs and compatibility data",),
+            adapter_validation="pass",
         ),
         "constant_net_lowering": _capability(
             "adapter_required",
             ("GND/VCC cells require a validated constant-net transform",),
+            adapter_validation="pass",
         ),
         "exact_site_bel_roundtrip": _capability(
             "adapter_required",
             ("AMF Tcl output must be imported into EmuFlow schemas",),
+            adapter_validation="pass",
         ),
         "xilinx_ultrascaleplus_xcvu19p": _capability(
             "unverified",
