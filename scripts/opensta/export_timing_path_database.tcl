@@ -340,12 +340,23 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   # `-endpoint_count 1` on the bulk query.
   unset -nocomplain seen_endpoint
   array set seen_endpoint {}
+  # Snapshot plain names before issuing the first timing query.  Iterating the
+  # OpenSTA-owned pin collection while `find_timing_paths` mutates internal
+  # search state leaves stale collection handles in OpenSTA 2.6.
+  set endpoint_names [list]
   foreach endpoint [all_registers -data_pins] {
     set endpoint_name [get_property $endpoint full_name]
+    lappend endpoint_names $endpoint_name
+  }
+  foreach endpoint_name $endpoint_names {
     if {[info exists seen_endpoint($endpoint_name)]} {
       continue
     }
     set seen_endpoint($endpoint_name) 1
+    set endpoint [get_pins -quiet [list $endpoint_name]]
+    if {[llength $endpoint] != 1} {
+      error "timing endpoint '$endpoint_name' is absent or ambiguous"
+    }
     foreach path_end [find_timing_paths -path_delay max \
         -to [list $endpoint] -group_count 1 -endpoint_count 1 \
         -sort_by_slack] {

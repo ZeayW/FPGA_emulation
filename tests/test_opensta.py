@@ -81,6 +81,11 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertNotIn("binary encode hex", script)
         self.assertNotIn("-group_count $max_paths", script)
         self.assertIn("foreach endpoint [all_registers -data_pins]", script)
+        self.assertIn("lappend endpoint_names $endpoint_name", script)
+        self.assertIn("foreach endpoint_name $endpoint_names", script)
+        self.assertIn(
+            "set endpoint [get_pins -quiet [list $endpoint_name]]", script
+        )
         self.assertIn("-to [list $endpoint] -group_count 1", script)
         self.assertIn("if {$queried_paths >= $max_paths}", script)
         self.assertIn("EMUFLOW_STA_THROUGH_NETS", script)
