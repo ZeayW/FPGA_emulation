@@ -340,9 +340,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   # handles.  OpenSTA 2.6 can corrupt its collection arena during nested path
   # object queries on real routed designs; the C++ JSON reporter expands the
   # same paths internally without exposing those unsafe handles.
-  redirect -file $output_path {
-    report_checks -path_delay max -group_count $max_paths \
-      -endpoint_count 1 -sort_by_slack -format json
-  }
+  report_checks -path_delay max -group_count $max_paths \
+    -endpoint_count 1 -sort_by_slack -format json > $output_path
   puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count format=json output=$output_path"
 }
