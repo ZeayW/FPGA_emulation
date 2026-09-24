@@ -13,6 +13,7 @@ before producing a compact EmuFlow placement certificate.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+import hashlib
 import math
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -47,6 +48,14 @@ _ALLOWED_ASSIGNMENT_KEYS = {
 _FF_CLOCK = "C"
 _FF_ENABLE = "CE"
 _FF_SR = {"FDCE": "R", "FDRE": "R", "FDPE": "S", "FDSE": "S"}
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _resource_sort_key(resource: str) -> Tuple[int, str]:
@@ -788,6 +797,12 @@ def validate_xilinx_openparf_atomic_placement(
         "status": "pass", "part": architecture.part,
         "provider": "openparf-native-mcf-direct-lg-ism-atomic-v1",
         "runtime_validation": "unverified",
+        "source": {
+            "native_placement_sha256": _sha256(placement_path),
+            "name_map_sha256": _sha256(name_map_path),
+            "mapped_sha256": _sha256(mapped_path),
+            "architecture_sha256": _sha256(architecture_path),
+        },
         "clusters": clusters,
         "summary": {
             "atoms": len(placed), "occupied_sites": len(clusters),

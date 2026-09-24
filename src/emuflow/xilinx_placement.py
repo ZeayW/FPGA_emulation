@@ -23,6 +23,9 @@ XILINX_SINGLE_SLR_PLAN_PROVIDER = "emuflow-xilinx-single-slr-planner-v1"
 XILINX_EXACT_SITE_LEGALIZER_PROVIDER = (
     "emuflow-xilinx-exact-site-legalizer-v3-physical-grid"
 )
+XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER = (
+    "openparf-native-mcf-direct-lg-ism-atomic-bridge-v1"
+)
 XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 0.75
 _SITE_XY_RE = re.compile(r"^(?P<kind>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 
@@ -1237,13 +1240,22 @@ def validate_xilinx_placement(
         raise ValidationError("Xilinx placement header is invalid")
     if placement.get("status") != "pass" or placement.get("part") != architecture.part:
         raise ValidationError("Xilinx placement identity is invalid")
-    if placement.get("provider") != XILINX_EXACT_SITE_LEGALIZER_PROVIDER:
+    provider = placement.get("provider")
+    if provider not in {
+        XILINX_EXACT_SITE_LEGALIZER_PROVIDER,
+        XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER,
+    }:
         raise ValidationError("Xilinx placement provider is invalid")
-    policy = placement.get("policy")
-    if policy != {
+    expected_policy = {
         "clock_region_site_utilization_limit": XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT,
         "capacity_rounding": "ceil-with-one-site-minimum",
-    }:
+    }
+    if provider == XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER:
+        expected_policy.update({
+            "packing": "native-openparf-atomic-site-groups-v1",
+            "placement_certificate": "emuflow.openparf-atomic-placement/v1",
+        })
+    if placement.get("policy") != expected_policy:
         raise ValidationError("Xilinx placement routability policy is invalid")
     source = placement.get("source", {})
     if source.get("packed_sha256") != _sha256(packed_path):
