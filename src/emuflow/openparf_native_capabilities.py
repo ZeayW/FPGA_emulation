@@ -225,8 +225,8 @@ def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
                     continue
                 if "shapeConstr" in candidate or "shape_constr" in candidate:
                     shape_consumers.append(str(path.relative_to(root)))
-        output_cas_bug = (
-            "KWD_OUTPUT KWD_CAS ENDL    { driver.addCellInputCasPinCbk"
+        output_cas_correct = (
+            "KWD_OUTPUT KWD_CAS ENDL    { driver.addCellOutputCasPinCbk"
             in texts["parser"]
         )
         four_lut_extractor = all(marker in texts["chain_info"] for marker in (
@@ -247,26 +247,38 @@ def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
             and "addShapeNodeCbk" in texts["shape_db"]
             and not shape_consumers
         )
-        dp_mask_is_io_gated = all(marker in texts["placer"] for marker in (
-            "if self.params.io_legalization_flag:",
+        dp_mask_is_carry_gated = all(marker in texts["placer"] for marker in (
+            "if self.params.carry_chain_legalization_flag:",
+            "self.data_cls.chain_cla_ids.bs",
+            "self.data_cls.chain_lut_ids.bs",
             "fixed_mask[inst_ids] = 1",
             "self.op_cls.ism_dp_op.fixed_mask = fixed_mask",
         ))
+        carry_seed_is_gp_backed = (
+            all(marker in texts["placer"] for marker in (
+                "Seed native carry legalization from the current GP solution",
+                "pos_xyz = self.data_cls.inst_locs_xyz.to(",
+                "pos[movable_range[0] : movable_range[1]]",
+            ))
+            and "assert self.data_cls.io_pos_xyz is not None"
+            not in texts["placer"]
+        )
         checks = {
             "parser": evidence(
                 "parser",
-                status="core_missing" if output_cas_bug else "unverified",
+                status=(
+                    "native_supported" if output_cas_correct else "core_missing"
+                ),
                 reason=(
-                    "Bookshelf OUTPUT CAS invokes the input-cascade callback; "
-                    "the native chain extractor therefore cannot observe a "
-                    "directed CARRY8 cascade through this input format"
-                    if output_cas_bug else
-                    "Bookshelf cascade output semantics were not proven"
+                    "Bookshelf INPUT/OUTPUT CAS pins dispatch to direction-correct callbacks"
+                    if output_cas_correct else
+                    "Bookshelf cascade output semantics are incorrect or unproven"
                 ),
                 markers=(
                     "KWD_INPUT KWD_CAS",
                     "KWD_OUTPUT KWD_CAS",
                     "driver.addCellInputCasPinCbk",
+                    "driver.addCellOutputCasPinCbk",
                 ),
             ),
             "shape_db": evidence(
@@ -313,16 +325,23 @@ def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
             ),
             "placer": evidence(
                 "placer",
-                status="core_missing" if dp_mask_is_io_gated else "unverified",
+                status=(
+                    "native_supported"
+                    if dp_mask_is_carry_gated and carry_seed_is_gp_backed
+                    else "core_missing"
+                ),
                 reason=(
-                    "ISM fixes the carry area type only inside the unrelated "
-                    "io_legalization_flag branch; macro preservation through DP "
-                    "is not an independent carry contract"
-                    if dp_mask_is_io_gated else
-                    "carry preservation through detailed placement was not proven"
+                    "carry legalization is seeded from GP and ISM fixes both "
+                    "carry primitives and associated LUTs whenever carry-chain "
+                    "legalization is active"
+                    if dp_mask_is_carry_gated and carry_seed_is_gp_backed else
+                    "carry preservation through detailed placement is incorrectly gated or unproven"
                 ),
                 markers=(
-                    "if self.params.io_legalization_flag:",
+                    "if self.params.carry_chain_legalization_flag:",
+                    "self.data_cls.chain_cla_ids.bs",
+                    "self.data_cls.chain_lut_ids.bs",
+                    "pos_xyz = self.data_cls.inst_locs_xyz.to(",
                     "fixed_mask[inst_ids] = 1",
                     "self.op_cls.ism_dp_op.fixed_mask = fixed_mask",
                 ),
@@ -460,6 +479,40 @@ def probe_xilinx_openparf_carry_native_support(
             "required_lut_outputs": ["O5", "O6"],
             "native_lut_interface": "PROP[0:3]",
         },
+        "remaining_core_changes": [
+            {
+                "id": "carry8-chain-metadata",
+                "component": "openparf/custom_data/chain_info",
+                "requirement": (
+                    "derive eight ordered LUT6_2 members per CARRY8 from paired "
+                    "DI[i]/S[i] <- O5/O6 connectivity while retaining directed CI/CO[7] chain order"
+                ),
+            },
+            {
+                "id": "carry8-full-slice-legalization",
+                "component": "openparf/ops/chain_legalizer",
+                "requirement": (
+                    "model one CARRY8 as one complete slice row with LUT slots "
+                    "A6LUT through H6LUT instead of a half-row CLA4"
+                ),
+            },
+            {
+                "id": "carry8-bookshelf-export",
+                "component": "src/emuflow/xilinx_openparf_atomic.py",
+                "requirement": (
+                    "emit CARRY8, LUT6_2, cascade-pin, area-type, resource, "
+                    "density, and macro ownership records without preplacement"
+                ),
+            },
+            {
+                "id": "carry8-exact-import-validation",
+                "component": "src/emuflow/xilinx_openparf_atomic.py",
+                "requirement": (
+                    "validate same-site CARRY8/LUT6_2 roles, consecutive native "
+                    "carry adjacency, complete coverage, and ISM preservation"
+                ),
+            },
+        ],
         "source_audit": source_audit,
     }
     validate_xilinx_placer_capability_report(report)

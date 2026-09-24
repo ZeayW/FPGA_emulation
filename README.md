@@ -1049,10 +1049,11 @@ explicitly `core_missing` for that contract rather than merely awaiting an
 adapter.  Its native extractor and legalizer implement an XArch CLA4 unit with
 four `PROP[0:3]` LUTs and half-site occupancy; they cannot preserve one
 UltraScale+ CARRY8 plus eight coupled LUT6_2 O5/O6 adapters.  In addition, the
-Bookshelf grammar currently sends `OUTPUT CAS` through the input-cascade
-callback, parsed `.shape` carry constraints have no placement/legalization/DP
-consumer, and ISM carry locking is gated by the unrelated IO-legalization
-branch.  The internal
+parsed `.shape` carry constraints have no placement/legalization/DP consumer.
+Two independent upstream plumbing defects found during that audit are now
+fixed: Bookshelf `OUTPUT CAS` dispatches to the output-cascade callback, and
+ISM freezes both carry primitives and their associated LUTs whenever carry
+legalization is active rather than depending on IO legalization.  The internal
 `probe_xilinx_openparf_carry_native_support` qualification API records these
 exact source-backed blockers against a real two-CARRY8 macro contract and
 forbids runtime launch, fallback, or preplacement.  No compiled carry result is

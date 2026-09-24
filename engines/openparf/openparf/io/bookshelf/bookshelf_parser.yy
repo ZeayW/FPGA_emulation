@@ -193,7 +193,7 @@ cell_block_line : KWD_PIN STRING KWD_INPUT ENDL             { driver.addCellInpu
                 | KWD_PIN STRING KWD_INPUT KWD_CTRL_SR ENDL { driver.addCellCtrlSRPinCbk(*$2);   delete $2; }
                 | KWD_PIN STRING KWD_INPUT KWD_CTRL_CE ENDL { driver.addCellCtrlCEPinCbk(*$2);   delete $2; }
                 | KWD_PIN STRING KWD_INPUT KWD_CAS ENDL     { driver.addCellInputCasPinCbk(*$2); delete $2; }
-                | KWD_PIN STRING KWD_OUTPUT KWD_CAS ENDL    { driver.addCellInputCasPinCbk(*$2); delete $2; }
+                | KWD_PIN STRING KWD_OUTPUT KWD_CAS ENDL    { driver.addCellOutputCasPinCbk(*$2); delete $2; }
                 | KWD_PAR STRING ENDL                       { driver.addCellParameterCbk(*$2);   delete $2; }
                 ;
 
