@@ -59,6 +59,18 @@ class DreamplaceFPGACandidateTest(unittest.TestCase):
         self.assertFalse(report["execution_ready"])
         self.assertIn("stages.detailed_placement", report["blockers"])
         self.assertIn("constraints.multi_slr_regions", report["blockers"])
+        self.assertEqual(
+            report["feature_capabilities"]["emuflow_mapped_json_input"][
+                "adapter_validation"
+            ],
+            "pass",
+        )
+        self.assertEqual(
+            report["feature_capabilities"]["emuflow_placement_import"][
+                "adapter_validation"
+            ],
+            "pass",
+        )
 
     def test_full_emuflow_primitive_population_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
