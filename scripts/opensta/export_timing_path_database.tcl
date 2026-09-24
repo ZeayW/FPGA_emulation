@@ -337,50 +337,18 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"
 } else {
   # Use OpenSTA's native reporter instead of traversing Tcl PathEnd/PathVertex
-  # handles.  OpenSTA 2.6 can corrupt its collection arena both when nested
-  # PathEnd properties are expanded and when one enormous report_checks call
-  # retains every endpoint.  Snapshot endpoint *names*, then ask the native C++
-  # reporter for one endpoint at a time.  Each native JSON document is appended
-  # to the output; Python merges, sorts, and applies max_paths after parsing.
-  set endpoint_names [list]
-  foreach endpoint [all_registers -data_pins] {
-    lappend endpoint_names [get_property $endpoint full_name]
+  # handles.  OpenSTA 2.6 corrupts its path arena when the configured
+  # group_count is orders of magnitude larger than the design, and also when
+  # report_checks is repeatedly invoked in one process.  Bound one native
+  # report by the exact number of possible endpoints.  Python then applies the
+  # user-visible max_paths limit after validating and globally sorting checks.
+  set endpoint_count [llength [all_registers -data_pins]]
+  incr endpoint_count [llength [all_outputs]]
+  set report_limit [expr {min($max_paths, $endpoint_count)}]
+  if {$report_limit <= 0} {
+    error "OpenSTA found no timing endpoints"
   }
-  foreach endpoint [all_outputs] {
-    lappend endpoint_names [get_property $endpoint full_name]
-  }
-  set endpoint_names [lsort -unique $endpoint_names]
-  set output [open $output_path w]
-  close $output
-  set queried_endpoints 0
-  set reported_documents 0
-  foreach endpoint_name $endpoint_names {
-    set endpoint [get_pins -quiet [list $endpoint_name]]
-    if {[llength $endpoint] == 0} {
-      set endpoint [get_ports -quiet [list $endpoint_name]]
-    }
-    if {[llength $endpoint] != 1} {
-      error "timing endpoint '$endpoint_name' is absent or ambiguous"
-    }
-    set report_text ""
-    with_output_to_variable report_text [list report_checks \
-      -path_delay max -to [list $endpoint] -group_count 1 \
-      -endpoint_count 1 -sort_by_slack -format json]
-    incr queried_endpoints
-    set report_text [string trim $report_text]
-    if {$report_text eq "No paths found." || $report_text eq ""} {
-      continue
-    }
-    if {![string match "\{*" $report_text]} {
-      error "OpenSTA native JSON reporter returned unexpected text for '$endpoint_name': $report_text"
-    }
-    set output [open $output_path a]
-    puts $output $report_text
-    close $output
-    incr reported_documents
-  }
-  if {$reported_documents == 0} {
-    error "OpenSTA found no constrained timing paths"
-  }
-  puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count format=json-sequence queried_endpoints=$queried_endpoints reported_documents=$reported_documents output=$output_path"
+  report_checks -path_delay max -group_count $report_limit \
+    -endpoint_count 1 -sort_by_slack -format json > $output_path
+  puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count format=json report_limit=$report_limit output=$output_path"
 }

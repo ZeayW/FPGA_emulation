@@ -80,11 +80,13 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("binary scan [encoding convertto utf-8 $value] H*", script)
         self.assertNotIn("binary decode hex", script)
         self.assertNotIn("binary encode hex", script)
-        self.assertIn("[list report_checks \\", script)
-        self.assertIn("foreach endpoint [all_registers -data_pins]", script)
-        self.assertIn("foreach endpoint [all_outputs]", script)
-        self.assertIn("with_output_to_variable report_text", script)
-        self.assertIn("-to [list $endpoint] -group_count 1", script)
+        self.assertIn("report_checks -path_delay max", script)
+        self.assertIn(
+            "set endpoint_count [llength [all_registers -data_pins]]", script
+        )
+        self.assertIn("incr endpoint_count [llength [all_outputs]]", script)
+        self.assertIn("min($max_paths, $endpoint_count)", script)
+        self.assertIn("-group_count $report_limit", script)
         self.assertIn("-endpoint_count 1 -sort_by_slack -format json", script)
         self.assertIn("EMUFLOW_STA_THROUGH_NETS", script)
         self.assertIn("get_pins -quiet -of_objects $through_net", script)
