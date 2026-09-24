@@ -22,24 +22,27 @@ import com.xilinx.rapidwright.rwroute.CUFR;
 import com.xilinx.rapidwright.rwroute.Connection;
 import com.xilinx.rapidwright.rwroute.RWRouteConfig;
 import com.xilinx.rapidwright.timing.TimingModel;
+import com.xilinx.rapidwright.util.ParallelismTools;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 public final class EmuFlowRWRoute {
     private static final String SCHEMA = "emuflow.xilinx-route-db/v1";
     private static final String ROUTER_STRATEGY =
-        "CUFR-HUS-non-timing-driven-uturn-enabled-serial-unroutable-recovery";
+        "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-recovery";
     private static final String[] DSP48E2_COMPONENTS = new String[] {
         "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
         "DSP_ALU", "DSP_M_DATA", "DSP_OUTPUT", "DSP_PREADD"
@@ -53,18 +56,198 @@ public final class EmuFlowRWRoute {
      * unroutable connection when enlargement is disabled.
      *
      * Route A therefore widens only connections for which the current search
-     * found no route. Those exceptional connections are routed serially before
-     * the unchanged partition tree on every later iteration and are skipped by
-     * the tree itself. This preserves CUFR's original parallel decomposition:
-     * rebuilding the complete tree around even a few enlarged connections can
-     * move ordinary reroutes towards its sequential middle branches.
+     * found no route. Those exceptional connections are routed through their
+     * own recursive partitioning ternary tree before the unchanged main tree
+     * on every later iteration and are skipped by the main tree itself. This
+     * preserves CUFR's original parallel decomposition without serializing a
+     * large exceptional set: rebuilding the complete tree around even a few
+     * enlarged connections can move ordinary reroutes towards its sequential
+     * middle branches.
      * Congested-but-routed connections remain under negotiated congestion and
      * do not trigger bounding-box growth.
      */
     private static final class UnroutableOnlyBoundingBoxCUFR extends CUFR {
-        private final Set<Connection> serialRecoveryConnections =
-            new LinkedHashSet<>();
-        private boolean routingSerialRecovery;
+        /**
+         * Compact Route-A-owned equivalent of CUFR's RPTT, scoped only to
+         * connections whose original bounding boxes were genuinely
+         * unroutable. The structure follows the balance-driven cutline and
+         * middle-before-left/right ordering of RapidWright's Apache-licensed
+         * CUFRpartitionTree. Keeping it local is necessary because the
+         * upstream node payload is package-private and CUFR's main tree is
+         * private.
+         */
+        private static final class RecoveryPartitionTree {
+            private static final class Bounds {
+                final int xMin;
+                final int xMax;
+                final int yMin;
+                final int yMax;
+
+                Bounds(int xMin, int xMax, int yMin, int yMax) {
+                    this.xMin = xMin;
+                    this.xMax = xMax;
+                    this.yMin = yMin;
+                    this.yMax = yMax;
+                }
+            }
+
+            private static final class Node {
+                final Bounds bounds;
+                final List<Connection> connections;
+                Node middle;
+                Node left;
+                Node right;
+
+                Node(Bounds bounds, List<Connection> connections) {
+                    this.bounds = bounds;
+                    this.connections = connections;
+                }
+
+                boolean isLeaf() {
+                    return left == null;
+                }
+            }
+
+            final Node root;
+            private final Bounds deviceBounds;
+
+            RecoveryPartitionTree(List<Connection> connections, int xMax, int yMax) {
+                deviceBounds = new Bounds(0, xMax, 0, yMax);
+                root = new Node(deviceBounds, connections);
+                build(root);
+            }
+
+            private int clampX(int value) {
+                return Math.min(Math.max(value, deviceBounds.xMin), deviceBounds.xMax);
+            }
+
+            private int clampY(int value) {
+                return Math.min(Math.max(value, deviceBounds.yMin), deviceBounds.yMax);
+            }
+
+            private void build(Node node) {
+                Collections.sort(node.connections);
+                int width = node.bounds.xMax - node.bounds.xMin + 1;
+                int height = node.bounds.yMax - node.bounds.yMin + 1;
+                double bestScore = Double.POSITIVE_INFINITY;
+                double bestPosition = Double.NaN;
+                boolean splitX = true;
+
+                if (width > 1) {
+                    int[] before = new int[width - 1];
+                    int[] after = new int[width - 1];
+                    for (Connection connection : node.connections) {
+                        int start = Math.max(
+                            node.bounds.xMin, clampX(connection.getXMinBB())
+                        ) - node.bounds.xMin;
+                        int end = Math.min(
+                            node.bounds.xMax, clampX(connection.getXMaxBB())
+                        ) - node.bounds.xMin;
+                        for (int x = start; x < width - 1; x++) before[x]++;
+                        for (int x = 0; x < end; x++) after[x]++;
+                    }
+                    int maximumBefore = before[width - 2];
+                    int maximumAfter = after[0];
+                    for (int x = 0; x < width - 1; x++) {
+                        if (before[x] == maximumBefore || after[x] == maximumAfter) continue;
+                        int denominator = Math.max(before[x], after[x]);
+                        if (denominator == 0) continue;
+                        double score = (double) Math.abs(before[x] - after[x]) / denominator;
+                        if (score < bestScore) {
+                            bestScore = score;
+                            bestPosition = node.bounds.xMin + x + 0.5;
+                            splitX = true;
+                        }
+                    }
+                }
+
+                if (height > 1) {
+                    int[] before = new int[height - 1];
+                    int[] after = new int[height - 1];
+                    for (Connection connection : node.connections) {
+                        int start = Math.max(
+                            node.bounds.yMin, clampY(connection.getYMinBB())
+                        ) - node.bounds.yMin;
+                        int end = Math.min(
+                            node.bounds.yMax, clampY(connection.getYMaxBB())
+                        ) - node.bounds.yMin;
+                        for (int y = start; y < height - 1; y++) before[y]++;
+                        for (int y = 0; y < end; y++) after[y]++;
+                    }
+                    int maximumBefore = before[height - 2];
+                    int maximumAfter = after[0];
+                    for (int y = 0; y < height - 1; y++) {
+                        if (before[y] == maximumBefore || after[y] == maximumAfter) continue;
+                        int denominator = Math.max(before[y], after[y]);
+                        if (denominator == 0) continue;
+                        double score = (double) Math.abs(before[y] - after[y]) / denominator;
+                        if (score < bestScore) {
+                            bestScore = score;
+                            bestPosition = node.bounds.yMin + y + 0.5;
+                            splitX = false;
+                        }
+                    }
+                }
+
+                if (Double.isNaN(bestPosition)) return;
+                List<Connection> left = new ArrayList<>();
+                List<Connection> middle = new ArrayList<>();
+                List<Connection> right = new ArrayList<>();
+                if (splitX) {
+                    for (Connection connection : node.connections) {
+                        if (clampX(connection.getXMaxBB()) < bestPosition) {
+                            left.add(connection);
+                        } else if (clampX(connection.getXMinBB()) > bestPosition) {
+                            right.add(connection);
+                        } else {
+                            middle.add(connection);
+                        }
+                    }
+                    int cut = (int) Math.floor(bestPosition);
+                    node.left = new Node(
+                        new Bounds(node.bounds.xMin, cut, node.bounds.yMin, node.bounds.yMax),
+                        left
+                    );
+                    node.right = new Node(
+                        new Bounds(cut + 1, node.bounds.xMax, node.bounds.yMin, node.bounds.yMax),
+                        right
+                    );
+                } else {
+                    for (Connection connection : node.connections) {
+                        if (clampY(connection.getYMaxBB()) < bestPosition) {
+                            left.add(connection);
+                        } else if (clampY(connection.getYMinBB()) > bestPosition) {
+                            right.add(connection);
+                        } else {
+                            middle.add(connection);
+                        }
+                    }
+                    int cut = (int) Math.floor(bestPosition);
+                    node.left = new Node(
+                        new Bounds(node.bounds.xMin, node.bounds.xMax, node.bounds.yMin, cut),
+                        left
+                    );
+                    node.right = new Node(
+                        new Bounds(node.bounds.xMin, node.bounds.xMax, cut + 1, node.bounds.yMax),
+                        right
+                    );
+                }
+                if (left.isEmpty() || right.isEmpty()) {
+                    node.left = null;
+                    node.right = null;
+                    return;
+                }
+                build(node.left);
+                build(node.right);
+                if (!middle.isEmpty()) {
+                    node.middle = new Node(node.bounds, middle);
+                    build(node.middle);
+                }
+            }
+        }
+
+        private final Set<Connection> recoveryConnections =
+            ConcurrentHashMap.newKeySet();
 
         UnroutableOnlyBoundingBoxCUFR(Design design, RWRouteConfig config) {
             super(design, config);
@@ -78,27 +261,33 @@ public final class EmuFlowRWRoute {
 
         @Override
         protected void routeIndirectConnections(Collection<Connection> connections) {
-            if (!serialRecoveryConnections.isEmpty()) {
-                routingSerialRecovery = true;
-                try {
-                    for (Connection connection : serialRecoveryConnections) {
-                        if (super.shouldRoute(connection)) {
-                            routeIndirectConnection(connection);
-                        }
-                    }
-                } finally {
-                    routingSerialRecovery = false;
-                }
+            if (!recoveryConnections.isEmpty()) {
+                List<Connection> snapshot = new ArrayList<>(recoveryConnections);
+                RecoveryPartitionTree tree = new RecoveryPartitionTree(
+                    snapshot, design.getDevice().getColumns(), design.getDevice().getRows()
+                );
+                routeRecoveryTree(tree.root);
             }
             super.routeIndirectConnections(connections);
         }
 
+        private void routeRecoveryTree(RecoveryPartitionTree.Node node) {
+            if (node.isLeaf()) {
+                for (Connection connection : node.connections) {
+                    if (super.shouldRoute(connection)) routeIndirectConnection(connection);
+                }
+                return;
+            }
+            if (node.middle != null) routeRecoveryTree(node.middle);
+            ParallelismTools.invokeAll(
+                () -> routeRecoveryTree(node.left),
+                () -> routeRecoveryTree(node.right)
+            );
+        }
+
         @Override
         protected boolean shouldRoute(Connection connection) {
-            if (!routingSerialRecovery
-                    && serialRecoveryConnections.contains(connection)) {
-                return false;
-            }
+            if (recoveryConnections.contains(connection)) return false;
             return super.shouldRoute(connection);
         }
 
@@ -107,7 +296,7 @@ public final class EmuFlowRWRoute {
             connection.enlargeBoundingBox(
                 config.getExtensionXIncrement(), config.getExtensionYIncrement()
             );
-            serialRecoveryConnections.add(connection);
+            recoveryConnections.add(connection);
             if (routeIteration == 1 && swapOutputPin(connection)) return true;
             return false;
         }

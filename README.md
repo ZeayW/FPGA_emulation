@@ -4494,15 +4494,16 @@ for large, difficult negotiated-congestion problems; placement uses the
 complete certified device and preserves routing headroom outside the exact
 site-capacity footprint.
 The sealed route certificate records the exact
-`CUFR-HUS-non-timing-driven-uturn-enabled-serial-unroutable-recovery`
+`CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-recovery`
 strategy; there is no silent fallback to the serial router. U-turn routing
 resources are enabled because
 the complete XCVU19P site grid includes legal placements near device edges;
 RapidWright explicitly requires those resources for boundary routability.
 Ordinary negotiated congestion retains a fixed bounding box. Only a connection
 for which the current search found no route is enlarged. Such exceptional
-connections are routed serially before CUFR's unchanged partition tree on each
-later iteration and skipped inside the tree. This avoids RapidWright's
+connections are routed through a separate recursive partitioning ternary tree
+before CUFR's unchanged main tree on each later iteration and skipped inside
+the main tree. This avoids both a large serial recovery tail and RapidWright's
 fixed-box behavior of abandoning a truly unroutable connection while
 preserving CUFR's original parallel decomposition, rather than rebuilding the
 tree around enlarged connections or using the upstream blanket adaptive mode
