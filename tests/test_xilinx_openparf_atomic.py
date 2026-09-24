@@ -11,6 +11,7 @@ from emuflow.openparf_native_capabilities import (
 from emuflow.xilinx_placer_capability import (
     qualify_xilinx_placer_capabilities,
 )
+from emuflow.yosys import import_yosys_json
 from emuflow.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_MANIFEST_SCHEMA,
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
@@ -200,7 +201,12 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             manifest = export_xilinx_openparf_atomic(
                 mapped, atomic_source, architecture, output, top="top"
             )
+            imported_clocks = import_yosys_json(mapped).value["clocks"]
         self.assertEqual(source["schema"], OPENPARF_ATOMIC_SOURCE_SCHEMA)
+        self.assertEqual(imported_clocks, [{
+            "id": "clk", "name": "clk", "source_port": "clk",
+            "period_ns": None,
+        }])
         self.assertEqual(source["summary"], {
             "physical_atoms": 131, "constant_cells": 0,
         })

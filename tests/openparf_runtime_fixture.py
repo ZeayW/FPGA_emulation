@@ -110,7 +110,16 @@ def write_openparf_runtime_fixture(
             })
 
     mapped_path.write_text(json.dumps({
-        "modules": {"top": {"attributes": {"top": "1"}, "cells": cells}},
+        "modules": {"top": {
+            "attributes": {"top": "1"},
+            "ports": {
+                "clk": {"direction": "input", "bits": [clock_bit]},
+            },
+            "netnames": {
+                "clk": {"hide_name": 0, "bits": [clock_bit]},
+            },
+            "cells": cells,
+        }},
     }), encoding="utf-8")
     packed_path.write_text(json.dumps({
         "schema": "emuflow.packed-site-netlist/v1",
