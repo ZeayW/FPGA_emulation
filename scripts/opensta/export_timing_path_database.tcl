@@ -336,19 +336,26 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   }
   puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"
 } else {
-  # Use OpenSTA's native reporter instead of traversing Tcl PathEnd/PathVertex
-  # handles.  OpenSTA 2.6 corrupts its path arena when the configured
-  # group_count is orders of magnitude larger than the design, and also when
-  # report_checks is repeatedly invoked in one process.  Bound one native
-  # report by the exact number of possible endpoints.  Python then applies the
-  # user-visible max_paths limit after validating and globally sorting checks.
+  # Ask OpenSTA for one bounded, globally sorted PathEnd collection.  A single
+  # search is stable in OpenSTA 2.6; repeated per-endpoint searches and the
+  # native JSON reporter both corrupt that version's path arena.  The static
+  # EmuIR pin map above means serialization needs no nested net collection
+  # query while these PathEnd handles are live.
   set endpoint_count [llength [all_registers -data_pins]]
   incr endpoint_count [llength [all_outputs]]
   set report_limit [expr {min($max_paths, $endpoint_count)}]
   if {$report_limit <= 0} {
     error "OpenSTA found no timing endpoints"
   }
-  report_checks -path_delay max -group_count $report_limit \
-    -endpoint_count 1 -sort_by_slack -format json > $output_path
-  puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count format=json report_limit=$report_limit output=$output_path"
+  set output [open $output_path w]
+  puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
+  set timing_paths [find_timing_paths -path_delay max \
+    -group_count $report_limit -endpoint_count 1 -sort_by_slack]
+  set queried_paths [llength $timing_paths]
+  emuflow_emit_timing_paths $timing_paths output emitted
+  close $output
+  if {$emitted == 0} {
+    error "OpenSTA found no timing paths containing mapped EmuIR nets"
+  }
+  puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"
 }
