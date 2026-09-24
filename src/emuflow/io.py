@@ -59,6 +59,7 @@ def write_json(
     *,
     compact: bool = False,
     durable: bool | None = None,
+    sort_keys: bool = True,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(
@@ -77,7 +78,7 @@ def write_json(
                 stream,
                 indent=None if compact else 2,
                 separators=(",", ":") if compact else None,
-                sort_keys=True,
+                sort_keys=sort_keys,
             )
             stream.write("\n")
             stream.flush()

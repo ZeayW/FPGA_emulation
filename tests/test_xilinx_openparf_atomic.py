@@ -50,6 +50,19 @@ def _defined_and_resource_models(library: str, sites: str):
     return defined, resource_models
 
 
+def _resource_rows(sites: str):
+    rows = []
+    in_resources = False
+    for line in sites.splitlines():
+        if line == "RESOURCES":
+            in_resources = True
+        elif line == "END RESOURCES":
+            in_resources = False
+        elif in_resources:
+            rows.append(line.split())
+    return rows
+
+
 def _fixture(root: Path, *, coincident=False, mixed=False):
     mapped = root / "mapped.json"
     packed = root / "packed.json"
@@ -143,11 +156,16 @@ def _fixture(root: Path, *, coincident=False, mixed=False):
                 }],
                 "alternative_templates": [],
             }
-            sites.append({
-                "name": f"{site_type}_X0Y0", "type": site_type,
-                "template": site_type, "x": offset, "y": 0,
-                "tile": {"grid_col": 5 + offset, "grid_row": 8},
-            })
+            for site_index in range(2):
+                sites.append({
+                    "name": f"{site_type}_X{site_index}Y0", "type": site_type,
+                    "template": site_type,
+                    "x": offset + 3 * site_index, "y": 0,
+                    "tile": {
+                        "grid_col": 5 + offset + 3 * site_index,
+                        "grid_row": 8,
+                    },
+                })
     architecture.write_text(json.dumps({
         "schema": "emuflow.archdb/v1", "part": "fixture",
         "source": {"format": "test/v1"}, "policy": {"name": "test"},
@@ -168,6 +186,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             )
             config = json.loads((output / "openparf.json").read_text())
             names = json.loads((output / "name_map.json").read_text())
+            sites = (output / "design.scl").read_text()
             net_lines = (output / "design.nets").read_text().splitlines()
 
         declarations = [
@@ -175,6 +194,9 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         ]
         self.assertEqual(manifest["atoms"], 128)
         self.assertEqual(manifest["resources"], {"FF": 64, "LUT": 64})
+        self.assertEqual(
+            manifest["resource_unit_capacity"], {"LUT": 16, "FF": 16}
+        )
         self.assertEqual(manifest["net_export"], {
             "emitted": 129, "dropped_single_endpoint": 0,
         })
@@ -187,6 +209,21 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(len(names["coordinate_system"]["sites"]), 16)
         self.assertEqual(64 / (16 * 8), 0.5)
         self.assertLessEqual(manifest["resources"]["FF"], 16 * 16)
+        self.assertEqual([row[0] for row in _resource_rows(sites)], ["LUT", "FF"])
+        self.assertEqual(list(config["gp_model2area_types_map"]), ["LUT6", "FDRE"])
+        target_density = config["target_density"]
+        for resource, primitive in (("LUT", "LUT6"), ("FF", "FDRE")):
+            width, height = config["gp_model2area_types_map"][primitive][resource]
+            unit_area = width * height
+            movable_area = manifest["resources"][resource] * unit_area
+            placeable_area = sum(
+                item["resources"].get(resource, 0) * unit_area
+                for item in names["coordinate_system"]["sites"]
+            )
+            filler_count = int((placeable_area - movable_area) / unit_area)
+            self.assertGreater(movable_area, 0)
+            self.assertLess(movable_area, target_density * placeable_area)
+            self.assertGreater(filler_count, 0)
         self.assertEqual(config["generic_cluster_placement_flag"], 0)
         self.assertEqual(config["global_place_flag"], 1)
         self.assertEqual(config["legalize_flag"], 1)
@@ -240,6 +277,9 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["legalize_flag"], 1)
         self.assertEqual(config["detailed_place_flag"], 1)
         self.assertEqual(config["resource_categories"], {"FF": "FF", "LUT": "LUTL"})
+        self.assertEqual(list(config["gp_model2area_types_map"]), ["LUT6", "FDRE"])
+        self.assertEqual(config["gp_model2area_types_map"]["LUT6"]["LUT"], [0.25, 0.25])
+        self.assertEqual(config["gp_model2area_types_map"]["FDRE"]["FF"], [0.25, 0.25])
         self.assertEqual(config["CLB_capacity"], 16)
         self.assertEqual(config["BLE_capacity"], 2)
         self.assertIn("PIN C INPUT CLOCK", library)
@@ -247,6 +287,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertIn("PIN R INPUT CTRL_SR", library)
         self.assertIn("LUT 16", sites)
         self.assertIn("FF 16", sites)
+        self.assertEqual([row[0] for row in _resource_rows(sites)], ["LUT", "FF"])
         self.assertIn("a0 FDRE", nodes)
         self.assertIn("a1 LUT6", nodes)
         self.assertEqual(manifest["nets"], 2)
@@ -437,6 +478,18 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertIn("DSP48E2 1", sites)
         self.assertIn("RAMB36E2 1", sites)
         self.assertIn("URAM288 1", sites)
+        self.assertEqual(
+            [row[0] for row in _resource_rows(sites)],
+            ["LUT", "FF", "DSP48E2", "RAMB36E2", "URAM288"],
+        )
+        self.assertEqual(
+            list(config["gp_model2area_types_map"]),
+            ["LUT6", "FDRE", "DSP48E2", "RAMB36E2", "URAM288"],
+        )
+        self.assertEqual(
+            config["gp_model2area_types_map"]["DSP48E2"]["DSP48E2"],
+            [1.0, 1.0],
+        )
         self.assertIn("PIN A[0] INPUT", library)
         self.assertIn("PIN P[1] OUTPUT", library)
         defined, resource_models = _defined_and_resource_models(library, sites)
