@@ -23,15 +23,18 @@ from .errors import ImportError, ValidationError
 from .io import read_json, write_json
 from .openparf import run_openparf, validate_openparf_runtime
 from .xilinx_packing import (
+    CONSTANT_TYPES,
     FF_TYPES,
     LUT_TYPES,
     PACKED_SITE_NETLIST_SCHEMA,
+    _derive_cascade_chains,
 )
 
 
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
 OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v1"
 OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v1"
+OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 
 _HARD_RESOURCES = {
     "DSP48E2": "DSP48E2",
@@ -307,6 +310,86 @@ def _collect_atoms(
     return selected_top, cells, sorted(atoms, key=lambda item: item["instance"])
 
 
+def build_xilinx_openparf_atomic_source(
+    mapped_path: Path,
+    output_path: Path,
+    *,
+    top: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build an unplaced singleton-atom source without legacy site packing."""
+
+    mapped = read_json(mapped_path)
+    selected_top, module = _select_module(mapped, top)
+    cells = module.get("cells")
+    if not isinstance(cells, Mapping) or not cells:
+        raise ValidationError("mapped JSON cells are invalid or empty")
+    unsupported = set()
+    for cell in cells.values():
+        if not isinstance(cell, Mapping):
+            unsupported.add(f"invalid-cell-record:{type(cell).__name__}")
+            continue
+        cell_type = cell.get("type")
+        if cell_type not in _SUPPORTED | CONSTANT_TYPES:
+            unsupported.add(cell_type)
+    unsupported = sorted(unsupported, key=str)
+    if unsupported:
+        raise ValidationError(
+            "OpenPARF atomic source does not support primitives: "
+            + ", ".join(str(item) for item in unsupported)
+        )
+    cascades = _derive_cascade_chains(cells)
+    if cascades:
+        raise ValidationError(
+            "OpenPARF atomic source rejects dedicated cascade connectivity"
+        )
+    clusters = []
+    constants = []
+    for index, (name, cell) in enumerate(sorted(cells.items())):
+        cell_type = cell["type"]
+        if cell_type in CONSTANT_TYPES:
+            constants.append(name)
+            continue
+        hard = cell_type in _HARD_RESOURCES
+        clusters.append({
+            "id": f"atomic-source-{index:06d}",
+            "kind": "hard" if hard else "slice",
+            "site_templates": [cell_type] if hard else ["SLICEL", "SLICEM"],
+            "control_set": None,
+            "assignments": [{
+                "instance": name,
+                "cell_type": cell_type,
+                "bel_candidates": (
+                    [cell_type] if hard
+                    else [f"{letter}6LUT" for letter in "ABCDEFGH"]
+                    if cell_type in LUT_TYPES
+                    else [
+                        bel for letter in "ABCDEFGH"
+                        for bel in (f"{letter}FF", f"{letter}FF2")
+                    ]
+                ),
+            }],
+        })
+    value = {
+        "schema": OPENPARF_ATOMIC_SOURCE_SCHEMA,
+        "status": "pass",
+        "top": selected_top,
+        "source": {"mapped_sha256": _sha256(mapped_path)},
+        "policy": {
+            "provider": "mapped-singleton-atoms-no-site-packing-v1",
+            "dedicated_or_relative_constraints": "fail-closed",
+        },
+        "clusters": clusters,
+        "cascade_chains": [],
+        "unplaced_constants": constants,
+        "summary": {
+            "physical_atoms": len(clusters),
+            "constant_cells": len(constants),
+        },
+    }
+    write_json(output_path, value, compact=True)
+    return value
+
+
 def probe_xilinx_openparf_atomic_eligibility(
     mapped: Mapping[str, Any],
     packed: Mapping[str, Any],
@@ -470,8 +553,21 @@ def export_xilinx_openparf_atomic(
 
     mapped = read_json(mapped_path)
     packed = read_json(packed_path)
-    if not isinstance(packed, Mapping) or packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA:
-        raise ValidationError("PackedSiteNetlist header is invalid")
+    if (
+        not isinstance(packed, Mapping)
+        or packed.get("schema") not in {
+            PACKED_SITE_NETLIST_SCHEMA, OPENPARF_ATOMIC_SOURCE_SCHEMA,
+        }
+    ):
+        raise ValidationError("OpenPARF atomic source header is invalid")
+    if packed.get("schema") == OPENPARF_ATOMIC_SOURCE_SCHEMA:
+        source = packed.get("source")
+        if (
+            packed.get("status") != "pass"
+            or not isinstance(source, Mapping)
+            or source.get("mapped_sha256") != _sha256(mapped_path)
+        ):
+            raise ValidationError("OpenPARF atomic source identity is invalid")
     architecture = ArchitectureDB.load(architecture_path)
     selected_top, cells, atoms = _collect_atoms(
         mapped, packed, top if top is not None else packed.get("top")

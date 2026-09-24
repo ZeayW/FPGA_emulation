@@ -7,11 +7,118 @@ from unittest import mock
 from emuflow.xilinx_physical_backend import (
     _physical_clock_periods,
     _select_xilinx_slr_window,
+    run_rapidwright_openparf_native_candidate_backend,
     run_rapidwright_partition_backend,
 )
 
 
 class XilinxPhysicalBackendTest(unittest.TestCase):
+    def test_native_candidate_bypasses_legacy_placement_call_graph(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            physical = root / "physical"
+            packed_path = physical / "packed-sites.json"
+            placement_path = physical / "placement.json"
+
+            def materialize(
+                mapped, architecture, certificate, packed, placement, **kwargs
+            ):
+                self.assertEqual(mapped, physical / "partition.mapped.json")
+                self.assertEqual(architecture, root / "architecture.json")
+                self.assertEqual(
+                    certificate,
+                    physical / "openparf-native/placement-certificate.json",
+                )
+                self.assertEqual(kwargs, {"top": "top"})
+                packed.write_text(
+                    __import__("json").dumps({"summary": {"clusters": 2}}),
+                    encoding="utf-8",
+                )
+                placement.write_text(
+                    __import__("json").dumps({"summary": {"clusters": 1}}),
+                    encoding="utf-8",
+                )
+                return {"status": "pass"}
+
+            def stop_at_export(mapped, packed, placement, output):
+                self.assertEqual(mapped, physical / "partition.mapped.json")
+                self.assertEqual(packed, packed_path)
+                self.assertEqual(placement, placement_path)
+                self.assertEqual(output, physical / "rwroute.tsv")
+                raise RuntimeError("native-bridge-reached-rwroute")
+
+            forbidden = AssertionError("legacy placement path was called")
+            with (
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.ArchitectureDB.load",
+                    return_value=SimpleNamespace(part="xcvu19p-test"),
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.emit_xilinx_mapped_json",
+                    return_value={"top": "top"},
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.build_xilinx_openparf_atomic_source",
+                    return_value={"summary": {"physical_atoms": 2}},
+                ) as build_source,
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.run_xilinx_openparf_atomic_qualification",
+                    return_value={"status": "pass"},
+                ) as qualify,
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.materialize_xilinx_openparf_atomic_contract",
+                    side_effect=materialize,
+                ) as bridge,
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.validate_xilinx_packing",
+                    return_value={"status": "pass"},
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.validate_xilinx_placement",
+                    return_value={"status": "pass"},
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.export_rwroute_input",
+                    side_effect=stop_at_export,
+                ) as export,
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.pack_xilinx_sites",
+                    side_effect=forbidden,
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.run_xilinx_openparf_guidance",
+                    side_effect=forbidden,
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.place_xilinx_clusters",
+                    side_effect=forbidden,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "native-bridge-reached-rwroute"
+                ):
+                    run_rapidwright_openparf_native_candidate_backend(
+                        fpga="fpga0",
+                        part="xcvu19p-test",
+                        merged_ir_path=root / "input.json",
+                        architecture_path=root / "architecture.json",
+                        runtime={},
+                        original_cells=0,
+                        transport_cells=0,
+                        output_dir=physical,
+                        boundary_identity_path=root / "boundary.json",
+                        rapidwright_jar=root / "rapidwright.jar",
+                        java=root / "java",
+                        classes_dir=root / "classes",
+                        java_source=root / "route.java",
+                        device_data_root=root / "device-data",
+                        timing_data_dir=root / "timing-data",
+                    )
+            build_source.assert_called_once()
+            qualify.assert_called_once()
+            bridge.assert_called_once()
+            export.assert_called_once()
+
     def test_physical_clocks_only_include_emuir_clocks(self):
         runtime = {
             "fabric_clock": {"period_ns": 4.0},
