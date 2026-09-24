@@ -1034,6 +1034,11 @@ digests, complete cell ownership, site/BEL compatibility, and exact physical
 site grouping.  CARRY8, LUT6_2/paired-LUT use, RAMB18 half sites, cascades,
 relative placement, and mixed-resource site groups remain fail-closed; this
 path is not yet a public placer selection or the default Phase 7 provider.
+The internal `run_rapidwright_openparf_native_candidate_backend` entry point
+uses that native placement and then rejoins the existing RWRoute, routed-
+timing, boundary-timing, and OpenSTA tail.  It never invokes the legacy Xilinx
+site packer, continuous-only OpenPARF guidance adapter, or greedy exact site
+legalizer.
 EmuFlow does not claim an open Xilinx bitstream flow. The Vivado provider ends
 at routed checkpoints and timing reports; success there cannot satisfy the
 default open-flow completion gate or replace board-level sign-off.

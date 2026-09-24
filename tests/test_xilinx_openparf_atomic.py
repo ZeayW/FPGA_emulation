@@ -14,6 +14,8 @@ from emuflow.xilinx_placer_capability import (
 from emuflow.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_MANIFEST_SCHEMA,
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
+    OPENPARF_ATOMIC_SOURCE_SCHEMA,
+    build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
     run_xilinx_openparf_atomic_qualification,
     validate_xilinx_openparf_atomic_placement,
@@ -176,6 +178,30 @@ def _fixture(root: Path, *, coincident=False, mixed=False):
 
 
 class XilinxOpenparfAtomicTest(unittest.TestCase):
+    def test_singleton_source_feeds_export_without_legacy_site_packing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, _packed, architecture = write_openparf_runtime_fixture(
+                root, include_hard=True
+            )
+            atomic_source = root / "atomic-source.json"
+            source = build_xilinx_openparf_atomic_source(
+                mapped, atomic_source, top="top"
+            )
+            output = root / "openparf"
+            manifest = export_xilinx_openparf_atomic(
+                mapped, atomic_source, architecture, output, top="top"
+            )
+        self.assertEqual(source["schema"], OPENPARF_ATOMIC_SOURCE_SCHEMA)
+        self.assertEqual(source["summary"], {
+            "physical_atoms": 131, "constant_cells": 0,
+        })
+        self.assertEqual(manifest["atoms"], 131)
+        self.assertEqual(manifest["resources"], {
+            "DSP48E2": 1, "FF": 64, "LUT": 64,
+            "RAMB36E2": 1, "URAM288": 1,
+        })
+
     def test_non_degenerate_runtime_fixture_export_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
