@@ -202,6 +202,8 @@ def _render_sites(
     used: Set[str],
     x_axis: List[int],
     y_axis: List[int],
+    *,
+    include_slice_aux: bool = True,
 ) -> str:
     tile_resources: Dict[Tuple[int, int], Counter[str]] = defaultdict(Counter)
     for site in sites:
@@ -216,7 +218,7 @@ def _render_sites(
     # stay in continuous logic placement instead of the min-cost-flow
     # legalizer reserved for genuinely sparse DSP/BRAM/URAM columns.
     for resources in tile_resources.values():
-        if resources.get("X_SLICE", 0) > 0:
+        if include_slice_aux and resources.get("X_SLICE", 0) > 0:
             resources["X_SLICE_AUX"] = 1
 
     signatures = sorted({
@@ -237,7 +239,7 @@ def _render_sites(
     lines.append("RESOURCES")
     for resource in sorted(used):
         lines.append(f"  {resource} {resource}")
-    if "X_SLICE" in used:
+    if include_slice_aux and "X_SLICE" in used:
         lines.append("  X_SLICE_AUX X_SLICE_AUX")
     lines.extend(["END RESOURCES", ""])
     x_index = {coordinate: index for index, coordinate in enumerate(x_axis)}
@@ -264,6 +266,7 @@ def export_xilinx_cluster_bookshelf(
     top: Optional[str] = None,
     slr: Optional[str] = None,
     slrs: Optional[Sequence[str]] = None,
+    native_packed_cluster_legalization: bool = False,
 ) -> Dict[str, Any]:
     mapped = read_json(mapped_path)
     packed = read_json(packed_path)
@@ -323,6 +326,23 @@ def export_xilinx_cluster_bookshelf(
                 f"ArchitectureDB has {capacity[resource]} {resource} sites for {count} clusters"
             )
     output_dir.mkdir(parents=True, exist_ok=True)
+    if native_packed_cluster_legalization:
+        # The generic OpenPARF legalizer only accepts single-site,
+        # single-resource site types.  Prove that this design-specific fixture
+        # has that representation before removing the analytical slice marker.
+        from .openparf_native_capabilities import (
+            probe_openparf_native_capabilities,
+            require_native_packed_cluster_smoke,
+        )
+
+        matrix = probe_openparf_native_capabilities(
+            mapped_path,
+            packed_path,
+            architecture_path,
+            top=selected_top,
+        )
+        require_native_packed_cluster_smoke(matrix)
+
     files = {
         "design.nodes": "".join(
             f"{names[cluster]} {resources[cluster]}\n" for cluster in sorted(names)
@@ -330,7 +350,11 @@ def export_xilinx_cluster_bookshelf(
         "design.lib": _render_library(resources, nets),
         "design.nets": _render_nets(names, nets),
         "design.scl": _render_sites(
-            placement_sites, set(demand), x_axis, y_axis
+            placement_sites,
+            set(demand),
+            x_axis,
+            y_axis,
+            include_slice_aux=not native_packed_cluster_legalization,
         ),
         "design.pl": "",
         "design.aux": "design : design.nodes design.nets design.pl design.scl design.lib\n",
@@ -348,7 +372,10 @@ def export_xilinx_cluster_bookshelf(
             # deliberately no LUT1 code).  Six is the neutral UltraScale+
             # representative for our already packed one-site cluster; the
             # actual occupied area remains the explicit 1x1 X_SLICE model.
-            "isLUT": 6 if resource == "X_SLICE" else 0,
+            "isLUT": (
+                0 if native_packed_cluster_legalization
+                else (6 if resource == "X_SLICE" else 0)
+            ),
             "isFF": 0,
         }
         for resource in sorted(demand)
@@ -373,10 +400,13 @@ def export_xilinx_cluster_bookshelf(
         # single-site-resource lookahead is retained for sparse hard columns,
         # while the architecture-aware Xilinx legalizer below this stage is
         # the sole owner of final site/BEL/cascade legality.
-        "global_place_flag": 1, "legalize_flag": 0,
-        "emuflow_continuous_global_guidance": True,
+        "global_place_flag": 1,
+        "legalize_flag": int(native_packed_cluster_legalization),
+        "emuflow_continuous_global_guidance": not native_packed_cluster_legalization,
         "generic_cluster_placement_flag": 1,
-        "logic_area_type_names": ["X_SLICE"],
+        "logic_area_type_names": (
+            [] if native_packed_cluster_legalization else ["X_SLICE"]
+        ),
         "detailed_place_flag": 0, "plot_flag": 0,
         "plot_target_at_names": sorted(demand), "io_at_names": [],
         "num_threads": 8, "gp_model2area_types_map": model_map,
@@ -384,7 +414,10 @@ def export_xilinx_cluster_bookshelf(
             resource: [resource] for resource in sorted(demand)
         },
         "resource_categories": {
-            resource: ("LUTL" if resource == "X_SLICE" else "SSSIR")
+            resource: (
+                "SSSIR" if native_packed_cluster_legalization
+                else ("LUTL" if resource == "X_SLICE" else "SSSIR")
+            )
             for resource in sorted(demand)
         },
         "CLB_capacity": 1, "BLE_capacity": 1, "num_ControlSets_per_CLB": 1,
@@ -396,14 +429,47 @@ def export_xilinx_cluster_bookshelf(
         # native elfPlace-style area inflation consume only analytical filler
         # area in congested regions.  Exact site/BEL legality is still owned
         # by the downstream Xilinx legalizer.
-        "gp_adjust_area": 1, "gp_adjust_area_types": ["X_SLICE"],
-        "gp_adjust_route_area": 1, "gp_adjust_pin_area": 1,
+        "gp_adjust_area": int(not native_packed_cluster_legalization),
+        "gp_adjust_area_types": (
+            [] if native_packed_cluster_legalization else ["X_SLICE"]
+        ),
+        "gp_adjust_route_area": int(not native_packed_cluster_legalization),
+        "gp_adjust_pin_area": int(not native_packed_cluster_legalization),
         "gp_adjust_resource_area": 0, "honor_clock_region_constraints": 0,
         "honor_half_column_constraints": 0,
         "result_dir": str((output_dir / "results").resolve()),
         "route_flag": 0, "slr_aware_flag": 0,
     }
     write_json(output_dir / "openparf.json", config, compact=True)
+    cluster_name_map = [
+        {
+            "openparf": names[cluster],
+            "cluster": cluster,
+            **(
+                {"resource": resources[cluster]}
+                if native_packed_cluster_legalization
+                else {}
+            ),
+        }
+        for cluster in sorted(names)
+    ]
+    native_site_resources = []
+    if native_packed_cluster_legalization:
+        x_index = {coordinate: index for index, coordinate in enumerate(x_axis)}
+        y_index = {coordinate: index for index, coordinate in enumerate(y_axis)}
+        resource_grid: Dict[Tuple[int, int], Counter[str]] = defaultdict(Counter)
+        for site in placement_sites:
+            resource = _site_resource(site["type"])
+            if resource in demand:
+                resource_grid[_physical_tile_coordinate(site)][resource] += 1
+        native_site_resources = [
+            {
+                "x": x_index[coordinate[0]],
+                "y": y_index[coordinate[1]],
+                "resources": dict(sorted(site_resources.items())),
+            }
+            for coordinate, site_resources in sorted(resource_grid.items())
+        ]
     write_json(output_dir / "name_map.json", {
         "schema": XILINX_OPENPARF_NAME_MAP_SCHEMA,
         "coordinate_system": {
@@ -411,10 +477,12 @@ def export_xilinx_cluster_bookshelf(
             "x_axis": x_axis,
             "y_axis": y_axis,
         },
-        "clusters": [
-            {"openparf": names[cluster], "cluster": cluster}
-            for cluster in sorted(names)
-        ],
+        "clusters": cluster_name_map,
+        **(
+            {"site_resources": native_site_resources}
+            if native_packed_cluster_legalization
+            else {}
+        ),
     }, compact=True)
     manifest = {
         "schema": XILINX_OPENPARF_MANIFEST_SCHEMA,
@@ -425,6 +493,11 @@ def export_xilinx_cluster_bookshelf(
             if selected_slrs is not None else None
         ),
         "resources": dict(sorted(demand.items())),
+        "mode": (
+            "native-packed-cluster-mcf-smoke"
+            if native_packed_cluster_legalization
+            else "continuous-guidance"
+        ),
         "files": sorted([*files, "openparf.json", "name_map.json"]),
     }
     write_json(output_dir / "manifest.json", manifest, compact=True)
@@ -510,6 +583,128 @@ def import_xilinx_openparf_guidance(
     }
     write_json(output_path, result, compact=True)
     return {"status": "pass", "clusters": len(coordinates), "output": str(output_path)}
+
+
+def validate_xilinx_openparf_native_smoke_placement(
+    placement_path: Path, name_map_path: Path
+) -> Dict[str, Any]:
+    """Validate the deliberately narrow packed-cluster MCF smoke result.
+
+    This proves unique compatible single-resource sites only.  It does not
+    claim detailed placement, BEL legality, cascade legality, or clock/SLR
+    legality.
+    """
+
+    name_map = read_json(name_map_path)
+    if name_map.get("schema") != XILINX_OPENPARF_NAME_MAP_SCHEMA:
+        raise ValidationError("Xilinx OpenPARF name map is invalid")
+    clusters = {
+        entry["openparf"]: (entry["cluster"], entry.get("resource"))
+        for entry in name_map.get("clusters", [])
+    }
+    site_resources = {
+        (entry["x"], entry["y"]): entry.get("resources", {})
+        for entry in name_map.get("site_resources", [])
+    }
+    if not clusters or not site_resources:
+        raise ValidationError("native OpenPARF smoke metadata is incomplete")
+    seen_names = set()
+    occupied = set()
+    with placement_path.open("r", encoding="utf-8") as stream:
+        for line_number, raw in enumerate(stream, start=1):
+            fields = raw.strip().split()
+            if not fields or fields[0].startswith("#"):
+                continue
+            if len(fields) not in {3, 4, 5} or fields[0] not in clusters:
+                raise ValidationError(
+                    f"{placement_path}:{line_number}: invalid native placement row"
+                )
+            if fields[0] in seen_names:
+                raise ValidationError("native OpenPARF placement duplicates a cluster")
+            try:
+                x_value, y_value = float(fields[1]), float(fields[2])
+                z_value = float(fields[3]) if len(fields) >= 4 else 0.0
+            except ValueError as error:
+                raise ValidationError("native OpenPARF placement is non-numeric") from error
+            if (
+                not x_value.is_integer()
+                or not y_value.is_integer()
+                or not z_value.is_integer()
+            ):
+                raise ValidationError("native OpenPARF placement is not discrete")
+            if int(z_value) != 0:
+                raise ValidationError(
+                    "native packed-cluster OpenPARF placement requires z=0"
+                )
+            location = (int(x_value), int(y_value))
+            if location in occupied:
+                raise ValidationError("native OpenPARF placement overlaps a site")
+            resource = clusters[fields[0]][1]
+            if site_resources.get(location, {}).get(resource, 0) != 1:
+                raise ValidationError(
+                    "native OpenPARF placement uses an incompatible or ambiguous site"
+                )
+            seen_names.add(fields[0])
+            occupied.add(location)
+    if seen_names != set(clusters):
+        raise ValidationError("native OpenPARF placement does not cover every cluster")
+    return {
+        "status": "pass",
+        "clusters": len(seen_names),
+        "unique_sites": len(occupied),
+        "scope": "single-site-resource-mcf-smoke",
+    }
+
+
+def run_xilinx_openparf_native_legalization_smoke(
+    mapped_path: Path,
+    packed_path: Path,
+    architecture_path: Path,
+    output_dir: Path,
+    *,
+    top: Optional[str] = None,
+    openparf_install: Optional[Path] = None,
+    openparf_python: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Exercise native packed-cluster MCF legalization without fallback.
+
+    This internal P1 probe is intentionally not wired into the production
+    backend or user CLI.  Unsupported designs fail before OpenPARF runs.
+    """
+
+    manifest = export_xilinx_cluster_bookshelf(
+        mapped_path,
+        packed_path,
+        architecture_path,
+        output_dir,
+        top=top,
+        native_packed_cluster_legalization=True,
+    )
+    placement = run_openparf(
+        output_dir / "openparf.json",
+        log_path=output_dir / "openparf.log",
+        install_root=openparf_install,
+        python_executable=openparf_python,
+    )
+    validation = validate_xilinx_openparf_native_smoke_placement(
+        placement, output_dir / "name_map.json"
+    )
+    guidance = import_xilinx_openparf_guidance(
+        placement,
+        output_dir / "name_map.json",
+        output_dir / "native-guidance.json",
+    )
+    return {
+        "status": "pass",
+        "provider": "openparf-native-packed-cluster-mcf-smoke-v1",
+        "manifest": manifest["schema"],
+        "placement": str(placement),
+        "validation": validation,
+        "guidance": guidance,
+        "qualification_scope": (
+            "core MCF smoke only; not a production Phase 7 placer"
+        ),
+    }
 
 
 def run_xilinx_openparf_guidance(
