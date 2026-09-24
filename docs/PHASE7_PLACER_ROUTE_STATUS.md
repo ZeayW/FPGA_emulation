@@ -25,7 +25,7 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 
 | Route | Implemented evidence | Remaining production blockers | Decision |
 |---|---|---|---|
-| OpenPARF native (`feature/phase7-openparf-native`) | Pinned-source probe; ordinary LUT1–LUT6/FD* atomization; singleton DSP48E2/RAMB36E2/URAM288 support; one real compiled GP → hard-resource MCF/direct-LG → ISM run; independently validated placement certificate | carry/MUX/LUT6_2; RAMB18 half-sites; cascade, clock/half-column/SLR constraints; standard packed/placement conversion; complete RapidWright export and routed Phase 7 | Primary implementation route; native runtime is proven for the audited LUT/FF plus independent hard-resource subset, and remains fail-closed elsewhere |
+| OpenPARF native (`feature/phase7-openparf-native`) | Pinned-source probe; ordinary LUT1–LUT6/FD* atomization; singleton DSP48E2/RAMB36E2/URAM288 support; one real compiled GP → hard-resource MCF/direct-LG → ISM run; independently validated placement certificate; no-search bridge to standard packed/placement contracts; internal RapidWright/OpenSTA candidate backend | carry/MUX/LUT6_2; RAMB18 half-sites; cascade, clock/half-column/SLR constraints; complete real XCVU19P RWRoute/OpenSTA gate | Primary implementation route; native runtime and contract bridge are proven for the audited subset, and remain fail-closed elsewhere |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga`) | Pinned-source probe; Yosys mapped JSON to official FPGA Interchange logical netlist; physical netlist to validated placement certificate; real Cap'n Proto schema roundtrip | Upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
 | AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result |
 
@@ -61,3 +61,18 @@ single native OpenPARF invocation; every atom and final site/BEL assignment was
 independently re-imported.  This proves the compiled placement path for that
 bounded subset.  It does not yet prove RapidWright routing, global OpenSTA
 timing, cascades, clock legality, or DLA support.
+
+The first real-XCVU19P routing gate exposed a test-region error before routing:
+the selected 16 slice sites formed a `1x16` collinear Bookshelf domain.  Native
+OpenPARF correctly could not produce a finite two-dimensional density solution
+(`HPWL=-INF`) and direct legalization rejected every atom.  The adapter now
+rejects collinear, disconnected, density-saturated, or non-finite site regions
+before runtime, and records the region and density proof in its manifest.  The
+gate must be rerun on a connected two-dimensional real-device region; this
+failure is not counted as RapidWright or QoR evidence.
+
+Macro support will use a compact physical-macro contract derived from mapped
+connectivity.  It must preserve exact BEL roles, same-site membership, relative
+site offsets, RAMB18 mode, and cascade ordering.  OpenPARF must place those
+groups as indivisible units; the bridge may validate and materialize the result
+but may not repack macros or search for legal sites after placement.
