@@ -39,7 +39,7 @@ import org.json.JSONObject;
 public final class EmuFlowRWRoute {
     private static final String SCHEMA = "emuflow.xilinx-route-db/v1";
     private static final String ROUTER_STRATEGY =
-        "CUFR-HUS-non-timing-driven-uturn-enabled-unroutable-only-bbox-expansion";
+        "CUFR-HUS-non-timing-driven-uturn-enabled-serial-unroutable-recovery";
     private static final String[] DSP48E2_COMPONENTS = new String[] {
         "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
         "DSP_ALU", "DSP_M_DATA", "DSP_OUTPUT", "DSP_PREADD"
@@ -53,12 +53,18 @@ public final class EmuFlowRWRoute {
      * unroutable connection when enlargement is disabled.
      *
      * Route A therefore widens only connections for which the current search
-     * found no route. The partition tree is marked dirty and rebuilt exactly
-     * once before the next iteration. Congested-but-routed connections remain
-     * under negotiated congestion and do not trigger blanket box growth.
+     * found no route. Those exceptional connections are routed serially before
+     * the unchanged partition tree on every later iteration and are skipped by
+     * the tree itself. This preserves CUFR's original parallel decomposition:
+     * rebuilding the complete tree around even a few enlarged connections can
+     * move ordinary reroutes towards its sequential middle branches.
+     * Congested-but-routed connections remain under negotiated congestion and
+     * do not trigger bounding-box growth.
      */
     private static final class UnroutableOnlyBoundingBoxCUFR extends CUFR {
-        private boolean partitionTreeDirty;
+        private final Set<Connection> serialRecoveryConnections =
+            new LinkedHashSet<>();
+        private boolean routingSerialRecovery;
 
         UnroutableOnlyBoundingBoxCUFR(Design design, RWRouteConfig config) {
             super(design, config);
@@ -72,14 +78,28 @@ public final class EmuFlowRWRoute {
 
         @Override
         protected void routeIndirectConnections(Collection<Connection> connections) {
-            boolean previous = config.isEnlargeBoundingBox();
-            if (partitionTreeDirty) config.setEnlargeBoundingBox(true);
-            try {
-                super.routeIndirectConnections(connections);
-            } finally {
-                config.setEnlargeBoundingBox(previous);
-                partitionTreeDirty = false;
+            if (!serialRecoveryConnections.isEmpty()) {
+                routingSerialRecovery = true;
+                try {
+                    for (Connection connection : serialRecoveryConnections) {
+                        if (super.shouldRoute(connection)) {
+                            routeIndirectConnection(connection);
+                        }
+                    }
+                } finally {
+                    routingSerialRecovery = false;
+                }
             }
+            super.routeIndirectConnections(connections);
+        }
+
+        @Override
+        protected boolean shouldRoute(Connection connection) {
+            if (!routingSerialRecovery
+                    && serialRecoveryConnections.contains(connection)) {
+                return false;
+            }
+            return super.shouldRoute(connection);
         }
 
         @Override
@@ -87,7 +107,7 @@ public final class EmuFlowRWRoute {
             connection.enlargeBoundingBox(
                 config.getExtensionXIncrement(), config.getExtensionYIncrement()
             );
-            partitionTreeDirty = true;
+            serialRecoveryConnections.add(connection);
             if (routeIteration == 1 && swapOutputPin(connection)) return true;
             return false;
         }

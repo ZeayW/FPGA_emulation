@@ -405,7 +405,7 @@ def validate_xilinx_route_db(
         or router
         != (
             "CUFR-HUS-non-timing-driven-uturn-enabled-"
-            "unroutable-only-bbox-expansion"
+            "serial-unroutable-recovery"
         )
     ):
         raise ValidationError("XilinxRouteDB transformed-cell accounting is invalid")

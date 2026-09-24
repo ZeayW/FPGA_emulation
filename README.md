@@ -4494,18 +4494,19 @@ for large, difficult negotiated-congestion problems; placement uses the
 complete certified device and preserves routing headroom outside the exact
 site-capacity footprint.
 The sealed route certificate records the exact
-`CUFR-HUS-non-timing-driven-uturn-enabled-unroutable-only-bbox-expansion`
+`CUFR-HUS-non-timing-driven-uturn-enabled-serial-unroutable-recovery`
 strategy; there is no silent fallback to the serial router. U-turn routing
 resources are enabled because
 the complete XCVU19P site grid includes legal placements near device edges;
 RapidWright explicitly requires those resources for boundary routability.
 Ordinary negotiated congestion retains a fixed bounding box. Only a connection
-for which the current search found no route is enlarged, and CUFR's partition
-tree is rebuilt exactly once before the next iteration after such an
-enlargement. This avoids RapidWright's fixed-box behavior of abandoning a truly
-unroutable connection, while also avoiding the upstream blanket adaptive mode
-that enlarges every congested connection and rebuilds CUFR's partition tree on
-every iteration.
+for which the current search found no route is enlarged. Such exceptional
+connections are routed serially before CUFR's unchanged partition tree on each
+later iteration and skipped inside the tree. This avoids RapidWright's
+fixed-box behavior of abandoning a truly unroutable connection while
+preserving CUFR's original parallel decomposition, rather than rebuilding the
+tree around enlarged connections or using the upstream blanket adaptive mode
+that enlarges every congested connection.
 Routed timing binds ordinary signal/clock nets to their mapped integer bits.
 Certified `GLOBAL_LOGIC1`/`static_vcc` and `GLOBAL_LOGIC0`/`static_gnd` nets are
 device-tied constants, not timed data endpoints. They remain in the route
