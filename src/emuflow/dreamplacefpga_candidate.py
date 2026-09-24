@@ -41,14 +41,20 @@ DREAMPLACEFPGA_UPSTREAM_URL = (
 CAPABILITY_STATES = XILINX_PLACER_CAPABILITY_STATUSES
 
 
-def _capability(state: str, reason: str, evidence: str) -> Dict[str, Any]:
+def _capability(
+    state: str,
+    reason: str,
+    evidence: str,
+    *,
+    adapter_validation: str = "missing",
+) -> Dict[str, Any]:
     if state not in CAPABILITY_STATES:
         raise AssertionError(f"unknown DREAMPlaceFPGA capability state {state!r}")
     return {
         "status": state,
         "evidence": [f"{evidence}: {reason}"],
         **(
-            {"adapter_validation": "missing"}
+            {"adapter_validation": adapter_validation}
             if state == "adapter_required"
             else {}
         ),
@@ -136,8 +142,11 @@ _FEATURE_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     ),
     "emuflow_mapped_json_input": _capability(
         "adapter_required",
-        "EmuFlow emits normalized Yosys JSON, while upstream requires a matching .netlist",
-        "IFsupport/README.md",
+        "the bounded LUT/FF/DSP/BRAM36 adapter emits an official LogicalNetlist "
+        "container without primitive lowering",
+        "src/emuflow/dreamplacefpga_interchange.py and "
+        "tests/test_dreamplacefpga_interchange.py",
+        adapter_validation="pass",
     ),
     "placed_physical_netlist_output": _capability(
         "native_supported",
@@ -146,8 +155,11 @@ _FEATURE_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     ),
     "emuflow_placement_import": _capability(
         "adapter_required",
-        "EmuFlow has no checked .phys-to-placement certificate importer for this provider",
-        "EmuFlow provider boundary",
+        "the bounded importer checks .phys cell identity, type, site/BEL "
+        "legality, overlap, and full mapped-cell coverage",
+        "src/emuflow/dreamplacefpga_interchange.py and "
+        "tests/test_dreamplacefpga_interchange.py",
+        adapter_validation="pass",
     ),
     "site_routing": _capability(
         "unverified",
