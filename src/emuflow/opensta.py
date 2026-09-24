@@ -145,16 +145,47 @@ def _convert_opensta_json_to_tsv(
     *,
     pin_map: Mapping[str, str],
     clocks: Mapping[str, float],
+    max_paths: int,
 ) -> int:
-    """Convert OpenSTA's native JSON report without retaining Tcl handles."""
+    """Convert one or more native OpenSTA JSON reports to the sealed TSV."""
 
     try:
-        report = json.loads(input_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        document = input_path.read_text(encoding="utf-8")
+    except OSError as error:
         raise EmuFlowError("OpenSTA did not produce valid path JSON") from error
-    checks = report.get("checks")
-    if not isinstance(checks, list):
-        raise EmuFlowError("OpenSTA path JSON has no checks array")
+    decoder = json.JSONDecoder()
+    offset = 0
+    checks = []
+    try:
+        while offset < len(document):
+            while offset < len(document) and document[offset].isspace():
+                offset += 1
+            if offset == len(document):
+                break
+            report, offset = decoder.raw_decode(document, offset)
+            report_checks = report.get("checks")
+            if not isinstance(report_checks, list):
+                raise EmuFlowError("OpenSTA path JSON has no checks array")
+            checks.extend(report_checks)
+    except (AttributeError, json.JSONDecodeError) as error:
+        raise EmuFlowError("OpenSTA did not produce valid path JSON") from error
+    if not checks:
+        raise EmuFlowError("OpenSTA path JSON contains no timing checks")
+
+    def slack_key(check: Any) -> tuple[float, str, str]:
+        if not isinstance(check, dict):
+            raise EmuFlowError("OpenSTA path JSON contains an invalid check")
+        try:
+            slack = float(check["slack"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise EmuFlowError(
+                "OpenSTA path JSON lacks required timing fields"
+            ) from error
+        if not math.isfinite(slack):
+            raise EmuFlowError("OpenSTA path JSON contains non-finite timing")
+        return slack, str(check.get("endpoint", "")), str(check.get("startpoint", ""))
+
+    checks.sort(key=slack_key)
     emitted = 0
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as stream:
@@ -163,8 +194,8 @@ def _convert_opensta_json_to_tsv(
             "slack_ns\tfixed_delay_ns\tpath_nets_hex\n"
         )
         for check in checks:
-            if not isinstance(check, dict):
-                raise EmuFlowError("OpenSTA path JSON contains an invalid check")
+            if emitted >= max_paths:
+                break
             clock = check.get("target_clock") or check.get("source_clock")
             if clock not in clocks:
                 continue
@@ -1557,6 +1588,7 @@ def run_opensta_path_database(
                 imported_tsv_path,
                 pin_map=_emuir_timing_pin_map(ir),
                 clocks=clock_map,
+                max_paths=max_paths,
             )
         imported = import_sta_path_database_tsv(
             imported_tsv_path,
