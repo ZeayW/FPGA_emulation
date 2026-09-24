@@ -18,6 +18,7 @@ from emuflow.xilinx_openparf_atomic import (
     run_xilinx_openparf_atomic_qualification,
     validate_xilinx_openparf_atomic_placement,
 )
+from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
 
 def _cell(cell_type, connections):
@@ -157,6 +158,41 @@ def _fixture(root: Path, *, coincident=False, mixed=False):
 
 
 class XilinxOpenparfAtomicTest(unittest.TestCase):
+    def test_non_degenerate_runtime_fixture_export_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_runtime_fixture(root)
+            output = root / "output"
+            manifest = export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output
+            )
+            config = json.loads((output / "openparf.json").read_text())
+            names = json.loads((output / "name_map.json").read_text())
+            net_lines = (output / "design.nets").read_text().splitlines()
+
+        declarations = [
+            line.split() for line in net_lines if line.startswith("net ")
+        ]
+        self.assertEqual(manifest["atoms"], 128)
+        self.assertEqual(manifest["resources"], {"FF": 64, "LUT": 64})
+        self.assertEqual(manifest["net_export"], {
+            "emitted": 129, "dropped_single_endpoint": 0,
+        })
+        self.assertEqual(len(declarations), 129)
+        self.assertTrue(all(int(fields[2]) >= 2 for fields in declarations))
+        self.assertEqual(
+            sorted(int(fields[2]) for fields in declarations),
+            [2] * 128 + [64],
+        )
+        self.assertEqual(len(names["coordinate_system"]["sites"]), 16)
+        self.assertEqual(64 / (16 * 8), 0.5)
+        self.assertLessEqual(manifest["resources"]["FF"], 16 * 16)
+        self.assertEqual(config["generic_cluster_placement_flag"], 0)
+        self.assertEqual(config["global_place_flag"], 1)
+        self.assertEqual(config["legalize_flag"], 1)
+        self.assertEqual(config["detailed_place_flag"], 1)
+        self.assertNotIn("fallback", config)
+
     def test_capability_contract_qualifies_only_the_atomic_subset(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
