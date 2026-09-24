@@ -96,6 +96,25 @@ foreach line [lrange $map_lines 1 end] {
   set emuir_by_mapped_net($mapped_name) $emuir_name
 }
 
+# Resolve mapped nets to their connected pins before any timing path handles
+# exist.  OpenSTA 2.6 owns PathEnd/PathVertex handles returned through Tcl; a
+# nested `get_nets -of_objects $pin` while walking those handles can corrupt
+# its collection arena on larger designs.  A timing pin belongs to one net, so
+# this immutable reverse index preserves the same ordered EmuIR-net recovery
+# without issuing object-graph queries while a PathEnd is live.
+array set emuir_by_pin_full_name {}
+foreach mapped_name [array names emuir_by_mapped_net] {
+  set mapped_net [get_nets -quiet [list $mapped_name]]
+  if {[llength $mapped_net] != 1} {
+    continue
+  }
+  foreach mapped_pin [get_pins -quiet -of_objects $mapped_net] {
+    set pin_full_name [get_property $mapped_pin full_name]
+    set emuir_by_pin_full_name($pin_full_name) \
+      $emuir_by_mapped_net($mapped_name)
+  }
+}
+
 set output [open $output_path w]
 puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
 set emitted 0
@@ -106,7 +125,7 @@ set queried_paths 0
 # of retaining those handles across the per-cut-net loop.
 proc emuflow_emit_timing_paths {
     timing_paths output_var emitted_var {required_net ""}} {
-  global emuir_by_mapped_net
+  global emuir_by_pin_full_name
   upvar 1 $output_var output
   upvar 1 $emitted_var emitted
   foreach path_end $timing_paths {
@@ -132,17 +151,12 @@ proc emuflow_emit_timing_paths {
     array set seen_net {}
     foreach point $points {
       set pin [get_property $point pin]
-      foreach net [get_nets -quiet -of_objects $pin] {
-        set mapped_name [get_property $net full_name]
-        if {![info exists emuir_by_mapped_net($mapped_name)]} {
-          set mapped_name [get_property $net name]
-        }
-        if {[info exists emuir_by_mapped_net($mapped_name)]} {
-          set emuir_name $emuir_by_mapped_net($mapped_name)
-          if {![info exists seen_net($emuir_name)]} {
-            set seen_net($emuir_name) 1
-            lappend path_nets $emuir_name
-          }
+      set pin_full_name [get_property $pin full_name]
+      if {[info exists emuir_by_pin_full_name($pin_full_name)]} {
+        set emuir_name $emuir_by_pin_full_name($pin_full_name)
+        if {![info exists seen_net($emuir_name)]} {
+          set seen_net($emuir_name) 1
+          lappend path_nets $emuir_name
         }
       }
     }

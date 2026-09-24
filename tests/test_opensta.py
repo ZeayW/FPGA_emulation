@@ -98,6 +98,15 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("-to $endpoint_pin", script)
         self.assertIn("-endpoint_count 1", script)
         self.assertIn("proc emuflow_emit_timing_paths", script)
+        self.assertIn("array set emuir_by_pin_full_name {}", script)
+        self.assertIn(
+            "get_pins -quiet -of_objects $mapped_net", script
+        )
+        emit_body = script[
+            script.index("proc emuflow_emit_timing_paths") :
+            script.index("if {[info exists env(EMUFLOW_STA_THROUGH_NETS)]")
+        ]
+        self.assertNotIn("get_nets -quiet -of_objects $pin", emit_body)
         self.assertIn(
             '$required_net ne "" && ![info exists seen_net($required_net)]',
             script,
