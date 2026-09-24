@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import subprocess
@@ -68,8 +69,8 @@ def _finite_nonnegative(value: Any, context: str) -> float:
     return float(value)
 
 
-def _write_emuir_timing_pin_map(ir: EmuIR, output_path: Path) -> None:
-    """Write the immutable OpenSTA timing-pin to EmuIR-net identity map.
+def _emuir_timing_pin_map(ir: EmuIR) -> Dict[str, str]:
+    """Return immutable OpenSTA timing-pin to EmuIR-net identities.
 
     OpenSTA 2.6 can corrupt its Tcl collection arena when object-graph queries
     are nested under live PathEnd handles.  Connectivity is already exact in
@@ -124,6 +125,11 @@ def _write_emuir_timing_pin_map(ir: EmuIR, output_path: Path) -> None:
                 scalar_pin = port if width == 1 else f"{port}__{bit}"
                 bind(f"{instance}/{scalar_pin}", net_id)
 
+    return mapping
+
+
+def _write_emuir_timing_pin_map(ir: EmuIR, output_path: Path) -> None:
+    mapping = _emuir_timing_pin_map(ir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as stream:
         stream.write("pin_full_name_hex\temuir_net_hex\n")
@@ -131,6 +137,77 @@ def _write_emuir_timing_pin_map(ir: EmuIR, output_path: Path) -> None:
             stream.write(
                 f"{pin_name.encode().hex()}\t{net_id.encode().hex()}\n"
             )
+
+
+def _convert_opensta_json_to_tsv(
+    input_path: Path,
+    output_path: Path,
+    *,
+    pin_map: Mapping[str, str],
+    clocks: Mapping[str, float],
+) -> int:
+    """Convert OpenSTA's native JSON report without retaining Tcl handles."""
+
+    try:
+        report = json.loads(input_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise EmuFlowError("OpenSTA did not produce valid path JSON") from error
+    checks = report.get("checks")
+    if not isinstance(checks, list):
+        raise EmuFlowError("OpenSTA path JSON has no checks array")
+    emitted = 0
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as stream:
+        stream.write(
+            "path_id_hex\tclock_domain_hex\tclock_period_ns\t"
+            "slack_ns\tfixed_delay_ns\tpath_nets_hex\n"
+        )
+        for check in checks:
+            if not isinstance(check, dict):
+                raise EmuFlowError("OpenSTA path JSON contains an invalid check")
+            clock = check.get("target_clock") or check.get("source_clock")
+            if clock not in clocks:
+                continue
+            points = check.get("source_path")
+            if not isinstance(points, list) or not points:
+                continue
+            path_nets = []
+            seen_nets = set()
+            for point in points:
+                if not isinstance(point, dict):
+                    raise EmuFlowError(
+                        "OpenSTA path JSON contains an invalid path point"
+                    )
+                net = pin_map.get(point.get("pin"))
+                if net is not None and net not in seen_nets:
+                    seen_nets.add(net)
+                    path_nets.append(net)
+            if not path_nets:
+                continue
+            try:
+                slack = float(check["slack"])
+                fixed_delay = float(points[-1]["arrival"])
+                startpoint = str(check["startpoint"])
+                endpoint = str(check["endpoint"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise EmuFlowError(
+                    "OpenSTA path JSON lacks required timing fields"
+                ) from error
+            if not math.isfinite(slack) or not math.isfinite(fixed_delay):
+                raise EmuFlowError("OpenSTA path JSON contains non-finite timing")
+            path_id = f"{startpoint}->{endpoint}#{emitted:08d}"
+            stream.write(
+                f"{path_id.encode().hex()}\t{clock.encode().hex()}\t"
+                f"{float(clocks[clock]):.12g}\t{slack:.12g}\t"
+                f"{fixed_delay:.12g}\t"
+                f"{','.join(net.encode().hex() for net in path_nets)}\n"
+            )
+            emitted += 1
+    if emitted == 0:
+        raise EmuFlowError(
+            "OpenSTA found no timing paths containing mapped EmuIR nets"
+        )
+    return emitted
 
 
 def load_timing_model(path: Path) -> Dict[str, Any]:
@@ -1388,7 +1465,10 @@ def run_opensta_path_database(
         net_map_path = root / "net-map.tsv"
         pin_map_path = root / "pin-map.tsv"
         clock_path = root / "clocks.tsv"
-        raw_path = root / "paths.tsv"
+        raw_path = root / ("paths.tsv" if through_net_ids else "paths.json")
+        imported_tsv_path = (
+            raw_path if through_net_ids else root / "paths.import.tsv"
+        )
         through_path = root / "through-nets.tsv"
         through_endpoint_path = root / "through-endpoints.tsv"
         raw_through_coverage_path = root / "through-net-coverage.tsv"
@@ -1471,8 +1551,15 @@ def run_opensta_path_database(
             raise EmuFlowError(
                 "OpenSTA reported success but did not create its path TSV"
             )
+        if not through_net_ids:
+            _convert_opensta_json_to_tsv(
+                raw_path,
+                imported_tsv_path,
+                pin_map=_emuir_timing_pin_map(ir),
+                clocks=clock_map,
+            )
         imported = import_sta_path_database_tsv(
-            raw_path,
+            imported_tsv_path,
             ir_path,
             output_path,
             provider=OPENSTA_PROVIDER,

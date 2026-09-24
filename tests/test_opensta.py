@@ -16,6 +16,7 @@ from emuflow.opensta import (
     render_opensta_liberty,
     run_opensta_path_database,
     validate_timing_model_coverage,
+    _convert_opensta_json_to_tsv,
     _write_emuir_timing_pin_map,
 )
 from emuflow.sta import validate_sta_path_database
@@ -79,15 +80,10 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("binary scan [encoding convertto utf-8 $value] H*", script)
         self.assertNotIn("binary decode hex", script)
         self.assertNotIn("binary encode hex", script)
-        self.assertNotIn("-group_count $max_paths", script)
-        self.assertIn("foreach endpoint [all_registers -data_pins]", script)
-        self.assertIn("lappend endpoint_names $endpoint_name", script)
-        self.assertIn("foreach endpoint_name $endpoint_names", script)
-        self.assertIn(
-            "set endpoint [get_pins -quiet [list $endpoint_name]]", script
-        )
-        self.assertIn("-to [list $endpoint] -group_count 1", script)
-        self.assertIn("if {$queried_paths >= $max_paths}", script)
+        self.assertIn("report_checks -path_delay max", script)
+        self.assertIn("-group_count $max_paths", script)
+        self.assertIn("-endpoint_count 1 -sort_by_slack -format json", script)
+        self.assertNotIn("all_registers -data_pins", script)
         self.assertIn("EMUFLOW_STA_THROUGH_NETS", script)
         self.assertIn("get_pins -quiet -of_objects $through_net", script)
         self.assertIn("foreach through_pin $through_pins", script)
@@ -139,6 +135,50 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("q_reg[0]/D", decoded)
         self.assertIn("q_reg[0]/Q", decoded)
         self.assertEqual(len(decoded), len(set(decoded)))
+
+    def test_native_opensta_json_converts_without_tcl_handles(self) -> None:
+        report = {
+            "checks": [{
+                "startpoint": "q_reg[0]/Q",
+                "endpoint": "q_reg[1]/D",
+                "source_clock": "clk",
+                "target_clock": "clk",
+                "source_path": [
+                    {"pin": "q_reg[0]/Q", "arrival": 0.1, "slew": 0.0},
+                    {"pin": "next_lut[1]/I0", "arrival": 0.2, "slew": 0.0},
+                    {"pin": "next_lut[1]/O", "arrival": 0.5, "slew": 0.0},
+                    {"pin": "q_reg[1]/D", "arrival": 0.5, "slew": 0.0},
+                ],
+                "slack": 9.5,
+            }]
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "paths.json"
+            output = root / "paths.tsv"
+            source.write_text(json.dumps(report), encoding="utf-8")
+            count = _convert_opensta_json_to_tsv(
+                source,
+                output,
+                pin_map={
+                    "q_reg[0]/Q": "q[0]",
+                    "next_lut[1]/I0": "q[1]",
+                    "next_lut[1]/O": "next_q[1]",
+                    "q_reg[1]/D": "next_q[1]",
+                },
+                clocks={"clk": 10.0},
+            )
+            rows = output.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(count, 1)
+        self.assertEqual(len(rows), 2)
+        fields = rows[1].split("\t")
+        self.assertEqual(bytes.fromhex(fields[1]).decode(), "clk")
+        self.assertEqual(float(fields[3]), 9.5)
+        self.assertEqual(float(fields[4]), 0.5)
+        self.assertEqual(
+            [bytes.fromhex(value).decode() for value in fields[5].split(",")],
+            ["q[0]", "q[1]", "next_q[1]"],
+        )
 
     def test_vtr_timing_db_builds_scalarized_opensta_model(self) -> None:
         source = {

@@ -122,8 +122,6 @@ foreach line [lrange $pin_map_lines 1 end] {
   set emuir_by_pin_full_name($pin_full_name) $emuir_name
 }
 
-set output [open $output_path w]
-puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
 set emitted 0
 set queried_paths 0
 
@@ -189,6 +187,8 @@ proc emuflow_emit_timing_paths {
 
 if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     $env(EMUFLOW_STA_THROUGH_NETS) ne ""} {
+  set output [open $output_path w]
+  puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
   if {![info exists env(EMUFLOW_STA_THROUGH_COVERAGE)] ||
       $env(EMUFLOW_STA_THROUGH_COVERAGE) eq ""} {
     error "EMUFLOW_STA_THROUGH_COVERAGE is required for directed extraction"
@@ -330,48 +330,19 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     puts $coverage_output "[emuflow_hex_encode $emuir_name]\t$driver_count\t[expr {$queried_paths - $before_queried}]\t[expr {$emitted - $before_emitted}]"
   }
   close $coverage_output
+  close $output
+  if {$emitted == 0} {
+    error "OpenSTA found no timing paths containing mapped EmuIR nets"
+  }
+  puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"
 } else {
-  # Do not retain a bulk collection of PathEnd handles while traversing the
-  # points and nets of every path.  OpenSTA owns those handles, and its 2.6
-  # Tcl interface can corrupt the collection while nested object queries are
-  # in progress.  Query one timed endpoint at a time and serialize the result
-  # before issuing the next query.  This still exports exactly the worst setup
-  # path per sequential endpoint, which is the contract formerly requested by
-  # `-endpoint_count 1` on the bulk query.
-  unset -nocomplain seen_endpoint
-  array set seen_endpoint {}
-  # Snapshot plain names before issuing the first timing query.  Iterating the
-  # OpenSTA-owned pin collection while `find_timing_paths` mutates internal
-  # search state leaves stale collection handles in OpenSTA 2.6.
-  set endpoint_names [list]
-  foreach endpoint [all_registers -data_pins] {
-    set endpoint_name [get_property $endpoint full_name]
-    lappend endpoint_names $endpoint_name
+  # Use OpenSTA's native reporter instead of traversing Tcl PathEnd/PathVertex
+  # handles.  OpenSTA 2.6 can corrupt its collection arena during nested path
+  # object queries on real routed designs; the C++ JSON reporter expands the
+  # same paths internally without exposing those unsafe handles.
+  redirect -file $output_path {
+    report_checks -path_delay max -group_count $max_paths \
+      -endpoint_count 1 -sort_by_slack -format json
   }
-  foreach endpoint_name $endpoint_names {
-    if {[info exists seen_endpoint($endpoint_name)]} {
-      continue
-    }
-    set seen_endpoint($endpoint_name) 1
-    set endpoint [get_pins -quiet [list $endpoint_name]]
-    if {[llength $endpoint] != 1} {
-      error "timing endpoint '$endpoint_name' is absent or ambiguous"
-    }
-    foreach path_end [find_timing_paths -path_delay max \
-        -to [list $endpoint] -group_count 1 -endpoint_count 1 \
-        -sort_by_slack] {
-      set timing_paths [list $path_end]
-      incr queried_paths
-      emuflow_emit_timing_paths $timing_paths output emitted
-    }
-    if {$queried_paths >= $max_paths} {
-      break
-    }
-  }
+  puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count format=json output=$output_path"
 }
-close $output
-
-if {$emitted == 0} {
-  error "OpenSTA found no timing paths containing mapped EmuIR nets"
-}
-puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"
