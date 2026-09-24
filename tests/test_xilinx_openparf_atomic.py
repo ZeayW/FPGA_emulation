@@ -140,6 +140,14 @@ def _fixture(root: Path, *, coincident=False, mixed=False):
             "x": 0, "y": 1,
             "tile": {"grid_col": 4 if coincident else 5, "grid_row": 8},
         },
+        {
+            "name": "SLICE_X1Y0", "type": "SLICEL", "template": "SLICEL",
+            "x": 1, "y": 0, "tile": {"grid_col": 4, "grid_row": 9},
+        },
+        {
+            "name": "SLICE_X1Y1", "type": "SLICEL", "template": "SLICEL",
+            "x": 1, "y": 1, "tile": {"grid_col": 5, "grid_row": 9},
+        },
     ]
     templates = {"SLICEL": {
         "bels": [*lut_bels, *ff_bels], "alternative_templates": [],
@@ -162,9 +170,9 @@ def _fixture(root: Path, *, coincident=False, mixed=False):
                 sites.append({
                     "name": f"{site_type}_X{site_index}Y0", "type": site_type,
                     "template": site_type,
-                    "x": offset + 3 * site_index, "y": 0,
+                    "x": 10 + offset + 3 * site_index, "y": 0,
                     "tile": {
-                        "grid_col": 5 + offset + 3 * site_index,
+                        "grid_col": 10 + offset + 3 * site_index,
                         "grid_row": 8,
                     },
                 })
@@ -223,6 +231,18 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(
             manifest["resource_unit_capacity"], {"LUT": 16, "FF": 16}
         )
+        self.assertEqual(manifest["placement_region"], {
+            "logic_sites": 16,
+            "dense_width": 4,
+            "dense_height": 4,
+            "occupied_fraction": 1.0,
+        })
+        self.assertEqual(manifest["density_contract"]["LUT"], {
+            "movable_area": 4.0,
+            "placeable_area": 16.0,
+            "target_area": 12.0,
+            "filler_units": 192,
+        })
         self.assertEqual(manifest["net_export"], {
             "emitted": 129, "dropped_single_endpoint": 0,
         })
@@ -255,6 +275,37 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["legalize_flag"], 1)
         self.assertEqual(config["detailed_place_flag"], 1)
         self.assertNotIn("fallback", config)
+
+    def test_collinear_and_disconnected_logic_crops_fail_before_runtime(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_runtime_fixture(root)
+            value = json.loads(architecture.read_text())
+            for index, site in enumerate(value["sites"]):
+                site["tile"] = {"grid_col": 0, "grid_row": index}
+            architecture.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "non-degenerate two-dimensional"
+            ):
+                export_xilinx_openparf_atomic(
+                    mapped, packed, architecture, root / "collinear"
+                )
+
+            for index, site in enumerate(value["sites"]):
+                local = index % 8
+                coordinate = (
+                    (local // 4, local % 4)
+                    if index < 8
+                    else (3 + local // 4, 5 + local % 4)
+                )
+                site["tile"] = {
+                    "grid_col": coordinate[0], "grid_row": coordinate[1],
+                }
+            architecture.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "disconnected islands"):
+                export_xilinx_openparf_atomic(
+                    mapped, packed, architecture, root / "disconnected"
+                )
 
     def test_non_degenerate_mixed_runtime_fixture_export_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
