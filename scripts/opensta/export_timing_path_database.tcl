@@ -310,10 +310,32 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   }
   close $coverage_output
 } else {
-  set timing_paths [find_timing_paths -path_delay max \
-    -group_count $max_paths -endpoint_count 1 -sort_by_slack]
-  set queried_paths [llength $timing_paths]
-  emuflow_emit_timing_paths $timing_paths output emitted
+  # Do not retain a bulk collection of PathEnd handles while traversing the
+  # points and nets of every path.  OpenSTA owns those handles, and its 2.6
+  # Tcl interface can corrupt the collection while nested object queries are
+  # in progress.  Query one timed endpoint at a time and serialize the result
+  # before issuing the next query.  This still exports exactly the worst setup
+  # path per sequential endpoint, which is the contract formerly requested by
+  # `-endpoint_count 1` on the bulk query.
+  unset -nocomplain seen_endpoint
+  array set seen_endpoint {}
+  foreach endpoint [all_registers -data_pins] {
+    set endpoint_name [get_property $endpoint full_name]
+    if {[info exists seen_endpoint($endpoint_name)]} {
+      continue
+    }
+    set seen_endpoint($endpoint_name) 1
+    foreach path_end [find_timing_paths -path_delay max \
+        -to [list $endpoint] -group_count 1 -endpoint_count 1 \
+        -sort_by_slack] {
+      set timing_paths [list $path_end]
+      incr queried_paths
+      emuflow_emit_timing_paths $timing_paths output emitted
+    }
+    if {$queried_paths >= $max_paths} {
+      break
+    }
+  }
 }
 close $output
 
