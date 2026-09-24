@@ -197,6 +197,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             library = (output / "design.lib").read_text()
             sites = (output / "design.scl").read_text()
             nodes = (output / "design.nodes").read_text()
+            nets = (output / "design.nets").read_text()
         self.assertEqual(manifest["schema"], OPENPARF_ATOMIC_MANIFEST_SCHEMA)
         self.assertEqual(manifest["runtime_validation"], "unverified")
         self.assertEqual(config["generic_cluster_placement_flag"], 0)
@@ -212,10 +213,40 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertIn("FF 16", sites)
         self.assertIn("a0 FDRE", nodes)
         self.assertIn("a1 LUT6", nodes)
+        self.assertEqual(manifest["nets"], 2)
+        self.assertEqual(manifest["net_export"], {
+            "emitted": 2, "dropped_single_endpoint": 1,
+        })
+        declarations = [
+            line.split() for line in nets.splitlines() if line.startswith("net ")
+        ]
+        self.assertTrue(declarations)
+        self.assertTrue(all(int(fields[2]) >= 2 for fields in declarations))
+        self.assertIn("net n0 2\n  a1 O\n  a0 D\nendnet", nets)
+        self.assertIn("net n1 2\n  a0 C\n  a1 I0\nendnet", nets)
         self.assertEqual(
             _defined_and_resource_models(library, sites),
             ({"FDRE", "LUT6"}, {"FDRE", "LUT6"}),
         )
+
+    def test_net_export_still_rejects_multiple_drivers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            mapped_value = json.loads(mapped.read_text())
+            mapped_value["modules"]["top"]["cells"]["lut2"] = _cell(
+                "LUT6", {"I0": [11], "O": [1]}
+            )
+            mapped.write_text(json.dumps(mapped_value), encoding="utf-8")
+            packed_value = json.loads(packed.read_text())
+            packed_value["clusters"][0]["assignments"].append({
+                "instance": "lut2", "cell_type": "LUT6", "bel": "B6LUT",
+            })
+            packed.write_text(json.dumps(packed_value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "multiple.*drivers"):
+                export_xilinx_openparf_atomic(
+                    mapped, packed, architecture, root / "multi-driver"
+                )
 
     def test_import_aggregates_atoms_into_a_physical_certificate(self):
         with tempfile.TemporaryDirectory() as temporary:

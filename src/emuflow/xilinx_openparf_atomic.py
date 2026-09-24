@@ -350,7 +350,7 @@ def _render_library(cells: Mapping[str, Any], atoms: Sequence[Mapping[str, str]]
 
 def _render_nets(
     cells: Mapping[str, Any], atoms: Sequence[Mapping[str, str]], names: Mapping[str, str]
-) -> Tuple[str, int]:
+) -> Tuple[str, int, int]:
     endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
     for atom in atoms:
         instance = atom["instance"]
@@ -361,15 +361,21 @@ def _render_nets(
                     (names[instance], port, direction)
                 )
     lines = []
-    for net_index, (_bit, pins) in enumerate(sorted(endpoints.items())):
+    emitted = 0
+    dropped_single_endpoint = 0
+    for _bit, pins in sorted(endpoints.items()):
         drivers = [pin for pin in pins if pin[2] == "output"]
         if len(drivers) > 1:
             raise ValidationError("mapped net has multiple atomic-resource drivers")
+        if len(pins) < 2:
+            dropped_single_endpoint += 1
+            continue
         ordered = [*drivers, *(pin for pin in pins if pin[2] != "output")]
-        lines.append(f"net n{net_index} {len(ordered)}")
+        lines.append(f"net n{emitted} {len(ordered)}")
         lines.extend(f"  {instance} {port}" for instance, port, _direction in ordered)
         lines.append("endnet")
-    return "\n".join(lines) + "\n", len(endpoints)
+        emitted += 1
+    return "\n".join(lines) + "\n", emitted, dropped_single_endpoint
 
 
 def _render_sites(
@@ -462,7 +468,9 @@ def export_xilinx_openparf_atomic(
         atom["instance"]: f"a{index}" for index, atom in enumerate(atoms)
     }
     library = _render_library(cells, atoms)
-    nets, net_count = _render_nets(cells, atoms, names)
+    nets, net_count, dropped_single_endpoint_nets = _render_nets(
+        cells, atoms, names
+    )
     site_text, coordinate_system = _render_sites(sites, atoms)
     output_dir.mkdir(parents=True, exist_ok=True)
     files = {
@@ -537,6 +545,10 @@ def export_xilinx_openparf_atomic(
         "schema": OPENPARF_ATOMIC_MANIFEST_SCHEMA,
         "status": "pass", "mode": "native-atomic-mixed-resource-qualification",
         "part": architecture.part, "atoms": len(atoms), "nets": net_count,
+        "net_export": {
+            "emitted": net_count,
+            "dropped_single_endpoint": dropped_single_endpoint_nets,
+        },
         "resources": dict(sorted(demand.items())),
         "runtime_validation": "unverified",
         "constraint_policy": {
