@@ -354,7 +354,18 @@ def materialize_xilinx_openparf_atomic_contract(
     occupied_local = Counter()
     placement_clusters = []
     for cluster in clusters:
-        site_name = cluster["id"].removeprefix("openparf:")
+        cluster_id = cluster["id"]
+        prefix = "openparf:"
+        if not cluster_id.startswith(prefix):
+            raise ValidationError(
+                f"OpenPARF bridge cluster id {cluster_id!r} does not start "
+                f"with {prefix!r}"
+            )
+        # The installed HPC container still executes this bridge with
+        # CPython 3.8.  Avoid str.removeprefix (added in Python 3.9) in the
+        # runtime path and validate the namespace instead of silently
+        # accepting a malformed id.
+        site_name = cluster_id[len(prefix):]
         site = architecture.site_named(site_name)
         local_key = _clock_region_key(site)
         if local_key is not None:

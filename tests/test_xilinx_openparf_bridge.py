@@ -109,7 +109,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             self.assertEqual(len(packed_instances), len(set(packed_instances)))
             self.assertEqual(set(packed_instances), set(placed_instances))
             self.assertEqual(
-                {cluster["id"].removeprefix("openparf:")
+                {cluster["id"][len("openparf:"):]
                  for cluster in packed_value["clusters"]},
                 {cluster["site"] for cluster in placement_value["clusters"]},
             )
