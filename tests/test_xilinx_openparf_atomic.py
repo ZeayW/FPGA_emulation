@@ -230,6 +230,62 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["detailed_place_flag"], 1)
         self.assertNotIn("fallback", config)
 
+    def test_real_style_runtime_placement_uses_odd_lut6_slots(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_runtime_fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output
+            )
+            names = json.loads((output / "name_map.json").read_text())
+            sites = names["coordinate_system"]["sites"]
+            resource_indexes = {"LUT": 0, "FF": 0}
+            rows = []
+            first_lut_row = None
+            for atom in names["atoms"]:
+                resource = atom["resource"]
+                index = resource_indexes[resource]
+                resource_indexes[resource] += 1
+                site = sites[index // 4]
+                z = 2 * (index % 4) + (1 if resource == "LUT" else 0)
+                row = (
+                    f"{atom['openparf']} {site['dense_x']} "
+                    f"{site['dense_y']} {z}"
+                )
+                if resource == "LUT" and first_lut_row is None:
+                    first_lut_row = len(rows)
+                rows.append(row)
+            placement = output / "real-style.pl"
+            placement.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            certificate = validate_xilinx_openparf_atomic_placement(
+                placement, output / "name_map.json", mapped, architecture
+            )
+            self.assertEqual(certificate["summary"]["luts"], 64)
+            self.assertEqual(certificate["summary"]["ffs"], 64)
+            lut_assignments = [
+                assignment
+                for cluster in certificate["clusters"]
+                for assignment in cluster["assignments"]
+                if assignment["cell_type"] == "LUT6"
+            ]
+            self.assertEqual(len(lut_assignments), 64)
+            self.assertTrue(
+                all(item["bel"] in {f"{letter}6LUT" for letter in "ABCD"}
+                    for item in lut_assignments)
+            )
+
+            even_rows = list(rows)
+            fields = even_rows[first_lut_row].split()
+            fields[3] = "0"
+            even_rows[first_lut_row] = " ".join(fields)
+            even = output / "even-lut6.pl"
+            even.write_text("\n".join(even_rows) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "paired LUT"):
+                validate_xilinx_openparf_atomic_placement(
+                    even, output / "name_map.json", mapped, architecture
+                )
+
     def test_capability_contract_qualifies_only_the_atomic_subset(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -332,7 +388,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
             placement = output / "placed.pl"
-            placement.write_text("a0 0 0 0\na1 0 0 0\n", encoding="utf-8")
+            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
             certificate = validate_xilinx_openparf_atomic_placement(
                 placement, output / "name_map.json", mapped, architecture,
                 output / "certificate.json",
@@ -352,17 +408,17 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             {item["source_cluster"] for item in assignments}, {"ordinary"}
         )
 
-    def test_odd_lut_slot_and_control_set_violation_fail_closed(self):
+    def test_even_lut_slot_and_control_set_violation_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             mapped, packed, architecture = _fixture(root)
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            odd = output / "odd.pl"
-            odd.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+            even = output / "even.pl"
+            even.write_text("a0 0 0 0\na1 0 0 0\n", encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "paired LUT"):
                 validate_xilinx_openparf_atomic_placement(
-                    odd, output / "name_map.json", mapped, architecture
+                    even, output / "name_map.json", mapped, architecture
                 )
 
             mapped_value = json.loads(mapped.read_text())
@@ -382,7 +438,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             # CK/SR domain but have distinct clocks.
             controls = output2 / "controls.pl"
             controls.write_text(
-                "a0 0 0 0\na1 0 0 2\na2 0 0 4\n", encoding="utf-8"
+                "a0 0 0 0\na1 0 0 2\na2 0 0 5\n", encoding="utf-8"
             )
             with self.assertRaisesRegex(ValidationError, "control-set"):
                 validate_xilinx_openparf_atomic_placement(
@@ -544,7 +600,8 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             rows = []
             for atom in names["atoms"]:
                 x, y = coordinates[target_site[atom["resource"]]]
-                rows.append(f"{atom['openparf']} {x} {y} 0")
+                z = 1 if atom["resource"] == "LUT" else 0
+                rows.append(f"{atom['openparf']} {x} {y} {z}")
             placement = output / "mixed.pl"
             placement.write_text("\n".join(rows) + "\n", encoding="utf-8")
             certificate = validate_xilinx_openparf_atomic_placement(
@@ -608,7 +665,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             def fake_run(_config, **_kwargs):
                 placement = output / "results" / "xilinx_atomic_lut_ff.pl"
                 placement.parent.mkdir(parents=True, exist_ok=True)
-                placement.write_text("a0 0 0 0\na1 0 0 0\n", encoding="utf-8")
+                placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
                 return placement
 
             with mock.patch(

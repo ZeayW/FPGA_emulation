@@ -613,15 +613,18 @@ def export_xilinx_openparf_atomic(
     return manifest
 
 
-def _slot_bel(resource: str, z: int) -> str:
+def _slot_bel(resource: str, z: int, cell_type: str) -> str:
     if not 0 <= z < 16:
         raise ValidationError("OpenPARF atomic placement has an invalid z slot")
     letter = "ABCDEFGH"[z // 2]
     if resource == "LUT":
-        if z % 2:
+        if z % 2 == 0:
             raise ValidationError(
-                "OpenPARF used paired LUT packing that violates the 6LUT-only policy"
+                "OpenPARF used an even/paired LUT slot that has no qualified "
+                "physical 5LUT mapping"
             )
+        if cell_type not in LUT_TYPES:
+            raise ValidationError("OpenPARF LUT slot contains a non-LUT primitive")
         return f"{letter}6LUT"
     return f"{letter}FF" if z % 2 == 0 else f"{letter}FF2"
 
@@ -700,7 +703,7 @@ def validate_xilinx_openparf_atomic_placement(
                     raise ValidationError(
                         "OpenPARF atomic placement uses a site without the required resource"
                     )
-                bel_name = _slot_bel(resource, z)
+                bel_name = _slot_bel(resource, z, cell_type)
             elif resource in _HARD_RESOURCES.values():
                 if z != 0:
                     raise ValidationError(
