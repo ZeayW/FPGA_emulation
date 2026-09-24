@@ -102,6 +102,15 @@ def test_routed_opensta_staging_inserts_one_exact_delay_per_sink():
         assert metadata["inserted_route_delay_cells"] == 1
         assert model["cells"][delay_instances[0]["type"]]["delay_ns"] == 0.123
         assert model["cells"]["LUT1"]["delay_ns"] == 0.07
+        assert delay_instances[0]["id"] == "__emuflow_rw_delay__00000000"
+        assert "/" not in delay_instances[0]["id"]
+        delay_nets = [
+            net for net in routed_ir.value["nets"]
+            if net["id"].startswith("__emuflow_rw_delay_net__")
+        ]
+        assert [net["id"] for net in delay_nets] == [
+            "__emuflow_rw_delay_net__00000000"
+        ]
 
 
 def test_opensta_summary_recomputes_wns_and_tns():

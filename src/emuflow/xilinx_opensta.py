@@ -127,8 +127,13 @@ def build_xilinx_routed_opensta_inputs(
                 delay, f"EMUFLOW_RW_ROUTE_DELAY_{len(delay_types):06d}"
             )
             index = len(bound) - 1
-            instance_id = f"__emuflow_rw_delay__/{index:08d}"
-            net_id = f"__emuflow_rw_delay_net__/{index:08d}"
+            # Keep synthetic identifiers flat.  OpenSTA treats ``/`` as its
+            # hierarchy separator even when the Verilog reader accepted an
+            # escaped identifier containing that character.  Route-delay
+            # cells are not hierarchy, so encoding them as hierarchy is both
+            # misleading and unsafe for later pin/path lookup.
+            instance_id = f"__emuflow_rw_delay__{index:08d}"
+            net_id = f"__emuflow_rw_delay_net__{index:08d}"
             instances.append(
                 {
                     "id": instance_id,
