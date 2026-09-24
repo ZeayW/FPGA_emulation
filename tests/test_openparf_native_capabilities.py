@@ -295,6 +295,15 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
         self.assertEqual(reproduction["required_lut_adapters_per_unit"], 8)
         self.assertEqual(reproduction["native_prop_luts_per_unit"], 4)
         self.assertEqual(
+            [item["id"] for item in report["remaining_core_changes"]],
+            [
+                "carry8-chain-metadata",
+                "carry8-full-slice-legalization",
+                "carry8-bookshelf-export",
+                "carry8-exact-import-validation",
+            ],
+        )
+        self.assertEqual(
             report["constraints"]["ordered_carry8_chain"]["status"],
             "core_missing",
         )
@@ -315,9 +324,11 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
             set(audit["checks"]),
             {"parser", "shape_db", "chain_info", "chain_legalizer", "placer"},
         )
+        self.assertEqual(audit["checks"]["parser"]["status"], "native_supported")
+        self.assertEqual(audit["checks"]["placer"]["status"], "native_supported")
         self.assertTrue(all(
-            item["status"] == "core_missing"
-            for item in audit["checks"].values()
+            audit["checks"][name]["status"] == "core_missing"
+            for name in ("shape_db", "chain_info", "chain_legalizer")
         ))
         self.assertIn(
             "ordinal_lut_ids.resize(current_size + 4)",
@@ -330,6 +341,35 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
         self.assertEqual(
             audit["checks"]["shape_db"]["placement_or_operator_consumers"],
             [],
+        )
+        parser = (
+            ROOT / "engines/openparf/openparf/io/bookshelf/bookshelf_parser.yy"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "KWD_OUTPUT KWD_CAS ENDL    { driver.addCellOutputCasPinCbk",
+            parser,
+        )
+        placer = (
+            ROOT / "engines/openparf/openparf/placement/placer.py"
+        ).read_text(encoding="utf-8")
+        carry_mask = placer.split(
+            "if self.params.carry_chain_legalization_flag:", 2
+        )[-1]
+        self.assertIn("self.data_cls.chain_cla_ids.bs", carry_mask)
+        self.assertIn("self.data_cls.chain_lut_ids.bs", carry_mask)
+        self.assertIn(
+            "pos_xyz = self.data_cls.inst_locs_xyz.to(",
+            placer,
+        )
+        self.assertIn(
+            "pos[movable_range[0] : movable_range[1]]",
+            placer,
+        )
+        self.assertNotIn("assert self.data_cls.io_pos_xyz is not None", placer)
+        self.assertNotIn(
+            "if self.params.io_legalization_flag:", carry_mask.split(
+                "loc_xyz = self.op_cls.ism_dp_op", 1
+            )[0],
         )
 
     def test_carry_probe_is_unverified_when_pinned_source_is_missing(self):

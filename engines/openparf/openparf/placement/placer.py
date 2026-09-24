@@ -1811,10 +1811,17 @@ class Placer(nn.Module):
                 )
                 pos_xyz[movable_range[0] : movable_range[1], 2].zero_()
             elif self.params.carry_chain_legalization_flag:
-                assert self.data_cls.io_pos_xyz is not None
-                pos_xyz = self.data_cls.io_pos_xyz.to(self.device).to(self.dtype)
+                # Seed native carry legalization from the current GP solution.
+                # IO legalization is an independent optional operation and
+                # must not be required to allocate this position buffer.
+                pos_xyz = self.data_cls.inst_locs_xyz.to(
+                    self.device
+                ).to(self.dtype).clone()
                 with torch.no_grad():
-                    pos_xyz[:, :2].data.copy_(pos[: self.data_cls.movable_range[1]])
+                    movable_range = self.data_cls.movable_range
+                    pos_xyz[movable_range[0] : movable_range[1], :2].data.copy_(
+                        pos[movable_range[0] : movable_range[1]]
+                    )
                 logger.info("Start Carry Chain Legalization...")
                 self.op_cls.chain_legalization_op(pos_xyz)
                 self.op_cls.masked_direct_lg_op(pos_xyz)
@@ -1937,16 +1944,14 @@ class Placer(nn.Module):
                     self.data_cls.half_column_available_clock_region
                 )
                 self.op_cls.ism_dp_op.reset_slr_aware_flag(self.params.slr_aware_flag)
-            if self.params.io_legalization_flag:
-                chain_at_name = self.params.carry_chain_at_name
-                chain_at_id = self.placedb.getAreaTypeIndexFromName(chain_at_name)
-                inst_ids = self.data_cls.area_type_inst_groups[chain_at_id]
-                inst_ids = inst_ids[
-                    torch.logical_and(
-                        self.data_cls.movable_range[0] <= inst_ids,
-                        inst_ids < self.data_cls.movable_range[1],
-                    )
-                ]
+            if self.params.carry_chain_legalization_flag:
+                # A legalized carry macro includes both the carry primitives
+                # and their associated LUTs.  ISM must not move either half of
+                # that native macro after chain legalization.
+                inst_ids = torch.unique(torch.cat((
+                    self.data_cls.chain_cla_ids.bs,
+                    self.data_cls.chain_lut_ids.bs,
+                ))).cpu()
                 fixed_mask = torch.zeros(
                     self.data_cls.inst_locs_xyz.shape[0],
                     dtype=torch.uint8,

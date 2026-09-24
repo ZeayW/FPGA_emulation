@@ -40,12 +40,15 @@ not from upstream documentation:
 - `chain_legalizer.cpp` places one half-site chain unit and exactly four LUT
   slots.  It has no representation for one CARRY8 plus eight LUT6_2 cells whose
   O5 and O6 outputs jointly feed DI/S.
-- the Bookshelf parser dispatches `OUTPUT CAS` to the input-cascade callback,
-  so the current input path cannot construct a directed carry chain;
 - Bookshelf carry `.shape` records are stored in the database but are not
   consumed by global placement, legalization, legality checking, or ISM;
-- the existing ISM fixed mask for the carry area type is created only inside
-  the unrelated IO-legalization branch.
+
+The audit also found and fixed two independent plumbing bugs. Bookshelf
+`OUTPUT CAS` now dispatches to the output-cascade callback. ISM now builds its
+fixed mask under `carry_chain_legalization_flag` and includes both the carry
+primitive IDs and every associated LUT ID; it no longer depends on IO
+legalization or freezes only the carry area type. Source-backed tests guard
+both fixes.
 
 `probe_xilinx_openparf_carry_native_support` validates a mapped design's
 PhysicalMacroContract, reduces it to a deterministic minimum reproduction
@@ -60,3 +63,12 @@ macro into four ordinary LUTs, invoking the old search legalizer, or assigning
 sites before OpenPARF.  A real compiled GP -> carry legalizer -> ISM run would
 only become meaningful after the core and input semantics are extended to
 CARRY8/LUT6_2 and independently tested.
+
+The remaining implementation boundary is explicit in the qualification
+report: variable eight-LUT CARRY8 chain metadata, full-slice CARRY8 chain
+legalization, unplaced Bookshelf export of CARRY8/LUT6_2 resource and cascade
+semantics, and an exact importer/validator for same-site roles and native chain
+adjacency.  The carry legalizer is now initialized from the current global
+placement coordinates without requiring IO legalization.  The remaining items
+are structural core/adapter changes, not parameters that can be approximated by
+preplacement.
