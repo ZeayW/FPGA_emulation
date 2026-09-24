@@ -4188,6 +4188,36 @@ emuflow arch validate-rapidwright-device \
   resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json
 ```
 
+Placement consumers must not infer vertical hard-wire adjacency or regional
+capacity from site-name coordinates.  The optional native-constraints
+exporter derives those facts from the same pinned RapidWright database.  Its
+current proof scope is deliberately narrow: CARRY8 `CO[7] -> CI` edges are
+admitted only when `CARRY8/CO7 -> COUT` and `CARRY8/CIN -> CIN` are dedicated
+SitePin connections resolving to the identical canonical native Node.  The
+artifact chain-compresses those proven edges, seals the complete native proof
+stream, and records exact `(SLR, clock region, site type)` site counts bound to
+the ArchitectureDB hash.  If the pinned native database represents the carry
+continuation as an arc between distinct Nodes, the exporter reports
+`dedicated_adjacency.CARRY_NEXT=core_missing` and emits no adjacency rather
+than guessing from coordinates or intent labels.  DSP, BRAM, and URAM cascade
+adjacency remain `unverified`; half-column clock capacity is neither exported
+nor guessed and any consumer requesting it fails closed.
+
+```bash
+PYTHONPATH=src python3 \
+  scripts/rapidwright/export_native_device_constraints.py \
+  --rapidwright-jar /external/rapidwright-2026.1.0-standalone-lin64.jar \
+  --provider-manifest \
+  resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json \
+  --architecture /external/xcvu19p.architecture.json \
+  --scratch-dir /external/scratch \
+  --output /external/xcvu19p.native-constraints.json
+```
+
+This is a provider-side capability artifact, not a coordinate-based legalizer
+or a duplicate routing database.  The generated JSON and compilation scratch
+remain external run artifacts and must not be committed.
+
 The no-route `.device`, route certificate, imported ArchitectureDB, native
 RapidWright database, and physical-region sidecars are external run artifacts
 and must not be committed. The certificate contains counts, hashes, and a
