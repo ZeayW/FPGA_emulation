@@ -230,6 +230,68 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["detailed_place_flag"], 1)
         self.assertNotIn("fallback", config)
 
+    def test_non_degenerate_mixed_runtime_fixture_export_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_runtime_fixture(
+                root, include_hard=True
+            )
+            output = root / "output"
+            manifest = export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output
+            )
+            config = json.loads((output / "openparf.json").read_text())
+            names = json.loads((output / "name_map.json").read_text())
+            net_lines = (output / "design.nets").read_text().splitlines()
+
+        self.assertEqual(manifest["atoms"], 131)
+        self.assertEqual(manifest["resources"], {
+            "DSP48E2": 1, "FF": 64, "LUT": 64,
+            "RAMB36E2": 1, "URAM288": 1,
+        })
+        self.assertEqual(manifest["resource_unit_capacity"], {
+            "LUT": 16, "FF": 16, "DSP48E2": 1,
+            "RAMB36E2": 1, "URAM288": 1,
+        })
+        self.assertEqual(manifest["net_export"], {
+            "emitted": 132, "dropped_single_endpoint": 0,
+        })
+        declarations = [
+            line.split() for line in net_lines if line.startswith("net ")
+        ]
+        self.assertEqual(
+            sorted(int(fields[2]) for fields in declarations),
+            [2] * 131 + [64],
+        )
+        hard_atoms = [
+            atom for atom in names["atoms"]
+            if atom["resource"] in {"DSP48E2", "RAMB36E2", "URAM288"}
+        ]
+        self.assertEqual(len(hard_atoms), 3)
+        pin_rows = [
+            line.strip() for line in net_lines
+            if line.startswith("  ")
+        ]
+        for atom in hard_atoms:
+            self.assertEqual(
+                sum(row.startswith(atom["openparf"] + " ") for row in pin_rows),
+                2,
+            )
+            hard_sites = [
+                item for item in names["coordinate_system"]["sites"]
+                if item["resources"].get(atom["resource"]) == 1
+            ]
+            self.assertEqual(len(hard_sites), 2)
+        self.assertEqual(config["resource_categories"], {
+            "LUT": "LUTL", "FF": "FF", "DSP48E2": "SSSIR",
+            "RAMB36E2": "SSSIR", "URAM288": "SSSIR",
+        })
+        self.assertEqual(config["generic_cluster_placement_flag"], 0)
+        self.assertEqual(config["global_place_flag"], 1)
+        self.assertEqual(config["legalize_flag"], 1)
+        self.assertEqual(config["detailed_place_flag"], 1)
+        self.assertNotIn("fallback", config)
+
     def test_real_style_runtime_placement_uses_odd_lut6_slots(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
