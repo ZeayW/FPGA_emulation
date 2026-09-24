@@ -19,11 +19,14 @@ import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.edif.EDIFCell;
 import com.xilinx.rapidwright.rwroute.CUFR;
+import com.xilinx.rapidwright.rwroute.Connection;
+import com.xilinx.rapidwright.rwroute.RWRouteConfig;
 import com.xilinx.rapidwright.timing.TimingModel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -35,10 +38,70 @@ import org.json.JSONObject;
 
 public final class EmuFlowRWRoute {
     private static final String SCHEMA = "emuflow.xilinx-route-db/v1";
+    private static final String ROUTER_STRATEGY =
+        "CUFR-HUS-non-timing-driven-uturn-enabled-unroutable-only-bbox-expansion";
     private static final String[] DSP48E2_COMPONENTS = new String[] {
         "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
         "DSP_ALU", "DSP_M_DATA", "DSP_OUTPUT", "DSP_PREADD"
     };
+
+    /**
+     * CUFR's upstream --enlargeBoundingBox policy enlarges both unroutable and
+     * merely congested connections. CUFR consequently rebuilds its complete
+     * partition tree every iteration while that option is enabled. A fixed
+     * bounding box is not complete either: upstream RWRoute abandons a truly
+     * unroutable connection when enlargement is disabled.
+     *
+     * Route A therefore widens only connections for which the current search
+     * found no route. The partition tree is marked dirty and rebuilt exactly
+     * once before the next iteration. Congested-but-routed connections remain
+     * under negotiated congestion and do not trigger blanket box growth.
+     */
+    private static final class UnroutableOnlyBoundingBoxCUFR extends CUFR {
+        private boolean partitionTreeDirty;
+
+        UnroutableOnlyBoundingBoxCUFR(Design design, RWRouteConfig config) {
+            super(design, config);
+            if (config.isEnlargeBoundingBox()) {
+                throw new IllegalArgumentException(
+                    "unroutable-only CUFR requires the upstream blanket "
+                    + "bounding-box expansion policy to remain disabled"
+                );
+            }
+        }
+
+        @Override
+        protected void routeIndirectConnections(Collection<Connection> connections) {
+            boolean previous = config.isEnlargeBoundingBox();
+            if (partitionTreeDirty) config.setEnlargeBoundingBox(true);
+            try {
+                super.routeIndirectConnections(connections);
+            } finally {
+                config.setEnlargeBoundingBox(previous);
+                partitionTreeDirty = false;
+            }
+        }
+
+        @Override
+        protected boolean handleUnroutableConnection(Connection connection) {
+            connection.enlargeBoundingBox(
+                config.getExtensionXIncrement(), config.getExtensionYIncrement()
+            );
+            partitionTreeDirty = true;
+            if (routeIteration == 1 && swapOutputPin(connection)) return true;
+            return false;
+        }
+
+        @Override
+        protected boolean handleCongestedConnection(Connection connection) {
+            return false;
+        }
+
+        public static Design routeDesignWithUserDefinedArguments(Design design, String[] args) {
+            RWRouteConfig config = new RWRouteConfig(args);
+            return routeDesign(new UnroutableOnlyBoundingBoxCUFR(design, config));
+        }
+    }
 
     private static final class MaterializedCell {
         final String logicalType;
@@ -521,12 +584,12 @@ public final class EmuFlowRWRoute {
         // intra-site nets remain outside the inter-site route certificate.
         // CUFR is RapidWright's parallel full-design specialization of
         // RWRoute.  HUS is its upstream strategy for large, difficult
-        // negotiated-congestion problems.  Keep the full-design default of a
-        // fixed bounding box: rebuilding an ever larger CUFR partition tree
-        // on every negotiated-congestion iteration makes difficult complete
-        // designs needlessly super-linear.  U-turn resources remain required
-        // for legal placements at the complete XCVU19P device boundary.
-        CUFR.routeDesignWithUserDefinedArguments(
+        // negotiated-congestion problems. Only genuinely unroutable
+        // connections expand their bounding box; ordinary congested routes do
+        // not trigger blanket expansion or an unconditional tree rebuild.
+        // U-turn resources remain required for legal placements at the
+        // complete XCVU19P device boundary.
+        UnroutableOnlyBoundingBoxCUFR.routeDesignWithUserDefinedArguments(
             design,
             new String[] {
                 "--hus", "--nonTimingDriven", "--useUTurnNodes"
@@ -673,7 +736,7 @@ public final class EmuFlowRWRoute {
             .put("transformed_dsp48e2_cells", transformedDsp48e2Cells)
             .put(
                 "router",
-                "CUFR-HUS-non-timing-driven-uturn-enabled-fixed-bbox"
+                ROUTER_STRATEGY
             ));
         output.put("nets", routeNets);
         output.put("excluded_nets", excluded);
