@@ -21,7 +21,7 @@ from emuflow.xilinx_openparf_atomic import (
 
 
 def _cell(cell_type, connections):
-    outputs = {"O", "Q"}
+    outputs = {"O", "Q", "P", "DOADO", "DOUT_A"}
     return {
         "type": cell_type,
         "port_directions": {
@@ -32,30 +32,69 @@ def _cell(cell_type, connections):
     }
 
 
-def _fixture(root: Path, *, coincident=False):
+def _defined_and_resource_models(library: str, sites: str):
+    defined = {
+        line.split()[1] for line in library.splitlines()
+        if line.startswith("CELL ")
+    }
+    resource_models = set()
+    in_resources = False
+    for line in sites.splitlines():
+        if line == "RESOURCES":
+            in_resources = True
+        elif line == "END RESOURCES":
+            in_resources = False
+        elif in_resources:
+            resource_models.update(line.split()[1:])
+    return defined, resource_models
+
+
+def _fixture(root: Path, *, coincident=False, mixed=False):
     mapped = root / "mapped.json"
     packed = root / "packed.json"
     architecture = root / "architecture.json"
-    mapped.write_text(json.dumps({
-        "modules": {"top": {"attributes": {"top": "1"}, "cells": {
+    cells = {
             "lut": _cell("LUT6", {"I0": [10], "O": [1]}),
             "ff": _cell(
                 "FDRE", {"C": [10], "CE": ["1"], "D": [1],
                          "Q": [2], "R": ["0"]}
             ),
-        }}},
+    }
+    if mixed:
+        cells.update({
+            "dsp": _cell("DSP48E2", {"A": [3, 4], "P": [5, 6]}),
+            "bram": _cell("RAMB36E2", {"ADDRARDADDR": [7, 8], "DOADO": [9]}),
+            "uram": _cell("URAM288", {"ADDR_A": [11, 12], "DOUT_A": [13]}),
+        })
+    mapped.write_text(json.dumps({
+        "modules": {"top": {"attributes": {"top": "1"}, "cells": cells}},
     }), encoding="utf-8")
+    clusters = [{
+        "id": "ordinary", "kind": "slice",
+        "site_templates": ["SLICEL", "SLICEM"],
+        "control_set": "ordinary-control-set",
+        "assignments": [
+            {"instance": "lut", "cell_type": "LUT6", "bel": "A6LUT"},
+            {"instance": "ff", "cell_type": "FDRE", "bel": "AFF"},
+        ],
+    }]
+    if mixed:
+        for instance, primitive, template in (
+            ("dsp", "DSP48E2", "DSP48E2"),
+            ("bram", "RAMB36E2", "RAMB36E2"),
+            ("uram", "URAM288", "URAM288"),
+        ):
+            clusters.append({
+                "id": instance, "kind": "hard", "site_templates": [template],
+                "control_set": None,
+                "assignments": [{
+                    "instance": instance, "cell_type": primitive,
+                    "bel": primitive, "bel_candidates": [primitive],
+                }],
+            })
     packed.write_text(json.dumps({
         "schema": "emuflow.packed-site-netlist/v1", "top": "top",
-        "clusters": [{
-            "id": "ordinary", "kind": "slice",
-            "site_templates": ["SLICEL", "SLICEM"],
-            "control_set": "ordinary-control-set",
-            "assignments": [
-                {"instance": "lut", "cell_type": "LUT6", "bel": "A6LUT"},
-                {"instance": "ff", "cell_type": "FDRE", "bel": "AFF"},
-            ],
-        }],
+        "clusters": clusters,
         "cascade_chains": [],
     }), encoding="utf-8")
     lut_bels = [
@@ -86,12 +125,32 @@ def _fixture(root: Path, *, coincident=False):
             "tile": {"grid_col": 4 if coincident else 5, "grid_row": 8},
         },
     ]
+    templates = {"SLICEL": {
+        "bels": [*lut_bels, *ff_bels], "alternative_templates": [],
+    }}
+    if mixed:
+        for offset, (primitive, site_type) in enumerate((
+            ("DSP48E2", "DSP48E2"),
+            ("RAMB36E2", "RAMB36E2"),
+            ("URAM288", "URAM288"),
+        ), start=1):
+            templates[site_type] = {
+                "bels": [{
+                    "name": primitive, "type": primitive, "z": 0,
+                    "compatible_cells": [primitive],
+                    "placement_mode": site_type,
+                }],
+                "alternative_templates": [],
+            }
+            sites.append({
+                "name": f"{site_type}_X0Y0", "type": site_type,
+                "template": site_type, "x": offset, "y": 0,
+                "tile": {"grid_col": 5 + offset, "grid_row": 8},
+            })
     architecture.write_text(json.dumps({
         "schema": "emuflow.archdb/v1", "part": "fixture",
         "source": {"format": "test/v1"}, "policy": {"name": "test"},
-        "site_templates": {"SLICEL": {
-            "bels": [*lut_bels, *ff_bels], "alternative_templates": [],
-        }},
+        "site_templates": templates,
         "sites": sites,
     }), encoding="utf-8")
     return mapped, packed, architecture
@@ -153,6 +212,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertIn("FF 16", sites)
         self.assertIn("a0 FDRE", nodes)
         self.assertIn("a1 LUT6", nodes)
+        self.assertEqual(
+            _defined_and_resource_models(library, sites),
+            ({"FDRE", "LUT6"}, {"FDRE", "LUT6"}),
+        )
 
     def test_import_aggregates_atoms_into_a_physical_certificate(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -170,6 +233,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(certificate["runtime_validation"], "unverified")
         self.assertEqual(certificate["summary"], {
             "atoms": 2, "occupied_sites": 1, "luts": 1, "ffs": 1,
+            "hard_resources": {},
         })
         assignments = certificate["clusters"][0]["assignments"]
         self.assertEqual(
@@ -253,7 +317,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     mapped, packed, architecture, root / "carry"
                 )
 
-    def test_dual_lut_ram_and_dsp_are_explicitly_out_of_scope(self):
+    def test_dual_lut_and_unsupported_hard_cluster_kinds_fail_closed(self):
         cases = (
             ("LUT6_2", "slice", "primitive 'LUT6_2'"),
             ("DSP48E2", "dsp", "cluster kind 'dsp'"),
@@ -280,6 +344,140 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     export_xilinx_openparf_atomic(
                         mapped, packed, architecture, root / "out"
                     )
+
+    def test_mixed_fixture_exports_one_native_mcf_direct_lg_ism_flow(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root, mixed=True)
+            output = root / "output"
+            manifest = export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output
+            )
+            config = json.loads((output / "openparf.json").read_text())
+            sites = (output / "design.scl").read_text()
+            library = (output / "design.lib").read_text()
+        self.assertEqual(manifest["resources"], {
+            "DSP48E2": 1, "FF": 1, "LUT": 1,
+            "RAMB36E2": 1, "URAM288": 1,
+        })
+        self.assertEqual(config["generic_cluster_placement_flag"], 0)
+        self.assertEqual(config["legalize_flag"], 1)
+        self.assertEqual(config["detailed_place_flag"], 1)
+        self.assertEqual(config["resource_categories"], {
+            "DSP48E2": "SSSIR", "FF": "FF", "LUT": "LUTL",
+            "RAMB36E2": "SSSIR", "URAM288": "SSSIR",
+        })
+        self.assertIn("DSP48E2 1", sites)
+        self.assertIn("RAMB36E2 1", sites)
+        self.assertIn("URAM288 1", sites)
+        self.assertIn("PIN A[0] INPUT", library)
+        self.assertIn("PIN P[1] OUTPUT", library)
+        defined, resource_models = _defined_and_resource_models(library, sites)
+        self.assertEqual(resource_models, defined)
+        self.assertEqual(defined, {
+            "DSP48E2", "FDRE", "LUT6", "RAMB36E2", "URAM288",
+        })
+
+    def test_mixed_capability_is_source_backed_and_adapter_qualified(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root, mixed=True)
+            matrix = probe_openparf_native_capabilities(
+                mapped, packed, architecture
+            )
+        feature = next(
+            item for item in matrix["provider_features"]
+            if item["feature"] == "mixed_atomic_sssir_native_flow"
+        )
+        self.assertEqual(feature["status"], "native_supported")
+        for primitive in ("DSP48E2", "RAMB36E2", "URAM288"):
+            self.assertEqual(matrix["primitives"][primitive], {
+                "status": "adapter_required",
+                "evidence": [
+                    "src/emuflow/xilinx_openparf_atomic.py",
+                    "openparf/ops/mcf_lg/mcf_lg.py",
+                ],
+                "adapter_validation": "pass",
+                "reason": (
+                    "the atomic adapter preserves connectivity, LUT/FF control "
+                    "sets, discrete resource occupancy, and physical BEL compatibility"
+                ),
+            })
+
+    def test_mixed_fixture_import_checks_hard_site_bel_and_coverage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root, mixed=True)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            names = json.loads((output / "name_map.json").read_text())
+            coordinates = {
+                item["site"]: (item["dense_x"], item["dense_y"])
+                for item in names["coordinate_system"]["sites"]
+            }
+            target_site = {
+                "LUT": "SLICE_X0Y0", "FF": "SLICE_X0Y0",
+                "DSP48E2": "DSP48E2_X0Y0",
+                "RAMB36E2": "RAMB36E2_X0Y0",
+                "URAM288": "URAM288_X0Y0",
+            }
+            rows = []
+            for atom in names["atoms"]:
+                x, y = coordinates[target_site[atom["resource"]]]
+                rows.append(f"{atom['openparf']} {x} {y} 0")
+            placement = output / "mixed.pl"
+            placement.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            certificate = validate_xilinx_openparf_atomic_placement(
+                placement, output / "name_map.json", mapped, architecture
+            )
+            wrong = output / "wrong.pl"
+            wrong_rows = list(rows)
+            hard_index = next(
+                index for index, atom in enumerate(names["atoms"])
+                if atom["resource"] == "DSP48E2"
+            )
+            slice_x, slice_y = coordinates["SLICE_X0Y0"]
+            wrong_rows[hard_index] = (
+                f"{names['atoms'][hard_index]['openparf']} {slice_x} {slice_y} 0"
+            )
+            wrong.write_text("\n".join(wrong_rows) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "required resource"):
+                validate_xilinx_openparf_atomic_placement(
+                    wrong, output / "name_map.json", mapped, architecture
+                )
+        self.assertEqual(certificate["summary"]["hard_resources"], {
+            "DSP48E2": 1, "RAMB36E2": 1, "URAM288": 1,
+        })
+        assignments = {
+            item["instance"]: item
+            for cluster in certificate["clusters"]
+            for item in cluster["assignments"]
+        }
+        self.assertEqual(assignments["dsp"]["bel"], "DSP48E2")
+        self.assertEqual(assignments["bram"]["bel"], "RAMB36E2")
+        self.assertEqual(assignments["uram"]["bel"], "URAM288")
+
+    def test_half_site_and_hard_cascade_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root, mixed=True)
+            value = json.loads(packed.read_text())
+            bram = next(cluster for cluster in value["clusters"] if cluster["id"] == "bram")
+            bram["site_mode"] = "RAMB18E2x1"
+            packed.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "relative/physical"):
+                export_xilinx_openparf_atomic(
+                    mapped, packed, architecture, root / "half-site"
+                )
+
+            mapped, packed, architecture = _fixture(root, mixed=True)
+            value = json.loads(packed.read_text())
+            value["cascade_chains"] = [{"kind": "dsp", "instances": ["dsp"]}]
+            packed.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "cascade constraints"):
+                export_xilinx_openparf_atomic(
+                    mapped, packed, architecture, root / "cascade"
+                )
 
     def test_internal_runner_has_no_fallback_and_keeps_runtime_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:

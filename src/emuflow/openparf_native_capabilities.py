@@ -99,6 +99,34 @@ def audit_pinned_openparf_source(source_root: Path) -> Dict[str, Any]:
             root / "openparf/ops/ism_dp/ism_dp.py",
             ("class ISMDetailedPlace",),
         ),
+        "mixed_atomic_sssir_dispatch": _source_check(
+            root / "openparf/placement/placer.py",
+            (
+                "self.op_cls.ssr_legalize_op(self.data_cls.pos[0])",
+                "pos_xyz = self.op_cls.direct_lg_op(pos)",
+                "loc_xyz = self.op_cls.ism_dp_op(self.data_cls.inst_locs_xyz)",
+            ),
+        ),
+        "ism_sssir_preservation": _source_check(
+            root / "openparf/ops/ism_dp/src/ism_detailed_placer.hpp",
+            ("case ResourceCategory::kSSSIR:",),
+        ),
+        "mcf_locks_sssir_solution": _source_check(
+            root / "openparf/ops/mcf_lg/mcf_lg.py",
+            (
+                "pos.data.copy_(res)",
+                "self.data_cls.inst_lock_mask[self.inst_ids_groups[i]] = 1",
+                "self.data_cls.lock_area_types(self.data_cls.ssr_area_types)",
+            ),
+        ),
+        "direct_lg_preserves_non_slice_xy": _source_check(
+            root / "openparf/ops/direct_lg/src/direct_lg_kernel.h",
+            (
+                "if (db.isInstLUT(i) || db.isInstFF(i))",
+                "pos[i * 3]     = init_pos[i * 2]",
+                "pos[i * 3 + 1] = init_pos[i * 2 + 1]",
+            ),
+        ),
         "chain_legalizer": _source_check(
             root / "openparf/ops/chain_legalizer/chain_legalizer.py",
             ("class ChainLegalizer",),
@@ -281,6 +309,10 @@ def probe_openparf_native_capabilities(
     ism = _source_has(source_audit, "atomic_detailed_placer")
     chain = _source_has(source_audit, "chain_legalizer")
     checker = _source_has(source_audit, "legality_checker")
+    mixed_dispatch = _source_has(source_audit, "mixed_atomic_sssir_dispatch")
+    ism_sssir = _source_has(source_audit, "ism_sssir_preservation")
+    mcf_lock = _source_has(source_audit, "mcf_locks_sssir_solution")
+    direct_preserve = _source_has(source_audit, "direct_lg_preserves_non_slice_xy")
     from .xilinx_openparf_atomic import (
         probe_xilinx_openparf_atomic_eligibility,
     )
@@ -291,22 +323,29 @@ def probe_openparf_native_capabilities(
     )
     atomic_ready = (
         atomic_adapter["eligible"] and direct and ism and operator_selection
+        and mixed_dispatch and ism_sssir and mcf_lock and direct_preserve
     )
+    atomic_primitives = {
+        *(f"LUT{width}" for width in range(1, 7)),
+        "FDCE", "FDPE", "FDRE", "FDSE",
+        "DSP48E2", "RAMB36E2", "URAM288",
+    }
     for primitive in sorted(primitive_capabilities):
-        if primitive in _KNOWN_PLACED_PRIMITIVES and (
-            primitive.startswith("LUT") and primitive != "LUT6_2"
-            or primitive in {"FDCE", "FDPE", "FDRE", "FDSE"}
-        ):
+        if primitive in atomic_primitives:
             primitive_capabilities[primitive] = {
                 "status": "adapter_required",
                 "evidence": [
                     "src/emuflow/xilinx_openparf_atomic.py",
-                    "openparf/ops/direct_lg/direct_lg.py",
+                    (
+                        "openparf/ops/direct_lg/direct_lg.py"
+                        if primitive not in {"DSP48E2", "RAMB36E2", "URAM288"}
+                        else "openparf/ops/mcf_lg/mcf_lg.py"
+                    ),
                 ],
                 "adapter_validation": "pass" if atomic_ready else "missing",
                 "reason": (
-                    "the atomic adapter preserves LUT/FF connectivity, control "
-                    "sets, discrete slot occupancy, and physical BEL compatibility"
+                    "the atomic adapter preserves connectivity, LUT/FF control "
+                    "sets, discrete resource occupancy, and physical BEL compatibility"
                     if atomic_ready else atomic_adapter["reason"]
                 ),
             }
@@ -363,6 +402,25 @@ def probe_openparf_native_capabilities(
                 if atomic_ready else atomic_adapter["reason"]
             ),
             ("src/emuflow/xilinx_openparf_atomic.py", "openparf/ops/ism_dp/ism_dp.py"),
+        ),
+        feature(
+            "mixed_atomic_sssir_native_flow",
+            (
+                "native_supported"
+                if mixed_dispatch and ism_sssir and mcf_lock and direct_preserve
+                else "core_missing"
+            ),
+            (
+                "global placement invokes and locks SSSIR MCF; direct LUT/FF "
+                "legalization preserves non-slice coordinates, and ISM "
+                "explicitly handles SSSIR categories"
+            ),
+            (
+                "openparf/placement/placer.py",
+                "openparf/ops/mcf_lg/mcf_lg.py",
+                "openparf/ops/direct_lg/src/direct_lg_kernel.h",
+                "openparf/ops/ism_dp/src/ism_detailed_placer.hpp",
+            ),
         ),
         feature(
             "dedicated_cascade_legalization",
