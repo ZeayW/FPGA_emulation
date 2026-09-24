@@ -4387,6 +4387,16 @@ The current timing qualification is setup-only RapidWright lightweight route
 timing plus OpenSTA.  Hold, package-pin/interface binding, and vendor sign-off
 remain outside Route A and are reported rather than silently inferred.
 
+AMF-Placer is being evaluated as an alternative complete placement route, but
+it is not a selectable provider or default. The public basic release contains
+real mixed-size global placement, macro legalization, CLB packing, and detailed
+placement; it also consumes Vivado-extracted input formats, lacks public core
+support for the current `MUXF9` and `URAM288` inventory, and has not qualified
+XCVU19P multi-SLR or clock legality. EmuFlow therefore exposes only an internal
+fail-closed capability and adapter contract at this milestone. The pinned
+source audit, primitive matrix, and adaptation boundary are documented in
+[`docs/PHASE7_AMF_PLACER_CAPABILITY.md`](docs/PHASE7_AMF_PLACER_CAPABILITY.md).
+
 Route A's Phase 6 macro-cycle checker evaluates the Xilinx primitives emitted
 by the pinned open Yosys mapping rather than accepting a generic-LUT surrogate.
 Its fail-closed model covers LUT1--LUT6_2, FDCE/FDPE/FDRE/FDSE, MUXF7/8/9,
