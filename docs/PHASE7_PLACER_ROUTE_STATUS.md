@@ -25,7 +25,7 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 
 | Route | Implemented evidence | Remaining production blockers | Decision |
 |---|---|---|---|
-| OpenPARF native (`feature/phase7-openparf-native`) | Pinned-source probe; ordinary LUT1–LUT6/FD* atomization; singleton DSP48E2/RAMB36E2/URAM288 support; one real compiled GP → hard-resource MCF/direct-LG → ISM run; independently validated placement certificate; no-search bridge to standard packed/placement contracts; internal RapidWright/OpenSTA candidate backend | carry/MUX/LUT6_2; RAMB18 half-sites; cascade, clock/half-column/SLR constraints; complete real XCVU19P RWRoute/OpenSTA gate | Primary implementation route; native runtime and contract bridge are proven for the audited subset, and remain fail-closed elsewhere |
+| OpenPARF native (`feature/phase7-openparf-native`) | Pinned-source probe; ordinary LUT1–LUT6/FD* atomization; singleton DSP48E2/RAMB36E2/URAM288 support; one real compiled GP → hard-resource MCF/direct-LG → ISM run; independently validated placement certificate; no-search bridge to standard packed/placement contracts; internal RapidWright/OpenSTA candidate backend; exact CARRY8 core-gap reproduction | CARRY8/LUT6_2 is confirmed `core_missing`; MUX/RAMB18/cascade and clock/half-column/SLR remain incomplete; complete real XCVU19P RWRoute/OpenSTA gate | Primary atomic route plus a separate native-core extension track; the audited subset remains fail-closed elsewhere and is not yet a DLA backend |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga`) | Pinned-source probe; Yosys mapped JSON to official FPGA Interchange logical netlist; physical netlist to validated placement certificate; real Cap'n Proto schema roundtrip | Upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
 | AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result |
 
@@ -71,8 +71,29 @@ before runtime, and records the region and density proof in its manifest.  The
 gate must be rerun on a connected two-dimensional real-device region; this
 failure is not counted as RapidWright or QoR evidence.
 
+The next connected `4x4` region passed the two-dimensional geometry check but
+was correctly rejected by the Route A reservation gate: the fixture occupied
+all 16 slice sites while the route contract permits at most 75% local site
+utilization.  The gate input is being enlarged; the utilization requirement is
+not weakened to make the test pass.
+
 Macro support will use a compact physical-macro contract derived from mapped
 connectivity.  It must preserve exact BEL roles, same-site membership, relative
 site offsets, RAMB18 mode, and cascade ordering.  OpenPARF must place those
 groups as indivisible units; the bridge may validate and materialize the result
 but may not repack macros or search for legal sites after placement.
+
+Pinned-source and minimum-reproduction evidence now classifies the
+`CARRY8 + 8xLUT6_2` path as `core_missing`: the current chain representation
+and legalizer are fixed to a 4-bit CLA plus four PROP LUTs.  The next macro
+route therefore extends the native OpenPARF data model/legalizer/ISM in an
+isolated branch.  It must not manufacture a pass by preplacing the macro or by
+calling the retired greedy legalizer.
+
+Native device constraints are split by evidence.  RapidWright can export
+typed carry/DSP/BRAM/URAM adjacency only when the primitive-specific BEL/site
+endpoints share the same canonical native `Node`; coordinate proximity is not
+accepted.  Clock-region and SLR membership/capacity are available.  XCVU19P
+half-column membership and maximum unique-clock capacity are not exposed by
+the pinned RapidWright API, so OpenPARF's benchmark-specific 12/24-clock
+constants are not imported and that capability stays fail-closed.
