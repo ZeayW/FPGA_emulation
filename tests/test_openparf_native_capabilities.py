@@ -8,7 +8,9 @@ from emuflow.errors import ValidationError
 from emuflow.openparf_native_capabilities import (
     CAPABILITY_STATUSES,
     OPENPARF_NATIVE_CAPABILITY_SCHEMA,
+    audit_pinned_openparf_carry_path,
     probe_openparf_native_capabilities,
+    probe_xilinx_openparf_carry_native_support,
 )
 from emuflow.xilinx_placer_capability import (
     qualify_xilinx_placer_capabilities,
@@ -18,6 +20,9 @@ from emuflow.xilinx_openparf import (
     export_xilinx_cluster_bookshelf,
     run_xilinx_openparf_native_legalization_smoke,
     validate_xilinx_openparf_native_smoke_placement,
+)
+from emuflow.xilinx_physical_macros import (
+    derive_xilinx_physical_macro_contract,
 )
 
 
@@ -103,6 +108,65 @@ def _write_fixture(root: Path, *, cascade: bool = False, collision: bool = False
         "site_templates": templates, "sites": sites,
     }), encoding="utf-8")
     return mapped, packed, architecture
+
+
+def _mapped_cell(cell_type, connections, outputs):
+    return {
+        "type": cell_type,
+        "port_directions": {
+            port: ("output" if port in outputs else "input")
+            for port in connections
+        },
+        "connections": connections,
+    }
+
+
+def _add_carry(cells, name, *, ci, co, net_base):
+    di = []
+    select = []
+    for index in range(8):
+        di_output = net_base + 2 * index
+        select_output = di_output + 1
+        cells[f"{name}$lut6_2_{index}"] = _mapped_cell(
+            "LUT6_2",
+            {
+                "I0": [net_base + 100 + index],
+                "O5": [di_output],
+                "O6": [select_output],
+            },
+            {"O5", "O6"},
+        )
+        di.append(di_output)
+        select.append(select_output)
+    cells[name] = _mapped_cell(
+        "CARRY8",
+        {
+            "CI": [ci],
+            "CI_TOP": ["0"],
+            "DI": di,
+            "S": select,
+            "CO": list(range(co, co + 8)),
+            "O": list(range(co + 8, co + 16)),
+        },
+        {"CO", "O"},
+    )
+
+
+def _write_two_carry_fixture(root: Path):
+    cells = {}
+    _add_carry(cells, "carry0", ci=1, co=1000, net_base=2000)
+    _add_carry(cells, "carry1", ci=1007, co=1100, net_base=3000)
+    mapped = root / "carry-mapped.json"
+    contract = root / "physical-macros.json"
+    mapped.write_text(json.dumps({
+        "modules": {
+            "top": {"attributes": {"top": "1"}, "cells": cells}
+        }
+    }), encoding="utf-8")
+    derive_xilinx_physical_macro_contract(
+        mapped, contract, top="top"
+    )
+    return mapped, contract
 
 
 class OpenparfNativeCapabilitiesTest(unittest.TestCase):
@@ -193,15 +257,96 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
             }
             mapped.write_text(json.dumps(value), encoding="utf-8")
             matrix = probe_openparf_native_capabilities(mapped, packed, architecture)
-        self.assertTrue(
-            all(matrix["primitives"][primitive]["status"] == "adapter_required"
-                for primitive in placed)
-        )
+        for primitive in placed:
+            expected = (
+                "core_missing"
+                if primitive in {"CARRY8", "LUT6_2"}
+                else "adapter_required"
+            )
+            self.assertEqual(matrix["primitives"][primitive]["status"], expected)
         self.assertEqual(matrix["primitives"]["GND"]["status"], "native_supported")
         self.assertEqual(
             matrix["primitives"]["FUTURE_PRIMITIVE"]["status"], "unverified"
         )
         self.assertFalse(matrix["native_packed_cluster_smoke"]["eligible"])
+
+    def test_carry_probe_reproduces_pinned_core_gap_without_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, contract = _write_two_carry_fixture(root)
+            output = root / "carry-capability.json"
+            with mock.patch("emuflow.openparf.run_openparf") as run_openparf:
+                report = probe_xilinx_openparf_carry_native_support(
+                    mapped, contract, top="top", output_path=output
+                )
+            serialized = json.loads(output.read_text(encoding="utf-8"))
+
+        run_openparf.assert_not_called()
+        self.assertEqual(report, serialized)
+        validate_xilinx_placer_capability_report(report)
+        self.assertEqual(report["qualification"]["status"], "core_missing")
+        self.assertFalse(report["qualification"]["runtime_launched"])
+        self.assertEqual(report["qualification"]["fallback"], "forbidden")
+        self.assertEqual(report["qualification"]["preplacement"], "forbidden")
+        reproduction = report["minimum_reproduction"]
+        self.assertEqual(reproduction["carry8_units"], 2)
+        self.assertEqual(reproduction["lut6_2_adapters"], 16)
+        self.assertEqual(reproduction["carry_chain_lengths"], [2])
+        self.assertEqual(reproduction["required_lut_adapters_per_unit"], 8)
+        self.assertEqual(reproduction["native_prop_luts_per_unit"], 4)
+        self.assertEqual(
+            report["constraints"]["ordered_carry8_chain"]["status"],
+            "core_missing",
+        )
+        decision = qualify_xilinx_placer_capabilities(
+            report,
+            required_primitives=("CARRY8", "LUT6_2"),
+            required_constraints=(
+                "indivisible_carry8_lut6_2_macro",
+                "ordered_carry8_chain",
+            ),
+        )
+        self.assertEqual(decision["status"], "fail")
+
+    def test_carry_source_audit_records_exact_native_assumptions(self):
+        audit = audit_pinned_openparf_carry_path(ROOT / "engines/openparf")
+        self.assertEqual(audit["status"], "core_missing")
+        self.assertEqual(
+            set(audit["checks"]),
+            {"parser", "shape_db", "chain_info", "chain_legalizer", "placer"},
+        )
+        self.assertTrue(all(
+            item["status"] == "core_missing"
+            for item in audit["checks"].values()
+        ))
+        self.assertIn(
+            "ordinal_lut_ids.resize(current_size + 4)",
+            audit["checks"]["chain_info"]["markers"],
+        )
+        self.assertIn(
+            "for (int j = 0; j < 4; j++)",
+            audit["checks"]["chain_legalizer"]["markers"],
+        )
+        self.assertEqual(
+            audit["checks"]["shape_db"]["placement_or_operator_consumers"],
+            [],
+        )
+
+    def test_carry_probe_is_unverified_when_pinned_source_is_missing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, contract = _write_two_carry_fixture(root)
+            report = probe_xilinx_openparf_carry_native_support(
+                mapped,
+                contract,
+                top="top",
+                source_root=root / "missing-openparf",
+            )
+        self.assertEqual(report["qualification"]["status"], "unverified")
+        self.assertTrue(all(
+            entry["status"] == "unverified"
+            for entry in report["source_audit"]["checks"].values()
+        ))
 
     def test_native_smoke_export_enables_only_generic_mcf_legalization(self):
         with tempfile.TemporaryDirectory() as temporary:
