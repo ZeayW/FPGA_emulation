@@ -281,6 +281,35 @@ def probe_openparf_native_capabilities(
     ism = _source_has(source_audit, "atomic_detailed_placer")
     chain = _source_has(source_audit, "chain_legalizer")
     checker = _source_has(source_audit, "legality_checker")
+    from .xilinx_openparf_atomic import (
+        probe_xilinx_openparf_atomic_eligibility,
+    )
+
+    atomic_adapter = probe_xilinx_openparf_atomic_eligibility(
+        mapped, packed, architecture,
+        top=top if top is not None else packed.get("top"),
+    )
+    atomic_ready = (
+        atomic_adapter["eligible"] and direct and ism and operator_selection
+    )
+    for primitive in sorted(primitive_capabilities):
+        if primitive in _KNOWN_PLACED_PRIMITIVES and (
+            primitive.startswith("LUT") and primitive != "LUT6_2"
+            or primitive in {"FDCE", "FDPE", "FDRE", "FDSE"}
+        ):
+            primitive_capabilities[primitive] = {
+                "status": "adapter_required",
+                "evidence": [
+                    "src/emuflow/xilinx_openparf_atomic.py",
+                    "openparf/ops/direct_lg/direct_lg.py",
+                ],
+                "adapter_validation": "pass" if atomic_ready else "missing",
+                "reason": (
+                    "the atomic adapter preserves LUT/FF connectivity, control "
+                    "sets, discrete slot occupancy, and physical BEL compatibility"
+                    if atomic_ready else atomic_adapter["reason"]
+                ),
+            }
 
     def feature(name: str, status: str, reason: str, evidence: Sequence[str]) -> Dict[str, Any]:
         if status not in CAPABILITY_STATUSES:
@@ -312,8 +341,12 @@ def probe_openparf_native_capabilities(
         feature(
             "atomic_lut_ff_legalization",
             "adapter_required" if direct and operator_selection else "core_missing",
-            "the native direct legalizer exists but generic packed-cluster mode disables it",
-            ("openparf/placement/op_collections.py", "openparf/ops/direct_lg/direct_lg.py"),
+            (
+                "the native direct legalizer is connected through the audited "
+                "atomic LUT/FF adapter for eligible fixtures"
+                if atomic_ready else atomic_adapter["reason"]
+            ),
+            ("src/emuflow/xilinx_openparf_atomic.py", "openparf/ops/direct_lg/direct_lg.py"),
         ),
         feature(
             "packed_cluster_detailed_placement",
@@ -324,8 +357,12 @@ def probe_openparf_native_capabilities(
         feature(
             "atomic_lut_ff_detailed_placement",
             "adapter_required" if ism else "core_missing",
-            "ISM exists for the native atomic LUT/FF model, not the current pre-packed site model",
-            ("openparf/ops/ism_dp/ism_dp.py",),
+            (
+                "ISM output is independently aggregated and checked by the "
+                "atomic placement certificate"
+                if atomic_ready else atomic_adapter["reason"]
+            ),
+            ("src/emuflow/xilinx_openparf_atomic.py", "openparf/ops/ism_dp/ism_dp.py"),
         ),
         feature(
             "dedicated_cascade_legalization",
@@ -377,31 +414,28 @@ def probe_openparf_native_capabilities(
             "adapter_validation": "pass",
         },
         "legalization": {
-            "status": "adapter_required" if generic_dispatch and mcf else "core_missing",
+            "status": "adapter_required" if atomic_ready else "core_missing",
             "evidence": [
-                "openparf/ops/mcf_lg/mcf_lg.py",
-                "src/emuflow/xilinx_openparf.py",
+                "openparf/ops/direct_lg/direct_lg.py",
+                "src/emuflow/xilinx_openparf_atomic.py",
             ],
-            **(
-                {"adapter_validation": "missing"}
-                if generic_dispatch and mcf
-                else {}
-            ),
+            **({"adapter_validation": "pass"} if atomic_ready else {}),
         },
         "detailed_placement": {
-            "status": "core_missing" if operator_selection else "unverified",
+            "status": "adapter_required" if atomic_ready else "core_missing",
             "evidence": [
-                "openparf/placement/op_collections.py",
-                "openparf/placement/placer.py",
+                "openparf/ops/ism_dp/ism_dp.py",
+                "src/emuflow/xilinx_openparf_atomic.py",
             ],
+            **({"adapter_validation": "pass"} if atomic_ready else {}),
         },
         "physical_export": {
             "status": "adapter_required",
             "evidence": [
-                "src/emuflow/xilinx_openparf.py",
-                "src/emuflow/xilinx_placement.py",
+                "src/emuflow/xilinx_openparf_atomic.py",
+                "src/emuflow/architecture.py",
             ],
-            "adapter_validation": "missing",
+            "adapter_validation": "pass" if atomic_ready else "missing",
         },
     }
     constraint_capabilities = {
@@ -426,11 +460,14 @@ def probe_openparf_native_capabilities(
             **({"adapter_validation": "missing"} if chain else {}),
         },
         "bel_site_mode": {
-            "status": "core_missing" if checker else "unverified",
+            "status": "adapter_required" if atomic_ready else (
+                "core_missing" if checker else "unverified"
+            ),
             "evidence": [
-                "openparf/ops/legality_check/legality_check.py",
-                "src/emuflow/xilinx_placement.py",
+                "src/emuflow/xilinx_openparf_atomic.py",
+                "src/emuflow/architecture.py",
             ],
+            **({"adapter_validation": "pass"} if atomic_ready else {}),
         },
     }
 
@@ -461,6 +498,7 @@ def probe_openparf_native_capabilities(
                 "production detailed placement or UltraScale+ BEL signoff"
             ),
         },
+        "native_atomic_lut_ff": atomic_adapter,
     }
     validate_xilinx_placer_capability_report(result)
     if output_path is not None:
