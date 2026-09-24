@@ -23,8 +23,15 @@ def _cell(cell_type, connections, outputs):
     }
 
 
-def write_openparf_runtime_fixture(root: Path) -> Tuple[Path, Path, Path]:
-    """Write a 64-LUT/64-FF, 4x4-slice runtime smoke fixture."""
+def write_openparf_runtime_fixture(
+    root: Path, *, include_hard: bool = False
+) -> Tuple[Path, Path, Path]:
+    """Write a 64-LUT/64-FF, 4x4-slice runtime smoke fixture.
+
+    ``include_hard`` inserts independent DSP48E2, RAMB36E2, and URAM288
+    instances into three existing FF-to-LUT ring edges.  No disconnected or
+    synthetic load-only net is added.
+    """
 
     root.mkdir(parents=True, exist_ok=True)
     mapped_path = root / "mapped.json"
@@ -37,10 +44,18 @@ def write_openparf_runtime_fixture(root: Path) -> Tuple[Path, Path, Path]:
     cells = {}
     clusters = []
     clock_bit = 1_000_000
+    hard_insertions = {
+        1: ("dsp", "DSP48E2", "A", "P", 30_000),
+        2: ("bram", "RAMB36E2", "ADDRARDADDR", "DOADO", 30_001),
+        3: ("uram", "URAM288", "ADDR_A", "DOUT_A", 30_002),
+    } if include_hard else {}
     for index in range(64):
         lut_name = f"lut_{index:02d}"
         ff_name = f"ff_{index:02d}"
-        previous_ff_bit = 20_000 + ((index - 1) % 64)
+        previous_ff_index = (index - 1) % 64
+        previous_ff_bit = 20_000 + previous_ff_index
+        if index in hard_insertions:
+            previous_ff_bit = hard_insertions[index][4]
         lut_bit = 10_000 + index
         ff_bit = 20_000 + index
         cells[lut_name] = _cell(
@@ -70,6 +85,29 @@ def write_openparf_runtime_fixture(root: Path) -> Tuple[Path, Path, Path]:
                 {"instance": ff_name, "cell_type": "FDRE", "bel": "AFF"},
             ],
         })
+
+    if include_hard:
+        for insertion_index, (
+            instance, primitive, input_port, output_port, output_bit
+        ) in hard_insertions.items():
+            input_bit = 20_000 + ((insertion_index - 1) % 64)
+            cells[instance] = _cell(
+                primitive,
+                {input_port: [input_bit], output_port: [output_bit]},
+                {output_port},
+            )
+            clusters.append({
+                "id": instance,
+                "kind": "hard",
+                "site_templates": [primitive],
+                "control_set": None,
+                "assignments": [{
+                    "instance": instance,
+                    "cell_type": primitive,
+                    "bel": primitive,
+                    "bel_candidates": [primitive],
+                }],
+            })
 
     mapped_path.write_text(json.dumps({
         "modules": {"top": {"attributes": {"top": "1"}, "cells": cells}},
@@ -107,15 +145,39 @@ def write_openparf_runtime_fixture(root: Path) -> Tuple[Path, Path, Path]:
         for x in range(4)
         for y in range(4)
     ]
+    site_templates = {"SLICEL": {
+        "bels": [*lut_bels, *ff_bels], "alternative_templates": [],
+    }}
+    if include_hard:
+        for resource_index, primitive in enumerate(
+            ("DSP48E2", "RAMB36E2", "URAM288"), start=0
+        ):
+            site_templates[primitive] = {
+                "bels": [{
+                    "name": primitive,
+                    "type": primitive,
+                    "z": 0,
+                    "compatible_cells": [primitive],
+                    "placement_mode": primitive,
+                }],
+                "alternative_templates": [],
+            }
+            for site_index in range(2):
+                x = 4 + 2 * resource_index + site_index
+                sites.append({
+                    "name": f"{primitive}_X{site_index}Y0",
+                    "type": primitive,
+                    "template": primitive,
+                    "x": x,
+                    "y": 0,
+                    "tile": {"grid_col": x, "grid_row": 0},
+                })
     architecture_path.write_text(json.dumps({
         "schema": "emuflow.archdb/v1",
         "part": "openparf-runtime-fixture",
         "source": {"format": "test/v1"},
         "policy": {"name": "test-runtime-smoke"},
-        "site_templates": {"SLICEL": {
-            "bels": [*lut_bels, *ff_bels], "alternative_templates": [],
-        }},
+        "site_templates": site_templates,
         "sites": sites,
     }), encoding="utf-8")
     return mapped_path, packed_path, architecture_path
-
