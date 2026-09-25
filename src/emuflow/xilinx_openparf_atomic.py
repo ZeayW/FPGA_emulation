@@ -168,13 +168,30 @@ def _placement_sites(
     ]
     if not slice_sites:
         raise ValidationError("ArchitectureDB has no slice sites")
-    by_coordinate: Dict[Tuple[int, int], List[str]] = defaultdict(list)
-    for raw_site in architecture.value["sites"]:
-        by_coordinate[_physical_coordinate(raw_site)].append(raw_site["name"])
+    # A real UltraScale+ tile may contain several sites of the same hard
+    # resource (two DSP48E2s, four URAM288s, ...).  Bookshelf represents that
+    # as one tile with resource capacity greater than one.  Multiple logic
+    # sites at one coordinate are still unsupported because LUT/FF z encodes
+    # BEL occupancy rather than a site selector.
+    selected_sites = [
+        site for site in architecture.sites
+        if str(site.get("type", "")).upper().startswith("SLICE")
+        or any(
+            sum(primitive in bel["compatible_cells"] for bel in site["bels"])
+            == 1
+            for primitive in hard_resources
+        )
+    ]
+    by_coordinate: Dict[Tuple[int, int], List[Mapping[str, Any]]] = defaultdict(list)
+    for raw_site in selected_sites:
+        by_coordinate[_physical_coordinate(raw_site)].append(raw_site)
     collisions = {
-        coordinate: names
-        for coordinate, names in by_coordinate.items()
-        if len(names) != 1
+        coordinate: [site["name"] for site in sites]
+        for coordinate, sites in by_coordinate.items()
+        if sum(
+            str(site.get("type", "")).upper().startswith("SLICE")
+            for site in sites
+        ) > 1
     }
     if collisions:
         raise ValidationError(
@@ -614,14 +631,53 @@ def _render_sites(
     sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
     atoms: Sequence[Mapping[str, str]],
 ) -> Tuple[str, Dict[str, Any]]:
-    coordinates = [_physical_coordinate(site) for site, _resources in sites]
+    grouped: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    for site, resources in sites:
+        coordinate = _physical_coordinate(site)
+        group = grouped.setdefault(coordinate, {
+            "resources": Counter(), "physical_sites": defaultdict(list),
+        })
+        group["resources"].update(resources)
+        tile = site.get("tile")
+        site_index = (
+            tile.get("site_index", 0) if isinstance(tile, Mapping) else 0
+        )
+        if isinstance(site_index, bool) or not isinstance(site_index, int):
+            raise ValidationError("ArchitectureDB site_index is invalid")
+        for resource, count in resources.items():
+            if count <= 0:
+                continue
+            # Logic capacities are BEL counts within one physical slice; hard
+            # capacities are counts of independently selectable physical sites.
+            if resource in {"LUT", "FF"}:
+                if group["physical_sites"][resource]:
+                    raise ValidationError(
+                        "ArchitectureDB has multiple logic sites at one physical tile"
+                    )
+                group["physical_sites"][resource].append(
+                    (site_index, site["name"])
+                )
+            else:
+                group["physical_sites"][resource].append(
+                    (site_index, site["name"])
+                )
+    for group in grouped.values():
+        for resource, indexed_names in group["physical_sites"].items():
+            group["physical_sites"][resource] = [
+                name for _index, name in sorted(indexed_names)
+            ]
+
+    coordinates = list(grouped)
     x_axis = sorted({coordinate[0] for coordinate in coordinates})
     y_axis = sorted({coordinate[1] for coordinate in coordinates})
     x_index = {value: index for index, value in enumerate(x_axis)}
     y_index = {value: index for index, value in enumerate(y_axis)}
     signatures = sorted({
-        tuple(sorted(resources.items(), key=lambda item: _resource_sort_key(item[0])))
-        for _site, resources in sites
+        tuple(sorted(
+            group["resources"].items(),
+            key=lambda item: _resource_sort_key(item[0]),
+        ))
+        for group in grouped.values()
     })
     signature_names = {
         signature: f"EMUFLOW_SITE_{index}"
@@ -644,20 +700,29 @@ def _render_sites(
         "END RESOURCES", "", f"SITEMAP {len(x_axis)} {len(y_axis)}",
     ])
     site_map = []
-    for site, resources in sorted(
-        sites, key=lambda item: _physical_coordinate(item[0])
-    ):
-        coordinate = _physical_coordinate(site)
+    for coordinate, group in sorted(grouped.items()):
+        resources = group["resources"]
         dense = (x_index[coordinate[0]], y_index[coordinate[1]])
         signature = tuple(sorted(
             resources.items(), key=lambda item: _resource_sort_key(item[0])
         ))
         lines.append(f"{dense[0]} {dense[1]} {signature_names[signature]}")
+        physical_sites = {
+            resource: list(names)
+            for resource, names in sorted(
+                group["physical_sites"].items(),
+                key=lambda item: _resource_sort_key(item[0]),
+            )
+        }
+        all_names = sorted({
+            name for names in physical_sites.values() for name in names
+        })
         site_map.append({
             "dense_x": dense[0], "dense_y": dense[1],
             "physical_x": coordinate[0], "physical_y": coordinate[1],
-            "site": site["name"],
+            "site": all_names[0],
             "resources": dict(sorted(resources.items())),
+            "physical_sites": physical_sites,
         })
     lines.append("END SITEMAP")
     return "\n".join(lines) + "\n", {
@@ -825,9 +890,17 @@ def export_xilinx_openparf_atomic(
             "RAMB36E2": "BRAM_CASCADE",
             "URAM288": "URAM_CASCADE",
         }
-        coordinate_sites = {
-            item["site"]: item for item in coordinate_system["sites"]
-        }
+        coordinate_sites = {}
+        for item in coordinate_system["sites"]:
+            for resource, site_names in item.get("physical_sites", {}).items():
+                if resource not in family_for_resource:
+                    continue
+                for z, site_name in enumerate(site_names):
+                    if site_name in coordinate_sites:
+                        raise ValidationError(
+                            "physical hardblock site appears in two Bookshelf tiles"
+                        )
+                    coordinate_sites[site_name] = {**item, "hardblock_z": z}
         native_families = {
             item.get("kind"): item
             for item in native.get("payload", {}).get("dedicated_adjacency", [])
@@ -863,7 +936,7 @@ def export_xilinx_openparf_atomic(
                         "resource": resource,
                         "x": coordinate_sites[site_name]["dense_x"],
                         "y": coordinate_sites[site_name]["dense_y"],
-                        "z": 0,
+                        "z": coordinate_sites[site_name]["hardblock_z"],
                     } for site_name in names_window])
             if not windows:
                 raise ValidationError(
@@ -878,8 +951,13 @@ def export_xilinx_openparf_atomic(
             resource = atom["resource"]
             if resource not in _HARD_RESOURCES.values() or atom["instance"] in owned_hardblocks:
                 continue
-            candidates = [item for item in coordinate_system["sites"]
-                          if item.get("resources", {}).get(resource) == 1]
+            candidates = [
+                {**item, "site": site_name, "hardblock_z": z}
+                for item in coordinate_system["sites"]
+                for z, site_name in enumerate(
+                    item.get("physical_sites", {}).get(resource, [])
+                )
+            ]
             if not candidates:
                 raise ValidationError(
                     f"typed hardblock singleton {atom['instance']!r} has no legal site"
@@ -890,7 +968,8 @@ def export_xilinx_openparf_atomic(
                 "source_instances": [atom["instance"]],
                 "windows": [[{
                     "site": item["site"], "resource": resource,
-                    "x": item["dense_x"], "y": item["dense_y"], "z": 0,
+                    "x": item["dense_x"], "y": item["dense_y"],
+                    "z": item["hardblock_z"],
                 }] for item in candidates],
             })
         expected_hardblocks = {
@@ -1046,7 +1125,6 @@ def validate_xilinx_openparf_atomic_placement(
             site_entry = site_map.get((x, y))
             if site_entry is None:
                 raise ValidationError("OpenPARF atomic placement uses an unknown site")
-            site_name = site_entry["site"]
             atom = atoms[fields[0]]
             cell_type = atom["cell_type"]
             resource = atom.get("resource")
@@ -1055,7 +1133,7 @@ def validate_xilinx_openparf_atomic_placement(
                 not isinstance(resources, Mapping)
                 or (
                     resource not in {"LUT", "FF"}
-                    and resources.get(resource, 0) != 1
+                    and resources.get(resource, 0) < 1
                 )
             ):
                 raise ValidationError(
@@ -1068,13 +1146,25 @@ def validate_xilinx_openparf_atomic_placement(
                     )
                 bel_name = _slot_bel(resource, z, cell_type)
             elif resource in _HARD_RESOURCES.values():
-                if z != 0:
+                physical_sites = site_entry.get("physical_sites", {}).get(resource)
+                if (
+                    not isinstance(physical_sites, list)
+                    or z < 0 or z >= len(physical_sites)
+                ):
                     raise ValidationError(
-                        "OpenPARF singleton hard-resource placement must use z=0"
+                        "OpenPARF hard-resource placement uses an invalid site slot"
                     )
+                site_name = physical_sites[z]
                 bel_name = None
             else:
                 raise ValidationError("OpenPARF atomic placement has an unknown resource")
+            if resource in {"LUT", "FF"}:
+                physical_sites = site_entry.get("physical_sites", {}).get(resource)
+                if not isinstance(physical_sites, list) or len(physical_sites) != 1:
+                    raise ValidationError(
+                        "OpenPARF logic placement has no unique physical slice"
+                    )
+                site_name = physical_sites[0]
             collision = (site_name, resource, z)
             if collision in occupied:
                 raise ValidationError("OpenPARF atomic placement overlaps a BEL slot")

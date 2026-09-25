@@ -376,6 +376,73 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["detailed_place_flag"], 1)
         self.assertNotIn("fallback", config)
 
+    def test_cotiled_hard_sites_become_one_capacity_site_with_exact_slots(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_runtime_fixture(
+                root, include_hard=True
+            )
+            value = json.loads(architecture.read_text())
+            dsp_sites = [
+                site for site in value["sites"] if site["type"] == "DSP48E2"
+            ]
+            self.assertEqual(len(dsp_sites), 2)
+            dsp_sites[0]["tile"] = {
+                "grid_col": 20, "grid_row": 7, "site_index": 0,
+            }
+            dsp_sites[1]["tile"] = {
+                "grid_col": 20, "grid_row": 7, "site_index": 1,
+            }
+            architecture.write_text(json.dumps(value), encoding="utf-8")
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            names = json.loads((output / "name_map.json").read_text())
+            coordinate_sites = names["coordinate_system"]["sites"]
+            dsp_tiles = [
+                site for site in coordinate_sites
+                if site["resources"].get("DSP48E2")
+            ]
+            self.assertEqual(len(dsp_tiles), 1)
+            self.assertEqual(dsp_tiles[0]["resources"]["DSP48E2"], 2)
+            self.assertEqual(
+                dsp_tiles[0]["physical_sites"]["DSP48E2"],
+                ["DSP48E2_X0Y0", "DSP48E2_X1Y0"],
+            )
+
+            resource_indexes = {"LUT": 0, "FF": 0}
+            rows = []
+            for atom in names["atoms"]:
+                resource = atom["resource"]
+                candidates = [
+                    site for site in coordinate_sites
+                    if site["resources"].get(resource)
+                ]
+                if resource in resource_indexes:
+                    index = resource_indexes[resource]
+                    resource_indexes[resource] += 1
+                    site = candidates[index // 4]
+                    z = 2 * (index % 4) + (1 if resource == "LUT" else 0)
+                else:
+                    site = candidates[0]
+                    z = 1 if resource == "DSP48E2" else 0
+                rows.append(
+                    f"{atom['openparf']} {site['dense_x']} {site['dense_y']} {z}"
+                )
+            placement = output / "cotiled.pl"
+            placement.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            certificate = validate_xilinx_openparf_atomic_placement(
+                placement, output / "name_map.json", mapped, architecture
+            )
+            dsp_cluster = next(
+                cluster
+                for cluster in certificate["clusters"]
+                if any(
+                    assignment["cell_type"] == "DSP48E2"
+                    for assignment in cluster["assignments"]
+                )
+            )
+            self.assertEqual(dsp_cluster["site"], "DSP48E2_X1Y0")
+
     def test_real_style_runtime_placement_uses_odd_lut6_slots(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

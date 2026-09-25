@@ -4574,6 +4574,16 @@ full-device analytical solution from being squeezed into one SLR by the exact
 legalizer after half of its clusters have already been optimized for a
 different SLR.  The unrestricted whole-device guidance mode remains distinct
 and does not silently acquire a region constraint.
+The native atomic/macro qualification exporter also models real multi-site
+tiles directly. One Bookshelf tile carries the summed capacity of its demanded
+physical sites (for example, two DSP48E2 or four URAM288 sites), while a
+source-ordered hard-resource `z` slot maps each placed atom back to one exact
+ArchitectureDB site. Undemanded resources such as LAGUNA are omitted from the
+qualification problem rather than being mistaken for coordinate collisions.
+The name map preserves every physical site identity, and the independent
+validator resolves and rechecks the selected slot before RapidWright export.
+Multiple slice sites at one tile remain fail-closed because LUT/FF `z` already
+denotes BEL occupancy.
 The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.

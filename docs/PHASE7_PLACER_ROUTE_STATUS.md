@@ -100,7 +100,11 @@ operator chooses conflict-free whole-chain windows from the global-placement
 displacement cost, excludes every owned hard block from singleton MCF, and
 freezes the result before ISM. The current allocator is deliberately described
 as a deterministic conflict-aware heuristic, not as an exact optimizer. Its
-output is independently checked against the native adjacency artifact. DSP,
+output is independently checked against the native adjacency artifact. Real
+multi-site tiles are represented as one Bookshelf capacity site plus exact,
+source-ordered physical-site slots; unrelated device sites are not admitted
+to the placement problem. This preserves tile geometry without losing the
+identity of either DSP/URAM sibling site. DSP,
 then BRAM, then URAM must each pass compiled placement, RWRoute, and OpenSTA
 before this implementation is counted as qualified evidence.
 
