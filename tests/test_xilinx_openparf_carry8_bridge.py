@@ -46,7 +46,7 @@ class XilinxOpenparfCarry8BridgeTest(unittest.TestCase):
             )
             validation = validate_xilinx_placement(packed, architecture, output)
             self.assertEqual(report["runtime_validation"], "native-openparf")
-            self.assertEqual(report["cells"], 19)
+            self.assertEqual(report["cells"], 20)
             self.assertEqual(report["clusters"], 3)
             self.assertEqual(validation["cascade_chains"], 1)
 
@@ -63,7 +63,7 @@ class XilinxOpenparfCarry8BridgeTest(unittest.TestCase):
             route_report = export_rwroute_input(
                 mapped, packed, output, rwroute
             )
-            self.assertEqual(route_report["logical_cells"], 19)
+            self.assertEqual(route_report["logical_cells"], 20)
             self.assertEqual(route_report["expanded_lut6_2_cells"], 16)
             self.assertTrue(rwroute.is_file())
 

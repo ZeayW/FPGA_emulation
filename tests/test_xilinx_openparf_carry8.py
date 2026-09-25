@@ -68,7 +68,11 @@ def _write_fixture(root):
         net_base + offset
         for net_base in (1100, 2100)
         for offset in range(16)
+        if net_base + offset != 1100
     ]
+    cells["src_ff"] = _cell("FDRE", {
+        "C": [5000], "CE": ["1"], "D": ["0"], "Q": [1100], "R": ["0"],
+    })
     cells["ff"] = _cell("FDRE", {
         "C": [5000], "CE": ["1"], "D": [48], "Q": [5001], "R": ["0"],
     })
@@ -188,8 +192,8 @@ def _write_placement(path, name_map, *, break_chain=False, permute_macro_slots=F
     rows = []
     for atom in name_map["atoms"]:
         instance = atom["instance"]
-        if instance == "ff":
-            x, y, z = 1, 0, 0
+        if instance in {"ff", "src_ff"}:
+            x, y, z = (1, 0, 0) if instance == "ff" else (1, 0, 1)
         else:
             carry, bel = macro_bels[instance]
             x, y = macro_site[carry]
