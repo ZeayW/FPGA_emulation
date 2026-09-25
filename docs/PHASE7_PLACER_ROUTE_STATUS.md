@@ -25,7 +25,7 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 
 | Route | Implemented evidence | Remaining production blockers | Decision |
 |---|---|---|---|
-| OpenPARF native (`feature/phase7-openparf-native-macros`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; A2 now also passes that entire chain for two native full-slice CARRY8 macros and one certified CARRY_NEXT edge | MUX/RAMB18, DSP/BRAM/URAM cascades, and clock/half-column/SLR constraints; then Koios DLA medium | Primary route; atomic and CARRY8 subsets qualified, workload capability not yet qualified |
+| OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; A2 also passes that entire chain for two native full-slice CARRY8 macros and one certified CARRY_NEXT edge; source-sealed real-device facts now cover CARRY, DSP, and URAM chain adjacency | MUX/RAMB18, BRAM cascade proof, hard-block chain legalization, authoritative half-column limits, and Koios DLA medium | Primary route; atomic and CARRY8 subsets qualified, workload capability not yet qualified |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga`) | Pinned-source probe; Yosys mapped JSON to official FPGA Interchange logical netlist; physical netlist to validated placement certificate; real Cap'n Proto schema roundtrip | Upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
 | AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result |
 
@@ -81,7 +81,9 @@ primitive or constraint:
 1. represent one `CARRY8 + 8xLUT6_2` group as an indivisible full-slice unit,
    including ordered inter-site carry-chain adjacency;
 2. add MUXF7/MUXF8/MUXF9 relative placement and RAMB18 pair/mode constraints;
-3. add DSP48E2, BRAM, and URAM cascade ordering from typed native adjacency;
+3. add DSP48E2, BRAM, and URAM cascade ordering from typed native adjacency,
+   with a family-specific proof contract where the device database exposes a
+   hard-block-internal cascade differently from ordinary routing;
 4. consume authoritative clock-region and SLR membership/capacity during
    global placement and legalization;
 5. retain fail-closed behavior for half-column clock capacity until an
@@ -184,10 +186,18 @@ Standalone OpenSTA 3.1.0 (`051222e4ec`) reported one complete timed endpoint,
 zero failures, WNS +38.742802 ns, and TNS 0 ns.  This qualifies CARRY8, not the
 remaining hard-block cascades or the DLA workload.
 
-Native device constraints are split by evidence.  RapidWright can export
-typed carry/DSP/BRAM/URAM adjacency only when the primitive-specific BEL/site
-endpoints share the same canonical native `Node`; coordinate proximity is not
-accepted.  Clock-region and SLR membership/capacity are available.  XCVU19P
-half-column membership and maximum unique-clock capacity are not exposed by
-the pinned RapidWright API, so OpenPARF's benchmark-specific 12/24-clock
-constants are not imported and that capability stays fail-closed.
+Native device constraints are split by evidence.  The version-2 exporter
+seals its ArchitectureDB and RapidWright source identity, scopes all sites to
+the exact ArchitectureDB inventory, and proves each vector lane rather than
+accepting coordinate proximity.  On the real XCVU19P model it currently
+exports 508,992 `CARRY_NEXT`, 3,808 `DSP_CASCADE`, and 316 `URAM_CASCADE`
+edges.  Carry endpoints share the certified continuation node; DSP and URAM
+endpoints use exactly one typed direct native arc to the matching target
+site-pin vector.  BRAM cascade remains fail-closed because RapidWright exposes
+its CASDO endpoint entering a hard-block-internal tile wire without the same
+ordinary target-site-pin arc representation; a distinct authoritative proof
+is required before any BRAM edge can be consumed.  Clock-region and SLR
+membership/capacity are available.  XCVU19P half-column membership and maximum
+unique-clock capacity are not exposed by the pinned RapidWright API, so
+OpenPARF's benchmark-specific 12/24-clock constants are not imported and that
+capability stays fail-closed.

@@ -909,7 +909,7 @@ multiple real source-bound candidates pass that gate; synthetic fixtures only
 validate the checker.
 Relocatable v2 bundles remain readable but do not contain congestion CSV.
 
-## 11. Stage 7 - OpenPARF placement and Vivado handoff
+## 11. Stage 7 - OpenPARF-native placement and open physical closure
 
 ### Core literature
 
@@ -927,51 +927,75 @@ Relocatable v2 bundles remain readable but do not contain congestion CSV.
 1. **Lookahead placement** serves partition, routing, TDM, and pin planning.
    It must be fast and predict congestion, SLL crossing, and endpoint
    location.
-2. **Handoff placement** provides a legal and useful starting point for
-   Vivado. It must model enough packing and device constraints that Vivado
-   does not discard the result.
+2. **Physical placement** is the exact site/BEL assignment consumed by the
+   selected detailed router.  It must model packing, hard macros, cascade
+   adjacency, clock regions, SLRs, fixed I/O, and control sets itself.  A
+   downstream router may verify or route the answer, but may not silently
+   replace it with a vendor placer result.
 
 They must not be evaluated by the same acceptance criteria.
 
 ### Selected technical route
 
-1. Keep direct in-tree OpenPARF integration as the global-placement engine.
-2. Enable and validate the complete heterogeneous-resource model.
-3. Add LEAPS-style SLR/SLL objectives and continuous multi-die optimization.
-4. Add timing weights using OpenSTA paths; evaluate AMF-Placer/TD-Placer
-   timing models before selecting one.
-5. Add RUDY or a stronger routability estimator and correlate it with Vivado
-   congestion.
-6. Support macro cascades, fences, clock regions, and fixed I/O resources.
-7. Replace the bucket greedy legalizer with a pack/control-set-aware
-   legalization model for handoff:
-   - LUT/FF compatibility;
-   - FF control sets;
-   - carry/macro chains;
-   - site capacity and pin sharing;
-   - SLR and clock-region legality.
-8. Treat Vivado constraints as a graduated handoff:
-   soft regions, movable locations, and sparse hard anchors. Do not assume
-   that more fixed LOCs imply better placement.
+OpenPARF remains the production implementation route.  DREAMPlaceFPGA and
+AMF-Placer are independent candidate branches, not replacements for the
+OpenPARF work and not evidence until their public optimization cores run.
+
+1. **A1 atomic qualification.** Run the compiled OpenPARF global placement,
+   native resource legalization, and detailed placement on ordinary LUT/FF
+   atoms plus singleton DSP48E2, RAMB36E2, and URAM288 resources.  Re-import
+   every site/BEL assignment, route it with RapidWright, and time the routed
+   result with standalone OpenSTA.
+2. **A2 native macro qualification.** Extend OpenPARF's own placement and
+   legalization operators for indivisible CARRY8/LUT full-slice groups,
+   MUXF7/8/9 relative macros, RAMB18 modes, and typed DSP/BRAM/URAM cascade
+   chains.  Consume source-sealed RapidWright device facts; do not infer
+   adjacency from `x/y` proximity and do not run a greedy site search after
+   OpenPARF.
+3. **Device-wide legality.** Enforce clock-region, SLR, fixed-I/O, control-set,
+   and independently sourced half-column clock constraints during placement
+   and legalization.  A missing authoritative constraint remains
+   fail-closed.
+4. **Placement objectives.** Add LEAPS-style SLR/SLL objectives, OpenSTA path
+   weights, and RUDY/routability pressure only after the corresponding
+   legality model is independently checked.  Intermediate HPWL or density is
+   diagnostic, never the promotion metric.
+5. **Open physical closure.** Convert the exact OpenPARF result to the
+   RapidWright route boundary without moving cells, require zero missing sinks
+   and zero placement/legalization fallback, extract endpoint-complete routed
+   delays, and use standalone OpenSTA for authoritative global WNS/TNS.
+6. **Candidate controls.** DREAMPlaceFPGA remains a research control while its
+   upstream detailed placement and UltraScale+ macro/clock constraints are
+   absent.  AMF-Placer is a secondary candidate only after its public
+   optimization core, not merely its adapter, runs through the same route and
+   timing gates.
+7. **Workload promotion.** Freeze Phase 1--6, the architecture, router,
+   resource limits, timing model, and one physical seed; then compare surviving
+   candidates on Koios DLA medium through complete Phase 7.
 
 ### Acceptance gate
 
 Lookahead:
 
-- congestion and SLL rank correlation against Vivado;
+- congestion and SLL rank correlation against the selected routed backend;
 - endpoint-location stability;
 - runtime suitable for iterative use.
 
-Handoff:
+Physical placement:
 
 - complete compatible placement artifact;
-- bounded Vivado displacement and repair count;
-- no regression in placement/routing success;
-- measured Vivado runtime, congestion, WNS/TNS, SLL usage, and anchor
-  retention against a no-OpenPARF baseline.
+- zero downstream placement displacement or repair;
+- zero lost cells, illegal macros, overlaps, missing logical sinks, or
+  unrouted required endpoints;
+- exact site/BEL/macro revalidation against the same sealed ArchitectureDB and
+  native-device-constraint facts;
+- measured placement and routing runtime, routed congestion, SLL usage, and
+  authoritative standalone OpenSTA global WNS/TNS.
 
-Vivado remains the final placement/routing/sign-off backend for the current
-project scope.
+RapidWright routing plus independent routed-delay extraction and OpenSTA is
+the selected Xilinx research-qualification tail.  Vivado is optional external
+comparison/sign-off evidence and must not be required to make the open Phase 7
+placement route internally complete.
 
 ## 12. Cross-stage optimization campaign
 
