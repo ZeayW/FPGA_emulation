@@ -223,8 +223,13 @@ public final class EmuFlowNativeDeviceConstraints {
         require(sitePin != null && sitePinName.equals(sitePin.getPinName()),
                 site.getName() + "/" + sitePinName + " has no native SitePin");
         BELPin port = sitePin.getBELPin();
-        require(port != null && port.isSitePort() && port.isDedicatedSitePin(),
-                site.getName() + "/" + sitePinName + " is not dedicated");
+        // RapidWright does not mark every hard-block cascade PORT BEL pin as
+        // `isDedicatedSitePin()`, even when the two SitePins resolve to the
+        // same PIP-free canonical Node.  The latter identity (checked for the
+        // complete family vector below) is the native proof; the optional
+        // metadata flag is therefore deliberately not treated as authority.
+        require(port != null && port.isSitePort(),
+                site.getName() + "/" + sitePinName + " is not a site port");
         require(output ? site.isOutputPin(sitePinName) : site.isInputPin(sitePinName),
                 site.getName() + "/" + sitePinName + " direction is invalid");
         Node node = selected.getExternalNode(site);
