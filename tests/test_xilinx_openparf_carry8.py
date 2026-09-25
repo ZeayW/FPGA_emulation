@@ -133,27 +133,23 @@ def _write_fixture(root):
     payload = {
         "capabilities": {
             "clock_region_site_capacity": "native_supported",
-            "dedicated_adjacency.BRAM_CASCADE": "unverified",
+            "dedicated_adjacency.BRAM_CASCADE": "core_missing",
             "dedicated_adjacency.CARRY_NEXT": "native_supported",
-            "dedicated_adjacency.DSP_CASCADE": "unverified",
-            "dedicated_adjacency.URAM_CASCADE": "unverified",
+            "dedicated_adjacency.DSP_CASCADE": "core_missing",
+            "dedicated_adjacency.URAM_CASCADE": "core_missing",
             "half_column_clock_capacity": "unverified",
             "slr_site_capacity": "native_supported",
         },
         "dedicated_adjacency": [{
             "chains": chains,
             "edge_count": 12,
+            "endpoint_contract": "carry8-co7-ci-all-v1",
             "kind": "CARRY_NEXT",
             "native_proof_sha256": "b" * 64,
-            "proof_method": "rapidwright-primitive-bel-sitepin-same-canonical-node-v1",
-            "source_endpoint": {
-                "bel": "CARRY8", "bel_pin": "CO7", "logical_port": "CO",
-                "selection": {"kind": "bit", "index": 7}, "site_pin": "COUT",
-            },
-            "target_endpoint": {
-                "bel": "CARRY8", "bel_pin": "CIN", "logical_port": "CI",
-                "selection": {"kind": "all"}, "site_pin": "CIN",
-            },
+            "proof_method": (
+                "rapidwright-dedicated-sitepin-vector-"
+                "same-canonical-node-v1"
+            ),
         }],
         "site_capacity": [{
             "clock_region": "X0Y0", "site_type": "SLICEL", "sites": 16,
@@ -170,12 +166,16 @@ def _write_fixture(root):
         },
         "summary": {
             "capacity_buckets": 1, "clock_regions": 1, "dedicated_edges": 12,
+            "dedicated_edges_by_kind": {
+                "BRAM_CASCADE": 0, "CARRY_NEXT": 12,
+                "DSP_CASCADE": 0, "URAM_CASCADE": 0,
+            },
             "sites": 16, "slrs": 1,
         },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     native.write_text(json.dumps({
-        "schema": "emuflow.xilinx-native-device-constraints/v1",
+        "schema": "emuflow.xilinx-native-device-constraints/v2",
         "payload": payload,
         "payload_sha256": hashlib.sha256(encoded).hexdigest(),
     }, sort_keys=True), encoding="utf-8")

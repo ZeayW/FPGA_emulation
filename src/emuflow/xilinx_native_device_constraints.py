@@ -1,11 +1,11 @@
 """Source-sealed native Xilinx dedicated-wire and region-capacity facts.
 
 The artifact validated here is deliberately smaller than a second device
-database.  Dedicated CARRY8 edges are encoded as chains of ArchitectureDB
-site names; every consecutive pair was proven by the exporter through the
-primitive BEL pins, their dedicated SitePins, and one identical canonical
-RapidWright Node.  The digest of those native proofs is retained without
-copying the complete native routing graph into the repository.
+database. Dedicated carry, DSP, BRAM, and URAM edges are encoded as chains of
+ArchitectureDB site names. Every consecutive pair was proven by the exporter
+through the complete primitive-family vector of dedicated SitePins and
+identical canonical RapidWright Nodes. The digest of those native proofs is
+retained without copying the complete native routing graph into the repository.
 """
 
 from __future__ import annotations
@@ -27,10 +27,10 @@ from .rapidwright_provider import (
 
 
 XILINX_NATIVE_DEVICE_CONSTRAINTS_SCHEMA = (
-    "emuflow.xilinx-native-device-constraints/v1"
+    "emuflow.xilinx-native-device-constraints/v2"
 )
 NATIVE_DEDICATED_NODE_PROOF = (
-    "rapidwright-primitive-bel-sitepin-same-canonical-node-v1"
+    "rapidwright-dedicated-sitepin-vector-same-canonical-node-v1"
 )
 CAPABILITY_STATUSES = {
     "native_supported",
@@ -49,6 +49,12 @@ _REQUIRED_CAPABILITIES = (
     "half_column_clock_capacity",
     "slr_site_capacity",
 )
+_FAMILY_CONTRACTS = {
+    "BRAM_CASCADE": ("ramb36e2-all-cascade-sitepins-v1", {"RAMB36E2"}),
+    "CARRY_NEXT": ("carry8-co7-ci-all-v1", {"CARRY8"}),
+    "DSP_CASCADE": ("dsp48e2-all-cascade-sitepins-v1", {"DSP_ALU"}),
+    "URAM_CASCADE": ("uram288-all-cascade-sitepins-v1", {"URAM_288K_INST"}),
+}
 
 
 def _sha256(path: Path) -> str:
@@ -133,25 +139,6 @@ def _architecture_capacity(
     return capacity, sites
 
 
-def _validate_endpoint(value: Any, *, source: bool, context: str) -> None:
-    if not isinstance(value, dict):
-        raise ValidationError(f"{context}: expected an object")
-    expected = {
-        "bel": "CARRY8",
-        "bel_pin": "CO7" if source else "CIN",
-        "logical_port": "CO" if source else "CI",
-        "selection": {"kind": "bit", "index": 7}
-        if source
-        else {"kind": "all"},
-        "site_pin": "COUT" if source else "CIN",
-    }
-    if value != expected:
-        raise ValidationError(
-            f"{context}: expected the authoritative CARRY8 "
-            f"{'source' if source else 'target'} endpoint {expected!r}"
-        )
-
-
 def _validate_capabilities(value: Any) -> Dict[str, str]:
     if not isinstance(value, dict):
         raise ValidationError("native constraints capabilities are missing")
@@ -166,13 +153,13 @@ def _validate_capabilities(value: Any) -> Dict[str, str]:
         if status not in CAPABILITY_STATUSES:
             raise ValidationError(f"capabilities.{name}: invalid status")
         checked[name] = status
-    if checked["dedicated_adjacency.CARRY_NEXT"] not in {
-        "native_supported",
-        "core_missing",
-    }:
-        raise ValidationError(
-            "CARRY_NEXT must be native-supported or explicitly core-missing"
-        )
+    for kind in _DEDICATED_KINDS:
+        if checked[f"dedicated_adjacency.{kind}"] not in {
+            "native_supported", "core_missing"
+        }:
+            raise ValidationError(
+                f"{kind} must be native-supported or explicitly core-missing"
+            )
     if checked["clock_region_site_capacity"] != "native_supported":
         raise ValidationError("clock-region capacity must be native-supported")
     if checked["slr_site_capacity"] != "native_supported":
@@ -181,11 +168,6 @@ def _validate_capabilities(value: Any) -> Dict[str, str]:
         raise ValidationError(
             "half-column clock capacity must remain fail-closed/unverified"
         )
-    for kind in ("DSP_CASCADE", "BRAM_CASCADE", "URAM_CASCADE"):
-        if checked[f"dedicated_adjacency.{kind}"] != "unverified":
-            raise ValidationError(
-                f"{kind} cannot be claimed without a native endpoint proof"
-            )
     return checked
 
 
@@ -272,95 +254,90 @@ def validate_xilinx_native_device_constraints(
     raw_adjacency = payload.get("dedicated_adjacency")
     if not isinstance(raw_adjacency, list):
         raise ValidationError("native constraints dedicated_adjacency is invalid")
-    carry_status = capabilities["dedicated_adjacency.CARRY_NEXT"]
-    if carry_status == "core_missing":
-        if raw_adjacency:
-            raise ValidationError(
-                "core-missing CARRY_NEXT cannot contain claimed native edges"
-            )
-        adjacency = None
-        edge_count = 0
-    elif len(raw_adjacency) != 1:
-        raise ValidationError("native constraints must contain one CARRY_NEXT family")
-    else:
-        adjacency = raw_adjacency[0]
-
-    if adjacency is not None:
+    adjacency_kinds = []
+    edge_counts = {kind: 0 for kind in _DEDICATED_KINDS}
+    for family_index, adjacency in enumerate(raw_adjacency):
+        context = f"dedicated_adjacency[{family_index}]"
         if not isinstance(adjacency, dict) or set(adjacency) != {
-            "chains",
-            "edge_count",
-            "kind",
-            "native_proof_sha256",
-            "proof_method",
-            "source_endpoint",
-            "target_endpoint",
+            "chains", "edge_count", "endpoint_contract", "kind",
+            "native_proof_sha256", "proof_method",
         }:
-            raise ValidationError("native constraints CARRY_NEXT family is invalid")
-        if adjacency["kind"] != "CARRY_NEXT":
-            raise ValidationError("native constraints adjacency kind is not CARRY_NEXT")
+            raise ValidationError(f"{context}: invalid native family")
+        kind = _string(adjacency.get("kind"), f"{context}.kind")
+        if kind not in _FAMILY_CONTRACTS or kind in adjacency_kinds:
+            raise ValidationError(f"{context}: unknown or duplicate kind")
+        adjacency_kinds.append(kind)
+        expected_contract, required_bels = _FAMILY_CONTRACTS[kind]
+        if adjacency["endpoint_contract"] != expected_contract:
+            raise ValidationError(f"{context}: endpoint contract is invalid")
         if adjacency["proof_method"] != NATIVE_DEDICATED_NODE_PROOF:
-            raise ValidationError("native constraints CARRY_NEXT proof method is invalid")
-        _hex(adjacency["native_proof_sha256"], 64, "CARRY_NEXT native proof")
-        _validate_endpoint(
-            adjacency["source_endpoint"], source=True, context="source_endpoint"
-        )
-        _validate_endpoint(
-            adjacency["target_endpoint"], source=False, context="target_endpoint"
-        )
+            raise ValidationError(f"{context}: proof method is invalid")
+        _hex(adjacency["native_proof_sha256"], 64, f"{kind} native proof")
+        if capabilities[f"dedicated_adjacency.{kind}"] != "native_supported":
+            raise ValidationError(f"{context}: core-missing family contains edges")
         chains = adjacency["chains"]
         if not isinstance(chains, list) or not chains:
-            raise ValidationError("native constraints CARRY_NEXT chains are missing")
+            raise ValidationError(f"{context}: chains are missing")
         canonical_chains = []
         seen_sites = set()
-        edge_count = 0
+        observed_edges = 0
         for chain_index, chain in enumerate(chains):
-            context = f"CARRY_NEXT.chains[{chain_index}]"
+            chain_context = f"{kind}.chains[{chain_index}]"
             if (
                 not isinstance(chain, list)
                 or len(chain) < 2
                 or not all(isinstance(site, str) and site for site in chain)
             ):
-                raise ValidationError(f"{context}: expected at least two site names")
+                raise ValidationError(
+                    f"{chain_context}: expected at least two site names"
+                )
             if len(set(chain)) != len(chain):
-                raise ValidationError(f"{context}: repeated site")
+                raise ValidationError(f"{chain_context}: repeated site")
             chain_slrs = set()
             for site_name in chain:
                 site = architecture_sites.get(site_name)
                 if site is None:
-                    raise ValidationError(f"{context}: unknown site {site_name!r}")
-                if "CARRY8" not in _site_bels(architecture, site):
                     raise ValidationError(
-                        f"{context}: site {site_name!r} has no CARRY8 BEL"
+                        f"{chain_context}: unknown site {site_name!r}"
+                    )
+                if not required_bels.issubset(_site_bels(architecture, site)):
+                    raise ValidationError(
+                        f"{chain_context}: site {site_name!r} lacks the "
+                        f"required {kind} BEL contract"
                     )
                 if site_name in seen_sites:
                     raise ValidationError(
-                        f"{context}: site {site_name!r} belongs to multiple chains"
+                        f"{chain_context}: site belongs to multiple chains"
                     )
                 seen_sites.add(site_name)
                 chain_slrs.add(site["physical_region"]["slr"])
             if len(chain_slrs) != 1:
-                raise ValidationError(f"{context}: dedicated carry chain crosses SLRs")
+                raise ValidationError(f"{chain_context}: chain crosses SLRs")
             canonical_chains.append(tuple(chain))
-            edge_count += len(chain) - 1
+            observed_edges += len(chain) - 1
         if canonical_chains != sorted(canonical_chains):
-            raise ValidationError(
-                "native constraints CARRY_NEXT chains are not canonical"
-            )
-        if (
-            _nonnegative_integer(adjacency["edge_count"], "CARRY_NEXT.edge_count")
-            != edge_count
-        ):
-            raise ValidationError(
-                "native constraints CARRY_NEXT edge count is inconsistent"
-            )
-        if edge_count == 0:
-            raise ValidationError("native constraints contain no CARRY_NEXT edge")
+            raise ValidationError(f"{kind} chains are not canonical")
+        if _nonnegative_integer(
+            adjacency["edge_count"], f"{kind}.edge_count"
+        ) != observed_edges:
+            raise ValidationError(f"{kind} edge count is inconsistent")
+        edge_counts[kind] = observed_edges
+    if adjacency_kinds != sorted(adjacency_kinds):
+        raise ValidationError("native constraint families are not canonical")
+    for kind in _DEDICATED_KINDS:
+        status = capabilities[f"dedicated_adjacency.{kind}"]
+        if status == "native_supported" and kind not in adjacency_kinds:
+            raise ValidationError(f"native-supported {kind} has no edge family")
+        if status == "core_missing" and edge_counts[kind] != 0:
+            raise ValidationError(f"core-missing {kind} contains native edges")
+    edge_count = sum(edge_counts.values())
 
     summary = payload.get("summary")
     expected_summary = {
         "capacity_buckets": len(expected_capacity),
         "clock_regions": len({key[1] for key in expected_capacity}),
         "dedicated_edges": edge_count,
+        "dedicated_edges_by_kind": edge_counts,
         "sites": len(architecture_sites),
         "slrs": len({key[0] for key in expected_capacity}),
     }

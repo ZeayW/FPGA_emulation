@@ -114,7 +114,8 @@ def main() -> int:
     )
     print(
         "RapidWright native device constraints: "
-        f"{report['status']} {report['dedicated_edges']} carry edges "
+        f"{report['status']} {report['dedicated_edges']} dedicated edges "
+        f"{report['dedicated_edges_by_kind']} "
         f"{report['clock_regions']} clock regions {report['slrs']} SLRs"
     )
     return 0

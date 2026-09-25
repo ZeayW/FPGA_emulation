@@ -62,10 +62,10 @@ def _architecture():
 def _capabilities():
     return {
         "clock_region_site_capacity": "native_supported",
-        "dedicated_adjacency.BRAM_CASCADE": "unverified",
+        "dedicated_adjacency.BRAM_CASCADE": "core_missing",
         "dedicated_adjacency.CARRY_NEXT": "native_supported",
-        "dedicated_adjacency.DSP_CASCADE": "unverified",
-        "dedicated_adjacency.URAM_CASCADE": "unverified",
+        "dedicated_adjacency.DSP_CASCADE": "core_missing",
+        "dedicated_adjacency.URAM_CASCADE": "core_missing",
         "half_column_clock_capacity": "unverified",
         "slr_site_capacity": "native_supported",
     }
@@ -79,26 +79,13 @@ def _artifact(architecture_path, manifest_path):
             {
                 "chains": [["SLICE_X0Y0", "SLICE_X0Y1"]],
                 "edge_count": 1,
+                "endpoint_contract": "carry8-co7-ci-all-v1",
                 "kind": "CARRY_NEXT",
                 "native_proof_sha256": "b" * 64,
                 "proof_method": (
-                    "rapidwright-primitive-bel-sitepin-"
+                    "rapidwright-dedicated-sitepin-vector-"
                     "same-canonical-node-v1"
                 ),
-                "source_endpoint": {
-                    "bel": "CARRY8",
-                    "bel_pin": "CO7",
-                    "logical_port": "CO",
-                    "selection": {"kind": "bit", "index": 7},
-                    "site_pin": "COUT",
-                },
-                "target_endpoint": {
-                    "bel": "CARRY8",
-                    "bel_pin": "CIN",
-                    "logical_port": "CI",
-                    "selection": {"kind": "all"},
-                    "site_pin": "CIN",
-                },
             }
         ],
         "site_capacity": [
@@ -135,6 +122,12 @@ def _artifact(architecture_path, manifest_path):
             "capacity_buckets": 2,
             "clock_regions": 1,
             "dedicated_edges": 1,
+            "dedicated_edges_by_kind": {
+                "BRAM_CASCADE": 0,
+                "CARRY_NEXT": 1,
+                "DSP_CASCADE": 0,
+                "URAM_CASCADE": 0,
+            },
             "sites": 2,
             "slrs": 1,
         },
@@ -143,7 +136,7 @@ def _artifact(architecture_path, manifest_path):
         payload, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return {
-        "schema": "emuflow.xilinx-native-device-constraints/v1",
+        "schema": "emuflow.xilinx-native-device-constraints/v2",
         "payload": payload,
         "payload_sha256": hashlib.sha256(encoded).hexdigest(),
     }
@@ -208,10 +201,10 @@ class XilinxNativeDeviceConstraintsTest(unittest.TestCase):
 
             semantic_tampers = []
             endpoint = _artifact(architecture_path, manifest_path)
-            endpoint["payload"]["dedicated_adjacency"][0]["source_endpoint"][
-                "site_pin"
-            ] = "CIN"
-            semantic_tampers.append((endpoint, "source endpoint"))
+            endpoint["payload"]["dedicated_adjacency"][0][
+                "endpoint_contract"
+            ] = "wrong"
+            semantic_tampers.append((endpoint, "endpoint contract"))
             capacity = _artifact(architecture_path, manifest_path)
             capacity["payload"]["site_capacity"][0]["sites"] = 2
             semantic_tampers.append((capacity, "capacity"))
@@ -242,6 +235,9 @@ class XilinxNativeDeviceConstraintsTest(unittest.TestCase):
             ] = "core_missing"
             artifact["payload"]["dedicated_adjacency"] = []
             artifact["payload"]["summary"]["dedicated_edges"] = 0
+            artifact["payload"]["summary"]["dedicated_edges_by_kind"][
+                "CARRY_NEXT"
+            ] = 0
             _reseal(artifact)
             report = validate_xilinx_native_device_constraints(
                 artifact,
@@ -264,9 +260,12 @@ class XilinxNativeDeviceConstraintsTest(unittest.TestCase):
             "getSitePin(site)",
             "getExternalNode(site)",
             "getAllWiresInNode",
-            "CARRY8",
-            "CO7",
-            "CIN",
+            "CARRY_NEXT",
+            "DSP_CASCADE",
+            "BRAM_CASCADE",
+            "URAM_CASCADE",
+            "PCOUT",
+            "CAS_OUT_",
         ):
             self.assertIn(required, source)
         for forbidden in (
