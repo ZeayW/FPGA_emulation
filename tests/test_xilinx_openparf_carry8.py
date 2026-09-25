@@ -64,14 +64,25 @@ def _write_fixture(root):
     cells = {}
     _add_carry(cells, "carry0", ci=1, co_base=10, net_base=1000)
     _add_carry(cells, "carry1", ci=17, co_base=40, net_base=2000)
+    data_bits = [
+        net_base + offset
+        for net_base in (1100, 2100)
+        for offset in range(16)
+    ]
     cells["ff"] = _cell("FDRE", {
         "C": [5000], "CE": ["1"], "D": [48], "Q": [5001], "R": ["0"],
     })
     mapped.write_text(json.dumps({
         "modules": {"top": {
             "attributes": {"top": "1"},
-            "ports": {"clk": {"direction": "input", "bits": [5000]}},
-            "netnames": {"clk": {"hide_name": 0, "bits": [5000]}},
+            "ports": {
+                "clk": {"direction": "input", "bits": [5000]},
+                "data": {"direction": "input", "bits": data_bits},
+            },
+            "netnames": {
+                "clk": {"hide_name": 0, "bits": [5000]},
+                "data": {"hide_name": 0, "bits": data_bits},
+            },
             "cells": cells,
         }},
     }), encoding="utf-8")
