@@ -132,6 +132,14 @@ public final class InspectCascadePins {
                                     : reached.getSite().getName() + "/"
                                         + reached.getPinName())
                                 + "\t" + direct.size());
+                        if (direct.size() != 1) {
+                            for (PIP pip : direct) {
+                                System.out.println("WALKPIP\t"
+                                        + selected.getName() + "\t" + sitePin
+                                        + "\t" + depth + "\t"
+                                        + pipRecord(pip));
+                            }
+                        }
                         if ((depth > 0 && reached != null
                                 && !selected.getName().equals(
                                     reached.getSite().getName()))
@@ -159,6 +167,17 @@ public final class InspectCascadePins {
                 }
             }
         }
+    }
+
+    private static String pipRecord(PIP pip) {
+        Node start = pip.getStartNode();
+        Node end = pip.getEndNode();
+        return pip.getTile().getName() + "\t" + pip.getPIPType()
+                + "\t" + pip.isPIPFixed() + "\t" + nodeKey(start)
+                + "\t" + nodeKey(end) + "\t"
+                + (end == null || end.getSitePin() == null ? "-"
+                    : end.getSitePin().getSite().getName() + "/"
+                        + end.getSitePin().getPinName());
     }
 
     public static void main(String[] args) {
