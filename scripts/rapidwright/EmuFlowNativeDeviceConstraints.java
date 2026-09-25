@@ -418,8 +418,8 @@ public final class EmuFlowNativeDeviceConstraints {
             if (!targetArcs.isEmpty()) {
                 PIP selected = targetArcs.get(0);
                 records.add(pipRecord(selected));
-                TargetRef target = targets.get(nodeKey(selected.getEndNode()));
-                return new Connection(source, target,
+                TargetRef exactTarget = targets.get(nodeKey(selected.getEndNode()));
+                return new Connection(source, exactTarget,
                         sha256(String.join("\n", records)), records.size());
             }
             require(direct.size() == 1,
