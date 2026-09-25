@@ -394,6 +394,7 @@ public final class EmuFlowNativeDeviceConstraints {
                         sha256(String.join("\n", records)), records.size());
             }
             List<PIP> direct = new ArrayList<>();
+            List<PIP> targetArcs = new ArrayList<>();
             for (PIP pip : node.getAllDownhillPIPs()) {
                 if (!DIRECT_ARC_TYPE.equals(pip.getPIPType().name())) continue;
                 Node start = pip.getStartNode();
@@ -409,10 +410,20 @@ public final class EmuFlowNativeDeviceConstraints {
                                 && !pip.isGapArc(),
                         family.kind + " cascade uses a general routing arc");
                 direct.add(pip);
+                if (targets.containsKey(nodeKey(end))) targetArcs.add(pip);
             }
             if (direct.isEmpty()) return null;
+            require(targetArcs.size() <= 1,
+                    family.kind + " direct cascade reaches multiple target sites");
+            if (!targetArcs.isEmpty()) {
+                PIP selected = targetArcs.get(0);
+                records.add(pipRecord(selected));
+                TargetRef target = targets.get(nodeKey(selected.getEndNode()));
+                return new Connection(source, target,
+                        sha256(String.join("\n", records)), records.size());
+            }
             require(direct.size() == 1,
-                    family.kind + " direct cascade arc branches");
+                    family.kind + " direct cascade branches before its exact target");
             PIP selected = direct.get(0);
             require(key.equals(nodeKey(selected.getStartNode())),
                     family.kind + " direct arc starts on a different node");

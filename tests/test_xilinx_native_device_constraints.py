@@ -259,6 +259,8 @@ class XilinxNativeDeviceConstraintsTest(unittest.TestCase):
             "getSitePin(site)",
             "getExternalNode(site)",
             "getAllWiresInNode",
+            "targets.containsKey(nodeKey(end))",
+            "direct cascade branches before its exact target",
             "CARRY_NEXT",
             "DSP_CASCADE",
             "BRAM_CASCADE",
