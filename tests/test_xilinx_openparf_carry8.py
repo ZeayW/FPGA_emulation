@@ -68,7 +68,12 @@ def _write_fixture(root):
         "C": [5000], "CE": ["1"], "D": [48], "Q": [5001], "R": ["0"],
     })
     mapped.write_text(json.dumps({
-        "modules": {"top": {"attributes": {"top": "1"}, "cells": cells}},
+        "modules": {"top": {
+            "attributes": {"top": "1"},
+            "ports": {"clk": {"direction": "input", "bits": [5000]}},
+            "netnames": {"clk": {"hide_name": 0, "bits": [5000]}},
+            "cells": cells,
+        }},
     }), encoding="utf-8")
     pack_xilinx_sites(mapped, packed, top="top")
 
