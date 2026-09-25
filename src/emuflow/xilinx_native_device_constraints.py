@@ -30,7 +30,7 @@ XILINX_NATIVE_DEVICE_CONSTRAINTS_SCHEMA = (
     "emuflow.xilinx-native-device-constraints/v2"
 )
 NATIVE_DEDICATED_NODE_PROOF = (
-    "rapidwright-dedicated-sitepin-vector-same-canonical-node-v1"
+    "rapidwright-dedicated-sitepin-vector-direct-arc-v1"
 )
 CAPABILITY_STATUSES = {
     "native_supported",
