@@ -162,7 +162,7 @@ def _write_fixture(root):
     return mapped, packed, architecture, native, provider
 
 
-def _write_placement(path, name_map, *, break_chain=False):
+def _write_placement(path, name_map, *, break_chain=False, permute_macro_slots=False):
     macro_site = {"carry0": (0, 0), "carry1": ((1, 1) if break_chain else (0, 1))}
     macro_bels = {}
     for macro in name_map["carry_macros"]:
@@ -177,7 +177,13 @@ def _write_placement(path, name_map, *, break_chain=False):
         else:
             carry, bel = macro_bels[instance]
             x, y = macro_site[carry]
-            z = 0 if bel == "CARRY8" else 2 * "ABCDEFGH".index(bel[0]) + 1
+            if bel == "CARRY8":
+                z = 0
+            else:
+                index = "ABCDEFGH".index(bel[0])
+                if permute_macro_slots:
+                    index = int(f"{index:03b}"[::-1], 2)
+                z = 2 * index + 1
         rows.append(f"{atom['openparf']} {x} {y} {z}")
     path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
@@ -222,6 +228,28 @@ class XilinxOpenparfCarry8Test(unittest.TestCase):
             self.assertEqual(certificate["schema"], OPENPARF_CARRY8_PLACEMENT_SCHEMA)
             self.assertEqual(certificate["summary"]["carry8_macros"], 2)
             self.assertEqual(certificate["summary"]["native_carry_edges"], 1)
+            self.assertEqual(
+                certificate["summary"]["canonicalized_carry_lut_slots"], 0
+            )
+
+            permuted = root / "permuted.pl"
+            _write_placement(
+                permuted, name_map, permute_macro_slots=True
+            )
+            normalized = validate_xilinx_openparf_carry8_placement(
+                permuted, output / "name_map.json", mapped, architecture,
+                native, provider,
+            )
+            self.assertEqual(
+                normalized["summary"]["canonicalized_carry_lut_slots"], 8
+            )
+            normalized_roles = {
+                assignment["instance"]: assignment["bel"]
+                for cluster in normalized["clusters"]
+                for assignment in cluster["assignments"]
+            }
+            for index in range(8):
+                self.assertEqual(normalized_roles[f"carry0$lut{index}"], f"{'ABCDEFGH'[index]}6LUT")
 
             broken = root / "broken.pl"
             _write_placement(broken, name_map, break_chain=True)

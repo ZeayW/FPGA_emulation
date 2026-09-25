@@ -428,6 +428,22 @@ def validate_xilinx_openparf_carry8_placement(
     }
     if not atoms or len(atoms) != len(name_map.get("atoms", [])):
         raise ValidationError("OpenPARF CARRY8 name map has duplicate atoms")
+    macro_roles: Dict[str, str] = {}
+    for macro in name_map.get("carry_macros", []):
+        if not isinstance(macro, Mapping):
+            raise ValidationError("OpenPARF CARRY8 macro contract is invalid")
+        for member in macro.get("members", []):
+            if not isinstance(member, Mapping):
+                raise ValidationError("OpenPARF CARRY8 macro member is invalid")
+            instance = member.get("instance")
+            bel = member.get("bel")
+            if (
+                not isinstance(instance, str)
+                or not isinstance(bel, str)
+                or instance in macro_roles
+            ):
+                raise ValidationError("OpenPARF CARRY8 macro roles are invalid")
+            macro_roles[instance] = bel
     site_map = {
         (entry["dense_x"], entry["dense_y"]): entry
         for entry in name_map.get("coordinate_system", {}).get("sites", [])
@@ -435,6 +451,7 @@ def validate_xilinx_openparf_carry8_placement(
     }
     placed: Dict[str, Dict[str, Any]] = {}
     occupied = set()
+    canonicalized_carry_lut_slots = 0
     with placement_path.open("r", encoding="utf-8") as stream:
         for line_number, raw in enumerate(stream, start=1):
             fields = raw.strip().split()
@@ -460,7 +477,19 @@ def validate_xilinx_openparf_carry8_placement(
             if resource == "LUT":
                 if z not in range(1, 16, 2):
                     raise ValidationError("CARRY8 LUT6_2 must occupy a 6LUT z slot")
-                bel_name = f"{'ABCDEFGH'[z // 2]}6LUT"
+                slot_bel = f"{'ABCDEFGH'[z // 2]}6LUT"
+                # The full-slice carry macro fixes each LUT6_2 logical role
+                # through the CARRY8 S/DI bit it drives.  OpenPARF's detailed
+                # placement may permute the eight otherwise equivalent odd z
+                # slots after native chain legalization.  Preserve the site
+                # decision, prove that every physical slot remains unique,
+                # and canonicalize the internal BEL role from the sealed
+                # packed macro rather than treating that permutation as a
+                # semantic remap of the carry bits.
+                bel_name = macro_roles.get(atom["instance"], slot_bel)
+                if bel_name not in {f"{letter}6LUT" for letter in "ABCDEFGH"}:
+                    raise ValidationError("OpenPARF CARRY8 macro LUT role is invalid")
+                canonicalized_carry_lut_slots += bel_name != slot_bel
             elif resource == "FF":
                 if not 0 <= z < 16:
                     raise ValidationError("CARRY8-route FF uses an invalid z slot")
@@ -488,6 +517,7 @@ def validate_xilinx_openparf_carry8_placement(
                 "site": site_entry["site"],
                 "z": z,
                 "bel": bel_name,
+                "openparf_slot_bel": slot_bel if resource == "LUT" else bel_name,
                 "placement_mode": compatible[0].get("placement_mode", site["type"]),
             }
     if set(placed) != set(atoms):
@@ -551,6 +581,7 @@ def validate_xilinx_openparf_carry8_placement(
             "occupied_sites": len(clusters),
             "carry8_macros": len(carry_sites),
             "native_carry_edges": checked_edges,
+            "canonicalized_carry_lut_slots": canonicalized_carry_lut_slots,
         },
     }
     if output_path is not None:
