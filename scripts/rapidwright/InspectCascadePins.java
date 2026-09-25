@@ -78,6 +78,12 @@ public final class InspectCascadePins {
             System.out.println("SITE\t" + prefix + "\t"
                     + (selected == null ? "-" : selected.getName()));
             if (selected == null) continue;
+            for (Site tileSite : selected.getTile().getSites()) {
+                System.out.println("TILESITE\t" + selected.getTile().getName()
+                        + "\t" + tileSite.getSiteIndexInTile()
+                        + "\t" + tileSite.getName()
+                        + "\t" + tileSite.getSiteTypeEnum());
+            }
             Set<String> auditedNodes = new HashSet<>();
             for (BEL bel : selected.getBELs()) {
                 for (BELPin pin : bel.getPins()) {
