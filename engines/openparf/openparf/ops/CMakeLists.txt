@@ -30,6 +30,7 @@ add_subdirectory(ssr_abacus_lg)
 add_subdirectory(sll)
 add_subdirectory(wasll)
 add_subdirectory(soft_floor)
+add_subdirectory(typed_hardblock_legalizer)
 
 file(GLOB INSTALL_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/*.py")
 install(FILES ${INSTALL_SRCS} DESTINATION openparf/ops)
