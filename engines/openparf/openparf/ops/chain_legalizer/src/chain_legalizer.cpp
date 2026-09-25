@@ -243,7 +243,7 @@ void DispatchedChainLegalizerForward(database::PlaceDB const &placedb,
       int32_t xl = site.bbox().xl();
       int32_t yl = site.bbox().yl();
       col_yl[xl] = std::min(col_yl[xl], yl);
-      col_yh[xl] = std::max(col_yh[xl], site.bbox().yh());
+      col_yh[xl] = std::max(col_yh[xl], static_cast<int32_t>(site.bbox().yh()));
       cla_col_heights[xl] += 1;
     }
   }
