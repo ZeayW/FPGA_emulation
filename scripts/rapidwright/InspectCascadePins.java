@@ -9,6 +9,7 @@
  */
 
 import com.xilinx.rapidwright.device.BEL;
+import com.xilinx.rapidwright.device.BELClass;
 import com.xilinx.rapidwright.device.BELPin;
 import com.xilinx.rapidwright.device.Device;
 import com.xilinx.rapidwright.device.Node;
@@ -18,6 +19,10 @@ import com.xilinx.rapidwright.device.SitePin;
 import com.xilinx.rapidwright.device.Tile;
 
 import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public final class InspectCascadePins {
@@ -46,6 +51,21 @@ public final class InspectCascadePins {
             throw new IllegalArgumentException("usage: <full-part>");
         }
         Device device = Device.getDevice(args[0]);
+        Map<String, List<String>> nodeOwners = new HashMap<>();
+        for (Site site : device.getAllSites()) {
+            if (site == null) continue;
+            for (BEL bel : site.getBELs()) {
+                if (bel.getBELClass() == BELClass.PORT) continue;
+                for (BELPin pin : bel.getPins()) {
+                    if (!cascadeName(pin.getName())) continue;
+                    Node node = pin.getExternalNode(site);
+                    if (node == null || node.isInvalidNode()) continue;
+                    nodeOwners.computeIfAbsent(nodeKey(node), ignored -> new ArrayList<>())
+                            .add(site.getName() + "/" + bel.getName() + "/"
+                                    + pin.getName());
+                }
+            }
+        }
         String[] prefixes = {"DSP48E2_", "RAMB36_", "URAM288_"};
         for (String prefix : prefixes) {
             Site selected = null;
@@ -86,7 +106,10 @@ public final class InspectCascadePins {
                                     + "\t" + nodeKey(end)
                                     + "\t" + (sink == null ? "-"
                                         : sink.getSite().getName() + "/"
-                                            + sink.getPinName()));
+                                            + sink.getPinName())
+                                    + "\t" + String.join(",",
+                                        nodeOwners.getOrDefault(
+                                            nodeKey(end), new ArrayList<>())));
                         }
                     }
                 }
