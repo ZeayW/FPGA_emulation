@@ -1031,9 +1031,15 @@ without rerunning EmuFlow's legacy packer or site legalizer, into the standard
 PackedSiteNetlist and `emuflow.xilinx-placement/v1` contracts accepted by the
 RWRoute exporter.  The bridge rechecks mapped-netlist and ArchitectureDB
 digests, complete cell ownership, site/BEL compatibility, and exact physical
-site grouping.  CARRY8, LUT6_2/paired-LUT use, RAMB18 half sites, cascades,
-relative placement, and mixed-resource site groups remain fail-closed; this
-path is not yet a public placer selection or the default Phase 7 provider.
+site grouping.  Its atomic A1 gate has completed on a real XCVU19P device
+model: OpenPARF placed 128 atoms into 11 sites; RapidWright routed 22 nets and
+70 sinks with zero missing logical sinks; routed timing covered all 21
+inter-site logical endpoints; and standalone upstream OpenSTA 3.1.0
+(`051222e4ec`) validated 64 timed endpoints at WNS +39.091599 ns and TNS 0 ns.
+This proves the bounded atomic placement-to-timing handoff, not production DLA
+support.  CARRY8, LUT6_2/paired-LUT use, RAMB18 half sites, cascades, relative
+placement, and mixed-resource site groups remain fail-closed; this path is not
+yet a public placer selection or the default Phase 7 provider.
 The provider-neutral `emuflow.xilinx-physical-macro-contract/v1` now derives
 these non-atomic constraints directly from mapped connectivity without running
 a packer, placer, or legalizer. It records CARRY8/LUT6_2 and MUXF7/8/9 site

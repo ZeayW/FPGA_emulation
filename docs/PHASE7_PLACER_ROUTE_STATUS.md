@@ -25,7 +25,7 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 
 | Route | Implemented evidence | Remaining production blockers | Decision |
 |---|---|---|---|
-| OpenPARF native (`feature/phase7-openparf-native`) | Pinned-source probe; ordinary LUT1–LUT6/FD* atomization; singleton DSP48E2/RAMB36E2/URAM288 support; one real compiled GP → hard-resource MCF/direct-LG → ISM run; independently validated placement certificate; no-search bridge to standard packed/placement contracts; internal RapidWright/OpenSTA candidate backend; exact CARRY8 core-gap reproduction | CARRY8/LUT6_2 is confirmed `core_missing`; MUX/RAMB18/cascade and clock/half-column/SLR remain incomplete; complete real XCVU19P RWRoute/OpenSTA gate | Primary atomic route plus a separate native-core extension track; the audited subset remains fail-closed elsewhere and is not yet a DLA backend |
+| OpenPARF native (`feature/phase7-openparf-native`) | Pinned-source probe; ordinary LUT1–LUT6/FD* atomization; singleton DSP48E2/RAMB36E2/URAM288 support; real compiled GP → hard-resource MCF/direct-LG → ISM; independently validated placement certificate; no-search bridge to standard packed/placement contracts; real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1 qualification; exact CARRY8 core-gap reproduction | CARRY8/LUT6_2 is confirmed `core_missing`; MUX/RAMB18/cascade and clock/half-column/SLR remain incomplete | A1 atomic route passed end to end; A2 native-macro work is now the primary route and remains fail-closed until its resource-covering gates pass |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga`) | Pinned-source probe; Yosys mapped JSON to official FPGA Interchange logical netlist; physical netlist to validated placement certificate; real Cap'n Proto schema roundtrip | Upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
 | AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result |
 
@@ -117,31 +117,55 @@ based on complete routed legality, runtime, and global OpenSTA WNS/TNS; HPWL,
 density, or legalization cost are diagnostic metrics rather than promotion
 criteria.
 
-Large DLA work remains gated by the small real-runtime and resource fixtures.
-There is no hidden fallback to the old greedy legalizer.
+Large DLA work remains gated by the A2 macro/resource fixtures.  There is no
+hidden fallback to the old greedy legalizer.
 
 The real-runtime gate has now passed twice: first for a connected 64-LUT/64-FF
 fixture, then for the same connected ring with one DSP48E2, one RAMB36E2, and
 one URAM288.  The mixed run covered 131 atoms and 132 non-degenerate nets in a
 single native OpenPARF invocation; every atom and final site/BEL assignment was
 independently re-imported.  This proves the compiled placement path for that
-bounded subset.  It does not yet prove RapidWright routing, global OpenSTA
-timing, cascades, clock legality, or DLA support.
+bounded subset.  It does not prove cascades, clock legality, or DLA support.
 
 The first real-XCVU19P routing gate exposed a test-region error before routing:
 the selected 16 slice sites formed a `1x16` collinear Bookshelf domain.  Native
 OpenPARF correctly could not produce a finite two-dimensional density solution
 (`HPWL=-INF`) and direct legalization rejected every atom.  The adapter now
 rejects collinear, disconnected, density-saturated, or non-finite site regions
-before runtime, and records the region and density proof in its manifest.  The
-gate must be rerun on a connected two-dimensional real-device region; this
-failure is not counted as RapidWright or QoR evidence.
+before runtime, and records the region and density proof in its manifest.  That
+gate failure is not counted as RapidWright or QoR evidence.  The corrected
+connected two-dimensional gate is recorded below.
 
 The next connected `4x4` region passed the two-dimensional geometry check but
 was correctly rejected by the Route A reservation gate: the fixture occupied
 all 16 slice sites while the route contract permits at most 75% local site
 utilization.  The gate input is being enlarged; the utilization requirement is
 not weakened to make the test pass.
+
+### A1 atomic qualification result
+
+The corrected real-XCVU19P atomic fixture passed the complete A1 sequence
+without a placement, packing, legalization, or routing fallback:
+
+- native OpenPARF placed 128 atoms into 11 occupied sites;
+- RapidWright routed 22 nets and 70 sinks using 185 PIPs, with zero missing
+  logical sinks;
+- independent routed-timing validation covered all 21 inter-site logical
+  endpoints and observed a maximum route delay of 0.4403999938964844 ns;
+- standalone upstream OpenSTA 3.1.0 at revision `051222e4ec` emitted all 64
+  queried endpoint paths;
+- independent OpenSTA validation reported 64 timed endpoints, zero failing
+  endpoints, WNS +39.091599 ns, and TNS 0 ns;
+- the compact OpenSTA summary SHA-256 is
+  `d3c2c94f8f194e42beb5741a1ae2177bdfac04a280e585e3bf2897d201f6ad3c`.
+
+The older OpenSTA 2.6.0 runtime crashed after a bounded path query because of
+an upstream collection/path ownership defect.  The same frozen export passed
+on official OpenSTA 3.1.0, and the EmuFlow producer plus its independent
+validator then passed on that engine.  This is an engine qualification result,
+not an EmuFlow placement or timing-algorithm failure.  A1 remains an atomic
+handoff qualification only; it does not qualify the A2 macro route or Koios
+DLA medium.
 
 Macro support will use a compact physical-macro contract derived from mapped
 connectivity.  It must preserve exact BEL roles, same-site membership, relative
