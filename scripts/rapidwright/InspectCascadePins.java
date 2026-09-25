@@ -12,8 +12,13 @@ import com.xilinx.rapidwright.device.BEL;
 import com.xilinx.rapidwright.device.BELPin;
 import com.xilinx.rapidwright.device.Device;
 import com.xilinx.rapidwright.device.Node;
+import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
+import com.xilinx.rapidwright.device.SitePin;
 import com.xilinx.rapidwright.device.Tile;
+
+import java.util.HashSet;
+import java.util.Set;
 
 public final class InspectCascadePins {
     private InspectCascadePins() {}
@@ -53,17 +58,37 @@ public final class InspectCascadePins {
             System.out.println("SITE\t" + prefix + "\t"
                     + (selected == null ? "-" : selected.getName()));
             if (selected == null) continue;
+            Set<String> auditedNodes = new HashSet<>();
             for (BEL bel : selected.getBELs()) {
                 for (BELPin pin : bel.getPins()) {
                     if (!cascadeName(pin.getName())) continue;
                     String sitePin = pin.getConnectedSitePinName();
                     Node external = pin.getExternalNode(selected);
+                    SitePin nativeSitePin = pin.getSitePin(selected);
                     System.out.println("PIN\t" + selected.getName()
                             + "\t" + bel.getName()
                             + "\t" + pin.getName()
                             + "\t" + (pin.isInput() ? "I" : "O")
                             + "\t" + (sitePin == null ? "-" : sitePin)
-                            + "\t" + nodeKey(external));
+                            + "\t" + nodeKey(external)
+                            + "\t" + (nativeSitePin == null ? "-"
+                                : Boolean.toString(
+                                    nativeSitePin.getBELPin().isDedicatedSitePin())));
+                    if (pin.isOutput() && external != null
+                            && auditedNodes.add(nodeKey(external))) {
+                        for (PIP pip : external.getAllDownhillPIPs()) {
+                            Node end = pip.getEndNode();
+                            SitePin sink = end == null ? null : end.getSitePin();
+                            System.out.println("PIP\t" + selected.getName()
+                                    + "\t" + nodeKey(external)
+                                    + "\t" + pip.getPIPType()
+                                    + "\t" + pip.isPIPFixed()
+                                    + "\t" + nodeKey(end)
+                                    + "\t" + (sink == null ? "-"
+                                        : sink.getSite().getName() + "/"
+                                            + sink.getPinName()));
+                        }
+                    }
                 }
             }
         }
