@@ -32,9 +32,8 @@ families remain pending.
 
 ## CARRY8 native-core qualification
 
-The isolated A2 branch now contains the first native CARRY8/LUT6_2
-implementation.  This is source and contract evidence only until the modified
-C++ operators are built and executed:
+The isolated A2 branch now contains and has executed the first native
+CARRY8/LUT6_2 implementation:
 
 - `chain_info.cpp` retains the legacy four-PROP CLA4 behavior but recognizes
   typed `CARRY8`, extracts eight ordered `LUT6_2` members from `S[0:7]`, and
@@ -62,18 +61,26 @@ PhysicalMacroContract, reduces it to a deterministic minimum reproduction
 O5/O6 semantics), audits those exact pinned sources, and emits the common
 Xilinx placer capability contract.  A two-CARRY8/16-LUT6_2 chain fixture
 proves unplaced export and independent legality/tamper detection.  The probe
-still records `runtime_launched=false`, `fallback=forbidden`, and
-`preplacement=forbidden`, so source presence cannot be mistaken for a passing
-compiled run.
+records `fallback=forbidden` and `preplacement=forbidden`, so source presence
+cannot be mistaken for a passing compiled run.
 
 Accordingly this branch does not manufacture a passing runtime by changing the
 macro into four ordinary LUTs, invoking the old search legalizer, or assigning
-sites before OpenPARF.  The remaining gate is a real compiled GP -> carry
-legalizer -> masked LUT/FF legalization -> ISM run followed by the independent
-RapidWright legality, routing, and OpenSTA timing checks.
+sites before OpenPARF.
 
-The qualification report now lists runtime steps rather than already-completed
-core edits: compiled native placement, RapidWright device legality, no-search
-physical bridge and routing, and independent OpenSTA timing.  CARRY8 source
-support is reported separately as `native_supported`; workload capability
-remains `unverified` until those runtime steps pass.
+The compiled runtime and physical gates have now passed on a sequential
+two-CARRY8 fixture.  Native OpenPARF placed 20 logical atoms into three sites,
+including two full-slice CARRY8 macros and one certified `CARRY_NEXT` edge.
+The no-search bridge preserved those sites and BEL roles.  RapidWright then
+routed four nets and six sinks with 18 PIPs, zero missing sinks, and three
+exact logical route-delay bindings; the maximum extracted route delay was
+0.32760000610351564 ns.  Standalone upstream OpenSTA 3.1.0 at revision
+`051222e4ec` emitted the complete register-to-register path and independently
+validated WNS +38.742802 ns, TNS 0 ns, and zero failing endpoints.  The compact
+OpenSTA summary SHA-256 is
+`b21f290069a48ee6e2c63ad9cd057328e6d9c12a6417c5cbe44bf518e8fc0e56`.
+
+This qualifies the CARRY8 subset only.  MUXF7/8/9 relative placement,
+RAMB18 half-site modes, DSP/BRAM/URAM cascades, clock legality, and multi-SLR
+capacity remain fail-closed and must pass equivalent runtime, RWRoute, and
+OpenSTA gates before Koios DLA medium is admitted.

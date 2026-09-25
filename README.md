@@ -1037,8 +1037,9 @@ model: OpenPARF placed 128 atoms into 11 sites; RapidWright routed 22 nets and
 inter-site logical endpoints; and standalone upstream OpenSTA 3.1.0
 (`051222e4ec`) validated 64 timed endpoints at WNS +39.091599 ns and TNS 0 ns.
 This proves the bounded atomic placement-to-timing handoff, not production DLA
-support.  The isolated A2 branch now has source-level CARRY8/LUT6_2 support,
-while RAMB18 half sites, other relative macros, cascades, and clock/SLR
+support.  The isolated A2 branch now has compiled and physically qualified
+CARRY8/LUT6_2 support, while RAMB18 half sites, other relative macros,
+cascades, and clock/SLR
 constraints remain fail-closed; this path is not yet a public placer selection
 or the default Phase 7 provider.
 The provider-neutral `emuflow.xilinx-physical-macro-contract/v1` now derives
@@ -1064,9 +1065,13 @@ ISM freezes both carry primitives and their associated LUTs whenever carry
 legalization is active rather than depending on IO legalization.  The internal
 `probe_xilinx_openparf_carry_native_support` qualification API separates the
 source audit from runtime qualification against a two-CARRY8 macro contract
-and forbids fallback or preplacement.  No compiled carry result is claimed:
-source and unit gates pass, while native GP-to-chain-legalization-to-DP,
-RapidWright routing, and OpenSTA timing remain mandatory runtime gates.
+and forbids fallback or preplacement.  That compiled gate now passes: native
+OpenPARF placed 20 logical atoms into three sites; the no-search bridge
+preserved two full-slice macros and their CARRY_NEXT edge; RapidWright routed
+four nets, six sinks, and 18 PIPs with zero missing sinks; and standalone
+OpenSTA 3.1.0 (`051222e4ec`) reported WNS +38.742802 ns and TNS 0 ns for the
+complete sequential path.  This is CARRY8-subset evidence, not proof of
+hard-block cascades or Koios DLA medium support.
 The internal `run_rapidwright_openparf_native_candidate_backend` entry point
 uses that native placement and then rejoins the existing RWRoute, routed-
 timing, boundary-timing, and OpenSTA tail.  It never invokes the legacy Xilinx

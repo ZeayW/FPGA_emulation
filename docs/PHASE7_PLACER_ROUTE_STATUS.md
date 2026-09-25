@@ -25,7 +25,7 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 
 | Route | Implemented evidence | Remaining production blockers | Decision |
 |---|---|---|---|
-| OpenPARF native (`feature/phase7-openparf-native-macros`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; A2 adds typed CARRY8 extraction, full-slice eight-LUT legalization, unplaced macro export, and independent BEL/CARRY_NEXT validation | Modified C++ runtime build/execution, macro bridge, RWRoute/OpenSTA gate; then MUX/RAMB18/cascade and clock/half-column/SLR | A1 passed end to end; A2 source/unit gate passes but remains unqualified until the real compiled and physical gates pass |
+| OpenPARF native (`feature/phase7-openparf-native-macros`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; A2 now also passes that entire chain for two native full-slice CARRY8 macros and one certified CARRY_NEXT edge | MUX/RAMB18, DSP/BRAM/URAM cascades, and clock/half-column/SLR constraints; then Koios DLA medium | Primary route; atomic and CARRY8 subsets qualified, workload capability not yet qualified |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga`) | Pinned-source probe; Yosys mapped JSON to official FPGA Interchange logical netlist; physical netlist to validated placement certificate; real Cap'n Proto schema roundtrip | Upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
 | AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result |
 
@@ -173,13 +173,16 @@ site offsets, RAMB18 mode, and cascade ordering.  OpenPARF must place those
 groups as indivisible units; the bridge may validate and materialize the result
 but may not repack macros or search for legal sites after placement.
 
-The isolated A2 branch now extends the native chain extractor and legalizer for
+The isolated A2 branch extends the native chain extractor and legalizer for
 `CARRY8 + 8xLUT6_2`, emits an empty placement seed, and independently checks
-same-site BEL roles plus typed `CARRY_NEXT` adjacency.  Its focused Python and
-source-audit gate passes.  This is not runtime evidence: the route remains
-fail-closed until the modified C++ operators execute and their answer passes
-the RapidWright routing and OpenSTA gates.  It may not manufacture a pass by
-preplacing the macro or by calling the retired greedy legalizer.
+same-site BEL roles plus typed `CARRY_NEXT` adjacency.  The modified C++
+operators have now run on the sequential two-CARRY8 fixture without
+preplacement or fallback: 20 logical atoms occupied three sites.  The
+no-search bridge preserved the result; RapidWright routed four nets, six sinks,
+and 18 PIPs with zero missing sinks and three exact route-delay bindings.
+Standalone OpenSTA 3.1.0 (`051222e4ec`) reported one complete timed endpoint,
+zero failures, WNS +38.742802 ns, and TNS 0 ns.  This qualifies CARRY8, not the
+remaining hard-block cascades or the DLA workload.
 
 Native device constraints are split by evidence.  RapidWright can export
 typed carry/DSP/BRAM/URAM adjacency only when the primitive-specific BEL/site
