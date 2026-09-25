@@ -83,7 +83,7 @@ def _artifact(architecture_path, manifest_path):
                 "kind": "CARRY_NEXT",
                 "native_proof_sha256": "b" * 64,
                 "proof_method": (
-                    "rapidwright-dedicated-sitepin-vector-direct-arc-v1"
+                    "rapidwright-dedicated-sitepin-vector-directed-path-v2"
                 ),
             }
         ],

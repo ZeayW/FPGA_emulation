@@ -30,7 +30,7 @@ XILINX_NATIVE_DEVICE_CONSTRAINTS_SCHEMA = (
     "emuflow.xilinx-native-device-constraints/v2"
 )
 NATIVE_DEDICATED_NODE_PROOF = (
-    "rapidwright-dedicated-sitepin-vector-direct-arc-v1"
+    "rapidwright-dedicated-sitepin-vector-directed-path-v2"
 )
 CAPABILITY_STATUSES = {
     "native_supported",
@@ -50,7 +50,10 @@ _REQUIRED_CAPABILITIES = (
     "slr_site_capacity",
 )
 _FAMILY_CONTRACTS = {
-    "BRAM_CASCADE": ("ramb36e2-all-cascade-sitepins-v1", {"RAMB36E2"}),
+    "BRAM_CASCADE": (
+        "ramb36e2-72-data-parity-2-ecc-cascade-sitepins-v2",
+        {"RAMB36E2"},
+    ),
     "CARRY_NEXT": ("carry8-co7-ci-all-v1", {"CARRY8"}),
     "DSP_CASCADE": ("dsp48e2-all-cascade-sitepins-v1", {"DSP_ALU"}),
     "URAM_CASCADE": ("uram288-all-cascade-sitepins-v1", {"URAM_288K_INST"}),
@@ -100,7 +103,30 @@ def _site_bels(architecture: ArchitectureDB, site: Mapping[str, Any]) -> set[str
             if isinstance(templates, dict)
             else {}
         )
-        bels = template.get("bels", []) if isinstance(template, dict) else []
+        templates_to_visit = [template] if isinstance(template, dict) else []
+        root_template_name = site.get("template")
+        visited_templates = (
+            {root_template_name} if isinstance(root_template_name, str) else set()
+        )
+        expanded_bels = []
+        while templates_to_visit:
+            current = templates_to_visit.pop()
+            if not isinstance(current, dict):
+                continue
+            expanded_bels.extend(current.get("bels", []))
+            alternatives = current.get("alternative_templates", [])
+            if not isinstance(alternatives, list):
+                continue
+            for name in alternatives:
+                if not isinstance(name, str) or name in visited_templates:
+                    continue
+                visited_templates.add(name)
+                alternative = (
+                    templates.get(name) if isinstance(templates, dict) else None
+                )
+                if isinstance(alternative, dict):
+                    templates_to_visit.append(alternative)
+        bels = expanded_bels
     if not isinstance(bels, list):
         return set()
     return {

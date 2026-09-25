@@ -44,7 +44,7 @@ public final class EmuFlowNativeDeviceConstraints {
     private static final String ROUTE_BACKEND =
             "rapidwright-native-device-database-v1";
     private static final String PROOF_METHOD =
-            "rapidwright-dedicated-sitepin-vector-direct-arc-v1";
+            "rapidwright-dedicated-sitepin-vector-directed-path-v2";
     private static final String DIRECT_ARC_TYPE = "DIRECTIONAL_NOT_BUFFERED21";
 
     private static final class CapacityKey implements Comparable<CapacityKey> {
@@ -104,10 +104,12 @@ public final class EmuFlowNativeDeviceConstraints {
 
     private static final class EndpointVector {
         final Site site;
+        final String contractSiteName;
         final List<Endpoint> endpoints;
         final String key;
-        EndpointVector(Site site, List<Endpoint> endpoints) {
+        EndpointVector(Site site, String contractSiteName, List<Endpoint> endpoints) {
             this.site = site;
+            this.contractSiteName = contractSiteName;
             this.endpoints = endpoints;
             List<String> keys = new ArrayList<>();
             for (Endpoint endpoint : endpoints) keys.add(endpoint.nodeKey);
@@ -272,14 +274,15 @@ public final class EmuFlowNativeDeviceConstraints {
                 node, nodeKey(node), seal[0], Integer.parseInt(seal[1]));
     }
 
-    private static EndpointVector vector(Site site, Family family, boolean source) {
+    private static EndpointVector vector(
+            Site site, String contractSiteName, Family family, boolean source) {
         List<Endpoint> result = new ArrayList<>();
         for (EndpointPair pair : family.endpoints) {
             Endpoint endpoint = endpoint(site, source ? pair.source : pair.target, source);
             if (endpoint == null) return null;
             result.add(endpoint);
         }
-        return new EndpointVector(site, result);
+        return new EndpointVector(site, contractSiteName, result);
     }
 
     private static void addRange(List<EndpointPair> result, String source,
@@ -312,7 +315,8 @@ public final class EmuFlowNativeDeviceConstraints {
         }
         bram.add(new EndpointPair("CASOUTDBITERR", "CASINDBITERR"));
         bram.add(new EndpointPair("CASOUTSBITERR", "CASINSBITERR"));
-        result.add(new Family("BRAM_CASCADE", "ramb36e2-all-cascade-sitepins-v1",
+        result.add(new Family("BRAM_CASCADE",
+                "ramb36e2-72-data-parity-2-ecc-cascade-sitepins-v2",
                 "RAMB36_", "BRAM_", bram));
 
         String[] suffixes = {"ADDR_A", "ADDR_B", "BWE_A", "BWE_B",
@@ -375,9 +379,29 @@ public final class EmuFlowNativeDeviceConstraints {
         Node end = pip.getEndNode();
         require(start != null && end != null,
                 "native direct arc has incomplete nodes");
+        String[] startSeal = nodeMemberSeal(start);
+        String[] endSeal = nodeMemberSeal(end);
         return pip.getTile().getName() + "\u0000" + pip.getStartWireIndex()
                 + "\u0000" + pip.getEndWireIndex() + "\u0000" + pip.getPIPType()
-                + "\u0000" + nodeKey(start) + "\u0000" + nodeKey(end);
+                + "\u0000" + nodeKey(start) + "\u0000" + startSeal[1]
+                + "\u0000" + startSeal[0] + "\u0000" + nodeKey(end)
+                + "\u0000" + endSeal[1] + "\u0000" + endSeal[0];
+    }
+
+    private static void requireReverseArc(Node start, PIP selected, Family family) {
+        String record = pipRecord(selected);
+        int matches = 0;
+        for (PIP pip : selected.getEndNode().getAllUphillPIPs()) {
+            if (!DIRECT_ARC_TYPE.equals(pip.getPIPType().name())) continue;
+            Node candidateStart = pip.getStartNode();
+            if (candidateStart != null
+                    && nodeKey(start).equals(nodeKey(candidateStart))
+                    && record.equals(pipRecord(pip))) {
+                matches += 1;
+            }
+        }
+        require(matches == 1,
+                family.kind + " exact target arc lacks one reverse native proof");
     }
 
     private static Connection connection(
@@ -417,6 +441,7 @@ public final class EmuFlowNativeDeviceConstraints {
                     family.kind + " direct cascade reaches multiple target sites");
             if (!targetArcs.isEmpty()) {
                 PIP selected = targetArcs.get(0);
+                requireReverseArc(node, selected, family);
                 records.add(pipRecord(selected));
                 TargetRef exactTarget = targets.get(nodeKey(selected.getEndNode()));
                 return new Connection(source, exactTarget,
@@ -433,15 +458,33 @@ public final class EmuFlowNativeDeviceConstraints {
         throw new IllegalStateException(family.kind + " direct arc exceeds 16 hops");
     }
 
+    private static String contractSiteName(
+            Site site, Family family, Set<String> eligibleSites) {
+        if (eligibleSites.contains(site.getName())) return site.getName();
+        if (!"BRAM_CASCADE".equals(family.kind)) return null;
+        List<String> anchors = new ArrayList<>();
+        for (Site tileSite : site.getTile().getSites()) {
+            if (tileSite != null && eligibleSites.contains(tileSite.getName())
+                    && tileSite.getName().startsWith("RAMB18_")) {
+                anchors.add(tileSite.getName());
+            }
+        }
+        require(anchors.size() == 1,
+                site.getName() + " does not have exactly one ArchitectureDB "
+                        + "RAMB18/RAMB36 mode anchor");
+        return anchors.get(0);
+    }
+
     private static List<Edge> edges(
             Device device, Family family, Set<String> eligibleSites) {
         List<EndpointVector> sources = new ArrayList<>();
         List<EndpointVector> targetVectors = new ArrayList<>();
         for (Site site : device.getAllSites()) {
-            if (site == null || !eligibleSites.contains(site.getName())
-                    || !site.getName().startsWith(family.sitePrefix)) continue;
-            EndpointVector source = vector(site, family, true);
-            EndpointVector target = vector(site, family, false);
+            if (site == null || !site.getName().startsWith(family.sitePrefix)) continue;
+            String contractSiteName = contractSiteName(site, family, eligibleSites);
+            if (contractSiteName == null) continue;
+            EndpointVector source = vector(site, contractSiteName, family, true);
+            EndpointVector target = vector(site, contractSiteName, family, false);
             if (source != null) sources.add(source);
             if (target != null) targetVectors.add(target);
         }
@@ -474,17 +517,27 @@ public final class EmuFlowNativeDeviceConstraints {
                 connections.add(connection);
             }
             if (!complete) continue;
-            require(target != null && !source.site.getName().equals(target.site.getName()),
+            require(target != null
+                            && !source.contractSiteName.equals(target.contractSiteName),
                     family.kind + " self edge is invalid");
             SLR sourceSlr = source.site.getTile().getSLR();
             SLR targetSlr = target.site.getTile().getSLR();
             require(sourceSlr != null && targetSlr != null
                             && sourceSlr.getName().equals(targetSlr.getName()),
                     family.kind + " edge crosses SLRs");
+            if ("BRAM_CASCADE".equals(family.kind)) {
+                ClockRegion sourceClockRegion = source.site.getClockRegion();
+                ClockRegion targetClockRegion = target.site.getClockRegion();
+                require(sourceClockRegion != null && targetClockRegion != null,
+                        family.kind + " edge lacks clock-region membership");
+                if (!sourceClockRegion.getName().equals(
+                            targetClockRegion.getName())) continue;
+            }
             result.add(new Edge(source, target, connections));
         }
-        result.sort(Comparator.comparing((Edge edge) -> edge.source.site.getName())
-                .thenComparing(edge -> edge.target.site.getName()));
+        result.sort(Comparator.comparing(
+                    (Edge edge) -> edge.source.contractSiteName)
+                .thenComparing(edge -> edge.target.contractSiteName));
         return result;
     }
 
@@ -492,8 +545,8 @@ public final class EmuFlowNativeDeviceConstraints {
         Map<String, String> next = new HashMap<>();
         Set<String> targets = new HashSet<>();
         for (Edge edge : edges) {
-            String source = edge.source.site.getName();
-            String target = edge.target.site.getName();
+            String source = edge.source.contractSiteName;
+            String target = edge.target.contractSiteName;
             require(next.put(source, target) == null, kind + " branches");
             require(targets.add(target), kind + " merges");
         }
@@ -527,9 +580,9 @@ public final class EmuFlowNativeDeviceConstraints {
             for (int index = 0; index < family.endpoints.size(); ++index) {
                 EndpointPair pair = family.endpoints.get(index);
                 Connection connection = edge.connections.get(index);
-                records.add(family.kind + "\u0000" + edge.source.site.getName()
+                records.add(family.kind + "\u0000" + edge.source.contractSiteName
                         + "\u0000" + pair.source + "\u0000"
-                        + edge.target.site.getName() + "\u0000" + pair.target
+                        + edge.target.contractSiteName + "\u0000" + pair.target
                         + "\u0000" + connection.source.nodeKey + "\u0000"
                         + connection.source.memberCount + "\u0000"
                         + connection.source.memberSha256 + "\u0000"
