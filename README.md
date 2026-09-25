@@ -1038,20 +1038,24 @@ inter-site logical endpoints; and standalone upstream OpenSTA 3.1.0
 (`051222e4ec`) validated 64 timed endpoints at WNS +39.091599 ns and TNS 0 ns.
 This proves the bounded atomic placement-to-timing handoff, not production DLA
 support.  The isolated A2 branch now has compiled and physically qualified
-CARRY8/LUT6_2 support, while RAMB18 half sites, other relative macros,
-cascades, and clock/SLR
+CARRY8/LUT6_2 support plus source-sealed real-device adjacency for CARRY,
+DSP, BRAM, and URAM cascades, while RAMB18 half sites, other relative macros,
+hard-block chain legalization, and half-column clock
 constraints remain fail-closed; this path is not yet a public placer selection
 or the default Phase 7 provider.
 The provider-neutral `emuflow.xilinx-physical-macro-contract/v1` now derives
 these non-atomic constraints directly from mapped connectivity without running
 a packer, placer, or legalizer. It records CARRY8/LUT6_2 and MUXF7/8/9 site
 ownership, RAMB18 half-site occupancy demand, and exact dedicated cascade
-connectivity for carry, DSP, BRAM, and URAM chains. Cascade order is a logical
-connectivity order only: because ArchitectureDB does not yet expose a typed
-native-cascade adjacency graph, device binding is explicitly
-`adapter_required`; the contract never invents a `y+1` relationship. This
-contract is audited infrastructure.  Its CARRY8 subset now feeds an explicit
-unplaced native OpenPARF adapter; the other macro families remain unconsumed.
+connectivity for carry, DSP, BRAM, and URAM chains.  A source-sealed
+RapidWright device-fact artifact now binds that logical order to directed
+native site-pin paths without inventing a `y+1` relationship.  On the real
+XCVU19P model it proves 508,992 carry, 3,808 DSP, 1,980 clock-region-local
+BRAM, and 316 URAM edges.  The placement capability remains
+`adapter_required` until OpenPARF consumes those DSP/BRAM/URAM chains during
+native legalization.  This contract is audited infrastructure.  Its CARRY8
+subset now feeds an explicit unplaced native OpenPARF adapter; the hard-block
+macro families remain unconsumed by the placement core.
 The isolated A2 branch extends the pinned native extractor and legalizer while
 retaining the XArch CLA4 path: typed CARRY8 units select eight ordered LUT6_2
 members from S[0:7], verify the paired DI drivers, and occupy one full slice.
