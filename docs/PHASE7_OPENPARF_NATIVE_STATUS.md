@@ -26,22 +26,28 @@ device adapter must prove those relations from authoritative device data.
 
 Ordinary atomic LUT/FF/DSP/BRAM/URAM cells are not copied into this contract.
 Unknown, branching, merging, cyclic, partial-width, multiply-owned, or
-incomplete macro topology fails closed. The OpenPARF runtime does not consume
-this contract yet; native macro placement therefore remains pending.
+incomplete macro topology fails closed. The first explicit OpenPARF macro
+adapter now consumes the CARRY8 subset of this contract; all other macro
+families remain pending.
 
 ## CARRY8 native-core qualification
 
-The CARRY8/LUT6_2 family is now classified `core_missing`, not
-`adapter_required`.  This conclusion comes from the checked-in implementation,
-not from upstream documentation:
+The isolated A2 branch now contains the first native CARRY8/LUT6_2
+implementation.  This is source and contract evidence only until the modified
+C++ operators are built and executed:
 
-- `chain_info.cpp` allocates exactly four associated LUT IDs per chain unit and
-  accepts only `PROP[0:3]`.
-- `chain_legalizer.cpp` places one half-site chain unit and exactly four LUT
-  slots.  It has no representation for one CARRY8 plus eight LUT6_2 cells whose
-  O5 and O6 outputs jointly feed DI/S.
-- Bookshelf carry `.shape` records are stored in the database but are not
-  consumed by global placement, legalization, legality checking, or ISM;
+- `chain_info.cpp` retains the legacy four-PROP CLA4 behavior but recognizes
+  typed `CARRY8`, extracts eight ordered `LUT6_2` members from `S[0:7]`, and
+  independently proves that each `DI[i]` is driven by the same LUT instance;
+- `chain_legalizer.cpp` derives member arity from the extracted chain and maps
+  an eight-LUT CARRY8 unit to one full slice with A6LUT through H6LUT slots;
+- `xilinx_openparf_carry8.py` emits unplaced typed atoms and CAS connectivity,
+  invokes GP, native chain legalization, masked LUT/FF legalization, and ISM,
+  then independently checks exact BEL roles and RapidWright-certified
+  `CARRY_NEXT` adjacency;
+- parsed `.shape` records remain unused.  The explicit route deliberately uses
+  typed cascade and DI/S connectivity instead of claiming that inactive shape
+  infrastructure provides macro support.
 
 The audit also found and fixed two independent plumbing bugs. Bookshelf
 `OUTPUT CAS` now dispatches to the output-cascade callback. ISM now builds its
@@ -55,20 +61,19 @@ PhysicalMacroContract, reduces it to a deterministic minimum reproduction
 (CARRY8 count, eight LUT6_2 adapters per unit, chain lengths, and required
 O5/O6 semantics), audits those exact pinned sources, and emits the common
 Xilinx placer capability contract.  A two-CARRY8/16-LUT6_2 chain fixture
-proves the mismatch and the gate records `runtime_launched=false`,
-`fallback=forbidden`, and `preplacement=forbidden`.
+proves unplaced export and independent legality/tamper detection.  The probe
+still records `runtime_launched=false`, `fallback=forbidden`, and
+`preplacement=forbidden`, so source presence cannot be mistaken for a passing
+compiled run.
 
 Accordingly this branch does not manufacture a passing runtime by changing the
 macro into four ordinary LUTs, invoking the old search legalizer, or assigning
-sites before OpenPARF.  A real compiled GP -> carry legalizer -> ISM run would
-only become meaningful after the core and input semantics are extended to
-CARRY8/LUT6_2 and independently tested.
+sites before OpenPARF.  The remaining gate is a real compiled GP -> carry
+legalizer -> masked LUT/FF legalization -> ISM run followed by the independent
+RapidWright legality, routing, and OpenSTA timing checks.
 
-The remaining implementation boundary is explicit in the qualification
-report: variable eight-LUT CARRY8 chain metadata, full-slice CARRY8 chain
-legalization, unplaced Bookshelf export of CARRY8/LUT6_2 resource and cascade
-semantics, and an exact importer/validator for same-site roles and native chain
-adjacency.  The carry legalizer is now initialized from the current global
-placement coordinates without requiring IO legalization.  The remaining items
-are structural core/adapter changes, not parameters that can be approximated by
-preplacement.
+The qualification report now lists runtime steps rather than already-completed
+core edits: compiled native placement, RapidWright device legality, no-search
+physical bridge and routing, and independent OpenSTA timing.  CARRY8 source
+support is reported separately as `native_supported`; workload capability
+remains `unverified` until those runtime steps pass.

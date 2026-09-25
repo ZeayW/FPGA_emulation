@@ -160,9 +160,8 @@ def audit_pinned_openparf_source(source_root: Path) -> Dict[str, Any]:
 def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
     """Audit the actual native carry input/legalization/DP implementation.
 
-    The pinned core contains a carry-chain legalizer, but it is an XArch CLA4
-    implementation.  A class name or configuration switch is therefore not
-    sufficient evidence that it can preserve an UltraScale+ CARRY8 macro.
+    Source markers are evidence only for the implementation shape.  They do
+    not replace an executed placement plus independent device-legality check.
     """
 
     root = source_root.resolve()
@@ -229,17 +228,18 @@ def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
             "KWD_OUTPUT KWD_CAS ENDL    { driver.addCellOutputCasPinCbk"
             in texts["parser"]
         )
-        four_lut_extractor = all(marker in texts["chain_info"] for marker in (
-            "ordinal_lut_ids.resize(current_size + 4)",
-            "prop_id < 4",
-            'name.rfind("PROP")',
+        carry8_extractor = all(marker in texts["chain_info"] for marker in (
+            'model.name() == "CARRY8"',
+            "associated_luts_per_unit = is_carry8 ? 8 : 4",
+            'name.rfind("DI", 0)',
+            "adjacent_lut_id == ordinal_lut_ids",
         ))
-        four_lut_legalizer = all(
+        carry8_legalizer = all(
             marker in texts["chain_legalizer"] for marker in (
-                "for (int j = 0; j < 4; j++)",
-                "(i - cla_st) * 4 + j",
+                "luts_per_unit == 4 || luts_per_unit == 8",
+                "luts_per_unit == 8 ? 1.0 : 0.5",
                 "z + j * 2",
-                "0.5 * len",
+                "site.bbox().yh()",
             )
         )
         shape_only_loaded = (
@@ -283,10 +283,11 @@ def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
             ),
             "shape_db": evidence(
                 "shape_db",
-                status="core_missing" if shape_only_loaded else "unverified",
+                status="adapter_required" if shape_only_loaded else "unverified",
                 reason=(
                     "Bookshelf Carry-chain shape records are loaded into the "
-                    "database, but no placement/legalization/DP consumer exists"
+                    "database but are not used by the explicit typed CARRY8 "
+                    "chain route; native extraction uses cascade and DI/S connectivity"
                     if shape_only_loaded else
                     "shape-constraint ingestion was not proven"
                 ),
@@ -294,33 +295,34 @@ def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
             ),
             "chain_info": evidence(
                 "chain_info",
-                status="core_missing" if four_lut_extractor else "unverified",
+                status="native_supported" if carry8_extractor else "core_missing",
                 reason=(
-                    "native chain extraction is fixed to four PROP[0:3] LUTs "
-                    "per chain unit, not eight LUT6_2 O5/O6 adapters"
-                    if four_lut_extractor else
-                    "native carry-chain member arity was not proven"
+                    "native extraction selects eight ordered LUT6_2 members "
+                    "for CARRY8 and proves each DI/S pair has one common driver"
+                    if carry8_extractor else
+                    "native CARRY8 eight-LUT member extraction is missing"
                 ),
                 markers=(
-                    "ordinal_lut_ids.resize(current_size + 4)",
-                    "prop_id < 4",
-                    'name.rfind("PROP")',
+                    'model.name() == "CARRY8"',
+                    "associated_luts_per_unit = is_carry8 ? 8 : 4",
+                    'name.rfind("DI", 0)',
+                    "adjacent_lut_id == ordinal_lut_ids",
                 ),
             ),
             "chain_legalizer": evidence(
                 "chain_legalizer",
-                status="core_missing" if four_lut_legalizer else "unverified",
+                status="native_supported" if carry8_legalizer else "core_missing",
                 reason=(
-                    "native chain legalization packs one half-site CLA plus "
-                    "four LUT slots; it has no CARRY8 plus eight paired-LUT model"
-                    if four_lut_legalizer else
-                    "native carry-chain legalization geometry was not proven"
+                    "native legalization infers four- or eight-LUT units and "
+                    "places each eight-LUT CARRY8 unit as one full slice"
+                    if carry8_legalizer else
+                    "native full-slice CARRY8 legalization is missing"
                 ),
                 markers=(
-                    "for (int j = 0; j < 4; j++)",
-                    "(i - cla_st) * 4 + j",
+                    "luts_per_unit == 4 || luts_per_unit == 8",
+                    "luts_per_unit == 8 ? 1.0 : 0.5",
                     "z + j * 2",
-                    "0.5 * len",
+                    "site.bbox().yh()",
                 ),
             ),
             "placer": evidence(
@@ -361,8 +363,9 @@ def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
         "status": (
             "unverified" if missing else
             "core_missing" if any(
-                check["status"] == "core_missing" for check in checks.values()
-            ) else "unverified"
+                checks[name]["status"] == "core_missing"
+                for name in ("parser", "chain_info", "chain_legalizer", "placer")
+            ) else "native_supported"
         ),
         "checks": checks,
     }
@@ -376,7 +379,7 @@ def probe_xilinx_openparf_carry_native_support(
     source_root: Optional[Path] = None,
     output_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Fail closed on the pinned core's CARRY8/LUT6_2 incompatibility.
+    """Report source capability while requiring runtime CARRY8 qualification.
 
     This is a qualification gate, not a placer.  It never emits Bookshelf
     input, calls OpenPARF, chooses sites, or preplaces macro members.
@@ -408,7 +411,10 @@ def probe_xilinx_openparf_carry_native_support(
     if source_root is None:
         source_root = Path(__file__).resolve().parents[2] / "engines/openparf"
     source_audit = audit_pinned_openparf_carry_path(source_root)
-    status = source_audit["status"]
+    source_status = source_audit["status"]
+    qualification_status = (
+        "unverified" if source_status == "native_supported" else source_status
+    )
     evidence = [
         str(Path(check["path"]).relative_to(Path(source_audit["root"])))
         for check in source_audit["checks"].values()
@@ -423,7 +429,7 @@ def probe_xilinx_openparf_carry_native_support(
         "revision": source_audit["revision"],
         "stages": {
             "global_placement": entry(
-                status,
+                qualification_status,
                 "openparf/placement/placer.py",
                 "openparf/custom_data/chain_info/src/chain_info.cpp",
             ),
@@ -436,11 +442,11 @@ def probe_xilinx_openparf_carry_native_support(
                 "adapter_validation": "pass",
             },
             "legalization": entry(
-                status,
+                qualification_status,
                 "openparf/ops/chain_legalizer/src/chain_legalizer.cpp",
             ),
             "detailed_placement": entry(
-                status, "openparf/placement/placer.py"
+                qualification_status, "openparf/placement/placer.py"
             ),
             "physical_export": {
                 "status": "adapter_required",
@@ -449,23 +455,28 @@ def probe_xilinx_openparf_carry_native_support(
             },
         },
         "primitives": {
-            "CARRY8": entry(status, *evidence),
-            "LUT6_2": entry(status, *evidence),
+            "CARRY8": entry(qualification_status, *evidence),
+            "LUT6_2": entry(qualification_status, *evidence),
         },
         "constraints": {
-            "indivisible_carry8_lut6_2_macro": entry(status, *evidence),
-            "ordered_carry8_chain": entry(status, *evidence),
+            "indivisible_carry8_lut6_2_macro": entry(
+                qualification_status, *evidence
+            ),
+            "ordered_carry8_chain": entry(qualification_status, *evidence),
         },
         "qualification": {
-            "status": status,
+            "status": qualification_status,
             "runtime_launched": False,
             "fallback": "forbidden",
             "preplacement": "forbidden",
             "reason": (
                 "the pinned native core cannot represent or legalize the "
                 "required CARRY8 plus eight LUT6_2 macro semantics"
-                if status == "core_missing" else
-                "the pinned carry implementation could not be verified"
+                if source_status == "core_missing" else
+                "source support is present, but compiled native placement and "
+                "independent RapidWright device-legality validation have not run"
+                if source_status == "native_supported" else
+                "the pinned carry implementation could not be audited"
             ),
         },
         "minimum_reproduction": {
@@ -474,42 +485,40 @@ def probe_xilinx_openparf_carry_native_support(
             "carry_chain_lengths": [
                 len(chain["members"]) for chain in carry_chains
             ],
-            "required_lut_adapters_per_unit": 8,
-            "native_prop_luts_per_unit": 4,
+            "associated_luts_per_unit": 8,
             "required_lut_outputs": ["O5", "O6"],
-            "native_lut_interface": "PROP[0:3]",
+            "native_lut_interface": "DI[0:7]/S[0:7] paired LUT6_2 drivers",
         },
-        "remaining_core_changes": [
+        "remaining_qualification_steps": [
             {
-                "id": "carry8-chain-metadata",
-                "component": "openparf/custom_data/chain_info",
+                "id": "compiled-openparf-carry8-run",
+                "component": "src/emuflow/xilinx_openparf_carry8.py",
                 "requirement": (
-                    "derive eight ordered LUT6_2 members per CARRY8 from paired "
-                    "DI[i]/S[i] <- O5/O6 connectivity while retaining directed CI/CO[7] chain order"
+                    "build the modified core and execute unplaced GP through "
+                    "native chain legalization and detailed placement"
                 ),
             },
             {
-                "id": "carry8-full-slice-legalization",
-                "component": "openparf/ops/chain_legalizer",
+                "id": "rapidwright-native-legality",
+                "component": "src/emuflow/xilinx_openparf_carry8.py",
                 "requirement": (
-                    "model one CARRY8 as one complete slice row with LUT slots "
-                    "A6LUT through H6LUT instead of a half-row CLA4"
+                    "independently prove same-site CARRY8/LUT6_2 roles and "
+                    "CARRY_NEXT adjacency against certified device constraints"
                 ),
             },
             {
-                "id": "carry8-bookshelf-export",
-                "component": "src/emuflow/xilinx_openparf_atomic.py",
+                "id": "rapidwright-route-bridge",
+                "component": "src/emuflow/xilinx_openparf_bridge.py",
                 "requirement": (
-                    "emit CARRY8, LUT6_2, cascade-pin, area-type, resource, "
-                    "density, and macro ownership records without preplacement"
+                    "preserve the qualified macro placement through physical "
+                    "netlist export and route it without greedy fallback"
                 ),
             },
             {
-                "id": "carry8-exact-import-validation",
-                "component": "src/emuflow/xilinx_openparf_atomic.py",
+                "id": "opensta-timing-gate",
+                "component": "src/emuflow/opensta_global_timing.py",
                 "requirement": (
-                    "validate same-site CARRY8/LUT6_2 roles, consecutive native "
-                    "carry adjacency, complete coverage, and ISM preservation"
+                    "run the independent routed endpoint and global timing gate"
                 ),
             },
         ],
@@ -601,6 +610,8 @@ def probe_openparf_native_capabilities(
     if source_root is None:
         source_root = Path(__file__).resolve().parents[2] / "engines/openparf"
     source_audit = audit_pinned_openparf_source(source_root)
+    carry_source_audit = audit_pinned_openparf_carry_path(source_root)
+    carry_source_ready = carry_source_audit["status"] == "native_supported"
 
     primitive_counts = Counter(str(cell.get("type")) for cell in cells.values())
     primitive_matrix = []
@@ -720,15 +731,25 @@ def probe_openparf_native_capabilities(
     for primitive in ("CARRY8", "LUT6_2"):
         if primitive in primitive_capabilities:
             primitive_capabilities[primitive] = {
-                "status": "core_missing",
+                "status": (
+                    "adapter_required" if carry_source_ready else
+                    carry_source_audit["status"]
+                ),
                 "evidence": [
                     "openparf/custom_data/chain_info/src/chain_info.cpp",
                     "openparf/ops/chain_legalizer/src/chain_legalizer.cpp",
-                    "src/emuflow/openparf_native_capabilities.py",
+                    "src/emuflow/xilinx_openparf_carry8.py",
                 ],
+                **(
+                    {"adapter_validation": "missing"}
+                    if carry_source_ready else {}
+                ),
                 "reason": (
-                    "the pinned carry path is a four-PROP-LUT CLA4 model and "
-                    "cannot preserve an UltraScale+ CARRY8 with eight dual-output LUT6_2 adapters"
+                    "the native core has typed CARRY8 extraction and full-slice "
+                    "legalization, but the explicit adapter has not completed "
+                    "compiled placement and RapidWright legality qualification"
+                    if carry_source_ready else
+                    "native CARRY8/LUT6_2 source support is missing or unverified"
                 ),
             }
 
@@ -806,10 +827,15 @@ def probe_openparf_native_capabilities(
         ),
         feature(
             "dedicated_cascade_legalization",
-            "core_missing" if chain else "unverified",
+            "adapter_required" if carry_source_ready else (
+                "core_missing" if chain else "unverified"
+            ),
             (
-                "the available native chain legalizer is fixed to CLA4 plus "
-                "four PROP LUTs and cannot represent CARRY8/LUT6_2 macros"
+                "the source core supports full-slice CARRY8 chains, but this "
+                "generic probe cannot substitute for an executed adapter and "
+                "RapidWright legality qualification"
+                if carry_source_ready else
+                "native CARRY8/LUT6_2 cascade legalization is missing or unverified"
             ),
             (
                 "openparf/custom_data/chain_info/src/chain_info.cpp",
@@ -901,11 +927,18 @@ def probe_openparf_native_capabilities(
             "adapter_validation": "missing",
         },
         "dedicated_cascade": {
-            "status": "core_missing" if chain else "unverified",
+            "status": "adapter_required" if carry_source_ready else (
+                "core_missing" if chain else "unverified"
+            ),
             "evidence": [
                 "openparf/custom_data/chain_info/src/chain_info.cpp",
                 "openparf/ops/chain_legalizer/src/chain_legalizer.cpp",
+                "src/emuflow/xilinx_openparf_carry8.py",
             ],
+            **(
+                {"adapter_validation": "missing"}
+                if carry_source_ready else {}
+            ),
         },
         "bel_site_mode": {
             "status": "adapter_required" if atomic_ready else (
@@ -931,6 +964,7 @@ def probe_openparf_native_capabilities(
             "EmuFlow-greedy-exact-legalizer"
         ),
         "source_audit": source_audit,
+        "carry_source_audit": carry_source_audit,
         "primitive_inventory": primitive_matrix,
         "provider_features": features,
         "design_hazards": {

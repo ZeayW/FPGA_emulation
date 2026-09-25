@@ -243,7 +243,7 @@ void DispatchedChainLegalizerForward(database::PlaceDB const &placedb,
       int32_t xl = site.bbox().xl();
       int32_t yl = site.bbox().yl();
       col_yl[xl] = std::min(col_yl[xl], yl);
-      col_yh[xl] = std::max(col_yh[xl], yl);
+      col_yh[xl] = std::max(col_yh[xl], site.bbox().yh());
       cla_col_heights[xl] += 1;
     }
   }
@@ -258,7 +258,14 @@ void DispatchedChainLegalizerForward(database::PlaceDB const &placedb,
     int   len      = en - st;
     float center_x = 0;
     float center_y = 0;
-    float height   = 0.5 * len;
+    int   lut_st   = chain_lut_ids_b_starts[chain_id];
+    int   lut_en   = chain_lut_ids_b_starts[chain_id + 1];
+    openparfAssert(len > 0);
+    openparfAssert((lut_en - lut_st) % len == 0);
+    int   luts_per_unit = (lut_en - lut_st) / len;
+    openparfAssert(luts_per_unit == 4 || luts_per_unit == 8);
+    float unit_height = luts_per_unit == 8 ? 1.0 : 0.5;
+    float height   = unit_height * len;
     float bl_x;
     float bl_y;
     for (int i = st; i < en; i++) {
@@ -338,17 +345,30 @@ void DispatchedChainLegalizerForward(database::PlaceDB const &placedb,
         int       cla_en   = chain_cla_ids_b_starts[chain_id + 1];
         int       lut_st   = chain_lut_ids_b_starts[chain_id];
         int       lut_en   = chain_lut_ids_b_starts[chain_id + 1];
+        openparfAssert(cla_en > cla_st);
+        openparfAssert((lut_en - lut_st) % (cla_en - cla_st) == 0);
+        int luts_per_unit =
+            (lut_en - lut_st) / (cla_en - cla_st);
+        openparfAssert(luts_per_unit == 4 || luts_per_unit == 8);
+        float unit_height = luts_per_unit == 8 ? 1.0 : 0.5;
         for (int i = cla_st; i < cla_en; i++) {
           int   cla_inst_id            = chain_cla_ids_bs[i];
-          float lb_y                   = rv.y() + 0.5 * (i - cla_st);
+          float lb_y                   = rv.y() + unit_height * (i - cla_st);
           pos_xyz[cla_inst_id * 3]     = rv.x() + 0.5;
           pos_xyz[cla_inst_id * 3 + 1] = std::floor(lb_y) + 0.5;
-          pos_xyz[cla_inst_id * 3 + 2] = std::fabs(lb_y - std::round(lb_y)) < 0.1 ? 0 : 1;
+          pos_xyz[cla_inst_id * 3 + 2] =
+              luts_per_unit == 8
+                  ? 0
+                  : (std::fabs(lb_y - std::round(lb_y)) < 0.1 ? 0 : 1);
           float x                      = pos_xyz[cla_inst_id * 3];
           float y                      = pos_xyz[cla_inst_id * 3 + 1];
-          int   z                      = pos_xyz[cla_inst_id * 3 + 2] == 0 ? 1 : 9;
-          for (int j = 0; j < 4; j++) {
-            int lut_inst_id              = chain_lut_ids_bs[lut_st + (i - cla_st) * 4 + j];
+          int   z                      =
+              luts_per_unit == 8
+                  ? 1
+                  : (pos_xyz[cla_inst_id * 3 + 2] == 0 ? 1 : 9);
+          for (int j = 0; j < luts_per_unit; j++) {
+            int lut_inst_id = chain_lut_ids_bs[
+                lut_st + (i - cla_st) * luts_per_unit + j];
             pos_xyz[lut_inst_id * 3]     = x;
             pos_xyz[lut_inst_id * 3 + 1] = y;
             pos_xyz[lut_inst_id * 3 + 2] = z + j * 2;

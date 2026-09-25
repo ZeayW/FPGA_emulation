@@ -1037,9 +1037,10 @@ model: OpenPARF placed 128 atoms into 11 sites; RapidWright routed 22 nets and
 inter-site logical endpoints; and standalone upstream OpenSTA 3.1.0
 (`051222e4ec`) validated 64 timed endpoints at WNS +39.091599 ns and TNS 0 ns.
 This proves the bounded atomic placement-to-timing handoff, not production DLA
-support.  CARRY8, LUT6_2/paired-LUT use, RAMB18 half sites, cascades, relative
-placement, and mixed-resource site groups remain fail-closed; this path is not
-yet a public placer selection or the default Phase 7 provider.
+support.  The isolated A2 branch now has source-level CARRY8/LUT6_2 support,
+while RAMB18 half sites, other relative macros, cascades, and clock/SLR
+constraints remain fail-closed; this path is not yet a public placer selection
+or the default Phase 7 provider.
 The provider-neutral `emuflow.xilinx-physical-macro-contract/v1` now derives
 these non-atomic constraints directly from mapped connectivity without running
 a packer, placer, or legalizer. It records CARRY8/LUT6_2 and MUXF7/8/9 site
@@ -1048,23 +1049,24 @@ connectivity for carry, DSP, BRAM, and URAM chains. Cascade order is a logical
 connectivity order only: because ArchitectureDB does not yet expose a typed
 native-cascade adjacency graph, device binding is explicitly
 `adapter_required`; the contract never invents a `y+1` relationship. This
-contract is audited infrastructure and is not yet consumed by the OpenPARF
-runtime.
-The pinned OpenPARF carry route has now been audited at source level and is
-explicitly `core_missing` for that contract rather than merely awaiting an
-adapter.  Its native extractor and legalizer implement an XArch CLA4 unit with
-four `PROP[0:3]` LUTs and half-site occupancy; they cannot preserve one
-UltraScale+ CARRY8 plus eight coupled LUT6_2 O5/O6 adapters.  In addition, the
-parsed `.shape` carry constraints have no placement/legalization/DP consumer.
+contract is audited infrastructure.  Its CARRY8 subset now feeds an explicit
+unplaced native OpenPARF adapter; the other macro families remain unconsumed.
+The isolated A2 branch extends the pinned native extractor and legalizer while
+retaining the XArch CLA4 path: typed CARRY8 units select eight ordered LUT6_2
+members from S[0:7], verify the paired DI drivers, and occupy one full slice.
+The adapter invokes GP, native chain legalization, masked LUT/FF legalization,
+and ISM, then independently validates exact BEL roles and RapidWright-certified
+CARRY_NEXT adjacency.  Parsed `.shape` records still have no consumer and are
+not used as evidence.
 Two independent upstream plumbing defects found during that audit are now
 fixed: Bookshelf `OUTPUT CAS` dispatches to the output-cascade callback, and
 ISM freezes both carry primitives and their associated LUTs whenever carry
 legalization is active rather than depending on IO legalization.  The internal
-`probe_xilinx_openparf_carry_native_support` qualification API records these
-exact source-backed blockers against a real two-CARRY8 macro contract and
-forbids runtime launch, fallback, or preplacement.  No compiled carry result is
-claimed: native GP-to-chain-legalization-to-DP qualification remains blocked
-until the upstream core/input contract gains true CARRY8/LUT6_2 semantics.
+`probe_xilinx_openparf_carry_native_support` qualification API separates the
+source audit from runtime qualification against a two-CARRY8 macro contract
+and forbids fallback or preplacement.  No compiled carry result is claimed:
+source and unit gates pass, while native GP-to-chain-legalization-to-DP,
+RapidWright routing, and OpenSTA timing remain mandatory runtime gates.
 The internal `run_rapidwright_openparf_native_candidate_backend` entry point
 uses that native placement and then rejoins the existing RWRoute, routed-
 timing, boundary-timing, and OpenSTA tail.  It never invokes the legacy Xilinx

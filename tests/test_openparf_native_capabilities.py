@@ -258,19 +258,19 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
             mapped.write_text(json.dumps(value), encoding="utf-8")
             matrix = probe_openparf_native_capabilities(mapped, packed, architecture)
         for primitive in placed:
-            expected = (
-                "core_missing"
-                if primitive in {"CARRY8", "LUT6_2"}
-                else "adapter_required"
+            self.assertEqual(
+                matrix["primitives"][primitive]["status"], "adapter_required"
             )
-            self.assertEqual(matrix["primitives"][primitive]["status"], expected)
+        self.assertEqual(
+            matrix["primitives"]["CARRY8"]["adapter_validation"], "missing"
+        )
         self.assertEqual(matrix["primitives"]["GND"]["status"], "native_supported")
         self.assertEqual(
             matrix["primitives"]["FUTURE_PRIMITIVE"]["status"], "unverified"
         )
         self.assertFalse(matrix["native_packed_cluster_smoke"]["eligible"])
 
-    def test_carry_probe_reproduces_pinned_core_gap_without_launch(self):
+    def test_carry_probe_requires_explicit_runtime_qualification(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             mapped, contract = _write_two_carry_fixture(root)
@@ -284,7 +284,7 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
         run_openparf.assert_not_called()
         self.assertEqual(report, serialized)
         validate_xilinx_placer_capability_report(report)
-        self.assertEqual(report["qualification"]["status"], "core_missing")
+        self.assertEqual(report["qualification"]["status"], "unverified")
         self.assertFalse(report["qualification"]["runtime_launched"])
         self.assertEqual(report["qualification"]["fallback"], "forbidden")
         self.assertEqual(report["qualification"]["preplacement"], "forbidden")
@@ -292,20 +292,19 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
         self.assertEqual(reproduction["carry8_units"], 2)
         self.assertEqual(reproduction["lut6_2_adapters"], 16)
         self.assertEqual(reproduction["carry_chain_lengths"], [2])
-        self.assertEqual(reproduction["required_lut_adapters_per_unit"], 8)
-        self.assertEqual(reproduction["native_prop_luts_per_unit"], 4)
+        self.assertEqual(reproduction["associated_luts_per_unit"], 8)
         self.assertEqual(
-            [item["id"] for item in report["remaining_core_changes"]],
+            [item["id"] for item in report["remaining_qualification_steps"]],
             [
-                "carry8-chain-metadata",
-                "carry8-full-slice-legalization",
-                "carry8-bookshelf-export",
-                "carry8-exact-import-validation",
+                "compiled-openparf-carry8-run",
+                "rapidwright-native-legality",
+                "rapidwright-route-bridge",
+                "opensta-timing-gate",
             ],
         )
         self.assertEqual(
             report["constraints"]["ordered_carry8_chain"]["status"],
-            "core_missing",
+            "unverified",
         )
         decision = qualify_xilinx_placer_capabilities(
             report,
@@ -319,23 +318,24 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
 
     def test_carry_source_audit_records_exact_native_assumptions(self):
         audit = audit_pinned_openparf_carry_path(ROOT / "engines/openparf")
-        self.assertEqual(audit["status"], "core_missing")
+        self.assertEqual(audit["status"], "native_supported")
         self.assertEqual(
             set(audit["checks"]),
             {"parser", "shape_db", "chain_info", "chain_legalizer", "placer"},
         )
         self.assertEqual(audit["checks"]["parser"]["status"], "native_supported")
         self.assertEqual(audit["checks"]["placer"]["status"], "native_supported")
-        self.assertTrue(all(
-            audit["checks"][name]["status"] == "core_missing"
-            for name in ("shape_db", "chain_info", "chain_legalizer")
-        ))
+        self.assertEqual(audit["checks"]["shape_db"]["status"], "adapter_required")
+        self.assertEqual(audit["checks"]["chain_info"]["status"], "native_supported")
+        self.assertEqual(
+            audit["checks"]["chain_legalizer"]["status"], "native_supported"
+        )
         self.assertIn(
-            "ordinal_lut_ids.resize(current_size + 4)",
+            "associated_luts_per_unit = is_carry8 ? 8 : 4",
             audit["checks"]["chain_info"]["markers"],
         )
         self.assertIn(
-            "for (int j = 0; j < 4; j++)",
+            "luts_per_unit == 8 ? 1.0 : 0.5",
             audit["checks"]["chain_legalizer"]["markers"],
         )
         self.assertEqual(
