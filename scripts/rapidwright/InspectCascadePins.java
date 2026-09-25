@@ -104,6 +104,38 @@ public final class InspectCascadePins {
                                         nodeKey(end), new ArrayList<>())));
                     }
                 }
+                if (pin.isOutput() && external != null && sitePin != null
+                        && (sitePin.startsWith("CASDO")
+                            || sitePin.startsWith("CASOUT"))) {
+                    Node current = external;
+                    Set<String> walked = new HashSet<>();
+                    for (int depth = 0; depth <= 16; ++depth) {
+                        String currentKey = nodeKey(current);
+                        if (!walked.add(currentKey)) {
+                            System.out.println("WALK\t" + selected.getName()
+                                    + "\t" + sitePin + "\t" + depth
+                                    + "\tCYCLE\t" + currentKey);
+                            break;
+                        }
+                        SitePin reached = current.getSitePin();
+                        List<PIP> direct = new ArrayList<>();
+                        for (PIP pip : current.getAllDownhillPIPs()) {
+                            if ("DIRECTIONAL_NOT_BUFFERED21".equals(
+                                        pip.getPIPType().name())) {
+                                direct.add(pip);
+                            }
+                        }
+                        System.out.println("WALK\t" + selected.getName()
+                                + "\t" + sitePin + "\t" + depth
+                                + "\t" + currentKey
+                                + "\t" + (reached == null ? "-"
+                                    : reached.getSite().getName() + "/"
+                                        + reached.getPinName())
+                                + "\t" + direct.size());
+                        if (reached != null || direct.size() != 1) break;
+                        current = direct.get(0).getEndNode();
+                    }
+                }
                 if (pin.isInput() && external != null
                         && auditedUphill.add(nodeKey(external))) {
                     for (PIP pip : external.getAllUphillPIPs()) {
