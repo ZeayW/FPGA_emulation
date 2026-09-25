@@ -300,11 +300,26 @@ public final class EmuFlowNativeDeviceConstraints {
         return result;
     }
 
-    private static TreeMap<CapacityKey, Long> capacity(Device device) {
+    private static Set<String> eligibleSites(Path path) throws IOException {
+        List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+        Set<String> result = new HashSet<>();
+        for (String line : lines) {
+            require(!line.isEmpty() && result.add(line),
+                    "architecture site allowlist is empty or duplicated");
+        }
+        require(!result.isEmpty(), "architecture site allowlist is empty");
+        return result;
+    }
+
+    private static TreeMap<CapacityKey, Long> capacity(
+            Device device, Set<String> eligibleSites) {
         TreeMap<CapacityKey, Long> result = new TreeMap<>();
+        Set<String> seen = new HashSet<>();
         for (Site site : device.getAllSites()) {
             require(site != null && site.getTile() != null,
                     "device contains a null site or tile");
+            if (!eligibleSites.contains(site.getName())) continue;
+            require(seen.add(site.getName()), "native device contains a duplicate site");
             ClockRegion clockRegion = site.getClockRegion();
             SLR slr = site.getTile().getSLR();
             require(clockRegion != null && slr != null,
@@ -313,15 +328,19 @@ public final class EmuFlowNativeDeviceConstraints {
                     site.getSiteTypeEnum().name());
             result.put(key, result.getOrDefault(key, 0L) + 1L);
         }
+        require(seen.equals(eligibleSites),
+                "ArchitectureDB site allowlist does not match the native device");
         require(!result.isEmpty(), "device contains no sites");
         return result;
     }
 
-    private static List<Edge> edges(Device device, Family family) {
+    private static List<Edge> edges(
+            Device device, Family family, Set<String> eligibleSites) {
         List<EndpointVector> sources = new ArrayList<>();
         Map<String, EndpointVector> targets = new HashMap<>();
         for (Site site : device.getAllSites()) {
-            if (site == null || !site.getName().startsWith(family.sitePrefix)) continue;
+            if (site == null || !eligibleSites.contains(site.getName())
+                    || !site.getName().startsWith(family.sitePrefix)) continue;
             EndpointVector source = vector(site, family, true);
             EndpointVector target = vector(site, family, false);
             if (source != null) sources.add(source);
@@ -513,23 +532,25 @@ public final class EmuFlowNativeDeviceConstraints {
     }
 
     public static void main(String[] args) throws IOException {
-        require(args.length == 8,
+        require(args.length == 9,
                 "usage: <device> <full-part> <version> <revision> "
-                        + "<manifest-sha256> <database-md5> <architecture-sha256> <output>");
+                        + "<manifest-sha256> <database-md5> <architecture-sha256> "
+                        + "<architecture-sites> <output>");
         Device device = Device.getDevice(args[1]);
         require(device != null && device.getName().equals(args[0]),
                 "device identity mismatch");
-        TreeMap<CapacityKey, Long> capacity = capacity(device);
+        Set<String> eligibleSites = eligibleSites(Paths.get(args[7]));
+        TreeMap<CapacityKey, Long> capacity = capacity(device, eligibleSites);
         List<FamilyResult> results = new ArrayList<>();
         for (Family family : families()) {
-            List<Edge> edges = edges(device, family);
+            List<Edge> edges = edges(device, family, eligibleSites);
             results.add(new FamilyResult(family, edges, chains(family.kind, edges)));
         }
         String payload = payload(args[0], args[1], args[2], args[3], args[4],
                 args[5], args[6], capacity, results);
         String document = "{\"payload\":" + payload + ",\"payload_sha256\":"
                 + quote(sha256(payload)) + ",\"schema\":" + quote(SCHEMA) + "}\n";
-        Path output = Paths.get(args[7]);
+        Path output = Paths.get(args[8]);
         Path parent = output.toAbsolutePath().getParent();
         if (parent != null) Files.createDirectories(parent);
         Files.write(output, document.getBytes(StandardCharsets.UTF_8));

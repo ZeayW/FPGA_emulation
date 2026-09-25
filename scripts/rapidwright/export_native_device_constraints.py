@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from emuflow.architecture import ArchitectureDB
 from emuflow.rapidwright_provider import (
     load_rapidwright_provider_manifest,
     validate_rapidwright_provider_manifest,
@@ -78,6 +79,14 @@ def main() -> int:
     ) as temporary:
         classes = Path(temporary) / "classes"
         classes.mkdir()
+        architecture_sites = Path(temporary) / "architecture-sites.txt"
+        architecture = ArchitectureDB.load(args.architecture)
+        site_names = sorted(
+            str(site["name"]) for site in architecture.value.get("sites", [])
+        )
+        if not site_names or len(site_names) != len(set(site_names)):
+            raise SystemExit("ArchitectureDB has no sites or duplicate site names")
+        architecture_sites.write_text("\n".join(site_names) + "\n", encoding="utf-8")
         _run(
             [
                 args.javac,
@@ -103,6 +112,7 @@ def main() -> int:
                 _sha256(args.provider_manifest),
                 checked["device_database_md5"],
                 _sha256(args.architecture),
+                str(architecture_sites),
                 str(args.output),
             ]
         )
