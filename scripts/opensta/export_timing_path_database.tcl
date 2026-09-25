@@ -98,9 +98,9 @@ foreach line [lrange $map_lines 1 end] {
 }
 
 # Load the pin/net identity produced directly from sealed EmuIR connectivity.
-# OpenSTA 2.6 can corrupt its Tcl collection arena both when resolving a large
-# set of nets to pins and when nesting that lookup under live PathEnd handles.
-# The static map keeps path export independent of those unsafe object queries.
+# This static map avoids repeated collection scans while live PathEnd handles
+# are being serialized and gives the exporter an independently sealed identity
+# source instead of inferring EmuIR names from the timing engine's hierarchy.
 array set emuir_by_pin_full_name {}
 set pin_map_path [file normalize [emuflow_required_env EMUFLOW_STA_PIN_MAP]]
 set pin_map_input [open $pin_map_path r]
@@ -241,18 +241,17 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     if {[llength $through_net] != 1} {
       error "through net '$mapped_name' is absent or ambiguous"
     }
-    # OpenSTA 2.6 accepts pins and nets for -through, but its Tcl net
-    # collection path can dereference invalid state.  Resolve the net to its
-    # connected pins first; this is semantically equivalent for a timing path.
+    # Resolve the net to its connected pins before reconstructing the bounded
+    # timing cone.  This also makes driver selection explicit and auditable.
     set through_pins [get_pins -quiet -of_objects $through_net]
     if {[llength $through_pins] == 0} {
       error "through net '$mapped_name' has no timing pins"
     }
     # OpenSTA does not treat an internal combinational driver as a legal timing
     # startpoint, so querying -from the cut-net driver silently returns no path.
-    # Its 2.6 -through collection path is also unsafe.  Instead, independently
-    # reconstruct the cut's timing cone and query from its real sequential/input
-    # startpoints to its real sequential/output endpoints.  The serialized path
+    # Instead, independently reconstruct the cut's timing cone and query from
+    # its real sequential/input startpoints to its real sequential/output
+    # endpoints.  The serialized path
     # is still checked below (and again by Python) for the requested EmuIR net,
     # so a reconvergent bypass cannot satisfy the coverage certificate.
     set driver_count 0
@@ -281,7 +280,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
         foreach endpoint $endpoints {
           foreach path_end [find_timing_paths -path_delay max \
               -from [list $startpoint] -to [list $endpoint] \
-              -group_count 1 -endpoint_count 1 \
+              -group_path_count 1 -endpoint_path_count 1 \
               -sort_by_slack] {
             set timing_paths [list $path_end]
             incr queried_paths
@@ -312,7 +311,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
           error "timed endpoint '$endpoint_name' is absent or ambiguous"
         }
         foreach path_end [find_timing_paths -path_delay max \
-            -to $endpoint_pin -group_count 1 -endpoint_count 1 \
+            -to $endpoint_pin -group_path_count 1 -endpoint_path_count 1 \
             -sort_by_slack] {
           set timing_paths [list $path_end]
           incr queried_paths
@@ -336,11 +335,10 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   }
   puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"
 } else {
-  # Ask OpenSTA for one bounded, globally sorted PathEnd collection.  A single
-  # search is stable in OpenSTA 2.6; repeated per-endpoint searches and the
-  # native JSON reporter both corrupt that version's path arena.  The static
-  # EmuIR pin map above means serialization needs no nested net collection
-  # query while these PathEnd handles are live.
+  # Ask OpenSTA for one bounded, globally sorted PathEnd collection.  One
+  # bounded search avoids rebuilding the search graph per endpoint.  The
+  # static EmuIR pin map above means serialization needs no nested net
+  # collection query while these PathEnd handles are live.
   set endpoint_count [llength [all_registers -data_pins]]
   incr endpoint_count [llength [all_outputs]]
   set report_limit [expr {min($max_paths, $endpoint_count)}]
@@ -350,7 +348,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   set output [open $output_path w]
   puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
   set timing_paths [find_timing_paths -path_delay max \
-    -group_count $report_limit -endpoint_count 1 -sort_by_slack]
+    -group_path_count $report_limit -endpoint_path_count 1 -sort_by_slack]
   set queried_paths [llength $timing_paths]
   emuflow_emit_timing_paths $timing_paths output emitted
   close $output

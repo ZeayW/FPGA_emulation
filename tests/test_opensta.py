@@ -86,7 +86,7 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("incr endpoint_count [llength [all_outputs]]", script)
         self.assertIn("min($max_paths, $endpoint_count)", script)
         self.assertIn(
-            "-group_count $report_limit -endpoint_count 1", script
+            "-group_path_count $report_limit -endpoint_path_count 1", script
         )
         self.assertIn(
             "emuflow_emit_timing_paths $timing_paths output emitted", script
@@ -105,7 +105,7 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("$emitted == $before_emitted", script)
         self.assertIn("[info exists timed_endpoints($emuir_name)]", script)
         self.assertIn("-to $endpoint_pin", script)
-        self.assertIn("-endpoint_count 1", script)
+        self.assertIn("-endpoint_path_count 1", script)
         self.assertIn("proc emuflow_emit_timing_paths", script)
         self.assertIn("array set emuir_by_pin_full_name {}", script)
         self.assertIn("EMUFLOW_STA_PIN_MAP", script)
