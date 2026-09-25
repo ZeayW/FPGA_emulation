@@ -952,6 +952,13 @@ OpenPARF work and not evidence until their public optimization cores run.
    chains.  Consume source-sealed RapidWright device facts; do not infer
    adjacency from `x/y` proximity and do not run a greedy site search after
    OpenPARF.
+   The first typed-hardblock implementation is an in-core deterministic,
+   conflict-aware whole-chain window allocator driven by global-placement
+   displacement. It is not called an exact optimizer. All owned DSP/BRAM/URAM
+   instances are removed from singleton MCF and frozen before ISM; an
+   independent checker proves the selected windows against source-sealed
+   dedicated adjacency. Qualify in the order DSP, BRAM, URAM so each family
+   reaches RWRoute and standalone OpenSTA before the next family is promoted.
 3. **Device-wide legality.** Enforce clock-region, SLR, fixed-I/O, control-set,
    and independently sourced half-column clock constraints during placement
    and legalization.  A missing authoritative constraint remains

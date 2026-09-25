@@ -54,6 +54,7 @@ from ..ops.ssr_abacus_lg import ssr_abacus_lg
 from ..ops.sll import sll
 from ..ops.soft_floor import soft_floor
 from ..ops.wasll import wasll
+from ..ops.typed_hardblock_legalizer import TypedHardblockLegalizer
 
 logger = logging.getLogger(__name__)
 
@@ -548,7 +549,21 @@ class OpCollections(object):
         self.precond2_op = build_precond2_op(params, placedb, data_cls)
         # single-site resource
         # i.e., a resource occupies exactly one site
-        self.ssr_legalize_op = mcf_lg.MinCostFlowLegalizer(params, placedb, data_cls)
+        self.typed_hardblock_legalization_op = (
+            TypedHardblockLegalizer(
+                params.typed_hardblock_chain_constraints, placedb, data_cls
+            )
+            if params.typed_hardblock_chain_constraints
+            else None
+        )
+        typed_hardblock_ids = (
+            self.typed_hardblock_legalization_op.inst_ids.tolist()
+            if self.typed_hardblock_legalization_op is not None
+            else []
+        )
+        self.ssr_legalize_op = mcf_lg.MinCostFlowLegalizer(
+            params, placedb, data_cls, excluded_inst_ids=typed_hardblock_ids
+        )
         self.ssr_abacus_legalize_op = build_ssr_abacus_legalize_op(
             params, data_cls, placedb
         )

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class MinCostFlowLegalizer:
-    def __init__(self, params, placedb, data_cls):
+    def __init__(self, params, placedb, data_cls, excluded_inst_ids=None):
         self.data_cls = data_cls
         self.legalizer = mcf_lg_cpp.MinCostFlowLegalizer(placedb)
         self.honor_fence_region_constraints = False
@@ -26,6 +26,7 @@ class MinCostFlowLegalizer:
             self.legalizer.set_max_clk_per_half_column(
                 params.maximum_clock_per_half_column)
         self.inst_ids_groups = []
+        excluded_inst_ids = set(excluded_inst_ids or ())
         data_cls.ssr_area_types = []
 
         layout = placedb.db().layout()
@@ -43,6 +44,7 @@ class MinCostFlowLegalizer:
                     data_cls.movable_range[0]
                     <= inst_id
                     < data_cls.movable_range[1]
+                    and inst_id not in excluded_inst_ids
                 )
             ]
             if not inst_ids:

@@ -16,6 +16,7 @@ from emuflow.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_MANIFEST_SCHEMA,
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_SOURCE_SCHEMA,
+    OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA,
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
     run_xilinx_openparf_atomic_qualification,
@@ -851,6 +852,91 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 validate_xilinx_openparf_atomic_placement(
                     malformed, output / "name_map.json", mapped, architecture
                 )
+
+    def test_exports_exact_native_dsp_chain_windows_for_in_core_legalizer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_runtime_fixture(
+                root, include_hard=True
+            )
+            mapped_value = json.loads(mapped.read_text(encoding="utf-8"))
+            cells = mapped_value["modules"]["top"]["cells"]
+            cells["dsp"]["port_directions"]["ACOUT"] = "output"
+            cells["dsp"]["connections"]["ACOUT"] = [40_000, 40_001]
+            cells["dsp_next"] = {
+                "type": "DSP48E2",
+                "port_directions": {"ACIN": "input", "P": "output"},
+                "connections": {"ACIN": [40_000, 40_001], "P": [40_002]},
+            }
+            mapped.write_text(json.dumps(mapped_value), encoding="utf-8")
+            packed_value = json.loads(packed.read_text(encoding="utf-8"))
+            packed_value["clusters"].append({
+                "id": "dsp_next", "kind": "hard",
+                "site_templates": ["DSP48E2"], "control_set": None,
+                "assignments": [{
+                    "instance": "dsp_next", "cell_type": "DSP48E2",
+                    "bel": "DSP48E2", "bel_candidates": ["DSP48E2"],
+                }],
+            })
+            packed_value["cascade_chains"] = [{
+                "id": "dsp-chain", "cell_type": "DSP48E2",
+                "instances": ["dsp", "dsp_next"], "links": [],
+            }]
+            packed.write_text(json.dumps(packed_value), encoding="utf-8")
+            architecture_value = json.loads(
+                architecture.read_text(encoding="utf-8")
+            )
+            architecture_value["sites"].append({
+                "name": "DSP48E2_X2Y0", "type": "DSP48E2",
+                "template": "DSP48E2", "x": 12, "y": 0,
+                "tile": {"grid_col": 12, "grid_row": 0},
+            })
+            architecture.write_text(
+                json.dumps(architecture_value), encoding="utf-8"
+            )
+            native_path = root / "native.json"
+            provider_path = root / "provider.json"
+            native_path.write_text("{}", encoding="utf-8")
+            provider_path.write_text("{}", encoding="utf-8")
+            native = {"payload": {"dedicated_adjacency": [{
+                "kind": "DSP_CASCADE",
+                "chains": [["DSP48E2_X0Y0", "DSP48E2_X1Y0"]],
+            }]}}
+            output = root / "output"
+            with mock.patch(
+                "emuflow.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
+                return_value=(native, {"status": "pass"}),
+            ), mock.patch(
+                "emuflow.xilinx_openparf_atomic.require_xilinx_native_constraint_capability"
+            ):
+                report = export_xilinx_openparf_atomic(
+                    mapped, packed, architecture, output,
+                    native_constraints_path=native_path,
+                    provider_manifest_path=provider_path,
+                )
+            contract = json.loads(
+                (output / "typed-hardblock-chains.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                contract["schema"], OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA
+            )
+            chain = next(group for group in contract["groups"]
+                         if group["id"] == "dsp-chain")
+            self.assertEqual(chain["source_instances"], ["dsp", "dsp_next"])
+            self.assertEqual(
+                [site["site"] for site in chain["windows"][0]],
+                ["DSP48E2_X0Y0", "DSP48E2_X1Y0"],
+            )
+            config = json.loads((output / "openparf.json").read_text())
+            self.assertEqual(
+                Path(config["typed_hardblock_chain_constraints"]),
+                (output / "typed-hardblock-chains.json").resolve(),
+            )
+            self.assertTrue(
+                report["constraint_policy"][
+                    "typed_hardblock_chains_use_internal_legalizer"
+                ]
+            )
 
 
 if __name__ == "__main__":

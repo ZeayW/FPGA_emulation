@@ -22,6 +22,10 @@ from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
 from .io import read_json, write_json
 from .openparf import run_openparf, validate_openparf_runtime
+from .xilinx_native_device_constraints import (
+    load_xilinx_native_device_constraints,
+    require_xilinx_native_constraint_capability,
+)
 from .xilinx_packing import (
     CONSTANT_TYPES,
     FF_TYPES,
@@ -35,6 +39,9 @@ OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
 OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v1"
 OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v1"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
+OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA = (
+    "openparf.typed-hardblock-chains/v1"
+)
 
 _HARD_RESOURCES = {
     "DSP48E2": "DSP48E2",
@@ -319,15 +326,30 @@ def _validate_native_density_contract(
 
 
 def _collect_atoms(
-    mapped: Mapping[str, Any], packed: Mapping[str, Any], top: Optional[str]
+    mapped: Mapping[str, Any], packed: Mapping[str, Any], top: Optional[str],
+    *, allow_hardblock_cascades: bool = False,
 ) -> Tuple[str, Mapping[str, Any], List[Dict[str, str]]]:
     selected_top, module = _select_module(mapped, top)
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped JSON cells are invalid")
     cascades = packed.get("cascade_chains", [])
-    if not isinstance(cascades, list) or cascades:
+    if not isinstance(cascades, list):
+        raise ValidationError("atomic mixed-resource cascade constraints are invalid")
+    if cascades and not allow_hardblock_cascades:
         raise ValidationError("atomic mixed-resource adapter rejects all cascade constraints")
+    if allow_hardblock_cascades:
+        for chain in cascades:
+            if (
+                not isinstance(chain, Mapping)
+                or chain.get("cell_type") not in _HARD_RESOURCES
+                or not isinstance(chain.get("instances"), list)
+                or len(chain["instances"]) < 2
+            ):
+                raise ValidationError(
+                    "typed hardblock route accepts only DSP48E2/RAMB36E2/"
+                    "URAM288 cascade chains"
+                )
     atoms: List[Dict[str, str]] = []
     seen = set()
     clusters = packed.get("clusters")
@@ -650,6 +672,8 @@ def export_xilinx_openparf_atomic(
     output_dir: Path,
     *,
     top: Optional[str] = None,
+    native_constraints_path: Optional[Path] = None,
+    provider_manifest_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Export the fail-closed native mixed-resource qualification subset."""
 
@@ -671,8 +695,25 @@ def export_xilinx_openparf_atomic(
         ):
             raise ValidationError("OpenPARF atomic source identity is invalid")
     architecture = ArchitectureDB.load(architecture_path)
+    typed_hardblock_mode = (
+        native_constraints_path is not None or provider_manifest_path is not None
+    )
+    if typed_hardblock_mode and (
+        native_constraints_path is None or provider_manifest_path is None
+    ):
+        raise ValidationError(
+            "typed hardblock route requires both native constraints and provider manifest"
+        )
+    native = None
+    if typed_hardblock_mode:
+        native, _native_report = load_xilinx_native_device_constraints(
+            native_constraints_path,
+            architecture_path=architecture_path,
+            provider_manifest_path=provider_manifest_path,
+        )
     selected_top, cells, atoms = _collect_atoms(
-        mapped, packed, top if top is not None else packed.get("top")
+        mapped, packed, top if top is not None else packed.get("top"),
+        allow_hardblock_cascades=typed_hardblock_mode,
     )
     hard = sorted({
         atom["cell_type"] for atom in atoms
@@ -777,6 +818,106 @@ def export_xilinx_openparf_atomic(
         "route_flag": 0, "slr_aware_flag": 0,
         "result_dir": str((output_dir / "results").resolve()),
     }
+    hardblock_groups = []
+    if typed_hardblock_mode:
+        family_for_resource = {
+            "DSP48E2": "DSP_CASCADE",
+            "RAMB36E2": "BRAM_CASCADE",
+            "URAM288": "URAM_CASCADE",
+        }
+        coordinate_sites = {
+            item["site"]: item for item in coordinate_system["sites"]
+        }
+        native_families = {
+            item.get("kind"): item
+            for item in native.get("payload", {}).get("dedicated_adjacency", [])
+            if isinstance(item, Mapping)
+        }
+        owned_hardblocks = set()
+        for chain in packed.get("cascade_chains", []):
+            resource = chain["cell_type"]
+            kind = family_for_resource[resource]
+            require_xilinx_native_constraint_capability(
+                _native_report, "dedicated_adjacency." + kind
+            )
+            family = native_families.get(kind)
+            if not isinstance(family, Mapping):
+                raise ValidationError(f"native constraints have no {kind} family")
+            instances = chain["instances"]
+            overlap = owned_hardblocks.intersection(instances)
+            if overlap:
+                raise ValidationError(
+                    f"typed hardblock cascades overlap: {sorted(overlap)!r}"
+                )
+            owned_hardblocks.update(instances)
+            windows = []
+            for physical_chain in family.get("chains", []):
+                if not isinstance(physical_chain, list):
+                    raise ValidationError(f"native {kind} chain is invalid")
+                for start in range(0, len(physical_chain) - len(instances) + 1):
+                    names_window = physical_chain[start:start + len(instances)]
+                    if any(site_name not in coordinate_sites for site_name in names_window):
+                        continue
+                    windows.append([{
+                        "site": site_name,
+                        "resource": resource,
+                        "x": coordinate_sites[site_name]["dense_x"],
+                        "y": coordinate_sites[site_name]["dense_y"],
+                        "z": 0,
+                    } for site_name in names_window])
+            if not windows:
+                raise ValidationError(
+                    f"typed hardblock chain {chain.get('id')!r} has no native legal window"
+                )
+            hardblock_groups.append({
+                "id": str(chain.get("id")), "resource": resource,
+                "instances": [names[name] for name in instances],
+                "source_instances": list(instances), "windows": windows,
+            })
+        for atom in atoms:
+            resource = atom["resource"]
+            if resource not in _HARD_RESOURCES.values() or atom["instance"] in owned_hardblocks:
+                continue
+            candidates = [item for item in coordinate_system["sites"]
+                          if item.get("resources", {}).get(resource) == 1]
+            if not candidates:
+                raise ValidationError(
+                    f"typed hardblock singleton {atom['instance']!r} has no legal site"
+                )
+            hardblock_groups.append({
+                "id": "singleton:" + atom["instance"], "resource": resource,
+                "instances": [names[atom["instance"]]],
+                "source_instances": [atom["instance"]],
+                "windows": [[{
+                    "site": item["site"], "resource": resource,
+                    "x": item["dense_x"], "y": item["dense_y"], "z": 0,
+                }] for item in candidates],
+            })
+        expected_hardblocks = {
+            atom["instance"] for atom in atoms
+            if atom["resource"] in _HARD_RESOURCES.values()
+        }
+        covered_hardblocks = {
+            instance for group in hardblock_groups
+            for instance in group["source_instances"]
+        }
+        if covered_hardblocks != expected_hardblocks:
+            raise ValidationError("typed hardblock constraints have incomplete ownership")
+        constraint_path = output_dir / "typed-hardblock-chains.json"
+        write_json(constraint_path, {
+            "schema": OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA,
+            "status": "pass", "groups": hardblock_groups,
+            "source": {
+                "mapped_sha256": _sha256(mapped_path),
+                "packed_sha256": _sha256(packed_path),
+                "architecture_sha256": _sha256(architecture_path),
+                "native_constraints_sha256": _sha256(native_constraints_path),
+                "provider_manifest_sha256": _sha256(provider_manifest_path),
+            },
+        }, compact=True)
+        config["typed_hardblock_chain_constraints"] = str(
+            constraint_path.resolve()
+        )
     # OpenPARF assigns area-type IDs by first appearance in this mapping and
     # its DataCollections currently requires FF to be area type 1.  Preserve
     # the deliberate LUT, FF, then stable hard-resource model order.
@@ -790,6 +931,7 @@ def export_xilinx_openparf_atomic(
             {"openparf": names[atom["instance"]], **atom} for atom in atoms
         ],
         "coordinate_system": coordinate_system,
+        "hardblock_groups": hardblock_groups,
     }, compact=True)
     manifest = {
         "schema": OPENPARF_ATOMIC_MANIFEST_SCHEMA,
@@ -809,12 +951,23 @@ def export_xilinx_openparf_atomic(
         "runtime_validation": "unverified",
         "constraint_policy": {
             "ordinary_slice_clusters_are_repackable": True,
-            "singleton_dsp_bram_uram_use_native_sssir_mcf": True,
-            "dedicated_or_relative_constraints": "fail-closed",
+            "singleton_dsp_bram_uram_use_native_sssir_mcf": (
+                not typed_hardblock_mode
+            ),
+            "typed_hardblock_chains_use_internal_legalizer": (
+                typed_hardblock_mode
+            ),
+            "dedicated_or_relative_constraints": (
+                "native-typed-hardblock-legalizer"
+                if typed_hardblock_mode else "fail-closed"
+            ),
             "ramb18_half_site": "fail-closed",
             "lut_policy": "8 independent 6LUT BELs; no paired 5LUT use",
         },
-        "files": sorted([*files, "openparf.json", "name_map.json"]),
+        "files": sorted([
+            *files, "openparf.json", "name_map.json",
+            *(["typed-hardblock-chains.json"] if typed_hardblock_mode else []),
+        ]),
     }
     write_json(output_dir / "manifest.json", manifest, compact=True)
     return manifest
@@ -842,6 +995,9 @@ def validate_xilinx_openparf_atomic_placement(
     mapped_path: Path,
     architecture_path: Path,
     output_path: Optional[Path] = None,
+    *,
+    native_constraints_path: Optional[Path] = None,
+    provider_manifest_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Validate and aggregate native atom placement without fallback."""
 
@@ -942,6 +1098,66 @@ def validate_xilinx_openparf_atomic_placement(
     if set(placed) != set(atoms):
         raise ValidationError("OpenPARF atomic placement does not cover every atom")
 
+    checked_native_edges = 0
+    hardblock_groups = name_map.get("hardblock_groups", [])
+    if hardblock_groups:
+        if native_constraints_path is None or provider_manifest_path is None:
+            raise ValidationError(
+                "typed hardblock placement validation requires native constraints"
+            )
+        native, native_report = load_xilinx_native_device_constraints(
+            native_constraints_path,
+            architecture_path=architecture_path,
+            provider_manifest_path=provider_manifest_path,
+        )
+        family_for_resource = {
+            "DSP48E2": "DSP_CASCADE", "RAMB36E2": "BRAM_CASCADE",
+            "URAM288": "URAM_CASCADE",
+        }
+        native_families = {
+            family.get("kind"): family
+            for family in native.get("payload", {}).get("dedicated_adjacency", [])
+            if isinstance(family, Mapping)
+        }
+        by_source_instance = {
+            item["instance"]: item for item in placed.values()
+        }
+        covered = set()
+        for group in hardblock_groups:
+            if not isinstance(group, Mapping):
+                raise ValidationError("typed hardblock group is invalid")
+            resource = group.get("resource")
+            instances = group.get("source_instances")
+            if resource not in family_for_resource or not isinstance(instances, list):
+                raise ValidationError("typed hardblock group header is invalid")
+            if covered.intersection(instances):
+                raise ValidationError("typed hardblock placement ownership overlaps")
+            covered.update(instances)
+            sites = [by_source_instance[name]["site"] for name in instances]
+            if len(instances) > 1:
+                kind = family_for_resource[resource]
+                require_xilinx_native_constraint_capability(
+                    native_report, "dedicated_adjacency." + kind
+                )
+                family = native_families.get(kind, {})
+                native_edges = {
+                    edge
+                    for chain in family.get("chains", [])
+                    for edge in zip(chain, chain[1:])
+                }
+                for edge in zip(sites, sites[1:]):
+                    if edge not in native_edges:
+                        raise ValidationError(
+                            "OpenPARF typed hardblock chain violates native adjacency"
+                        )
+                    checked_native_edges += 1
+        expected = {
+            item["instance"] for item in placed.values()
+            if item["resource"] in _HARD_RESOURCES.values()
+        }
+        if covered != expected:
+            raise ValidationError("typed hardblock placement coverage is incomplete")
+
     by_site: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for item in placed.values():
         by_site[item["site"]].append(item)
@@ -1012,6 +1228,8 @@ def validate_xilinx_openparf_atomic_placement(
             ).items())),
         },
     }
+    if hardblock_groups:
+        result["summary"]["native_hardblock_edges"] = checked_native_edges
     if output_path is not None:
         write_json(output_path, result, compact=True)
     return result
@@ -1064,5 +1282,51 @@ def run_xilinx_openparf_atomic_qualification(
             "small unconstrained LUT/FF plus independent singleton "
             "DSP48E2/RAMB36E2/URAM288 fixture; no carry, RAMB18 half-site, "
             "cascade, relative placement, clock-region, half-column, or SLR claim"
+        ),
+    }
+
+
+def run_xilinx_openparf_hardblock_qualification(
+    mapped_path: Path,
+    packed_path: Path,
+    architecture_path: Path,
+    native_constraints_path: Path,
+    provider_manifest_path: Path,
+    output_dir: Path,
+    *,
+    top: Optional[str] = None,
+    openparf_install: Optional[Path] = None,
+    openparf_python: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Run native GP plus in-core typed DSP/BRAM/URAM legalization."""
+
+    runtime = validate_openparf_runtime(
+        install_root=openparf_install, python_executable=openparf_python
+    )
+    manifest = export_xilinx_openparf_atomic(
+        mapped_path, packed_path, architecture_path, output_dir, top=top,
+        native_constraints_path=native_constraints_path,
+        provider_manifest_path=provider_manifest_path,
+    )
+    placement = run_openparf(
+        output_dir / "openparf.json",
+        log_path=output_dir / "openparf.log",
+        install_root=openparf_install,
+        python_executable=openparf_python,
+    )
+    certificate = validate_xilinx_openparf_atomic_placement(
+        placement, output_dir / "name_map.json", mapped_path,
+        architecture_path, output_dir / "placement-certificate.json",
+        native_constraints_path=native_constraints_path,
+        provider_manifest_path=provider_manifest_path,
+    )
+    certificate["runtime_validation"] = "native-openparf"
+    write_json(output_dir / "placement-certificate.json", certificate, compact=True)
+    return {
+        "status": "pass", "runtime": runtime, "manifest": manifest,
+        "placement": str(placement), "certificate": certificate,
+        "qualification_scope": (
+            "OpenPARF global placement plus internal typed DSP/BRAM/URAM "
+            "dedicated-chain legalization"
         ),
     }

@@ -41,6 +41,10 @@
     "description": "place architecture-defined packed clusters with the single-site-resource legalizer instead of the LUT/FF direct legalizer",
     "default": 0
   },
+  "typed_hardblock_chain_constraints": {
+    "description": "source-sealed exact legal windows for native DSP/BRAM/URAM chain legalization",
+    "default": ""
+  },
   "logic_area_type_names": {
     "description": "area types used for logic-overflow decisions; defaults to the native LUT/FF architecture",
     "default": ["LUT", "FF"]

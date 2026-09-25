@@ -25,7 +25,7 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 
 | Route | Implemented evidence | Remaining production blockers | Decision |
 |---|---|---|---|
-| OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; A2 also passes that entire chain for two native full-slice CARRY8 macros and one certified CARRY_NEXT edge; source-sealed real-device facts now cover CARRY, DSP, BRAM, and URAM chain adjacency | MUX/RAMB18, hard-block chain legalization, authoritative half-column limits, and Koios DLA medium | Primary route; atomic and CARRY8 subsets qualified, workload capability not yet qualified |
+| OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; A2 also passes that entire chain for two native full-slice CARRY8 macros and one certified CARRY_NEXT edge; source-sealed real-device facts now cover CARRY, DSP, BRAM, and URAM chain adjacency; an in-core typed DSP/BRAM/URAM window legalizer and independent adjacency checker are implemented and under real-runtime qualification | MUX/RAMB18, real-runtime DSP/BRAM/URAM chain qualification, authoritative half-column limits, and Koios DLA medium | Primary route; atomic and CARRY8 subsets qualified, typed hard-block runtime evidence pending |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga`) | Pinned-source probe; Yosys mapped JSON to official FPGA Interchange logical netlist; physical netlist to validated placement certificate; real Cap'n Proto schema roundtrip | Upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
 | AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result |
 
@@ -93,6 +93,16 @@ primitive or constraint:
 
 The bridge may translate and verify OpenPARF's answer, but it may not choose a
 different legal site, repack a macro, or invoke the retired greedy legalizer.
+
+The typed hard-block implementation now follows that boundary. A compact
+source-sealed contract enumerates exact legal native windows. An OpenPARF
+operator chooses conflict-free whole-chain windows from the global-placement
+displacement cost, excludes every owned hard block from singleton MCF, and
+freezes the result before ISM. The current allocator is deliberately described
+as a deterministic conflict-aware heuristic, not as an exact optimizer. Its
+output is independently checked against the native adjacency artifact. DSP,
+then BRAM, then URAM must each pass compiled placement, RWRoute, and OpenSTA
+before this implementation is counted as qualified evidence.
 
 ### Route B: DREAMPlaceFPGA research control
 

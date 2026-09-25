@@ -1037,12 +1037,18 @@ model: OpenPARF placed 128 atoms into 11 sites; RapidWright routed 22 nets and
 inter-site logical endpoints; and standalone upstream OpenSTA 3.1.0
 (`051222e4ec`) validated 64 timed endpoints at WNS +39.091599 ns and TNS 0 ns.
 This proves the bounded atomic placement-to-timing handoff, not production DLA
-support.  The isolated A2 branch now has compiled and physically qualified
-CARRY8/LUT6_2 support plus source-sealed real-device adjacency for CARRY,
-DSP, BRAM, and URAM cascades, while RAMB18 half sites, other relative macros,
-hard-block chain legalization, and half-column clock
-constraints remain fail-closed; this path is not yet a public placer selection
-or the default Phase 7 provider.
+support. The isolated A2 branch now has compiled and physically qualified
+CARRY8/LUT6_2 support plus source-sealed real-device adjacency for CARRY, DSP,
+BRAM, and URAM cascades. It also contains an internal typed-hardblock legalizer:
+a compact native-window contract owns every DSP/BRAM/URAM chain or singleton,
+excludes those instances from ordinary singleton MCF, assigns whole chains
+using deterministic global-placement displacement cost, and freezes the result
+before ISM. An independent checker replays exact native adjacency. This new
+operator has unit/contract evidence only until its DSP, BRAM, and URAM fixtures
+pass the compiled OpenPARF → RapidWright → OpenSTA gates; it is not described as
+an exact optimizer. RAMB18 half sites, other relative macros, authoritative
+half-column clock constraints, and Koios DLA medium remain open gates, so this
+path is not yet a public placer selection or the default Phase 7 provider.
 The provider-neutral `emuflow.xilinx-physical-macro-contract/v1` now derives
 these non-atomic constraints directly from mapped connectivity without running
 a packer, placer, or legalizer. It records CARRY8/LUT6_2 and MUXF7/8/9 site
@@ -1051,11 +1057,11 @@ connectivity for carry, DSP, BRAM, and URAM chains.  A source-sealed
 RapidWright device-fact artifact now binds that logical order to directed
 native site-pin paths without inventing a `y+1` relationship.  On the real
 XCVU19P model it proves 508,992 carry, 3,808 DSP, 1,980 clock-region-local
-BRAM, and 316 URAM edges.  The placement capability remains
-`adapter_required` until OpenPARF consumes those DSP/BRAM/URAM chains during
-native legalization.  This contract is audited infrastructure.  Its CARRY8
-subset now feeds an explicit unplaced native OpenPARF adapter; the hard-block
-macro families remain unconsumed by the placement core.
+BRAM, and 316 URAM edges. The placement capability remains `adapter_required`
+until the newly implemented in-core typed legalizer completes its real-runtime
+family gates. The contract is audited infrastructure and its CARRY8 subset is
+already physically qualified; DSP/BRAM/URAM consumption is implemented but not
+yet promoted as runtime evidence.
 The isolated A2 branch extends the pinned native extractor and legalizer while
 retaining the XArch CLA4 path: typed CARRY8 units select eight ordered LUT6_2
 members from S[0:7], verify the paired DI drivers, and occupy one full slice.

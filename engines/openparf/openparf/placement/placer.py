@@ -1843,6 +1843,14 @@ class Placer(nn.Module):
                 else:
                     pos_xyz = self.op_cls.direct_lg_op(pos)
 
+            # Dedicated DSP/BRAM/URAM chains are legalized inside OpenPARF,
+            # after the ordinary resource legalizers have finished.  Their
+            # exact legal windows come from a source-sealed native-device
+            # contract; no coordinate-inferred or post-export repair is used.
+            if self.op_cls.typed_hardblock_legalization_op is not None:
+                logger.info("Start typed hardblock chain legalization...")
+                self.op_cls.typed_hardblock_legalization_op(pos_xyz)
+
             # apply solution
             loc_xyz = pos_xyz[
                 self.data_cls.movable_range[0] : self.data_cls.movable_range[1]
@@ -1959,6 +1967,18 @@ class Placer(nn.Module):
                     requires_grad=False,
                 )
                 fixed_mask[inst_ids] = 1
+                self.op_cls.ism_dp_op.fixed_mask = fixed_mask
+            if self.op_cls.typed_hardblock_legalization_op is not None:
+                typed_ids = self.op_cls.typed_hardblock_legalization_op.inst_ids.cpu()
+                if not hasattr(self.op_cls.ism_dp_op, "fixed_mask"):
+                    raise RuntimeError("ISM detailed placer has no fixed-mask contract")
+                fixed_mask = self.op_cls.ism_dp_op.fixed_mask
+                if fixed_mask is None:
+                    fixed_mask = torch.zeros(
+                        self.data_cls.inst_locs_xyz.shape[0],
+                        dtype=torch.uint8, device="cpu", requires_grad=False,
+                    )
+                fixed_mask[typed_ids] = 1
                 self.op_cls.ism_dp_op.fixed_mask = fixed_mask
             loc_xyz = self.op_cls.ism_dp_op(self.data_cls.inst_locs_xyz)
             # apply solution
