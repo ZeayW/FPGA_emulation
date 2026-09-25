@@ -132,7 +132,10 @@ public final class InspectCascadePins {
                                     : reached.getSite().getName() + "/"
                                         + reached.getPinName())
                                 + "\t" + direct.size());
-                        if (reached != null || direct.size() != 1) break;
+                        if ((depth > 0 && reached != null
+                                && !selected.getName().equals(
+                                    reached.getSite().getName()))
+                                || direct.size() != 1) break;
                         current = direct.get(0).getEndNode();
                     }
                 }
