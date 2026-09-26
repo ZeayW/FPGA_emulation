@@ -4590,6 +4590,11 @@ types are removed from generic electrostatic density and from its convergence
 gate; exact window selection supplies their capacity/non-overlap proof. Partial
 ownership fails before placement, so an unconstrained hard block cannot be
 silently hidden from density.
+The typed contract records OpenPARF's in-core site-center coordinate separately
+from the lower-left dense coordinate serialized in the final Bookshelf `.pl`;
+the independent importer resolves the latter back to the exact physical site.
+An illegal typed placement aborts before ISM detailed placement rather than
+continuing with a malformed site index.
 The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.

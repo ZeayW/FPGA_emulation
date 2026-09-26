@@ -994,6 +994,26 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 [site["site"] for site in chain["windows"][0]],
                 ["DSP48E2_X0Y0", "DSP48E2_X1Y0"],
             )
+            names = json.loads(
+                (output / "name_map.json").read_text(encoding="utf-8")
+            )
+            coordinates = {
+                site_name: item
+                for item in names["coordinate_system"]["sites"]
+                for site_names in item["physical_sites"].values()
+                for site_name in site_names
+            }
+            for site in chain["windows"][0]:
+                coordinate = coordinates[site["site"]]
+                self.assertEqual(site["x"], coordinate["placement_x"])
+                self.assertEqual(site["y"], coordinate["placement_y"])
+            self.assertTrue(
+                any(
+                    site["x"] != coordinates[site["site"]]["dense_x"]
+                    or site["y"] != coordinates[site["site"]]["dense_y"]
+                    for site in chain["windows"][0]
+                )
+            )
             config = json.loads((output / "openparf.json").read_text())
             self.assertEqual(
                 Path(config["typed_hardblock_chain_constraints"]),

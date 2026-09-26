@@ -107,7 +107,10 @@ to the placement problem. This preserves tile geometry without losing the
 identity of either DSP/URAM sibling site. A typed area type must have complete
 contract ownership: it remains wirelength-movable during global placement but
 is removed from generic density and its convergence gate because exact window
-selection supplies the capacity proof. Partial ownership fails closed. DSP,
+selection supplies the capacity proof. Partial ownership fails closed. The
+typed legalizer uses the exact Bookshelf site center in memory while `.pl`
+serialization retains the lower-left site key; an illegal typed result aborts
+before ISM detailed placement. DSP,
 then BRAM, then URAM must each pass compiled placement, RWRoute, and OpenSTA
 before this implementation is counted as qualified evidence.
 

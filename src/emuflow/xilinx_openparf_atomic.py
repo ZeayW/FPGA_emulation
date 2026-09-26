@@ -724,6 +724,25 @@ def _render_sites(
             "resources": dict(sorted(resources.items())),
             "physical_sites": physical_sites,
         })
+    # OpenPARF's Bookshelf reader derives a site's bounding box from the next
+    # entry in the same column (or the top of the SITEMAP for the final entry).
+    # Legalizer position tensors use the center of that box, while the emitted
+    # .pl file is written back using its lower-left dense coordinate.  Preserve
+    # both coordinate systems explicitly so typed hard blocks do not confuse
+    # the serialized site identity with the in-core legal position.
+    sites_by_x: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    for item in site_map:
+        sites_by_x[item["dense_x"]].append(item)
+    for column in sites_by_x.values():
+        column.sort(key=lambda item: item["dense_y"])
+        for index, item in enumerate(column):
+            next_y = (
+                column[index + 1]["dense_y"]
+                if index + 1 < len(column)
+                else len(y_axis)
+            )
+            item["placement_x"] = item["dense_x"] + 0.5
+            item["placement_y"] = (item["dense_y"] + next_y) * 0.5
     lines.append("END SITEMAP")
     return "\n".join(lines) + "\n", {
         "x_axis": x_axis, "y_axis": y_axis, "sites": site_map,
@@ -934,8 +953,8 @@ def export_xilinx_openparf_atomic(
                     windows.append([{
                         "site": site_name,
                         "resource": resource,
-                        "x": coordinate_sites[site_name]["dense_x"],
-                        "y": coordinate_sites[site_name]["dense_y"],
+                        "x": coordinate_sites[site_name]["placement_x"],
+                        "y": coordinate_sites[site_name]["placement_y"],
                         "z": coordinate_sites[site_name]["hardblock_z"],
                     } for site_name in names_window])
             if not windows:
@@ -968,7 +987,7 @@ def export_xilinx_openparf_atomic(
                 "source_instances": [atom["instance"]],
                 "windows": [[{
                     "site": item["site"], "resource": resource,
-                    "x": item["dense_x"], "y": item["dense_y"],
+                    "x": item["placement_x"], "y": item["placement_y"],
                     "z": item["hardblock_z"],
                 }] for item in candidates],
             })

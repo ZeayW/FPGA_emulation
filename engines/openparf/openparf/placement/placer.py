@@ -1888,6 +1888,11 @@ class Placer(nn.Module):
                 else:
                     legal = self.op_cls.legality_check_op(self.data_cls.inst_locs_xyz)
                 if not legal:
+                    if self.op_cls.typed_hardblock_legalization_op is not None:
+                        raise RuntimeError(
+                            "typed hardblock legalization produced an illegal "
+                            "in-core placement"
+                        )
                     logger.warning("Placement is not LEGAL")
                 legality_check_done = True
             if self.params.gp_timing_analysis_flag or debug_timing_flag:
