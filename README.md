@@ -1117,6 +1117,8 @@ arbitrary number of reserved instances; it no longer assumes that every mask
 is an even-sized set of LUT pairs, because a valid F7 cone has three members.
 The Python/C++ operator boundary also canonicalizes those IDs to the C++
 `int32_t` contract instead of reinterpreting PyTorch's default `int64` tensor.
+ISM detailed placement preserves locked macro BELs through its final
+intra-slice pin-access pass; only unlocked slices are locally reordered.
 F7 export, conflict legalization,
 independent certificate reconstruction, and tamper-oriented unit gates pass;
 compiled OpenPARF plus RapidWright/OpenSTA evidence and the F8/F9 real-device

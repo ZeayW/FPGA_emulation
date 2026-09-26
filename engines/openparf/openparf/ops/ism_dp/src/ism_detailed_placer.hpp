@@ -1188,6 +1188,31 @@ class ISMDetailedPlacer {
 
     // Optimize each CLB
     for (auto &clb : clbMap) {
+      // The independent-set matcher already leaves fixed clusters in place,
+      // but this final intra-CLB pin-access pass historically ignored the
+      // fixed mask and could silently reassign their z slots.  A physical
+      // site macro owns exact LUT/MUX BEL roles, so moving even one locked LUT
+      // within the slice invalidates the macro.  Preserve the complete CLB
+      // whenever it contains a locked LUT or FF; unlocked CLBs retain the
+      // normal pin-access and BLE-alignment optimization.
+      bool containsFixedInstance = false;
+      for (const auto &ble : clb.ble) {
+        for (IndexType k = 0; k < db_.BLECapacity(); ++k) {
+          const auto lutId = ble.lut[k];
+          const auto ffId  = ble.ff[k];
+          if ((lutId != kIndexTypeMax && param_.fixedMask[lutId]) ||
+              (ffId != kIndexTypeMax && param_.fixedMask[ffId])) {
+            containsFixedInstance = true;
+            break;
+          }
+        }
+        if (containsFixedInstance) {
+          break;
+        }
+      }
+      if (containsFixedInstance) {
+        continue;
+      }
       // Cache BLE original order in the CLB
       for (IndexType i = 0; i < db_.numBLEsPerCLB(); ++i) {
         clb.ble[i].origIdx = i;
