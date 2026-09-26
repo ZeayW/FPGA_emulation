@@ -1184,6 +1184,11 @@ OR-Tools C++, OpenMP, PyTorch, NumPy, PyYAML, and Hummingbird. CUDA is optional
 and disabled by default. GUROBI is not required because OpenPARF's experimental
 router is disabled.
 
+Hummingbird is loaded lazily only when the optional learned OpenPARF delay
+estimator is explicitly enabled.  Baseline global placement, typed hard-block
+legalization, detailed placement, and legality checks do not import learned
+model runtimes or their optional estimator backends on the execution hot path.
+
 Configure, compile, and test from the repository root:
 
 ```bash

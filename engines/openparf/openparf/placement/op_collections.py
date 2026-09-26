@@ -24,7 +24,6 @@ import logging
 import math
 import numpy as np
 import torch
-from hummingbird.ml import convert, load
 
 from ..ops.direct_lg import direct_lg
 from ..ops.electric_potential import electric_potential
@@ -477,6 +476,11 @@ def build_congestion_prediction_op(params, data_cls):
 
 
 def build_estimate_delay_op(params, data_cls, placedb):
+    # Learned delay estimation is optional.  Import its inference dependency
+    # only when the feature is explicitly constructed so ordinary placement
+    # does not load Hummingbird and every optional estimator backend.
+    from hummingbird.ml import load
+
     delay_model_path = params.delay_model_path
     delay_model = load(delay_model_path)
     return delay_estimation.DelayEstimation(
