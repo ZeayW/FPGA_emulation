@@ -4762,8 +4762,11 @@ and RAM/DSP/URAM timing is explicitly reported as an unqualified surrogate.
 The compact summary records those limits and the full OpenSTA path database
 remains the sole per-partition WNS/TNS authority. Its independent validator
 recomputes WNS, TNS, failing endpoint count, and the path population from that
-database. The path exporter uses OpenSTA 2.6's `find_timing_paths`
-`-group_count`/`-endpoint_count` API; report-only
+database. The path exporter queries one worst setup path per independently
+identified endpoint and serializes it before the next query. This preserves
+endpoint-complete WNS/TNS while avoiding a known OpenSTA 2.6/Tcl object-lifetime
+failure caused by retaining a large `PathEnd` collection. It uses OpenSTA 2.6's
+`find_timing_paths` `-group_count`/`-endpoint_count` API; report-only
 `-group_path_count`/`-endpoint_path_count` flags are rejected rather than
 silently yielding no authority result. Route A also binds every original
 same-FPGA TimingPathDB member to

@@ -335,22 +335,34 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   }
   puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"
 } else {
-  # Ask OpenSTA for one bounded, globally sorted PathEnd collection.  One
-  # bounded search avoids rebuilding the search graph per endpoint.  The
-  # static EmuIR pin map above means serialization needs no nested net
-  # collection query while these PathEnd handles are live.
-  set endpoint_count [llength [all_registers -data_pins]]
-  incr endpoint_count [llength [all_outputs]]
+  # OpenSTA 2.6 owns PathEnd handles returned by find_timing_paths.  Keeping a
+  # large collection of those handles live while Tcl serializes every point
+  # can corrupt the old Tcl/OpenSTA object arena at process teardown.  Query
+  # one independently identified endpoint at a time and serialize its worst
+  # path before issuing the next query.  This still emits exactly one setup
+  # path per timed endpoint, so WNS/TNS semantics are unchanged.
+  set endpoints [all_registers -data_pins]
+  foreach endpoint [all_outputs] {
+    lappend endpoints $endpoint
+  }
+  set endpoint_count [llength $endpoints]
   set report_limit [expr {min($max_paths, $endpoint_count)}]
   if {$report_limit <= 0} {
     error "OpenSTA found no timing endpoints"
   }
   set output [open $output_path w]
   puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
-  set timing_paths [find_timing_paths -path_delay max \
-    -group_count $report_limit -endpoint_count 1 -sort_by_slack]
-  set queried_paths [llength $timing_paths]
-  emuflow_emit_timing_paths $timing_paths output emitted
+  foreach endpoint $endpoints {
+    if {$queried_paths >= $report_limit} {
+      break
+    }
+    foreach path_end [find_timing_paths -path_delay max \
+        -to [list $endpoint] -group_count 1 -endpoint_count 1 \
+        -sort_by_slack] {
+      incr queried_paths
+      emuflow_emit_timing_paths [list $path_end] output emitted
+    }
+  }
   close $output
   if {$emitted == 0} {
     error "OpenSTA found no timing paths containing mapped EmuIR nets"

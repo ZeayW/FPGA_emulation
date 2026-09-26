@@ -80,17 +80,17 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertNotIn("binary decode hex", script)
         self.assertNotIn("binary encode hex", script)
         self.assertIn("find_timing_paths -path_delay max", script)
-        self.assertIn(
-            "set endpoint_count [llength [all_registers -data_pins]]", script
-        )
-        self.assertIn("incr endpoint_count [llength [all_outputs]]", script)
+        self.assertIn("set endpoints [all_registers -data_pins]", script)
+        self.assertIn("foreach endpoint [all_outputs]", script)
+        self.assertIn("set endpoint_count [llength $endpoints]", script)
         self.assertIn("min($max_paths, $endpoint_count)", script)
         self.assertIn(
-            "-group_count $report_limit -endpoint_count 1", script
+            "-to [list $endpoint] -group_count 1 -endpoint_count 1", script
         )
         self.assertIn(
-            "emuflow_emit_timing_paths $timing_paths output emitted", script
+            "emuflow_emit_timing_paths [list $path_end] output emitted", script
         )
+        self.assertNotIn("set timing_paths [find_timing_paths", script)
         self.assertIn("EMUFLOW_STA_THROUGH_NETS", script)
         self.assertIn("get_pins -quiet -of_objects $through_net", script)
         self.assertIn("foreach through_pin $through_pins", script)
