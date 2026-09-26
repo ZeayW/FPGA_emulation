@@ -36,7 +36,6 @@ from .xilinx_placement import (
     XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER,
     XILINX_PLACEMENT_SCHEMA,
     XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT,
-    _materialize_assignment_sites,
     validate_xilinx_placement,
 )
 from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
@@ -45,9 +44,11 @@ from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 OPENPARF_ATOMIC_BRIDGE_REPORT_SCHEMA = (
     "emuflow.openparf-atomic-physical-bridge-report/v1"
 )
-_SUPPORTED_PHYSICAL_TYPES = LUT_TYPES | FF_TYPES | set(HARD_BINDINGS)
+_SUPPORTED_HARD_TYPES = set(HARD_BINDINGS) | {"RAMB18E2"}
+_SUPPORTED_PHYSICAL_TYPES = LUT_TYPES | FF_TYPES | _SUPPORTED_HARD_TYPES
 _CERTIFICATE_ASSIGNMENT_KEYS = {
-    "instance", "cell_type", "bel", "placement_mode", "source_cluster",
+    "instance", "cell_type", "bel", "physical_site", "placement_mode",
+    "source_cluster",
 }
 
 
@@ -275,7 +276,19 @@ def _validate_certificate(
                 raise ValidationError(f"{assignment_context}: BEL is not uniquely compatible")
             placement_mode = compatible[0].get("placement_mode", site["type"])
             if assignment.get("placement_mode") != placement_mode:
-                raise ValidationError(f"{assignment_context}: placement mode is invalid")
+                if cell_type not in {"RAMB18E2", "RAMB36E2"}:
+                    raise ValidationError(
+                        f"{assignment_context}: placement mode is invalid"
+                    )
+            physical_site = assignment.get("physical_site")
+            if not isinstance(physical_site, str) or not physical_site:
+                raise ValidationError(
+                    f"{assignment_context}: physical site is invalid"
+                )
+            if cell_type not in {"RAMB18E2", "RAMB36E2"} and physical_site != site_name:
+                raise ValidationError(
+                    f"{assignment_context}: physical site disagrees with anchor"
+                )
             normalized = {
                 "instance": name, "cell_type": cell_type, "bel": bel_name,
             }
@@ -285,7 +298,7 @@ def _validate_certificate(
                     lut_count += 1
                 else:
                     ff_count += 1
-            elif cell_type in HARD_BINDINGS:
+            elif cell_type in _SUPPORTED_HARD_TYPES:
                 hard_assignments.append(normalized)
                 hard_counts[cell_type] += 1
             else:
@@ -293,7 +306,18 @@ def _validate_certificate(
         if slice_assignments and hard_assignments:
             raise ValidationError(f"{context}: mixes slice and hard resources")
         if hard_assignments:
-            if len(assignments) != 1:
+            hard_types = {item["cell_type"] for item in hard_assignments}
+            if hard_types == {"RAMB18E2"}:
+                bels = {item["bel"] for item in hard_assignments}
+                if (
+                    len(hard_assignments) > 2
+                    or len(bels) != len(hard_assignments)
+                    or not bels.issubset({"RAMB18E2_L", "RAMB18E2_U"})
+                ):
+                    raise ValidationError(
+                        f"{context}: RAMB18E2 shared-tile assignment is invalid"
+                    )
+            elif len(assignments) != 1:
                 raise ValidationError(f"{context}: hard-resource site is not singleton")
             kind = "hard"
             control_set = None
@@ -317,14 +341,21 @@ def _validate_certificate(
         modes = sorted({
             assignment["placement_mode"] for assignment in assignments
         })
-        physical_clusters.append({
+        physical_cluster = {
             "id": entry["cluster"], "kind": kind,
             "site_templates": modes, "control_set": control_set,
             "assignments": sorted(
                 [*slice_assignments, *hard_assignments],
                 key=lambda item: item["instance"],
             ),
-        })
+        }
+        if hard_assignments and {
+            item["cell_type"] for item in hard_assignments
+        } == {"RAMB18E2"}:
+            physical_cluster["site_mode"] = (
+                f"RAMB18E2x{len(hard_assignments)}"
+            )
+        physical_clusters.append(physical_cluster)
     if set(owners) != expected:
         missing = sorted(expected - set(owners))
         extra = sorted(set(owners) - expected)
@@ -398,11 +429,15 @@ def materialize_xilinx_openparf_atomic_contract(
     selected_top, cells, clusters, constants, cascades = _validate_certificate(
         mapped, certificate, architecture, top, source_packed
     )
-    if cascades:
+    has_native_seal = any(
+        key in source
+        for key in ("native_constraints_sha256", "provider_manifest_sha256")
+    )
+    if cascades or has_native_seal:
         if native_constraints_path is None or provider_manifest_path is None:
             raise ValidationError(
-                "OpenPARF cascade bridge requires its native constraints and "
-                "provider manifest"
+                "OpenPARF native hardblock bridge requires its constraints "
+                "and provider manifest"
             )
         certificate_source = certificate.get("source", {})
         if (
@@ -412,7 +447,7 @@ def materialize_xilinx_openparf_atomic_contract(
             != _sha256(provider_manifest_path)
         ):
             raise ValidationError(
-                "OpenPARF cascade certificate native source identity is invalid"
+                "OpenPARF native certificate source identity is invalid"
             )
     certificate_sha = _sha256(atomic_placement_path)
     mapped_sha = _sha256(mapped_path)
@@ -487,8 +522,8 @@ def materialize_xilinx_openparf_atomic_contract(
             assignments.append({
                 **assignment,
                 "placement_mode": source["placement_mode"],
+                "site": source["physical_site"],
             })
-        assignments = _materialize_assignment_sites(site_name, assignments)
         placement_clusters.append({
             "cluster": cluster["id"], "site": site_name,
             "site_type": site["type"], "x": site["x"], "y": site["y"],
@@ -542,7 +577,7 @@ def materialize_xilinx_openparf_atomic_contract(
                 ).items())),
             },
         }
-        if cascades:
+        if cascades or has_native_seal:
             assert native_constraints_path is not None
             assert provider_manifest_path is not None
             placement["source"].update({

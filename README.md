@@ -1087,6 +1087,13 @@ distinct lower-RAMB18, upper-RAMB18, and whole-RAMB36 placement/native
 identities, and the complete native-device artifact independently validated.
 It remains non-admissible placement evidence until OpenPARF consumes those
 claims and a two-RAMB18 fixture passes the RapidWright/OpenSTA physical gate.
+The in-development consumer now represents each RAMB18 as an independent
+OpenPARF hard-block decision over the source-sealed lower/upper views; it does
+not pair instances by name or packing order.  Explicit lower/upper occupancy
+claims allow two RAMB18 cells to share a tile while a RAMB36 whole-tile claim
+excludes both halves.  Export, legalization, certificate, and tamper-focused
+unit gates pass, but the compiled real-device physical gate is still pending,
+so this remains branch-local and non-default.
 The first real-device probe also established that the three identities must be
 kept separate: placement uses `RAMB180/RAMB18E2_L`,
 `RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`, while the database's primary

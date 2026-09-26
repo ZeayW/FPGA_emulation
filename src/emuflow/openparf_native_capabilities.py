@@ -131,6 +131,15 @@ def audit_pinned_openparf_source(source_root: Path) -> Dict[str, Any]:
                 "pos[i * 3 + 1] = init_pos[i * 2 + 1]",
             ),
         ),
+        "typed_hardblock_legalizer": _source_check(
+            root / "openparf/ops/typed_hardblock_legalizer/typed_hardblock_legalizer.py",
+            (
+                "openparf.typed-hardblock-groups/v2",
+                'SUPPORTED_RESOURCES = {"DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"}',
+                'site["claims"]',
+                "occupied.update(claims)",
+            ),
+        ),
         "chain_legalizer": _source_check(
             root / "openparf/ops/chain_legalizer/chain_legalizer.py",
             ("class ChainLegalizer",),
@@ -692,6 +701,7 @@ def probe_openparf_native_capabilities(
     ism_sssir = _source_has(source_audit, "ism_sssir_preservation")
     mcf_lock = _source_has(source_audit, "mcf_locks_sssir_solution")
     direct_preserve = _source_has(source_audit, "direct_lg_preserves_non_slice_xy")
+    typed_hardblock = _source_has(source_audit, "typed_hardblock_legalizer")
     from .xilinx_openparf_atomic import (
         probe_xilinx_openparf_atomic_eligibility,
     )
@@ -699,6 +709,7 @@ def probe_openparf_native_capabilities(
     atomic_adapter = probe_xilinx_openparf_atomic_eligibility(
         mapped, packed, architecture,
         top=top if top is not None else packed.get("top"),
+        allow_typed_hardblocks=typed_hardblock,
     )
     atomic_ready = (
         atomic_adapter["eligible"] and direct and ism and operator_selection
@@ -707,7 +718,7 @@ def probe_openparf_native_capabilities(
     atomic_primitives = {
         *(f"LUT{width}" for width in range(1, 7)),
         "FDCE", "FDPE", "FDRE", "FDSE",
-        "DSP48E2", "RAMB36E2", "URAM288",
+        "DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288",
     }
     for primitive in sorted(primitive_capabilities):
         if primitive in atomic_primitives:
@@ -717,7 +728,9 @@ def probe_openparf_native_capabilities(
                     "src/emuflow/xilinx_openparf_atomic.py",
                     (
                         "openparf/ops/direct_lg/direct_lg.py"
-                        if primitive not in {"DSP48E2", "RAMB36E2", "URAM288"}
+                        if primitive not in {
+                            "DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"
+                        }
                         else "openparf/ops/mcf_lg/mcf_lg.py"
                     ),
                 ],

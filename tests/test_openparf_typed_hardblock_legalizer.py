@@ -23,7 +23,10 @@ class _Data:
 
 
 def _site(name, resource, x, y):
-    return {"site": name, "resource": resource, "x": x, "y": y, "z": 0}
+    return {
+        "site": name, "resource": resource, "x": x, "y": y, "z": 0,
+        "claims": [f"site:{name}"],
+    }
 
 
 class TypedHardblockLegalizerTest(unittest.TestCase):
@@ -37,7 +40,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_uses_global_placement_cost_and_avoids_overlap(self):
         value = {
-            "schema": "openparf.typed-hardblock-chains/v1", "status": "pass",
+            "schema": "openparf.typed-hardblock-groups/v2", "status": "pass",
             "groups": [
                 {
                     "id": "chain", "resource": "DSP48E2",
@@ -69,7 +72,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_fails_closed_when_no_conflict_free_window_exists(self):
         value = {
-            "schema": "openparf.typed-hardblock-chains/v1", "status": "pass",
+            "schema": "openparf.typed-hardblock-groups/v2", "status": "pass",
             "groups": [
                 {"id": "a", "resource": "URAM288", "instances": ["u0"],
                  "windows": [[_site("U0", "URAM288", 0, 0)]]},
@@ -83,7 +86,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_rejects_duplicate_instance_ownership(self):
         value = {
-            "schema": "openparf.typed-hardblock-chains/v1", "status": "pass",
+            "schema": "openparf.typed-hardblock-groups/v2", "status": "pass",
             "groups": [
                 {"id": "a", "resource": "DSP48E2", "instances": ["d0"],
                  "windows": [[_site("D0", "DSP48E2", 0, 0)]]},
@@ -93,6 +96,50 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "appears twice"):
             self._operator(value, ["d0"])
+
+    def test_ramb18_halves_share_a_tile_but_whole_mode_conflicts(self):
+        lower = {
+            "site": "RAMB18_X0Y0", "resource": "RAMB18E2",
+            "x": 3, "y": 4, "z": 0, "claims": ["bram:BRAM_X0Y0:lower"],
+        }
+        upper = {
+            "site": "RAMB18_X0Y1", "resource": "RAMB18E2",
+            "x": 3, "y": 4, "z": 1, "claims": ["bram:BRAM_X0Y0:upper"],
+        }
+        value = {
+            "schema": "openparf.typed-hardblock-groups/v2", "status": "pass",
+            "groups": [
+                {
+                    "id": "lo", "resource": "RAMB18E2", "instances": ["r0"],
+                    "windows": [[lower], [upper]],
+                },
+                {
+                    "id": "hi", "resource": "RAMB18E2", "instances": ["r1"],
+                    "windows": [[lower], [upper]],
+                },
+            ],
+        }
+        operator, _data = self._operator(value, ["r0", "r1"])
+        pos = torch.tensor([[3.0, 4.0, 0.0], [3.0, 4.0, 1.0]])
+        operator(pos)
+        self.assertEqual({item["site"] for item in operator.last_assignment}, {
+            "RAMB18_X0Y0", "RAMB18_X0Y1",
+        })
+
+        whole = {
+            "site": "RAMB36_X0Y0", "resource": "RAMB36E2",
+            "x": 3, "y": 4, "z": 0,
+            "claims": ["bram:BRAM_X0Y0:lower", "bram:BRAM_X0Y0:upper"],
+        }
+        value["groups"].append({
+            "id": "whole", "resource": "RAMB36E2", "instances": ["b0"],
+            "windows": [[whole]],
+        })
+        operator, _data = self._operator(value, ["r0", "r1", "b0"])
+        with self.assertRaisesRegex(RuntimeError, "no conflict-free window"):
+            operator(torch.tensor([
+                [3.0, 4.0, 0.0], [3.0, 4.0, 1.0], [3.0, 4.0, 0.0],
+            ]))
 
 
 if __name__ == "__main__":

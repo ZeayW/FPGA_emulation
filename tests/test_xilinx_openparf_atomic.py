@@ -24,6 +24,7 @@ from emuflow.xilinx_openparf_atomic import (
 )
 from tests.openparf_runtime_fixture import (
     write_openparf_hardblock_cascade_fixture,
+    write_openparf_ramb18_fixture,
     write_openparf_runtime_fixture,
 )
 
@@ -881,6 +882,127 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(assignments["bram"]["bel"], "RAMB36E2")
         self.assertEqual(assignments["uram"]["bel"], "URAM288")
 
+    def test_ramb18_exports_independent_source_sealed_half_claims(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_ramb18_fixture(root)
+            native_path = root / "native.json"
+            provider_path = root / "provider.json"
+            native_path.write_text("{}", encoding="utf-8")
+            provider_path.write_text("{}", encoding="utf-8")
+            native = {"payload": {
+                "dedicated_adjacency": [],
+                "bram_tile_groups": [
+                    {
+                        "anchor": f"RAMB18_X{index}Y1",
+                        "tile": f"BRAM_X{index}Y0",
+                        "lower": {
+                            "site": f"RAMB18_X{index}Y0",
+                            "site_type": "RAMB180", "bel": "RAMB18E2_L",
+                        },
+                        "upper": {
+                            "site": f"RAMB18_X{index}Y1",
+                            "site_type": "RAMB181", "bel": "RAMB18E2_U",
+                        },
+                        "whole": {
+                            "site": f"RAMB36_X{index}Y0",
+                            "site_type": "RAMB36", "bel": "RAMB36E2",
+                        },
+                    }
+                    for index in range(2)
+                ],
+            }}
+            output = root / "output"
+            with mock.patch(
+                "emuflow.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
+                return_value=(native, {"status": "pass"}),
+            ), mock.patch(
+                "emuflow.xilinx_openparf_atomic.require_xilinx_native_constraint_capability"
+            ):
+                manifest = export_xilinx_openparf_atomic(
+                    mapped, packed, architecture, output,
+                    native_constraints_path=native_path,
+                    provider_manifest_path=provider_path,
+                )
+            self.assertEqual(manifest["resources"]["RAMB18E2"], 2)
+            contract = json.loads(
+                (output / "typed-hardblock-groups.json").read_text()
+            )
+            groups = [
+                item for item in contract["groups"]
+                if item["resource"] == "RAMB18E2"
+            ]
+            self.assertEqual(len(groups), 2)
+            self.assertEqual(
+                {tuple(item["source_instances"]) for item in groups},
+                {("ramb18_lo",), ("ramb18_hi",)},
+            )
+            self.assertTrue(all(item["kind"] == "singleton" for item in groups))
+            self.assertTrue(all(len(item["windows"]) == 4 for item in groups))
+
+            lo_window = groups[0]["windows"][0][0]
+            hi_window = next(
+                window[0] for window in groups[1]["windows"]
+                if window[0]["anchor"] == lo_window["anchor"]
+                and window[0]["z"] != lo_window["z"]
+            )
+            names = json.loads((output / "name_map.json").read_text())
+            dense = {
+                anchor: (entry["dense_x"], entry["dense_y"])
+                for entry in names["coordinate_system"]["sites"]
+                for anchor in entry["physical_sites"].get("RAMB18E2", [])
+            }
+            positions = {
+                groups[0]["source_instances"][0]: lo_window,
+                groups[1]["source_instances"][0]: hi_window,
+            }
+            slice_sites = [
+                entry for entry in names["coordinate_system"]["sites"]
+                if "LUT" in entry["resources"]
+            ]
+            rows = []
+            for atom in names["atoms"]:
+                window = positions.get(atom["instance"])
+                if window is not None:
+                    x, y = dense[window["anchor"]]
+                    z = window["z"]
+                else:
+                    pair_index = int(atom["instance"].rsplit("_", 1)[1])
+                    slice_site = slice_sites[pair_index // 8]
+                    x, y = slice_site["dense_x"], slice_site["dense_y"]
+                    z = (
+                        2 * (pair_index % 8) + 1
+                        if atom["resource"] == "LUT"
+                        else 2 * (pair_index % 8)
+                    )
+                rows.append(f"{atom['openparf']} {x} {y} {z}")
+            placement = output / "ramb18.pl"
+            placement.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            with mock.patch(
+                "emuflow.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
+                return_value=(native, {"status": "pass"}),
+            ), mock.patch(
+                "emuflow.xilinx_openparf_atomic.require_xilinx_native_constraint_capability"
+            ):
+                certificate = validate_xilinx_openparf_atomic_placement(
+                    placement, output / "name_map.json", mapped, architecture,
+                    native_constraints_path=native_path,
+                    provider_manifest_path=provider_path,
+                )
+            assignments = [
+                assignment for cluster in certificate["clusters"]
+                for assignment in cluster["assignments"]
+                if assignment["cell_type"] == "RAMB18E2"
+            ]
+            self.assertEqual(
+                {item["physical_site"] for item in assignments},
+                {lo_window["site"], hi_window["site"]},
+            )
+            self.assertEqual(
+                {item["bel"] for item in assignments},
+                {"RAMB18E2_L", "RAMB18E2_U"},
+            )
+
     def test_half_site_and_hard_cascade_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -889,7 +1011,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             bram = next(cluster for cluster in value["clusters"] if cluster["id"] == "bram")
             bram["site_mode"] = "RAMB18E2x1"
             packed.write_text(json.dumps(value), encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "relative/physical"):
+            with self.assertRaisesRegex(ValidationError, "hard-resource support"):
                 export_xilinx_openparf_atomic(
                     mapped, packed, architecture, root / "half-site"
                 )
@@ -999,10 +1121,37 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             provider_path = root / "provider.json"
             native_path.write_text("{}", encoding="utf-8")
             provider_path.write_text("{}", encoding="utf-8")
-            native = {"payload": {"dedicated_adjacency": [{
-                "kind": "DSP_CASCADE",
-                "chains": [["DSP48E2_X0Y0", "DSP48E2_X1Y0"]],
-            }]}}
+            native = {"payload": {
+                "dedicated_adjacency": [{
+                    "kind": "DSP_CASCADE",
+                    "chains": [["DSP48E2_X0Y0", "DSP48E2_X1Y0"]],
+                }],
+                "bram_tile_groups": [
+                    {
+                        "anchor": f"RAMB36E2_X{index}Y0",
+                        "tile": f"BRAM_TEST_X{index}",
+                        "lower": {
+                            "site": f"RAMB18_X{index}Y0",
+                            "site_type": "RAMB180", "bel": "RAMB18E2_L",
+                            "native_site_type": "RAMBFIFO18",
+                            "native_bel": "RAMBFIFO18",
+                        },
+                        "upper": {
+                            "site": f"RAMB18_X{index}Y1",
+                            "site_type": "RAMB181", "bel": "RAMB18E2_U",
+                            "native_site_type": "RAMB181",
+                            "native_bel": "RAMB18E2_U",
+                        },
+                        "whole": {
+                            "site": f"RAMB36_X{index}Y0",
+                            "site_type": "RAMB36", "bel": "RAMB36E2",
+                            "native_site_type": "RAMBFIFO36",
+                            "native_bel": "RAMBFIFO36E2",
+                        },
+                    }
+                    for index in range(2)
+                ],
+            }}
             output = root / "output"
             with mock.patch(
                 "emuflow.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
@@ -1016,7 +1165,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     provider_manifest_path=provider_path,
                 )
             contract = json.loads(
-                (output / "typed-hardblock-chains.json").read_text(encoding="utf-8")
+                (output / "typed-hardblock-groups.json").read_text(encoding="utf-8")
             )
             self.assertEqual(
                 contract["schema"], OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA
@@ -1051,7 +1200,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             config = json.loads((output / "openparf.json").read_text())
             self.assertEqual(
                 Path(config["typed_hardblock_chain_constraints"]),
-                (output / "typed-hardblock-chains.json").resolve(),
+                (output / "typed-hardblock-groups.json").resolve(),
             )
             self.assertTrue(
                 report["constraint_policy"][

@@ -3,7 +3,7 @@
 This is an internal qualification route, not a production placer selection.
 It dissolves only ordinary, unconstrained LUT1--LUT6/FD* slice clusters and
 lets OpenPARF's native direct legalizer and ISM detailed placer repack them.
-Independent singleton DSP48E2/RAMB36E2/URAM288 objects use the same run's
+Independent singleton DSP48E2/RAMB18E2/RAMB36E2/URAM288 objects use the same run's
 native single-site-resource min-cost-flow legalization.
 Every unsupported physical relation is rejected before export.  The importer
 then independently checks the conservative UltraScale+ 6LUT-only slot policy
@@ -41,17 +41,18 @@ OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v1"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = "openparf-native-mcf-direct-lg-ism-atomic-v1"
 OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA = (
-    "openparf.typed-hardblock-chains/v1"
+    "openparf.typed-hardblock-groups/v2"
 )
 
 _HARD_RESOURCES = {
     "DSP48E2": "DSP48E2",
+    "RAMB18E2": "RAMB18E2",
     "RAMB36E2": "RAMB36E2",
     "URAM288": "URAM288",
 }
 _SUPPORTED = LUT_TYPES | FF_TYPES | set(_HARD_RESOURCES)
 _ALLOWED_CLUSTER_KEYS = {
-    "id", "kind", "site_templates", "control_set", "assignments",
+    "id", "kind", "site_templates", "site_mode", "control_set", "assignments",
 }
 _ALLOWED_ASSIGNMENT_KEYS = {
     "instance", "cell_type", "bel", "bel_candidates",
@@ -60,6 +61,20 @@ _FF_CLOCK = "C"
 _FF_ENABLE = "CE"
 _FF_SR = {"FDCE": "R", "FDRE": "R", "FDPE": "S", "FDSE": "S"}
 _TARGET_DENSITY = 0.75
+
+
+def _site_claim(site_name: str) -> List[str]:
+    return [f"site:{site_name}"]
+
+
+def _bram_claims(tile: str, role: str) -> List[str]:
+    if role == "lower":
+        return [f"bram:{tile}:lower"]
+    if role == "upper":
+        return [f"bram:{tile}:upper"]
+    if role == "whole":
+        return [f"bram:{tile}:lower", f"bram:{tile}:upper"]
+    raise ValidationError(f"unknown BRAM tile role {role!r}")
 
 
 def _sha256(path: Path) -> str:
@@ -179,7 +194,7 @@ def _placement_sites(
         if str(site.get("type", "")).upper().startswith("SLICE")
         or any(
             sum(primitive in bel["compatible_cells"] for bel in site["bels"])
-            == 1
+            == (2 if primitive == "RAMB18E2" else 1)
             for primitive in hard_resources
         )
     ]
@@ -223,19 +238,24 @@ def _placement_sites(
     for site in architecture.sites:
         if str(site.get("type", "")).upper().startswith("SLICE"):
             continue
-        matches = [
-            primitive for primitive in hard_resources
-            if sum(
+        resources: Dict[str, int] = {}
+        for primitive in hard_resources:
+            compatible_bels = sum(
                 primitive in bel["compatible_cells"] for bel in site["bels"]
-            ) == 1
-        ]
-        if len(matches) > 1:
+            )
+            expected = 2 if primitive == "RAMB18E2" else 1
+            if compatible_bels == expected:
+                resources[_HARD_RESOURCES[primitive]] = expected
+        if len(resources) > 1 and set(resources) != {"RAMB18E2", "RAMB36E2"}:
             raise ValidationError(
                 f"site {site['name']!r} is ambiguous for demanded hard resources"
             )
-        if matches:
-            result.append((site, {_HARD_RESOURCES[matches[0]]: 1}))
-            hard_capacity[matches[0]] += 1
+        if resources:
+            result.append((site, resources))
+            for primitive in hard_resources:
+                resource = _HARD_RESOURCES[primitive]
+                if resource in resources:
+                    hard_capacity[primitive] += resources[resource]
     missing = sorted(set(hard_resources) - set(hard_capacity))
     if missing:
         raise ValidationError(
@@ -365,8 +385,12 @@ def _collect_atoms(
                 or len(chain["instances"]) < 2
             ):
                 raise ValidationError(
-                    "typed hardblock route accepts only DSP48E2/RAMB36E2/"
-                    "URAM288 cascade chains"
+                    "typed hardblock route accepts only supported hardblock "
+                    "cascade chains"
+                )
+            if chain.get("cell_type") == "RAMB18E2":
+                raise ValidationError(
+                    "RAMB18E2 dedicated cascades are not yet qualified"
                 )
     atoms: List[Dict[str, str]] = []
     seen = set()
@@ -390,6 +414,29 @@ def _collect_atoms(
         assignments = cluster.get("assignments")
         if not isinstance(assignments, list) or not assignments:
             raise ValidationError(f"cluster {cluster.get('id')!r} has no assignments")
+        hard_types = {
+            assignment.get("cell_type")
+            for assignment in assignments if isinstance(assignment, Mapping)
+        }
+        if kind == "hard" and hard_types == {"RAMB18E2"}:
+            bels = [assignment.get("bel") for assignment in assignments]
+            if (
+                len(assignments) > 2
+                or len(bels) != len(set(bels))
+                or set(bels) - {"RAMB18E2_L", "RAMB18E2_U"}
+                or cluster.get("site_mode") != f"RAMB18E2x{len(assignments)}"
+            ):
+                raise ValidationError("RAMB18E2 source packing is invalid")
+        elif kind == "hard" and (
+            len(assignments) != 1
+            or len(hard_types) != 1
+            or next(iter(hard_types), None) not in _HARD_RESOURCES
+            or cluster.get("site_mode") is not None
+        ):
+            raise ValidationError(
+                "hard-resource support requires one DSP48E2/RAMB36E2/URAM288 "
+                "or one/two source-packed RAMB18E2 cells"
+            )
         for assignment in assignments:
             if not isinstance(assignment, Mapping):
                 raise ValidationError("packed assignment is invalid")
@@ -412,13 +459,8 @@ def _collect_atoms(
                 raise ValidationError(
                     f"slice cluster contains hard primitive {cell_type!r}"
                 )
-            if kind == "hard" and (
-                cell_type not in _HARD_RESOURCES or len(assignments) != 1
-            ):
-                raise ValidationError(
-                    "hard-resource support is limited to independent singleton "
-                    "DSP48E2, RAMB36E2, or URAM288 clusters"
-                )
+            if kind == "hard" and cell_type not in _HARD_RESOURCES:
+                raise ValidationError("hard cluster contains an unsupported primitive")
             if instance in seen:
                 raise ValidationError(f"mapped instance {instance!r} is packed twice")
             seen.add(instance)
@@ -482,6 +524,10 @@ def build_xilinx_openparf_atomic_source(
         raise ValidationError(
             "OpenPARF atomic source rejects dedicated cascade connectivity"
         )
+    if any(cell.get("type") == "RAMB18E2" for cell in cells.values()):
+        raise ValidationError(
+            "RAMB18E2 requires the real site packer to provide source identity"
+        )
     clusters = []
     constants = []
     for index, (name, cell) in enumerate(sorted(cells.items())):
@@ -536,11 +582,19 @@ def probe_xilinx_openparf_atomic_eligibility(
     architecture: ArchitectureDB,
     *,
     top: Optional[str] = None,
+    allow_typed_hardblocks: bool = False,
 ) -> Dict[str, Any]:
     """Return a side-effect-free design-specific adapter decision."""
 
     try:
         _selected_top, _cells, atoms = _collect_atoms(mapped, packed, top)
+        if (
+            any(atom["cell_type"] == "RAMB18E2" for atom in atoms)
+            and not allow_typed_hardblocks
+        ):
+            raise ValidationError(
+                "RAMB18E2 requires the typed hardblock group legalizer"
+            )
         hard = sorted({
             atom["cell_type"] for atom in atoms
             if atom["cell_type"] in _HARD_RESOURCES
@@ -750,6 +804,85 @@ def _render_sites(
     }
 
 
+def _native_bram_candidates(
+    coordinate_system: Mapping[str, Any], native: Mapping[str, Any],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Bind source-sealed BRAM views to the single ArchitectureDB anchor.
+
+    The native artifact is authoritative for tile membership, placement site
+    type, site name, BEL, and whole-versus-half exclusion.  The ArchitectureDB
+    contributes only the Bookshelf coordinate of its retained RAMB181 anchor.
+    """
+
+    coordinates: Dict[Tuple[str, str], Mapping[str, Any]] = {}
+    for item in coordinate_system.get("sites", []):
+        if not isinstance(item, Mapping):
+            continue
+        physical = item.get("physical_sites", {})
+        if not isinstance(physical, Mapping):
+            continue
+        for resource in ("RAMB18E2", "RAMB36E2"):
+            names = physical.get(resource, [])
+            if not isinstance(names, list):
+                raise ValidationError("BRAM Bookshelf physical-site map is invalid")
+            for anchor in names:
+                key = (resource, anchor)
+                if key in coordinates:
+                    raise ValidationError("BRAM anchor appears at multiple coordinates")
+                coordinates[key] = item
+
+    result: Dict[str, List[Dict[str, Any]]] = {
+        "RAMB18E2": [], "RAMB36E2": [],
+    }
+    if not any(key[0] in result for key in coordinates):
+        return result
+    groups = native.get("payload", {}).get("bram_tile_groups", [])
+    if not isinstance(groups, list) or not groups:
+        raise ValidationError("native constraints have no BRAM tile groups")
+    for group in groups:
+        if not isinstance(group, Mapping):
+            raise ValidationError("native BRAM tile group is invalid")
+        anchor = group.get("anchor")
+        tile = group.get("tile")
+        if not isinstance(anchor, str) or not isinstance(tile, str):
+            raise ValidationError("native BRAM tile group identity is invalid")
+        for resource, roles in (
+            ("RAMB18E2", (("lower", 0), ("upper", 1))),
+            ("RAMB36E2", (("whole", 0),)),
+        ):
+            coordinate = coordinates.get((resource, anchor))
+            if coordinate is None:
+                continue
+            for role, z in roles:
+                view = group.get(role)
+                if not isinstance(view, Mapping):
+                    raise ValidationError("native BRAM tile view is invalid")
+                result[resource].append({
+                    "anchor": anchor,
+                    "bel": view["bel"],
+                    "claims": _bram_claims(tile, role),
+                    "placement_mode": view["site_type"],
+                    "resource": resource,
+                    "site": view["site"],
+                    "tile": tile,
+                    "x": coordinate["placement_x"],
+                    "y": coordinate["placement_y"],
+                    "z": z,
+                })
+    for resource, values in result.items():
+        values.sort(key=lambda item: (item["anchor"], item["z"], item["site"]))
+        expected = len(coordinates)
+        if resource == "RAMB18E2":
+            expected = 2 * sum(key[0] == resource for key in coordinates)
+        else:
+            expected = sum(key[0] == resource for key in coordinates)
+        if len(values) != expected:
+            raise ValidationError(
+                f"native BRAM candidates do not cover {resource} anchors"
+            )
+    return result
+
+
 def export_xilinx_openparf_atomic(
     mapped_path: Path,
     packed_path: Path,
@@ -910,10 +1043,15 @@ def export_xilinx_openparf_atomic(
             "RAMB36E2": "BRAM_CASCADE",
             "URAM288": "URAM_CASCADE",
         }
+        bram_candidates = _native_bram_candidates(coordinate_system, native)
+        bram_by_site = {
+            resource: {candidate["site"]: candidate for candidate in candidates}
+            for resource, candidates in bram_candidates.items()
+        }
         coordinate_sites = {}
         for item in coordinate_system["sites"]:
             for resource, site_names in item.get("physical_sites", {}).items():
-                if resource not in family_for_resource:
+                if resource not in family_for_resource or resource == "RAMB36E2":
                     continue
                 for z, site_name in enumerate(site_names):
                     if site_name in coordinate_sites:
@@ -929,6 +1067,10 @@ def export_xilinx_openparf_atomic(
         owned_hardblocks = set()
         for chain in packed.get("cascade_chains", []):
             resource = chain["cell_type"]
+            if resource == "RAMB18E2":
+                raise ValidationError(
+                    "RAMB18E2 dedicated cascades are not yet qualified"
+                )
             kind = family_for_resource[resource]
             require_xilinx_native_constraint_capability(
                 _native_report, "dedicated_adjacency." + kind
@@ -949,21 +1091,34 @@ def export_xilinx_openparf_atomic(
                     raise ValidationError(f"native {kind} chain is invalid")
                 for start in range(0, len(physical_chain) - len(instances) + 1):
                     names_window = physical_chain[start:start + len(instances)]
-                    if any(site_name not in coordinate_sites for site_name in names_window):
-                        continue
-                    windows.append([{
-                        "site": site_name,
-                        "resource": resource,
-                        "x": coordinate_sites[site_name]["placement_x"],
-                        "y": coordinate_sites[site_name]["placement_y"],
-                        "z": coordinate_sites[site_name]["hardblock_z"],
-                    } for site_name in names_window])
+                    if resource == "RAMB36E2":
+                        candidates = bram_by_site[resource]
+                        if any(site_name not in candidates for site_name in names_window):
+                            continue
+                        windows.append([
+                            dict(candidates[site_name]) for site_name in names_window
+                        ])
+                    else:
+                        if any(
+                            site_name not in coordinate_sites
+                            for site_name in names_window
+                        ):
+                            continue
+                        windows.append([{
+                            "site": site_name,
+                            "resource": resource,
+                            "x": coordinate_sites[site_name]["placement_x"],
+                            "y": coordinate_sites[site_name]["placement_y"],
+                            "z": coordinate_sites[site_name]["hardblock_z"],
+                            "claims": _site_claim(site_name),
+                        } for site_name in names_window])
             if not windows:
                 raise ValidationError(
                     f"typed hardblock chain {chain.get('id')!r} has no native legal window"
                 )
             hardblock_groups.append({
-                "id": str(chain.get("id")), "resource": resource,
+                "id": str(chain.get("id")), "kind": "cascade",
+                "resource": resource,
                 "instances": [names[name] for name in instances],
                 "source_instances": list(instances), "windows": windows,
             })
@@ -971,25 +1126,45 @@ def export_xilinx_openparf_atomic(
             resource = atom["resource"]
             if resource not in _HARD_RESOURCES.values() or atom["instance"] in owned_hardblocks:
                 continue
-            candidates = [
-                {**item, "site": site_name, "hardblock_z": z}
-                for item in coordinate_system["sites"]
-                for z, site_name in enumerate(
-                    item.get("physical_sites", {}).get(resource, [])
-                )
-            ]
+            if resource in bram_candidates:
+                candidates = [dict(item) for item in bram_candidates[resource]]
+            else:
+                candidates = [
+                    {
+                        **item, "site": site_name, "hardblock_z": z,
+                        "claims": _site_claim(site_name),
+                    }
+                    for item in coordinate_system["sites"]
+                    for z, site_name in enumerate(
+                        item.get("physical_sites", {}).get(resource, [])
+                    )
+                ]
             if not candidates:
                 raise ValidationError(
                     f"typed hardblock singleton {atom['instance']!r} has no legal site"
                 )
             hardblock_groups.append({
-                "id": "singleton:" + atom["instance"], "resource": resource,
+                "id": "singleton:" + atom["instance"], "kind": "singleton",
+                "resource": resource,
                 "instances": [names[atom["instance"]]],
                 "source_instances": [atom["instance"]],
                 "windows": [[{
                     "site": item["site"], "resource": resource,
-                    "x": item["placement_x"], "y": item["placement_y"],
-                    "z": item["hardblock_z"],
+                    "x": (
+                        item["placement_x"] if "placement_x" in item else item["x"]
+                    ),
+                    "y": (
+                        item["placement_y"] if "placement_y" in item else item["y"]
+                    ),
+                    "z": (
+                        item["hardblock_z"] if "hardblock_z" in item else item["z"]
+                    ),
+                    "claims": item["claims"],
+                    **({
+                        "anchor": item["anchor"], "bel": item["bel"],
+                        "placement_mode": item["placement_mode"],
+                        "tile": item["tile"],
+                    } if resource in bram_candidates else {}),
                 }] for item in candidates],
             })
         expected_hardblocks = {
@@ -1002,7 +1177,7 @@ def export_xilinx_openparf_atomic(
         }
         if covered_hardblocks != expected_hardblocks:
             raise ValidationError("typed hardblock constraints have incomplete ownership")
-        constraint_path = output_dir / "typed-hardblock-chains.json"
+        constraint_path = output_dir / "typed-hardblock-groups.json"
         write_json(constraint_path, {
             "schema": OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA,
             "status": "pass", "groups": hardblock_groups,
@@ -1060,12 +1235,15 @@ def export_xilinx_openparf_atomic(
                 "native-typed-hardblock-legalizer"
                 if typed_hardblock_mode else "fail-closed"
             ),
-            "ramb18_half_site": "fail-closed",
+            "ramb18_half_site": (
+                "source-sealed-independent-half-claims"
+                if typed_hardblock_mode else "fail-closed"
+            ),
             "lut_policy": "8 independent 6LUT BELs; no paired 5LUT use",
         },
         "files": sorted([
             *files, "openparf.json", "name_map.json",
-            *(["typed-hardblock-chains.json"] if typed_hardblock_mode else []),
+            *(["typed-hardblock-groups.json"] if typed_hardblock_mode else []),
         ]),
     }
     write_json(output_dir / "manifest.json", manifest, compact=True)
@@ -1122,6 +1300,40 @@ def validate_xilinx_openparf_atomic_placement(
     }
     if not site_map:
         raise ValidationError("OpenPARF atomic site map is empty")
+    hardblock_groups = name_map.get("hardblock_groups", [])
+    native = None
+    native_report = None
+    bram_view_by_slot: Dict[Tuple[int, int, str, int], Mapping[str, Any]] = {}
+    if hardblock_groups:
+        if native_constraints_path is None or provider_manifest_path is None:
+            raise ValidationError(
+                "typed hardblock placement validation requires native constraints"
+            )
+        native, native_report = load_xilinx_native_device_constraints(
+            native_constraints_path,
+            architecture_path=architecture_path,
+            provider_manifest_path=provider_manifest_path,
+        )
+        bram_candidates = _native_bram_candidates(
+            name_map.get("coordinate_system", {}), native
+        )
+        dense_by_anchor = {}
+        for (dense_x, dense_y), entry in site_map.items():
+            physical = entry.get("physical_sites", {})
+            if not isinstance(physical, Mapping):
+                continue
+            for resource in ("RAMB18E2", "RAMB36E2"):
+                for anchor in physical.get(resource, []):
+                    dense_by_anchor[(resource, anchor)] = (dense_x, dense_y)
+        for resource, candidates in bram_candidates.items():
+            for candidate in candidates:
+                dense = dense_by_anchor.get((resource, candidate["anchor"]))
+                if dense is None:
+                    raise ValidationError("native BRAM candidate has no Bookshelf anchor")
+                key = (dense[0], dense[1], resource, int(candidate["z"]))
+                if key in bram_view_by_slot:
+                    raise ValidationError("native BRAM slot mapping is ambiguous")
+                bram_view_by_slot[key] = candidate
     placed: Dict[str, Dict[str, Any]] = {}
     occupied = set()
     with placement_path.open("r", encoding="utf-8") as stream:
@@ -1165,6 +1377,14 @@ def validate_xilinx_openparf_atomic_placement(
                         "OpenPARF atomic placement uses a site without the required resource"
                     )
                 bel_name = _slot_bel(resource, z, cell_type)
+            elif resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot:
+                candidate = bram_view_by_slot.get((x, y, resource, z))
+                if candidate is None:
+                    raise ValidationError(
+                        "OpenPARF BRAM placement uses an uncertified tile view"
+                    )
+                site_name = candidate["site"]
+                bel_name = candidate["bel"]
             elif resource in _HARD_RESOURCES.values():
                 physical_sites = site_entry.get("physical_sites", {}).get(resource)
                 if (
@@ -1189,7 +1409,14 @@ def validate_xilinx_openparf_atomic_placement(
             if collision in occupied:
                 raise ValidationError("OpenPARF atomic placement overlaps a BEL slot")
             occupied.add(collision)
-            site = architecture.site_named(site_name)
+            anchor_names = site_entry.get("physical_sites", {}).get(resource)
+            anchor_name = (
+                anchor_names[0]
+                if resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot
+                and isinstance(anchor_names, list) and len(anchor_names) == 1
+                else site_name
+            )
+            site = architecture.site_named(anchor_name)
             compatible = [
                 bel for bel in site["bels"]
                 if cell_type in bel["compatible_cells"]
@@ -1203,23 +1430,19 @@ def validate_xilinx_openparf_atomic_placement(
             placed[fields[0]] = {
                 **atom, "site": site_name, "resource": resource, "z": z,
                 "bel": physical_bel["name"],
-                "placement_mode": physical_bel.get("placement_mode", site["type"]),
+                "placement_mode": (
+                    candidate["placement_mode"]
+                    if resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot
+                    else physical_bel.get("placement_mode", site["type"])
+                ),
+                "anchor_site": anchor_name,
             }
     if set(placed) != set(atoms):
         raise ValidationError("OpenPARF atomic placement does not cover every atom")
 
     checked_native_edges = 0
-    hardblock_groups = name_map.get("hardblock_groups", [])
     if hardblock_groups:
-        if native_constraints_path is None or provider_manifest_path is None:
-            raise ValidationError(
-                "typed hardblock placement validation requires native constraints"
-            )
-        native, native_report = load_xilinx_native_device_constraints(
-            native_constraints_path,
-            architecture_path=architecture_path,
-            provider_manifest_path=provider_manifest_path,
-        )
+        assert native is not None and native_report is not None
         family_for_resource = {
             "DSP48E2": "DSP_CASCADE", "RAMB36E2": "BRAM_CASCADE",
             "URAM288": "URAM_CASCADE",
@@ -1233,18 +1456,68 @@ def validate_xilinx_openparf_atomic_placement(
             item["instance"]: item for item in placed.values()
         }
         covered = set()
+        occupied_claims = set()
         for group in hardblock_groups:
             if not isinstance(group, Mapping):
                 raise ValidationError("typed hardblock group is invalid")
             resource = group.get("resource")
             instances = group.get("source_instances")
-            if resource not in family_for_resource or not isinstance(instances, list):
+            if resource not in _HARD_RESOURCES.values() or not isinstance(instances, list):
                 raise ValidationError("typed hardblock group header is invalid")
             if covered.intersection(instances):
                 raise ValidationError("typed hardblock placement ownership overlaps")
             covered.update(instances)
-            sites = [by_source_instance[name]["site"] for name in instances]
-            if len(instances) > 1:
+            try:
+                selected = [by_source_instance[name] for name in instances]
+            except KeyError as error:
+                raise ValidationError(
+                    "typed hardblock group references an unknown instance"
+                ) from error
+            matching_windows = []
+            for window in group.get("windows", []):
+                if not isinstance(window, list) or len(window) != len(selected):
+                    continue
+                if not all(isinstance(entry, Mapping) for entry in window):
+                    continue
+                if all(
+                    entry.get("site") == item["site"]
+                    and isinstance(entry.get("z"), (int, float))
+                    and not isinstance(entry.get("z"), bool)
+                    and float(entry["z"]) == float(item["z"])
+                    for entry, item in zip(window, selected)
+                ):
+                    matching_windows.append(window)
+            if len(matching_windows) != 1:
+                raise ValidationError(
+                    "OpenPARF typed hardblock placement does not match exactly "
+                    "one certified window"
+                )
+            selected_window = matching_windows[0]
+            claims = []
+            for entry in selected_window:
+                raw_claims = entry.get("claims")
+                if (
+                    not isinstance(raw_claims, list) or not raw_claims
+                    or not all(isinstance(claim, str) and claim for claim in raw_claims)
+                ):
+                    raise ValidationError(
+                        "OpenPARF typed hardblock window has invalid occupancy claims"
+                    )
+                claims.extend(raw_claims)
+            if (
+                len(claims) != len(set(claims))
+                or occupied_claims.intersection(claims)
+            ):
+                raise ValidationError(
+                    "OpenPARF typed hardblock placement has conflicting occupancy claims"
+                )
+            occupied_claims.update(claims)
+            sites = [item["site"] for item in selected]
+            if group.get("kind") == "cascade" and len(instances) > 1:
+                if resource not in family_for_resource:
+                    raise ValidationError(
+                        "typed hardblock cascade uses an unqualified resource"
+                    )
                 kind = family_for_resource[resource]
                 require_xilinx_native_constraint_capability(
                     native_report, "dedicated_adjacency." + kind
@@ -1270,7 +1543,7 @@ def validate_xilinx_openparf_atomic_placement(
 
     by_site: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for item in placed.values():
-        by_site[item["site"]].append(item)
+        by_site[item["anchor_site"]].append(item)
     for site_name, items in by_site.items():
         if sum(item["resource"] == "LUT" for item in items) > 8:
             raise ValidationError(f"site {site_name!r} exceeds physical LUT capacity")
@@ -1279,9 +1552,16 @@ def validate_xilinx_openparf_atomic_placement(
         hard_items = [
             item for item in items if item["resource"] in _HARD_RESOURCES.values()
         ]
-        if len(hard_items) > 1:
+        ramb18_items = [
+            item for item in hard_items if item["resource"] == "RAMB18E2"
+        ]
+        if len(hard_items) > 1 and (
+            len(hard_items) != len(ramb18_items)
+            or len(ramb18_items) > 2
+            or len({item["bel"] for item in ramb18_items}) != len(ramb18_items)
+        ):
             raise ValidationError(
-                f"site {site_name!r} has multiple singleton hard resources"
+                f"site {site_name!r} has incompatible hard-resource occupancy"
             )
         half_cksr: Dict[int, Tuple[Any, Any]] = {}
         quarter_ce: Dict[Tuple[int, int], Any] = {}
@@ -1311,6 +1591,7 @@ def validate_xilinx_openparf_atomic_placement(
                     "instance": item["instance"],
                     "cell_type": item["cell_type"], "bel": item["bel"],
                     "placement_mode": item["placement_mode"],
+                    "physical_site": item["site"],
                     "source_cluster": item["source_cluster"],
                 }
                 for item in sorted(items, key=lambda value: value["instance"])
@@ -1345,7 +1626,8 @@ def validate_xilinx_openparf_atomic_placement(
             "native_constraints_sha256": _sha256(native_constraints_path),
             "provider_manifest_sha256": _sha256(provider_manifest_path),
         })
-        result["summary"]["native_hardblock_edges"] = checked_native_edges
+        if checked_native_edges:
+            result["summary"]["native_hardblock_edges"] = checked_native_edges
     if output_path is not None:
         write_json(output_path, result, compact=True)
     return result
