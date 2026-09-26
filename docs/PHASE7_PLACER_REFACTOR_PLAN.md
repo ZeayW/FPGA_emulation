@@ -95,6 +95,11 @@ capability.  Unsupported candidates do not delay the OpenPARF primary route.
   0.73 seconds/24.1 MiB for the ten-coordinate query, with exact selected-row
   equality.  Performance evidence is invalid if conversion time is charged to
   every validation instead of once at export.
+- The MUXF9 stress gate must retain the independent macro-window evidence: the
+  old expanded JSON was 904,496,404 bytes and required 67.78 seconds/6.80 GiB
+  peak RSS to parse; the compact template is 1,549 bytes and requires 0.06
+  seconds/6.7 MiB.  Placement, certificate, route, routed timing, and OpenSTA
+  WNS/TNS must remain equal after source-identity fields are excluded.
 
 ### 7A-4: native packing
 
@@ -170,8 +175,11 @@ Any rejected certificate returns to the owning upstream placer implementation.
    masked direct legalization, and independent F7 certificate gate pass in
    source/unit validation.  Compiled F7/F8/F9 runtime gates also pass through
    global placement, macro/LUT/FF legalization, ISM detailed placement, and
-   independent certificate reconstruction.  RapidWright/OpenSTA evidence on
-   real-device fixtures, clock legality, and multi-SLR capacity remain gates.
+   independent certificate reconstruction.  Real-XCVU19P F7/F8/F9 fixtures
+   now also pass the standard physical bridge, RapidWright routing, routed
+   timing validation, and standalone OpenSTA 3.1.  Their final WNS values are
+   +9.0814 ns, +9.009399 ns, and +8.8682 ns respectively, all with TNS 0.
+   Clock legality and multi-SLR capacity remain gates.
 3. **RAMB tile-group export and consumption gates -- complete.**
    The pinned real XCVU19P database exports and independently validates 2,160
    tile groups with distinct lower-RAMB18, upper-RAMB18, and whole-RAMB36

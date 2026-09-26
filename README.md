@@ -1113,7 +1113,15 @@ coordinates used by the real placement took 0.73 seconds and 24.1 MiB peak
 RSS (11.4x faster and 34.2x less peak memory, including Python startup).
 Repeated hot queries improved by 16.8x at the median.  The selected records
 were also compared field-for-field with the former JSON contract and matched
-exactly.
+exactly.  The larger MUXF9 stress gate exposed and removed a second full-JSON
+hot path: the former per-member/per-slice macro-window payload was 904,496,404
+bytes and took 67.78 seconds with 6.80 GiB peak RSS merely to parse.  The
+version-2 template is 1,549 bytes and parses in 0.06 seconds with 6.7 MiB peak
+RSS, while legal windows are streamed from the indexed site database.  This is
+a 583,923x size reduction, 1,130x parse speedup, and 1,035x peak-memory
+reduction.  Placement clusters and summaries, certificate clusters and
+summaries, routed nets and timing, routed path timing, and final OpenSTA
+WNS/TNS all matched the former contract exactly.
 The same in-core contract now admits connectivity-derived MUXF7/F8/F9 cones.
 Each cone records exact LUT and MUX BEL roles, offers only complete same-slice
 windows, lets OpenPARF choose the window from global-placement displacement,
@@ -1138,9 +1146,15 @@ LUT/FF capacity.  Before RWRoute, the standard packing validator independently
 reconstructs each cone from mapped connectivity and checks its exact dedicated
 BEL topology, while the placement validator checks same-site ownership.  Unit
 gates exercise this complete bridge for F7, F8, and F9 rather than accepting
-only the native OpenPARF certificate.
-RapidWright/OpenSTA evidence on the real-device fixtures remains pending, so
-MUX support is not yet a promoted provider claim.
+only the native OpenPARF certificate.  The pinned real-XCVU19P gates now pass
+the complete physical tail.  F7 placed 7 atoms in two sites, routed 5 nets/10
+sinks/32 PIPs with 0.2865 ns maximum route delay, and reached OpenSTA WNS
++9.0814 ns/TNS 0.  F8 placed 15 atoms in two sites, routed 9 nets/14 sinks/50
+PIPs with 0.256100006 ns maximum route delay, and reached WNS +9.009399 ns/TNS
+0.  F9 placed 31 atoms in two sites, routed 17 nets/22 sinks/112 PIPs with
+0.2755 ns maximum route delay, and reached WNS +8.8682 ns/TNS 0.  These gates
+qualify the MUX hierarchy itself; clock legality, multi-SLR capacity, the
+resource-covering gate, and DLA medium still prevent provider promotion.
 The first real-device probe also established that the three identities must be
 kept separate: placement uses `RAMB180/RAMB18E2_L`,
 `RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`, while the database's primary
