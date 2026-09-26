@@ -70,7 +70,7 @@ def _resource_rows(sites: str):
     return rows
 
 
-def _fixture(root: Path, *, coincident=False, mixed=False, ramb18=False):
+def _fixture(root: Path, *, coincident=False, mixed=False):
     mapped = root / "mapped.json"
     packed = root / "packed.json"
     architecture = root / "architecture.json"
@@ -86,11 +86,6 @@ def _fixture(root: Path, *, coincident=False, mixed=False, ramb18=False):
             "dsp": _cell("DSP48E2", {"A": [3, 4], "P": [5, 6]}),
             "bram": _cell("RAMB36E2", {"ADDRARDADDR": [7, 8], "DOADO": [9]}),
             "uram": _cell("URAM288", {"ADDR_A": [11, 12], "DOUT_A": [13]}),
-        })
-    if ramb18:
-        cells.update({
-            "ramb18_lo": _cell("RAMB18E2", {"ADDRARDADDR": [21], "DOADO": [22]}),
-            "ramb18_hi": _cell("RAMB18E2", {"ADDRARDADDR": [23], "DOADO": [24]}),
         })
     mapped.write_text(json.dumps({
         "modules": {"top": {"attributes": {"top": "1"}, "cells": cells}},
@@ -118,22 +113,6 @@ def _fixture(root: Path, *, coincident=False, mixed=False, ramb18=False):
                     "bel": primitive, "bel_candidates": [primitive],
                 }],
             })
-    if ramb18:
-        clusters.append({
-            "id": "ramb18-pair", "kind": "hard",
-            "site_templates": ["RAMB180", "RAMB181"],
-            "site_mode": "RAMB18E2x2", "control_set": None,
-            "assignments": [
-                {
-                    "instance": "ramb18_lo", "cell_type": "RAMB18E2",
-                    "bel": "RAMB18E2_L",
-                },
-                {
-                    "instance": "ramb18_hi", "cell_type": "RAMB18E2",
-                    "bel": "RAMB18E2_U",
-                },
-            ],
-        })
     packed.write_text(json.dumps({
         "schema": "emuflow.packed-site-netlist/v1", "top": "top",
         "clusters": clusters,
@@ -202,36 +181,6 @@ def _fixture(root: Path, *, coincident=False, mixed=False, ramb18=False):
                         "grid_row": 8,
                     },
                 })
-    if ramb18:
-        templates.update({
-            "RAMB180": {
-                "bels": [{
-                    "name": "RAMB18E2_L", "type": "RAMB18E2", "z": 0,
-                    "compatible_cells": ["RAMB18E2"],
-                }],
-                "alternative_templates": [],
-            },
-            "RAMB181": {
-                "bels": [{
-                    "name": "RAMB18E2_U", "type": "RAMB18E2", "z": 0,
-                    "compatible_cells": ["RAMB18E2"],
-                }],
-                "alternative_templates": ["RAMB180", "RAMB36"],
-            },
-            "RAMB36": {
-                "bels": [{
-                    "name": "RAMB36E2", "type": "RAMB36E2", "z": 0,
-                    "compatible_cells": ["RAMB36E2"],
-                }],
-                "alternative_templates": [],
-            },
-        })
-        for index in range(2):
-            sites.append({
-                "name": f"RAMB18_X{index}Y1", "type": "RAMB181",
-                "template": "RAMB181", "x": 20 + index, "y": 1,
-                "tile": {"grid_col": 20 + index, "grid_row": 8},
-            })
     architecture.write_text(json.dumps({
         "schema": "emuflow.archdb/v1", "part": "fixture",
         "source": {"format": "test/v1"}, "policy": {"name": "test"},
@@ -932,100 +881,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(assignments["bram"]["bel"], "RAMB36E2")
         self.assertEqual(assignments["uram"]["bel"], "URAM288")
 
-    def test_ramb18_shared_site_exports_and_imports_atomic_half_slots(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            mapped, packed, architecture = _fixture(root, ramb18=True)
-            native_path = root / "native.json"
-            provider_path = root / "provider.json"
-            native_path.write_text("{}", encoding="utf-8")
-            provider_path.write_text("{}", encoding="utf-8")
-            native = {"payload": {"dedicated_adjacency": []}}
-            output = root / "output"
-            with mock.patch(
-                "emuflow.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
-                return_value=(native, {"status": "pass"}),
-            ):
-                manifest = export_xilinx_openparf_atomic(
-                    mapped, packed, architecture, output,
-                    native_constraints_path=native_path,
-                    provider_manifest_path=provider_path,
-                )
-            self.assertEqual(manifest["resources"]["RAMB18E2"], 2)
-            self.assertEqual(
-                manifest["resource_unit_capacity"]["RAMB18E2"], 2
-            )
-            contract = json.loads(
-                (output / "typed-hardblock-chains.json").read_text()
-            )
-            group = next(
-                item for item in contract["groups"]
-                if item["resource"] == "RAMB18E2"
-            )
-            self.assertEqual(group["kind"], "packed-site")
-            self.assertEqual(group["source_instances"], ["ramb18_lo", "ramb18_hi"])
-            first_window = group["windows"][0]
-            self.assertEqual(
-                [item["site"] for item in first_window],
-                [first_window[0]["site"], first_window[0]["site"]],
-            )
-            self.assertEqual([item["z"] for item in first_window], [0, 1])
-            self.assertEqual(
-                {claim for item in first_window for claim in item["claims"]},
-                {
-                    f"bram:{first_window[0]['site']}:lower",
-                    f"bram:{first_window[0]['site']}:upper",
-                },
-            )
-
-            names = json.loads((output / "name_map.json").read_text())
-            slice_site = next(
-                item for item in names["coordinate_system"]["sites"]
-                if "LUT" in item["resources"]
-            )
-            ramb_positions = dict(zip(group["source_instances"], first_window))
-            rows = []
-            for atom in names["atoms"]:
-                if atom["instance"] in ramb_positions:
-                    position = ramb_positions[atom["instance"]]
-                    site = next(
-                        item for item in names["coordinate_system"]["sites"]
-                        if position["site"] in item["physical_sites"].get(
-                            "RAMB18E2", []
-                        )
-                    )
-                    z = position["z"]
-                else:
-                    site = slice_site
-                    z = 1 if atom["resource"] == "LUT" else 0
-                rows.append(
-                    f"{atom['openparf']} {site['dense_x']} {site['dense_y']} {z}"
-                )
-            placement = output / "ramb18.pl"
-            placement.write_text("\n".join(rows) + "\n", encoding="utf-8")
-            with mock.patch(
-                "emuflow.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
-                return_value=(native, {"status": "pass"}),
-            ):
-                certificate = validate_xilinx_openparf_atomic_placement(
-                    placement, output / "name_map.json", mapped, architecture,
-                    native_constraints_path=native_path,
-                    provider_manifest_path=provider_path,
-                )
-            ramb_assignments = [
-                assignment for cluster in certificate["clusters"]
-                for assignment in cluster["assignments"]
-                if assignment["cell_type"] == "RAMB18E2"
-            ]
-            self.assertEqual(
-                {item["bel"] for item in ramb_assignments},
-                {"RAMB18E2_L", "RAMB18E2_U"},
-            )
-            self.assertEqual(
-                certificate["summary"]["hard_resources"], {"RAMB18E2": 2}
-            )
-
-    def test_invalid_half_site_metadata_and_hard_cascade_fail_closed(self):
+    def test_half_site_and_hard_cascade_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             mapped, packed, architecture = _fixture(root, mixed=True)
@@ -1033,7 +889,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             bram = next(cluster for cluster in value["clusters"] if cluster["id"] == "bram")
             bram["site_mode"] = "RAMB18E2x1"
             packed.write_text(json.dumps(value), encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "hard-resource support"):
+            with self.assertRaisesRegex(ValidationError, "relative/physical"):
                 export_xilinx_openparf_atomic(
                     mapped, packed, architecture, root / "half-site"
                 )

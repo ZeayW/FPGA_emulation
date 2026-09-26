@@ -3,7 +3,6 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.xilinx_openparf_atomic import (
@@ -16,10 +15,7 @@ from emuflow.xilinx_openparf_bridge import (
 from emuflow.xilinx_packing import validate_xilinx_packing
 from emuflow.xilinx_placement import validate_xilinx_placement
 from emuflow.xilinx_rwroute import export_rwroute_input
-from tests.openparf_runtime_fixture import (
-    write_openparf_ramb18_fixture,
-    write_openparf_runtime_fixture,
-)
+from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
 
 def _native_certificate(root: Path, *, include_hard: bool):
@@ -70,102 +66,6 @@ def _native_certificate(root: Path, *, include_hard: bool):
 
 
 class XilinxOpenparfBridgeTest(unittest.TestCase):
-    def test_ramb18_pair_materializes_two_physical_half_sites(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            mapped, source_packed, architecture = write_openparf_ramb18_fixture(root)
-            native_path = root / "native.json"
-            provider_path = root / "provider.json"
-            native_path.write_text("{}", encoding="utf-8")
-            provider_path.write_text("{}", encoding="utf-8")
-            native = {"payload": {"dedicated_adjacency": []}}
-            export_dir = root / "openparf"
-            with mock.patch(
-                "emuflow.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
-                return_value=(native, {"status": "pass"}),
-            ):
-                export_xilinx_openparf_atomic(
-                    mapped, source_packed, architecture, export_dir,
-                    native_constraints_path=native_path,
-                    provider_manifest_path=provider_path,
-                )
-            name_map = json.loads((export_dir / "name_map.json").read_text())
-            ramb_group = next(
-                group for group in name_map["hardblock_groups"]
-                if group["resource"] == "RAMB18E2"
-            )
-            positions = dict(zip(
-                ramb_group["source_instances"], ramb_group["windows"][0]
-            ))
-            slice_sites = [
-                item for item in name_map["coordinate_system"]["sites"]
-                if "LUT" in item["resources"]
-            ]
-            logic_indexes = {"LUT": 0, "FF": 0}
-            rows = []
-            for atom in name_map["atoms"]:
-                if atom["instance"] in positions:
-                    position = positions[atom["instance"]]
-                    site = next(
-                        item for item in name_map["coordinate_system"]["sites"]
-                        if position["site"] in item["physical_sites"].get(
-                            "RAMB18E2", []
-                        )
-                    )
-                    z = position["z"]
-                else:
-                    index = logic_indexes[atom["resource"]]
-                    logic_indexes[atom["resource"]] += 1
-                    site = slice_sites[index // 4]
-                    z = 2 * (index % 4) + (
-                        1 if atom["resource"] == "LUT" else 0
-                    )
-                rows.append(
-                    f"{atom['openparf']} {site['dense_x']} {site['dense_y']} {z}"
-                )
-            native_placement = export_dir / "native.pl"
-            native_placement.write_text("\n".join(rows) + "\n", encoding="utf-8")
-            certificate_path = root / "certificate.json"
-            with mock.patch(
-                "emuflow.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
-                return_value=(native, {"status": "pass"}),
-            ):
-                certificate = validate_xilinx_openparf_atomic_placement(
-                    native_placement, export_dir / "name_map.json", mapped,
-                    architecture, certificate_path,
-                    native_constraints_path=native_path,
-                    provider_manifest_path=provider_path,
-                )
-            certificate["runtime_validation"] = "native-openparf"
-            certificate_path.write_text(
-                json.dumps(certificate, sort_keys=True), encoding="utf-8"
-            )
-            packed = root / "packed.json"
-            placement = root / "placement.json"
-            materialize_xilinx_openparf_atomic_contract(
-                mapped, architecture, certificate_path, packed, placement,
-                source_packed_path=source_packed,
-                native_constraints_path=native_path,
-                provider_manifest_path=provider_path,
-            )
-            packed_value = json.loads(packed.read_text())
-            placement_value = json.loads(placement.read_text())
-            ramb_cluster = next(
-                cluster for cluster in packed_value["clusters"]
-                if {assignment["cell_type"] for assignment in cluster["assignments"]}
-                == {"RAMB18E2"}
-            )
-            self.assertEqual(ramb_cluster["site_mode"], "RAMB18E2x2")
-            physical_sites = {
-                assignment["site"]
-                for cluster in placement_value["clusters"]
-                for assignment in cluster["assignments"]
-                if assignment["cell_type"] == "RAMB18E2"
-            }
-            self.assertEqual(
-                physical_sites, {"RAMB18_X0Y0", "RAMB18_X0Y1"}
-            )
-
     def test_mixed_atomic_result_converts_and_feeds_rwroute(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

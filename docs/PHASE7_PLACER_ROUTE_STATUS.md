@@ -25,7 +25,7 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 
 | Route | Implemented evidence | Remaining production blockers | Decision |
 |---|---|---|---|
-| OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; A2 also passes that entire chain for two native full-slice CARRY8 macros and one certified CARRY_NEXT edge; source-sealed real-device facts now cover CARRY, DSP, BRAM, and URAM chain adjacency; an in-core typed DSP/BRAM/URAM window legalizer and independent adjacency checker are implemented and under real-runtime qualification | MUX/RAMB18, real-runtime DSP/BRAM/URAM chain qualification, authoritative half-column limits, and Koios DLA medium | Primary route; atomic and CARRY8 subsets qualified, typed hard-block runtime evidence pending |
+| OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; bounded CARRY8, DSP48E2, RAMB36E2, and URAM288 fixtures also pass that complete chain; source-sealed real-device facts cover CARRY, DSP, RAMB36, and URAM chain adjacency | MUXF7/8/9, explicit RAMB18 upper/lower/whole tile groups, clock legality, authoritative half-column limits, unified production candidate backend, and Koios DLA medium | Primary route; qualified subsets only, not yet the default |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga`) | Pinned-source probe; Yosys mapped JSON to official FPGA Interchange logical netlist; physical netlist to validated placement certificate; real Cap'n Proto schema roundtrip | Upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
 | AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result |
 
@@ -56,6 +56,8 @@ the default provider yet.
 OpenPARF remains the primary route.  The parallel branches are controlled
 alternatives and independent implementation probes; they do not replace the
 OpenPARF work merely because an interchange adapter can be made to roundtrip.
+The complete stage-by-stage refactor and promotion gates are specified in
+[the native placer refactor plan](PHASE7_PLACER_REFACTOR_PLAN.md).
 
 ### Route A1: OpenPARF atomic qualification
 
@@ -80,7 +82,8 @@ primitive or constraint:
 
 1. represent one `CARRY8 + 8xLUT6_2` group as an indivisible full-slice unit,
    including ordered inter-site carry-chain adjacency;
-2. add MUXF7/MUXF8/MUXF9 relative placement and RAMB18 pair/mode constraints;
+2. add MUXF7/MUXF8/MUXF9 relative placement, then source-sealed RAMB18
+   upper/lower/whole tile groups and mutually exclusive mode constraints;
 3. add DSP48E2, BRAM, and URAM cascade ordering from typed native adjacency,
    with a family-specific proof contract where the device database exposes a
    hard-block-internal cascade differently from ordinary routing;
@@ -93,6 +96,15 @@ primitive or constraint:
 
 The bridge may translate and verify OpenPARF's answer, but it may not choose a
 different legal site, repack a macro, or invoke the retired greedy legalizer.
+
+The RAMB18 native-device audit found that ArchitectureDB currently retains one
+`RAMB181` anchor per physical BRAM tile, while RapidWright exposes three
+overlapping native views: upper RAMB18, lower RAMB18, and whole RAMB36.  The
+names and coordinates are not a sufficient binding between those views.
+Accordingly RAMB18 remains `adapter_required`: the production path must first
+export a source-sealed tile group with exact native site/BEL identities and
+then make OpenPARF choose conflict-free half/full claims.  `Y-1`, `Y/2`, name
+rewrites, and forced instance pairing are forbidden.
 
 The typed hard-block implementation now follows that boundary. A compact
 source-sealed contract enumerates exact legal native windows. An OpenPARF

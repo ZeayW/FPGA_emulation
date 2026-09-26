@@ -15,7 +15,7 @@ not perform packing, placement, or search.
 | --- | --- | --- |
 | CARRY8 with eight LUT6_2 O5/O6 adapters | Implemented, fail-closed | Same UltraScale+ slice |
 | MUXF7/MUXF8/MUXF9 cone | Implemented, fail-closed | Same UltraScale+ slice with explicit BEL roles |
-| RAMB18E2 half-site demand | Production packer emits explicit lower/upper pairs; OpenPARF v2 hardblock groups atomically claim either half while RAMB36 claims both | Unit and bridge contracts pass; real XCVU19P route/OpenSTA gate pending |
+| RAMB18E2 half-site demand | Implemented without name-based pairing | RapidWright exposes overlapping upper/lower/whole native views, but ArchitectureDB currently retains one anchor; an explicit source-sealed tile-group adapter is required |
 | CARRY8/DSP48E2/RAMB18E2/RAMB36E2/URAM288 cascade | Logical chain order and exact port signals implemented | Typed native adjacency is adapter-required |
 
 Cascade placement deliberately does not assume adjacent sites are related by
@@ -23,6 +23,13 @@ Cascade placement deliberately does not assume adjacent sites are related by
 half-column graph, so the contract requires same-column, same-SLR, consecutive
 native-cascade neighbors and marks resolution `adapter_required`. A future
 device adapter must prove those relations from authoritative device data.
+
+The same rule applies within a BRAM tile.  The native database exposes upper
+RAMB18, lower RAMB18, and whole RAMB36 as overlapping site views.  The current
+ArchitectureDB anchor and its alternative templates do not prove their exact
+native site/BEL mapping, so coordinate parity and site-name arithmetic are not
+accepted.  RAMB18 placement remains fail-closed until a source-sealed tile
+group proves those identities and whole-versus-half mutual exclusion.
 
 Ordinary atomic LUT/FF/DSP/BRAM/URAM cells are not copied into this contract.
 Unknown, branching, merging, cyclic, partial-width, multiply-owned, or

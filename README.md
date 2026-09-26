@@ -1024,6 +1024,14 @@ graph. Long virtual DUT periods produced by large emulation frame ratios are
 preserved in the provider-neutral runtime and system-timing contracts; the
 VPR-only runtime SDC records its bounded effective values explicitly. Additional
 architecture mapping profiles remain open gates.
+The Xilinx-native Phase 7 replacement is tracked in the
+[native placer refactor plan](docs/PHASE7_PLACER_REFACTOR_PLAN.md).  OpenPARF
+remains the primary placer and is responsible for native packing, analytical
+placement, resource/macro legalization, and detailed placement; RapidWright
+supplies source-sealed device facts and routing, and standalone OpenSTA supplies
+the final global timing result.  DREAMPlaceFPGA and AMF-Placer are isolated
+comparison branches subject to the same end-to-end gate, not implicit
+fallbacks.
 An internal, non-default qualification path also supports OpenPARF's native
 direct legalization/ISM flow for unconstrained LUT/FF atoms and independent
 singleton DSP48E2, RAMB36E2, and URAM288 resources.  Its result is converted,
@@ -1063,15 +1071,15 @@ route delay, and OpenSTA validated 98 endpoints at WNS +38.359802 ns/TNS 0.
 URAM placed 130 atoms into 11 sites, routed 90 certificate nets/127 sinks/537
 PIPs with a 1.503900024 ns maximum route delay, and OpenSTA validated 138
 endpoints at WNS +38.266102 ns/TNS 0. Both have zero missing or unrouted sinks.
-The operator is not described as an exact optimizer. RAMB18 lower/upper modes
-now use one atomic packed group and explicit occupancy claims: each half owns
-one slot of the shared BRAM site while RAMB36 owns both. The OpenPARF in-core
-legalizer and independent importer both enforce those claims, and the Route A
-bridge materializes the lower and upper RapidWright site identities without a
-post-placement search. Unit contracts pass; the real XCVU19P route/OpenSTA
-qualification remains open. Other relative macros, authoritative half-column
-clock constraints, and Koios DLA medium also remain open gates, so this
+The operator is not described as an exact optimizer. RAMB18 half sites, other relative macros, authoritative
+half-column clock constraints, and Koios DLA medium remain open gates, so this
 path is not yet a public placer selection or the default Phase 7 provider.
+The native RAMB18 audit found that RapidWright exposes upper RAMB18, lower
+RAMB18, and whole RAMB36 as three overlapping views of one tile while the
+current ArchitectureDB retains only one anchor.  Therefore RAMB18 stays
+`adapter_required` until an exact source-sealed tile-group mapping exists;
+coordinate or name arithmetic such as `Y-1`/`Y/2` is not accepted as device
+evidence.
 The provider-neutral `emuflow.xilinx-physical-macro-contract/v1` now derives
 these non-atomic constraints directly from mapped connectivity without running
 a packer, placer, or legalizer. It records CARRY8/LUT6_2 and MUXF7/8/9 site

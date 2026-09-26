@@ -41,18 +41,17 @@ OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v1"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = "openparf-native-mcf-direct-lg-ism-atomic-v1"
 OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA = (
-    "openparf.typed-hardblock-groups/v2"
+    "openparf.typed-hardblock-chains/v1"
 )
 
 _HARD_RESOURCES = {
     "DSP48E2": "DSP48E2",
-    "RAMB18E2": "RAMB18E2",
     "RAMB36E2": "RAMB36E2",
     "URAM288": "URAM288",
 }
 _SUPPORTED = LUT_TYPES | FF_TYPES | set(_HARD_RESOURCES)
 _ALLOWED_CLUSTER_KEYS = {
-    "id", "kind", "site_templates", "site_mode", "control_set", "assignments",
+    "id", "kind", "site_templates", "control_set", "assignments",
 }
 _ALLOWED_ASSIGNMENT_KEYS = {
     "instance", "cell_type", "bel", "bel_candidates",
@@ -61,18 +60,6 @@ _FF_CLOCK = "C"
 _FF_ENABLE = "CE"
 _FF_SR = {"FDCE": "R", "FDRE": "R", "FDPE": "S", "FDSE": "S"}
 _TARGET_DENSITY = 0.75
-
-
-def _hardblock_claims(resource: str, site_name: str, z: int) -> List[str]:
-    """Return mutually exclusive native occupancy claims for one hard slot."""
-
-    if resource == "RAMB18E2":
-        if z not in {0, 1}:
-            raise ValidationError("RAMB18E2 uses only lower/upper z slots")
-        return [f"bram:{site_name}:{'lower' if z == 0 else 'upper'}"]
-    if resource == "RAMB36E2":
-        return [f"bram:{site_name}:lower", f"bram:{site_name}:upper"]
-    return [f"site:{site_name}"]
 
 
 def _sha256(path: Path) -> str:
@@ -236,23 +223,19 @@ def _placement_sites(
     for site in architecture.sites:
         if str(site.get("type", "")).upper().startswith("SLICE"):
             continue
-        resources: Dict[str, int] = {}
-        for primitive in hard_resources:
-            compatible_bels = sum(
+        matches = [
+            primitive for primitive in hard_resources
+            if sum(
                 primitive in bel["compatible_cells"] for bel in site["bels"]
-            )
-            expected = 2 if primitive == "RAMB18E2" else 1
-            if compatible_bels == expected:
-                resources[_HARD_RESOURCES[primitive]] = expected
-        if len(resources) > 1 and set(resources) != {"RAMB18E2", "RAMB36E2"}:
+            ) == 1
+        ]
+        if len(matches) > 1:
             raise ValidationError(
                 f"site {site['name']!r} is ambiguous for demanded hard resources"
             )
-        if resources:
-            result.append((site, resources))
-            for primitive in hard_resources:
-                if _HARD_RESOURCES[primitive] in resources:
-                    hard_capacity[primitive] += resources[_HARD_RESOURCES[primitive]]
+        if matches:
+            result.append((site, {_HARD_RESOURCES[matches[0]]: 1}))
+            hard_capacity[matches[0]] += 1
     missing = sorted(set(hard_resources) - set(hard_capacity))
     if missing:
         raise ValidationError(
@@ -382,12 +365,8 @@ def _collect_atoms(
                 or len(chain["instances"]) < 2
             ):
                 raise ValidationError(
-                    "typed hardblock route accepts only supported hardblock "
-                    "cascade chains"
-                )
-            if chain.get("cell_type") == "RAMB18E2":
-                raise ValidationError(
-                    "RAMB18E2 dedicated cascades are not yet qualified"
+                    "typed hardblock route accepts only DSP48E2/RAMB36E2/"
+                    "URAM288 cascade chains"
                 )
     atoms: List[Dict[str, str]] = []
     seen = set()
@@ -411,29 +390,6 @@ def _collect_atoms(
         assignments = cluster.get("assignments")
         if not isinstance(assignments, list) or not assignments:
             raise ValidationError(f"cluster {cluster.get('id')!r} has no assignments")
-        hard_types = {
-            assignment.get("cell_type")
-            for assignment in assignments if isinstance(assignment, Mapping)
-        }
-        if kind == "hard" and hard_types == {"RAMB18E2"}:
-            bels = [assignment.get("bel") for assignment in assignments]
-            if (
-                len(assignments) > 2
-                or len(bels) != len(set(bels))
-                or set(bels) - {"RAMB18E2_L", "RAMB18E2_U"}
-                or cluster.get("site_mode") != f"RAMB18E2x{len(assignments)}"
-            ):
-                raise ValidationError("RAMB18E2 shared-site cluster is invalid")
-        elif kind == "hard" and (
-            len(assignments) != 1
-            or len(hard_types) != 1
-            or next(iter(hard_types), None) not in _HARD_RESOURCES
-            or cluster.get("site_mode") is not None
-        ):
-            raise ValidationError(
-                "hard-resource support requires one DSP48E2/RAMB36E2/URAM288 "
-                "or one qualified RAMB18E2 shared-site cluster"
-            )
         for assignment in assignments:
             if not isinstance(assignment, Mapping):
                 raise ValidationError("packed assignment is invalid")
@@ -456,8 +412,13 @@ def _collect_atoms(
                 raise ValidationError(
                     f"slice cluster contains hard primitive {cell_type!r}"
                 )
-            if kind == "hard" and cell_type not in _HARD_RESOURCES:
-                raise ValidationError("hard cluster contains an unsupported primitive")
+            if kind == "hard" and (
+                cell_type not in _HARD_RESOURCES or len(assignments) != 1
+            ):
+                raise ValidationError(
+                    "hard-resource support is limited to independent singleton "
+                    "DSP48E2, RAMB36E2, or URAM288 clusters"
+                )
             if instance in seen:
                 raise ValidationError(f"mapped instance {instance!r} is packed twice")
             seen.add(instance)
@@ -521,11 +482,6 @@ def build_xilinx_openparf_atomic_source(
         raise ValidationError(
             "OpenPARF atomic source rejects dedicated cascade connectivity"
         )
-    if any(cell.get("type") == "RAMB18E2" for cell in cells.values()):
-        raise ValidationError(
-            "RAMB18E2 requires the real site packer so lower/upper ownership "
-            "is explicit"
-        )
     clusters = []
     constants = []
     for index, (name, cell) in enumerate(sorted(cells.items())):
@@ -580,19 +536,11 @@ def probe_xilinx_openparf_atomic_eligibility(
     architecture: ArchitectureDB,
     *,
     top: Optional[str] = None,
-    allow_typed_hardblocks: bool = False,
 ) -> Dict[str, Any]:
     """Return a side-effect-free design-specific adapter decision."""
 
     try:
         _selected_top, _cells, atoms = _collect_atoms(mapped, packed, top)
-        if (
-            any(atom["cell_type"] == "RAMB18E2" for atom in atoms)
-            and not allow_typed_hardblocks
-        ):
-            raise ValidationError(
-                "RAMB18E2 requires the typed hardblock group legalizer"
-            )
         hard = sorted({
             atom["cell_type"] for atom in atoms
             if atom["cell_type"] in _HARD_RESOURCES
@@ -978,18 +926,9 @@ def export_xilinx_openparf_atomic(
             for item in native.get("payload", {}).get("dedicated_adjacency", [])
             if isinstance(item, Mapping)
         }
-        packed_clusters_by_id = {
-            str(cluster.get("id")): cluster
-            for cluster in packed.get("clusters", [])
-            if isinstance(cluster, Mapping)
-        }
         owned_hardblocks = set()
         for chain in packed.get("cascade_chains", []):
             resource = chain["cell_type"]
-            if resource == "RAMB18E2":
-                raise ValidationError(
-                    "RAMB18E2 dedicated cascades are not yet qualified"
-                )
             kind = family_for_resource[resource]
             require_xilinx_native_constraint_capability(
                 _native_report, "dedicated_adjacency." + kind
@@ -1018,78 +957,16 @@ def export_xilinx_openparf_atomic(
                         "x": coordinate_sites[site_name]["placement_x"],
                         "y": coordinate_sites[site_name]["placement_y"],
                         "z": coordinate_sites[site_name]["hardblock_z"],
-                        "claims": _hardblock_claims(
-                            resource, site_name,
-                            coordinate_sites[site_name]["hardblock_z"],
-                        ),
                     } for site_name in names_window])
             if not windows:
                 raise ValidationError(
                     f"typed hardblock chain {chain.get('id')!r} has no native legal window"
                 )
             hardblock_groups.append({
-                "id": str(chain.get("id")), "kind": "cascade",
-                "resource": resource,
+                "id": str(chain.get("id")), "resource": resource,
                 "instances": [names[name] for name in instances],
                 "source_instances": list(instances), "windows": windows,
             })
-
-        ramb18_by_cluster: Dict[str, List[Mapping[str, str]]] = defaultdict(list)
-        for atom in atoms:
-            if atom["resource"] == "RAMB18E2":
-                ramb18_by_cluster[atom["source_cluster"]].append(atom)
-        for cluster_id, cluster_atoms in sorted(ramb18_by_cluster.items()):
-            source_cluster = packed_clusters_by_id.get(cluster_id)
-            if not isinstance(source_cluster, Mapping):
-                raise ValidationError("RAMB18E2 source cluster is missing")
-            assignment_by_instance = {
-                assignment.get("instance"): assignment
-                for assignment in source_cluster.get("assignments", [])
-                if isinstance(assignment, Mapping)
-            }
-            bel_order = {"RAMB18E2_L": 0, "RAMB18E2_U": 1}
-            ordered = sorted(
-                cluster_atoms,
-                key=lambda atom: bel_order[
-                    assignment_by_instance[atom["instance"]]["bel"]
-                ],
-            )
-            instances = [atom["instance"] for atom in ordered]
-            overlap = owned_hardblocks.intersection(instances)
-            if overlap:
-                raise ValidationError(
-                    f"RAMB18E2 packed-site ownership overlaps: {sorted(overlap)!r}"
-                )
-            owned_hardblocks.update(instances)
-            candidates = [
-                (item, site_name)
-                for item in coordinate_system["sites"]
-                for site_name in item.get("physical_sites", {}).get("RAMB18E2", [])
-            ]
-            windows = []
-            for item, site_name in candidates:
-                window = []
-                for atom in ordered:
-                    bel = assignment_by_instance[atom["instance"]]["bel"]
-                    z = bel_order[bel]
-                    window.append({
-                        "site": site_name, "resource": "RAMB18E2",
-                        "x": item["placement_x"], "y": item["placement_y"],
-                        "z": z,
-                        "claims": _hardblock_claims("RAMB18E2", site_name, z),
-                    })
-                windows.append(window)
-            if not windows:
-                raise ValidationError(
-                    f"RAMB18E2 packed cluster {cluster_id!r} has no legal site"
-                )
-            hardblock_groups.append({
-                "id": "packed:" + cluster_id, "kind": "packed-site",
-                "resource": "RAMB18E2",
-                "instances": [names[name] for name in instances],
-                "source_instances": instances, "windows": windows,
-            })
-
         for atom in atoms:
             resource = atom["resource"]
             if resource not in _HARD_RESOURCES.values() or atom["instance"] in owned_hardblocks:
@@ -1106,17 +983,13 @@ def export_xilinx_openparf_atomic(
                     f"typed hardblock singleton {atom['instance']!r} has no legal site"
                 )
             hardblock_groups.append({
-                "id": "singleton:" + atom["instance"], "kind": "singleton",
-                "resource": resource,
+                "id": "singleton:" + atom["instance"], "resource": resource,
                 "instances": [names[atom["instance"]]],
                 "source_instances": [atom["instance"]],
                 "windows": [[{
                     "site": item["site"], "resource": resource,
                     "x": item["placement_x"], "y": item["placement_y"],
                     "z": item["hardblock_z"],
-                    "claims": _hardblock_claims(
-                        resource, item["site"], item["hardblock_z"]
-                    ),
                 }] for item in candidates],
             })
         expected_hardblocks = {
@@ -1187,10 +1060,7 @@ def export_xilinx_openparf_atomic(
                 "native-typed-hardblock-legalizer"
                 if typed_hardblock_mode else "fail-closed"
             ),
-            "ramb18_half_site": (
-                "native-lower-upper-atomic-groups"
-                if typed_hardblock_mode else "fail-closed"
-            ),
+            "ramb18_half_site": "fail-closed",
             "lut_policy": "8 independent 6LUT BELs; no paired 5LUT use",
         },
         "files": sorted([
@@ -1295,18 +1165,6 @@ def validate_xilinx_openparf_atomic_placement(
                         "OpenPARF atomic placement uses a site without the required resource"
                     )
                 bel_name = _slot_bel(resource, z, cell_type)
-            elif resource == "RAMB18E2":
-                physical_sites = site_entry.get("physical_sites", {}).get(resource)
-                if (
-                    not isinstance(physical_sites, list)
-                    or len(physical_sites) != 1
-                    or z not in {0, 1}
-                ):
-                    raise ValidationError(
-                        "OpenPARF RAMB18E2 placement uses an invalid half-site slot"
-                    )
-                site_name = physical_sites[0]
-                bel_name = "RAMB18E2_L" if z == 0 else "RAMB18E2_U"
             elif resource in _HARD_RESOURCES.values():
                 physical_sites = site_entry.get("physical_sites", {}).get(resource)
                 if (
@@ -1375,74 +1233,18 @@ def validate_xilinx_openparf_atomic_placement(
             item["instance"]: item for item in placed.values()
         }
         covered = set()
-        occupied_claims = set()
         for group in hardblock_groups:
             if not isinstance(group, Mapping):
                 raise ValidationError("typed hardblock group is invalid")
             resource = group.get("resource")
             instances = group.get("source_instances")
-            if resource not in _HARD_RESOURCES.values() or not isinstance(instances, list):
+            if resource not in family_for_resource or not isinstance(instances, list):
                 raise ValidationError("typed hardblock group header is invalid")
             if covered.intersection(instances):
                 raise ValidationError("typed hardblock placement ownership overlaps")
             covered.update(instances)
-            try:
-                selected = [by_source_instance[name] for name in instances]
-            except KeyError as error:
-                raise ValidationError(
-                    "typed hardblock group references an unknown instance"
-                ) from error
-            matching_windows = []
-            for window in group.get("windows", []):
-                if not isinstance(window, list) or len(window) != len(selected):
-                    continue
-                if not all(isinstance(entry, Mapping) for entry in window):
-                    continue
-                if all(
-                    entry.get("site") == item["site"]
-                    and isinstance(entry.get("z"), (int, float))
-                    and not isinstance(entry.get("z"), bool)
-                    and float(entry["z"]) == float(item["z"])
-                    for entry, item in zip(window, selected)
-                ):
-                    matching_windows.append(window)
-            if len(matching_windows) != 1:
-                raise ValidationError(
-                    "OpenPARF typed hardblock placement does not match exactly one "
-                    "certified window"
-                )
-            selected_window = matching_windows[0]
-            if any(
-                not isinstance(entry.get("claims"), list)
-                or not entry["claims"]
-                or not all(
-                    isinstance(claim, str) and claim
-                    for claim in entry["claims"]
-                )
-                for entry in selected_window
-            ):
-                raise ValidationError(
-                    "OpenPARF typed hardblock window has invalid occupancy claims"
-                )
-            claims = [
-                claim for entry in selected_window
-                for claim in entry["claims"]
-            ]
-            if (
-                not claims
-                or len(claims) != len(set(claims))
-                or occupied_claims.intersection(claims)
-            ):
-                raise ValidationError(
-                    "OpenPARF typed hardblock placement has conflicting occupancy claims"
-                )
-            occupied_claims.update(claims)
-            sites = [item["site"] for item in selected]
-            if group.get("kind") == "cascade" and len(instances) > 1:
-                if resource not in family_for_resource:
-                    raise ValidationError(
-                        "typed hardblock cascade uses an unqualified resource"
-                    )
+            sites = [by_source_instance[name]["site"] for name in instances]
+            if len(instances) > 1:
                 kind = family_for_resource[resource]
                 require_xilinx_native_constraint_capability(
                     native_report, "dedicated_adjacency." + kind
@@ -1477,16 +1279,9 @@ def validate_xilinx_openparf_atomic_placement(
         hard_items = [
             item for item in items if item["resource"] in _HARD_RESOURCES.values()
         ]
-        ramb18_items = [
-            item for item in hard_items if item["resource"] == "RAMB18E2"
-        ]
-        if len(hard_items) > 1 and (
-            len(hard_items) != len(ramb18_items)
-            or len(ramb18_items) > 2
-            or len({item["bel"] for item in ramb18_items}) != len(ramb18_items)
-        ):
+        if len(hard_items) > 1:
             raise ValidationError(
-                f"site {site_name!r} has incompatible hard-resource occupancy"
+                f"site {site_name!r} has multiple singleton hard resources"
             )
         half_cksr: Dict[int, Tuple[Any, Any]] = {}
         quarter_ce: Dict[Tuple[int, int], Any] = {}
@@ -1550,8 +1345,7 @@ def validate_xilinx_openparf_atomic_placement(
             "native_constraints_sha256": _sha256(native_constraints_path),
             "provider_manifest_sha256": _sha256(provider_manifest_path),
         })
-        if checked_native_edges:
-            result["summary"]["native_hardblock_edges"] = checked_native_edges
+        result["summary"]["native_hardblock_edges"] = checked_native_edges
     if output_path is not None:
         write_json(output_path, result, compact=True)
     return result
@@ -1620,7 +1414,7 @@ def run_xilinx_openparf_hardblock_qualification(
     openparf_install: Optional[Path] = None,
     openparf_python: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Run native GP plus in-core typed DSP/RAMB18/BRAM/URAM legalization."""
+    """Run native GP plus in-core typed DSP/BRAM/URAM legalization."""
 
     runtime = validate_openparf_runtime(
         install_root=openparf_install, python_executable=openparf_python
