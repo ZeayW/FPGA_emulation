@@ -503,6 +503,31 @@ public final class EmuFlowRWRoute {
         return result;
     }
 
+    private static String blockRamLogicalPin(
+        MaterializedCell materialized, String logicalPin
+    ) {
+        if (!materialized.isBlockRam()) return logicalPin;
+        int open = logicalPin.indexOf('[');
+        String port = open < 0 ? logicalPin : logicalPin.substring(0, open);
+        String suffix = open < 0 ? "" : logicalPin.substring(open);
+        // Yosys follows the Xilinx primitive declaration names, whereas the
+        // RapidWright 2026.1 Unisim library exposes the corresponding native
+        // RAMB18E2/RAMB36E2 port names. Translate only at this provider
+        // boundary; source-netlist and timing identities stay unchanged.
+        switch (port) {
+            case "DOADO": port = "DOUTADOUT"; break;
+            case "DOBDO": port = "DOUTBDOUT"; break;
+            case "DOPADOP": port = "DOUTPADOUTP"; break;
+            case "DOPBDOP": port = "DOUTPBDOUTP"; break;
+            case "DIADI": port = "DINADIN"; break;
+            case "DIBDI": port = "DINBDIN"; break;
+            case "DIPADIP": port = "DINPADINP"; break;
+            case "DIPBDIP": port = "DINPBDINP"; break;
+            default: break;
+        }
+        return port + suffix;
+    }
+
     private static void ensureLogicalPinMapping(
         MaterializedCell materialized, String logicalPin
     ) {
@@ -736,11 +761,16 @@ public final class EmuFlowRWRoute {
                         }
                         connected.add(net.createPin(physicalPin, cell.siteInst));
                     } else if (cell.isBlockRam()) {
-                        ensureLogicalPinMapping(cell, row[3]);
-                        SitePinInst primary = net.connect(cell.regularCell, row[3]);
+                        String routedLogicalPin = blockRamLogicalPin(cell, row[3]);
+                        ensureLogicalPinMapping(cell, routedLogicalPin);
+                        SitePinInst primary = net.connect(
+                            cell.regularCell, routedLogicalPin
+                        );
                         if (primary != null) connected.add(primary);
                         Set<String> sitePins = new LinkedHashSet<>(
-                            cell.regularCell.getAllCorrespondingSitePinNames(row[3])
+                            cell.regularCell.getAllCorrespondingSitePinNames(
+                                routedLogicalPin
+                            )
                         );
                         if (sitePins.isEmpty()) {
                             throw new IllegalStateException(

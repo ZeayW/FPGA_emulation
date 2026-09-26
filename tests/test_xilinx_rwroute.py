@@ -21,6 +21,26 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_rapidwright_block_ram_aliases_match_yosys_ports(self):
+        source = (
+            Path(__file__).parents[1]
+            / "scripts/rapidwright/EmuFlowRWRoute.java"
+        ).read_text(encoding="utf-8")
+        for yosys, rapidwright in (
+            ("DOADO", "DOUTADOUT"),
+            ("DOBDO", "DOUTBDOUT"),
+            ("DOPADOP", "DOUTPADOUTP"),
+            ("DOPBDOP", "DOUTPBDOUTP"),
+            ("DIADI", "DINADIN"),
+            ("DIBDI", "DINBDIN"),
+            ("DIPADIP", "DINPADINP"),
+            ("DIPBDIP", "DINPBDINP"),
+        ):
+            self.assertIn(
+                f'case "{yosys}": port = "{rapidwright}";', source
+            )
+        self.assertIn("blockRamLogicalPin(cell, row[3])", source)
+
     def test_rapidwright_dsp_cascade_uses_physical_b_bus_site_pins(self):
         source = (
             Path(__file__).parents[1]

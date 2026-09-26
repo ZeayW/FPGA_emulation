@@ -4358,6 +4358,12 @@ TDP write-enable can bind both lower and upper physical half pins; RWRoute
 receives every resulting sink site pin instead of retaining only the first.
 The compact route contract carries only the width/register/mode properties
 needed for that lowering and deliberately excludes large INIT payloads.
+At the provider boundary, the adapter explicitly translates the Yosys
+RAMB18E2/RAMB36E2 primitive aliases (`DOADO`, `DOBDO`, `DOPADOP`, `DOPBDOP`,
+`DIADI`, `DIBDI`, `DIPADIP`, and `DIPBDIP`) to RapidWright's native Unisim
+port identities while preserving every bus index. The mapped-netlist and
+timing identities remain unchanged; a missing native pin is an error rather
+than an omitted endpoint.
 Unsupported or ambiguous BRAM modes and multi-source expansions fail closed.
 Dedicated carry, DSP, BRAM,
 and URAM cascade
