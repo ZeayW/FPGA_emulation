@@ -24,6 +24,7 @@ from emuflow.xilinx_openparf_atomic import (
     run_xilinx_openparf_atomic_qualification,
     validate_xilinx_openparf_atomic_placement,
 )
+from emuflow.xilinx_packing import pack_xilinx_sites
 from tests.openparf_runtime_fixture import (
     write_openparf_hardblock_cascade_fixture,
     write_openparf_ramb18_fixture,
@@ -191,6 +192,74 @@ def _fixture(root: Path, *, coincident=False, mixed=False):
         "sites": sites,
     }), encoding="utf-8")
     return mapped, packed, architecture
+
+
+def _mux_tree_cells(root_type):
+    cells = {}
+    net = 100
+    leaf_count = {"MUXF7": 2, "MUXF8": 4, "MUXF9": 8}[root_type]
+    mux7 = []
+    for index in range(leaf_count // 2):
+        outputs = []
+        for side in range(2):
+            name = f"lut{index}_{side}"
+            cells[name] = _cell(
+                "LUT6", {"I0": [10 + 2 * index + side], "O": [net]}
+            )
+            outputs.append(net)
+            net += 1
+        name = f"mux7_{index}"
+        cells[name] = _cell("MUXF7", {
+            "I0": [outputs[0]], "I1": [outputs[1]],
+            "S": [30 + index], "O": [net],
+        })
+        mux7.append((name, net))
+        net += 1
+    if root_type == "MUXF7":
+        root = mux7[0]
+    else:
+        mux8 = []
+        for index in range(len(mux7) // 2):
+            name = f"mux8_{index}"
+            cells[name] = _cell("MUXF8", {
+                "I0": [mux7[2 * index][1]],
+                "I1": [mux7[2 * index + 1][1]],
+                "S": [40 + index], "O": [net],
+            })
+            mux8.append((name, net))
+            net += 1
+        if root_type == "MUXF8":
+            root = mux8[0]
+        else:
+            cells["mux9"] = _cell("MUXF9", {
+                "I0": [mux8[0][1]], "I1": [mux8[1][1]],
+                "S": [50], "O": [net],
+            })
+            root = ("mux9", net)
+            net += 1
+    cells["ff"] = _cell("FDRE", {
+        "C": [60], "CE": ["1"], "D": [root[1]],
+        "Q": [net], "R": ["0"],
+    })
+    return cells
+
+
+def _add_mux_bels(architecture, primitives):
+    value = json.loads(architecture.read_text(encoding="utf-8"))
+    roles = {
+        "MUXF7": ("F7MUX_AB", "F7MUX_CD", "F7MUX_EF", "F7MUX_GH"),
+        "MUXF8": ("F8MUX_BOT", "F8MUX_TOP"),
+        "MUXF9": ("F9MUX",),
+    }
+    for primitive in sorted(primitives):
+        value["site_templates"]["SLICEL"]["bels"].extend([
+            {
+                "name": bel, "type": primitive, "z": index,
+                "compatible_cells": [primitive], "placement_mode": "SLICEL",
+            }
+            for index, bel in enumerate(roles[primitive])
+        ])
+    architecture.write_text(json.dumps(value), encoding="utf-8")
 
 
 class XilinxOpenparfAtomicTest(unittest.TestCase):
@@ -1180,6 +1249,78 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(
             assignments["lut1"]["physical_site"], assignments["mux"]["physical_site"]
         )
+
+    def test_muxf8_and_muxf9_cones_export_complete_certifiable_site_macros(self):
+        expected = {
+            "MUXF8": (7, {"MUXF7", "MUXF8"}),
+            "MUXF9": (15, {"MUXF7", "MUXF8", "MUXF9"}),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for root_type, (member_count, resources) in expected.items():
+                case = root / root_type
+                case.mkdir()
+                mapped, packed, architecture = _fixture(case)
+                cells = _mux_tree_cells(root_type)
+                mapped.write_text(json.dumps({
+                    "modules": {
+                        "top": {"attributes": {"top": "1"}, "cells": cells}
+                    },
+                }), encoding="utf-8")
+                pack_xilinx_sites(mapped, packed, top="top")
+                _add_mux_bels(
+                    architecture,
+                    {cell["type"] for cell in cells.values()
+                     if cell["type"].startswith("MUXF")},
+                )
+                output = case / "output"
+                export_xilinx_openparf_atomic(
+                    mapped, packed, architecture, output
+                )
+                contract = json.loads(
+                    (output / "physical-macro-groups.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(len(contract["groups"]), 1)
+                group = contract["groups"][0]
+                self.assertEqual(len(group["instances"]), member_count)
+                self.assertEqual(set(group["owned_resources"]), resources)
+                self.assertTrue(all(
+                    len(window) == member_count
+                    and len({entry["site"] for entry in window}) == 1
+                    for window in group["windows"]
+                ))
+
+                sites = {
+                    site["site"]: site
+                    for site in load_xilinx_openparf_atomic_sites(
+                        output / "name_map.json"
+                    )
+                }
+                window = group["windows"][0]
+                lines = []
+                for instance, entry in zip(group["instances"], window):
+                    site = sites[entry["site"]]
+                    lines.append(
+                        f"{instance} {site['dense_x']} {site['dense_y']} {entry['z']}"
+                    )
+                names = json.loads(
+                    (output / "name_map.json").read_text(encoding="utf-8")
+                )
+                ff = next(atom for atom in names["atoms"] if atom["instance"] == "ff")
+                macro_site = window[0]["site"]
+                ff_site = next(site for site in sites.values()
+                               if site["site"] != macro_site and "FF" in site["resources"])
+                lines.append(
+                    f"{ff['openparf']} {ff_site['dense_x']} {ff_site['dense_y']} 0"
+                )
+                placement = output / "mux.pl"
+                placement.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                certificate = validate_xilinx_openparf_atomic_placement(
+                    placement, output / "name_map.json", mapped, architecture
+                )
+                self.assertEqual(certificate["status"], "pass")
 
     def test_internal_runner_has_no_fallback_and_keeps_runtime_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:

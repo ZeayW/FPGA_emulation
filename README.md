@@ -1119,13 +1119,15 @@ The Python/C++ operator boundary also canonicalizes those IDs to the C++
 `int32_t` contract instead of reinterpreting PyTorch's default `int64` tensor.
 ISM detailed placement preserves locked macro BELs through its final
 intra-slice pin-access pass; only unlocked slices are locally reordered.
-F7 export, conflict legalization, independent certificate reconstruction,
-tamper-oriented unit gates, and the compiled OpenPARF runtime gate pass.  The
-runtime gate exercises global placement, same-site macro legalization,
-ordinary LUT/FF legalization, and ISM detailed placement before the independent
-certificate accepts the exact `A6LUT`/`B6LUT`/`F7MUX_AB` assignment.
-RapidWright/OpenSTA evidence and the F8/F9 real-device fixtures remain pending,
-so MUX support is not yet a promoted provider claim.
+F7/F8/F9 export, conflict legalization, independent certificate
+reconstruction, tamper-oriented unit gates, and compiled OpenPARF runtime gates
+pass.  Each runtime gate exercises global placement, same-site macro
+legalization, ordinary LUT/FF legalization, and ISM detailed placement before
+the independent certificate accepts the complete source-sealed cone.  For F7
+that includes the exact `A6LUT`/`B6LUT`/`F7MUX_AB` assignment; F8 and F9 extend
+the same invariant across all seven and fifteen macro members respectively.
+RapidWright/OpenSTA evidence on the real-device fixtures remains pending, so
+MUX support is not yet a promoted provider claim.
 The first real-device probe also established that the three identities must be
 kept separate: placement uses `RAMB180/RAMB18E2_L`,
 `RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`, while the database's primary
