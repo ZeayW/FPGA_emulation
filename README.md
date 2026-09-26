@@ -1056,8 +1056,14 @@ the source-sealed hard-block cascade graph while materializing OpenPARF's final
 site grouping. A cascade-bearing certificate must bind its source packing,
 native device constraints, and RapidWright provider manifest; the independent
 placement validator reloads that native graph instead of assuming consecutive
-site-name coordinates. Separate real-width BRAM and URAM chain gates remain required; the
-operator is not described as an exact optimizer. RAMB18 half sites, other relative macros, authoritative
+site-name coordinates. The separate real-width two-level BRAM36 and URAM288
+gates now also pass the complete handoff. BRAM placed 130 atoms into 11 sites,
+routed 49 certificate nets/94 sinks/420 PIPs with a 1.332199951 ns maximum
+route delay, and OpenSTA validated 98 endpoints at WNS +38.359802 ns/TNS 0.
+URAM placed 130 atoms into 11 sites, routed 90 certificate nets/127 sinks/537
+PIPs with a 1.503900024 ns maximum route delay, and OpenSTA validated 138
+endpoints at WNS +38.266102 ns/TNS 0. Both have zero missing or unrouted sinks.
+The operator is not described as an exact optimizer. RAMB18 half sites, other relative macros, authoritative
 half-column clock constraints, and Koios DLA medium remain open gates, so this
 path is not yet a public placer selection or the default Phase 7 provider.
 The provider-neutral `emuflow.xilinx-physical-macro-contract/v1` now derives
@@ -1072,9 +1078,9 @@ and intermediate nodes; BRAM chains additionally fail closed unless every site
 is in one clock region. On the real XCVU19P model it proves 508,992 carry,
 3,808 DSP, 1,980 clock-region-local BRAM, and 316 URAM edges. The placement capability remains `adapter_required`
 until the newly implemented in-core typed legalizer completes its real-runtime
-family gates. The contract is audited infrastructure; CARRY8 and DSP48E2 are
-physically qualified, while BRAM/URAM consumption is implemented but not yet
-promoted as runtime evidence.
+family gates. The contract is audited infrastructure; CARRY8, DSP48E2,
+RAMB36E2, and URAM288 dedicated-chain consumption are physically qualified on
+their bounded real-width fixtures.
 The isolated A2 branch extends the pinned native extractor and legalizer while
 retaining the XArch CLA4 path: typed CARRY8 units select eight ordered LUT6_2
 members from S[0:7], verify the paired DI drivers, and occupy one full slice.

@@ -1,7 +1,9 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.xilinx_placement import (
@@ -80,7 +82,7 @@ class XilinxPlacementTest(unittest.TestCase):
                 cluster("dsp-b", "dsp", "dsp_b", "DSP48E2", "DSP48E2", "DSP48E2"),
             ],
             "cascade_chains": [{
-                "kind": "DSP48E2", "instances": ["dsp_a", "dsp_b"],
+                "cell_type": "DSP48E2", "instances": ["dsp_a", "dsp_b"],
                 "links": [{"source": "dsp_a", "sink": "dsp_b"}],
             }],
         }
@@ -136,6 +138,73 @@ class XilinxPlacementTest(unittest.TestCase):
         self.assertTrue(placed["slice-b"].startswith("SLICE_X1"))
         self.assertEqual(placed["dsp-b"], "DSP48E2_X0Y2")
         self.assertEqual(placed["dsp-a"], "DSP48E2_X0Y1")
+
+    def test_openparf_cascade_checker_uses_sealed_native_adjacency(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch, packed, guidance, _constraints = self._write_inputs(root)
+            placement = root / "placement.json"
+            place_xilinx_clusters(packed, arch, placement, guidance_path=guidance)
+            value = json.loads(placement.read_text(encoding="utf-8"))
+            architecture = json.loads(arch.read_text(encoding="utf-8"))
+            sites = {site["name"]: site for site in architecture["sites"]}
+            desired = {
+                "dsp-a": "DSP48E2_X0Y0",
+                "dsp-b": "DSP48E2_X0Y2",
+            }
+            for entry in value["clusters"]:
+                site_name = desired.get(entry["cluster"])
+                if site_name is None:
+                    continue
+                site = sites[site_name]
+                entry.update({
+                    "site": site_name,
+                    "site_type": site["type"],
+                    "x": site["x"],
+                    "y": site["y"],
+                    "physical_region": site["physical_region"],
+                })
+                for assignment in entry["assignments"]:
+                    assignment["site"] = site_name
+            native_path = root / "native.json"
+            provider_path = root / "provider.json"
+            native_path.write_text("{}", encoding="utf-8")
+            provider_path.write_text("{}", encoding="utf-8")
+            value["provider"] = (
+                "openparf-native-mcf-direct-lg-ism-atomic-bridge-v1"
+            )
+            value["policy"] = {
+                "clock_region_site_utilization_limit": 0.75,
+                "capacity_rounding": "ceil-with-one-site-minimum",
+                "packing": "native-openparf-atomic-site-groups-v1",
+                "placement_certificate": "emuflow.openparf-atomic-placement/v1",
+            }
+            value["source"].update({
+                "guidance_sha256": None,
+                "native_constraints_sha256": hashlib.sha256(
+                    native_path.read_bytes()
+                ).hexdigest(),
+                "provider_manifest_sha256": hashlib.sha256(
+                    provider_path.read_bytes()
+                ).hexdigest(),
+            })
+            placement.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "requires native"):
+                validate_xilinx_placement(packed, arch, placement)
+            native = {"payload": {"dedicated_adjacency": [{
+                "kind": "DSP_CASCADE",
+                "chains": [["DSP48E2_X0Y0", "DSP48E2_X0Y2"]],
+            }]}}
+            with mock.patch(
+                "emuflow.xilinx_placement.load_xilinx_native_device_constraints",
+                return_value=(native, {"status": "pass"}),
+            ):
+                checked = validate_xilinx_placement(
+                    packed, arch, placement,
+                    native_constraints_path=native_path,
+                    provider_manifest_path=provider_path,
+                )
+            self.assertEqual(checked["status"], "pass")
 
     def test_global_allowed_slr_window_is_compact_and_validated(self):
         with tempfile.TemporaryDirectory() as temporary:
