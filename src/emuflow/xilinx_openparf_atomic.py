@@ -39,6 +39,7 @@ OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
 OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v1"
 OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v1"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
+OPENPARF_ATOMIC_PROVIDER = "openparf-native-mcf-direct-lg-ism-atomic-v1"
 OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA = (
     "openparf.typed-hardblock-chains/v1"
 )
@@ -1318,7 +1319,7 @@ def validate_xilinx_openparf_atomic_placement(
     result = {
         "schema": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
         "status": "pass", "part": architecture.part,
-        "provider": "openparf-native-mcf-direct-lg-ism-atomic-v1",
+        "provider": OPENPARF_ATOMIC_PROVIDER,
         "runtime_validation": "unverified",
         "source": {
             "native_placement_sha256": _sha256(placement_path),

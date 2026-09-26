@@ -19,7 +19,10 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 from .architecture import ArchitectureDB
 from .errors import ValidationError
 from .io import read_json, write_json
-from .xilinx_openparf_atomic import OPENPARF_ATOMIC_PLACEMENT_SCHEMA
+from .xilinx_openparf_atomic import (
+    OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
+    OPENPARF_ATOMIC_PROVIDER,
+)
 from .xilinx_packing import (
     CONSTANT_TYPES,
     FF_TYPES,
@@ -42,7 +45,6 @@ from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 OPENPARF_ATOMIC_BRIDGE_REPORT_SCHEMA = (
     "emuflow.openparf-atomic-physical-bridge-report/v1"
 )
-_ATOMIC_PROVIDER = "openparf-native-mcf-direct-lg-ism-atomic-v1"
 _SUPPORTED_PHYSICAL_TYPES = LUT_TYPES | FF_TYPES | set(HARD_BINDINGS)
 _CERTIFICATE_ASSIGNMENT_KEYS = {
     "instance", "cell_type", "bel", "placement_mode", "source_cluster",
@@ -134,11 +136,14 @@ def _validate_certificate(
     certificate: Mapping[str, Any],
     architecture: ArchitectureDB,
     top: Optional[str],
-) -> Tuple[str, Mapping[str, Any], list[Dict[str, Any]], list[str]]:
+    source_packed: Optional[Mapping[str, Any]] = None,
+) -> Tuple[
+    str, Mapping[str, Any], list[Dict[str, Any]], list[str], list[Dict[str, Any]]
+]:
     if (
         certificate.get("schema") != OPENPARF_ATOMIC_PLACEMENT_SCHEMA
         or certificate.get("status") != "pass"
-        or certificate.get("provider") != _ATOMIC_PROVIDER
+        or certificate.get("provider") != OPENPARF_ATOMIC_PROVIDER
         or certificate.get("part") != architecture.part
     ):
         raise ValidationError("OpenPARF atomic placement identity is invalid")
@@ -165,6 +170,48 @@ def _validate_certificate(
         if isinstance(cell, Mapping) and cell.get("type") in CONSTANT_TYPES
     )
     expected = set(cells) - set(constants)
+    cascades: list[Dict[str, Any]] = []
+    source_owner: Dict[str, str] = {}
+    if source_packed is not None:
+        if (
+            source_packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA
+            or source_packed.get("status") != "pass"
+            or source_packed.get("top") != selected_top
+        ):
+            raise ValidationError(
+                "OpenPARF atomic source PackedSiteNetlist identity is invalid"
+            )
+        source_clusters = source_packed.get("clusters")
+        source_cascades = source_packed.get("cascade_chains")
+        if not isinstance(source_clusters, list) or not isinstance(
+            source_cascades, list
+        ):
+            raise ValidationError(
+                "OpenPARF atomic source PackedSiteNetlist is invalid"
+            )
+        for source_cluster in source_clusters:
+            if not isinstance(source_cluster, Mapping) or not isinstance(
+                source_cluster.get("id"), str
+            ):
+                raise ValidationError(
+                    "OpenPARF atomic source cluster identity is invalid"
+                )
+            for assignment in source_cluster.get("assignments", []):
+                if not isinstance(assignment, Mapping):
+                    raise ValidationError(
+                        "OpenPARF atomic source assignment is invalid"
+                    )
+                instance = assignment.get("instance")
+                if not isinstance(instance, str) or instance in source_owner:
+                    raise ValidationError(
+                        "OpenPARF atomic source cell ownership is invalid"
+                    )
+                source_owner[instance] = source_cluster["id"]
+        if set(source_owner) != expected:
+            raise ValidationError(
+                "OpenPARF atomic source cell coverage is incomplete"
+            )
+        cascades = [dict(item) for item in source_cascades]
     clusters = certificate.get("clusters")
     if not isinstance(clusters, list) or not clusters:
         raise ValidationError("OpenPARF atomic placement clusters are invalid")
@@ -210,6 +257,11 @@ def _validate_certificate(
             if name in owners:
                 raise ValidationError(f"cell {name!r} is assigned more than once")
             owners[name] = site_name
+            source_cluster = assignment.get("source_cluster")
+            if source_packed is not None and source_owner.get(name) != source_cluster:
+                raise ValidationError(
+                    f"{assignment_context}: source cluster identity is invalid"
+                )
             bel_name = assignment.get("bel")
             if not isinstance(bel_name, str) or not bel_name or bel_name in used_bels:
                 raise ValidationError(f"{assignment_context}: BEL is invalid or reused")
@@ -284,10 +336,21 @@ def _validate_certificate(
         "luts": lut_count, "ffs": ff_count,
         "hard_resources": dict(sorted(hard_counts.items())),
     }
+    native_edges = sum(
+        max(0, len(chain.get("instances", [])) - 1)
+        for chain in cascades
+        if isinstance(chain, Mapping)
+    )
+    if native_edges:
+        expected_summary["native_hardblock_edges"] = native_edges
+    elif certificate.get("summary", {}).get("native_hardblock_edges"):
+        raise ValidationError(
+            "OpenPARF atomic cascade certificate requires its source packing"
+        )
     if certificate.get("summary") != expected_summary:
         raise ValidationError("OpenPARF atomic placement summary is invalid")
     physical_clusters.sort(key=lambda item: item["id"])
-    return selected_top, cells, physical_clusters, constants
+    return selected_top, cells, physical_clusters, constants, cascades
 
 
 def materialize_xilinx_openparf_atomic_contract(
@@ -298,6 +361,7 @@ def materialize_xilinx_openparf_atomic_contract(
     placement_output_path: Path,
     *,
     top: Optional[str] = None,
+    source_packed_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Materialize standard physical contracts without repacking/replacing."""
 
@@ -306,6 +370,20 @@ def materialize_xilinx_openparf_atomic_contract(
     if not isinstance(mapped, Mapping) or not isinstance(certificate, Mapping):
         raise ValidationError("OpenPARF bridge inputs are invalid")
     architecture = ArchitectureDB.load(architecture_path)
+    source_packed: Optional[Mapping[str, Any]] = None
+    if source_packed_path is not None:
+        loaded_source_packed = read_json(source_packed_path)
+        if not isinstance(loaded_source_packed, Mapping):
+            raise ValidationError(
+                "OpenPARF atomic source PackedSiteNetlist is invalid"
+            )
+        if loaded_source_packed.get("source", {}).get(
+            "mapped_json_sha256"
+        ) != _sha256(mapped_path):
+            raise ValidationError(
+                "OpenPARF atomic source PackedSiteNetlist seal is invalid"
+            )
+        source_packed = loaded_source_packed
     source = certificate.get("source")
     if (
         not isinstance(source, Mapping)
@@ -315,8 +393,8 @@ def materialize_xilinx_openparf_atomic_contract(
         or not isinstance(source.get("name_map_sha256"), str)
     ):
         raise ValidationError("OpenPARF atomic placement source identity is invalid")
-    selected_top, cells, clusters, constants = _validate_certificate(
-        mapped, certificate, architecture, top
+    selected_top, cells, clusters, constants, cascades = _validate_certificate(
+        mapped, certificate, architecture, top, source_packed
     )
     certificate_sha = _sha256(atomic_placement_path)
     mapped_sha = _sha256(mapped_path)
@@ -331,6 +409,10 @@ def materialize_xilinx_openparf_atomic_contract(
             "mapped_json_sha256": mapped_sha,
             "architecture_sha256": architecture_sha,
             "openparf_atomic_placement_sha256": certificate_sha,
+            "source_packed_sha256": (
+                _sha256(source_packed_path)
+                if source_packed_path is not None else None
+            ),
         },
         "policy": {
             "provider": "openparf-native-atomic-site-group-bridge-v1",
@@ -339,7 +421,7 @@ def materialize_xilinx_openparf_atomic_contract(
             "ff_control_sets_per_slice": 1,
         },
         "clusters": clusters,
-        "cascade_chains": [],
+        "cascade_chains": cascades,
         "unplaced_constants": constants,
         "summary": {
             "cells": len(cells),
@@ -347,7 +429,11 @@ def materialize_xilinx_openparf_atomic_contract(
             "constant_cells": len(constants),
             "clusters": len(clusters),
             "cluster_kinds": dict(sorted(kind_counts.items())),
-            "cascade_chains": 0, "cascade_links": 0,
+            "cascade_chains": len(cascades),
+            "cascade_links": sum(
+                max(0, len(chain.get("instances", [])) - 1)
+                for chain in cascades
+            ),
         },
     }
 
@@ -429,7 +515,7 @@ def materialize_xilinx_openparf_atomic_contract(
             "summary": {
                 "clusters": len(placement_clusters),
                 "cells": len(cells) - len(constants),
-                "fixed_clusters": 0, "cascade_chains": 0,
+                "fixed_clusters": 0, "cascade_chains": len(cascades),
                 "mean_guidance_displacement": None,
                 "max_guidance_displacement": None,
                 **local_summary,
@@ -459,10 +545,15 @@ def materialize_xilinx_openparf_atomic_contract(
             "mapped_sha256": mapped_sha,
             "architecture_sha256": architecture_sha,
             "openparf_atomic_placement_sha256": certificate_sha,
+            "source_packed_sha256": (
+                _sha256(source_packed_path)
+                if source_packed_path is not None else None
+            ),
         },
         "packed_sha256": _sha256(packed_output_path),
         "placement_sha256": _sha256(placement_output_path),
         "cells": len(cells), "placed_cells": len(cells) - len(constants),
         "clusters": len(clusters),
+        "cascade_chains": len(cascades),
         "runtime_validation": certificate["runtime_validation"],
     }

@@ -1044,9 +1044,15 @@ a compact native-window contract owns every DSP/BRAM/URAM chain or singleton,
 excludes those instances from ordinary singleton MCF, assigns whole chains
 using deterministic global-placement displacement cost, and freezes the result
 before ISM. An independent checker replays exact native adjacency. This new
-operator has unit/contract evidence only until its DSP, BRAM, and URAM fixtures
-pass the compiled OpenPARF → RapidWright → OpenSTA gates; it is not described as
-an exact optimizer. RAMB18 half sites, other relative macros, authoritative
+operator has now passed its compiled XCVU19P DSP gate through native placement:
+132 atoms occupy 14 sites, the two DSP48E2 instances use one certified adjacent
+DSP cascade, and singleton RAMB36E2/URAM288 instances plus all LUT/FF atoms pass
+the independent placement checker.  The standard Route A bridge now preserves
+the source-sealed hard-block cascade graph while materializing OpenPARF's final
+site grouping; a cascade-bearing certificate without its source packing fails
+closed.  RapidWright routing and standalone OpenSTA are still required before
+the DSP gate is promoted, followed by separate BRAM and URAM chain gates; the
+operator is not described as an exact optimizer. RAMB18 half sites, other relative macros, authoritative
 half-column clock constraints, and Koios DLA medium remain open gates, so this
 path is not yet a public placer selection or the default Phase 7 provider.
 The provider-neutral `emuflow.xilinx-physical-macro-contract/v1` now derives

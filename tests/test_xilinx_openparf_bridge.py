@@ -205,6 +205,23 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                     root / "packed.json", root / "placement.json",
                 )
 
+    def test_cascade_certificate_requires_source_packing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, architecture, certificate = _native_certificate(
+                root, include_hard=True
+            )
+            value = json.loads(certificate.read_text())
+            value["summary"]["native_hardblock_edges"] = 1
+            certificate.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "requires its source packing"
+            ):
+                materialize_xilinx_openparf_atomic_contract(
+                    mapped, architecture, certificate,
+                    root / "packed.json", root / "placement.json",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
