@@ -1214,7 +1214,11 @@ The internal `run_rapidwright_openparf_native_candidate_backend` entry point
 uses that native placement and then rejoins the existing RWRoute, routed-
 timing, boundary-timing, and OpenSTA tail.  It never invokes the legacy Xilinx
 site packer, continuous-only OpenPARF guidance adapter, or greedy exact site
-legalizer.
+legalizer.  The one-shot multi-FPGA interfaces expose this fail-closed route
+explicitly as `--physical-rapidwright-placer openparf-native` (or
+`multi-fpga physical --rapidwright-placer openparf-native`).  The selector is
+valid only with the RapidWright physical backend; an unsupported primitive or
+constraint aborts instead of falling back to the historical placer.
 Native OpenPARF qualification also requires the supplied ArchitectureDB logic
 crop to form one connected, genuinely two-dimensional site region with finite
 density and filler headroom for every active resource.  Collinear, disconnected,
