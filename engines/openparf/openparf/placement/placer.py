@@ -2677,6 +2677,12 @@ class Placer(nn.Module):
                 )
             )
             for area_type, ov in enumerate(metrics[-1].overflow):
+                # Typed hard-block area types are owned by their exact-window
+                # legalizer. Their diagnostic overflow remains reportable,
+                # but it is not a convergence condition for the continuous
+                # density problem from which they were explicitly removed.
+                if not self.data_cls.optimization_area_type_mask[area_type]:
+                    continue
                 # do not concern the overflow of IOs
                 if area_type in io_at_ids:
                     continue

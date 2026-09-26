@@ -104,7 +104,10 @@ output is independently checked against the native adjacency artifact. Real
 multi-site tiles are represented as one Bookshelf capacity site plus exact,
 source-ordered physical-site slots; unrelated device sites are not admitted
 to the placement problem. This preserves tile geometry without losing the
-identity of either DSP/URAM sibling site. DSP,
+identity of either DSP/URAM sibling site. A typed area type must have complete
+contract ownership: it remains wirelength-movable during global placement but
+is removed from generic density and its convergence gate because exact window
+selection supplies the capacity proof. Partial ownership fails closed. DSP,
 then BRAM, then URAM must each pass compiled placement, RWRoute, and OpenSTA
 before this implementation is counted as qualified evidence.
 

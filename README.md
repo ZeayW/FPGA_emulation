@@ -4584,6 +4584,12 @@ The name map preserves every physical site identity, and the independent
 validator resolves and rechecks the selected slot before RapidWright export.
 Multiple slice sites at one tile remain fail-closed because LUT/FF `z` already
 denotes BEL occupancy.
+Every typed hard-resource area type must be completely owned by that contract.
+Those instances remain movable under the wirelength objective, but their area
+types are removed from generic electrostatic density and from its convergence
+gate; exact window selection supplies their capacity/non-overlap proof. Partial
+ownership fails before placement, so an unconstrained hard block cannot be
+silently hidden from density.
 The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.

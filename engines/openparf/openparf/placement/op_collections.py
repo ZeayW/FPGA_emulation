@@ -540,6 +540,46 @@ class OpCollections(object):
         self.pin_pos_op = build_pin_pos_op(params, placedb, data_cls)
         self.hpwl_op = self.build_hpwl_op(params, placedb, data_cls)
         self.wirelength_op = self.build_wawl_op(params, placedb, data_cls)
+        # Typed hard blocks retain wirelength-driven global coordinates, but
+        # their physical feasibility is solved by source-provided legal site
+        # windows rather than the generic electrostatic density model.  The
+        # contract must own every movable instance of each resource area type;
+        # otherwise removing that whole type from density would be unsound.
+        self.typed_hardblock_legalization_op = (
+            TypedHardblockLegalizer(
+                params.typed_hardblock_chain_constraints, placedb, data_cls
+            )
+            if params.typed_hardblock_chain_constraints
+            else None
+        )
+        if self.typed_hardblock_legalization_op is not None:
+            owned_ids = set(
+                self.typed_hardblock_legalization_op.inst_ids.tolist()
+            )
+            typed_area_types = []
+            resources = {
+                group["resource"]
+                for group in self.typed_hardblock_legalization_op.groups
+            }
+            for resource in sorted(resources):
+                area_type = placedb.getAreaTypeIndexFromName(resource)
+                movable_ids = {
+                    int(inst_id)
+                    for inst_id in data_cls.area_type_inst_groups[
+                        area_type
+                    ].tolist()
+                    if (
+                        data_cls.movable_range[0] <= int(inst_id)
+                        < data_cls.movable_range[1]
+                    )
+                }
+                if not movable_ids or not movable_ids.issubset(owned_ids):
+                    raise ValueError(
+                        "typed hardblock contract does not own all movable "
+                        "instances of area type {}".format(resource)
+                    )
+                typed_area_types.append(area_type)
+            data_cls.lock_area_types(typed_area_types)
         self.density_op = build_electric_potential_op(params, placedb, data_cls)
         self.overflow_op = self.build_electric_overflow_op(params, placedb, data_cls)
         self.normalized_overflow_op = self.build_normalized_overflow_op(
@@ -549,13 +589,6 @@ class OpCollections(object):
         self.precond2_op = build_precond2_op(params, placedb, data_cls)
         # single-site resource
         # i.e., a resource occupies exactly one site
-        self.typed_hardblock_legalization_op = (
-            TypedHardblockLegalizer(
-                params.typed_hardblock_chain_constraints, placedb, data_cls
-            )
-            if params.typed_hardblock_chain_constraints
-            else None
-        )
         typed_hardblock_ids = (
             self.typed_hardblock_legalization_op.inst_ids.tolist()
             if self.typed_hardblock_legalization_op is not None
