@@ -161,7 +161,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                 )
 
             mapped_value = json.loads(mapped.read_text())
-            mapped_value["modules"]["top"]["cells"]["lut_00"]["type"] = "MUXF7"
+            mapped_value["modules"]["top"]["cells"]["lut_00"]["type"] = "BUFGCE"
             mapped.write_text(json.dumps(mapped_value), encoding="utf-8")
             value["source"]["mapped_sha256"] = hashlib.sha256(
                 mapped.read_bytes()

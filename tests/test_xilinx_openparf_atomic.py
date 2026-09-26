@@ -24,7 +24,11 @@ from emuflow.xilinx_openparf_atomic import (
     run_xilinx_openparf_atomic_qualification,
     validate_xilinx_openparf_atomic_placement,
 )
-from emuflow.xilinx_packing import pack_xilinx_sites
+from emuflow.xilinx_openparf_bridge import (
+    materialize_xilinx_openparf_atomic_contract,
+)
+from emuflow.xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
+from emuflow.xilinx_placement import validate_xilinx_placement
 from tests.openparf_runtime_fixture import (
     write_openparf_hardblock_cascade_fixture,
     write_openparf_ramb18_fixture,
@@ -1234,6 +1238,34 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             certificate = validate_xilinx_openparf_atomic_placement(
                 placement, output / "name_map.json", mapped, architecture
             )
+            certificate_path = output / "placement-certificate.json"
+            certificate_path.write_text(
+                json.dumps(certificate, sort_keys=True), encoding="utf-8"
+            )
+            bridge_packed = root / "bridge-packed.json"
+            bridge_placement = root / "bridge-placement.json"
+            bridge = materialize_xilinx_openparf_atomic_contract(
+                mapped,
+                architecture,
+                certificate_path,
+                bridge_packed,
+                bridge_placement,
+            )
+            self.assertEqual(bridge["placed_cells"], 4)
+            self.assertEqual(
+                validate_xilinx_packing(
+                    mapped,
+                    bridge_packed,
+                    architecture_path=architecture,
+                )["cells"],
+                4,
+            )
+            self.assertEqual(
+                validate_xilinx_placement(
+                    bridge_packed, architecture, bridge_placement
+                )["cells"],
+                4,
+            )
         self.assertTrue(
             manifest["constraint_policy"]["mux_site_macros_use_internal_legalizer"]
         )
@@ -1321,6 +1353,34 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     placement, output / "name_map.json", mapped, architecture
                 )
                 self.assertEqual(certificate["status"], "pass")
+                certificate_path = output / "placement-certificate.json"
+                certificate_path.write_text(
+                    json.dumps(certificate, sort_keys=True), encoding="utf-8"
+                )
+                bridge_packed = case / "bridge-packed.json"
+                bridge_placement = case / "bridge-placement.json"
+                bridge = materialize_xilinx_openparf_atomic_contract(
+                    mapped,
+                    architecture,
+                    certificate_path,
+                    bridge_packed,
+                    bridge_placement,
+                )
+                self.assertEqual(bridge["placed_cells"], member_count + 1)
+                self.assertEqual(
+                    validate_xilinx_packing(
+                        mapped,
+                        bridge_packed,
+                        architecture_path=architecture,
+                    )["cells"],
+                    member_count + 1,
+                )
+                self.assertEqual(
+                    validate_xilinx_placement(
+                        bridge_packed, architecture, bridge_placement
+                    )["cells"],
+                    member_count + 1,
+                )
 
     def test_internal_runner_has_no_fallback_and_keeps_runtime_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:

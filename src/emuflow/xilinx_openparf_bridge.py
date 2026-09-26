@@ -28,6 +28,7 @@ from .xilinx_packing import (
     FF_TYPES,
     HARD_BINDINGS,
     LUT_TYPES,
+    MUX_TYPES,
     PACKED_SITE_NETLIST_SCHEMA,
     _ff_control_set,
     validate_xilinx_packing,
@@ -45,7 +46,9 @@ OPENPARF_ATOMIC_BRIDGE_REPORT_SCHEMA = (
     "emuflow.openparf-atomic-physical-bridge-report/v1"
 )
 _SUPPORTED_HARD_TYPES = set(HARD_BINDINGS) | {"RAMB18E2"}
-_SUPPORTED_PHYSICAL_TYPES = LUT_TYPES | FF_TYPES | _SUPPORTED_HARD_TYPES
+_SUPPORTED_PHYSICAL_TYPES = (
+    LUT_TYPES | FF_TYPES | MUX_TYPES | _SUPPORTED_HARD_TYPES
+)
 _CERTIFICATE_ASSIGNMENT_KEYS = {
     "instance", "cell_type", "bel", "physical_site", "placement_mode",
     "source_cluster",
@@ -292,11 +295,11 @@ def _validate_certificate(
             normalized = {
                 "instance": name, "cell_type": cell_type, "bel": bel_name,
             }
-            if cell_type in LUT_TYPES | FF_TYPES:
+            if cell_type in LUT_TYPES | FF_TYPES | MUX_TYPES:
                 slice_assignments.append(normalized)
                 if cell_type in LUT_TYPES:
                     lut_count += 1
-                else:
+                elif cell_type in FF_TYPES:
                     ff_count += 1
             elif cell_type in _SUPPORTED_HARD_TYPES:
                 hard_assignments.append(normalized)

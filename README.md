@@ -1126,6 +1126,13 @@ legalization, ordinary LUT/FF legalization, and ISM detailed placement before
 the independent certificate accepts the complete source-sealed cone.  For F7
 that includes the exact `A6LUT`/`B6LUT`/`F7MUX_AB` assignment; F8 and F9 extend
 the same invariant across all seven and fifteen macro members respectively.
+The atomic-to-standard physical bridge retains MUXF7/F8/F9 assignments as
+dedicated slice members instead of rejecting them or charging them against
+LUT/FF capacity.  Before RWRoute, the standard packing validator independently
+reconstructs each cone from mapped connectivity and checks its exact dedicated
+BEL topology, while the placement validator checks same-site ownership.  Unit
+gates exercise this complete bridge for F7, F8, and F9 rather than accepting
+only the native OpenPARF certificate.
 RapidWright/OpenSTA evidence on the real-device fixtures remains pending, so
 MUX support is not yet a promoted provider claim.
 The first real-device probe also established that the three identities must be
