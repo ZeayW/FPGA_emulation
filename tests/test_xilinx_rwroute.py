@@ -563,6 +563,71 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertIn(("WRITE_MODE_B", "READ_FIRST"), parameters)
         self.assertFalse(any(row[0] == "PARAM" and row[2].startswith("INIT") for row in rows))
 
+    def test_exporter_keeps_ramb18_vector_pin_identity(self):
+        mapped = {
+            "modules": {"top": {"cells": {
+                "src": {
+                    "type": "LUT1", "port_directions": {"O": "output"},
+                    "connections": {"O": [1]},
+                },
+                "memory": {
+                    "type": "RAMB18E2",
+                    "port_directions": {
+                        "ADDRARDADDR": "input", "DOADO": "output",
+                    },
+                    "connections": {
+                        "ADDRARDADDR": [1] + ["0"] * 13,
+                        "DOADO": [2] + ["0"] * 15,
+                    },
+                },
+                "sink": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [2]},
+                },
+            }}}
+        }
+        assignments = [
+            {"instance": "src", "cell_type": "LUT1", "bel": "A6LUT"},
+            {
+                "instance": "memory", "cell_type": "RAMB18E2",
+                "bel": "RAMB18E2_U",
+            },
+            {"instance": "sink", "cell_type": "FDRE", "bel": "AFF"},
+        ]
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+            "clusters": [{"assignments": assignments}],
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
+                {"instance": "src", "bel": "A6LUT", "site": "SLICE_X0Y0"},
+                {
+                    "instance": "memory", "bel": "RAMB18E2_U",
+                    "site": "RAMB18_X0Y1",
+                },
+                {"instance": "sink", "bel": "AFF", "site": "SLICE_X0Y1"},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / name for name in (
+                "mapped.json", "packed.json", "placement.json"
+            )]
+            for path, value in zip(paths, (mapped, packed, placement)):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            output = root / "route.tsv"
+            export_rwroute_input(*paths, output)
+            rows = [line.split("\t") for line in output.read_text().splitlines()]
+        memory_safe = next(
+            row[1] for row in rows if row[0] == "CELL" and row[2] == "memory"
+        )
+        memory_pins = {
+            row[3] for row in rows
+            if row[0] == "PIN" and row[2] == memory_safe
+        }
+        self.assertEqual(memory_pins, {"ADDRARDADDR[0]", "DOADO[0]"})
+
 
 if __name__ == "__main__":
     unittest.main()

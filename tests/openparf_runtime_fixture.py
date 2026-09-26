@@ -207,7 +207,15 @@ def write_openparf_ramb18_fixture(root: Path) -> Tuple[Path, Path, Path]:
         output_bit = 40_000 + index
         cells[name] = _cell(
             "RAMB18E2",
-            {"ADDRARDADDR": [input_bit], "DOADO": [output_bit]},
+            {
+                # Keep the production primitive's real bus widths.  A
+                # one-element connection would describe a scalar logical
+                # port named ADDRARDADDR/DOADO, which does not exist on the
+                # RapidWright RAMB18E2 Unisim and therefore is not a valid
+                # physical-routing fixture.
+                "ADDRARDADDR": [input_bit] + ["0"] * 13,
+                "DOADO": [output_bit] + ["0"] * 15,
+            },
             {"DOADO"},
         )
         cells[sink]["connections"]["I0"] = [output_bit]
