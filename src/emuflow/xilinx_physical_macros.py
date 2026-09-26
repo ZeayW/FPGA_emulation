@@ -519,6 +519,20 @@ def _derive_contract(
     }
 
 
+def build_xilinx_physical_macro_contract(
+    mapped_path: Path, *, top: Optional[str] = None
+) -> Dict[str, Any]:
+    """Derive the source-sealed physical-macro contract in memory.
+
+    Placement providers need the exact same connectivity-derived macro view as
+    the standalone contract writer.  Returning that canonical value directly
+    avoids writing and reparsing a diagnostic-sized JSON file in the placement
+    hot path.
+    """
+
+    return _derive_contract(mapped_path, top=top)
+
+
 def _validate_shape(value: Mapping[str, Any], cells: Mapping[str, Any]) -> None:
     expected_keys = {
         "schema", "status", "mapping_profile", "top", "source", "policy",

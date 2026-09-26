@@ -1810,10 +1810,14 @@ class Placer(nn.Module):
                     pos[movable_range[0] : movable_range[1]]
                 )
                 pos_xyz[movable_range[0] : movable_range[1], 2].zero_()
-            elif self.params.carry_chain_legalization_flag:
-                # Seed native carry legalization from the current GP solution.
-                # IO legalization is an independent optional operation and
-                # must not be required to allocate this position buffer.
+            elif (
+                self.params.carry_chain_legalization_flag
+                or (
+                    self.op_cls.typed_hardblock_legalization_op is not None
+                    and self.op_cls.typed_hardblock_legalization_op.site_macro_ids.numel()
+                )
+            ):
+                # Seed native macro legalization from the current GP solution.
                 pos_xyz = self.data_cls.inst_locs_xyz.to(
                     self.device
                 ).to(self.dtype).clone()
@@ -1822,8 +1826,17 @@ class Placer(nn.Module):
                     pos_xyz[movable_range[0] : movable_range[1], :2].data.copy_(
                         pos[movable_range[0] : movable_range[1]]
                     )
-                logger.info("Start Carry Chain Legalization...")
-                self.op_cls.chain_legalization_op(pos_xyz)
+                if self.params.carry_chain_legalization_flag:
+                    logger.info("Start Carry Chain Legalization...")
+                    self.op_cls.chain_legalization_op(pos_xyz)
+                if (
+                    self.op_cls.typed_hardblock_legalization_op is not None
+                    and self.op_cls.typed_hardblock_legalization_op.site_macro_ids.numel()
+                ):
+                    logger.info("Start same-site physical macro legalization...")
+                    self.op_cls.typed_hardblock_legalization_op.legalize_site_macros(
+                        pos_xyz
+                    )
                 self.op_cls.masked_direct_lg_op(pos_xyz)
             else:
                 if self.params.confine_clock_region_flag:
@@ -1847,9 +1860,14 @@ class Placer(nn.Module):
             # after the ordinary resource legalizers have finished.  Their
             # exact legal windows come from a source-sealed native-device
             # contract; no coordinate-inferred or post-export repair is used.
-            if self.op_cls.typed_hardblock_legalization_op is not None:
+            if (
+                self.op_cls.typed_hardblock_legalization_op is not None
+                and self.op_cls.typed_hardblock_legalization_op.hardblock_ids.numel()
+            ):
                 logger.info("Start typed hardblock chain legalization...")
-                self.op_cls.typed_hardblock_legalization_op(pos_xyz)
+                self.op_cls.typed_hardblock_legalization_op.legalize_hardblocks(
+                    pos_xyz
+                )
 
             # apply solution
             loc_xyz = pos_xyz[

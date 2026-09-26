@@ -562,8 +562,9 @@ class OpCollections(object):
             )
             typed_area_types = []
             resources = {
-                group["resource"]
+                resource
                 for group in self.typed_hardblock_legalization_op.groups
+                for resource in group["owned_resources"]
             }
             for resource in sorted(resources):
                 area_type = placedb.getAreaTypeIndexFromName(resource)
@@ -656,9 +657,20 @@ class OpCollections(object):
         self.chain_legalization_op = build_chain_legalization_op(
             params, placedb, data_cls
         )
+        masked_slice_ids = []
         if params.carry_chain_module_name:
+            masked_slice_ids.append(data_cls.chain_lut_ids.bs.cpu())
+        if (
+            self.typed_hardblock_legalization_op is not None
+            and self.typed_hardblock_legalization_op.site_macro_ids.numel()
+        ):
+            masked_slice_ids.append(
+                self.typed_hardblock_legalization_op.site_macro_ids.cpu()
+            )
+        if masked_slice_ids:
             self.masked_direct_lg_op = masked_direct_lg.DirectLegalize(
-                placedb, data_cls, params
+                placedb, data_cls, params,
+                torch.unique(torch.cat(masked_slice_ids)),
             )
         else:
             self.masked_direct_lg_op = None

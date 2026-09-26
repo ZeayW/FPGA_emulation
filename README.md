@@ -1047,7 +1047,7 @@ inter-site logical endpoints; and standalone upstream OpenSTA 3.1.0
 This proves the bounded atomic placement-to-timing handoff, not production DLA
 support. The isolated A2 branch now has compiled and physically qualified
 CARRY8/LUT6_2 support plus source-sealed real-device adjacency for CARRY, DSP,
-BRAM, and URAM cascades. It also contains an internal typed-hardblock legalizer:
+BRAM, and URAM cascades. It also contains an internal physical-macro legalizer:
 a compact native-window contract owns every DSP/BRAM/URAM chain or singleton,
 excludes those instances from ordinary singleton MCF, assigns whole chains
 using deterministic global-placement displacement cost, and freezes the result
@@ -1108,6 +1108,14 @@ RSS (11.4x faster and 34.2x less peak memory, including Python startup).
 Repeated hot queries improved by 16.8x at the median.  The selected records
 were also compared field-for-field with the former JSON contract and matched
 exactly.
+The same in-core contract now admits connectivity-derived MUXF7/F8/F9 cones.
+Each cone records exact LUT and MUX BEL roles, offers only complete same-slice
+windows, lets OpenPARF choose the window from global-placement displacement,
+and masks the selected slice before ordinary LUT/FF legalization. No
+post-placement greedy repair is used. F7 export, conflict legalization,
+independent certificate reconstruction, and tamper-oriented unit gates pass;
+compiled OpenPARF plus RapidWright/OpenSTA evidence and the F8/F9 real-device
+fixtures remain pending, so MUX support is not yet a promoted provider claim.
 The first real-device probe also established that the three identities must be
 kept separate: placement uses `RAMB180/RAMB18E2_L`,
 `RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`, while the database's primary

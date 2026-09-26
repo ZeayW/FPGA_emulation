@@ -17,7 +17,7 @@ from emuflow.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_MANIFEST_SCHEMA,
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_SOURCE_SCHEMA,
-    OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA,
+    OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA,
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
     load_xilinx_openparf_atomic_sites,
@@ -980,7 +980,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 )
             self.assertEqual(manifest["resources"]["RAMB18E2"], 2)
             contract = json.loads(
-                (output / "typed-hardblock-groups.json").read_text()
+                (output / "physical-macro-groups.json").read_text()
             )
             groups = [
                 item for item in contract["groups"]
@@ -1081,6 +1081,105 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 export_xilinx_openparf_atomic(
                     mapped, packed, architecture, root / "cascade"
                 )
+
+    def test_muxf7_cone_is_legalized_as_one_source_sealed_slice_macro(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            mapped.write_text(json.dumps({
+                "modules": {"top": {"attributes": {"top": "1"}, "cells": {
+                    "lut0": _cell("LUT6", {"I0": [10], "O": [1]}),
+                    "lut1": _cell("LUT6", {"I0": [11], "O": [2]}),
+                    "mux": _cell("MUXF7", {
+                        "I0": [1], "I1": [2], "S": [3], "O": [4],
+                    }),
+                    "ff": _cell("FDRE", {
+                        "C": [20], "CE": ["1"], "D": [4],
+                        "Q": [5], "R": ["0"],
+                    }),
+                }}},
+            }), encoding="utf-8")
+            packed.write_text(json.dumps({
+                "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+                "clusters": [
+                    {
+                        "id": "mux-cone", "kind": "slice",
+                        "site_templates": ["SLICEL", "SLICEM"],
+                        "control_set": None,
+                        "assignments": [
+                            {"instance": "lut0", "cell_type": "LUT6", "bel": "A6LUT"},
+                            {"instance": "lut1", "cell_type": "LUT6", "bel": "B6LUT"},
+                            {"instance": "mux", "cell_type": "MUXF7", "bel": "F7MUX_AB"},
+                        ],
+                    },
+                    {
+                        "id": "ordinary", "kind": "slice",
+                        "site_templates": ["SLICEL", "SLICEM"],
+                        "control_set": None,
+                        "assignments": [
+                            {"instance": "ff", "cell_type": "FDRE", "bel": "AFF"},
+                        ],
+                    },
+                ],
+                "cascade_chains": [],
+            }), encoding="utf-8")
+            architecture_value = json.loads(architecture.read_text(encoding="utf-8"))
+            architecture_value["site_templates"]["SLICEL"]["bels"].extend([
+                {
+                    "name": bel, "type": "F7MUX", "z": index,
+                    "compatible_cells": ["MUXF7"], "placement_mode": "SLICEL",
+                }
+                for index, bel in enumerate(
+                    ("F7MUX_AB", "F7MUX_CD", "F7MUX_EF", "F7MUX_GH")
+                )
+            ])
+            architecture.write_text(json.dumps(architecture_value), encoding="utf-8")
+            output = root / "output"
+            manifest = export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output
+            )
+            contract = json.loads(
+                (output / "physical-macro-groups.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(contract["groups"]), 1)
+            group = contract["groups"][0]
+            self.assertEqual(group["kind"], "site_macro")
+            self.assertEqual(group["owned_resources"], ["MUXF7"])
+            self.assertEqual(len(group["windows"]), 4)
+            self.assertTrue(all(
+                len({entry["site"] for entry in window}) == 1
+                for window in group["windows"]
+            ))
+            names = json.loads((output / "name_map.json").read_text(encoding="utf-8"))
+            openparf = {atom["instance"]: atom["openparf"] for atom in names["atoms"]}
+            sites = load_xilinx_openparf_atomic_sites(output / "name_map.json")
+            slice_sites = [site for site in sites if "LUT" in site["resources"]]
+            first, second = slice_sites[:2]
+            placement = output / "mux.pl"
+            placement.write_text("\n".join([
+                f"{openparf['lut0']} {first['dense_x']} {first['dense_y']} 1",
+                f"{openparf['lut1']} {first['dense_x']} {first['dense_y']} 3",
+                f"{openparf['mux']} {first['dense_x']} {first['dense_y']} 0",
+                f"{openparf['ff']} {second['dense_x']} {second['dense_y']} 0",
+            ]) + "\n", encoding="utf-8")
+            certificate = validate_xilinx_openparf_atomic_placement(
+                placement, output / "name_map.json", mapped, architecture
+            )
+        self.assertTrue(
+            manifest["constraint_policy"]["mux_site_macros_use_internal_legalizer"]
+        )
+        assignments = {
+            item["instance"]: item
+            for cluster in certificate["clusters"]
+            for item in cluster["assignments"]
+        }
+        self.assertEqual(assignments["mux"]["bel"], "F7MUX_AB")
+        self.assertEqual(
+            assignments["lut0"]["physical_site"], assignments["mux"]["physical_site"]
+        )
+        self.assertEqual(
+            assignments["lut1"]["physical_site"], assignments["mux"]["physical_site"]
+        )
 
     def test_internal_runner_has_no_fallback_and_keeps_runtime_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1222,10 +1321,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     provider_manifest_path=provider_path,
                 )
             contract = json.loads(
-                (output / "typed-hardblock-groups.json").read_text(encoding="utf-8")
+                (output / "physical-macro-groups.json").read_text(encoding="utf-8")
             )
             self.assertEqual(
-                contract["schema"], OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA
+                contract["schema"], OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA
             )
             chain = next(group for group in contract["groups"]
                          if group["id"] == "dsp-chain")
@@ -1260,7 +1359,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             config = json.loads((output / "openparf.json").read_text())
             self.assertEqual(
                 Path(config["typed_hardblock_chain_constraints"]),
-                (output / "typed-hardblock-groups.json").resolve(),
+                (output / "physical-macro-groups.json").resolve(),
             )
             self.assertTrue(
                 report["constraint_policy"][

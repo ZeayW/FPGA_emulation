@@ -40,10 +40,10 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_uses_global_placement_cost_and_avoids_overlap(self):
         value = {
-            "schema": "openparf.typed-hardblock-groups/v2", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v1", "status": "pass",
             "groups": [
                 {
-                    "id": "chain", "resource": "DSP48E2",
+                    "id": "chain", "kind": "cascade", "resource": "DSP48E2",
                     "instances": ["d0", "d1"],
                     "windows": [
                         [_site("D0", "DSP48E2", 0, 0), _site("D1", "DSP48E2", 0, 1)],
@@ -51,7 +51,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
                     ],
                 },
                 {
-                    "id": "singleton", "resource": "DSP48E2",
+                    "id": "singleton", "kind": "singleton", "resource": "DSP48E2",
                     "instances": ["d2"],
                     "windows": [
                         [_site("D0", "DSP48E2", 0, 0)],
@@ -72,11 +72,11 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_fails_closed_when_no_conflict_free_window_exists(self):
         value = {
-            "schema": "openparf.typed-hardblock-groups/v2", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v1", "status": "pass",
             "groups": [
-                {"id": "a", "resource": "URAM288", "instances": ["u0"],
+                {"id": "a", "kind": "singleton", "resource": "URAM288", "instances": ["u0"],
                  "windows": [[_site("U0", "URAM288", 0, 0)]]},
-                {"id": "b", "resource": "URAM288", "instances": ["u1"],
+                {"id": "b", "kind": "singleton", "resource": "URAM288", "instances": ["u1"],
                  "windows": [[_site("U0", "URAM288", 0, 0)]]},
             ],
         }
@@ -86,11 +86,11 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_rejects_duplicate_instance_ownership(self):
         value = {
-            "schema": "openparf.typed-hardblock-groups/v2", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v1", "status": "pass",
             "groups": [
-                {"id": "a", "resource": "DSP48E2", "instances": ["d0"],
+                {"id": "a", "kind": "singleton", "resource": "DSP48E2", "instances": ["d0"],
                  "windows": [[_site("D0", "DSP48E2", 0, 0)]]},
-                {"id": "b", "resource": "DSP48E2", "instances": ["d0"],
+                {"id": "b", "kind": "singleton", "resource": "DSP48E2", "instances": ["d0"],
                  "windows": [[_site("D1", "DSP48E2", 0, 1)]]},
             ],
         }
@@ -107,14 +107,14 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
             "x": 3, "y": 4, "z": 1, "claims": ["bram:BRAM_X0Y0:upper"],
         }
         value = {
-            "schema": "openparf.typed-hardblock-groups/v2", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v1", "status": "pass",
             "groups": [
                 {
-                    "id": "lo", "resource": "RAMB18E2", "instances": ["r0"],
+                    "id": "lo", "kind": "singleton", "resource": "RAMB18E2", "instances": ["r0"],
                     "windows": [[lower], [upper]],
                 },
                 {
-                    "id": "hi", "resource": "RAMB18E2", "instances": ["r1"],
+                    "id": "hi", "kind": "singleton", "resource": "RAMB18E2", "instances": ["r1"],
                     "windows": [[lower], [upper]],
                 },
             ],
@@ -132,7 +132,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
             "claims": ["bram:BRAM_X0Y0:lower", "bram:BRAM_X0Y0:upper"],
         }
         value["groups"].append({
-            "id": "whole", "resource": "RAMB36E2", "instances": ["b0"],
+            "id": "whole", "kind": "singleton", "resource": "RAMB36E2", "instances": ["b0"],
             "windows": [[whole]],
         })
         operator, _data = self._operator(value, ["r0", "r1", "b0"])
@@ -140,6 +140,34 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
             operator(torch.tensor([
                 [3.0, 4.0, 0.0], [3.0, 4.0, 1.0], [3.0, 4.0, 0.0],
             ]))
+
+    def test_same_site_macro_allows_one_shared_exclusive_claim(self):
+        def member(name, resource, z):
+            return {
+                "site": name, "resource": resource,
+                "x": 2, "y": 3, "z": z, "claims": ["site:" + name],
+            }
+
+        value = {
+            "schema": "openparf.physical-macro-groups/v1", "status": "pass",
+            "groups": [{
+                "id": "mux", "kind": "site_macro", "resource": "SLICE_MACRO",
+                "owned_resources": ["MUXF7"],
+                "instances": ["l0", "l1", "m0"],
+                "windows": [[
+                    member("SLICE_X0Y0", "LUT", 1),
+                    member("SLICE_X0Y0", "LUT", 3),
+                    member("SLICE_X0Y0", "MUXF7", 0),
+                ]],
+            }],
+        }
+        operator, data = self._operator(value, ["l0", "l1", "m0"])
+        pos = torch.zeros((3, 3))
+        operator.legalize_site_macros(pos)
+        self.assertEqual(pos.tolist(), [
+            [2.0, 3.0, 1.0], [2.0, 3.0, 3.0], [2.0, 3.0, 0.0],
+        ])
+        self.assertTrue(torch.all(data.inst_lock_mask))
 
 
 if __name__ == "__main__":

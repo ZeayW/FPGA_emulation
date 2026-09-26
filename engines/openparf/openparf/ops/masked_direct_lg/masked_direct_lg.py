@@ -77,7 +77,7 @@ class DirectLegalize(object):
     sites where the masked cells are located.
     """
 
-    def __init__(self, placedb, data_cls, params):
+    def __init__(self, placedb, data_cls, params, masked_inst_ids):
         """
         @brief initialization
         """
@@ -93,7 +93,7 @@ class DirectLegalize(object):
         self.param.numClockNet = 0
         self.param.numHalfColumn = 0
         self.param.maxClockNetPerHalfColumn = 0
-        self.chain_lut_ids = data_cls.chain_lut_ids.bs.cpu()
+        self.masked_inst_ids = masked_inst_ids.cpu()
 
     def forward(self, pos_xyz):
         if pos_xyz.is_cuda:
@@ -103,7 +103,7 @@ class DirectLegalize(object):
         rv = masked_direct_lg_cpp.forward(
             self.placedb,
             self.param,
-            self.chain_lut_ids,
+            self.masked_inst_ids,
             local_pos_xyz)
         with torch.no_grad():
             pos_xyz.data.copy_(rv)

@@ -159,8 +159,11 @@ Any rejected certificate returns to the owning upstream placer implementation.
 1. **A1 engine gate -- complete.**  Ordinary LUT/FF plus independent hard
    blocks passed native OpenPARF, RapidWright routing, and OpenSTA.
 2. **A2 macro/resource gates -- in progress.**  CARRY8, DSP48E2, RAMB18E2,
-   RAMB36E2, and URAM288 bounded fixtures have physical evidence.  MUXF7/8/9,
-   clock legality, and multi-SLR capacity remain gates.
+   RAMB36E2, and URAM288 bounded fixtures have physical evidence.  The
+   connectivity-derived MUX same-site macro contract, OpenPARF window chooser,
+   masked direct legalization, and independent F7 certificate gate pass in
+   source/unit validation.  Compiled F7/F8/F9 physical evidence, clock
+   legality, and multi-SLR capacity remain gates.
 3. **RAMB tile-group export and consumption gates -- complete.**
    The pinned real XCVU19P database exports and independently validates 2,160
    tile groups with distinct lower-RAMB18, upper-RAMB18, and whole-RAMB36

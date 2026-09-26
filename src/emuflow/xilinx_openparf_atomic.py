@@ -34,6 +34,7 @@ from .xilinx_packing import (
     PACKED_SITE_NETLIST_SCHEMA,
     _derive_cascade_chains,
 )
+from .xilinx_physical_macros import build_xilinx_physical_macro_contract
 
 
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
@@ -44,8 +45,8 @@ OPENPARF_ATOMIC_PROVIDER = "openparf-native-mcf-direct-lg-ism-atomic-v1"
 XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-site-database/v1"
 )
-OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA = (
-    "openparf.typed-hardblock-groups/v2"
+OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA = (
+    "openparf.physical-macro-groups/v1"
 )
 
 _HARD_RESOURCES = {
@@ -54,7 +55,17 @@ _HARD_RESOURCES = {
     "RAMB36E2": "RAMB36E2",
     "URAM288": "URAM288",
 }
-_SUPPORTED = LUT_TYPES | FF_TYPES | set(_HARD_RESOURCES)
+_MUX_RESOURCES = {
+    "MUXF7": "MUXF7",
+    "MUXF8": "MUXF8",
+    "MUXF9": "MUXF9",
+}
+_MUX_BELS = {
+    "MUXF7": ("F7MUX_AB", "F7MUX_CD", "F7MUX_EF", "F7MUX_GH"),
+    "MUXF8": ("F8MUX_BOT", "F8MUX_TOP"),
+    "MUXF9": ("F9MUX",),
+}
+_SUPPORTED = LUT_TYPES | FF_TYPES | set(_HARD_RESOURCES) | set(_MUX_RESOURCES)
 _ALLOWED_CLUSTER_KEYS = {
     "id", "kind", "site_templates", "site_mode", "control_set", "assignments",
 }
@@ -69,6 +80,21 @@ _TARGET_DENSITY = 0.75
 
 def _site_claim(site_name: str) -> List[str]:
     return [f"site:{site_name}"]
+
+
+def _slice_role_slot(cell_type: str, bel: str) -> int:
+    """Map one source-sealed UltraScale+ slice BEL role to OpenPARF z."""
+
+    if cell_type in LUT_TYPES:
+        if bel not in {f"{letter}6LUT" for letter in "ABCDEFGH"}:
+            raise ValidationError(f"unsupported LUT macro BEL role {bel!r}")
+        return 2 * "ABCDEFGH".index(bel[0]) + 1
+    roles = _MUX_BELS.get(cell_type)
+    if roles is None or bel not in roles:
+        raise ValidationError(
+            f"unsupported {cell_type} macro BEL role {bel!r}"
+        )
+    return roles.index(bel)
 
 
 def _bram_claims(tile: str, role: str) -> List[str]:
@@ -306,10 +332,10 @@ def load_xilinx_openparf_atomic_sites(
     )
 
 
-def _load_typed_hardblock_groups(
+def _load_physical_macro_groups(
     name_map_path: Path, name_map: Mapping[str, Any]
 ) -> List[Mapping[str, Any]]:
-    descriptor = name_map.get("typed_hardblock_constraints")
+    descriptor = name_map.get("physical_macro_constraints")
     if descriptor is None:
         return []
     if not isinstance(descriptor, Mapping):
@@ -317,7 +343,7 @@ def _load_typed_hardblock_groups(
     relative = descriptor.get("file")
     count = descriptor.get("groups")
     if (
-        descriptor.get("schema") != OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA
+        descriptor.get("schema") != OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA
         or not isinstance(relative, str) or Path(relative).name != relative
         or not isinstance(count, int) or isinstance(count, bool) or count <= 0
     ):
@@ -325,7 +351,7 @@ def _load_typed_hardblock_groups(
     contract = read_json(name_map_path.parent / relative)
     groups = contract.get("groups")
     if (
-        contract.get("schema") != OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA
+        contract.get("schema") != OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA
         or contract.get("status") != "pass"
         or not isinstance(groups, list) or len(groups) != count
     ):
@@ -424,7 +450,9 @@ def _control_tuple(cell_type: str, cell: Mapping[str, Any]) -> Tuple[Any, Any, A
 
 
 def _placement_sites(
-    architecture: ArchitectureDB, hard_resources: Sequence[str]
+    architecture: ArchitectureDB,
+    hard_resources: Sequence[str],
+    mux_resources: Sequence[str] = (),
 ) -> List[Tuple[Dict[str, Any], Dict[str, int]]]:
     slice_sites = [
         site for site in architecture.sites
@@ -481,7 +509,28 @@ def _placement_sites(
                 f"slice site {site['name']!r} does not expose the required "
                 "8 6LUT and 16 FF BELs"
             )
-    result = [(site, {"LUT": 16, "FF": 16}) for site in slice_sites]
+        for primitive in mux_resources:
+            expected_bels = set(_MUX_BELS[primitive])
+            compatible_bels = {
+                bel["name"] for bel in site["bels"]
+                if primitive in bel["compatible_cells"]
+            }
+            if compatible_bels != expected_bels:
+                raise ValidationError(
+                    f"slice site {site['name']!r} does not expose the exact "
+                    f"{primitive} BEL set {sorted(expected_bels)!r}"
+                )
+    result = [(
+        site,
+        {
+            "LUT": 16,
+            "FF": 16,
+            **{
+                primitive: len(_MUX_BELS[primitive])
+                for primitive in mux_resources
+            },
+        },
+    ) for site in slice_sites]
     hard_capacity = Counter()
     for site in architecture.sites:
         if str(site.get("type", "")).upper().startswith("SLICE"):
@@ -614,6 +663,7 @@ def _validate_native_density_contract(
 def _collect_atoms(
     mapped: Mapping[str, Any], packed: Mapping[str, Any], top: Optional[str],
     *, allow_hardblock_cascades: bool = False,
+    physical_macro_contract: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[str, Mapping[str, Any], List[Dict[str, str]]]:
     selected_top, module = _select_module(mapped, top)
     cells = module.get("cells")
@@ -642,6 +692,23 @@ def _collect_atoms(
                 )
     atoms: List[Dict[str, str]] = []
     seen = set()
+    mux_macros = []
+    if physical_macro_contract is not None:
+        mux_macros = [
+            macro for macro in physical_macro_contract.get("site_macros", [])
+            if isinstance(macro, Mapping)
+            and macro.get("kind") in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
+        ]
+    mux_macro_by_members = {
+        frozenset(
+            member["instance"] for member in macro.get("members", [])
+            if isinstance(member, Mapping)
+        ): macro
+        for macro in mux_macros
+    }
+    if len(mux_macro_by_members) != len(mux_macros):
+        raise ValidationError("physical MUX macro ownership is ambiguous")
+    covered_mux_macros = set()
     clusters = packed.get("clusters")
     if not isinstance(clusters, list) or not clusters:
         raise ValidationError("PackedSiteNetlist clusters are invalid")
@@ -662,6 +729,35 @@ def _collect_atoms(
         assignments = cluster.get("assignments")
         if not isinstance(assignments, list) or not assignments:
             raise ValidationError(f"cluster {cluster.get('id')!r} has no assignments")
+        mux_assignments = [
+            assignment for assignment in assignments
+            if isinstance(assignment, Mapping)
+            and assignment.get("cell_type") in _MUX_RESOURCES
+        ]
+        if mux_assignments:
+            if kind != "slice":
+                raise ValidationError("MUX physical macro must be a slice cluster")
+            macro = mux_macro_by_members.get(frozenset(
+                assignment.get("instance") for assignment in assignments
+                if isinstance(assignment, Mapping)
+            ))
+            if macro is None:
+                raise ValidationError(
+                    "MUX slice cluster does not match one complete connectivity-derived macro"
+                )
+            expected_roles = {
+                member["instance"]: member["physical_role"]
+                for member in macro["members"]
+            }
+            actual_roles = {
+                assignment.get("instance"): assignment.get("bel")
+                for assignment in assignments
+            }
+            if actual_roles != expected_roles:
+                raise ValidationError(
+                    "MUX slice cluster differs from the connectivity-derived BEL roles"
+                )
+            covered_mux_macros.add(macro["id"])
         hard_types = {
             assignment.get("cell_type")
             for assignment in assignments if isinstance(assignment, Mapping)
@@ -703,7 +799,7 @@ def _collect_atoms(
                 raise ValidationError(
                     f"atomic mixed-resource adapter rejects primitive {cell_type!r}"
                 )
-            if kind == "slice" and cell_type not in LUT_TYPES | FF_TYPES:
+            if kind == "slice" and cell_type not in LUT_TYPES | FF_TYPES | set(_MUX_RESOURCES):
                 raise ValidationError(
                     f"slice cluster contains hard primitive {cell_type!r}"
                 )
@@ -719,9 +815,13 @@ def _collect_atoms(
                 "resource": (
                     "FF" if cell_type in FF_TYPES
                     else "LUT" if cell_type in LUT_TYPES
+                    else _MUX_RESOURCES[cell_type] if cell_type in _MUX_RESOURCES
                     else _HARD_RESOURCES[cell_type]
                 ),
             })
+    expected_mux_macros = {macro["id"] for macro in mux_macros}
+    if covered_mux_macros != expected_mux_macros:
+        raise ValidationError("connectivity-derived MUX macro coverage is incomplete")
     physical_cells = {
         name for name, cell in cells.items()
         if isinstance(cell, Mapping) and cell.get("type") not in {"GND", "VCC"}
@@ -776,12 +876,47 @@ def build_xilinx_openparf_atomic_source(
         raise ValidationError(
             "RAMB18E2 requires the real site packer to provide source identity"
         )
+    has_mux = any(cell.get("type") in _MUX_RESOURCES for cell in cells.values())
+    macro_contract = (
+        build_xilinx_physical_macro_contract(mapped_path, top=selected_top)
+        if has_mux else {"site_macros": []}
+    )
+    unsupported_site_macros = [
+        macro for macro in macro_contract.get("site_macros", [])
+        if macro.get("kind") not in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
+    ]
+    if unsupported_site_macros:
+        raise ValidationError(
+            "OpenPARF atomic source does not yet support site macros: "
+            + ", ".join(sorted(str(macro.get("kind")) for macro in unsupported_site_macros))
+        )
     clusters = []
     constants = []
+    macro_owned = set()
+    for macro in macro_contract.get("site_macros", []):
+        assignments = []
+        for member in macro["members"]:
+            instance = member["instance"]
+            macro_owned.add(instance)
+            assignments.append({
+                "instance": instance,
+                "cell_type": member["cell_type"],
+                "bel": member["physical_role"],
+                "bel_candidates": [member["physical_role"]],
+            })
+        clusters.append({
+            "id": macro["id"],
+            "kind": "slice",
+            "site_templates": ["SLICEL", "SLICEM"],
+            "control_set": None,
+            "assignments": assignments,
+        })
     for index, (name, cell) in enumerate(sorted(cells.items())):
         cell_type = cell["type"]
         if cell_type in CONSTANT_TYPES:
             constants.append(name)
+            continue
+        if name in macro_owned:
             continue
         hard = cell_type in _HARD_RESOURCES
         clusters.append({
@@ -803,6 +938,12 @@ def build_xilinx_openparf_atomic_source(
                 ),
             }],
         })
+    summary = {
+        "physical_atoms": len(clusters),
+        "constant_cells": len(constants),
+    }
+    if macro_contract.get("site_macros"):
+        summary["physical_macros"] = len(macro_contract["site_macros"])
     value = {
         "schema": OPENPARF_ATOMIC_SOURCE_SCHEMA,
         "status": "pass",
@@ -815,10 +956,7 @@ def build_xilinx_openparf_atomic_source(
         "clusters": clusters,
         "cascade_chains": [],
         "unplaced_constants": constants,
-        "summary": {
-            "physical_atoms": len(clusters),
-            "constant_cells": len(constants),
-        },
+        "summary": summary,
     }
     write_json(output_path, value, compact=True)
     return value
@@ -1177,15 +1315,34 @@ def export_xilinx_openparf_atomic(
             architecture_path=architecture_path,
             provider_manifest_path=provider_manifest_path,
         )
+    selected_module_name, selected_module = _select_module(
+        mapped, top if top is not None else packed.get("top")
+    )
+    selected_cells = selected_module.get("cells", {})
+    has_mux = any(
+        isinstance(cell, Mapping) and cell.get("type") in _MUX_RESOURCES
+        for cell in selected_cells.values()
+    )
+    macro_contract = (
+        build_xilinx_physical_macro_contract(
+            mapped_path, top=selected_module_name
+        )
+        if has_mux else {"site_macros": []}
+    )
     selected_top, cells, atoms = _collect_atoms(
         mapped, packed, top if top is not None else packed.get("top"),
         allow_hardblock_cascades=typed_hardblock_mode,
+        physical_macro_contract=macro_contract,
     )
     hard = sorted({
         atom["cell_type"] for atom in atoms
         if atom["cell_type"] in _HARD_RESOURCES
     })
-    sites = _placement_sites(architecture, hard)
+    mux = sorted({
+        atom["cell_type"] for atom in atoms
+        if atom["cell_type"] in _MUX_RESOURCES
+    })
+    sites = _placement_sites(architecture, hard, mux)
     placement_region = _validate_native_placement_region(sites)
     per_site_capacity, density_contract = _validate_native_density_contract(
         sites, atoms
@@ -1231,6 +1388,7 @@ def export_xilinx_openparf_atomic(
         resource = (
             "LUT" if primitive in LUT_TYPES
             else "FF" if primitive in FF_TYPES
+            else _MUX_RESOURCES[primitive] if primitive in _MUX_RESOURCES
             else _HARD_RESOURCES[primitive]
         )
         unit_dimension = 1.0 / math.sqrt(per_site_capacity[resource])
@@ -1242,6 +1400,10 @@ def export_xilinx_openparf_atomic(
             model_map[primitive] = {
                 "LUT": [unit_dimension, unit_dimension],
                 "isLUT": int(primitive[3:]),
+            }
+        elif primitive in _MUX_RESOURCES:
+            model_map[primitive] = {
+                _MUX_RESOURCES[primitive]: [unit_dimension, unit_dimension]
             }
         else:
             model_map[primitive] = {
@@ -1285,6 +1447,56 @@ def export_xilinx_openparf_atomic(
         "result_dir": str((output_dir / "results").resolve()),
     }
     hardblock_groups = []
+    mux_macros = [
+        macro for macro in macro_contract.get("site_macros", [])
+        if macro.get("kind") in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
+    ]
+    slice_windows = []
+    for item in coordinate_system["sites"]:
+        physical_slices = item.get("physical_sites", {}).get("LUT", [])
+        if len(physical_slices) != 1:
+            continue
+        slice_windows.append((item, physical_slices[0]))
+    for macro in mux_macros:
+        members = macro["members"]
+        source_instances = [member["instance"] for member in members]
+        windows = []
+        for coordinate, site_name in slice_windows:
+            window = []
+            for member in members:
+                cell_type = member["cell_type"]
+                resource = (
+                    "LUT" if cell_type in LUT_TYPES
+                    else _MUX_RESOURCES[cell_type]
+                )
+                role = member["physical_role"]
+                window.append({
+                    "site": site_name,
+                    "resource": resource,
+                    "x": coordinate["placement_x"],
+                    "y": coordinate["placement_y"],
+                    "z": _slice_role_slot(cell_type, role),
+                    "claims": _site_claim(site_name),
+                    "bel": role,
+                })
+            windows.append(window)
+        if not windows:
+            raise ValidationError(
+                f"MUX physical macro {macro['id']!r} has no legal slice window"
+            )
+        hardblock_groups.append({
+            "id": macro["id"],
+            "kind": "site_macro",
+            "resource": "SLICE_MACRO",
+            "owned_resources": sorted({
+                _MUX_RESOURCES[member["cell_type"]]
+                for member in members
+                if member["cell_type"] in _MUX_RESOURCES
+            }),
+            "instances": [names[name] for name in source_instances],
+            "source_instances": source_instances,
+            "windows": windows,
+        })
     if typed_hardblock_mode:
         family_for_resource = {
             "DSP48E2": "DSP_CASCADE",
@@ -1421,21 +1633,27 @@ def export_xilinx_openparf_atomic(
         }
         covered_hardblocks = {
             instance for group in hardblock_groups
+            if group["resource"] in _HARD_RESOURCES.values()
             for instance in group["source_instances"]
         }
         if covered_hardblocks != expected_hardblocks:
             raise ValidationError("typed hardblock constraints have incomplete ownership")
-        constraint_path = output_dir / "typed-hardblock-groups.json"
-        write_json(constraint_path, {
-            "schema": OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA,
-            "status": "pass", "groups": hardblock_groups,
-            "source": {
-                "mapped_sha256": _sha256(mapped_path),
-                "packed_sha256": _sha256(packed_path),
-                "architecture_sha256": _sha256(architecture_path),
+    if hardblock_groups:
+        constraint_path = output_dir / "physical-macro-groups.json"
+        source_identity = {
+            "mapped_sha256": _sha256(mapped_path),
+            "packed_sha256": _sha256(packed_path),
+            "architecture_sha256": _sha256(architecture_path),
+        }
+        if typed_hardblock_mode:
+            source_identity.update({
                 "native_constraints_sha256": _sha256(native_constraints_path),
                 "provider_manifest_sha256": _sha256(provider_manifest_path),
-            },
+            })
+        write_json(constraint_path, {
+            "schema": OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA,
+            "status": "pass", "groups": hardblock_groups,
+            "source": source_identity,
         }, compact=True)
         config["typed_hardblock_chain_constraints"] = str(
             constraint_path.resolve()
@@ -1464,10 +1682,10 @@ def export_xilinx_openparf_atomic(
             "sites": site_count,
         },
     }
-    if typed_hardblock_mode:
-        name_map["typed_hardblock_constraints"] = {
-            "schema": OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA,
-            "file": "typed-hardblock-groups.json",
+    if hardblock_groups:
+        name_map["physical_macro_constraints"] = {
+            "schema": OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA,
+            "file": "physical-macro-groups.json",
             "groups": len(hardblock_groups),
         }
     write_json(output_dir / "name_map.json", name_map, compact=True)
@@ -1495,9 +1713,10 @@ def export_xilinx_openparf_atomic(
             "typed_hardblock_chains_use_internal_legalizer": (
                 typed_hardblock_mode
             ),
+            "mux_site_macros_use_internal_legalizer": bool(mux_macros),
             "dedicated_or_relative_constraints": (
-                "native-typed-hardblock-legalizer"
-                if typed_hardblock_mode else "fail-closed"
+                "native-physical-macro-legalizer"
+                if hardblock_groups else "fail-closed"
             ),
             "ramb18_half_site": (
                 "source-sealed-independent-half-claims"
@@ -1507,7 +1726,7 @@ def export_xilinx_openparf_atomic(
         },
         "files": sorted([
             *files, "openparf.json", "name_map.json", "site-map.sqlite3",
-            *(["typed-hardblock-groups.json"] if typed_hardblock_mode else []),
+            *(["physical-macro-groups.json"] if hardblock_groups else []),
         ]),
     }
     write_json(output_dir / "manifest.json", manifest, compact=True)
@@ -1590,11 +1809,15 @@ def validate_xilinx_openparf_atomic_placement(
             name_map_path, coordinates=requested_coordinates
         )
     }
-    hardblock_groups = _load_typed_hardblock_groups(name_map_path, name_map)
+    hardblock_groups = _load_physical_macro_groups(name_map_path, name_map)
+    native_hardblock_groups = [
+        group for group in hardblock_groups
+        if group.get("resource") in _HARD_RESOURCES.values()
+    ]
     native = None
     native_report = None
     bram_view_by_slot: Dict[Tuple[int, int, str, int], Mapping[str, Any]] = {}
-    if hardblock_groups:
+    if native_hardblock_groups:
         if native_constraints_path is None or provider_manifest_path is None:
             raise ValidationError(
                 "typed hardblock placement validation requires native constraints"
@@ -1640,7 +1863,7 @@ def validate_xilinx_openparf_atomic_placement(
             if (
                 not isinstance(resources, Mapping)
                 or (
-                    resource not in {"LUT", "FF"}
+                    resource not in {"LUT", "FF"} | set(_MUX_RESOURCES.values())
                     and resources.get(resource, 0) < 1
                 )
             ):
@@ -1653,6 +1876,19 @@ def validate_xilinx_openparf_atomic_placement(
                         "OpenPARF atomic placement uses a site without the required resource"
                     )
                 bel_name = _slot_bel(resource, z, cell_type)
+            elif resource in _MUX_RESOURCES.values():
+                roles = _MUX_BELS.get(cell_type)
+                if roles is None or z < 0 or z >= len(roles):
+                    raise ValidationError(
+                        "OpenPARF MUX placement uses an invalid BEL slot"
+                    )
+                bel_name = roles[z]
+                physical_sites = site_entry.get("physical_sites", {}).get(resource)
+                if not isinstance(physical_sites, list) or len(physical_sites) != 1:
+                    raise ValidationError(
+                        "OpenPARF MUX placement has no unique physical slice"
+                    )
+                site_name = physical_sites[0]
             elif resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot:
                 candidate = bram_view_by_slot.get((x, y, resource, z))
                 if candidate is None:
@@ -1716,14 +1952,16 @@ def validate_xilinx_openparf_atomic_placement(
 
     checked_native_edges = 0
     if hardblock_groups:
-        assert native is not None and native_report is not None
         family_for_resource = {
             "DSP48E2": "DSP_CASCADE", "RAMB36E2": "BRAM_CASCADE",
             "URAM288": "URAM_CASCADE",
         }
         native_families = {
             family.get("kind"): family
-            for family in native.get("payload", {}).get("dedicated_adjacency", [])
+            for family in (
+                native.get("payload", {}).get("dedicated_adjacency", [])
+                if native is not None else []
+            )
             if isinstance(family, Mapping)
         }
         by_source_instance = {
@@ -1736,7 +1974,10 @@ def validate_xilinx_openparf_atomic_placement(
                 raise ValidationError("typed hardblock group is invalid")
             resource = group.get("resource")
             instances = group.get("source_instances")
-            if resource not in _HARD_RESOURCES.values() or not isinstance(instances, list):
+            if (
+                resource not in set(_HARD_RESOURCES.values()) | {"SLICE_MACRO"}
+                or not isinstance(instances, list)
+            ):
                 raise ValidationError("typed hardblock group header is invalid")
             if covered.intersection(instances):
                 raise ValidationError("typed hardblock placement ownership overlaps")
@@ -1778,16 +2019,20 @@ def validate_xilinx_openparf_atomic_placement(
                         "OpenPARF typed hardblock window has invalid occupancy claims"
                     )
                 claims.extend(raw_claims)
-            if (
-                len(claims) != len(set(claims))
-                or occupied_claims.intersection(claims)
-            ):
+            unique_claims = set(claims)
+            internally_valid = (
+                group.get("kind") == "site_macro"
+                and len({item["site"] for item in selected}) == 1
+                and unique_claims == {"site:" + selected[0]["site"]}
+            ) or len(claims) == len(unique_claims)
+            if not internally_valid or occupied_claims.intersection(unique_claims):
                 raise ValidationError(
                     "OpenPARF typed hardblock placement has conflicting occupancy claims"
                 )
-            occupied_claims.update(claims)
+            occupied_claims.update(unique_claims)
             sites = [item["site"] for item in selected]
             if group.get("kind") == "cascade" and len(instances) > 1:
+                assert native is not None and native_report is not None
                 if resource not in family_for_resource:
                     raise ValidationError(
                         "typed hardblock cascade uses an unqualified resource"
@@ -1808,10 +2053,25 @@ def validate_xilinx_openparf_atomic_placement(
                             "OpenPARF typed hardblock chain violates native adjacency"
                         )
                     checked_native_edges += 1
+        has_site_macro_groups = any(
+            group.get("kind") == "site_macro" for group in hardblock_groups
+        )
+        derived_macro_contract = (
+            build_xilinx_physical_macro_contract(
+                mapped_path, top=name_map.get("top")
+            )
+            if has_site_macro_groups else {"site_macros": []}
+        )
+        expected_mux_members = {
+            member["instance"]
+            for macro in derived_macro_contract.get("site_macros", [])
+            if macro.get("kind") in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
+            for member in macro.get("members", [])
+        }
         expected = {
             item["instance"] for item in placed.values()
             if item["resource"] in _HARD_RESOURCES.values()
-        }
+        } | expected_mux_members
         if covered != expected:
             raise ValidationError("typed hardblock placement coverage is incomplete")
 
@@ -1894,12 +2154,13 @@ def validate_xilinx_openparf_atomic_placement(
         },
     }
     if hardblock_groups:
-        assert native_constraints_path is not None
-        assert provider_manifest_path is not None
-        result["source"].update({
-            "native_constraints_sha256": _sha256(native_constraints_path),
-            "provider_manifest_sha256": _sha256(provider_manifest_path),
-        })
+        if native_hardblock_groups:
+            assert native_constraints_path is not None
+            assert provider_manifest_path is not None
+            result["source"].update({
+                "native_constraints_sha256": _sha256(native_constraints_path),
+                "provider_manifest_sha256": _sha256(provider_manifest_path),
+            })
         if checked_native_edges:
             result["summary"]["native_hardblock_edges"] = checked_native_edges
     if output_path is not None:

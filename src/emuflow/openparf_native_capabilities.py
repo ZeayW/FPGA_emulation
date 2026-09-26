@@ -134,10 +134,10 @@ def audit_pinned_openparf_source(source_root: Path) -> Dict[str, Any]:
         "typed_hardblock_legalizer": _source_check(
             root / "openparf/ops/typed_hardblock_legalizer/typed_hardblock_legalizer.py",
             (
-                "openparf.typed-hardblock-groups/v2",
+                "openparf.physical-macro-groups/v1",
                 'SUPPORTED_RESOURCES = {"DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"}',
                 'site["claims"]',
-                "occupied.update(claims)",
+                "occupied.update(unique_claims)",
             ),
         ),
         "chain_legalizer": _source_check(
@@ -257,7 +257,7 @@ def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
             and not shape_consumers
         )
         dp_mask_is_carry_gated = all(marker in texts["placer"] for marker in (
-            "if self.params.carry_chain_legalization_flag:",
+            "self.params.carry_chain_legalization_flag",
             "self.data_cls.chain_cla_ids.bs",
             "self.data_cls.chain_lut_ids.bs",
             "fixed_mask[inst_ids] = 1",
@@ -265,7 +265,7 @@ def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
         ))
         carry_seed_is_gp_backed = (
             all(marker in texts["placer"] for marker in (
-                "Seed native carry legalization from the current GP solution",
+                "Seed native macro legalization from the current GP solution",
                 "pos_xyz = self.data_cls.inst_locs_xyz.to(",
                 "pos[movable_range[0] : movable_range[1]]",
             ))
