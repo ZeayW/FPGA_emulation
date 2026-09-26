@@ -1112,7 +1112,10 @@ The same in-core contract now admits connectivity-derived MUXF7/F8/F9 cones.
 Each cone records exact LUT and MUX BEL roles, offers only complete same-slice
 windows, lets OpenPARF choose the window from global-placement displacement,
 and masks the selected slice before ordinary LUT/FF legalization. No
-post-placement greedy repair is used. F7 export, conflict legalization,
+post-placement greedy repair is used.  The masked direct legalizer accepts an
+arbitrary number of reserved instances; it no longer assumes that every mask
+is an even-sized set of LUT pairs, because a valid F7 cone has three members.
+F7 export, conflict legalization,
 independent certificate reconstruction, and tamper-oriented unit gates pass;
 compiled OpenPARF plus RapidWright/OpenSTA evidence and the F8/F9 real-device
 fixtures remain pending, so MUX support is not yet a promoted provider claim.

@@ -39,7 +39,11 @@ at::Tensor directLegalizeForward(database::PlaceDB const &placedb,
   using masked_direct_lg::DirectLegalizeParam;
 
   CHECK_FLAT_CPU(masked_inst_ids);
-  CHECK_EVEN(masked_inst_ids);
+  // The mask is an arbitrary set of already-legalized instances.  The old
+  // even-cardinality assertion was inherited from LUT-pair-only callers, but
+  // physical site macros such as LUT6 + LUT6 + MUXF7 legitimately contain an
+  // odd number of members.  The kernel iterates the IDs independently and
+  // does not consume them in pairs.
   CHECK_CONTIGUOUS(masked_inst_ids);
   CHECK_FLAT_CPU(init_pos);
   CHECK_DIVISIBLE(init_pos, 3);
