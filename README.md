@@ -1156,16 +1156,20 @@ PIPs with 0.256100006 ns maximum route delay, and reached WNS +9.009399 ns/TNS
 qualify the MUX hierarchy itself; clock legality, multi-SLR capacity, the
 resource-covering gate, and DLA medium still prevent provider promotion.
 The native atomic exporter now also translates complete ArchitectureDB clock
-regions into OpenPARF's Bookshelf clock-region model.  It enables OpenPARF's
-clock-region assignment, clock-aware legalization, detailed-placement checks,
-and the 24-clock-per-region limit only when every placement site belongs to a
-canonical, rectangular, gap-free clock-region grid.  Partial coverage,
-non-rectangular regions, and missing grid coordinates fail before placement.
-The bundled Bookshelf reader accepts multi-digit region names such as `X4Y10`,
-which are required by real UltraScale+ devices.  Half-column limits remain
-disabled because the current ArchitectureDB has not yet source-sealed those
-boundaries, and compiled real-device clock/multi-SLR evidence remains a
-promotion gate.
+regions into OpenPARF's Bookshelf clock-region model.  It emits the region
+geometry only when every placement site belongs to a canonical, rectangular,
+gap-free grid; partial coverage, non-rectangular regions, and missing grid
+coordinates fail before placement.  The bundled Bookshelf reader accepts
+multi-digit region names such as `X4Y10`, which are required by real
+UltraScale+ devices.  Active UTPlaceFX clock assignment remains deliberately
+disabled: that upstream implementation assumes one SLICE, one DSP, and one RAM
+site class and discovers clocks only from explicit clock-source models, while
+the real device model contains multiple BRAM views plus URAM and the current
+adapter does not yet admit BUFG primitives.  Enabling it would abort or enforce
+the wrong capacity model.  Half-column limits likewise remain disabled until
+their boundaries are source sealed.  Clock-source import, safe multi-resource
+clock planning, and compiled real-device clock/multi-SLR evidence remain
+promotion gates.
 The first real-device probe also established that the three identities must be
 kept separate: placement uses `RAMB180/RAMB18E2_L`,
 `RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`, while the database's primary

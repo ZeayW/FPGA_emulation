@@ -75,10 +75,12 @@ capability.  Unsupported candidates do not delay the OpenPARF primary route.
 - Import exact compatible resources, clock regions, SLRs, dedicated adjacency,
   and overlapping modes from source-sealed RapidWright facts.
 - Export a complete canonical clock-region grid into the OpenPARF Bookshelf
-  database and enable clock-aware assignment/legalization only when every
-  placement site is covered by one rectangular region.  Multi-digit region
-  coordinates are required; partial or gapped grids fail closed.  Do not
-  enable half-column limits until their boundaries are source sealed.
+  database only when every placement site is covered by one rectangular
+  region.  Multi-digit region coordinates are required; partial or gapped
+  grids fail closed.  Keep UTPlaceFX clock assignment disabled until explicit
+  clock-source primitives and the real device's distinct BRAM/URAM classes are
+  modeled without collapsing resource capacities.  Do not enable half-column
+  limits until their boundaries are source sealed.
 - Represent one BRAM tile as an explicit group containing lower RAMB18,
   upper RAMB18, and whole RAMB36 views.  RAMB36 claims both halves; two
   RAMB18 instances may share a tile only by occupying distinct proven slots.

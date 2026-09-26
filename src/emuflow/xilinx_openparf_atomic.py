@@ -1278,6 +1278,19 @@ def _render_sites(
         clock_region_contract = {
             "width": width, "height": height,
             "maximum_clocks_per_region": _MAX_CLOCKS_PER_REGION,
+            # The checked-in UTPlaceFX clock planner recognizes a single
+            # SLICE/DSP/RAM site class and discovers clocks only from explicit
+            # clock-source models.  A real UltraScale+ database contains
+            # multiple BRAM views plus URAM, while this adapter intentionally
+            # rejects BUFG/clock-source primitives today.  Export the exact
+            # region geometry so the parser and later independent validator
+            # can consume it, but do not silently claim active clock planning.
+            "native_enforcement": "disabled",
+            "native_enforcement_reason": (
+                "OpenPARF UTPlaceFX cannot safely represent the current "
+                "multi-resource UltraScale+ site model or discover its clock "
+                "sources"
+            ),
             "regions": contract_regions,
         }
     return "\n".join(lines) + "\n", {
@@ -1537,14 +1550,15 @@ def export_xilinx_openparf_atomic(
         "gp_adjust_area": 0, "gp_adjust_area_types": [],
         "gp_adjust_route_area": 0, "gp_adjust_pin_area": 0,
         "gp_adjust_resource_area": 0,
-        "honor_clock_region_constraints": int(
-            coordinate_system["clock_regions"] is not None
-        ),
+        # CLOCKREGIONS remains part of the source-sealed Bookshelf database,
+        # but native enforcement stays off until clock-source primitives and
+        # the multi-resource device model are represented without collapsing
+        # BRAM/URAM classes.  Enabling UTPlaceFX here would either abort or
+        # enforce the wrong capacity model.
+        "honor_clock_region_constraints": 0,
         "honor_half_column_constraints": 0,
-        "confine_clock_region_flag": int(
-            coordinate_system["clock_regions"] is not None
-        ),
-        "count_ck_cr": int(coordinate_system["clock_regions"] is not None),
+        "confine_clock_region_flag": 0,
+        "count_ck_cr": 0,
         "maximum_clock_per_clock_region": _MAX_CLOCKS_PER_REGION,
         "maximum_clock_per_half_column": 0,
         "clock_region_capacity": _MAX_CLOCKS_PER_REGION,

@@ -424,7 +424,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["detailed_place_flag"], 1)
         self.assertNotIn("fallback", config)
 
-    def test_clock_region_grid_is_exported_and_enabled_for_native_placement(self):
+    def test_clock_region_grid_is_exported_without_unsafe_native_enforcement(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             mapped, packed, architecture = _fixture(
@@ -441,9 +441,9 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertIn("CLOCKREGION X0Y0 : 0 0 0 1 1 0", sites)
         self.assertIn("CLOCKREGION X1Y0 : 1 0 1 1 1 1", sites)
         self.assertIn("END CLOCKREGIONS", sites)
-        self.assertEqual(config["honor_clock_region_constraints"], 1)
-        self.assertEqual(config["confine_clock_region_flag"], 1)
-        self.assertEqual(config["count_ck_cr"], 1)
+        self.assertEqual(config["honor_clock_region_constraints"], 0)
+        self.assertEqual(config["confine_clock_region_flag"], 0)
+        self.assertEqual(config["count_ck_cr"], 0)
         self.assertEqual(config["honor_half_column_constraints"], 0)
         self.assertEqual(config["maximum_clock_per_clock_region"], 24)
         self.assertEqual(config["maximum_clock_per_half_column"], 0)
@@ -451,6 +451,12 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "width": 2,
             "height": 1,
             "maximum_clocks_per_region": 24,
+            "native_enforcement": "disabled",
+            "native_enforcement_reason": (
+                "OpenPARF UTPlaceFX cannot safely represent the current "
+                "multi-resource UltraScale+ site model or discover its clock "
+                "sources"
+            ),
             "regions": [
                 {
                     "name": "X0Y0", "x": 0, "y": 0, "slr": "SLR0",
