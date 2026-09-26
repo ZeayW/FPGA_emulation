@@ -93,7 +93,12 @@ class DirectLegalize(object):
         self.param.numClockNet = 0
         self.param.numHalfColumn = 0
         self.param.maxClockNetPerHalfColumn = 0
-        self.masked_inst_ids = masked_inst_ids.cpu()
+        # The C++ boundary consumes raw int32_t IDs.  Normalize once here so
+        # callers may pass ordinary PyTorch index tensors (which default to
+        # int64) without relying on an unsafe reinterpretation in the kernel.
+        self.masked_inst_ids = masked_inst_ids.to(
+            device="cpu", dtype=torch.int32
+        ).contiguous()
 
     def forward(self, pos_xyz):
         if pos_xyz.is_cuda:
