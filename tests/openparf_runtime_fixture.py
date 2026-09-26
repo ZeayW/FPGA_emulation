@@ -214,6 +214,7 @@ def write_openparf_ramb18_fixture(root: Path) -> Tuple[Path, Path, Path]:
                 # RapidWright RAMB18E2 Unisim and therefore is not a valid
                 # physical-routing fixture.
                 "ADDRARDADDR": [input_bit] + ["0"] * 13,
+                "CLKARDCLK": [1_000_000],
                 "DOADO": [output_bit] + ["0"] * 15,
             },
             {"DOADO"},
