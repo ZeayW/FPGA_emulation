@@ -14,6 +14,9 @@ from .architecture import ArchitectureDB
 from .errors import ValidationError
 from .io import read_json, write_json
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
+from .xilinx_native_device_constraints import (
+    load_xilinx_native_device_constraints,
+)
 
 
 XILINX_PLACEMENT_SCHEMA = "emuflow.xilinx-placement/v1"
@@ -1231,6 +1234,8 @@ def validate_xilinx_placement(
     placement_path: Path,
     *,
     constraints_path: Optional[Path] = None,
+    native_constraints_path: Optional[Path] = None,
+    provider_manifest_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Independently re-check cluster ownership, sites, BELs, and cascades."""
 
@@ -1349,6 +1354,66 @@ def validate_xilinx_placement(
         raise ValidationError("Xilinx placement cell ownership is incomplete")
     owner = {instance: cluster_id for instance, cluster_id in cell_owners.items()}
     chains = _cascade_cluster_chains(packed, owner)
+    native_edges_by_kind: Dict[str, Set[Tuple[str, str]]] = {}
+    if provider == XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER and chains:
+        if native_constraints_path is None or provider_manifest_path is None:
+            raise ValidationError(
+                "OpenPARF cascade placement validation requires native "
+                "constraints and provider manifest"
+            )
+        if (
+            source.get("native_constraints_sha256")
+            != _sha256(native_constraints_path)
+            or source.get("provider_manifest_sha256")
+            != _sha256(provider_manifest_path)
+        ):
+            raise ValidationError(
+                "OpenPARF cascade placement native source identity is invalid"
+            )
+        native, _native_report = load_xilinx_native_device_constraints(
+            native_constraints_path,
+            architecture_path=architecture_path,
+            provider_manifest_path=provider_manifest_path,
+        )
+        for family in native["payload"]["dedicated_adjacency"]:
+            native_edges_by_kind[family["kind"]] = {
+                edge
+                for native_chain in family["chains"]
+                for edge in zip(native_chain, native_chain[1:])
+            }
+        kind_by_cell_type = {
+            "DSP48E2": "DSP_CASCADE",
+            "RAMB36E2": "BRAM_CASCADE",
+            "URAM288": "URAM_CASCADE",
+        }
+        typed_chains = []
+        for raw_chain in packed.get("cascade_chains", []):
+            cluster_chain = []
+            for instance in raw_chain.get("instances", []):
+                cluster = owner.get(instance)
+                if cluster is not None and (
+                    not cluster_chain or cluster_chain[-1] != cluster
+                ):
+                    cluster_chain.append(cluster)
+            if len(cluster_chain) > 1:
+                typed_chains.append((raw_chain.get("cell_type"), cluster_chain))
+        if [chain for _cell_type, chain in typed_chains] != chains:
+            raise ValidationError("cascade chain typing is inconsistent")
+        for cell_type, chain in typed_chains:
+            kind = kind_by_cell_type.get(cell_type)
+            if kind is None or kind not in native_edges_by_kind:
+                raise ValidationError(
+                    f"OpenPARF cascade type {cell_type!r} lacks native adjacency"
+                )
+            site_path = [placed[cluster] for cluster in chain]
+            if any(
+                edge not in native_edges_by_kind[kind]
+                for edge in zip(site_path, site_path[1:])
+            ):
+                raise ValidationError(
+                    "OpenPARF cascade placement violates source-sealed native "
+                    "adjacency: " + " -> ".join(chain)
+                )
     for chain in chains:
         coordinates = [_physical_site_coordinate(placed[cluster]) for cluster in chain]
         slrs = {
@@ -1362,16 +1427,17 @@ def validate_xilinx_placement(
                 "dedicated cascade placement crosses an SLR boundary: "
                 + " -> ".join(chain)
             )
-        first_kind, first_x, first_y = coordinates[0]
-        expected = [
-            (first_kind, first_x, first_y + offset)
-            for offset in range(len(chain))
-        ]
-        if coordinates != expected:
-            raise ValidationError(
-                "dedicated cascade placement is not physically contiguous: "
-                + " -> ".join(chain)
-            )
+        if provider != XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER:
+            first_kind, first_x, first_y = coordinates[0]
+            expected = [
+                (first_kind, first_x, first_y + offset)
+                for offset in range(len(chain))
+            ]
+            if coordinates != expected:
+                raise ValidationError(
+                    "dedicated cascade placement is not physically contiguous: "
+                    + " -> ".join(chain)
+                )
     expected_local_summary = {
         "clock_region_site_groups": len(local_capacity),
         "maximum_clock_region_site_utilization": max(

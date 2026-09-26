@@ -362,6 +362,8 @@ def materialize_xilinx_openparf_atomic_contract(
     *,
     top: Optional[str] = None,
     source_packed_path: Optional[Path] = None,
+    native_constraints_path: Optional[Path] = None,
+    provider_manifest_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Materialize standard physical contracts without repacking/replacing."""
 
@@ -396,6 +398,22 @@ def materialize_xilinx_openparf_atomic_contract(
     selected_top, cells, clusters, constants, cascades = _validate_certificate(
         mapped, certificate, architecture, top, source_packed
     )
+    if cascades:
+        if native_constraints_path is None or provider_manifest_path is None:
+            raise ValidationError(
+                "OpenPARF cascade bridge requires its native constraints and "
+                "provider manifest"
+            )
+        certificate_source = certificate.get("source", {})
+        if (
+            certificate_source.get("native_constraints_sha256")
+            != _sha256(native_constraints_path)
+            or certificate_source.get("provider_manifest_sha256")
+            != _sha256(provider_manifest_path)
+        ):
+            raise ValidationError(
+                "OpenPARF cascade certificate native source identity is invalid"
+            )
     certificate_sha = _sha256(atomic_placement_path)
     mapped_sha = _sha256(mapped_path)
     architecture_sha = _sha256(architecture_path)
@@ -524,13 +542,22 @@ def materialize_xilinx_openparf_atomic_contract(
                 ).items())),
             },
         }
+        if cascades:
+            assert native_constraints_path is not None
+            assert provider_manifest_path is not None
+            placement["source"].update({
+                "native_constraints_sha256": _sha256(native_constraints_path),
+                "provider_manifest_sha256": _sha256(provider_manifest_path),
+            })
         write_json(placement_temp, placement, compact=True)
         validate_xilinx_packing(
             mapped_path, packed_temp, top=selected_top,
             architecture_path=architecture_path,
         )
         validate_xilinx_placement(
-            packed_temp, architecture_path, placement_temp
+            packed_temp, architecture_path, placement_temp,
+            native_constraints_path=native_constraints_path,
+            provider_manifest_path=provider_manifest_path,
         )
         os.replace(packed_temp, packed_output_path)
         os.replace(placement_temp, placement_output_path)

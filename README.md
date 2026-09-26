@@ -1053,8 +1053,10 @@ logical endpoints at a maximum 1.350700195 ns; and independent upstream OpenSTA
 fixture uses real primitive bus widths and the production Xilinx packer, so a
 scalar placeholder cannot satisfy this gate. The standard Route A bridge now preserves
 the source-sealed hard-block cascade graph while materializing OpenPARF's final
-site grouping; a cascade-bearing certificate without its source packing fails
-closed. Separate real-width BRAM and URAM chain gates remain required; the
+site grouping. A cascade-bearing certificate must bind its source packing,
+native device constraints, and RapidWright provider manifest; the independent
+placement validator reloads that native graph instead of assuming consecutive
+site-name coordinates. Separate real-width BRAM and URAM chain gates remain required; the
 operator is not described as an exact optimizer. RAMB18 half sites, other relative macros, authoritative
 half-column clock constraints, and Koios DLA medium remain open gates, so this
 path is not yet a public placer selection or the default Phase 7 provider.

@@ -1339,6 +1339,12 @@ def validate_xilinx_openparf_atomic_placement(
         },
     }
     if hardblock_groups:
+        assert native_constraints_path is not None
+        assert provider_manifest_path is not None
+        result["source"].update({
+            "native_constraints_sha256": _sha256(native_constraints_path),
+            "provider_manifest_sha256": _sha256(provider_manifest_path),
+        })
         result["summary"]["native_hardblock_edges"] = checked_native_edges
     if output_path is not None:
         write_json(output_path, result, compact=True)
