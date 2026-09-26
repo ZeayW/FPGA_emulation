@@ -74,6 +74,11 @@ capability.  Unsupported candidates do not delay the OpenPARF primary route.
 
 - Import exact compatible resources, clock regions, SLRs, dedicated adjacency,
   and overlapping modes from source-sealed RapidWright facts.
+- Export a complete canonical clock-region grid into the OpenPARF Bookshelf
+  database and enable clock-aware assignment/legalization only when every
+  placement site is covered by one rectangular region.  Multi-digit region
+  coordinates are required; partial or gapped grids fail closed.  Do not
+  enable half-column limits until their boundaries are source sealed.
 - Represent one BRAM tile as an explicit group containing lower RAMB18,
   upper RAMB18, and whole RAMB36 views.  RAMB36 claims both halves; two
   RAMB18 instances may share a tile only by occupying distinct proven slots.
@@ -179,7 +184,9 @@ Any rejected certificate returns to the owning upstream placer implementation.
    now also pass the standard physical bridge, RapidWright routing, routed
    timing validation, and standalone OpenSTA 3.1.  Their final WNS values are
    +9.0814 ns, +9.009399 ns, and +8.8682 ns respectively, all with TNS 0.
-   Clock legality and multi-SLR capacity remain gates.
+   Clock-region export and fail-closed structural validation now pass source
+   and unit gates; compiled real-device clock legality and multi-SLR capacity
+   remain gates.
 3. **RAMB tile-group export and consumption gates -- complete.**
    The pinned real XCVU19P database exports and independently validates 2,160
    tile groups with distinct lower-RAMB18, upper-RAMB18, and whole-RAMB36

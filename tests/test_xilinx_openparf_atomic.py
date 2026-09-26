@@ -78,7 +78,9 @@ def _resource_rows(sites: str):
     return rows
 
 
-def _fixture(root: Path, *, coincident=False, mixed=False):
+def _fixture(
+    root: Path, *, coincident=False, mixed=False, clock_regions=False
+):
     mapped = root / "mapped.json"
     packed = root / "packed.json"
     architecture = root / "architecture.json"
@@ -162,6 +164,15 @@ def _fixture(root: Path, *, coincident=False, mixed=False):
             "x": 1, "y": 1, "tile": {"grid_col": 5, "grid_row": 9},
         },
     ]
+    if clock_regions:
+        columns = sorted({site["tile"]["grid_col"] for site in sites})
+        for site in sites:
+            site["physical_region"] = {
+                "slr": "SLR0",
+                "clock_region": (
+                    f"X{columns.index(site['tile']['grid_col'])}Y0"
+                ),
+            }
     templates = {"SLICEL": {
         "bels": [*lut_bels, *ff_bels], "alternative_templates": [],
     }}
@@ -412,6 +423,74 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["legalize_flag"], 1)
         self.assertEqual(config["detailed_place_flag"], 1)
         self.assertNotIn("fallback", config)
+
+    def test_clock_region_grid_is_exported_and_enabled_for_native_placement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(
+                root, clock_regions=True
+            )
+            output = root / "output"
+            manifest = export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output
+            )
+            config = json.loads((output / "openparf.json").read_text())
+            sites = (output / "design.scl").read_text()
+
+        self.assertIn("CLOCKREGIONS 2 1", sites)
+        self.assertIn("CLOCKREGION X0Y0 : 0 0 0 1 1 0", sites)
+        self.assertIn("CLOCKREGION X1Y0 : 1 0 1 1 1 1", sites)
+        self.assertIn("END CLOCKREGIONS", sites)
+        self.assertEqual(config["honor_clock_region_constraints"], 1)
+        self.assertEqual(config["confine_clock_region_flag"], 1)
+        self.assertEqual(config["count_ck_cr"], 1)
+        self.assertEqual(config["honor_half_column_constraints"], 0)
+        self.assertEqual(config["maximum_clock_per_clock_region"], 24)
+        self.assertEqual(config["maximum_clock_per_half_column"], 0)
+        self.assertEqual(manifest["clock_region_contract"], {
+            "width": 2,
+            "height": 1,
+            "maximum_clocks_per_region": 24,
+            "regions": [
+                {
+                    "name": "X0Y0", "x": 0, "y": 0, "slr": "SLR0",
+                    "bbox": [0, 0, 0, 1],
+                },
+                {
+                    "name": "X1Y0", "x": 1, "y": 0, "slr": "SLR0",
+                    "bbox": [1, 0, 1, 1],
+                },
+            ],
+        })
+
+    def test_partial_or_incomplete_clock_region_grid_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(
+                root, clock_regions=True
+            )
+            value = json.loads(architecture.read_text())
+            del value["sites"][0]["physical_region"]
+            architecture.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValidationError, "coverage is partial"):
+                export_xilinx_openparf_atomic(
+                    mapped, packed, architecture, root / "partial"
+                )
+
+            gap_root = root / "gap"
+            gap_root.mkdir()
+            mapped, packed, architecture = _fixture(
+                gap_root, clock_regions=True
+            )
+            value = json.loads(architecture.read_text())
+            for site in value["sites"]:
+                if site["physical_region"]["clock_region"] == "X1Y0":
+                    site["physical_region"]["clock_region"] = "X2Y0"
+            architecture.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValidationError, "grid is incomplete"):
+                export_xilinx_openparf_atomic(
+                    mapped, packed, architecture, root / "gap-output"
+                )
 
     def test_site_database_descriptor_and_metadata_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -24,7 +24,7 @@ def _cell(cell_type, connections, outputs):
 
 
 def write_openparf_runtime_fixture(
-    root: Path, *, include_hard: bool = False
+    root: Path, *, include_hard: bool = False, clock_regions: bool = False
 ) -> Tuple[Path, Path, Path]:
     """Write a 64-LUT/64-FF, 4x4-slice runtime smoke fixture.
 
@@ -181,6 +181,17 @@ def write_openparf_runtime_fixture(
                     "y": 0,
                     "tile": {"grid_col": x, "grid_row": 0},
                 })
+    if clock_regions:
+        x_midpoint = (min(site["tile"]["grid_col"] for site in sites)
+                      + max(site["tile"]["grid_col"] for site in sites) + 1) // 2
+        for site in sites:
+            site["physical_region"] = {
+                "slr": "SLR0",
+                "clock_region": (
+                    "X0Y0" if site["tile"]["grid_col"] < x_midpoint
+                    else "X1Y0"
+                ),
+            }
     architecture_path.write_text(json.dumps({
         "schema": "emuflow.archdb/v1",
         "part": "openparf-runtime-fixture",

@@ -16,6 +16,7 @@ from collections import Counter, defaultdict
 import hashlib
 import math
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -76,6 +77,8 @@ _FF_CLOCK = "C"
 _FF_ENABLE = "CE"
 _FF_SR = {"FDCE": "R", "FDRE": "R", "FDPE": "S", "FDSE": "S"}
 _TARGET_DENSITY = 0.75
+_CLOCK_REGION_NAME = re.compile(r"^X([0-9]+)Y([0-9]+)$")
+_MAX_CLOCKS_PER_REGION = 24
 
 
 def _site_claim(site_name: str) -> List[str]:
@@ -1076,9 +1079,30 @@ def _render_sites(
     grouped: Dict[Tuple[int, int], Dict[str, Any]] = {}
     for site, resources in sites:
         coordinate = _physical_coordinate(site)
+        region = site.get("physical_region")
+        if region is not None:
+            if (
+                not isinstance(region, Mapping)
+                or not isinstance(region.get("slr"), str)
+                or not region["slr"]
+                or not isinstance(region.get("clock_region"), str)
+                or not region["clock_region"]
+            ):
+                raise ValidationError(
+                    "ArchitectureDB physical_region is incomplete"
+                )
+            region = {
+                "slr": region["slr"],
+                "clock_region": region["clock_region"],
+            }
         group = grouped.setdefault(coordinate, {
             "resources": Counter(), "physical_sites": defaultdict(list),
+            "physical_region": region,
         })
+        if group["physical_region"] != region:
+            raise ValidationError(
+                "ArchitectureDB sites at one physical tile disagree on region"
+            )
         group["resources"].update(resources)
         tile = site.get("tile")
         site_index = (
@@ -1165,6 +1189,7 @@ def _render_sites(
             "site": all_names[0],
             "resources": dict(sorted(resources.items())),
             "physical_sites": physical_sites,
+            "physical_region": group["physical_region"],
         })
     # OpenPARF's Bookshelf reader derives a site's bounding box from the next
     # entry in the same column (or the top of the SITEMAP for the final entry).
@@ -1186,8 +1211,78 @@ def _render_sites(
             item["placement_x"] = item["dense_x"] + 0.5
             item["placement_y"] = (item["dense_y"] + next_y) * 0.5
     lines.append("END SITEMAP")
+    present_regions = [
+        item["physical_region"] for item in site_map
+        if item["physical_region"] is not None
+    ]
+    if present_regions and len(present_regions) != len(site_map):
+        raise ValidationError(
+            "ArchitectureDB clock-region coverage is partial"
+        )
+    clock_region_contract = None
+    if present_regions:
+        by_name: Dict[str, Dict[str, Any]] = {}
+        for item in site_map:
+            region = item["physical_region"]
+            name = region["clock_region"]
+            match = _CLOCK_REGION_NAME.fullmatch(name)
+            if match is None:
+                raise ValidationError(
+                    f"ArchitectureDB clock region {name!r} is not canonical"
+                )
+            index = (int(match.group(1)), int(match.group(2)))
+            entry = by_name.setdefault(name, {
+                "index": index, "slr": region["slr"], "sites": [],
+            })
+            if entry["index"] != index or entry["slr"] != region["slr"]:
+                raise ValidationError(
+                    f"ArchitectureDB clock region {name!r} is inconsistent"
+                )
+            entry["sites"].append((item["dense_x"], item["dense_y"]))
+        width = max(entry["index"][0] for entry in by_name.values()) + 1
+        height = max(entry["index"][1] for entry in by_name.values()) + 1
+        expected = {(x, y) for x in range(width) for y in range(height)}
+        observed = {entry["index"] for entry in by_name.values()}
+        if observed != expected:
+            raise ValidationError(
+                "ArchitectureDB clock-region grid is incomplete"
+            )
+        contract_regions = []
+        lines.extend(["", f"CLOCKREGIONS {width} {height}"])
+        for name, entry in sorted(
+            by_name.items(), key=lambda item: item[1]["index"]
+        ):
+            xs = [coordinate[0] for coordinate in entry["sites"]]
+            ys = [coordinate[1] for coordinate in entry["sites"]]
+            xl, xh = min(xs), max(xs)
+            yl, yh = min(ys), max(ys)
+            for item in site_map:
+                if (
+                    xl <= item["dense_x"] <= xh
+                    and yl <= item["dense_y"] <= yh
+                    and item["physical_region"]["clock_region"] != name
+                ):
+                    raise ValidationError(
+                        f"ArchitectureDB clock region {name!r} is not rectangular"
+                    )
+            ymid = yl + (yh - yl + 1) // 2
+            lines.append(
+                f"  CLOCKREGION {name} : {xl} {yl} {xh} {yh} {ymid} {xl}"
+            )
+            contract_regions.append({
+                "name": name, "x": entry["index"][0],
+                "y": entry["index"][1], "slr": entry["slr"],
+                "bbox": [xl, yl, xh, yh],
+            })
+        lines.append("END CLOCKREGIONS")
+        clock_region_contract = {
+            "width": width, "height": height,
+            "maximum_clocks_per_region": _MAX_CLOCKS_PER_REGION,
+            "regions": contract_regions,
+        }
     return "\n".join(lines) + "\n", {
         "x_axis": x_axis, "y_axis": y_axis, "sites": site_map,
+        "clock_regions": clock_region_contract,
     }
 
 
@@ -1442,8 +1537,17 @@ def export_xilinx_openparf_atomic(
         "gp_adjust_area": 0, "gp_adjust_area_types": [],
         "gp_adjust_route_area": 0, "gp_adjust_pin_area": 0,
         "gp_adjust_resource_area": 0,
-        "honor_clock_region_constraints": 0,
+        "honor_clock_region_constraints": int(
+            coordinate_system["clock_regions"] is not None
+        ),
         "honor_half_column_constraints": 0,
+        "confine_clock_region_flag": int(
+            coordinate_system["clock_regions"] is not None
+        ),
+        "count_ck_cr": int(coordinate_system["clock_regions"] is not None),
+        "maximum_clock_per_clock_region": _MAX_CLOCKS_PER_REGION,
+        "maximum_clock_per_half_column": 0,
+        "clock_region_capacity": _MAX_CLOCKS_PER_REGION,
         "route_flag": 0, "slr_aware_flag": 0,
         "result_dir": str((output_dir / "results").resolve()),
     }
@@ -1701,6 +1805,7 @@ def export_xilinx_openparf_atomic(
             for resource in sorted(per_site_capacity, key=_resource_sort_key)
         },
         "placement_region": placement_region,
+        "clock_region_contract": coordinate_system["clock_regions"],
         "density_contract": density_contract,
         "runtime_validation": "unverified",
         "constraint_policy": {
