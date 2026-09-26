@@ -1099,8 +1099,14 @@ The native atomic and CARRY8 adapters store the complete XCVU19P site map once
 in an indexed `site-map.sqlite3` placement contract.  `name_map.json` contains atom
 identity, coordinate axes, and descriptors only; placement validation queries
 the selected coordinates and resource rows instead of repeatedly parsing a
-117 MB JSON site table.  Typed hard-block windows remain in their single
-source-sealed constraint contract and are not duplicated into the name map.
+117 MB JSON site table.  The version-2 physical-macro contract also avoids
+enumerating every legal slice once per MUX member.  A MUX group stores only its
+member resource/BEL-slot template and the sealed legal-window count; the
+OpenPARF legalizer streams candidate slice coordinates from the same immutable
+SQLite site contract and retains only the best conflict-free candidate.  DSP,
+BRAM, and URAM cascade windows remain explicit because they encode directed
+native adjacency rather than a repeated uniform site template.  No full site
+or MUX-window JSON is duplicated into the name map or parsed in the hot path.
 On the 512,880-site XCVU19P fixture, an isolated old full-JSON parse took
 8.32 seconds and 843 MiB peak RSS, while the indexed lookup of the ten
 coordinates used by the real placement took 0.73 seconds and 24.1 MiB peak

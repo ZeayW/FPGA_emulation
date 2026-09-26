@@ -46,7 +46,7 @@ XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-site-database/v1"
 )
 OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA = (
-    "openparf.physical-macro-groups/v1"
+    "openparf.physical-macro-groups/v2"
 )
 
 _HARD_RESOURCES = {
@@ -354,6 +354,7 @@ def _load_physical_macro_groups(
         contract.get("schema") != OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA
         or contract.get("status") != "pass"
         or not isinstance(groups, list) or len(groups) != count
+        or contract.get("site_database") != name_map.get("site_database")
     ):
         raise ValidationError("typed hardblock constraint contract is invalid")
     return groups
@@ -1451,36 +1452,14 @@ def export_xilinx_openparf_atomic(
         macro for macro in macro_contract.get("site_macros", [])
         if macro.get("kind") in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
     ]
-    slice_windows = []
-    for item in coordinate_system["sites"]:
-        physical_slices = item.get("physical_sites", {}).get("LUT", [])
-        if len(physical_slices) != 1:
-            continue
-        slice_windows.append((item, physical_slices[0]))
+    slice_window_count = sum(
+        len(item.get("physical_sites", {}).get("LUT", [])) == 1
+        for item in coordinate_system["sites"]
+    )
     for macro in mux_macros:
         members = macro["members"]
         source_instances = [member["instance"] for member in members]
-        windows = []
-        for coordinate, site_name in slice_windows:
-            window = []
-            for member in members:
-                cell_type = member["cell_type"]
-                resource = (
-                    "LUT" if cell_type in LUT_TYPES
-                    else _MUX_RESOURCES[cell_type]
-                )
-                role = member["physical_role"]
-                window.append({
-                    "site": site_name,
-                    "resource": resource,
-                    "x": coordinate["placement_x"],
-                    "y": coordinate["placement_y"],
-                    "z": _slice_role_slot(cell_type, role),
-                    "claims": _site_claim(site_name),
-                    "bel": role,
-                })
-            windows.append(window)
-        if not windows:
+        if not slice_window_count:
             raise ValidationError(
                 f"MUX physical macro {macro['id']!r} has no legal slice window"
             )
@@ -1495,7 +1474,24 @@ def export_xilinx_openparf_atomic(
             }),
             "instances": [names[name] for name in source_instances],
             "source_instances": source_instances,
-            "windows": windows,
+            "window_count": slice_window_count,
+            "window_template": {
+                "kind": "same-site-slice/v1",
+                "site_resource": "LUT",
+                "members": [
+                    {
+                        "resource": (
+                            "LUT" if member["cell_type"] in LUT_TYPES
+                            else _MUX_RESOURCES[member["cell_type"]]
+                        ),
+                        "z": _slice_role_slot(
+                            member["cell_type"], member["physical_role"]
+                        ),
+                        "bel": member["physical_role"],
+                    }
+                    for member in members
+                ],
+            },
         })
     if typed_hardblock_mode:
         family_for_resource = {
@@ -1638,6 +1634,13 @@ def export_xilinx_openparf_atomic(
         }
         if covered_hardblocks != expected_hardblocks:
             raise ValidationError("typed hardblock constraints have incomplete ownership")
+    site_database_path = output_dir / "site-map.sqlite3"
+    site_count = _write_site_database(site_database_path, coordinate_system)
+    site_database_descriptor = {
+        "schema": XILINX_OPENPARF_SITE_DATABASE_SCHEMA,
+        "file": site_database_path.name,
+        "sites": site_count,
+    }
     if hardblock_groups:
         constraint_path = output_dir / "physical-macro-groups.json"
         source_identity = {
@@ -1654,6 +1657,7 @@ def export_xilinx_openparf_atomic(
             "schema": OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA,
             "status": "pass", "groups": hardblock_groups,
             "source": source_identity,
+            "site_database": site_database_descriptor,
         }, compact=True)
         config["typed_hardblock_chain_constraints"] = str(
             constraint_path.resolve()
@@ -1661,8 +1665,6 @@ def export_xilinx_openparf_atomic(
     # OpenPARF assigns area-type IDs by first appearance in this mapping and
     # its DataCollections currently requires FF to be area type 1.  Preserve
     # the deliberate LUT, FF, then stable hard-resource model order.
-    site_database_path = output_dir / "site-map.sqlite3"
-    site_count = _write_site_database(site_database_path, coordinate_system)
     write_json(
         output_dir / "openparf.json", config, compact=True, sort_keys=False
     )
@@ -1676,11 +1678,7 @@ def export_xilinx_openparf_atomic(
             "x_axis": coordinate_system["x_axis"],
             "y_axis": coordinate_system["y_axis"],
         },
-        "site_database": {
-            "schema": XILINX_OPENPARF_SITE_DATABASE_SCHEMA,
-            "file": site_database_path.name,
-            "sites": site_count,
-        },
+        "site_database": site_database_descriptor,
     }
     if hardblock_groups:
         name_map["physical_macro_constraints"] = {
@@ -1941,6 +1939,8 @@ def validate_xilinx_openparf_atomic_placement(
             physical_bel = compatible[0]
             placed[openparf_name] = {
                 **atom, "site": site_name, "resource": resource, "z": z,
+                "x": site_entry["placement_x"],
+                "y": site_entry["placement_y"],
                 "bel": physical_bel["name"],
                 "placement_mode": (
                     candidate["placement_mode"]
@@ -1988,26 +1988,64 @@ def validate_xilinx_openparf_atomic_placement(
                 raise ValidationError(
                     "typed hardblock group references an unknown instance"
                 ) from error
-            matching_windows = []
-            for window in group.get("windows", []):
-                if not isinstance(window, list) or len(window) != len(selected):
-                    continue
-                if not all(isinstance(entry, Mapping) for entry in window):
-                    continue
-                if all(
-                    entry.get("site") == item["site"]
-                    and isinstance(entry.get("z"), (int, float))
-                    and not isinstance(entry.get("z"), bool)
-                    and float(entry["z"]) == float(item["z"])
-                    for entry, item in zip(window, selected)
-                ):
-                    matching_windows.append(window)
-            if len(matching_windows) != 1:
-                raise ValidationError(
-                    "OpenPARF typed hardblock placement does not match exactly "
-                    "one certified window"
+            template = group.get("window_template")
+            if group.get("kind") == "site_macro" and template is not None:
+                members = (
+                    template.get("members")
+                    if isinstance(template, Mapping) else None
                 )
-            selected_window = matching_windows[0]
+                if (
+                    not isinstance(template, Mapping)
+                    or template.get("kind") != "same-site-slice/v1"
+                    or template.get("site_resource") != "LUT"
+                    or not isinstance(group.get("window_count"), int)
+                    or isinstance(group.get("window_count"), bool)
+                    or group["window_count"] <= 0
+                    or not isinstance(members, list)
+                    or len(members) != len(selected)
+                    or not all(isinstance(member, Mapping) for member in members)
+                    or len({item["site"] for item in selected}) != 1
+                    or not all(
+                        member.get("resource") == item["resource"]
+                        and member.get("bel") == item["bel"]
+                        and isinstance(member.get("z"), (int, float))
+                        and not isinstance(member.get("z"), bool)
+                        and float(member["z"]) == float(item["z"])
+                        for member, item in zip(members, selected)
+                    )
+                ):
+                    raise ValidationError(
+                        "OpenPARF site macro does not match its compact window template"
+                    )
+                selected_window = [
+                    {
+                        **dict(member), "site": item["site"],
+                        "x": item["x"], "y": item["y"],
+                        "claims": _site_claim(item["site"]),
+                    }
+                    for member, item in zip(members, selected)
+                ]
+            else:
+                matching_windows = []
+                for window in group.get("windows", []):
+                    if not isinstance(window, list) or len(window) != len(selected):
+                        continue
+                    if not all(isinstance(entry, Mapping) for entry in window):
+                        continue
+                    if all(
+                        entry.get("site") == item["site"]
+                        and isinstance(entry.get("z"), (int, float))
+                        and not isinstance(entry.get("z"), bool)
+                        and float(entry["z"]) == float(item["z"])
+                        for entry, item in zip(window, selected)
+                    ):
+                        matching_windows.append(window)
+                if len(matching_windows) != 1:
+                    raise ValidationError(
+                        "OpenPARF typed hardblock placement does not match exactly "
+                        "one certified window"
+                    )
+                selected_window = matching_windows[0]
             claims = []
             for entry in selected_window:
                 raw_claims = entry.get("claims")

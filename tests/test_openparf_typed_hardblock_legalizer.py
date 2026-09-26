@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,17 +31,59 @@ def _site(name, resource, x, y):
 
 
 class TypedHardblockLegalizerTest(unittest.TestCase):
-    def _operator(self, value, names):
+    def _operator(self, value, names, site_rows=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        path = Path(temporary.name) / "constraints.json"
+        root = Path(temporary.name)
+        path = root / "constraints.json"
+        if site_rows is not None:
+            database_path = root / "sites.sqlite3"
+            with sqlite3.connect(database_path) as database:
+                database.executescript("""
+                    CREATE TABLE metadata (
+                        key TEXT PRIMARY KEY, value TEXT NOT NULL
+                    ) WITHOUT ROWID;
+                    CREATE TABLE sites (
+                        dense_x INTEGER NOT NULL, dense_y INTEGER NOT NULL,
+                        physical_x INTEGER NOT NULL, physical_y INTEGER NOT NULL,
+                        placement_x REAL NOT NULL, placement_y REAL NOT NULL,
+                        site TEXT NOT NULL, PRIMARY KEY(dense_x, dense_y)
+                    ) WITHOUT ROWID;
+                    CREATE TABLE physical_sites (
+                        resource TEXT NOT NULL, physical_site TEXT NOT NULL,
+                        dense_x INTEGER NOT NULL, dense_y INTEGER NOT NULL,
+                        slot INTEGER NOT NULL,
+                        PRIMARY KEY(resource, physical_site)
+                    ) WITHOUT ROWID;
+                """)
+                database.executemany(
+                    "INSERT INTO metadata VALUES (?, ?)",
+                    [
+                        ("schema", "emuflow.openparf-site-database/v1"),
+                        ("site_count", str(len(site_rows))),
+                    ],
+                )
+                for dense_x, dense_y, site, x, y in site_rows:
+                    database.execute(
+                        "INSERT INTO sites VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (dense_x, dense_y, dense_x, dense_y, x, y, site),
+                    )
+                    database.execute(
+                        "INSERT INTO physical_sites VALUES (?, ?, ?, ?, ?)",
+                        ("LUT", site, dense_x, dense_y, 0),
+                    )
+            value["site_database"] = {
+                "schema": "emuflow.openparf-site-database/v1",
+                "file": database_path.name,
+                "sites": len(site_rows),
+            }
         path.write_text(json.dumps(value), encoding="utf-8")
         data = _Data(len(names))
         return TypedHardblockLegalizer(path, _PlaceDB(names), data), data
 
     def test_uses_global_placement_cost_and_avoids_overlap(self):
         value = {
-            "schema": "openparf.physical-macro-groups/v1", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
             "groups": [
                 {
                     "id": "chain", "kind": "cascade", "resource": "DSP48E2",
@@ -72,7 +115,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_fails_closed_when_no_conflict_free_window_exists(self):
         value = {
-            "schema": "openparf.physical-macro-groups/v1", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
             "groups": [
                 {"id": "a", "kind": "singleton", "resource": "URAM288", "instances": ["u0"],
                  "windows": [[_site("U0", "URAM288", 0, 0)]]},
@@ -86,7 +129,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_rejects_duplicate_instance_ownership(self):
         value = {
-            "schema": "openparf.physical-macro-groups/v1", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
             "groups": [
                 {"id": "a", "kind": "singleton", "resource": "DSP48E2", "instances": ["d0"],
                  "windows": [[_site("D0", "DSP48E2", 0, 0)]]},
@@ -107,7 +150,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
             "x": 3, "y": 4, "z": 1, "claims": ["bram:BRAM_X0Y0:upper"],
         }
         value = {
-            "schema": "openparf.physical-macro-groups/v1", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
             "groups": [
                 {
                     "id": "lo", "kind": "singleton", "resource": "RAMB18E2", "instances": ["r0"],
@@ -149,7 +192,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
             }
 
         value = {
-            "schema": "openparf.physical-macro-groups/v1", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
             "groups": [{
                 "id": "mux", "kind": "site_macro", "resource": "SLICE_MACRO",
                 "owned_resources": ["MUXF7"],
@@ -166,6 +209,41 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
         operator.legalize_site_macros(pos)
         self.assertEqual(pos.tolist(), [
             [2.0, 3.0, 1.0], [2.0, 3.0, 3.0], [2.0, 3.0, 0.0],
+        ])
+        self.assertTrue(torch.all(data.inst_lock_mask))
+
+    def test_compact_same_site_template_streams_indexed_windows(self):
+        value = {
+            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
+            "groups": [{
+                "id": "mux", "kind": "site_macro", "resource": "SLICE_MACRO",
+                "owned_resources": ["MUXF7"],
+                "instances": ["l0", "l1", "m0"],
+                "window_count": 2,
+                "window_template": {
+                    "kind": "same-site-slice/v1", "site_resource": "LUT",
+                    "members": [
+                        {"resource": "LUT", "z": 1, "bel": "A6LUT"},
+                        {"resource": "LUT", "z": 3, "bel": "B6LUT"},
+                        {"resource": "MUXF7", "z": 0, "bel": "F7MUX_AB"},
+                    ],
+                },
+            }],
+        }
+        operator, data = self._operator(
+            value,
+            ["l0", "l1", "m0"],
+            site_rows=[
+                (0, 0, "SLICE_X0Y0", 0.0, 0.0),
+                (1, 0, "SLICE_X1Y0", 9.0, 4.0),
+            ],
+        )
+        pos = torch.tensor([
+            [8.5, 4.0, 0.0], [9.2, 4.0, 0.0], [9.0, 3.8, 0.0],
+        ])
+        operator.legalize_site_macros(pos)
+        self.assertEqual(pos.tolist(), [
+            [9.0, 4.0, 1.0], [9.0, 4.0, 3.0], [9.0, 4.0, 0.0],
         ])
         self.assertTrue(torch.all(data.inst_lock_mask))
 

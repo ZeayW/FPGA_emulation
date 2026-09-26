@@ -1218,11 +1218,15 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             group = contract["groups"][0]
             self.assertEqual(group["kind"], "site_macro")
             self.assertEqual(group["owned_resources"], ["MUXF7"])
-            self.assertEqual(len(group["windows"]), 4)
-            self.assertTrue(all(
-                len({entry["site"] for entry in window}) == 1
-                for window in group["windows"]
-            ))
+            self.assertNotIn("windows", group)
+            self.assertEqual(group["window_count"], 4)
+            self.assertEqual(
+                group["window_template"]["kind"], "same-site-slice/v1"
+            )
+            self.assertEqual(
+                [member["z"] for member in group["window_template"]["members"]],
+                [1, 3, 0],
+            )
             names = json.loads((output / "name_map.json").read_text(encoding="utf-8"))
             openparf = {atom["instance"]: atom["openparf"] for atom in names["atoms"]}
             sites = load_xilinx_openparf_atomic_sites(output / "name_map.json")
@@ -1318,11 +1322,11 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 group = contract["groups"][0]
                 self.assertEqual(len(group["instances"]), member_count)
                 self.assertEqual(set(group["owned_resources"]), resources)
-                self.assertTrue(all(
-                    len(window) == member_count
-                    and len({entry["site"] for entry in window}) == 1
-                    for window in group["windows"]
-                ))
+                self.assertNotIn("windows", group)
+                self.assertEqual(group["window_count"], 4)
+                self.assertEqual(
+                    len(group["window_template"]["members"]), member_count
+                )
 
                 sites = {
                     site["site"]: site
@@ -1330,18 +1334,22 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                         output / "name_map.json"
                     )
                 }
-                window = group["windows"][0]
+                macro_site_entry = next(
+                    site for site in sites.values() if "LUT" in site["resources"]
+                )
                 lines = []
-                for instance, entry in zip(group["instances"], window):
-                    site = sites[entry["site"]]
+                for instance, entry in zip(
+                    group["instances"], group["window_template"]["members"]
+                ):
                     lines.append(
-                        f"{instance} {site['dense_x']} {site['dense_y']} {entry['z']}"
+                        f"{instance} {macro_site_entry['dense_x']} "
+                        f"{macro_site_entry['dense_y']} {entry['z']}"
                     )
                 names = json.loads(
                     (output / "name_map.json").read_text(encoding="utf-8")
                 )
                 ff = next(atom for atom in names["atoms"] if atom["instance"] == "ff")
-                macro_site = window[0]["site"]
+                macro_site = macro_site_entry["site"]
                 ff_site = next(site for site in sites.values()
                                if site["site"] != macro_site and "FF" in site["resources"])
                 lines.append(

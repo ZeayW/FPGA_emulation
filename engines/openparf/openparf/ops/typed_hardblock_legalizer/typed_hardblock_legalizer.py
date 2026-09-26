@@ -10,11 +10,14 @@ OpenPARF has returned.
 
 import json
 import math
+from pathlib import Path
+import sqlite3
 
 import torch
 
 
-CONSTRAINT_SCHEMA = "openparf.physical-macro-groups/v1"
+CONSTRAINT_SCHEMA = "openparf.physical-macro-groups/v2"
+SITE_DATABASE_SCHEMA = "emuflow.openparf-site-database/v1"
 SUPPORTED_RESOURCES = {"DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"}
 SUPPORTED_SITE_RESOURCES = {"LUT", "MUXF7", "MUXF8", "MUXF9"}
 
@@ -64,10 +67,41 @@ class TypedHardblockLegalizer(object):
     """Place complete chains and typed singletons on certified site windows."""
 
     def __init__(self, constraint_file, placedb, data_cls):
-        with open(constraint_file, "r") as stream:
+        constraint_path = Path(constraint_file).resolve()
+        with constraint_path.open("r") as stream:
             value = json.load(stream)
         if value.get("schema") != CONSTRAINT_SCHEMA or value.get("status") != "pass":
             raise ValueError("typed hardblock chain constraint header is invalid")
+
+        self.site_database = None
+        database_descriptor = value.get("site_database")
+        if database_descriptor is not None:
+            if not isinstance(database_descriptor, dict):
+                raise ValueError("site database descriptor must be an object")
+            relative = database_descriptor.get("file")
+            site_count = database_descriptor.get("sites")
+            if (
+                database_descriptor.get("schema") != SITE_DATABASE_SCHEMA
+                or not isinstance(relative, str)
+                or not relative
+                or Path(relative).name != relative
+                or isinstance(site_count, bool)
+                or not isinstance(site_count, int)
+                or site_count <= 0
+            ):
+                raise ValueError("site database descriptor is invalid")
+            database_path = constraint_path.parent / relative
+            if not database_path.is_file():
+                raise ValueError("site database is missing")
+            uri = "file:{}?mode=ro&immutable=1".format(database_path)
+            with sqlite3.connect(uri, uri=True) as database:
+                metadata = dict(database.execute("SELECT key, value FROM metadata"))
+            if (
+                metadata.get("schema") != SITE_DATABASE_SCHEMA
+                or metadata.get("site_count") != str(site_count)
+            ):
+                raise ValueError("site database metadata is invalid")
+            self.site_database = database_path
 
         self.data_cls = data_cls
         self.groups = []
@@ -95,36 +129,92 @@ class TypedHardblockLegalizer(object):
                 raise ValueError("typed hardblock instance appears twice: {}".format(sorted(overlap)))
             instance_names.update(names)
             windows = []
-            for window_index, raw_window in enumerate(raw.get("windows", [])):
-                window_context = "{}.windows[{}]".format(context, window_index)
-                if not isinstance(raw_window, list) or len(raw_window) != len(names):
-                    raise ValueError("{} has the wrong length".format(window_context))
-                window = [
-                    _site(site, resource, "{}[{}]".format(window_context, site_index))
-                    for site_index, site in enumerate(raw_window)
-                ]
-                claims = [claim for site in window for claim in site["claims"]]
-                if resource == "SLICE_MACRO":
-                    site_names = {site["site"] for site in window}
-                    unique_claims = set(claims)
+            window_template = raw.get("window_template")
+            if window_template is not None:
+                if resource != "SLICE_MACRO" or kind != "site_macro":
+                    raise ValueError(
+                        "{}.window_template is only valid for a site macro".format(
+                            context
+                        )
+                    )
+                if self.site_database is None:
+                    raise ValueError(
+                        "{}.window_template requires the site database".format(context)
+                    )
+                members = (
+                    window_template.get("members")
+                    if isinstance(window_template, dict) else None
+                )
+                if (
+                    not isinstance(window_template, dict)
+                    or window_template.get("kind") != "same-site-slice/v1"
+                    or window_template.get("site_resource") != "LUT"
+                    or not isinstance(members, list)
+                    or len(members) != len(names)
+                ):
+                    raise ValueError("{}.window_template is invalid".format(context))
+                normalized_members = []
+                for member_index, member in enumerate(members):
+                    member_context = "{}.window_template.members[{}]".format(
+                        context, member_index
+                    )
+                    if not isinstance(member, dict):
+                        raise ValueError("{} must be an object".format(member_context))
+                    member_resource = member.get("resource")
+                    coordinate = member.get("z")
                     if (
-                        len(site_names) != 1
-                        or unique_claims != {"site:" + next(iter(site_names))}
+                        member_resource not in SUPPORTED_SITE_RESOURCES
+                        or isinstance(coordinate, bool)
+                        or not isinstance(coordinate, (int, float))
+                        or not math.isfinite(float(coordinate))
                     ):
+                        raise ValueError("{} is invalid".format(member_context))
+                    normalized_members.append({
+                        "resource": member_resource,
+                        "z": float(coordinate),
+                    })
+                window_count = raw.get("window_count")
+                if (
+                    isinstance(window_count, bool)
+                    or not isinstance(window_count, int)
+                    or window_count <= 0
+                ):
+                    raise ValueError("{}.window_count is invalid".format(context))
+                window_template = {
+                    "site_resource": "LUT", "members": normalized_members,
+                }
+            else:
+                for window_index, raw_window in enumerate(raw.get("windows", [])):
+                    window_context = "{}.windows[{}]".format(context, window_index)
+                    if not isinstance(raw_window, list) or len(raw_window) != len(names):
+                        raise ValueError("{} has the wrong length".format(window_context))
+                    window = [
+                        _site(site, resource, "{}[{}]".format(window_context, site_index))
+                        for site_index, site in enumerate(raw_window)
+                    ]
+                    claims = [claim for site in window for claim in site["claims"]]
+                    if resource == "SLICE_MACRO":
+                        site_names = {site["site"] for site in window}
+                        unique_claims = set(claims)
+                        if (
+                            len(site_names) != 1
+                            or unique_claims != {"site:" + next(iter(site_names))}
+                        ):
+                            raise ValueError(
+                                "{} is not one exclusive same-site window".format(
+                                    window_context
+                                )
+                            )
+                    elif len(claims) != len(set(claims)):
                         raise ValueError(
-                            "{} is not one exclusive same-site window".format(
+                            "{} has internally conflicting occupancy claims".format(
                                 window_context
                             )
                         )
-                elif len(claims) != len(set(claims)):
-                    raise ValueError(
-                        "{} has internally conflicting occupancy claims".format(
-                            window_context
-                        )
-                    )
-                windows.append(window)
-            if not windows:
-                raise ValueError("{} has no legal windows".format(context))
+                    windows.append(window)
+                if not windows:
+                    raise ValueError("{} has no legal windows".format(context))
+                window_count = len(windows)
             owned_resources = (
                 sorted({_string(item, context + ".owned_resources")
                         for item in raw.get("owned_resources", [])})
@@ -150,6 +240,8 @@ class TypedHardblockLegalizer(object):
                 "names": names,
                 "ids": [int(placedb.nameToInst(name)) for name in names],
                 "windows": windows,
+                "window_template": window_template,
+                "window_count": window_count,
             })
 
         if not self.groups:
@@ -171,6 +263,39 @@ class TypedHardblockLegalizer(object):
         ), dtype=torch.int64)
         self.last_assignment = None
 
+    def _iter_windows(self, group):
+        template = group["window_template"]
+        if template is None:
+            for window in group["windows"]:
+                yield window
+            return
+        uri = "file:{}?mode=ro&immutable=1".format(self.site_database)
+        query = (
+            "SELECT p.physical_site, s.placement_x, s.placement_y "
+            "FROM physical_sites p JOIN sites s USING(dense_x, dense_y) "
+            "WHERE p.resource = ? "
+            "ORDER BY s.dense_x, s.dense_y, p.slot, p.physical_site"
+        )
+        emitted = 0
+        with sqlite3.connect(uri, uri=True) as database:
+            for site, x, y in database.execute(
+                query, (template["site_resource"],)
+            ):
+                emitted += 1
+                yield [
+                    {
+                        "site": site,
+                        "resource": member["resource"],
+                        "x": float(x), "y": float(y), "z": member["z"],
+                        "claims": ["site:" + site],
+                    }
+                    for member in template["members"]
+                ]
+        if emitted != group["window_count"]:
+            raise RuntimeError(
+                "compact site-window count disagrees with the sealed contract"
+            )
+
     def _cost(self, group, window, pos_xyz):
         result = 0.0
         for inst_id, site in zip(group["ids"], window):
@@ -187,29 +312,31 @@ class TypedHardblockLegalizer(object):
         # deterministic conflict-aware heuristic, not an exact optimizer.
         ordered = sorted(
             [group for group in self.groups if group["kind"] in kinds],
-            key=lambda group: (len(group["windows"]), -len(group["ids"]), group["id"]),
+            key=lambda group: (
+                group["window_count"], -len(group["ids"]), group["id"]
+            ),
         )
         with torch.no_grad():
             for group in ordered:
-                candidates = []
-                for window in group["windows"]:
+                best = None
+                for window in self._iter_windows(group):
                     claims = tuple(sorted(set(
                         claim for site in window for claim in site["claims"]
                     )))
                     if occupied.isdisjoint(claims):
                         site_names = tuple(site["site"] for site in window)
-                        candidates.append((
+                        candidate = (
                             self._cost(group, window, local), site_names,
                             claims, window,
-                        ))
-                if not candidates:
+                        )
+                        if best is None or candidate[:3] < best[:3]:
+                            best = candidate
+                if best is None:
                     raise RuntimeError(
                         "typed hardblock group legalization has no conflict-free window for {}"
                         .format(group["id"])
                     )
-                _cost, _site_names, claims, selected = min(
-                    candidates, key=lambda item: (item[0], item[1], item[2])
-                )
+                _cost, _site_names, claims, selected = best
                 occupied.update(claims)
                 for inst_id, name, site in zip(group["ids"], group["names"], selected):
                     local[inst_id, 0] = site["x"]

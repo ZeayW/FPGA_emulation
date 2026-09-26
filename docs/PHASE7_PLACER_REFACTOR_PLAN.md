@@ -84,6 +84,12 @@ capability.  Unsupported candidates do not delay the OpenPARF primary route.
   coordinate axes, and a descriptor for that database; validators query only
   the coordinates and resource rows used by the candidate.  Do not duplicate
   the site table or hard-block windows in a large JSON hot path.
+- Represent uniform same-slice MUXF7/F8/F9 legality as one compact member/BEL
+  template plus a sealed window count.  Stream the legal slice coordinates
+  from ``site-map.sqlite3`` while selecting a window; never materialize the
+  Cartesian repetition of every macro member at every slice in JSON or retain
+  every candidate dictionary in memory.  Directed DSP/BRAM/URAM cascade
+  windows remain explicit because the device adjacency itself is nonuniform.
 - The real 512,880-site XCVU19P gate must retain the measured indexed-contract
   evidence: 8.32 seconds/843 MiB for the former full JSON parse versus
   0.73 seconds/24.1 MiB for the ten-coordinate query, with exact selected-row
