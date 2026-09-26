@@ -17,7 +17,7 @@ import torch
 
 
 CONSTRAINT_SCHEMA = "openparf.physical-macro-groups/v2"
-SITE_DATABASE_SCHEMA = "emuflow.openparf-site-database/v1"
+SITE_DATABASE_SCHEMA = "emuflow.openparf-atomic-site-database/v1"
 SUPPORTED_RESOURCES = {"DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"}
 SUPPORTED_SITE_RESOURCES = {"LUT", "MUXF7", "MUXF8", "MUXF9"}
 

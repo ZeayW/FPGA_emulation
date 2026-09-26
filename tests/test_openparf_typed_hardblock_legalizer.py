@@ -59,7 +59,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
                 database.executemany(
                     "INSERT INTO metadata VALUES (?, ?)",
                     [
-                        ("schema", "emuflow.openparf-site-database/v1"),
+                        ("schema", "emuflow.openparf-atomic-site-database/v1"),
                         ("site_count", str(len(site_rows))),
                     ],
                 )
@@ -73,7 +73,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
                         ("LUT", site, dense_x, dense_y, 0),
                     )
             value["site_database"] = {
-                "schema": "emuflow.openparf-site-database/v1",
+                "schema": "emuflow.openparf-atomic-site-database/v1",
                 "file": database_path.name,
                 "sites": len(site_rows),
             }
