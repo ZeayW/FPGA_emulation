@@ -339,6 +339,17 @@ def validate_xilinx_native_device_constraints(
                 chain_slrs.add(site["physical_region"]["slr"])
             if len(chain_slrs) != 1:
                 raise ValidationError(f"{chain_context}: chain crosses SLRs")
+            if kind == "BRAM_CASCADE":
+                chain_clock_regions = {
+                    architecture_sites[site_name]["physical_region"][
+                        "clock_region"
+                    ]
+                    for site_name in chain
+                }
+                if len(chain_clock_regions) != 1:
+                    raise ValidationError(
+                        f"{chain_context}: BRAM chain crosses clock regions"
+                    )
             canonical_chains.append(tuple(chain))
             observed_edges += len(chain) - 1
         if canonical_chains != sorted(canonical_chains):

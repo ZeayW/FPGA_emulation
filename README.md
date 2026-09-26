@@ -1044,14 +1044,17 @@ a compact native-window contract owns every DSP/BRAM/URAM chain or singleton,
 excludes those instances from ordinary singleton MCF, assigns whole chains
 using deterministic global-placement displacement cost, and freezes the result
 before ISM. An independent checker replays exact native adjacency. This new
-operator has now passed its compiled XCVU19P DSP gate through native placement:
-132 atoms occupy 14 sites, the two DSP48E2 instances use one certified adjacent
-DSP cascade, and singleton RAMB36E2/URAM288 instances plus all LUT/FF atoms pass
-the independent placement checker.  The standard Route A bridge now preserves
+operator has now passed its compiled XCVU19P DSP gate through the full physical
+handoff. OpenPARF placed 130 atoms into 12 occupied sites while preserving one
+30-lane ACOUT-to-ACIN cascade. RapidWright routed 49 certificate nets, 91 sinks,
+and 493 PIPs with zero missing or unrouted sinks; routed timing covered 48 exact
+logical endpoints at a maximum 1.350700195 ns; and independent upstream OpenSTA
+3.1.0 validated 62 paths at WNS +27.377401 ns and TNS 0 ns. The qualification
+fixture uses real primitive bus widths and the production Xilinx packer, so a
+scalar placeholder cannot satisfy this gate. The standard Route A bridge now preserves
 the source-sealed hard-block cascade graph while materializing OpenPARF's final
 site grouping; a cascade-bearing certificate without its source packing fails
-closed.  RapidWright routing and standalone OpenSTA are still required before
-the DSP gate is promoted, followed by separate BRAM and URAM chain gates; the
+closed. Separate real-width BRAM and URAM chain gates remain required; the
 operator is not described as an exact optimizer. RAMB18 half sites, other relative macros, authoritative
 half-column clock constraints, and Koios DLA medium remain open gates, so this
 path is not yet a public placer selection or the default Phase 7 provider.
@@ -1061,13 +1064,15 @@ a packer, placer, or legalizer. It records CARRY8/LUT6_2 and MUXF7/8/9 site
 ownership, RAMB18 half-site occupancy demand, and exact dedicated cascade
 connectivity for carry, DSP, BRAM, and URAM chains.  A source-sealed
 RapidWright device-fact artifact now binds that logical order to directed
-native site-pin paths without inventing a `y+1` relationship.  On the real
-XCVU19P model it proves 508,992 carry, 3,808 DSP, 1,980 clock-region-local
-BRAM, and 316 URAM edges. The placement capability remains `adapter_required`
+native site-pin paths without inventing a `y+1` relationship. Every accepted
+PIP is checked in both directions and seals all member wires of its endpoint
+and intermediate nodes; BRAM chains additionally fail closed unless every site
+is in one clock region. On the real XCVU19P model it proves 508,992 carry,
+3,808 DSP, 1,980 clock-region-local BRAM, and 316 URAM edges. The placement capability remains `adapter_required`
 until the newly implemented in-core typed legalizer completes its real-runtime
-family gates. The contract is audited infrastructure and its CARRY8 subset is
-already physically qualified; DSP/BRAM/URAM consumption is implemented but not
-yet promoted as runtime evidence.
+family gates. The contract is audited infrastructure; CARRY8 and DSP48E2 are
+physically qualified, while BRAM/URAM consumption is implemented but not yet
+promoted as runtime evidence.
 The isolated A2 branch extends the pinned native extractor and legalizer while
 retaining the XArch CLA4 path: typed CARRY8 units select eight ordered LUT6_2
 members from S[0:7], verify the paired DI drivers, and occupy one full slice.

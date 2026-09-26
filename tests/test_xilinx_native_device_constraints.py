@@ -251,6 +251,87 @@ class XilinxNativeDeviceConstraintsTest(unittest.TestCase):
                     report, "dedicated_adjacency.CARRY_NEXT"
                 )
 
+    def test_bram_chain_must_remain_inside_one_clock_region(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            architecture_value = _architecture()
+            bram_bel = {
+                "name": "RAMB36E2",
+                "type": "RAMB36E2",
+                "z": 0,
+                "compatible_cells": ["RAMB36E2"],
+            }
+            architecture_value["site_templates"]["RAMB36"] = {
+                "bels": [bram_bel], "alternative_templates": [],
+            }
+            for index, clock_region in enumerate(("X0Y0", "X0Y1")):
+                architecture_value["sites"].append({
+                    "name": f"RAMB36_X0Y{index}",
+                    "type": "RAMB36",
+                    "template": "RAMB36",
+                    "x": 1,
+                    "y": index,
+                    "physical_region": {
+                        "slr": "SLR0", "clock_region": clock_region,
+                    },
+                })
+            architecture_path = root / "architecture.json"
+            manifest_path = root / "provider.json"
+            architecture_path.write_text(
+                json.dumps(architecture_value, sort_keys=True), encoding="utf-8"
+            )
+            manifest_path.write_text(
+                PINNED.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            artifact = _artifact(architecture_path, manifest_path)
+            payload = artifact["payload"]
+            payload["capabilities"]["dedicated_adjacency.BRAM_CASCADE"] = (
+                "native_supported"
+            )
+            payload["dedicated_adjacency"].append({
+                "chains": [["RAMB36_X0Y0", "RAMB36_X0Y1"]],
+                "edge_count": 1,
+                "endpoint_contract": (
+                    "ramb36e2-72-data-parity-2-ecc-cascade-sitepins-v2"
+                ),
+                "kind": "BRAM_CASCADE",
+                "native_proof_sha256": "c" * 64,
+                "proof_method": (
+                    "rapidwright-dedicated-sitepin-vector-directed-path-v2"
+                ),
+            })
+            payload["dedicated_adjacency"].sort(key=lambda item: item["kind"])
+            payload["site_capacity"].extend([
+                {
+                    "clock_region": clock_region,
+                    "site_type": "RAMB36",
+                    "sites": 1,
+                    "slr": "SLR0",
+                }
+                for clock_region in ("X0Y0", "X0Y1")
+            ])
+            payload["site_capacity"].sort(
+                key=lambda item: (
+                    item["slr"], item["clock_region"], item["site_type"]
+                )
+            )
+            payload["summary"].update({
+                "capacity_buckets": 4,
+                "clock_regions": 2,
+                "dedicated_edges": 2,
+                "sites": 4,
+            })
+            payload["summary"]["dedicated_edges_by_kind"]["BRAM_CASCADE"] = 1
+            _reseal(artifact)
+            with self.assertRaisesRegex(ValidationError, "crosses clock regions"):
+                validate_xilinx_native_device_constraints(
+                    artifact,
+                    ArchitectureDB.load(architecture_path),
+                    read_json(manifest_path),
+                    architecture_path=architecture_path,
+                    provider_manifest_path=manifest_path,
+                )
+
     def test_java_exporter_uses_native_connectivity_not_coordinates(self):
         source = JAVA_EXPORTER.read_text(encoding="utf-8")
         for required in (

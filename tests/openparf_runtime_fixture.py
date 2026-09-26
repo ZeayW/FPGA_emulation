@@ -190,3 +190,108 @@ def write_openparf_runtime_fixture(
         "sites": sites,
     }), encoding="utf-8")
     return mapped_path, packed_path, architecture_path
+
+
+_HARDBLOCK_CASCADE_SPECS = {
+    "DSP48E2": {
+        "input": ("A", 30),
+        "output": ("P", 48),
+        "cascade": ("ACOUT", "ACIN", 30),
+        "clock": None,
+    },
+    "RAMB36E2": {
+        "input": ("ADDRARDADDR", 15),
+        "output": ("DOUTADOUT", 32),
+        "cascade": ("CASDOUTA", "CASDINA", 32),
+        "clock": "CLKARDCLK",
+    },
+    "URAM288": {
+        "input": ("ADDR_A", 23),
+        "output": ("DOUT_A", 72),
+        "cascade": ("CAS_OUT_DOUT_A", "CAS_IN_DOUT_A", 72),
+        "clock": "CLK",
+    },
+}
+
+
+def write_openparf_hardblock_cascade_fixture(
+    root: Path, primitive: str
+) -> Tuple[Path, Path, Path]:
+    """Write one real-width two-instance hard-block cascade fixture.
+
+    The hard blocks replace two FF-to-LUT ring edges so their ordinary data
+    ports remain connected to real logic. Every dedicated-cascade lane is an
+    integer net; constants never pad a cascade bus. The real Xilinx packer,
+    rather than this fixture, produces the packed clusters and chain contract.
+    """
+
+    try:
+        spec = _HARDBLOCK_CASCADE_SPECS[primitive]
+    except KeyError as exc:
+        raise ValueError(
+            f"unsupported hard-block cascade primitive {primitive!r}"
+        ) from exc
+
+    mapped_path, packed_path, architecture_path = write_openparf_runtime_fixture(root)
+    mapped = json.loads(mapped_path.read_text(encoding="utf-8"))
+    module = mapped["modules"]["top"]
+    cells = module["cells"]
+    clock_bit = module["ports"]["clk"]["bits"][0]
+    input_port, input_width = spec["input"]
+    output_port, output_width = spec["output"]
+    cascade_output, cascade_input, cascade_width = spec["cascade"]
+    cascade_bits = list(range(40_000, 40_000 + cascade_width))
+
+    for ordinal, (name, ring_index) in enumerate(
+        (("hardblock_head", 1), ("hardblock_tail", 4))
+    ):
+        input_bits = [20_000 + ring_index - 1, *(["0"] * (input_width - 1))]
+        output_base = 30_000 + ordinal * 1_000
+        output_bits = list(range(output_base, output_base + output_width))
+        connections = {input_port: input_bits, output_port: output_bits}
+        directions = {input_port: "input", output_port: "output"}
+        if ordinal == 0:
+            connections[cascade_output] = cascade_bits
+            directions[cascade_output] = "output"
+        else:
+            connections[cascade_input] = cascade_bits
+            directions[cascade_input] = "input"
+        if spec["clock"] is not None:
+            connections[spec["clock"]] = [clock_bit]
+            directions[spec["clock"]] = "input"
+        cells[name] = {
+            "type": primitive,
+            "port_directions": directions,
+            "connections": connections,
+        }
+        cells[f"lut_{ring_index:02d}"]["connections"]["I0"] = [output_bits[0]]
+
+    mapped_path.write_text(json.dumps(mapped), encoding="utf-8")
+
+    architecture = json.loads(architecture_path.read_text(encoding="utf-8"))
+    architecture["site_templates"][primitive] = {
+        "bels": [{
+            "name": primitive,
+            "type": primitive,
+            "z": 0,
+            "compatible_cells": [primitive],
+            "placement_mode": primitive,
+        }],
+        "alternative_templates": [],
+    }
+    for site_index in range(2):
+        x = 4 + site_index
+        architecture["sites"].append({
+            "name": f"{primitive}_X0Y{site_index}",
+            "type": primitive,
+            "template": primitive,
+            "x": x,
+            "y": site_index,
+            "tile": {"grid_col": x, "grid_row": site_index},
+        })
+    architecture_path.write_text(json.dumps(architecture), encoding="utf-8")
+
+    from emuflow.xilinx_packing import pack_xilinx_sites
+
+    pack_xilinx_sites(mapped_path, packed_path, top="top")
+    return mapped_path, packed_path, architecture_path

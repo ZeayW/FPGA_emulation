@@ -22,7 +22,10 @@ from emuflow.xilinx_openparf_atomic import (
     run_xilinx_openparf_atomic_qualification,
     validate_xilinx_openparf_atomic_placement,
 )
-from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
+from tests.openparf_runtime_fixture import (
+    write_openparf_hardblock_cascade_fixture,
+    write_openparf_runtime_fixture,
+)
 
 
 def _cell(cell_type, connections):
@@ -188,6 +191,37 @@ def _fixture(root: Path, *, coincident=False, mixed=False):
 
 
 class XilinxOpenparfAtomicTest(unittest.TestCase):
+    def test_real_width_hardblock_cascade_fixtures_use_the_real_packer(self):
+        expected = {
+            "DSP48E2": ("ACOUT", "ACIN", 30),
+            "RAMB36E2": ("CASDOUTA", "CASDINA", 32),
+            "URAM288": ("CAS_OUT_DOUT_A", "CAS_IN_DOUT_A", 72),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for primitive, (output_port, input_port, width) in expected.items():
+                mapped, packed, _architecture = (
+                    write_openparf_hardblock_cascade_fixture(
+                        root / primitive, primitive
+                    )
+                )
+                mapped_value = json.loads(mapped.read_text(encoding="utf-8"))
+                cells = mapped_value["modules"]["top"]["cells"]
+                self.assertEqual(
+                    len(cells["hardblock_head"]["connections"][output_port]),
+                    width,
+                )
+                self.assertEqual(
+                    cells["hardblock_head"]["connections"][output_port],
+                    cells["hardblock_tail"]["connections"][input_port],
+                )
+                packed_value = json.loads(packed.read_text(encoding="utf-8"))
+                self.assertEqual(len(packed_value["cascade_chains"]), 1)
+                chain = packed_value["cascade_chains"][0]
+                self.assertEqual(chain["cell_type"], primitive)
+                self.assertEqual(
+                    chain["instances"], ["hardblock_head", "hardblock_tail"]
+                )
     def test_singleton_source_feeds_export_without_legacy_site_packing(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
