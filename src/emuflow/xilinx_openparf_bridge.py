@@ -45,7 +45,8 @@ from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 OPENPARF_ATOMIC_BRIDGE_REPORT_SCHEMA = (
     "emuflow.openparf-atomic-physical-bridge-report/v1"
 )
-_SUPPORTED_PHYSICAL_TYPES = LUT_TYPES | FF_TYPES | set(HARD_BINDINGS)
+_SUPPORTED_HARD_TYPES = set(HARD_BINDINGS) | {"RAMB18E2"}
+_SUPPORTED_PHYSICAL_TYPES = LUT_TYPES | FF_TYPES | _SUPPORTED_HARD_TYPES
 _CERTIFICATE_ASSIGNMENT_KEYS = {
     "instance", "cell_type", "bel", "placement_mode", "source_cluster",
 }
@@ -285,7 +286,7 @@ def _validate_certificate(
                     lut_count += 1
                 else:
                     ff_count += 1
-            elif cell_type in HARD_BINDINGS:
+            elif cell_type in _SUPPORTED_HARD_TYPES:
                 hard_assignments.append(normalized)
                 hard_counts[cell_type] += 1
             else:
@@ -293,7 +294,18 @@ def _validate_certificate(
         if slice_assignments and hard_assignments:
             raise ValidationError(f"{context}: mixes slice and hard resources")
         if hard_assignments:
-            if len(assignments) != 1:
+            hard_types = {item["cell_type"] for item in hard_assignments}
+            if hard_types == {"RAMB18E2"}:
+                bels = {item["bel"] for item in hard_assignments}
+                if (
+                    len(hard_assignments) > 2
+                    or len(bels) != len(hard_assignments)
+                    or not bels.issubset({"RAMB18E2_L", "RAMB18E2_U"})
+                ):
+                    raise ValidationError(
+                        f"{context}: RAMB18E2 shared-site assignment is invalid"
+                    )
+            elif len(assignments) != 1:
                 raise ValidationError(f"{context}: hard-resource site is not singleton")
             kind = "hard"
             control_set = None
@@ -317,14 +329,21 @@ def _validate_certificate(
         modes = sorted({
             assignment["placement_mode"] for assignment in assignments
         })
-        physical_clusters.append({
+        physical_cluster = {
             "id": entry["cluster"], "kind": kind,
             "site_templates": modes, "control_set": control_set,
             "assignments": sorted(
                 [*slice_assignments, *hard_assignments],
                 key=lambda item: item["instance"],
             ),
-        })
+        }
+        if hard_assignments and {
+            item["cell_type"] for item in hard_assignments
+        } == {"RAMB18E2"}:
+            physical_cluster["site_mode"] = (
+                f"RAMB18E2x{len(hard_assignments)}"
+            )
+        physical_clusters.append(physical_cluster)
     if set(owners) != expected:
         missing = sorted(expected - set(owners))
         extra = sorted(set(owners) - expected)
@@ -398,11 +417,15 @@ def materialize_xilinx_openparf_atomic_contract(
     selected_top, cells, clusters, constants, cascades = _validate_certificate(
         mapped, certificate, architecture, top, source_packed
     )
-    if cascades:
+    has_native_seal = any(
+        key in source
+        for key in ("native_constraints_sha256", "provider_manifest_sha256")
+    )
+    if cascades or has_native_seal:
         if native_constraints_path is None or provider_manifest_path is None:
             raise ValidationError(
-                "OpenPARF cascade bridge requires its native constraints and "
-                "provider manifest"
+                "OpenPARF native hardblock bridge requires its constraints "
+                "and provider manifest"
             )
         certificate_source = certificate.get("source", {})
         if (
@@ -542,7 +565,7 @@ def materialize_xilinx_openparf_atomic_contract(
                 ).items())),
             },
         }
-        if cascades:
+        if cascades or has_native_seal:
             assert native_constraints_path is not None
             assert provider_manifest_path is not None
             placement["source"].update({

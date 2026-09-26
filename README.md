@@ -1063,8 +1063,14 @@ route delay, and OpenSTA validated 98 endpoints at WNS +38.359802 ns/TNS 0.
 URAM placed 130 atoms into 11 sites, routed 90 certificate nets/127 sinks/537
 PIPs with a 1.503900024 ns maximum route delay, and OpenSTA validated 138
 endpoints at WNS +38.266102 ns/TNS 0. Both have zero missing or unrouted sinks.
-The operator is not described as an exact optimizer. RAMB18 half sites, other relative macros, authoritative
-half-column clock constraints, and Koios DLA medium remain open gates, so this
+The operator is not described as an exact optimizer. RAMB18 lower/upper modes
+now use one atomic packed group and explicit occupancy claims: each half owns
+one slot of the shared BRAM site while RAMB36 owns both. The OpenPARF in-core
+legalizer and independent importer both enforce those claims, and the Route A
+bridge materializes the lower and upper RapidWright site identities without a
+post-placement search. Unit contracts pass; the real XCVU19P route/OpenSTA
+qualification remains open. Other relative macros, authoritative half-column
+clock constraints, and Koios DLA medium also remain open gates, so this
 path is not yet a public placer selection or the default Phase 7 provider.
 The provider-neutral `emuflow.xilinx-physical-macro-contract/v1` now derives
 these non-atomic constraints directly from mapped connectivity without running

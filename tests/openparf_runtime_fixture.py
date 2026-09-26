@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Tuple
 
+from emuflow.xilinx_packing import pack_xilinx_sites
+
 
 def _cell(cell_type, connections, outputs):
     return {
@@ -189,6 +191,68 @@ def write_openparf_runtime_fixture(
         "site_templates": site_templates,
         "sites": sites,
     }), encoding="utf-8")
+    return mapped_path, packed_path, architecture_path
+
+
+def write_openparf_ramb18_fixture(root: Path) -> Tuple[Path, Path, Path]:
+    """Write a paired RAMB18E2 fixture packed by the production packer."""
+
+    mapped_path, packed_path, architecture_path = write_openparf_runtime_fixture(
+        root, include_hard=False
+    )
+    mapped = json.loads(mapped_path.read_text(encoding="utf-8"))
+    cells = mapped["modules"]["top"]["cells"]
+    for index, (name, sink) in enumerate(
+        (("ramb18_lo", "lut_01"), ("ramb18_hi", "lut_02"))
+    ):
+        input_bit = cells[sink]["connections"]["I0"][0]
+        output_bit = 40_000 + index
+        cells[name] = _cell(
+            "RAMB18E2",
+            {"ADDRARDADDR": [input_bit], "DOADO": [output_bit]},
+            {"DOADO"},
+        )
+        cells[sink]["connections"]["I0"] = [output_bit]
+    mapped_path.write_text(json.dumps(mapped), encoding="utf-8")
+
+    architecture = json.loads(architecture_path.read_text(encoding="utf-8"))
+    architecture["site_templates"].update({
+        "RAMB180": {
+            "bels": [{
+                "name": "RAMB18E2_L", "type": "RAMB18E2", "z": 0,
+                "compatible_cells": ["RAMB18E2"],
+            }],
+            "alternative_templates": [],
+        },
+        "RAMB181": {
+            "bels": [{
+                "name": "RAMB18E2_U", "type": "RAMB18E2", "z": 0,
+                "compatible_cells": ["RAMB18E2"],
+            }],
+            "alternative_templates": ["RAMB180", "RAMB36"],
+        },
+        "RAMB36": {
+            "bels": [{
+                "name": "RAMB36E2", "type": "RAMB36E2", "z": 0,
+                "compatible_cells": ["RAMB36E2"],
+            }],
+            "alternative_templates": [],
+        },
+    })
+    architecture["sites"].extend([
+        {
+            "name": "RAMB18_X0Y1", "type": "RAMB181",
+            "template": "RAMB181", "x": 30, "y": 1,
+            "tile": {"grid_col": 30, "grid_row": 4, "site_index": 0},
+        },
+        {
+            "name": "RAMB18_X1Y1", "type": "RAMB181",
+            "template": "RAMB181", "x": 34, "y": 1,
+            "tile": {"grid_col": 34, "grid_row": 4, "site_index": 0},
+        },
+    ])
+    architecture_path.write_text(json.dumps(architecture), encoding="utf-8")
+    pack_xilinx_sites(mapped_path, packed_path, top="top")
     return mapped_path, packed_path, architecture_path
 
 

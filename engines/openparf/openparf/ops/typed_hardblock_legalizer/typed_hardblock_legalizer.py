@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic legalization for typed dedicated-cascade hard blocks.
+"""Deterministic legalization for typed hardblock groups and cascades.
 
 The device-specific producer supplies exact legal site windows.  This operator
 runs inside OpenPARF after global placement and chooses conflict-free windows
@@ -14,8 +14,8 @@ import math
 import torch
 
 
-CONSTRAINT_SCHEMA = "openparf.typed-hardblock-chains/v1"
-SUPPORTED_RESOURCES = {"DSP48E2", "RAMB36E2", "URAM288"}
+CONSTRAINT_SCHEMA = "openparf.typed-hardblock-groups/v2"
+SUPPORTED_RESOURCES = {"DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"}
 
 
 def _string(value, context):
@@ -30,6 +30,14 @@ def _site(value, resource, context):
     if value.get("resource") != resource:
         raise ValueError("{} has the wrong resource".format(context))
     name = _string(value.get("site"), context + ".site")
+    raw_claims = value.get("claims")
+    if not isinstance(raw_claims, list) or not raw_claims:
+        raise ValueError("{}.claims must be non-empty and unique".format(context))
+    claims = [
+        _string(claim, context + ".claims") for claim in raw_claims
+    ]
+    if len(claims) != len(set(claims)):
+        raise ValueError("{}.claims must be non-empty and unique".format(context))
     coordinates = []
     for axis in ("x", "y", "z"):
         coordinate = value.get(axis)
@@ -45,6 +53,7 @@ def _site(value, resource, context):
         "x": coordinates[0],
         "y": coordinates[1],
         "z": coordinates[2],
+        "claims": claims,
     }
 
 
@@ -86,8 +95,13 @@ class TypedHardblockLegalizer(object):
                     _site(site, resource, "{}[{}]".format(window_context, site_index))
                     for site_index, site in enumerate(raw_window)
                 ]
-                if len({site["site"] for site in window}) != len(window):
-                    raise ValueError("{} repeats a physical site".format(window_context))
+                claims = [claim for site in window for claim in site["claims"]]
+                if len(claims) != len(set(claims)):
+                    raise ValueError(
+                        "{} has internally conflicting occupancy claims".format(
+                            window_context
+                        )
+                    )
                 windows.append(window)
             if not windows:
                 raise ValueError("{} has no legal windows".format(context))
@@ -132,16 +146,24 @@ class TypedHardblockLegalizer(object):
             for group in ordered:
                 candidates = []
                 for window in group["windows"]:
-                    site_names = tuple(site["site"] for site in window)
-                    if occupied.isdisjoint(site_names):
-                        candidates.append((self._cost(group, window, local), site_names, window))
+                    claims = tuple(
+                        sorted(claim for site in window for claim in site["claims"])
+                    )
+                    if occupied.isdisjoint(claims):
+                        site_names = tuple(site["site"] for site in window)
+                        candidates.append((
+                            self._cost(group, window, local), site_names,
+                            claims, window,
+                        ))
                 if not candidates:
                     raise RuntimeError(
-                        "typed hardblock chain legalization has no conflict-free window for {}"
+                        "typed hardblock group legalization has no conflict-free window for {}"
                         .format(group["id"])
                     )
-                _cost, site_names, selected = min(candidates, key=lambda item: (item[0], item[1]))
-                occupied.update(site_names)
+                _cost, _site_names, claims, selected = min(
+                    candidates, key=lambda item: (item[0], item[1], item[2])
+                )
+                occupied.update(claims)
                 for inst_id, name, site in zip(group["ids"], group["names"], selected):
                     local[inst_id, 0] = site["x"]
                     local[inst_id, 1] = site["y"]

@@ -15,7 +15,7 @@ not perform packing, placement, or search.
 | --- | --- | --- |
 | CARRY8 with eight LUT6_2 O5/O6 adapters | Implemented, fail-closed | Same UltraScale+ slice |
 | MUXF7/MUXF8/MUXF9 cone | Implemented, fail-closed | Same UltraScale+ slice with explicit BEL roles |
-| RAMB18E2 half-site demand | Implemented without name-based pairing | Lower/upper half selection is adapter-required |
+| RAMB18E2 half-site demand | Production packer emits explicit lower/upper pairs; OpenPARF v2 hardblock groups atomically claim either half while RAMB36 claims both | Unit and bridge contracts pass; real XCVU19P route/OpenSTA gate pending |
 | CARRY8/DSP48E2/RAMB18E2/RAMB36E2/URAM288 cascade | Logical chain order and exact port signals implemented | Typed native adjacency is adapter-required |
 
 Cascade placement deliberately does not assume adjacent sites are related by
