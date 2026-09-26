@@ -31,6 +31,28 @@ DREAMPlaceFPGA and AMF-Placer remain isolated comparison branches.  They may
 be promoted only by the same physical and timing gates; an interchange or
 adapter roundtrip is not placement evidence.
 
+This is not a plan to replace OpenPARF with a new first-party placer.  EmuFlow
+may add device adapters, source-sealed constraints, and independent
+certifiers, but the optimization steps in the primary route must execute in
+OpenPARF.  In particular, the historical custom ``SitePacker`` and greedy
+nearest-site legalizer are migration inputs only; they are not components of
+the target route.
+
+## Route portfolio and selection policy
+
+The three branches deliberately explore different upstream placers, but they
+share one placement certificate and one physical/timing tail.
+
+| Route | Intended ownership | Current role | Promotion blocker |
+| --- | --- | --- | --- |
+| OpenPARF native | packing, analytical global placement, resource/macro legalization, detailed placement | primary implementation | complete UltraScale+ primitive/constraint coverage and DLA-medium evidence |
+| DREAMPlaceFPGA | its native FPGA packing/placement/legalization pipeline | research comparison | source-backed XCVU19P resource model, hard macros, clocks/SLRs, and an executable native detailed-placement gate |
+| AMF-Placer | its public mixed-size placement, macro legalization, CLB packing, and detailed placement | secondary comparison | public-core support for the required primitive set plus XCVU19P clock/multi-SLR qualification |
+
+There is no provider fallback.  A route either admits the complete design and
+produces a certified result, or it fails closed with an exact missing
+capability.  Unsupported candidates do not delay the OpenPARF primary route.
+
 ## Phase 7 decomposition
 
 ### 7A-1: source and capability admission
@@ -68,6 +90,9 @@ adapter roundtrip is not placement evidence.
 - The previous custom ``SitePacker`` may remain only as a small independent
   checker/fixture producer while this route is under development; it cannot
   participate in production placement evidence.
+- EmuFlow must not pre-pack a convenient answer and ask OpenPARF merely to
+  preserve it.  Only connectivity-derived indivisible macros and explicit
+  user constraints may enter as fixed grouping requirements.
 
 ### 7A-5: analytical global placement
 
@@ -99,6 +124,10 @@ adapter roundtrip is not placement evidence.
   compatibility, control sets, relative offsets, dedicated adjacency, region
   capacity, and deterministic seed identity.
 
+The independent checker is deliberately not a repair pass.  It cannot move a
+cell, choose a BEL, split or combine a cluster, or change a hard-block mode.
+Any rejected certificate returns to the owning upstream placer implementation.
+
 ### 7B: RapidWright physical realization
 
 - Translate the checked certificate through exact native site/BEL mappings.
@@ -122,10 +151,13 @@ adapter roundtrip is not placement evidence.
 2. **A2 macro/resource gates -- in progress.**  CARRY8, DSP48E2, RAMB36E2,
    and URAM288 bounded fixtures have physical evidence.  MUXF7/8/9, RAMB18
    native tile modes, clock legality, and multi-SLR capacity remain gates.
-3. **RAMB tile-group gate -- next.**  Extend the native device artifact with
-   explicit upper/lower/whole site and BEL proofs, consume that group in
-   OpenPARF, then run a two-RAMB18 real XCVU19P route/OpenSTA fixture.  Until
-   this passes, all inferred half-site materialization stays rejected.
+3. **RAMB tile-group export gate -- complete; consumption gate -- active.**
+   The pinned real XCVU19P database exports and independently validates 2,160
+   tile groups with distinct lower-RAMB18, upper-RAMB18, and whole-RAMB36
+   placement/native identities.  The active gate is to let OpenPARF choose
+   those exact half/full claims, then run a two-RAMB18 real XCVU19P
+   RapidWright/OpenSTA fixture.  Until that passes, all inferred half-site
+   materialization stays rejected.
 4. **Unified OpenPARF candidate backend.**  Remove the singleton-only source
    path and run the production mapped netlist through native macro discovery,
    packing, placement, legalization, detailed placement, and the shared
@@ -142,6 +174,31 @@ adapter roundtrip is not placement evidence.
    and global WNS/TNS evidence.  Otherwise keep the existing default and state
    the exact blocker.
 
+## Shared contracts and fair comparison
+
+All routes consume the same mapped netlist, ArchitectureDB, native device
+facts, fixed constraints, clock/SLR limits, seed, and objective weights.  They
+must emit the same provider-neutral certificate:
+
+- one record for every mapped atom;
+- exact logical cluster/macro ownership;
+- exact physical site and BEL;
+- explicit overlapping-resource claims;
+- fixed/clock-region/SLR and dedicated-adjacency evidence;
+- provider, source, device-fact, configuration, and seed identities.
+
+The common tail starts only after this certificate passes.  RapidWright then
+materializes the answer without placement search, RWRoute produces the routed
+implementation, and standalone OpenSTA computes complete-global WNS/TNS.
+HPWL, density, displacement, placer objective, and local timing are useful
+diagnostics but cannot decide the default.
+
+The first comparison uses exactly one physical seed and the same complete
+Phase 1--6 input.  A candidate that lacks a required primitive or constraint
+is reported as unsupported rather than being run on an easier surrogate
+design.  Koios DLA medium is the promotion workload; bounded fixtures prove
+individual resource contracts but cannot establish QoR.
+
 ## Branch policy
 
 - ``feature/phase7-openparf-native-hardblocks``: primary implementation.
@@ -153,6 +210,16 @@ adapter roundtrip is not placement evidence.
   end.
 - ``feature/phase7-placer-integration``: shared contracts and final comparison
   only after branch-local gates pass.
+
+The implementation branches may progress independently, but integration is
+ordered rather than speculative:
+
+1. land provider-neutral certificate/capability changes;
+2. complete the OpenPARF resource-covering and DLA-medium gates;
+3. admit each candidate only when its branch-local capability gate passes;
+4. run the same frozen end-to-end comparison; and
+5. promote at most one default, with the losing or incomplete routes retained
+   only as explicitly named research providers.
 
 No branch may change the public default independently.  Experimental runtime
 directories remain outside the repository and are deleted after a compact

@@ -1081,9 +1081,12 @@ current ArchitectureDB retains only one anchor.  Therefore RAMB18 stays
 coordinate or name arithmetic such as `Y-1`/`Y/2` is not accepted as device
 evidence.
 The version-3 native-device contract now has an exporter and independent
-validator for that tile-group mapping.  It remains non-admissible placement
-evidence until the exporter has passed against the pinned real XCVU19P device
-database and the resulting map is consumed by the OpenPARF legalizer.
+validator for that tile-group mapping.  The exporter has passed against the
+pinned real XCVU19P database: 2,160 BRAM tile groups were reconstructed with
+distinct lower-RAMB18, upper-RAMB18, and whole-RAMB36 placement/native
+identities, and the complete native-device artifact independently validated.
+It remains non-admissible placement evidence until OpenPARF consumes those
+claims and a two-RAMB18 fixture passes the RapidWright/OpenSTA physical gate.
 The first real-device probe also established that the three identities must be
 kept separate: placement uses `RAMB180/RAMB18E2_L`,
 `RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`, while the database's primary
