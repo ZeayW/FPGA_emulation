@@ -22,6 +22,7 @@ from .xilinx_native_device_constraints import (
     require_xilinx_native_constraint_capability,
 )
 from .xilinx_openparf_atomic import (
+    XILINX_OPENPARF_SITE_DATABASE_SCHEMA,
     _expanded_pins,
     _physical_coordinate,
     _render_nets,
@@ -31,6 +32,8 @@ from .xilinx_openparf_atomic import (
     _sha256,
     _validate_native_density_contract,
     _validate_native_placement_region,
+    _write_site_database,
+    load_xilinx_openparf_sites,
 )
 from .xilinx_packing import (
     CONSTANT_TYPES,
@@ -43,7 +46,7 @@ from .xilinx_packing import (
 
 
 OPENPARF_CARRY8_MANIFEST_SCHEMA = "emuflow.openparf-carry8-manifest/v1"
-OPENPARF_CARRY8_NAME_MAP_SCHEMA = "emuflow.openparf-carry8-name-map/v1"
+OPENPARF_CARRY8_NAME_MAP_SCHEMA = "emuflow.openparf-carry8-name-map/v2"
 OPENPARF_CARRY8_PLACEMENT_SCHEMA = "emuflow.openparf-carry8-placement/v1"
 OPENPARF_CARRY8_PROVIDER = "openparf-native-carry8-full-slice-v1"
 _TARGET_DENSITY = 0.75
@@ -276,6 +279,8 @@ def export_xilinx_openparf_carry8(
     nets, net_count, dropped = _render_nets(cells, atoms, names)
     site_text, coordinate_system = _render_sites(sites, atoms)
     output_dir.mkdir(parents=True, exist_ok=True)
+    site_database_path = output_dir / "site-map.sqlite3"
+    site_count = _write_site_database(site_database_path, coordinate_system)
     files = {
         "design.nodes": "".join(
             f"{names[atom['instance']]} {atom['cell_type']}\n" for atom in atoms
@@ -353,7 +358,15 @@ def export_xilinx_openparf_carry8(
         "atoms": [{"openparf": names[item["instance"]], **item} for item in atoms],
         "carry_macros": macros,
         "cascade_chains": packed.get("cascade_chains", []),
-        "coordinate_system": coordinate_system,
+        "coordinate_system": {
+            "x_axis": coordinate_system["x_axis"],
+            "y_axis": coordinate_system["y_axis"],
+        },
+        "site_database": {
+            "schema": XILINX_OPENPARF_SITE_DATABASE_SCHEMA,
+            "file": site_database_path.name,
+            "sites": site_count,
+        },
         "source": {
             "mapped_sha256": _sha256(mapped_path),
             "packed_sha256": _sha256(packed_path),
@@ -378,6 +391,7 @@ def export_xilinx_openparf_carry8(
         "preplacement": False,
         "fallback": "forbidden",
         "runtime_validation": "unverified",
+        "files": sorted([*files, "openparf.json", "name_map.json", "site-map.sqlite3"]),
     }
     write_json(output_dir / "manifest.json", manifest, compact=True)
     return manifest
@@ -444,14 +458,7 @@ def validate_xilinx_openparf_carry8_placement(
             ):
                 raise ValidationError("OpenPARF CARRY8 macro roles are invalid")
             macro_roles[instance] = bel
-    site_map = {
-        (entry["dense_x"], entry["dense_y"]): entry
-        for entry in name_map.get("coordinate_system", {}).get("sites", [])
-        if isinstance(entry, Mapping)
-    }
-    placed: Dict[str, Dict[str, Any]] = {}
-    occupied = set()
-    canonicalized_carry_lut_slots = 0
+    raw_placement: Dict[str, Tuple[int, int, int]] = {}
     with placement_path.open("r", encoding="utf-8") as stream:
         for line_number, raw in enumerate(stream, start=1):
             fields = raw.strip().split()
@@ -459,7 +466,7 @@ def validate_xilinx_openparf_carry8_placement(
                 continue
             if len(fields) not in {4, 5} or fields[0] not in atoms:
                 raise ImportError(f"{placement_path}:{line_number}: invalid placement row")
-            if fields[0] in placed:
+            if fields[0] in raw_placement:
                 raise ValidationError("OpenPARF CARRY8 placement duplicates an atom")
             try:
                 xyz = [float(value) for value in fields[1:4]]
@@ -467,61 +474,74 @@ def validate_xilinx_openparf_carry8_placement(
                 raise ImportError("OpenPARF CARRY8 placement is non-numeric") from error
             if any(not math.isfinite(value) or not value.is_integer() for value in xyz):
                 raise ValidationError("OpenPARF CARRY8 placement is not discrete")
-            x, y, z = (int(value) for value in xyz)
-            site_entry = site_map.get((x, y))
-            if site_entry is None:
-                raise ValidationError("OpenPARF CARRY8 placement uses an unknown site")
-            atom = atoms[fields[0]]
-            cell_type = atom["cell_type"]
-            resource = atom["resource"]
-            if resource == "LUT":
-                if z not in range(1, 16, 2):
-                    raise ValidationError("CARRY8 LUT6_2 must occupy a 6LUT z slot")
-                slot_bel = f"{'ABCDEFGH'[z // 2]}6LUT"
-                # The full-slice carry macro fixes each LUT6_2 logical role
-                # through the CARRY8 S/DI bit it drives.  OpenPARF's detailed
-                # placement may permute the eight otherwise equivalent odd z
-                # slots after native chain legalization.  Preserve the site
-                # decision, prove that every physical slot remains unique,
-                # and canonicalize the internal BEL role from the sealed
-                # packed macro rather than treating that permutation as a
-                # semantic remap of the carry bits.
-                bel_name = macro_roles.get(atom["instance"], slot_bel)
-                if bel_name not in {f"{letter}6LUT" for letter in "ABCDEFGH"}:
-                    raise ValidationError("OpenPARF CARRY8 macro LUT role is invalid")
-                canonicalized_carry_lut_slots += bel_name != slot_bel
-            elif resource == "FF":
-                if not 0 <= z < 16:
-                    raise ValidationError("CARRY8-route FF uses an invalid z slot")
-                bel_name = f"{'ABCDEFGH'[z // 2]}FF" + ("2" if z % 2 else "")
-            elif resource == "CARRY8":
-                if z != 0:
-                    raise ValidationError("CARRY8 must occupy its unique z=0 resource")
-                bel_name = "CARRY8"
-            else:
-                raise ValidationError("OpenPARF CARRY8 placement has unknown resource")
-            collision = (site_entry["site"], resource, z)
-            if collision in occupied:
-                raise ValidationError("OpenPARF CARRY8 placement overlaps a BEL slot")
-            occupied.add(collision)
-            site = architecture.site_named(site_entry["site"])
-            compatible = [
-                bel for bel in site.get("bels", [])
-                if bel.get("name") == bel_name
-                and cell_type in bel.get("compatible_cells", [])
-            ]
-            if len(compatible) != 1:
-                raise ValidationError("OpenPARF CARRY8 placement has no compatible BEL")
-            placed[fields[0]] = {
-                **atom,
-                "site": site_entry["site"],
-                "z": z,
-                "bel": bel_name,
-                "openparf_slot_bel": slot_bel if resource == "LUT" else bel_name,
-                "placement_mode": compatible[0].get("placement_mode", site["type"]),
-            }
-    if set(placed) != set(atoms):
+            raw_placement[fields[0]] = tuple(int(value) for value in xyz)
+    if set(raw_placement) != set(atoms):
         raise ValidationError("OpenPARF CARRY8 placement coverage is incomplete")
+    coordinates = sorted({(x, y) for x, y, _z in raw_placement.values()})
+    site_map = {
+        (entry["dense_x"], entry["dense_y"]): entry
+        for entry in load_xilinx_openparf_sites(
+            name_map_path,
+            expected_name_map_schema=OPENPARF_CARRY8_NAME_MAP_SCHEMA,
+            coordinates=coordinates,
+        )
+    }
+    placed: Dict[str, Dict[str, Any]] = {}
+    occupied = set()
+    canonicalized_carry_lut_slots = 0
+    for openparf_name, (x, y, z) in raw_placement.items():
+        site_entry = site_map.get((x, y))
+        if site_entry is None:
+            raise ValidationError("OpenPARF CARRY8 placement uses an unknown site")
+        atom = atoms[openparf_name]
+        cell_type = atom["cell_type"]
+        resource = atom["resource"]
+        if resource == "LUT":
+            if z not in range(1, 16, 2):
+                raise ValidationError("CARRY8 LUT6_2 must occupy a 6LUT z slot")
+            slot_bel = f"{'ABCDEFGH'[z // 2]}6LUT"
+            # The full-slice carry macro fixes each LUT6_2 logical role
+            # through the CARRY8 S/DI bit it drives.  OpenPARF's detailed
+            # placement may permute the eight otherwise equivalent odd z
+            # slots after native chain legalization.  Preserve the site
+            # decision, prove that every physical slot remains unique,
+            # and canonicalize the internal BEL role from the sealed
+            # packed macro rather than treating that permutation as a
+            # semantic remap of the carry bits.
+            bel_name = macro_roles.get(atom["instance"], slot_bel)
+            if bel_name not in {f"{letter}6LUT" for letter in "ABCDEFGH"}:
+                raise ValidationError("OpenPARF CARRY8 macro LUT role is invalid")
+            canonicalized_carry_lut_slots += bel_name != slot_bel
+        elif resource == "FF":
+            if not 0 <= z < 16:
+                raise ValidationError("CARRY8-route FF uses an invalid z slot")
+            bel_name = f"{'ABCDEFGH'[z // 2]}FF" + ("2" if z % 2 else "")
+        elif resource == "CARRY8":
+            if z != 0:
+                raise ValidationError("CARRY8 must occupy its unique z=0 resource")
+            bel_name = "CARRY8"
+        else:
+            raise ValidationError("OpenPARF CARRY8 placement has unknown resource")
+        collision = (site_entry["site"], resource, z)
+        if collision in occupied:
+            raise ValidationError("OpenPARF CARRY8 placement overlaps a BEL slot")
+        occupied.add(collision)
+        site = architecture.site_named(site_entry["site"])
+        compatible = [
+            bel for bel in site.get("bels", [])
+            if bel.get("name") == bel_name
+            and cell_type in bel.get("compatible_cells", [])
+        ]
+        if len(compatible) != 1:
+            raise ValidationError("OpenPARF CARRY8 placement has no compatible BEL")
+        placed[openparf_name] = {
+            **atom,
+            "site": site_entry["site"],
+            "z": z,
+            "bel": bel_name,
+            "openparf_slot_bel": slot_bel if resource == "LUT" else bel_name,
+            "placement_mode": compatible[0].get("placement_mode", site["type"]),
+        }
     by_instance = {item["instance"]: item for item in placed.values()}
     carry_sites: Dict[str, str] = {}
     for macro in name_map.get("carry_macros", []):

@@ -1071,8 +1071,8 @@ route delay, and OpenSTA validated 98 endpoints at WNS +38.359802 ns/TNS 0.
 URAM placed 130 atoms into 11 sites, routed 90 certificate nets/127 sinks/537
 PIPs with a 1.503900024 ns maximum route delay, and OpenSTA validated 138
 endpoints at WNS +38.266102 ns/TNS 0. Both have zero missing or unrouted sinks.
-The operator is not described as an exact optimizer. RAMB18 half sites, other relative macros, authoritative
-half-column clock constraints, and Koios DLA medium remain open gates, so this
+The operator is not described as an exact optimizer. Other relative macros,
+authoritative half-column clock constraints, and Koios DLA medium remain open gates, so this
 path is not yet a public placer selection or the default Phase 7 provider.
 The native RAMB18 audit found that RapidWright exposes upper RAMB18, lower
 RAMB18, and whole RAMB36 as three overlapping views of one tile while the
@@ -1085,15 +1085,22 @@ validator for that tile-group mapping.  The exporter has passed against the
 pinned real XCVU19P database: 2,160 BRAM tile groups were reconstructed with
 distinct lower-RAMB18, upper-RAMB18, and whole-RAMB36 placement/native
 identities, and the complete native-device artifact independently validated.
-It remains non-admissible placement evidence until OpenPARF consumes those
-claims and a two-RAMB18 fixture passes the RapidWright/OpenSTA physical gate.
-The in-development consumer now represents each RAMB18 as an independent
+The consumer represents each RAMB18 as an independent
 OpenPARF hard-block decision over the source-sealed lower/upper views; it does
 not pair instances by name or packing order.  Explicit lower/upper occupancy
 claims allow two RAMB18 cells to share a tile while a RAMB36 whole-tile claim
 excludes both halves.  Export, legalization, certificate, and tamper-focused
-unit gates pass, but the compiled real-device physical gate is still pending,
-so this remains branch-local and non-default.
+unit gates pass.  The compiled real-device fixture also passed native OpenPARF
+placement, RapidWright routing, and standalone OpenSTA 3.1 timing; this remains
+branch-local and non-default until the remaining primitive/clock and DLA-medium
+gates pass.
+
+The native atomic and CARRY8 adapters store the complete XCVU19P site map once
+in an indexed `site-map.sqlite3` placement contract.  `name_map.json` contains atom
+identity, coordinate axes, and descriptors only; placement validation queries
+the selected coordinates and resource rows instead of repeatedly parsing a
+117 MB JSON site table.  Typed hard-block windows remain in their single
+source-sealed constraint contract and are not duplicated into the name map.
 The first real-device probe also established that the three identities must be
 kept separate: placement uses `RAMB180/RAMB18E2_L`,
 `RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`, while the database's primary

@@ -16,6 +16,7 @@ from collections import Counter, defaultdict
 import hashlib
 import math
 from pathlib import Path
+import sqlite3
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .architecture import ArchitectureDB
@@ -36,10 +37,13 @@ from .xilinx_packing import (
 
 
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
-OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v1"
+OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v2"
 OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v1"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = "openparf-native-mcf-direct-lg-ism-atomic-v1"
+XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
+    "emuflow.openparf-atomic-site-database/v1"
+)
 OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA = (
     "openparf.typed-hardblock-groups/v2"
 )
@@ -83,6 +87,250 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _write_site_database(
+    path: Path, coordinate_system: Mapping[str, Any]
+) -> int:
+    """Write the large physical site map once in a queryable representation."""
+
+    path.unlink(missing_ok=True)
+    sites = coordinate_system.get("sites")
+    if not isinstance(sites, list) or not sites:
+        raise ValidationError("OpenPARF atomic coordinate system is empty")
+    with sqlite3.connect(path) as database:
+        database.executescript("""
+            PRAGMA journal_mode = OFF;
+            PRAGMA synchronous = OFF;
+            PRAGMA temp_store = MEMORY;
+            CREATE TABLE metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE sites (
+                dense_x INTEGER NOT NULL,
+                dense_y INTEGER NOT NULL,
+                physical_x INTEGER NOT NULL,
+                physical_y INTEGER NOT NULL,
+                placement_x REAL NOT NULL,
+                placement_y REAL NOT NULL,
+                site TEXT NOT NULL,
+                PRIMARY KEY (dense_x, dense_y)
+            ) WITHOUT ROWID;
+            CREATE TABLE resources (
+                dense_x INTEGER NOT NULL,
+                dense_y INTEGER NOT NULL,
+                resource TEXT NOT NULL,
+                capacity INTEGER NOT NULL,
+                PRIMARY KEY (dense_x, dense_y, resource)
+            ) WITHOUT ROWID;
+            CREATE TABLE physical_sites (
+                resource TEXT NOT NULL,
+                physical_site TEXT NOT NULL,
+                dense_x INTEGER NOT NULL,
+                dense_y INTEGER NOT NULL,
+                slot INTEGER NOT NULL,
+                PRIMARY KEY (resource, physical_site)
+            ) WITHOUT ROWID;
+            CREATE INDEX physical_sites_coordinate
+                ON physical_sites (dense_x, dense_y, resource, slot);
+        """)
+        database.execute(
+            "INSERT INTO metadata(key, value) VALUES (?, ?)",
+            ("schema", XILINX_OPENPARF_SITE_DATABASE_SCHEMA),
+        )
+        database.execute(
+            "INSERT INTO metadata(key, value) VALUES (?, ?)",
+            ("site_count", str(len(sites))),
+        )
+        database.executemany(
+            "INSERT INTO sites VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                (
+                    int(item["dense_x"]), int(item["dense_y"]),
+                    int(item["physical_x"]), int(item["physical_y"]),
+                    float(item["placement_x"]), float(item["placement_y"]),
+                    str(item["site"]),
+                )
+                for item in sites
+            ),
+        )
+        database.executemany(
+            "INSERT INTO resources VALUES (?, ?, ?, ?)",
+            (
+                (
+                    int(item["dense_x"]), int(item["dense_y"]),
+                    str(resource), int(capacity),
+                )
+                for item in sites
+                for resource, capacity in item["resources"].items()
+            ),
+        )
+        database.executemany(
+            "INSERT INTO physical_sites VALUES (?, ?, ?, ?, ?)",
+            (
+                (
+                    str(resource), str(site_name),
+                    int(item["dense_x"]), int(item["dense_y"]), int(slot),
+                )
+                for item in sites
+                for resource, site_names in item["physical_sites"].items()
+                for slot, site_name in enumerate(site_names)
+            ),
+        )
+    return len(sites)
+
+
+def _site_database_path(
+    name_map_path: Path, name_map: Mapping[str, Any]
+) -> Tuple[Path, int]:
+    descriptor = name_map.get("site_database")
+    if not isinstance(descriptor, Mapping):
+        raise ValidationError("OpenPARF atomic name map has no site database")
+    if descriptor.get("schema") != XILINX_OPENPARF_SITE_DATABASE_SCHEMA:
+        raise ValidationError("OpenPARF atomic site database schema is invalid")
+    relative = descriptor.get("file")
+    count = descriptor.get("sites")
+    if (
+        not isinstance(relative, str) or not relative
+        or Path(relative).name != relative
+        or not isinstance(count, int) or isinstance(count, bool) or count <= 0
+    ):
+        raise ValidationError("OpenPARF atomic site database descriptor is invalid")
+    path = name_map_path.parent / relative
+    if not path.is_file():
+        raise ValidationError("OpenPARF atomic site database is missing")
+    return path, count
+
+
+def load_xilinx_openparf_sites(
+    name_map_path: Path,
+    *,
+    expected_name_map_schema: str,
+    coordinates: Optional[Sequence[Tuple[int, int]]] = None,
+    resources: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Read only requested site rows from the normalized placement contract."""
+
+    name_map = read_json(name_map_path)
+    if name_map.get("schema") != expected_name_map_schema:
+        raise ValidationError("OpenPARF name map is invalid")
+    database_path, expected_count = _site_database_path(name_map_path, name_map)
+    requested = {
+        (int(coordinate[0]), int(coordinate[1])) for coordinate in coordinates or []
+    }
+    resource_filter = {str(resource) for resource in resources or []}
+    uri = f"file:{database_path.resolve()}?mode=ro&immutable=1"
+    with sqlite3.connect(uri, uri=True) as database:
+        metadata = dict(database.execute("SELECT key, value FROM metadata"))
+        if (
+            metadata.get("schema") != XILINX_OPENPARF_SITE_DATABASE_SCHEMA
+            or metadata.get("site_count") != str(expected_count)
+        ):
+            raise ValidationError("OpenPARF atomic site database metadata is invalid")
+        if requested:
+            database.execute(
+                "CREATE TEMP TABLE requested ("
+                "dense_x INTEGER, dense_y INTEGER, PRIMARY KEY(dense_x, dense_y)) "
+                "WITHOUT ROWID"
+            )
+            database.executemany(
+                "INSERT INTO requested VALUES (?, ?)", sorted(requested)
+            )
+        elif resource_filter:
+            database.execute(
+                "CREATE TEMP TABLE requested ("
+                "dense_x INTEGER, dense_y INTEGER, PRIMARY KEY(dense_x, dense_y)) "
+                "WITHOUT ROWID"
+            )
+            placeholders = ",".join("?" for _ in resource_filter)
+            database.execute(
+                "INSERT INTO requested "
+                "SELECT DISTINCT dense_x, dense_y FROM physical_sites "
+                f"WHERE resource IN ({placeholders})",
+                sorted(resource_filter),
+            )
+        site_query = (
+            "SELECT s.dense_x, s.dense_y, s.physical_x, s.physical_y, "
+            "s.placement_x, s.placement_y, s.site FROM sites s "
+            "JOIN requested r USING(dense_x, dense_y) "
+            "ORDER BY s.dense_x, s.dense_y"
+            if requested or resource_filter else
+            "SELECT dense_x, dense_y, physical_x, physical_y, placement_x, "
+            "placement_y, site FROM sites ORDER BY dense_x, dense_y"
+        )
+        entries = {
+            (row[0], row[1]): {
+                "dense_x": row[0], "dense_y": row[1],
+                "physical_x": row[2], "physical_y": row[3],
+                "placement_x": row[4], "placement_y": row[5],
+                "site": row[6], "resources": {}, "physical_sites": {},
+            }
+            for row in database.execute(site_query)
+        }
+        suffix = (
+            " JOIN requested q USING(dense_x, dense_y)"
+            if requested or resource_filter else ""
+        )
+        for dense_x, dense_y, resource, capacity in database.execute(
+            "SELECT r.dense_x, r.dense_y, r.resource, r.capacity "
+            f"FROM resources r{suffix} ORDER BY r.dense_x, r.dense_y, r.resource"
+        ):
+            entries[(dense_x, dense_y)]["resources"][resource] = capacity
+        for dense_x, dense_y, resource, physical_site, _slot in database.execute(
+            "SELECT p.dense_x, p.dense_y, p.resource, p.physical_site, p.slot "
+            f"FROM physical_sites p{suffix} "
+            "ORDER BY p.dense_x, p.dense_y, p.resource, p.slot"
+        ):
+            entries[(dense_x, dense_y)]["physical_sites"].setdefault(
+                resource, []
+            ).append(physical_site)
+    if requested and set(entries) != requested:
+        raise ValidationError("OpenPARF atomic placement uses an unknown site")
+    return list(entries.values())
+
+
+def load_xilinx_openparf_atomic_sites(
+    name_map_path: Path,
+    *,
+    coordinates: Optional[Sequence[Tuple[int, int]]] = None,
+    resources: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Read selected sites from an atomic OpenPARF placement contract."""
+
+    return load_xilinx_openparf_sites(
+        name_map_path,
+        expected_name_map_schema=OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
+        coordinates=coordinates,
+        resources=resources,
+    )
+
+
+def _load_typed_hardblock_groups(
+    name_map_path: Path, name_map: Mapping[str, Any]
+) -> List[Mapping[str, Any]]:
+    descriptor = name_map.get("typed_hardblock_constraints")
+    if descriptor is None:
+        return []
+    if not isinstance(descriptor, Mapping):
+        raise ValidationError("typed hardblock constraint descriptor is invalid")
+    relative = descriptor.get("file")
+    count = descriptor.get("groups")
+    if (
+        descriptor.get("schema") != OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA
+        or not isinstance(relative, str) or Path(relative).name != relative
+        or not isinstance(count, int) or isinstance(count, bool) or count <= 0
+    ):
+        raise ValidationError("typed hardblock constraint descriptor is invalid")
+    contract = read_json(name_map_path.parent / relative)
+    groups = contract.get("groups")
+    if (
+        contract.get("schema") != OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA
+        or contract.get("status") != "pass"
+        or not isinstance(groups, list) or len(groups) != count
+    ):
+        raise ValidationError("typed hardblock constraint contract is invalid")
+    return groups
 
 
 def _resource_sort_key(resource: str) -> Tuple[int, str]:
@@ -1195,18 +1443,34 @@ def export_xilinx_openparf_atomic(
     # OpenPARF assigns area-type IDs by first appearance in this mapping and
     # its DataCollections currently requires FF to be area type 1.  Preserve
     # the deliberate LUT, FF, then stable hard-resource model order.
+    site_database_path = output_dir / "site-map.sqlite3"
+    site_count = _write_site_database(site_database_path, coordinate_system)
     write_json(
         output_dir / "openparf.json", config, compact=True, sort_keys=False
     )
-    write_json(output_dir / "name_map.json", {
+    name_map = {
         "schema": OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
         "top": selected_top,
         "atoms": [
             {"openparf": names[atom["instance"]], **atom} for atom in atoms
         ],
-        "coordinate_system": coordinate_system,
-        "hardblock_groups": hardblock_groups,
-    }, compact=True)
+        "coordinate_system": {
+            "x_axis": coordinate_system["x_axis"],
+            "y_axis": coordinate_system["y_axis"],
+        },
+        "site_database": {
+            "schema": XILINX_OPENPARF_SITE_DATABASE_SCHEMA,
+            "file": site_database_path.name,
+            "sites": site_count,
+        },
+    }
+    if typed_hardblock_mode:
+        name_map["typed_hardblock_constraints"] = {
+            "schema": OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA,
+            "file": "typed-hardblock-groups.json",
+            "groups": len(hardblock_groups),
+        }
+    write_json(output_dir / "name_map.json", name_map, compact=True)
     manifest = {
         "schema": OPENPARF_ATOMIC_MANIFEST_SCHEMA,
         "status": "pass", "mode": "native-atomic-mixed-resource-qualification",
@@ -1242,7 +1506,7 @@ def export_xilinx_openparf_atomic(
             "lut_policy": "8 independent 6LUT BELs; no paired 5LUT use",
         },
         "files": sorted([
-            *files, "openparf.json", "name_map.json",
+            *files, "openparf.json", "name_map.json", "site-map.sqlite3",
             *(["typed-hardblock-groups.json"] if typed_hardblock_mode else []),
         ]),
     }
@@ -1293,14 +1557,40 @@ def validate_xilinx_openparf_atomic_placement(
     }
     if len(atoms) != len(name_map.get("atoms", [])) or not atoms:
         raise ValidationError("OpenPARF atomic name map has duplicate atoms")
+    raw_placement: Dict[str, Tuple[int, int, int]] = {}
+    with placement_path.open("r", encoding="utf-8") as stream:
+        for line_number, raw in enumerate(stream, start=1):
+            fields = raw.strip().split()
+            if not fields or fields[0].startswith("#"):
+                continue
+            if len(fields) not in {4, 5} or fields[0] not in atoms:
+                raise ImportError(
+                    f"{placement_path}:{line_number}: invalid atomic placement row"
+                )
+            if fields[0] in raw_placement:
+                raise ValidationError("OpenPARF atomic placement duplicates an atom")
+            try:
+                values = [float(value) for value in fields[1:4]]
+            except ValueError as error:
+                raise ImportError("OpenPARF atomic placement is non-numeric") from error
+            if any(
+                not math.isfinite(value) or not value.is_integer()
+                for value in values
+            ):
+                raise ValidationError("OpenPARF atomic placement is not discrete")
+            raw_placement[fields[0]] = tuple(int(value) for value in values)
+    if set(raw_placement) != set(atoms):
+        raise ValidationError("OpenPARF atomic placement does not cover every atom")
+    requested_coordinates = sorted({
+        (x, y) for x, y, _z in raw_placement.values()
+    })
     site_map = {
         (item["dense_x"], item["dense_y"]): item
-        for item in name_map.get("coordinate_system", {}).get("sites", [])
-        if isinstance(item, Mapping)
+        for item in load_xilinx_openparf_atomic_sites(
+            name_map_path, coordinates=requested_coordinates
+        )
     }
-    if not site_map:
-        raise ValidationError("OpenPARF atomic site map is empty")
-    hardblock_groups = name_map.get("hardblock_groups", [])
+    hardblock_groups = _load_typed_hardblock_groups(name_map_path, name_map)
     native = None
     native_report = None
     bram_view_by_slot: Dict[Tuple[int, int, str, int], Mapping[str, Any]] = {}
@@ -1314,11 +1604,13 @@ def validate_xilinx_openparf_atomic_placement(
             architecture_path=architecture_path,
             provider_manifest_path=provider_manifest_path,
         )
-        bram_candidates = _native_bram_candidates(
-            name_map.get("coordinate_system", {}), native
+        bram_sites = load_xilinx_openparf_atomic_sites(
+            name_map_path, resources=("RAMB18E2", "RAMB36E2")
         )
+        bram_candidates = _native_bram_candidates({"sites": bram_sites}, native)
         dense_by_anchor = {}
-        for (dense_x, dense_y), entry in site_map.items():
+        for entry in bram_sites:
+            dense_x, dense_y = entry["dense_x"], entry["dense_y"]
             physical = entry.get("physical_sites", {})
             if not isinstance(physical, Mapping):
                 continue
@@ -1336,30 +1628,14 @@ def validate_xilinx_openparf_atomic_placement(
                 bram_view_by_slot[key] = candidate
     placed: Dict[str, Dict[str, Any]] = {}
     occupied = set()
-    with placement_path.open("r", encoding="utf-8") as stream:
-        for line_number, raw in enumerate(stream, start=1):
-            fields = raw.strip().split()
-            if not fields or fields[0].startswith("#"):
-                continue
-            if len(fields) not in {4, 5} or fields[0] not in atoms:
-                raise ImportError(
-                    f"{placement_path}:{line_number}: invalid atomic placement row"
-                )
-            if fields[0] in placed:
-                raise ValidationError("OpenPARF atomic placement duplicates an atom")
-            try:
-                values = [float(value) for value in fields[1:4]]
-            except ValueError as error:
-                raise ImportError("OpenPARF atomic placement is non-numeric") from error
-            if any(not math.isfinite(value) or not value.is_integer() for value in values):
-                raise ValidationError("OpenPARF atomic placement is not discrete")
-            x, y, z = (int(value) for value in values)
+    for openparf_name, (x, y, z) in raw_placement.items():
             site_entry = site_map.get((x, y))
             if site_entry is None:
                 raise ValidationError("OpenPARF atomic placement uses an unknown site")
-            atom = atoms[fields[0]]
+            atom = atoms[openparf_name]
             cell_type = atom["cell_type"]
             resource = atom.get("resource")
+            candidate = None
             resources = site_entry.get("resources")
             if (
                 not isinstance(resources, Mapping)
@@ -1427,7 +1703,7 @@ def validate_xilinx_openparf_atomic_placement(
                     "OpenPARF atomic placement has no unique compatible physical BEL"
                 )
             physical_bel = compatible[0]
-            placed[fields[0]] = {
+            placed[openparf_name] = {
                 **atom, "site": site_name, "resource": resource, "z": z,
                 "bel": physical_bel["name"],
                 "placement_mode": (
@@ -1437,8 +1713,6 @@ def validate_xilinx_openparf_atomic_placement(
                 ),
                 "anchor_site": anchor_name,
             }
-    if set(placed) != set(atoms):
-        raise ValidationError("OpenPARF atomic placement does not cover every atom")
 
     checked_native_edges = 0
     if hardblock_groups:

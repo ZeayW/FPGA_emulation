@@ -7,6 +7,7 @@ from pathlib import Path
 from emuflow.errors import ValidationError
 from emuflow.xilinx_openparf_atomic import (
     export_xilinx_openparf_atomic,
+    load_xilinx_openparf_atomic_sites,
     validate_xilinx_openparf_atomic_placement,
 )
 from emuflow.xilinx_openparf_bridge import (
@@ -27,7 +28,7 @@ def _native_certificate(root: Path, *, include_hard: bool):
         mapped, source_packed, architecture, export_dir
     )
     name_map = json.loads((export_dir / "name_map.json").read_text())
-    sites = name_map["coordinate_system"]["sites"]
+    sites = load_xilinx_openparf_atomic_sites(export_dir / "name_map.json")
     slices = [item for item in sites if "LUT" in item["resources"]]
     hard_sites = {
         resource: next(

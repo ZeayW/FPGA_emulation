@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,7 @@ from emuflow.xilinx_openparf_atomic import (
     OPENPARF_TYPED_HARDBLOCK_CONSTRAINT_SCHEMA,
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
+    load_xilinx_openparf_atomic_sites,
     run_xilinx_openparf_atomic_qualification,
     validate_xilinx_openparf_atomic_placement,
 )
@@ -262,6 +264,15 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             )
             config = json.loads((output / "openparf.json").read_text())
             names = json.loads((output / "name_map.json").read_text())
+            coordinate_sites = load_xilinx_openparf_atomic_sites(
+                output / "name_map.json"
+            )
+            selected_sites = load_xilinx_openparf_atomic_sites(
+                output / "name_map.json", coordinates=[(0, 0)]
+            )
+            site_database_exists = (
+                output / names["site_database"]["file"]
+            ).is_file()
             sites = (output / "design.scl").read_text()
             net_lines = (output / "design.nets").read_text().splitlines()
 
@@ -294,7 +305,18 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             sorted(int(fields[2]) for fields in declarations),
             [2] * 128 + [64],
         )
-        self.assertEqual(len(names["coordinate_system"]["sites"]), 16)
+        self.assertEqual(len(coordinate_sites), 16)
+        self.assertEqual(
+            names["schema"], "emuflow.openparf-atomic-name-map/v2"
+        )
+        self.assertNotIn("sites", names["coordinate_system"])
+        self.assertNotIn("hardblock_groups", names)
+        self.assertEqual(names["site_database"]["sites"], 16)
+        self.assertTrue(site_database_exists)
+        self.assertEqual(
+            [(item["dense_x"], item["dense_y"]) for item in selected_sites],
+            [(0, 0)],
+        )
         self.assertEqual(64 / (16 * 8), 0.5)
         self.assertLessEqual(manifest["resources"]["FF"], 16 * 16)
         self.assertEqual([row[0] for row in _resource_rows(sites)], ["LUT", "FF"])
@@ -306,7 +328,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             movable_area = manifest["resources"][resource] * unit_area
             placeable_area = sum(
                 item["resources"].get(resource, 0) * unit_area
-                for item in names["coordinate_system"]["sites"]
+                for item in coordinate_sites
             )
             filler_count = int((placeable_area - movable_area) / unit_area)
             self.assertGreater(movable_area, 0)
@@ -317,6 +339,28 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["legalize_flag"], 1)
         self.assertEqual(config["detailed_place_flag"], 1)
         self.assertNotIn("fallback", config)
+
+    def test_site_database_descriptor_and_metadata_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_runtime_fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            name_map_path = output / "name_map.json"
+            name_map = json.loads(name_map_path.read_text(encoding="utf-8"))
+
+            site_database = output / name_map["site_database"]["file"]
+            site_database.unlink()
+            with self.assertRaisesRegex(ValidationError, "database is missing"):
+                load_xilinx_openparf_atomic_sites(name_map_path)
+
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            with sqlite3.connect(output / "site-map.sqlite3") as database:
+                database.execute(
+                    "UPDATE metadata SET value = 'wrong' WHERE key = 'schema'"
+                )
+            with self.assertRaisesRegex(ValidationError, "metadata is invalid"):
+                load_xilinx_openparf_atomic_sites(name_map_path)
 
     def test_collinear_and_disconnected_logic_crops_fail_before_runtime(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -361,6 +405,9 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             )
             config = json.loads((output / "openparf.json").read_text())
             names = json.loads((output / "name_map.json").read_text())
+            coordinate_sites = load_xilinx_openparf_atomic_sites(
+                output / "name_map.json"
+            )
             net_lines = (output / "design.nets").read_text().splitlines()
 
         self.assertEqual(manifest["atoms"], 131)
@@ -397,7 +444,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 2,
             )
             hard_sites = [
-                item for item in names["coordinate_system"]["sites"]
+                item for item in coordinate_sites
                 if item["resources"].get(atom["resource"]) == 1
             ]
             self.assertEqual(len(hard_sites), 2)
@@ -432,7 +479,9 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
             names = json.loads((output / "name_map.json").read_text())
-            coordinate_sites = names["coordinate_system"]["sites"]
+            coordinate_sites = load_xilinx_openparf_atomic_sites(
+                output / "name_map.json"
+            )
             dsp_tiles = [
                 site for site in coordinate_sites
                 if site["resources"].get("DSP48E2")
@@ -487,7 +536,9 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 mapped, packed, architecture, output
             )
             names = json.loads((output / "name_map.json").read_text())
-            sites = names["coordinate_system"]["sites"]
+            sites = load_xilinx_openparf_atomic_sites(
+                output / "name_map.json"
+            )
             resource_indexes = {"LUT": 0, "FF": 0}
             rows = []
             first_lut_row = None
@@ -835,9 +886,12 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
             names = json.loads((output / "name_map.json").read_text())
+            coordinate_sites = load_xilinx_openparf_atomic_sites(
+                output / "name_map.json"
+            )
             coordinates = {
                 item["site"]: (item["dense_x"], item["dense_y"])
-                for item in names["coordinate_system"]["sites"]
+                for item in coordinate_sites
             }
             target_site = {
                 "LUT": "SLICE_X0Y0", "FF": "SLICE_X0Y0",
@@ -947,9 +1001,12 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 and window[0]["z"] != lo_window["z"]
             )
             names = json.loads((output / "name_map.json").read_text())
+            coordinate_sites = load_xilinx_openparf_atomic_sites(
+                output / "name_map.json"
+            )
             dense = {
                 anchor: (entry["dense_x"], entry["dense_y"])
-                for entry in names["coordinate_system"]["sites"]
+                for entry in coordinate_sites
                 for anchor in entry["physical_sites"].get("RAMB18E2", [])
             }
             positions = {
@@ -957,7 +1014,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 groups[1]["source_instances"][0]: hi_window,
             }
             slice_sites = [
-                entry for entry in names["coordinate_system"]["sites"]
+                entry for entry in coordinate_sites
                 if "LUT" in entry["resources"]
             ]
             rows = []
@@ -1180,9 +1237,12 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             names = json.loads(
                 (output / "name_map.json").read_text(encoding="utf-8")
             )
+            coordinate_sites = load_xilinx_openparf_atomic_sites(
+                output / "name_map.json"
+            )
             coordinates = {
                 site_name: item
-                for item in names["coordinate_system"]["sites"]
+                for item in coordinate_sites
                 for site_names in item["physical_sites"].values()
                 for site_name in site_names
             }

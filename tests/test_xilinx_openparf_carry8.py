@@ -220,8 +220,10 @@ class XilinxOpenparfCarry8Test(unittest.TestCase):
                 mapped, packed, architecture, native, provider, output, top="top"
             )
             config = read_json(output / "openparf.json")
+            name_map = read_json(output / "name_map.json")
             library = (output / "design.lib").read_text(encoding="utf-8")
             placement_seed = (output / "design.pl").read_text(encoding="utf-8")
+            site_database_exists = (output / "site-map.sqlite3").is_file()
         self.assertEqual(report["macro_units"], 2)
         self.assertFalse(report["preplacement"])
         self.assertEqual(config["carry_chain_module_name"], "CARRY8")
@@ -231,6 +233,12 @@ class XilinxOpenparfCarry8Test(unittest.TestCase):
         self.assertIn("PIN CI INPUT CAS", library)
         self.assertIn("PIN CO[7] OUTPUT CAS", library)
         self.assertEqual(placement_seed, "")
+        self.assertEqual(
+            name_map["schema"], "emuflow.openparf-carry8-name-map/v2"
+        )
+        self.assertNotIn("sites", name_map["coordinate_system"])
+        self.assertEqual(name_map["site_database"]["sites"], 16)
+        self.assertTrue(site_database_exists)
 
     def test_exact_macro_and_native_adjacency_validation(self):
         with tempfile.TemporaryDirectory() as temporary:

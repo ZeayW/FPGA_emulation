@@ -79,6 +79,11 @@ capability.  Unsupported candidates do not delay the OpenPARF primary route.
   RAMB18 instances may share a tile only by occupying distinct proven slots.
 - A site name, coordinate parity, ``Y-1``, or ``Y/2`` is never a device proof.
   Missing native slot/BEL facts leave RAMB18 as ``adapter_required``.
+- Store the half-million-site physical map once in the indexed
+  ``site-map.sqlite3`` contract.  The atom/name map contains only atom identity,
+  coordinate axes, and a descriptor for that database; validators query only
+  the coordinates and resource rows used by the candidate.  Do not duplicate
+  the site table or hard-block windows in a large JSON hot path.
 
 ### 7A-4: native packing
 
@@ -148,16 +153,16 @@ Any rejected certificate returns to the owning upstream placer implementation.
 
 1. **A1 engine gate -- complete.**  Ordinary LUT/FF plus independent hard
    blocks passed native OpenPARF, RapidWright routing, and OpenSTA.
-2. **A2 macro/resource gates -- in progress.**  CARRY8, DSP48E2, RAMB36E2,
-   and URAM288 bounded fixtures have physical evidence.  MUXF7/8/9, RAMB18
-   native tile modes, clock legality, and multi-SLR capacity remain gates.
-3. **RAMB tile-group export gate -- complete; consumption gate -- active.**
+2. **A2 macro/resource gates -- in progress.**  CARRY8, DSP48E2, RAMB18E2,
+   RAMB36E2, and URAM288 bounded fixtures have physical evidence.  MUXF7/8/9,
+   clock legality, and multi-SLR capacity remain gates.
+3. **RAMB tile-group export and consumption gates -- complete.**
    The pinned real XCVU19P database exports and independently validates 2,160
    tile groups with distinct lower-RAMB18, upper-RAMB18, and whole-RAMB36
-   placement/native identities.  The active gate is to let OpenPARF choose
-   those exact half/full claims, then run a two-RAMB18 real XCVU19P
-   RapidWright/OpenSTA fixture.  Until that passes, all inferred half-site
-   materialization stays rejected.
+   placement/native identities.  OpenPARF selected two independent RAMB18
+   half claims in one tile, and the real XCVU19P fixture passed RapidWright
+   routing and standalone OpenSTA 3.1 timing.  Inferred coordinate/name
+   arithmetic remains rejected.
 4. **Unified OpenPARF candidate backend.**  Remove the singleton-only source
    path and run the production mapped netlist through native macro discovery,
    packing, placement, legalization, detailed placement, and the shared
