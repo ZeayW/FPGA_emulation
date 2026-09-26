@@ -261,12 +261,15 @@ def build_xilinx_routed_opensta_inputs(
             hard_blocks.append(cell_type)
             continue
         if cell_type.startswith("EMUFLOW_RW_ROUTE_DELAY_"):
-            if len(typed_instances) != 1:
+            delays = {
+                float(instance["attributes"]["emuflow_route_delay_ns"])
+                for instance in typed_instances
+            }
+            if len(delays) != 1:
                 raise ValidationError(
-                    "routed-delay timing cell type is not instance-unique"
+                    "shared routed-delay timing cell type has unequal delays"
                 )
-            instance = typed_instances[0]
-            delay = float(instance["attributes"]["emuflow_route_delay_ns"])
+            delay = delays.pop()
             model["cells"][cell_type] = {
                 "kind": "combinational", "inputs": ["A"],
                 "output": "Y", "delay_ns": delay,
