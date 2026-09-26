@@ -131,7 +131,9 @@ def _write_fixture(root):
     checked = validate_rapidwright_provider_manifest(read_json(provider))
     chains = [[f"SLICE_X{x}Y{y}" for y in range(4)] for x in range(4)]
     payload = {
+        "bram_tile_groups": [],
         "capabilities": {
+            "bram_tile_groups": "native_supported",
             "clock_region_site_capacity": "native_supported",
             "dedicated_adjacency.BRAM_CASCADE": "core_missing",
             "dedicated_adjacency.CARRY_NEXT": "native_supported",
@@ -164,7 +166,8 @@ def _write_fixture(root):
             "route_backend": "rapidwright-native-device-database-v1",
         },
         "summary": {
-            "capacity_buckets": 1, "clock_regions": 1, "dedicated_edges": 12,
+            "bram_tile_groups": 0, "capacity_buckets": 1,
+            "clock_regions": 1, "dedicated_edges": 12,
             "dedicated_edges_by_kind": {
                 "BRAM_CASCADE": 0, "CARRY_NEXT": 12,
                 "DSP_CASCADE": 0, "URAM_CASCADE": 0,
@@ -174,7 +177,7 @@ def _write_fixture(root):
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     native.write_text(json.dumps({
-        "schema": "emuflow.xilinx-native-device-constraints/v2",
+        "schema": "emuflow.xilinx-native-device-constraints/v3",
         "payload": payload,
         "payload_sha256": hashlib.sha256(encoded).hexdigest(),
     }, sort_keys=True), encoding="utf-8")

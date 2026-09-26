@@ -1080,6 +1080,10 @@ current ArchitectureDB retains only one anchor.  Therefore RAMB18 stays
 `adapter_required` until an exact source-sealed tile-group mapping exists;
 coordinate or name arithmetic such as `Y-1`/`Y/2` is not accepted as device
 evidence.
+The version-3 native-device contract now has an exporter and independent
+validator for that tile-group mapping.  It remains non-admissible placement
+evidence until the exporter has passed against the pinned real XCVU19P device
+database and the resulting map is consumed by the OpenPARF legalizer.
 The provider-neutral `emuflow.xilinx-physical-macro-contract/v1` now derives
 these non-atomic constraints directly from mapped connectivity without running
 a packer, placer, or legalizer. It records CARRY8/LUT6_2 and MUXF7/8/9 site

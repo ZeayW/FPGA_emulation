@@ -30,6 +30,11 @@ ArchitectureDB anchor and its alternative templates do not prove their exact
 native site/BEL mapping, so coordinate parity and site-name arithmetic are not
 accepted.  RAMB18 placement remains fail-closed until a source-sealed tile
 group proves those identities and whole-versus-half mutual exclusion.
+The version-3 native-device exporter and validator now implement that compact
+tile-group contract, including exact native site type, site index, primitive
+BEL, anchor coverage, view uniqueness, and payload/source seals.  Its real
+XCVU19P runtime gate is pending; the contract alone does not enable RAMB18 in
+the placer.
 
 Ordinary atomic LUT/FF/DSP/BRAM/URAM cells are not copied into this contract.
 Unknown, branching, merging, cyclic, partial-width, multiply-owned, or

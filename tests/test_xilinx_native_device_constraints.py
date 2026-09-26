@@ -61,6 +61,7 @@ def _architecture():
 
 def _capabilities():
     return {
+        "bram_tile_groups": "native_supported",
         "clock_region_site_capacity": "native_supported",
         "dedicated_adjacency.BRAM_CASCADE": "core_missing",
         "dedicated_adjacency.CARRY_NEXT": "native_supported",
@@ -74,6 +75,7 @@ def _capabilities():
 def _artifact(architecture_path, manifest_path):
     checked = validate_rapidwright_provider_manifest(read_json(manifest_path))
     payload = {
+        "bram_tile_groups": [],
         "capabilities": _capabilities(),
         "dedicated_adjacency": [
             {
@@ -118,6 +120,7 @@ def _artifact(architecture_path, manifest_path):
             "route_backend": "rapidwright-native-device-database-v1",
         },
         "summary": {
+            "bram_tile_groups": 0,
             "capacity_buckets": 2,
             "clock_regions": 1,
             "dedicated_edges": 1,
@@ -135,7 +138,7 @@ def _artifact(architecture_path, manifest_path):
         payload, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return {
-        "schema": "emuflow.xilinx-native-device-constraints/v2",
+        "schema": "emuflow.xilinx-native-device-constraints/v3",
         "payload": payload,
         "payload_sha256": hashlib.sha256(encoded).hexdigest(),
     }
@@ -332,6 +335,109 @@ class XilinxNativeDeviceConstraintsTest(unittest.TestCase):
                     provider_manifest_path=manifest_path,
                 )
 
+    def test_bram_tile_group_requires_exact_overlapping_native_views(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            architecture_value = _architecture()
+            architecture_value["site_templates"].update({
+                "RAMB180": {
+                    "bels": [{
+                        "name": "RAMB18E2_L", "type": "RAMB18E2", "z": 0,
+                        "compatible_cells": ["RAMB18E2"],
+                    }],
+                    "alternative_templates": [],
+                },
+                "RAMB181": {
+                    "bels": [{
+                        "name": "RAMB18E2_U", "type": "RAMB18E2", "z": 0,
+                        "compatible_cells": ["RAMB18E2"],
+                    }],
+                    "alternative_templates": ["RAMB180", "RAMB36"],
+                },
+                "RAMB36": {
+                    "bels": [{
+                        "name": "RAMB36E2", "type": "RAMB36E2", "z": 0,
+                        "compatible_cells": ["RAMB36E2"],
+                    }],
+                    "alternative_templates": [],
+                },
+            })
+            architecture_value["sites"].append({
+                "name": "RAMB18_X0Y475", "type": "RAMB181",
+                "template": "RAMB181", "x": 4, "y": 475,
+                "physical_region": {"slr": "SLR0", "clock_region": "X0Y5"},
+            })
+            architecture_path = root / "architecture.json"
+            manifest_path = root / "provider.json"
+            architecture_path.write_text(
+                json.dumps(architecture_value, sort_keys=True), encoding="utf-8"
+            )
+            manifest_path.write_text(
+                PINNED.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            artifact = _artifact(architecture_path, manifest_path)
+            payload = artifact["payload"]
+            payload["site_capacity"].append({
+                "clock_region": "X0Y5", "site_type": "RAMB181",
+                "sites": 1, "slr": "SLR0",
+            })
+            payload["site_capacity"].sort(
+                key=lambda item: (
+                    item["slr"], item["clock_region"], item["site_type"]
+                )
+            )
+            payload["bram_tile_groups"] = [{
+                "anchor": "RAMB18_X0Y475",
+                "lower": {
+                    "bel": "RAMB18E2", "site": "RAMB18_X0Y474",
+                    "site_index": 1, "site_type": "RAMBFIFO18",
+                },
+                "tile": "BRAM_X2Y1185",
+                "upper": {
+                    "bel": "RAMB18E2", "site": "RAMB18_X0Y475",
+                    "site_index": 0, "site_type": "RAMB181",
+                },
+                "whole": {
+                    "bel": "RAMB36E2", "site": "RAMB36_X0Y237",
+                    "site_index": 2, "site_type": "RAMBFIFO36",
+                },
+            }]
+            payload["summary"].update({
+                "bram_tile_groups": 1,
+                "capacity_buckets": 3,
+                "clock_regions": 2,
+                "sites": 3,
+            })
+            _reseal(artifact)
+            report = validate_xilinx_native_device_constraints(
+                artifact,
+                ArchitectureDB.load(architecture_path),
+                read_json(manifest_path),
+                architecture_path=architecture_path,
+                provider_manifest_path=manifest_path,
+            )
+            self.assertEqual(report["bram_tile_groups"], 1)
+
+            for field, replacement, message in (
+                (("lower", "site"), "RAMB18_X0Y475", "distinct"),
+                (("whole", "bel"), "RAMB18E2", "primitive BEL"),
+                (("upper", "site"), "RAMB18_X0Y476", "upper view"),
+            ):
+                with self.subTest(field=field):
+                    broken = copy.deepcopy(artifact)
+                    broken["payload"]["bram_tile_groups"][0][field[0]][
+                        field[1]
+                    ] = replacement
+                    _reseal(broken)
+                    with self.assertRaisesRegex(ValidationError, message):
+                        validate_xilinx_native_device_constraints(
+                            broken,
+                            ArchitectureDB.load(architecture_path),
+                            read_json(manifest_path),
+                            architecture_path=architecture_path,
+                            provider_manifest_path=manifest_path,
+                        )
+
     def test_java_exporter_uses_native_connectivity_not_coordinates(self):
         source = JAVA_EXPORTER.read_text(encoding="utf-8")
         for required in (
@@ -348,6 +454,10 @@ class XilinxNativeDeviceConstraintsTest(unittest.TestCase):
             "URAM_CASCADE",
             "PCOUT",
             "CAS_OUT_",
+            "bramTileGroups",
+            "RAMBFIFO18",
+            "RAMBFIFO36",
+            "getBEL(expectedBel)",
         ):
             self.assertIn(required, source)
         for forbidden in (

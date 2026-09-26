@@ -40,7 +40,7 @@ import java.util.TreeMap;
 
 public final class EmuFlowNativeDeviceConstraints {
     private static final String SCHEMA =
-            "emuflow.xilinx-native-device-constraints/v2";
+            "emuflow.xilinx-native-device-constraints/v3";
     private static final String ROUTE_BACKEND =
             "rapidwright-native-device-database-v1";
     private static final String PROOF_METHOD =
@@ -61,6 +61,35 @@ public final class EmuFlowNativeDeviceConstraints {
             if (value != 0) return value;
             value = clockRegion.compareTo(other.clockRegion);
             return value != 0 ? value : siteType.compareTo(other.siteType);
+        }
+    }
+
+    private static final class BramView {
+        final String bel;
+        final String site;
+        final int siteIndex;
+        final String siteType;
+        BramView(String bel, Site site, int siteIndex) {
+            this.bel = bel;
+            this.site = site.getName();
+            this.siteIndex = siteIndex;
+            this.siteType = site.getSiteTypeEnum().name();
+        }
+    }
+
+    private static final class BramTileGroup {
+        final String anchor;
+        final BramView lower;
+        final String tile;
+        final BramView upper;
+        final BramView whole;
+        BramTileGroup(String anchor, BramView lower, String tile,
+                      BramView upper, BramView whole) {
+            this.anchor = anchor;
+            this.lower = lower;
+            this.tile = tile;
+            this.upper = upper;
+            this.whole = whole;
         }
     }
 
@@ -372,6 +401,77 @@ public final class EmuFlowNativeDeviceConstraints {
         return result;
     }
 
+    private static BramView bramView(
+            Site site, int siteIndex, String expectedType, String expectedBel) {
+        require(site != null && site.getSiteTypeEnum().name().equals(expectedType),
+                "BRAM tile lacks exact " + expectedType + " native view");
+        BEL bel = site.getBEL(expectedBel);
+        require(bel != null && bel.getBELClass() != BELClass.PORT,
+                site.getName() + " lacks primitive BEL " + expectedBel);
+        return new BramView(expectedBel, site, siteIndex);
+    }
+
+    private static List<BramTileGroup> bramTileGroups(
+            Device device, Set<String> eligibleSites) {
+        List<String> anchors = new ArrayList<>();
+        for (String name : eligibleSites) {
+            Site site = device.getSite(name);
+            require(site != null, "native device lacks ArchitectureDB site " + name);
+            if (site.getSiteTypeEnum().name().equals("RAMB181")) anchors.add(name);
+        }
+        Collections.sort(anchors);
+        List<BramTileGroup> result = new ArrayList<>();
+        Set<String> tiles = new HashSet<>();
+        Set<String> nativeSites = new HashSet<>();
+        for (String anchor : anchors) {
+            Site upperSite = device.getSite(anchor);
+            Tile tile = upperSite.getTile();
+            require(tile != null && tiles.add(tile.getName()),
+                    anchor + " has a null or duplicate BRAM tile");
+            Site lowerSite = null;
+            Site wholeSite = null;
+            int lowerIndex = -1;
+            int upperIndex = -1;
+            int wholeIndex = -1;
+            Site[] tileSites = tile.getSites();
+            require(tileSites != null, tile.getName() + " has no native sites");
+            for (int index = 0; index < tileSites.length; ++index) {
+                Site site = tileSites[index];
+                if (site == null) continue;
+                String type = site.getSiteTypeEnum().name();
+                if (type.equals("RAMB181")) {
+                    require(upperIndex == -1, tile.getName() + " has multiple RAMB181 views");
+                    upperSite = site;
+                    upperIndex = index;
+                } else if (type.equals("RAMBFIFO18")) {
+                    require(lowerIndex == -1,
+                            tile.getName() + " has multiple RAMBFIFO18 views");
+                    lowerSite = site;
+                    lowerIndex = index;
+                } else if (type.equals("RAMBFIFO36")) {
+                    require(wholeIndex == -1,
+                            tile.getName() + " has multiple RAMBFIFO36 views");
+                    wholeSite = site;
+                    wholeIndex = index;
+                }
+            }
+            require(upperSite.getName().equals(anchor) && upperIndex >= 0,
+                    anchor + " is not the tile's unique RAMB181 view");
+            BramView lower = bramView(
+                    lowerSite, lowerIndex, "RAMBFIFO18", "RAMB18E2");
+            BramView upper = bramView(
+                    upperSite, upperIndex, "RAMB181", "RAMB18E2");
+            BramView whole = bramView(
+                    wholeSite, wholeIndex, "RAMBFIFO36", "RAMB36E2");
+            require(nativeSites.add(lower.site) && nativeSites.add(upper.site)
+                            && nativeSites.add(whole.site),
+                    tile.getName() + " reuses a native BRAM site");
+            result.add(new BramTileGroup(
+                    anchor, lower, tile.getName(), upper, whole));
+        }
+        return result;
+    }
+
     private static String pipRecord(PIP pip) {
         require(pip != null && pip.getTile() != null,
                 "native direct arc has no tile");
@@ -625,6 +725,28 @@ public final class EmuFlowNativeDeviceConstraints {
         return result.append(']').toString();
     }
 
+    private static String bramViewJson(BramView view) {
+        return "{\"bel\":" + quote(view.bel)
+                + ",\"site\":" + quote(view.site)
+                + ",\"site_index\":" + view.siteIndex
+                + ",\"site_type\":" + quote(view.siteType) + "}";
+    }
+
+    private static String bramTileGroupsJson(List<BramTileGroup> groups) {
+        StringBuilder result = new StringBuilder("[");
+        for (int index = 0; index < groups.size(); ++index) {
+            if (index > 0) result.append(',');
+            BramTileGroup group = groups.get(index);
+            result.append("{\"anchor\":").append(quote(group.anchor))
+                    .append(",\"lower\":").append(bramViewJson(group.lower))
+                    .append(",\"tile\":").append(quote(group.tile))
+                    .append(",\"upper\":").append(bramViewJson(group.upper))
+                    .append(",\"whole\":").append(bramViewJson(group.whole))
+                    .append('}');
+        }
+        return result.append(']').toString();
+    }
+
     private static String adjacencyJson(List<FamilyResult> families) {
         StringBuilder result = new StringBuilder("[");
         boolean first = true;
@@ -650,6 +772,7 @@ public final class EmuFlowNativeDeviceConstraints {
                     family.edges.isEmpty() ? "core_missing" : "native_supported");
         }
         StringBuilder result = new StringBuilder("{")
+                .append("\"bram_tile_groups\":\"native_supported\",")
                 .append("\"clock_region_site_capacity\":\"native_supported\",");
         for (Map.Entry<String, String> entry : values.entrySet()) {
             result.append(quote(entry.getKey())).append(':')
@@ -673,6 +796,7 @@ public final class EmuFlowNativeDeviceConstraints {
                                   String revision, String manifestSha256,
                                   String databaseMd5, String architectureSha256,
                                   TreeMap<CapacityKey, Long> capacity,
+                                  List<BramTileGroup> bramGroups,
                                   List<FamilyResult> families) {
         Set<String> slrs = new HashSet<>();
         Set<String> clockRegions = new HashSet<>();
@@ -684,7 +808,8 @@ public final class EmuFlowNativeDeviceConstraints {
             sites += entry.getValue();
         }
         for (FamilyResult family : families) edges += family.edges.size();
-        return "{\"capabilities\":" + capabilitiesJson(families)
+        return "{\"bram_tile_groups\":" + bramTileGroupsJson(bramGroups)
+                + ",\"capabilities\":" + capabilitiesJson(families)
                 + ",\"dedicated_adjacency\":" + adjacencyJson(families)
                 + ",\"site_capacity\":" + capacityJson(capacity)
                 + ",\"source\":{\"architecture_sha256\":" + quote(architectureSha256)
@@ -695,7 +820,8 @@ public final class EmuFlowNativeDeviceConstraints {
                 + ",\"version\":" + quote(version) + "}"
                 + ",\"provider_manifest_sha256\":" + quote(manifestSha256)
                 + ",\"route_backend\":" + quote(ROUTE_BACKEND) + "}"
-                + ",\"summary\":{\"capacity_buckets\":" + capacity.size()
+                + ",\"summary\":{\"bram_tile_groups\":" + bramGroups.size()
+                + ",\"capacity_buckets\":" + capacity.size()
                 + ",\"clock_regions\":" + clockRegions.size()
                 + ",\"dedicated_edges\":" + edges
                 + ",\"dedicated_edges_by_kind\":" + edgeCountsJson(families)
@@ -712,13 +838,14 @@ public final class EmuFlowNativeDeviceConstraints {
                 "device identity mismatch");
         Set<String> eligibleSites = eligibleSites(Paths.get(args[7]));
         TreeMap<CapacityKey, Long> capacity = capacity(device, eligibleSites);
+        List<BramTileGroup> bramGroups = bramTileGroups(device, eligibleSites);
         List<FamilyResult> results = new ArrayList<>();
         for (Family family : families()) {
             List<Edge> edges = edges(device, family, eligibleSites);
             results.add(new FamilyResult(family, edges, chains(family.kind, edges)));
         }
         String payload = payload(args[0], args[1], args[2], args[3], args[4],
-                args[5], args[6], capacity, results);
+                args[5], args[6], capacity, bramGroups, results);
         String document = "{\"payload\":" + payload + ",\"payload_sha256\":"
                 + quote(sha256(payload)) + ",\"schema\":" + quote(SCHEMA) + "}\n";
         Path output = Paths.get(args[8]);

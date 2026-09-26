@@ -27,7 +27,7 @@ from .rapidwright_provider import (
 
 
 XILINX_NATIVE_DEVICE_CONSTRAINTS_SCHEMA = (
-    "emuflow.xilinx-native-device-constraints/v2"
+    "emuflow.xilinx-native-device-constraints/v3"
 )
 NATIVE_DEDICATED_NODE_PROOF = (
     "rapidwright-dedicated-sitepin-vector-directed-path-v2"
@@ -45,6 +45,7 @@ _DEDICATED_KINDS = (
     "URAM_CASCADE",
 )
 _REQUIRED_CAPABILITIES = (
+    "bram_tile_groups",
     "clock_region_site_capacity",
     "half_column_clock_capacity",
     "slr_site_capacity",
@@ -190,6 +191,8 @@ def _validate_capabilities(value: Any) -> Dict[str, str]:
         raise ValidationError("clock-region capacity must be native-supported")
     if checked["slr_site_capacity"] != "native_supported":
         raise ValidationError("SLR capacity must be native-supported")
+    if checked["bram_tile_groups"] != "native_supported":
+        raise ValidationError("BRAM tile groups must be native-supported")
     if checked["half_column_clock_capacity"] != "unverified":
         raise ValidationError(
             "half-column clock capacity must remain fail-closed/unverified"
@@ -275,6 +278,76 @@ def validate_xilinx_native_device_constraints(
     if observed_capacity != expected_capacity:
         raise ValidationError(
             "native constraints site capacity does not match ArchitectureDB"
+        )
+
+    expected_bram_anchors = {
+        name
+        for name, site in architecture_sites.items()
+        if {"RAMB18E2_L", "RAMB18E2_U", "RAMB36E2"}.issubset(
+            _site_bels(architecture, site)
+        )
+    }
+    raw_bram_groups = payload.get("bram_tile_groups")
+    if not isinstance(raw_bram_groups, list):
+        raise ValidationError("native constraints BRAM tile groups are missing")
+    observed_bram_anchors = []
+    native_sites = set()
+    native_tiles = set()
+    for group_index, group in enumerate(raw_bram_groups):
+        context = f"bram_tile_groups[{group_index}]"
+        if not isinstance(group, dict) or set(group) != {
+            "anchor", "lower", "tile", "upper", "whole",
+        }:
+            raise ValidationError(f"{context}: invalid BRAM tile group")
+        anchor = _string(group.get("anchor"), f"{context}.anchor")
+        if anchor not in expected_bram_anchors:
+            raise ValidationError(f"{context}: unknown BRAM anchor {anchor!r}")
+        tile = _string(group.get("tile"), f"{context}.tile")
+        if tile in native_tiles:
+            raise ValidationError(f"{context}: duplicate native BRAM tile")
+        native_tiles.add(tile)
+        observed_bram_anchors.append(anchor)
+        views = {}
+        for role, expected_bel in (
+            ("lower", "RAMB18E2"),
+            ("upper", "RAMB18E2"),
+            ("whole", "RAMB36E2"),
+        ):
+            entry = group.get(role)
+            entry_context = f"{context}.{role}"
+            if not isinstance(entry, dict) or set(entry) != {
+                "bel", "site", "site_index", "site_type",
+            }:
+                raise ValidationError(f"{entry_context}: invalid native view")
+            if entry.get("bel") != expected_bel:
+                raise ValidationError(f"{entry_context}: invalid primitive BEL")
+            site_name = _string(entry.get("site"), f"{entry_context}.site")
+            site_type = _string(
+                entry.get("site_type"), f"{entry_context}.site_type"
+            )
+            site_index = _nonnegative_integer(
+                entry.get("site_index"), f"{entry_context}.site_index"
+            )
+            views[role] = (site_name, site_type, site_index)
+        if len({value[0] for value in views.values()}) != 3:
+            raise ValidationError(f"{context}: BRAM native views are not distinct")
+        if len({value[2] for value in views.values()}) != 3:
+            raise ValidationError(f"{context}: BRAM native site indices are not distinct")
+        for site_name, _, _ in views.values():
+            if site_name in native_sites:
+                raise ValidationError(
+                    f"{context}: native BRAM site belongs to multiple groups"
+                )
+            native_sites.add(site_name)
+        if views["upper"][0] != anchor:
+            raise ValidationError(
+                f"{context}: ArchitectureDB anchor is not the native upper view"
+            )
+    if observed_bram_anchors != sorted(observed_bram_anchors):
+        raise ValidationError("native BRAM tile groups are not canonical")
+    if set(observed_bram_anchors) != expected_bram_anchors:
+        raise ValidationError(
+            "native BRAM tile groups do not cover ArchitectureDB anchors"
         )
 
     raw_adjacency = payload.get("dedicated_adjacency")
@@ -371,6 +444,7 @@ def validate_xilinx_native_device_constraints(
 
     summary = payload.get("summary")
     expected_summary = {
+        "bram_tile_groups": len(expected_bram_anchors),
         "capacity_buckets": len(expected_capacity),
         "clock_regions": len({key[1] for key in expected_capacity}),
         "dedicated_edges": edge_count,
