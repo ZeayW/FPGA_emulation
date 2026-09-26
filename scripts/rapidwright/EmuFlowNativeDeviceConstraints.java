@@ -66,14 +66,20 @@ public final class EmuFlowNativeDeviceConstraints {
 
     private static final class BramView {
         final String bel;
+        final String nativeBel;
+        final String nativeSiteType;
         final String site;
         final int siteIndex;
         final String siteType;
-        BramView(String bel, Site site, int siteIndex) {
+        BramView(
+                String bel, String nativeBel, String nativeSiteType,
+                Site site, int siteIndex, String siteType) {
             this.bel = bel;
+            this.nativeBel = nativeBel;
+            this.nativeSiteType = nativeSiteType;
             this.site = site.getName();
             this.siteIndex = siteIndex;
-            this.siteType = site.getSiteTypeEnum().name();
+            this.siteType = siteType;
         }
     }
 
@@ -402,13 +408,22 @@ public final class EmuFlowNativeDeviceConstraints {
     }
 
     private static BramView bramView(
-            Site site, int siteIndex, String expectedType, String expectedBel) {
-        require(site != null && site.getSiteTypeEnum().name().equals(expectedType),
-                "BRAM tile lacks exact " + expectedType + " native view");
-        BEL bel = site.getBEL(expectedBel);
+            Site site, int siteIndex, String nativeType, String placementType,
+            String logicalBel, String nativeBel) {
+        require(site != null && site.getSiteTypeEnum().name().equals(nativeType),
+                "BRAM tile lacks exact " + nativeType + " native view");
+        boolean supportsPlacementType = nativeType.equals(placementType);
+        for (com.xilinx.rapidwright.device.SiteTypeEnum alternative
+                : site.getAlternateSiteTypeEnums()) {
+            if (alternative.name().equals(placementType)) supportsPlacementType = true;
+        }
+        require(supportsPlacementType,
+                site.getName() + " lacks placement site type " + placementType);
+        BEL bel = site.getBEL(nativeBel);
         require(bel != null && bel.getBELClass() != BELClass.PORT,
-                site.getName() + " lacks primitive BEL " + expectedBel);
-        return new BramView(expectedBel, site, siteIndex);
+                site.getName() + " lacks native primitive BEL " + nativeBel);
+        return new BramView(
+                logicalBel, nativeBel, nativeType, site, siteIndex, placementType);
     }
 
     private static List<BramTileGroup> bramTileGroups(
@@ -458,11 +473,14 @@ public final class EmuFlowNativeDeviceConstraints {
             require(upperSite.getName().equals(anchor) && upperIndex >= 0,
                     anchor + " is not the tile's unique RAMB181 view");
             BramView lower = bramView(
-                    lowerSite, lowerIndex, "RAMBFIFO18", "RAMB18E2");
+                    lowerSite, lowerIndex, "RAMBFIFO18", "RAMB180",
+                    "RAMB18E2_L", "RAMBFIFO18");
             BramView upper = bramView(
-                    upperSite, upperIndex, "RAMB181", "RAMB18E2");
+                    upperSite, upperIndex, "RAMB181", "RAMB181",
+                    "RAMB18E2_U", "RAMB18E2_U");
             BramView whole = bramView(
-                    wholeSite, wholeIndex, "RAMBFIFO36", "RAMB36E2");
+                    wholeSite, wholeIndex, "RAMBFIFO36", "RAMB36",
+                    "RAMB36E2", "RAMBFIFO36E2");
             require(nativeSites.add(lower.site) && nativeSites.add(upper.site)
                             && nativeSites.add(whole.site),
                     tile.getName() + " reuses a native BRAM site");
@@ -727,6 +745,8 @@ public final class EmuFlowNativeDeviceConstraints {
 
     private static String bramViewJson(BramView view) {
         return "{\"bel\":" + quote(view.bel)
+                + ",\"native_bel\":" + quote(view.nativeBel)
+                + ",\"native_site_type\":" + quote(view.nativeSiteType)
                 + ",\"site\":" + quote(view.site)
                 + ",\"site_index\":" + view.siteIndex
                 + ",\"site_type\":" + quote(view.siteType) + "}";

@@ -35,6 +35,13 @@ tile-group contract, including exact native site type, site index, primitive
 BEL, anchor coverage, view uniqueness, and payload/source seals.  Its real
 XCVU19P runtime gate is pending; the contract alone does not enable RAMB18 in
 the placer.
+The first pinned-XCVU19P probe rejected an incorrect assumption that both half
+views expose a native BEL named `RAMB18E2`.  RapidWright materializes the legal
+placement views as `RAMB180/RAMB18E2_L`, `RAMB181/RAMB18E2_U`, and
+`RAMB36/RAMB36E2`; the corresponding primary database identities are
+`RAMBFIFO18`, `RAMB181`, and `RAMBFIFO36`.  Version 3 therefore seals both the
+placement identity and the native identity for every view.  This discovery is
+not bypassed or normalized with coordinate/name arithmetic.
 
 Ordinary atomic LUT/FF/DSP/BRAM/URAM cells are not copied into this contract.
 Unknown, branching, merging, cyclic, partial-width, multiply-owned, or

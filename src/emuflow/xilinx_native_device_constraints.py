@@ -308,15 +308,22 @@ def validate_xilinx_native_device_constraints(
         native_tiles.add(tile)
         observed_bram_anchors.append(anchor)
         views = {}
-        for role, expected_bel in (
-            ("lower", "RAMB18E2"),
-            ("upper", "RAMB18E2"),
-            ("whole", "RAMB36E2"),
+        for (
+            role,
+            expected_bel,
+            expected_site_type,
+            expected_native_type,
+            expected_native_bel,
+        ) in (
+            ("lower", "RAMB18E2_L", "RAMB180", "RAMBFIFO18", "RAMBFIFO18"),
+            ("upper", "RAMB18E2_U", "RAMB181", "RAMB181", "RAMB18E2_U"),
+            ("whole", "RAMB36E2", "RAMB36", "RAMBFIFO36", "RAMBFIFO36E2"),
         ):
             entry = group.get(role)
             entry_context = f"{context}.{role}"
             if not isinstance(entry, dict) or set(entry) != {
-                "bel", "site", "site_index", "site_type",
+                "bel", "native_bel", "native_site_type", "site", "site_index",
+                "site_type",
             }:
                 raise ValidationError(f"{entry_context}: invalid native view")
             if entry.get("bel") != expected_bel:
@@ -325,6 +332,19 @@ def validate_xilinx_native_device_constraints(
             site_type = _string(
                 entry.get("site_type"), f"{entry_context}.site_type"
             )
+            native_site_type = _string(
+                entry.get("native_site_type"),
+                f"{entry_context}.native_site_type",
+            )
+            native_bel = _string(
+                entry.get("native_bel"), f"{entry_context}.native_bel"
+            )
+            if (site_type, native_site_type, native_bel) != (
+                expected_site_type, expected_native_type, expected_native_bel
+            ):
+                raise ValidationError(
+                    f"{entry_context}: invalid native placement identity"
+                )
             site_index = _nonnegative_integer(
                 entry.get("site_index"), f"{entry_context}.site_index"
             )

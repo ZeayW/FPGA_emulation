@@ -1084,6 +1084,11 @@ The version-3 native-device contract now has an exporter and independent
 validator for that tile-group mapping.  It remains non-admissible placement
 evidence until the exporter has passed against the pinned real XCVU19P device
 database and the resulting map is consumed by the OpenPARF legalizer.
+The first real-device probe also established that the three identities must be
+kept separate: placement uses `RAMB180/RAMB18E2_L`,
+`RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`, while the database's primary
+views are `RAMBFIFO18`, `RAMB181`, and `RAMBFIFO36`.  The contract records both
+identities instead of treating a logical primitive name as a native BEL name.
 The provider-neutral `emuflow.xilinx-physical-macro-contract/v1` now derives
 these non-atomic constraints directly from mapped connectivity without running
 a packer, placer, or legalizer. It records CARRY8/LUT6_2 and MUXF7/8/9 site

@@ -106,6 +106,13 @@ export a source-sealed tile group with exact native site/BEL identities and
 then make OpenPARF choose conflict-free half/full claims.  `Y-1`, `Y/2`, name
 rewrites, and forced instance pairing are forbidden.
 
+The pinned RapidWright device probe further showed that logical placement and
+primary database identities differ.  Lower, upper, and whole placement use
+`RAMB180/RAMB18E2_L`, `RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`; their
+primary database views are `RAMBFIFO18`, `RAMB181`, and `RAMBFIFO36`.  The
+source-sealed tile-group contract records both sides of this mapping and fails
+closed on any mismatch.
+
 The typed hard-block implementation now follows that boundary. A compact
 source-sealed contract enumerates exact legal native windows. An OpenPARF
 operator chooses conflict-free whole-chain windows from the global-placement

@@ -389,17 +389,23 @@ class XilinxNativeDeviceConstraintsTest(unittest.TestCase):
             payload["bram_tile_groups"] = [{
                 "anchor": "RAMB18_X0Y475",
                 "lower": {
-                    "bel": "RAMB18E2", "site": "RAMB18_X0Y474",
-                    "site_index": 1, "site_type": "RAMBFIFO18",
+                    "bel": "RAMB18E2_L", "native_bel": "RAMBFIFO18",
+                    "native_site_type": "RAMBFIFO18",
+                    "site": "RAMB18_X0Y474", "site_index": 1,
+                    "site_type": "RAMB180",
                 },
                 "tile": "BRAM_X2Y1185",
                 "upper": {
-                    "bel": "RAMB18E2", "site": "RAMB18_X0Y475",
+                    "bel": "RAMB18E2_U", "native_bel": "RAMB18E2_U",
+                    "native_site_type": "RAMB181",
+                    "site": "RAMB18_X0Y475",
                     "site_index": 0, "site_type": "RAMB181",
                 },
                 "whole": {
-                    "bel": "RAMB36E2", "site": "RAMB36_X0Y237",
-                    "site_index": 2, "site_type": "RAMBFIFO36",
+                    "bel": "RAMB36E2", "native_bel": "RAMBFIFO36E2",
+                    "native_site_type": "RAMBFIFO36",
+                    "site": "RAMB36_X0Y237", "site_index": 2,
+                    "site_type": "RAMB36",
                 },
             }]
             payload["summary"].update({
@@ -421,6 +427,8 @@ class XilinxNativeDeviceConstraintsTest(unittest.TestCase):
             for field, replacement, message in (
                 (("lower", "site"), "RAMB18_X0Y475", "distinct"),
                 (("whole", "bel"), "RAMB18E2", "primitive BEL"),
+                (("lower", "native_bel"), "RAMB18E2_L", "placement identity"),
+                (("whole", "site_type"), "RAMBFIFO36", "placement identity"),
                 (("upper", "site"), "RAMB18_X0Y476", "upper view"),
             ):
                 with self.subTest(field=field):
@@ -457,7 +465,8 @@ class XilinxNativeDeviceConstraintsTest(unittest.TestCase):
             "bramTileGroups",
             "RAMBFIFO18",
             "RAMBFIFO36",
-            "getBEL(expectedBel)",
+            "getAlternateSiteTypeEnums",
+            "native primitive BEL",
         ):
             self.assertIn(required, source)
         for forbidden in (
