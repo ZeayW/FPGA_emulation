@@ -1101,6 +1101,13 @@ identity, coordinate axes, and descriptors only; placement validation queries
 the selected coordinates and resource rows instead of repeatedly parsing a
 117 MB JSON site table.  Typed hard-block windows remain in their single
 source-sealed constraint contract and are not duplicated into the name map.
+On the 512,880-site XCVU19P fixture, an isolated old full-JSON parse took
+8.32 seconds and 843 MiB peak RSS, while the indexed lookup of the ten
+coordinates used by the real placement took 0.73 seconds and 24.1 MiB peak
+RSS (11.4x faster and 34.2x less peak memory, including Python startup).
+Repeated hot queries improved by 16.8x at the median.  The selected records
+were also compared field-for-field with the former JSON contract and matched
+exactly.
 The first real-device probe also established that the three identities must be
 kept separate: placement uses `RAMB180/RAMB18E2_L`,
 `RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`, while the database's primary

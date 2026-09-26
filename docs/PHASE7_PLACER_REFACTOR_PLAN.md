@@ -84,6 +84,11 @@ capability.  Unsupported candidates do not delay the OpenPARF primary route.
   coordinate axes, and a descriptor for that database; validators query only
   the coordinates and resource rows used by the candidate.  Do not duplicate
   the site table or hard-block windows in a large JSON hot path.
+- The real 512,880-site XCVU19P gate must retain the measured indexed-contract
+  evidence: 8.32 seconds/843 MiB for the former full JSON parse versus
+  0.73 seconds/24.1 MiB for the ten-coordinate query, with exact selected-row
+  equality.  Performance evidence is invalid if conversion time is charged to
+  every validation instead of once at export.
 
 ### 7A-4: native packing
 
