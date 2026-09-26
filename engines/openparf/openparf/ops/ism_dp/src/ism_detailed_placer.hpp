@@ -410,9 +410,19 @@ class ISMDetailedPlacer {
              state_.pin_util_map[loc.x() * param_.pinUtilBinDimY + loc.y()] < param_.pinUtilToFixWhiteSpace;
     };
     auto siteXYGetter = [&](IndexType site_id) {
-      auto        loc  = siteToCluster.indexToXY(site_id);
-      auto const &site = getValidSite(loc.x(), loc.y());
-      auto const &bbox = site.bbox();
+      auto        loc    = siteToCluster.indexToXY(site_id);
+      auto        id1d   = state_.valid_site_map(loc.x(), loc.y());
+      if (id1d == kIndexTypeMax) {
+        // Real device grids are sparse.  Empty coordinates have no instance
+        // and no filler, but ISM still requests a coordinate for every entry
+        // in its dense working array.  Never dereference the empty-site
+        // sentinel merely to provide that unused coordinate.
+        return XY<RealType>(loc.x() + 0.5, loc.y() + 0.5);
+      }
+      auto const &layout = db_.db()->layout();
+      auto const &site = layout.siteMap().at(id1d);
+      openparfAssert(site);
+      auto const &bbox = site->bbox();
       return XY<RealType>((bbox.xl() + bbox.xh()) * 0.5, (bbox.yl() + bbox.yh()) * 0.5);
     };
     initISMProblemSiteMap(siteTypeGetter, addFiller, siteXYGetter, clusters, siteToCluster, prob);
@@ -571,9 +581,17 @@ class ISMDetailedPlacer {
       return false;
     };
     auto siteXYGetter = [&](IndexType site_id) {
-      auto        loc  = siteToCluster.indexToXY(site_id);
-      auto const &site = getValidSite(loc.x(), loc.y() / db_.numBLEsPerCLB());
-      auto const &bbox = site.bbox();
+      auto      loc   = siteToCluster.indexToXY(site_id);
+      IndexType siteX = loc.x();
+      IndexType siteY = loc.y() / db_.numBLEsPerCLB();
+      auto      id1d  = state_.valid_site_map(siteX, siteY);
+      if (id1d == kIndexTypeMax) {
+        return XY<RealType>(siteX + 0.5, siteY + 0.5);
+      }
+      auto const &layout = db_.db()->layout();
+      auto const &site = layout.siteMap().at(id1d);
+      openparfAssert(site);
+      auto const &bbox = site->bbox();
       return XY<RealType>((bbox.xl() + bbox.xh()) * 0.5, (bbox.yl() + bbox.yh()) * 0.5);
       // auto const& layout = db_.db()->layout();
       // auto const& site = layout.siteMap().at(loc.x(), loc.y() / db_.numBLEsPerCLB());
@@ -773,9 +791,17 @@ class ISMDetailedPlacer {
       return false;
     };
     auto siteXYGetter = [&](IndexType site_id) {
-      auto        loc  = siteToCluster.indexToXY(site_id);
-      auto const &site = getValidSite(loc.x() / 2, loc.y() / db_.numBLEsPerCLB());
-      auto const &bbox = site.bbox();
+      auto      loc   = siteToCluster.indexToXY(site_id);
+      IndexType siteX = loc.x() / 2;
+      IndexType siteY = loc.y() / db_.numBLEsPerCLB();
+      auto      id1d  = state_.valid_site_map(siteX, siteY);
+      if (id1d == kIndexTypeMax) {
+        return XY<RealType>(siteX + 0.5, siteY + 0.5);
+      }
+      auto const &layout = db_.db()->layout();
+      auto const &site = layout.siteMap().at(id1d);
+      openparfAssert(site);
+      auto const &bbox = site->bbox();
       return XY<RealType>((bbox.xl() + bbox.xh()) * 0.5, (bbox.yl() + bbox.yh()) * 0.5);
       // auto const& layout = db_.db()->layout();
       // auto const& site = layout.siteMap().at(loc.x() / 2, loc.y() / db_.numBLEsPerCLB());

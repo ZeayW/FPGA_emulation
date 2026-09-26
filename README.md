@@ -4595,6 +4595,10 @@ from the lower-left dense coordinate serialized in the final Bookshelf `.pl`;
 the independent importer resolves the latter back to the exact physical site.
 An illegal typed placement aborts before ISM detailed placement rather than
 continuing with a malformed site index.
+ISM now treats empty coordinates in a sparse real-device SITEMAP as inert
+working-array entries instead of dereferencing the empty-site sentinel.  This
+keeps native detailed placement enabled on the full XCVU19P grid without
+inventing filler sites or collapsing physical resource spacing.
 The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.

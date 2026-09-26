@@ -110,7 +110,9 @@ is removed from generic density and its convergence gate because exact window
 selection supplies the capacity proof. Partial ownership fails closed. The
 typed legalizer uses the exact Bookshelf site center in memory while `.pl`
 serialization retains the lower-left site key; an illegal typed result aborts
-before ISM detailed placement. DSP,
+before ISM detailed placement. ISM handles empty coordinates in a sparse
+real-device SITEMAP as inert entries, without fabricating sites or skipping
+detailed placement. DSP,
 then BRAM, then URAM must each pass compiled placement, RWRoute, and OpenSTA
 before this implementation is counted as qualified evidence.
 
