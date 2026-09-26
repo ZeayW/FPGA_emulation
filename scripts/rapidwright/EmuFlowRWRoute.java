@@ -548,8 +548,12 @@ public final class EmuFlowRWRoute {
             physicalPin = "DIN" + physicalPin.substring(1);
         } else if (physicalPin.startsWith("ACOUT")) {
             physicalPin = physicalPin.replace("ACOUT", "ACOUT_B");
+        } else if (physicalPin.startsWith("ACIN")) {
+            physicalPin = physicalPin.replace("ACIN", "ACIN_B");
         } else if (physicalPin.startsWith("BCOUT")) {
             physicalPin = physicalPin.replace("BCOUT", "BCOUT_B");
+        } else if (physicalPin.startsWith("BCIN")) {
+            physicalPin = physicalPin.replace("BCIN", "BCIN_B");
         } else if (physicalPin.startsWith("PATTERNBDETECT")) {
             physicalPin = physicalPin.replace("PATTERNBDETECT", "PATTERN_B_DETECT");
         } else if (physicalPin.startsWith("PATTERNDETECT")) {

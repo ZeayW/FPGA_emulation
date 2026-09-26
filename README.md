@@ -4605,6 +4605,11 @@ ISM now treats empty coordinates in a sparse real-device SITEMAP as inert
 working-array entries instead of dereferencing the empty-site sentinel.  This
 keeps native detailed placement enabled on the full XCVU19P grid without
 inventing filler sites or collapsing physical resource spacing.
+At the RapidWright boundary, the transformed DSP48E2 physical macro maps both
+ends of the UltraScale+ A/B cascade buses to their actual `_B` site-pin names
+(`ACOUT_B`/`ACIN_B` and `BCOUT_B`/`BCIN_B`).  Qualification fixtures use the
+real primitive bus widths; scalar stand-ins are not accepted as evidence for
+hard-block routing.
 The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.

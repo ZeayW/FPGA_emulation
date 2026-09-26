@@ -21,6 +21,21 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_rapidwright_dsp_cascade_uses_physical_b_bus_site_pins(self):
+        source = (
+            Path(__file__).parents[1]
+            / "scripts/rapidwright/EmuFlowRWRoute.java"
+        ).read_text(encoding="utf-8")
+        for logical, physical in (
+            ("ACOUT", "ACOUT_B"),
+            ("ACIN", "ACIN_B"),
+            ("BCOUT", "BCOUT_B"),
+            ("BCIN", "BCIN_B"),
+        ):
+            self.assertIn(
+                f'physicalPin.replace("{logical}", "{physical}")', source
+            )
+
     def test_device_data_provider_fails_closed_on_unpinned_database(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
