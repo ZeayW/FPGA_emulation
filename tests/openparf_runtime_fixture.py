@@ -204,7 +204,7 @@ def write_openparf_ramb18_fixture(root: Path) -> Tuple[Path, Path, Path]:
         (("ramb18_lo", "lut_01"), ("ramb18_hi", "lut_02"))
     ):
         input_bit = cells[sink]["connections"]["I0"][0]
-        output_bit = 40_000 + index
+        output_bit = 40_000 + 100 * index
         cells[name] = _cell(
             "RAMB18E2",
             {
@@ -215,7 +215,10 @@ def write_openparf_ramb18_fixture(root: Path) -> Tuple[Path, Path, Path]:
                 # physical-routing fixture.
                 "ADDRARDADDR": [input_bit] + ["0"] * 13,
                 "CLKARDCLK": [1_000_000],
-                "DOADO": [output_bit] + ["0"] * 15,
+                # Primitive output bits are ordinary driven nets even when
+                # most are sinkless.  Connecting output bits to constants
+                # would invert their direction in the timing-only IR.
+                "DOADO": [output_bit + bit for bit in range(16)],
             },
             {"DOADO"},
         )

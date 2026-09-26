@@ -280,7 +280,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
         foreach endpoint $endpoints {
           foreach path_end [find_timing_paths -path_delay max \
               -from [list $startpoint] -to [list $endpoint] \
-              -group_path_count 1 -endpoint_path_count 1 \
+              -group_count 1 -endpoint_count 1 \
               -sort_by_slack] {
             set timing_paths [list $path_end]
             incr queried_paths
@@ -311,7 +311,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
           error "timed endpoint '$endpoint_name' is absent or ambiguous"
         }
         foreach path_end [find_timing_paths -path_delay max \
-            -to $endpoint_pin -group_path_count 1 -endpoint_path_count 1 \
+            -to $endpoint_pin -group_count 1 -endpoint_count 1 \
             -sort_by_slack] {
           set timing_paths [list $path_end]
           incr queried_paths
@@ -348,7 +348,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   set output [open $output_path w]
   puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
   set timing_paths [find_timing_paths -path_delay max \
-    -group_path_count $report_limit -endpoint_path_count 1 -sort_by_slack]
+    -group_count $report_limit -endpoint_count 1 -sort_by_slack]
   set queried_paths [llength $timing_paths]
   emuflow_emit_timing_paths $timing_paths output emitted
   close $output

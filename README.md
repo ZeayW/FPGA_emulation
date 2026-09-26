@@ -4762,7 +4762,11 @@ and RAM/DSP/URAM timing is explicitly reported as an unqualified surrogate.
 The compact summary records those limits and the full OpenSTA path database
 remains the sole per-partition WNS/TNS authority. Its independent validator
 recomputes WNS, TNS, failing endpoint count, and the path population from that
-database. Route A also binds every original same-FPGA TimingPathDB member to
+database. The path exporter uses OpenSTA 2.6's `find_timing_paths`
+`-group_count`/`-endpoint_count` API; report-only
+`-group_path_count`/`-endpoint_path_count` flags are rejected rather than
+silently yielding no authority result. Route A also binds every original
+same-FPGA TimingPathDB member to
 its Xilinx logical launch/capture pins and measures a conservative longest
 path on the same routed graph. Those source-sealed local paths and the
 cross-FPGA logic/transport segments together cover the canonical original
