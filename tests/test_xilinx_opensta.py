@@ -113,6 +113,74 @@ def test_routed_opensta_staging_inserts_one_exact_delay_per_sink():
         ]
 
 
+def test_dsp_timing_cell_unions_ports_across_cascade_instances():
+    mapped = {
+        "modules": {"top": {
+            "attributes": {"top": "1"},
+            "ports": {},
+            "cells": {
+                "dsp_head": {
+                    "type": "DSP48E2", "parameters": {},
+                    "port_directions": {
+                        "A": "input", "ACOUT": "output", "P": "output",
+                    },
+                    "connections": {
+                        "A": [1, "0"], "ACOUT": [10, 11], "P": [20, 21],
+                    },
+                },
+                "dsp_tail": {
+                    "type": "DSP48E2", "parameters": {},
+                    "port_directions": {
+                        "A": "input", "ACIN": "input", "P": "output",
+                    },
+                    "connections": {
+                        "A": [2, "0"], "ACIN": [10, 11], "P": [30, 31],
+                    },
+                },
+            },
+            "netnames": {},
+        }},
+    }
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        mapped_path = root / "mapped.json"
+        mapped_path.write_text(json.dumps(mapped), encoding="utf-8")
+        timing_path = root / "routed-timing.json"
+        timing_path.write_text(json.dumps({
+            "schema": "emuflow.xilinx-routed-timing/v1",
+            "status": "pass", "top": "top", "part": "xcvu19p-test",
+            "source": {
+                "mapped_sha256": _sha(mapped_path),
+                "packed_sha256": "0" * 64,
+                "placement_sha256": "1" * 64,
+                "route_sha256": "2" * 64,
+            },
+            "qualification": {
+                "provider": "rapidwright-lightweight",
+                "analysis": "setup-route-only",
+                "hold_analysis": "unavailable",
+                "hard_block_clock_timing": "unqualified",
+                "logic_coefficients_ps": {
+                    "ff_clock_to_q": 25.0, "carry_co": 10.0,
+                    "lut_a1": 70.0, "lut_a2": 65.0, "lut_a3": 60.0,
+                    "lut_a4": 55.0, "lut_a5": 50.0, "lut_a6": 45.0,
+                },
+            },
+            "endpoints": [],
+            "summary": {
+                "logical_endpoints": 0, "physical_route_sinks": 0,
+                "exact_site_bindings": 0, "shared_site_bindings": 0,
+                "intra_site_endpoints": 0, "maximum_route_delay_ns": 0.0,
+            },
+        }), encoding="utf-8")
+        _ir, model, _metadata = build_xilinx_routed_opensta_inputs(
+            mapped_path, timing_path
+        )
+    dsp = model["cells"]["DSP48E2"]
+    assert {"A__0", "A__1", "ACIN__0", "ACIN__1"} <= set(dsp["inputs"])
+    assert {"ACOUT__0", "ACOUT__1", "P__0", "P__1"} <= set(dsp["outputs"])
+
+
 def test_opensta_summary_recomputes_wns_and_tns():
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)

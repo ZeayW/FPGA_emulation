@@ -204,14 +204,27 @@ def build_xilinx_routed_opensta_inputs(
         {"kind": "combinational", "inputs": ["I0", "I1", "S"], "output": "O", "delay_ns": model["cells"]["MUXF8"]["delay_ns"]},
     )
     pin_sets = _pin_sets(routed_ir)
-    hard_blocks = []
+    instances_by_type: Dict[str, list[Mapping[str, Any]]] = {}
     for instance in routed_ir.value["instances"]:
-        cell_type = instance["type"]
+        instances_by_type.setdefault(instance["type"], []).append(instance)
+    hard_blocks = []
+    for cell_type, typed_instances in sorted(instances_by_type.items()):
         if cell_type in model["cells"]:
             continue
-        pins = pin_sets[instance["id"]]
-        inputs = _scalar_pins(pins["inputs"])
-        outputs = _scalar_pins(pins["outputs"])
+        # One Liberty cell declaration is shared by every instance of a
+        # primitive.  Different hard-block instances routinely activate
+        # different legal ports (for example ACOUT on one DSP and ACIN on the
+        # next DSP in a cascade), so deriving the declaration from the first
+        # instance silently drops ports from the remaining instances.  Form
+        # the type-wide union while preserving each original port bit index.
+        typed_inputs: set[tuple[str, int]] = set()
+        typed_outputs: set[tuple[str, int]] = set()
+        for instance in typed_instances:
+            pins = pin_sets[instance["id"]]
+            typed_inputs.update(pins["inputs"])
+            typed_outputs.update(pins["outputs"])
+        inputs = _scalar_pins(typed_inputs)
+        outputs = _scalar_pins(typed_outputs)
         if cell_type in _RAM_TYPES:
             clocks = [pin for pin in inputs if "CLK" in pin.upper()]
             if not clocks or not outputs:
@@ -248,6 +261,11 @@ def build_xilinx_routed_opensta_inputs(
             hard_blocks.append(cell_type)
             continue
         if cell_type.startswith("EMUFLOW_RW_ROUTE_DELAY_"):
+            if len(typed_instances) != 1:
+                raise ValidationError(
+                    "routed-delay timing cell type is not instance-unique"
+                )
+            instance = typed_instances[0]
             delay = float(instance["attributes"]["emuflow_route_delay_ns"])
             model["cells"][cell_type] = {
                 "kind": "combinational", "inputs": ["A"],

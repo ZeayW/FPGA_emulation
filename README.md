@@ -4609,7 +4609,9 @@ At the RapidWright boundary, the transformed DSP48E2 physical macro maps both
 ends of the UltraScale+ A/B cascade buses to their actual `_B` site-pin names
 (`ACOUT_B`/`ACIN_B` and `BCOUT_B`/`BCIN_B`).  Qualification fixtures use the
 real primitive bus widths; scalar stand-ins are not accepted as evidence for
-hard-block routing.
+hard-block routing.  OpenSTA builds one type-wide hard-block timing interface
+from the union of every instance's active ports, so a cascade head and tail
+cannot cause each other's legal AC/BC input or output ports to disappear.
 The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.
