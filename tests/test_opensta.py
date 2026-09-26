@@ -13,6 +13,7 @@ from emuflow.opensta import (
     classify_through_net_timing_endpoints,
     load_timing_model,
     parse_clock_definitions,
+    require_opensta_engine,
     render_opensta_liberty,
     run_opensta_path_database,
     validate_timing_model_coverage,
@@ -68,13 +69,21 @@ class OpenStaProviderTest(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "expected CLOCK"):
             parse_clock_definitions(["clk"])
 
+    def test_legacy_opensta_is_rejected_before_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "sta"
+            executable.write_text(
+                "#!/bin/sh\necho 2.6.0\n", encoding="utf-8"
+            )
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            with self.assertRaisesRegex(Exception, "requires 3.1.0 or newer"):
+                require_opensta_engine(str(executable))
+
     def test_path_export_supports_directed_cut_net_queries(self) -> None:
         script = (
             ROOT / "scripts/opensta/export_timing_path_database.tcl"
         ).read_text(encoding="utf-8")
-        # OpenSTA is still commonly linked against Tcl 8.5 on shared HPC
-        # systems.  Keep hexadecimal transport on the older H* API instead of
-        # Tcl 8.6-only `binary encode/decode` subcommands.
+        # Keep hexadecimal transport on the portable H* API.
         self.assertIn("binary format H* $value", script)
         self.assertIn("binary scan [encoding convertto utf-8 $value] H*", script)
         self.assertNotIn("binary decode hex", script)
@@ -84,13 +93,12 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("foreach endpoint [all_outputs]", script)
         self.assertIn("set endpoint_count [llength $endpoints]", script)
         self.assertIn("min($max_paths, $endpoint_count)", script)
+        self.assertIn("-group_path_count $report_limit", script)
+        self.assertIn("-endpoint_path_count 1", script)
         self.assertIn(
-            "-to [list $endpoint] -group_count 1 -endpoint_count 1", script
+            "emuflow_emit_timing_paths $timing_paths output emitted", script
         )
-        self.assertIn(
-            "emuflow_emit_timing_paths [list $path_end] output emitted", script
-        )
-        self.assertNotIn("set timing_paths [find_timing_paths", script)
+        self.assertIn("set timing_paths [find_timing_paths", script)
         self.assertIn("EMUFLOW_STA_THROUGH_NETS", script)
         self.assertIn("get_pins -quiet -of_objects $through_net", script)
         self.assertIn("foreach through_pin $through_pins", script)
@@ -105,7 +113,8 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("$emitted == $before_emitted", script)
         self.assertIn("[info exists timed_endpoints($emuir_name)]", script)
         self.assertIn("-to $endpoint_pin", script)
-        self.assertIn("-endpoint_count 1", script)
+        self.assertNotIn("-endpoint_count", script)
+        self.assertNotIn("-group_count", script)
         self.assertIn("proc emuflow_emit_timing_paths", script)
         self.assertIn("array set emuir_by_pin_full_name {}", script)
         self.assertIn("EMUFLOW_STA_PIN_MAP", script)
@@ -334,7 +343,12 @@ class OpenStaProviderTest(unittest.TestCase):
             executable.write_text(
                 """#!/usr/bin/env python3
 import os
+import sys
 from pathlib import Path
+
+if sys.argv[1:] == ["-version"]:
+    print("3.1.0")
+    raise SystemExit(0)
 
 through = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()
 _, requested_hex = through[1].split("\\t")
@@ -398,6 +412,8 @@ print("fake OpenSTA pass")
             artifact["source"]["timing_model_qualification"],
             "analytical_uncharacterized",
         )
+        self.assertEqual(report["engine"]["version"], "3.1.0")
+        self.assertEqual(artifact["source"]["engine"]["version"], "3.1.0")
 
     def test_structural_endpoint_classifier_distinguishes_data_and_control(self) -> None:
         model = load_timing_model(DEFAULT_TIMING_MODEL)
@@ -527,7 +543,12 @@ print("fake OpenSTA pass")
             executable.write_text(
                 """#!/usr/bin/env python3
 import os
+import sys
 from pathlib import Path
+
+if sys.argv[1:] == ["-version"]:
+    print("3.1.0")
+    raise SystemExit(0)
 
 requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
 requested_hex = [row.split("\\t")[1] for row in requested]
@@ -590,7 +611,12 @@ Path(os.environ["EMUFLOW_STA_THROUGH_COVERAGE"]).write_text(
             executable.write_text(
                 """#!/usr/bin/env python3
 import os
+import sys
 from pathlib import Path
+
+if sys.argv[1:] == ["-version"]:
+    print("3.1.0")
+    raise SystemExit(0)
 
 requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
 requested_hex = requested[0].split("\\t")[1]

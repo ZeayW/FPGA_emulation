@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
+import re
 import subprocess
 import tempfile
 from collections import defaultdict
@@ -35,6 +37,42 @@ FPGA_TIMING_MODEL_SCHEMA = "emuflow.fpga-timing-model/v1"
 FPGA_TIMING_MODEL_SCHEMA_V2 = "emuflow.fpga-timing-model/v2"
 OPENSTA_PROVIDER = "opensta-fpga-path-database-v1"
 OPENSTA_THROUGH_COVERAGE_SCHEMA = "emuflow.opensta-through-net-coverage/v1"
+MINIMUM_OPENSTA_VERSION = (3, 1, 0)
+
+
+def require_opensta_engine(executable: str) -> Dict[str, str]:
+    """Fail closed on legacy engines with unsafe Tcl path-object ownership."""
+    version_result = subprocess.run(
+        [executable, "-version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    version_match = re.search(
+        r"(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:\s|$)",
+        version_result.stdout,
+    )
+    if version_result.returncode != 0 or version_match is None:
+        raise ValidationError(
+            "OpenSTA executable does not report a semantic version"
+        )
+    version_tuple = tuple(int(field) for field in version_match.groups())
+    if version_tuple < MINIMUM_OPENSTA_VERSION:
+        minimum = ".".join(str(field) for field in MINIMUM_OPENSTA_VERSION)
+        actual = ".".join(str(field) for field in version_tuple)
+        raise ValidationError(
+            f"OpenSTA {actual} is unsupported; EmuFlow requires {minimum} or newer"
+        )
+    executable_digest = hashlib.sha256()
+    with Path(executable).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            executable_digest.update(chunk)
+    return {
+        "name": "OpenSTA",
+        "version": ".".join(str(field) for field in version_tuple),
+        "executable_sha256": executable_digest.hexdigest(),
+    }
 
 
 def _runtime_data_path(relative: Path) -> Path:
@@ -71,10 +109,9 @@ def _finite_nonnegative(value: Any, context: str) -> float:
 def _emuir_timing_pin_map(ir: EmuIR) -> Dict[str, str]:
     """Return immutable OpenSTA timing-pin to EmuIR-net identities.
 
-    OpenSTA 2.6 can corrupt its Tcl collection arena when object-graph queries
-    are nested under live PathEnd handles.  Connectivity is already exact in
-    EmuIR, so materialize it once before launching OpenSTA instead of asking
-    the timing engine to rediscover each point's net while exporting paths.
+    Connectivity is already exact in EmuIR, so materialize it once before
+    launching OpenSTA.  The timing engine then supplies timing, while this
+    independently sealed map preserves the provider-neutral net identity.
     """
 
     pins_by_instance: DefaultDict[str, set[tuple[str, int]]] = defaultdict(set)
@@ -1377,6 +1414,7 @@ def run_opensta_path_database(
     )
     clock_map = _clock_map(ir, clocks)
     opensta = resolve_native_executable("sta", executable)
+    engine = require_opensta_engine(opensta)
     structural = (
         classify_through_net_timing_endpoints(
             ir, model, through_net_ids, instance_cell_types
@@ -1486,6 +1524,7 @@ def run_opensta_path_database(
                 "timing_model_qualification": model["source"][
                     "qualification"
                 ],
+                "engine": engine,
                 "architecture_timing_db": (
                     str(architecture_timing_db_path)
                     if architecture_timing_db_path is not None
@@ -1582,6 +1621,7 @@ def run_opensta_path_database(
         "provider": OPENSTA_PROVIDER,
         "timing_model": model["name"],
         "timing_model_qualification": model["source"]["qualification"],
+        "engine": engine,
         "clocks": clock_map,
         "paths": imported["paths"],
         "max_paths": max_paths,

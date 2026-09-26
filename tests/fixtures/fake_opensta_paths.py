@@ -2,7 +2,13 @@
 """Deterministic OpenSTA protocol fixture for multi-FPGA flow tests."""
 
 import os
+import sys
 from pathlib import Path
+
+
+if sys.argv[1:] == ["-version"]:
+    print("3.1.0")
+    raise SystemExit(0)
 
 
 rows = Path(os.environ["EMUFLOW_STA_NET_MAP"]).read_text().splitlines()[1:]

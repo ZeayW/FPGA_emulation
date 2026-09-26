@@ -3032,7 +3032,7 @@ launch/capture identities even when OpenSTA's Tcl export adds a second
 backslash-escaping layer.  The adapter accepts only a unique exact alias and
 rejects ambiguous spellings, so a structured endpoint certificate cannot be
 silently attached to the wrong instance.
-OpenSTA 2.6 directed internal-net queries are not used as the cut qualification
+Directed internal-net queries are not used as the cut qualification
 gate. In a reconvergent cone, both `-through` and an internal driver `-from`
 constraint can return the unrelated worst sibling path; inserting the requested
 net into that returned path would be unsound. The reusable v4 cut-timing
@@ -3824,8 +3824,8 @@ the concrete TDM occupancy/wait price; it never replaces the required complete
 Phase 7 WNS/TNS comparison.
 
 Cross-stage partition/routing/TDM work uses a partition-independent STA path
-database. The default provider builds standalone OpenSTA from
-`engines/openroad/src/sta`, renders the versioned open FPGA timing model, and
+database. The default provider builds standalone OpenSTA 3.1 from
+`engines/opensta`, renders the versioned open FPGA timing model, and
 records ordered stable EmuIR net identities for each global path. The Vivado
 adapter is an optional provider that emits the same checked path-database
 contract from a concrete Xilinx part.
@@ -4762,13 +4762,13 @@ and RAM/DSP/URAM timing is explicitly reported as an unqualified surrogate.
 The compact summary records those limits and the full OpenSTA path database
 remains the sole per-partition WNS/TNS authority. Its independent validator
 recomputes WNS, TNS, failing endpoint count, and the path population from that
-database. The path exporter queries one worst setup path per independently
-identified endpoint and serializes it before the next query. This preserves
-endpoint-complete WNS/TNS while avoiding a known OpenSTA 2.6/Tcl object-lifetime
-failure caused by retaining a large `PathEnd` collection. It uses OpenSTA 2.6's
-`find_timing_paths` `-group_count`/`-endpoint_count` API; report-only
-`-group_path_count`/`-endpoint_path_count` flags are rejected rather than
-silently yielding no authority result. Route A also binds every original
+database. The path exporter uses OpenSTA 3.1's bounded
+`find_timing_paths -group_path_count/-endpoint_path_count` API to obtain one
+worst setup path per timed endpoint in a single search. EmuFlow rejects older
+OpenSTA engines before timing: OpenSTA 2.6 can corrupt its Tcl path-object arena
+while serializing physical RAM paths, and a per-endpoint workaround adds
+unacceptable large-design search cost. The report seals the accepted engine
+version and executable SHA-256. Route A also binds every original
 same-FPGA TimingPathDB member to
 its Xilinx logical launch/capture pins and measures a conservative longest
 path on the same routed graph. Those source-sealed local paths and the

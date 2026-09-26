@@ -63,6 +63,14 @@ REQUIRED_SOURCE_FILES = {
         "LICENSE",
         "EMUFLOW_PROVENANCE.md",
     ),
+    "opensta": (
+        "CMakeLists.txt",
+        "app/StaMain.cc",
+        "search/Search.cc",
+        "tcl/StaTclTypes.i",
+        "LICENSE",
+        "EMUFLOW_PROVENANCE.md",
+    ),
     "openparf": (
         "CMakeLists.txt",
         "cmake/Ccache.cmake/CMakeLists.txt",

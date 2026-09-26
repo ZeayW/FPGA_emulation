@@ -21,9 +21,8 @@ proc emuflow_required_env {name} {
 }
 
 proc emuflow_hex_decode {value} {
-  # OpenSTA can be linked against Tcl 8.5 on supported HPC hosts.  The
-  # `binary encode/decode` subcommands were only added in Tcl 8.6, while the
-  # H* format and scan forms have been available since Tcl 8.4.
+  # Keep the on-disk transport independent of Tcl's newer encode/decode
+  # subcommands; the H* representation is stable across supported runtimes.
   return [encoding convertfrom utf-8 [binary format H* $value]]
 }
 
@@ -280,7 +279,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
         foreach endpoint $endpoints {
           foreach path_end [find_timing_paths -path_delay max \
               -from [list $startpoint] -to [list $endpoint] \
-              -group_count 1 -endpoint_count 1 \
+              -group_path_count 1 -endpoint_path_count 1 \
               -sort_by_slack] {
             set timing_paths [list $path_end]
             incr queried_paths
@@ -311,7 +310,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
           error "timed endpoint '$endpoint_name' is absent or ambiguous"
         }
         foreach path_end [find_timing_paths -path_delay max \
-            -to $endpoint_pin -group_count 1 -endpoint_count 1 \
+            -to $endpoint_pin -group_path_count 1 -endpoint_path_count 1 \
             -sort_by_slack] {
           set timing_paths [list $path_end]
           incr queried_paths
@@ -335,12 +334,10 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   }
   puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"
 } else {
-  # OpenSTA 2.6 owns PathEnd handles returned by find_timing_paths.  Keeping a
-  # large collection of those handles live while Tcl serializes every point
-  # can corrupt the old Tcl/OpenSTA object arena at process teardown.  Query
-  # one independently identified endpoint at a time and serialize its worst
-  # path before issuing the next query.  This still emits exactly one setup
-  # path per timed endpoint, so WNS/TNS semantics are unchanged.
+  # OpenSTA 3.1 fixes the legacy PathEnd/Tcl object-lifetime corruption, so
+  # request the bounded endpoint-complete collection once.  Re-running the
+  # path search separately for every endpoint is correct but prohibitively
+  # expensive on large designs.
   set endpoints [all_registers -data_pins]
   foreach endpoint [all_outputs] {
     lappend endpoints $endpoint
@@ -352,17 +349,11 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   }
   set output [open $output_path w]
   puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
-  foreach endpoint $endpoints {
-    if {$queried_paths >= $report_limit} {
-      break
-    }
-    foreach path_end [find_timing_paths -path_delay max \
-        -to [list $endpoint] -group_count 1 -endpoint_count 1 \
-        -sort_by_slack] {
-      incr queried_paths
-      emuflow_emit_timing_paths [list $path_end] output emitted
-    }
-  }
+  set timing_paths [find_timing_paths -path_delay max \
+      -group_path_count $report_limit -endpoint_path_count 1 \
+      -sort_by_slack]
+  set queried_paths [llength $timing_paths]
+  emuflow_emit_timing_paths $timing_paths output emitted
   close $output
   if {$emitted == 0} {
     error "OpenSTA found no timing paths containing mapped EmuIR nets"
