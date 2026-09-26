@@ -162,8 +162,10 @@ Any rejected certificate returns to the owning upstream placer implementation.
    RAMB36E2, and URAM288 bounded fixtures have physical evidence.  The
    connectivity-derived MUX same-site macro contract, OpenPARF window chooser,
    masked direct legalization, and independent F7 certificate gate pass in
-   source/unit validation.  Compiled F7/F8/F9 physical evidence, clock
-   legality, and multi-SLR capacity remain gates.
+   source/unit validation.  The compiled F7 runtime gate also passes through
+   global placement, macro/LUT/FF legalization, ISM detailed placement, and
+   independent certificate reconstruction.  RapidWright/OpenSTA evidence,
+   compiled F8/F9 gates, clock legality, and multi-SLR capacity remain gates.
 3. **RAMB tile-group export and consumption gates -- complete.**
    The pinned real XCVU19P database exports and independently validates 2,160
    tile groups with distinct lower-RAMB18, upper-RAMB18, and whole-RAMB36
