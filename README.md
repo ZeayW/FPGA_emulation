@@ -1105,11 +1105,15 @@ member resource/BEL-slot template and the sealed legal-window count.  The
 OpenPARF legalizer loads candidate slice coordinates from the same immutable
 SQLite site contract once, groups them into a deterministic two-dimensional
 index, and performs an exact nearest-unoccupied-site query for every macro.
-Same-slice LUT/MUX/CARRY macros use the center of the dense Bookshelf cell,
-which is the coordinate convention consumed by native `direct_lg` and emitted
-by the final `.pl`; sparse bounding-box centers remain reserved for tall
-DSP/BRAM/URAM resources.  Mixing those two coordinate systems is rejected by
-the native mask boundary instead of silently reserving a nonexistent slice.
+All in-core placement operators use the geometric center of the complete
+Bookshelf site bounding box, including same-slice LUT/MUX/CARRY macros.  The
+dense lower-left coordinate remains only the serialized site-map identity used
+by the final `.pl`.  Native `direct_lg` now carries an explicit covered-grid to
+site-anchor map: masked macros reserve the owning anchor, while spiral search
+visits a sparse, variable-height site exactly once at its geometric center.
+This keeps global placement, macro legalization, ordinary LUT/FF legalization,
+ISM, and the independent legality checker on one coordinate contract instead
+of silently mixing dense-cell and bounding-box centers.
 For a same-site macro, minimizing displacement of the member centroid is
 algebraically identical to the former exhaustive sum-of-squared-displacement
 scan; strict lower-bound pruning and the original site-name tie break preserve

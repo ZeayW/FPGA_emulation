@@ -106,6 +106,21 @@ def audit_pinned_openparf_source(source_root: Path) -> Dict[str, Any]:
                 "if (idxA == a.numPins() || idxB == b.numPins())",
             ),
         ),
+        "sparse_site_center_search": _source_check(
+            root / "openparf/ops/direct_lg/src/dl_solver.cpp",
+            (
+                "siteIdAtSearchCoordinate(xy.x(), xy.y())",
+                "nbrListMap[site_id].emplace_back(instId, dist)",
+            ),
+        ),
+        "sparse_site_anchor_reservation": _source_check(
+            root / "openparf/ops/direct_lg/src/direct_lg_kernel.cpp",
+            (
+                "prob.validSiteMap(ix, iy) = id1d",
+                "(bbox.yl() + bbox.yh()) * 0.5",
+                "site->siteMapId().y()",
+            ),
+        ),
         "atomic_detailed_placer": _source_check(
             root / "openparf/ops/ism_dp/ism_dp.py",
             ("class ISMDetailedPlace",),

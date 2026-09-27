@@ -207,6 +207,14 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
             matrix["source_audit"]["checks"]["constant_lut_slot_assignment"]["status"],
             "native_supported",
         )
+        self.assertEqual(
+            matrix["source_audit"]["checks"]["sparse_site_center_search"]["status"],
+            "native_supported",
+        )
+        self.assertEqual(
+            matrix["source_audit"]["checks"]["sparse_site_anchor_reservation"]["status"],
+            "native_supported",
+        )
         self.assertTrue(matrix["native_packed_cluster_smoke"]["eligible"])
         for item in matrix["provider_features"] + matrix["primitive_inventory"]:
             self.assertIn(item["status"], CAPABILITY_STATUSES)

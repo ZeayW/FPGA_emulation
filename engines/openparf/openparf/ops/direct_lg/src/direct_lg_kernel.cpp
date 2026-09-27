@@ -164,6 +164,8 @@ void initDLProblemSiteMap(database::PlaceDB const &db,
 
   prob.siteTypes.resize(db.siteMapDim().x(), db.siteMapDim().y());
   prob.siteXYs.resize(db.siteMapDim().x(), db.siteMapDim().y());
+  prob.validSiteMap.resize(
+          db.siteMapDim().x(), db.siteMapDim().y(), kIndexTypeMax);
 
   // initialize all sites
   // site_map does not contain duplicated sites
@@ -175,10 +177,27 @@ void initDLProblemSiteMap(database::PlaceDB const &db,
   }
 
   // We assume all instances should be placed at the center in a slice
-  // So we have SLICE offset (0.5, 0.5)
+  // rather than at the lower-left SITEMAP anchor.  The distinction matters
+  // for sparse column-based architectures: OpenPARF represents the vertical
+  // interval up to the next entry as one site bounding box.
   for (auto const &site : layout.siteMap()) {
-    auto x = site.bbox().xl();
-    auto y = site.bbox().yl();
+    auto const &bbox = site.bbox();
+    auto        x    = site.siteMapId().x();
+    auto        y    = site.siteMapId().y();
+    auto        id1d = layout.siteMap().index1D(x, y);
+    for (IndexType ix = bbox.xl(); ix < bbox.xh(); ++ix) {
+      for (IndexType iy = bbox.yl(); iy < bbox.yh(); ++iy) {
+        openparfAssertMsg(
+                prob.validSiteMap(ix, iy) == kIndexTypeMax,
+                "overlapping sites cover grid coordinate (%u, %u)",
+                ix,
+                iy);
+        prob.validSiteMap(ix, iy) = id1d;
+      }
+    }
+    prob.siteXYs(x, y).set(
+            (bbox.xl() + bbox.xh()) * 0.5,
+            (bbox.yl() + bbox.yh()) * 0.5);
     for (auto const &resource : layout.resourceMap()) {
       auto        site_type = layout.siteType(site);
       std::string site_name = site_type.name();
@@ -191,7 +210,6 @@ void initDLProblemSiteMap(database::PlaceDB const &db,
             prob.siteTypes(x, y) = DLSiteType::SLICE;
           }
           numSLICE++;
-          prob.siteXYs(x, y).set(x + 0.5, y + 0.5);
           if (resource.name() == "LUTL") {
             num_LUTs = std::max(num_LUTs, site_type.resourceCapacity(resource.id()));
           }
@@ -204,7 +222,6 @@ void initDLProblemSiteMap(database::PlaceDB const &db,
         if (db.isResourceLUT(resource.id()) && site_type.resourceCapacity(resource.id())) {
           prob.siteTypes(x, y) = DLSiteType::SLICE;
           numSLICE++;
-          prob.siteXYs(x, y).set(x + 0.5, y + 0.5);
           num_LUTs = std::max(num_LUTs, site_type.resourceCapacity(resource.id()));
         }
         if (db.isResourceFF(resource.id()) && site_type.resourceCapacity(resource.id())) {
@@ -236,13 +253,25 @@ void initDLProblemSiteMap(database::PlaceDB const &db,
             inst_id,
             x,
             y);
-    if (reserved_sites.emplace(x, y).second) {
-      openparfAssertMsg(prob.siteTypes(x, y) != DLSiteType::DONTCARE,
-                        "masked instance %u does not occupy a legal LUT/FF site (%d, %d)",
-                        inst_id,
-                        x,
-                        y);
-      prob.siteTypes(x, y) = DLSiteType::DONTCARE;
+    IndexType site_id = prob.validSiteMap(x, y);
+    openparfAssertMsg(
+            site_id != kIndexTypeMax,
+            "masked instance %u does not occupy any site at (%d, %d)",
+            inst_id,
+            x,
+            y);
+    auto const &site = layout.siteMap().at(site_id);
+    openparfAssert(site);
+    int32_t anchor_x = site->siteMapId().x();
+    int32_t anchor_y = site->siteMapId().y();
+    if (reserved_sites.emplace(anchor_x, anchor_y).second) {
+      openparfAssertMsg(
+              prob.siteTypes(anchor_x, anchor_y) != DLSiteType::DONTCARE,
+              "masked instance %u does not occupy a legal LUT/FF site (%d, %d)",
+              inst_id,
+              anchor_x,
+              anchor_y);
+      prob.siteTypes(anchor_x, anchor_y) = DLSiteType::DONTCARE;
     }
   }
   openparfPrint(kDebug, "#CLB-SLICE: %d, #LUTs per Site: %d, #FFs per Site: %d\n", numSLICE, num_LUTs, num_FFs);

@@ -385,6 +385,7 @@ class DLSolver {
   RealType     computeWirelenImprov(const DLNet &net, const IndexVector &pins, const XY<RealType> &loc) const;
   RealType     computeSLLIncrease(const DLNet &net, const IndexVector &pins, const XY<RealType> &loc) const;
   XY<RealType> computeInstCentroid(const IndexVector &instIdArray) const;
+  IndexType    siteIdAtSearchCoordinate(IntType x, IntType y) const;
   bool         instAndSiteAreCompatible(const DLInstance &instType, const DLSite &siteType) const;
   bool         candidateIsValid(const Candidate &cand) const;
   bool         twoLUTsAreCompatible(const DLInstance &lutA, const DLInstance &lutB) const;
@@ -439,6 +440,7 @@ class DLSolver {
   std::vector<DLNet>              _netArray;    // All nets
   std::vector<DLPin>              _pinArray;    // All pins
   Vector2D<DLSite>                _siteMap;     // The site map
+  Vector2D<IndexType>             _validSiteMap;   // Covered grid point -> site anchor ID
 
   IndexVector                     _instIdMapping;   // The instance original ID to sorted ID mapping
   IndexMap2                       _cksrMapping;     // Net ID to control set CK/SR ID mapping
@@ -479,6 +481,25 @@ inline XY<RealType> DLSolver::computeInstCentroid(const IndexVector &instIdArray
   }
   cen.set(cen.x() / totalWt, cen.y() / totalWt);
   return cen;
+}
+
+/// Return the unique site represented by one spiral-search grid point.
+///
+/// Sparse column-based Bookshelf maps can give a site a bounding box taller
+/// than one grid unit.  Every covered grid point maps to the same anchor, but
+/// the solver must visit that site only once, at the integer coordinate that
+/// contains its geometric center.
+inline IndexType DLSolver::siteIdAtSearchCoordinate(IntType x, IntType y) const {
+  auto site_id = _validSiteMap(x, y);
+  if (site_id == kIndexTypeMax) {
+    return kIndexTypeMax;
+  }
+  auto const &site = _siteMap[site_id];
+  if (static_cast<IntType>(site.loc.x()) != x ||
+      static_cast<IntType>(site.loc.y()) != y) {
+    return kIndexTypeMax;
+  }
+  return site_id;
 }
 
 /// Check if a instance type and a site type are compatible

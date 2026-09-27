@@ -234,6 +234,7 @@ void DLSolver::buildSiteMap(DLProblem const &prob) {
   _num_LUTs = prob.num_LUTs;
   _num_FFs  = prob.num_FFs;
   _siteMap.resize(prob.siteTypes.sizes(), DLSite(_param.candPQSize, _num_LUTs, _num_FFs));
+  _validSiteMap = prob.validSiteMap;
   for (IndexType i = 0; i < _siteMap.size(); ++i) {
     auto &site = _siteMap[i];
     site.id    = i;
@@ -594,11 +595,15 @@ void DLSolver::initSiteNeighbors() {
       if (!_bndBox.contain(xy)) {
         continue;
       }
-      auto &site = _siteMap(xy.x(), xy.y());
+      auto site_id = siteIdAtSearchCoordinate(xy.x(), xy.y());
+      if (site_id == kIndexTypeMax) {
+        continue;
+      }
+      auto &site = _siteMap[site_id];
       if (instAndSiteAreCompatible(inst, site) && instAndSiteClockCompatible(inst, site)) {
         RealType dist = initXY.manhattanDistance(site.loc);
         if (dist < _param.nbrDistEnd) {
-          nbrListMap(xy.x(), xy.y()).emplace_back(instId, dist);
+          nbrListMap[site_id].emplace_back(instId, dist);
         }
       }
     }
@@ -1532,7 +1537,11 @@ bool DLSolver::ripupSiteAndLegalizeInstance(DLInstance &inst, DLSite &site, Real
       if (!_bndBox.contain(xy)) {
         continue;
       }
-      auto     &site = _siteMap(xy.x(), xy.y());
+      auto site_id = siteIdAtSearchCoordinate(xy.x(), xy.y());
+      if (site_id == kIndexTypeMax) {
+        continue;
+      }
+      auto     &site = _siteMap[site_id];
       Candidate cand(site.det);
       if (instAndSiteAreCompatible(ruInst, site) && instAndSiteClockCompatible(ruInst, site) &&
           addInstToCandidateImpl(ruInst, cand) && addInstToSignature(ruInst, cand.sig)) {
@@ -1624,7 +1633,11 @@ bool DLSolver::greedyLegalizeInst(DLInstance &inst) {
     if (!_bndBox.contain(xy)) {
       continue;
     }
-    auto     &site = _siteMap(xy.x(), xy.y());
+    auto site_id = siteIdAtSearchCoordinate(xy.x(), xy.y());
+    if (site_id == kIndexTypeMax) {
+      continue;
+    }
+    auto     &site = _siteMap[site_id];
     Candidate cand(site.det);
     if (instAndSiteAreCompatible(inst, site) && instAndSiteClockCompatible(inst, site) &&
         addInstToCandidateImpl(inst, cand) && addInstToSignature(inst, cand.sig)) {
