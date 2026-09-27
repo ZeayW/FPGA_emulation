@@ -281,6 +281,39 @@ def _add_mux_bels(architecture, primitives):
 
 
 class XilinxOpenparfAtomicTest(unittest.TestCase):
+    def test_placement_geometry_does_not_materialize_every_site_bel_list(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _mapped, _packed, architecture_path = _fixture(root, mixed=True)
+            architecture = ArchitectureDB.load(architecture_path)
+            with mock.patch.object(
+                ArchitectureDB,
+                "sites",
+                new_callable=mock.PropertyMock,
+                side_effect=AssertionError(
+                    "placement geometry must scan compact raw sites"
+                ),
+            ):
+                sites = atomic_adapter._placement_sites(
+                    architecture,
+                    ["DSP48E2", "RAMB36E2", "URAM288"],
+                )
+            self.assertEqual(len(sites), 10)
+            self.assertEqual(
+                sum("LUT" in resources for _site, resources in sites),
+                4,
+            )
+            self.assertEqual(
+                {
+                    resource: sum(
+                        resources.get(resource, 0)
+                        for _site, resources in sites
+                    )
+                    for resource in ("DSP48E2", "RAMB36E2", "URAM288")
+                },
+                {"DSP48E2": 2, "RAMB36E2": 2, "URAM288": 2},
+            )
+
     def test_real_width_hardblock_cascade_fixtures_use_the_real_packer(self):
         expected = {
             "DSP48E2": ("ACOUT", "ACIN", 30),

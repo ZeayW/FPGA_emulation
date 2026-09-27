@@ -567,10 +567,148 @@ def _placement_sites(
     mux_resources: Sequence[str] = (),
     *, require_carry8: bool = False,
 ) -> List[Tuple[Dict[str, Any], Dict[str, int]]]:
-    slice_sites = [
-        site for site in architecture.sites
-        if str(site.get("type", "")).upper().startswith("SLICE")
-    ]
+    # ArchitectureDB.sites deliberately materializes every site's complete BEL
+    # list.  A full XCVU19P contains more than 500k sites but only a handful of
+    # distinct site templates, so doing that here multiplied a small template
+    # database into a multi-GiB Python object several times.  Placement geometry
+    # only needs the raw site coordinates; validate compatibility once per
+    # template and keep inline-BEL sites as the uncommon per-site case.
+    raw_sites = architecture.value["sites"]
+    templates = architecture.value.get("site_templates", {})
+    template_bels: Dict[str, List[Mapping[str, Any]]] = {}
+    template_profiles: Dict[str, Dict[str, Any]] = {}
+
+    def site_bels(site: Mapping[str, Any]) -> List[Mapping[str, Any]]:
+        inline = site.get("bels")
+        if isinstance(inline, list):
+            return inline
+        template_name = str(site["template"])
+        cached = template_bels.get(template_name)
+        if cached is not None:
+            return cached
+        template = templates[template_name]
+        modes = [template_name, *template.get("alternative_templates", [])]
+        cached = [
+            bel
+            for mode in modes
+            for bel in templates[mode]["bels"]
+        ]
+        template_bels[template_name] = cached
+        return cached
+
+    def site_profile(site: Mapping[str, Any]) -> Dict[str, Any]:
+        template_name = site.get("template") if "bels" not in site else None
+        if isinstance(template_name, str):
+            cached = template_profiles.get(template_name)
+            if cached is not None:
+                return cached
+        bels = site_bels(site)
+        profile: Dict[str, Any] = {
+            "lut_bels": {
+                bel["name"] for bel in bels
+                if any(
+                    cell_type in LUT_TYPES
+                    for cell_type in bel["compatible_cells"]
+                )
+                and bel["name"] in {f"{letter}6LUT" for letter in "ABCDEFGH"}
+            },
+            "ff_bels": {
+                bel["name"] for bel in bels
+                if any(
+                    cell_type in FF_TYPES
+                    for cell_type in bel["compatible_cells"]
+                )
+                and bel["name"] in {
+                    name for letter in "ABCDEFGH"
+                    for name in (f"{letter}FF", f"{letter}FF2")
+                }
+            },
+            "carry_bels": sum(
+                bel.get("name") == "CARRY8"
+                and "CARRY8" in bel.get("compatible_cells", [])
+                for bel in bels
+            ),
+            "dual_lut_bels": {
+                bel["name"] for bel in bels
+                if DUAL_OUTPUT_LUT_TYPE in bel.get("compatible_cells", [])
+                and bel["name"] in {f"{letter}6LUT" for letter in "ABCDEFGH"}
+            },
+            "mux_bels": {
+                primitive: {
+                    bel["name"] for bel in bels
+                    if primitive in bel["compatible_cells"]
+                }
+                for primitive in mux_resources
+            },
+            "hard_counts": {
+                primitive: sum(
+                    primitive in bel["compatible_cells"] for bel in bels
+                )
+                for primitive in hard_resources
+            },
+        }
+        if isinstance(template_name, str):
+            template_profiles[template_name] = profile
+        return profile
+
+    slice_sites: List[Dict[str, Any]] = []
+    hard_sites: List[Tuple[Dict[str, Any], Dict[str, int]]] = []
+    selected_sites: List[Dict[str, Any]] = []
+    hard_capacity = Counter()
+    validated_slice_profiles = set()
+    for raw_site in raw_sites:
+        profile = site_profile(raw_site)
+        is_slice = str(raw_site.get("type", "")).upper().startswith("SLICE")
+        if is_slice:
+            site = dict(raw_site)
+            slice_sites.append(site)
+            selected_sites.append(site)
+            profile_key = (
+                "template", raw_site.get("template")
+            ) if "bels" not in raw_site else ("inline", site["name"])
+            if profile_key not in validated_slice_profiles:
+                if len(profile["lut_bels"]) != 8 or len(profile["ff_bels"]) != 16:
+                    raise ValidationError(
+                        f"slice site {site['name']!r} does not expose the required "
+                        "8 6LUT and 16 FF BELs"
+                    )
+                if require_carry8 and (
+                    profile["carry_bels"] != 1
+                    or len(profile["dual_lut_bels"]) != 8
+                ):
+                    raise ValidationError(
+                        f"slice site {site['name']!r} lacks the complete "
+                        "CARRY8/LUT6_2 physical model"
+                    )
+                for primitive in mux_resources:
+                    expected_bels = set(_MUX_BELS[primitive])
+                    if profile["mux_bels"][primitive] != expected_bels:
+                        raise ValidationError(
+                            f"slice site {site['name']!r} does not expose the exact "
+                            f"{primitive} BEL set {sorted(expected_bels)!r}"
+                        )
+                validated_slice_profiles.add(profile_key)
+            continue
+
+        resources: Dict[str, int] = {}
+        for primitive in hard_resources:
+            compatible_bels = profile["hard_counts"][primitive]
+            expected = 2 if primitive == "RAMB18E2" else 1
+            if compatible_bels == expected:
+                resources[_HARD_RESOURCES[primitive]] = expected
+        if len(resources) > 1 and set(resources) != {"RAMB18E2", "RAMB36E2"}:
+            raise ValidationError(
+                f"site {raw_site['name']!r} is ambiguous for demanded hard resources"
+            )
+        if resources:
+            site = dict(raw_site)
+            selected_sites.append(site)
+            hard_sites.append((site, resources))
+            for primitive in hard_resources:
+                resource = _HARD_RESOURCES[primitive]
+                if resource in resources:
+                    hard_capacity[primitive] += resources[resource]
+
     if not slice_sites:
         raise ValidationError("ArchitectureDB has no slice sites")
     # A real UltraScale+ tile may contain several sites of the same hard
@@ -578,15 +716,6 @@ def _placement_sites(
     # as one tile with resource capacity greater than one.  Multiple logic
     # sites at one coordinate are still unsupported because LUT/FF z encodes
     # BEL occupancy rather than a site selector.
-    selected_sites = [
-        site for site in architecture.sites
-        if str(site.get("type", "")).upper().startswith("SLICE")
-        or any(
-            sum(primitive in bel["compatible_cells"] for bel in site["bels"])
-            == (2 if primitive == "RAMB18E2" else 1)
-            for primitive in hard_resources
-        )
-    ]
     by_coordinate: Dict[Tuple[int, int], List[Mapping[str, Any]]] = defaultdict(list)
     for raw_site in selected_sites:
         by_coordinate[_physical_coordinate(raw_site)].append(raw_site)
@@ -603,52 +732,6 @@ def _placement_sites(
             "ArchitectureDB has coincident physical resources that the atomic "
             f"Bookshelf grid cannot distinguish: {collisions!r}"
         )
-    for site in slice_sites:
-        lut_bels = {
-            bel["name"] for bel in site["bels"]
-            if any(cell_type in LUT_TYPES for cell_type in bel["compatible_cells"])
-            and bel["name"] in {f"{letter}6LUT" for letter in "ABCDEFGH"}
-        }
-        ff_bels = {
-            bel["name"] for bel in site["bels"]
-            if any(cell_type in FF_TYPES for cell_type in bel["compatible_cells"])
-            and bel["name"] in {
-                name for letter in "ABCDEFGH"
-                for name in (f"{letter}FF", f"{letter}FF2")
-            }
-        }
-        if len(lut_bels) != 8 or len(ff_bels) != 16:
-            raise ValidationError(
-                f"slice site {site['name']!r} does not expose the required "
-                "8 6LUT and 16 FF BELs"
-            )
-        if require_carry8:
-            carry_bels = [
-                bel for bel in site["bels"]
-                if bel.get("name") == "CARRY8"
-                and "CARRY8" in bel.get("compatible_cells", [])
-            ]
-            dual_lut_bels = {
-                bel["name"] for bel in site["bels"]
-                if DUAL_OUTPUT_LUT_TYPE in bel.get("compatible_cells", [])
-                and bel["name"] in {f"{letter}6LUT" for letter in "ABCDEFGH"}
-            }
-            if len(carry_bels) != 1 or len(dual_lut_bels) != 8:
-                raise ValidationError(
-                    f"slice site {site['name']!r} lacks the complete "
-                    "CARRY8/LUT6_2 physical model"
-                )
-        for primitive in mux_resources:
-            expected_bels = set(_MUX_BELS[primitive])
-            compatible_bels = {
-                bel["name"] for bel in site["bels"]
-                if primitive in bel["compatible_cells"]
-            }
-            if compatible_bels != expected_bels:
-                raise ValidationError(
-                    f"slice site {site['name']!r} does not expose the exact "
-                    f"{primitive} BEL set {sorted(expected_bels)!r}"
-                )
     result = [(
         site,
         {
@@ -661,28 +744,7 @@ def _placement_sites(
             **({"CARRY8": 1} if require_carry8 else {}),
         },
     ) for site in slice_sites]
-    hard_capacity = Counter()
-    for site in architecture.sites:
-        if str(site.get("type", "")).upper().startswith("SLICE"):
-            continue
-        resources: Dict[str, int] = {}
-        for primitive in hard_resources:
-            compatible_bels = sum(
-                primitive in bel["compatible_cells"] for bel in site["bels"]
-            )
-            expected = 2 if primitive == "RAMB18E2" else 1
-            if compatible_bels == expected:
-                resources[_HARD_RESOURCES[primitive]] = expected
-        if len(resources) > 1 and set(resources) != {"RAMB18E2", "RAMB36E2"}:
-            raise ValidationError(
-                f"site {site['name']!r} is ambiguous for demanded hard resources"
-            )
-        if resources:
-            result.append((site, resources))
-            for primitive in hard_resources:
-                resource = _HARD_RESOURCES[primitive]
-                if resource in resources:
-                    hard_capacity[primitive] += resources[resource]
+    result.extend(hard_sites)
     missing = sorted(set(hard_resources) - set(hard_capacity))
     if missing:
         raise ValidationError(

@@ -4810,6 +4810,11 @@ The name map preserves every physical site identity, and the independent
 validator resolves and rechecks the selected slot before RapidWright export.
 Multiple slice sites at one tile remain fail-closed because LUT/FF `z` already
 denotes BEL occupancy.
+The exporter scans compact physical-site records once and validates LUT/FF,
+CARRY8, mux, and hard-resource compatibility once per distinct site template.
+It does not materialize the complete repeated BEL inventory for every one of
+the hundreds of thousands of sites merely to construct placement geometry;
+inline-BEL architectures retain the same strict per-site validation.
 Every typed hard-resource area type must be completely owned by that contract.
 Those instances remain movable under the wirelength objective, but their area
 types are removed from generic electrostatic density and from its convergence
