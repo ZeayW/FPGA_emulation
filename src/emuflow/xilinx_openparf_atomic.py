@@ -1447,10 +1447,16 @@ def _render_site_geometry(
     x_axis = sorted({coordinate[0] for coordinate in coordinates})
     if y_axis_order not in {"ascending", "descending"}:
         raise ValidationError("OpenPARF physical Y-axis order is invalid")
-    y_axis = sorted(
-        {coordinate[1] for coordinate in coordinates},
-        reverse=y_axis_order == "descending",
-    )
+    physical_y_values = {coordinate[1] for coordinate in coordinates}
+    # Preserve empty physical tile rows.  UltraScale+ has real seams between
+    # directed CARRY_NEXT chains (for example at an SLR boundary); compressing
+    # the observed rows made the two sides adjacent in Bookshelf coordinates
+    # and let the native carry legalizer cross a nonexistent dedicated edge.
+    # Sparse rows are already supported by the patched OpenPARF site map and
+    # ISM operators, so retain the complete integer grid span here.
+    y_axis = list(range(min(physical_y_values), max(physical_y_values) + 1))
+    if y_axis_order == "descending":
+        y_axis.reverse()
     x_index = {value: index for index, value in enumerate(x_axis)}
     y_index = {value: index for index, value in enumerate(y_axis)}
     signatures = sorted({

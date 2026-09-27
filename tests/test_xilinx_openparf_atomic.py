@@ -281,6 +281,32 @@ def _add_mux_bels(architecture, primitives):
 
 
 class XilinxOpenparfAtomicTest(unittest.TestCase):
+    def test_site_geometry_preserves_empty_physical_rows(self):
+        sites = [
+            (
+                {
+                    "name": f"SLICE_X{x}Y{y}", "type": "SLICEL",
+                    "x": x, "y": y,
+                    "tile": {"grid_col": x, "grid_row": physical_y},
+                },
+                {"LUT": 16, "FF": 16},
+            )
+            for x in range(2)
+            for y, physical_y in ((0, 0), (1, 3))
+        ]
+        _prefix, suffix, coordinates = atomic_adapter._render_site_geometry(
+            sites
+        )
+        self.assertEqual(coordinates["y_axis"], [0, 1, 2, 3])
+        self.assertIn("SITEMAP 2 4\n", suffix)
+        rows = [
+            tuple(map(int, line.split()[:2]))
+            for line in suffix.split("SITEMAP 2 4\n", 1)[1].split(
+                "END SITEMAP", 1
+            )[0].strip().splitlines()
+        ]
+        self.assertEqual(rows, [(0, 0), (0, 3), (1, 0), (1, 3)])
+
     def test_placement_geometry_does_not_materialize_every_site_bel_list(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -1262,7 +1262,9 @@ opposite to CARRY8 site-Y order, so assuming increasing tile row would place a
 logically ordered chain on physically reversed dedicated edges.  Mixed or
 nonvertical native directions fail closed; the qualification fixture models
 the real inverted tile-row convention rather than a same-direction synthetic
-grid.
+grid.  Dense Bookshelf Y coordinates also preserve empty physical tile rows:
+an SLR or clocking seam that terminates one certified CARRY_NEXT chain remains
+an empty row and cannot be compressed into a false edge to the next chain.
 The internal
 `probe_xilinx_openparf_carry_native_support` qualification API separates the
 source audit from runtime qualification against a two-CARRY8 macro contract
