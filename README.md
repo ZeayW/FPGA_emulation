@@ -1101,9 +1101,15 @@ identity, coordinate axes, and descriptors only; placement validation queries
 the selected coordinates and resource rows instead of repeatedly parsing a
 117 MB JSON site table.  The version-2 physical-macro contract also avoids
 enumerating every legal slice once per MUX member.  A MUX group stores only its
-member resource/BEL-slot template and the sealed legal-window count; the
-OpenPARF legalizer streams candidate slice coordinates from the same immutable
-SQLite site contract and retains only the best conflict-free candidate.  DSP,
+member resource/BEL-slot template and the sealed legal-window count.  The
+OpenPARF legalizer loads candidate slice coordinates from the same immutable
+SQLite site contract once, groups them into a deterministic two-dimensional
+index, and performs an exact nearest-unoccupied-site query for every macro.
+For a same-site macro, minimizing displacement of the member centroid is
+algebraically identical to the former exhaustive sum-of-squared-displacement
+scan; strict lower-bound pruning and the original site-name tie break preserve
+that decision without repeating a full-device SQL query and site traversal for
+every CARRY/MUX group.  DSP,
 BRAM, and URAM cascade windows remain explicit because they encode directed
 native adjacency rather than a repeated uniform site template.  No full site
 or MUX-window JSON is duplicated into the name map or parsed in the hot path.

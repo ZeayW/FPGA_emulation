@@ -10,6 +10,7 @@ OpenPARF has returned.
 
 import json
 import math
+from bisect import bisect_left
 from pathlib import Path
 import sqlite3
 
@@ -263,7 +264,148 @@ class TypedHardblockLegalizer(object):
             inst_id for group in self.groups if group["kind"] != "site_macro"
             for inst_id in group["ids"]
         ), dtype=torch.int64)
+        # Compact same-site templates all refer to the same immutable device
+        # database.  Loading that database once is important: a realistic
+        # device has hundreds of thousands of LUT sites and thousands of
+        # CARRY/MUX macros.  Reopening and scanning it once per macro turns a
+        # small legalization problem into an O(macros * device-sites) pass.
+        self._compact_site_indexes = {}
         self.last_assignment = None
+
+    def _compact_site_index(self, site_resource, expected_count):
+        """Return a cached exact spatial index for compact template sites.
+
+        The index groups candidates into x columns and keeps every column
+        ordered by y.  Nearest-site lookup can then prune columns and rows by
+        an exact squared-distance lower bound without an optional spatial
+        library or an approximate search.
+        """
+        cached = self._compact_site_indexes.get(site_resource)
+        if cached is None:
+            uri = "file:{}?mode=ro&immutable=1".format(self.site_database)
+            query = (
+                "SELECT p.physical_site, s.placement_x, s.placement_y "
+                "FROM physical_sites p JOIN sites s USING(dense_x, dense_y) "
+                "WHERE p.resource = ? "
+                "ORDER BY s.dense_x, s.dense_y, p.slot, p.physical_site"
+            )
+            columns = {}
+            with sqlite3.connect(uri, uri=True) as database:
+                for site, x, y in database.execute(query, (site_resource,)):
+                    x = float(x)
+                    columns.setdefault(x, []).append((float(y), str(site)))
+            xs = sorted(columns)
+            ordered_columns = []
+            count = 0
+            for x in xs:
+                rows = sorted(columns[x])
+                count += len(rows)
+                ordered_columns.append((rows, [row[0] for row in rows]))
+            cached = {
+                "count": count,
+                "xs": xs,
+                "columns": ordered_columns,
+            }
+            self._compact_site_indexes[site_resource] = cached
+        if cached["count"] != expected_count:
+            raise RuntimeError(
+                "compact site-window count disagrees with the sealed contract"
+            )
+        return cached
+
+    @staticmethod
+    def _template_window(template, site, x, y):
+        return [
+            {
+                "site": site,
+                "resource": member["resource"],
+                "x": x, "y": y, "z": member["z"],
+                "claims": ["site:" + site],
+            }
+            for member in template["members"]
+        ]
+
+    def _nearest_template_window(self, group, pos_xyz, occupied):
+        """Choose exactly the same minimum-displacement site without a scan.
+
+        For a same-site macro, the sum of squared member displacement equals
+        ``N * distance(site, member-centroid)^2 + constant``.  Therefore the
+        original exhaustive objective is minimized by the nearest unoccupied
+        site to the centroid.  The two-level x/y search below is exact: it
+        stops only once the next coordinate's lower bound is strictly worse
+        than the best candidate already evaluated.  Site-name tie breaking is
+        retained from the exhaustive implementation.
+        """
+        template = group["window_template"]
+        index = self._compact_site_index(
+            template["site_resource"], group["window_count"]
+        )
+        count = len(group["ids"])
+        mean_x = sum(float(pos_xyz[inst_id, 0]) for inst_id in group["ids"]) / count
+        mean_y = sum(float(pos_xyz[inst_id, 1]) for inst_id in group["ids"]) / count
+        xs = index["xs"]
+        columns = index["columns"]
+        right = bisect_left(xs, mean_x)
+        left = right - 1
+        best = None
+        best_distance = None
+
+        while left >= 0 or right < len(xs):
+            left_distance = (
+                (xs[left] - mean_x) ** 2 if left >= 0 else float("inf")
+            )
+            right_distance = (
+                (xs[right] - mean_x) ** 2 if right < len(xs) else float("inf")
+            )
+            if left_distance <= right_distance:
+                column_index = left
+                x_distance = left_distance
+                left -= 1
+            else:
+                column_index = right
+                x_distance = right_distance
+                right += 1
+            if best_distance is not None and x_distance > best_distance:
+                break
+
+            x = xs[column_index]
+            rows, ys = columns[column_index]
+            upper = bisect_left(ys, mean_y)
+            lower = upper - 1
+            while lower >= 0 or upper < len(rows):
+                lower_distance = (
+                    (rows[lower][0] - mean_y) ** 2
+                    if lower >= 0 else float("inf")
+                )
+                upper_distance = (
+                    (rows[upper][0] - mean_y) ** 2
+                    if upper < len(rows) else float("inf")
+                )
+                if lower_distance <= upper_distance:
+                    row_index = lower
+                    y_distance = lower_distance
+                    lower -= 1
+                else:
+                    row_index = upper
+                    y_distance = upper_distance
+                    upper += 1
+                distance = x_distance + y_distance
+                if best_distance is not None and distance > best_distance:
+                    break
+                y, site = rows[row_index]
+                claims = ("site:" + site,)
+                if occupied.isdisjoint(claims):
+                    window = self._template_window(template, site, x, y)
+                    site_names = tuple(item["site"] for item in window)
+                    candidate = (
+                        self._cost(group, window, pos_xyz), site_names,
+                        claims, window,
+                    )
+                    if best is None or candidate[:3] < best[:3]:
+                        best = candidate
+                    if best_distance is None or distance < best_distance:
+                        best_distance = distance
+        return best
 
     def _iter_windows(self, group):
         template = group["window_template"]
@@ -271,32 +413,12 @@ class TypedHardblockLegalizer(object):
             for window in group["windows"]:
                 yield window
             return
-        uri = "file:{}?mode=ro&immutable=1".format(self.site_database)
-        query = (
-            "SELECT p.physical_site, s.placement_x, s.placement_y "
-            "FROM physical_sites p JOIN sites s USING(dense_x, dense_y) "
-            "WHERE p.resource = ? "
-            "ORDER BY s.dense_x, s.dense_y, p.slot, p.physical_site"
+        index = self._compact_site_index(
+            template["site_resource"], group["window_count"]
         )
-        emitted = 0
-        with sqlite3.connect(uri, uri=True) as database:
-            for site, x, y in database.execute(
-                query, (template["site_resource"],)
-            ):
-                emitted += 1
-                yield [
-                    {
-                        "site": site,
-                        "resource": member["resource"],
-                        "x": float(x), "y": float(y), "z": member["z"],
-                        "claims": ["site:" + site],
-                    }
-                    for member in template["members"]
-                ]
-        if emitted != group["window_count"]:
-            raise RuntimeError(
-                "compact site-window count disagrees with the sealed contract"
-            )
+        for x, (rows, _ys) in zip(index["xs"], index["columns"]):
+            for y, site in rows:
+                yield self._template_window(template, site, x, y)
 
     def _cost(self, group, window, pos_xyz):
         result = 0.0
@@ -320,19 +442,22 @@ class TypedHardblockLegalizer(object):
         )
         with torch.no_grad():
             for group in ordered:
-                best = None
-                for window in self._iter_windows(group):
-                    claims = tuple(sorted(set(
-                        claim for site in window for claim in site["claims"]
-                    )))
-                    if occupied.isdisjoint(claims):
-                        site_names = tuple(site["site"] for site in window)
-                        candidate = (
-                            self._cost(group, window, local), site_names,
-                            claims, window,
-                        )
-                        if best is None or candidate[:3] < best[:3]:
-                            best = candidate
+                if group["window_template"] is not None:
+                    best = self._nearest_template_window(group, local, occupied)
+                else:
+                    best = None
+                    for window in self._iter_windows(group):
+                        claims = tuple(sorted(set(
+                            claim for site in window for claim in site["claims"]
+                        )))
+                        if occupied.isdisjoint(claims):
+                            site_names = tuple(site["site"] for site in window)
+                            candidate = (
+                                self._cost(group, window, local), site_names,
+                                claims, window,
+                            )
+                            if best is None or candidate[:3] < best[:3]:
+                                best = candidate
                 if best is None:
                     raise RuntimeError(
                         "typed hardblock group legalization has no conflict-free window for {}"

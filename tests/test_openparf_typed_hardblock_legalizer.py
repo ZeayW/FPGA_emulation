@@ -276,6 +276,55 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
         self.assertEqual(pos.tolist(), [[9.0, 4.0, 0.0], [9.0, 4.0, 1.0]])
         self.assertTrue(torch.all(data.inst_lock_mask))
 
+    def test_compact_site_search_is_exact_cached_and_sublinear(self):
+        def group(group_id, instances):
+            return {
+                "id": group_id, "kind": "site_macro",
+                "resource": "SLICE_MACRO", "owned_resources": ["CARRY8"],
+                "instances": instances, "window_count": 400,
+                "window_template": {
+                    "kind": "same-site-slice/v1", "site_resource": "LUT",
+                    "members": [
+                        {"resource": "CARRY8", "z": 0, "bel": "CARRY8"},
+                        {"resource": "LUT", "z": 1, "bel": "A6LUT"},
+                    ],
+                },
+            }
+
+        names = ["carry0", "lut0", "carry1", "lut1"]
+        value = {
+            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
+            "groups": [
+                group("a", names[:2]),
+                group("b", names[2:]),
+            ],
+        }
+        rows = [
+            (x, y, "SLICE_X{}Y{}".format(x, y), float(x), float(y))
+            for x in range(20) for y in range(20)
+        ]
+        operator, data = self._operator(value, names, site_rows=rows)
+        original_cost = operator._cost
+        evaluations = []
+
+        def counted_cost(*args):
+            evaluations.append(1)
+            return original_cost(*args)
+
+        operator._cost = counted_cost
+        pos = torch.tensor([
+            [10.0, 10.0, 0.0], [10.0, 10.0, 0.0],
+            [10.0, 10.0, 0.0], [10.0, 10.0, 0.0],
+        ])
+        operator.legalize_site_macros(pos)
+        assigned = [item["site"] for item in operator.last_assignment]
+        # The four distance-one alternatives are tied geometrically; retain
+        # the original exhaustive legalizer's lexicographic site-name tie.
+        self.assertEqual(set(assigned), {"SLICE_X10Y10", "SLICE_X10Y11"})
+        self.assertEqual(len(operator._compact_site_indexes), 1)
+        self.assertLess(len(evaluations), 20)
+        self.assertTrue(torch.all(data.inst_lock_mask))
+
 
 if __name__ == "__main__":
     unittest.main()
