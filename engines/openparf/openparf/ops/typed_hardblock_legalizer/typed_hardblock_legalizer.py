@@ -130,7 +130,44 @@ class TypedHardblockLegalizer(object):
             shared_window_sets[set_id] = {
                 "resource": resource, "windows": windows,
             }
+        self._site_chain_sets = {}
+        for set_index, raw_set in enumerate(value.get("site_chain_sets", [])):
+            context = "site_chain_sets[{}]".format(set_index)
+            if not isinstance(raw_set, dict):
+                raise ValueError("{} must be an object".format(context))
+            set_id = _string(raw_set.get("id"), context + ".id")
+            if set_id in self._site_chain_sets:
+                raise ValueError("directed site-chain set id appears twice")
+            if raw_set.get("site_resource") != "LUT":
+                raise ValueError("{} must use LUT sites".format(context))
+            chains = raw_set.get("chains")
+            if not isinstance(chains, list) or not chains:
+                raise ValueError("{}.chains must be non-empty".format(context))
+            normalized_chains = []
+            owned_sites = set()
+            for chain_index, chain in enumerate(chains):
+                chain_context = "{}.chains[{}]".format(context, chain_index)
+                if (
+                    not isinstance(chain, list)
+                    or len(chain) < 2
+                    or not all(isinstance(site, str) and site for site in chain)
+                    or len(chain) != len(set(chain))
+                ):
+                    raise ValueError("{} is invalid".format(chain_context))
+                overlap = owned_sites.intersection(chain)
+                if overlap:
+                    raise ValueError(
+                        "directed site-chain sets overlap at {}".format(
+                            sorted(overlap)
+                        )
+                    )
+                owned_sites.update(chain)
+                normalized_chains.append(tuple(chain))
+            self._site_chain_sets[set_id] = {
+                "site_resource": "LUT", "chains": normalized_chains,
+            }
         referenced_window_sets = set()
+        referenced_site_chain_sets = set()
         instance_names = set()
         for index, raw in enumerate(value.get("groups", [])):
             context = "groups[{}]".format(index)
@@ -140,7 +177,9 @@ class TypedHardblockLegalizer(object):
             kind = _string(raw.get("kind"), context + ".kind")
             if resource not in SUPPORTED_RESOURCES | {"SLICE_MACRO"}:
                 raise ValueError("{} uses unsupported resource {}".format(context, resource))
-            if resource == "SLICE_MACRO" and kind != "site_macro":
+            if resource == "SLICE_MACRO" and kind not in {
+                "site_macro", "site_cascade",
+            }:
                 raise ValueError("{} has an invalid slice-macro kind".format(context))
             if resource != "SLICE_MACRO" and kind not in {"singleton", "cascade"}:
                 raise ValueError("{} has an invalid hardblock kind".format(context))
@@ -157,9 +196,13 @@ class TypedHardblockLegalizer(object):
             windows = []
             window_template = raw.get("window_template")
             window_set_id = raw.get("window_set")
-            if window_template is not None and window_set_id is not None:
+            chain_template = raw.get("chain_template")
+            if sum(
+                item is not None
+                for item in (window_template, window_set_id, chain_template)
+            ) > 1:
                 raise ValueError(
-                    "{} cannot use both window_template and window_set".format(context)
+                    "{} has conflicting compact window contracts".format(context)
                 )
             if window_template is not None:
                 if resource != "SLICE_MACRO" or kind != "site_macro":
@@ -229,6 +272,74 @@ class TypedHardblockLegalizer(object):
                 windows = window_set["windows"]
                 window_count = len(windows)
                 referenced_window_sets.add(window_set_id)
+            elif chain_template is not None:
+                if resource != "SLICE_MACRO" or kind != "site_cascade":
+                    raise ValueError(
+                        "{}.chain_template is only valid for a site cascade".format(
+                            context
+                        )
+                    )
+                if self.site_database is None:
+                    raise ValueError(
+                        "{}.chain_template requires the site database".format(context)
+                    )
+                members = (
+                    chain_template.get("unit_members")
+                    if isinstance(chain_template, dict) else None
+                )
+                chain_set_id = (
+                    chain_template.get("chain_set")
+                    if isinstance(chain_template, dict) else None
+                )
+                chain_length = (
+                    chain_template.get("chain_length")
+                    if isinstance(chain_template, dict) else None
+                )
+                if (
+                    not isinstance(chain_template, dict)
+                    or chain_template.get("kind") != "directed-site-chain/v1"
+                    or not isinstance(chain_set_id, str)
+                    or chain_set_id not in self._site_chain_sets
+                    or isinstance(chain_length, bool)
+                    or not isinstance(chain_length, int)
+                    or chain_length < 2
+                    or not isinstance(members, list)
+                    or not members
+                    or len(names) != chain_length * len(members)
+                ):
+                    raise ValueError("{}.chain_template is invalid".format(context))
+                normalized_members = []
+                for member_index, member in enumerate(members):
+                    member_context = "{}.chain_template.unit_members[{}]".format(
+                        context, member_index
+                    )
+                    if not isinstance(member, dict):
+                        raise ValueError("{} must be an object".format(member_context))
+                    member_resource = member.get("resource")
+                    coordinate = member.get("z")
+                    if (
+                        member_resource not in SUPPORTED_SITE_RESOURCES
+                        or isinstance(coordinate, bool)
+                        or not isinstance(coordinate, (int, float))
+                        or not math.isfinite(float(coordinate))
+                    ):
+                        raise ValueError("{} is invalid".format(member_context))
+                    normalized_members.append({
+                        "resource": member_resource, "z": float(coordinate),
+                    })
+                expected_count = sum(
+                    max(0, len(chain) - chain_length + 1)
+                    for chain in self._site_chain_sets[chain_set_id]["chains"]
+                )
+                if raw.get("window_count") != expected_count or expected_count <= 0:
+                    raise ValueError("{}.window_count is invalid".format(context))
+                chain_template = {
+                    "chain_set": chain_set_id,
+                    "chain_length": chain_length,
+                    "unit_members": normalized_members,
+                }
+                window_count = expected_count
+                referenced_site_chain_sets.add(chain_set_id)
             else:
                 for window_index, raw_window in enumerate(raw.get("windows", [])):
                     window_context = "{}.windows[{}]".format(context, window_index)
@@ -289,11 +400,16 @@ class TypedHardblockLegalizer(object):
                 "ids": [int(placedb.nameToInst(name)) for name in names],
                 "windows": windows,
                 "window_template": window_template,
+                "chain_template": chain_template,
                 "window_count": window_count,
             })
 
         if referenced_window_sets != set(shared_window_sets):
             raise ValueError("typed hardblock constraints contain an unused window set")
+        if referenced_site_chain_sets != set(self._site_chain_sets):
+            raise ValueError(
+                "typed hardblock constraints contain an unused site-chain set"
+            )
 
         if not self.groups:
             raise ValueError("typed hardblock chain constraints contain no groups")
@@ -305,11 +421,13 @@ class TypedHardblockLegalizer(object):
             raise ValueError("typed hardblock constraints reference a non-movable instance")
         self.inst_ids = torch.tensor(sorted(all_ids), dtype=torch.int64)
         self.site_macro_ids = torch.tensor(sorted(
-            inst_id for group in self.groups if group["kind"] == "site_macro"
+            inst_id for group in self.groups
+            if group["kind"] in {"site_macro", "site_cascade"}
             for inst_id in group["ids"]
         ), dtype=torch.int64)
         self.hardblock_ids = torch.tensor(sorted(
-            inst_id for group in self.groups if group["kind"] != "site_macro"
+            inst_id for group in self.groups
+            if group["kind"] not in {"site_macro", "site_cascade"}
             for inst_id in group["ids"]
         ), dtype=torch.int64)
         # Compact same-site templates all refer to the same immutable device
@@ -318,6 +436,7 @@ class TypedHardblockLegalizer(object):
         # CARRY/MUX macros.  Reopening and scanning it once per macro turns a
         # small legalization problem into an O(macros * device-sites) pass.
         self._compact_site_indexes = {}
+        self._compact_chain_indexes = {}
         self.last_assignment = None
 
     def _compact_site_index(self, site_resource, expected_count):
@@ -458,7 +577,170 @@ class TypedHardblockLegalizer(object):
                         best_distance = distance
         return best
 
+    def _compact_chain_index(self, template, expected_count):
+        """Index certified directed chain windows without expanding JSON.
+
+        The source contract stores every native site chain once.  A length-
+        specific index is built lazily and cached because logical carry chains
+        usually use only a few distinct lengths.  Candidate rows retain the
+        exact source site order; no adjacency is inferred from coordinates.
+        """
+        chain_set_id = template["chain_set"]
+        chain_length = template["chain_length"]
+        cache_key = (chain_set_id, chain_length)
+        cached = self._compact_chain_indexes.get(cache_key)
+        if cached is None:
+            chains = self._site_chain_sets[chain_set_id]["chains"]
+            wanted = {site for chain in chains for site in chain}
+            uri = "file:{}?mode=ro&immutable=1".format(self.site_database)
+            query = (
+                "SELECT p.physical_site, s.placement_x, s.placement_y "
+                "FROM physical_sites p JOIN sites s USING(dense_x, dense_y) "
+                "WHERE p.resource = 'LUT'"
+            )
+            coordinates = {}
+            with sqlite3.connect(uri, uri=True) as database:
+                for site, x, y in database.execute(query):
+                    if site in wanted:
+                        coordinates[str(site)] = (float(x), float(y))
+            if set(coordinates) != wanted:
+                raise RuntimeError(
+                    "directed site-chain contract references an unknown LUT site"
+                )
+
+            columns = {}
+            count = 0
+            for chain in chains:
+                for start in range(len(chain) - chain_length + 1):
+                    sites = chain[start:start + chain_length]
+                    site_coordinates = [coordinates[site] for site in sites]
+                    x, y = site_coordinates[0]
+                    if any(
+                        candidate_x != x or candidate_y != y + offset
+                        for offset, (candidate_x, candidate_y)
+                        in enumerate(site_coordinates)
+                    ):
+                        raise RuntimeError(
+                            "directed site-chain coordinates are not a unit-stride "
+                            "placement column"
+                        )
+                    columns.setdefault(x, []).append((y, sites))
+                    count += 1
+            xs = sorted(columns)
+            ordered_columns = []
+            for x in xs:
+                rows = sorted(columns[x], key=lambda item: (item[0], item[1]))
+                ordered_columns.append((rows, [row[0] for row in rows]))
+            cached = {"count": count, "xs": xs, "columns": ordered_columns}
+            self._compact_chain_indexes[cache_key] = cached
+        if cached["count"] != expected_count:
+            raise RuntimeError(
+                "compact directed-chain window count disagrees with the sealed contract"
+            )
+        return cached
+
+    @staticmethod
+    def _chain_template_window(template, sites, x, y):
+        return [
+            {
+                "site": site,
+                "resource": member["resource"],
+                "x": x, "y": y + unit_index, "z": member["z"],
+                "claims": ["site:" + site],
+            }
+            for unit_index, site in enumerate(sites)
+            for member in template["unit_members"]
+        ]
+
+    def _nearest_chain_window(self, group, pos_xyz, occupied):
+        """Select the exact nearest conflict-free certified chain window."""
+        template = group["chain_template"]
+        index = self._compact_chain_index(template, group["window_count"])
+        unit_size = len(template["unit_members"])
+        count = len(group["ids"])
+        mean_x = sum(float(pos_xyz[inst_id, 0]) for inst_id in group["ids"]) / count
+        mean_y = sum(
+            float(pos_xyz[inst_id, 1]) - (index_in_group // unit_size)
+            for index_in_group, inst_id in enumerate(group["ids"])
+        ) / count
+        xs = index["xs"]
+        columns = index["columns"]
+        right = bisect_left(xs, mean_x)
+        left = right - 1
+        best = None
+        best_distance = None
+
+        while left >= 0 or right < len(xs):
+            left_distance = (
+                (xs[left] - mean_x) ** 2 if left >= 0 else float("inf")
+            )
+            right_distance = (
+                (xs[right] - mean_x) ** 2 if right < len(xs) else float("inf")
+            )
+            if left_distance <= right_distance:
+                column_index = left
+                x_distance = left_distance
+                left -= 1
+            else:
+                column_index = right
+                x_distance = right_distance
+                right += 1
+            if best_distance is not None and x_distance > best_distance:
+                break
+
+            x = xs[column_index]
+            rows, ys = columns[column_index]
+            upper = bisect_left(ys, mean_y)
+            lower = upper - 1
+            while lower >= 0 or upper < len(rows):
+                lower_distance = (
+                    (rows[lower][0] - mean_y) ** 2
+                    if lower >= 0 else float("inf")
+                )
+                upper_distance = (
+                    (rows[upper][0] - mean_y) ** 2
+                    if upper < len(rows) else float("inf")
+                )
+                if lower_distance <= upper_distance:
+                    row_index = lower
+                    y_distance = lower_distance
+                    lower -= 1
+                else:
+                    row_index = upper
+                    y_distance = upper_distance
+                    upper += 1
+                distance = x_distance + y_distance
+                if best_distance is not None and distance > best_distance:
+                    break
+                y, sites = rows[row_index]
+                claims = tuple("site:" + site for site in sites)
+                if occupied.isdisjoint(claims):
+                    window = self._chain_template_window(
+                        template, sites, x, y
+                    )
+                    site_names = tuple(item["site"] for item in window)
+                    candidate = (
+                        self._cost(group, window, pos_xyz), site_names,
+                        claims, window,
+                    )
+                    if best is None or candidate[:3] < best[:3]:
+                        best = candidate
+                    if best_distance is None or distance < best_distance:
+                        best_distance = distance
+        return best
+
     def _iter_windows(self, group):
+        chain_template = group["chain_template"]
+        if chain_template is not None:
+            index = self._compact_chain_index(
+                chain_template, group["window_count"]
+            )
+            for x, (rows, _ys) in zip(index["xs"], index["columns"]):
+                for y, sites in rows:
+                    yield self._chain_template_window(
+                        chain_template, sites, x, y
+                    )
+            return
         template = group["window_template"]
         if template is None:
             for window in group["windows"]:
@@ -493,7 +775,9 @@ class TypedHardblockLegalizer(object):
         )
         with torch.no_grad():
             for group in ordered:
-                if group["window_template"] is not None:
+                if group["chain_template"] is not None:
+                    best = self._nearest_chain_window(group, local, occupied)
+                elif group["window_template"] is not None:
                     best = self._nearest_template_window(group, local, occupied)
                 else:
                     best = None
@@ -539,10 +823,12 @@ class TypedHardblockLegalizer(object):
         return pos_xyz
 
     def legalize_site_macros(self, pos_xyz):
-        return self._legalize(pos_xyz, {"site_macro"})
+        return self._legalize(pos_xyz, {"site_macro", "site_cascade"})
 
     def legalize_hardblocks(self, pos_xyz):
         return self._legalize(pos_xyz, {"singleton", "cascade"})
 
     def __call__(self, pos_xyz):
-        return self._legalize(pos_xyz, {"site_macro", "singleton", "cascade"})
+        return self._legalize(
+            pos_xyz, {"site_macro", "site_cascade", "singleton", "cascade"}
+        )

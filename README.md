@@ -1265,6 +1265,20 @@ the real inverted tile-row convention rather than a same-direction synthetic
 grid.  Dense Bookshelf Y coordinates also preserve empty physical tile rows:
 an SLR or clocking seam that terminates one certified CARRY_NEXT chain remains
 an empty row and cannot be compressed into a false edge to the next chain.
+The production atomic route no longer asks OpenPARF's geometric carry-chain
+legalizer to reconstruct that topology.  Each logical multi-CARRY8 cascade is
+one full-slice `site_cascade`; its CARRY8 plus eight LUT6_2 members are
+legalized together against compact `directed-site-chain/v1` windows derived
+only from the source-sealed RapidWright `CARRY_NEXT` chains.  Candidate chains
+are indexed lazily by logical length, so native chains are stored once rather
+than expanded once per logical cascade.  The independent placement validator
+checks every unit's BEL roles, same-site ownership, exact directed chain
+window, and native edge.  OpenPARF's rectangle-based carry legalizer is
+disabled when this contract is present because it cannot represent chain
+holes and was observed to cross both an SLR seam and a slice column on Koios
+DLA medium.  The compact adversarial gate and 71 related unit/integration
+tests pass; renewed real-DLA placement, routing, and OpenSTA qualification are
+still pending and no final Phase 7 QoR is claimed yet.
 The internal
 `probe_xilinx_openparf_carry_native_support` qualification API separates the
 source audit from runtime qualification against a two-CARRY8 macro contract
@@ -1290,7 +1304,7 @@ The native route also requires the source-sealed device facts explicitly:
 corresponding `--rapidwright-native-constraints` and
 `--rapidwright-provider-manifest` physical-stage options. CARRY8 plus its
 eight LUT6_2 adapters is one exclusive slice macro, CARRY_NEXT chains use the
-native carry legalizer, and each RAMB18E2 remains an independent lower/upper
+directed-site-chain legalizer, and each RAMB18E2 remains an independent lower/upper
 half-site occupant until native legalization. The no-search bridge groups the
 resulting legal half-site assignments by their physical RAMB36 tile; it does
 not reuse the legacy name-ordered RAMB18 packer.

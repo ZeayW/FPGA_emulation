@@ -406,11 +406,13 @@ def _load_physical_macro_groups(
     contract = read_json(name_map_path.parent / relative)
     groups = contract.get("groups")
     raw_window_sets = contract.get("window_sets", [])
+    raw_site_chain_sets = contract.get("site_chain_sets", [])
     if (
         contract.get("schema") != OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA
         or contract.get("status") != "pass"
         or not isinstance(groups, list) or len(groups) != count
         or not isinstance(raw_window_sets, list)
+        or not isinstance(raw_site_chain_sets, list)
         or contract.get("site_database") != name_map.get("site_database")
     ):
         raise ValidationError("typed hardblock constraint contract is invalid")
@@ -427,11 +429,67 @@ def _load_physical_macro_groups(
         ):
             raise ValidationError("typed hardblock shared window set is invalid")
         window_sets[item["id"]] = item
+    site_chain_sets: Dict[str, Mapping[str, Any]] = {}
+    for item in raw_site_chain_sets:
+        chains = item.get("chains") if isinstance(item, Mapping) else None
+        if (
+            not isinstance(item, Mapping)
+            or not isinstance(item.get("id"), str)
+            or not item["id"]
+            or item["id"] in site_chain_sets
+            or item.get("site_resource") != "LUT"
+            or not isinstance(chains, list)
+            or not chains
+            or any(
+                not isinstance(chain, list) or len(chain) < 2
+                or not all(isinstance(site, str) and site for site in chain)
+                or len(chain) != len(set(chain))
+                for chain in chains
+            )
+        ):
+            raise ValidationError("typed hardblock site-chain set is invalid")
+        site_chain_sets[item["id"]] = item
     result = []
     referenced = set()
+    referenced_site_chains = set()
     for group in groups:
         if not isinstance(group, Mapping):
             raise ValidationError("typed hardblock group is invalid")
+        chain_template = group.get("chain_template")
+        if chain_template is not None:
+            chain_set_id = (
+                chain_template.get("chain_set")
+                if isinstance(chain_template, Mapping) else None
+            )
+            chain_length = (
+                chain_template.get("chain_length")
+                if isinstance(chain_template, Mapping) else None
+            )
+            chain_set = site_chain_sets.get(chain_set_id)
+            expected_count = (
+                sum(max(0, len(chain) - chain_length + 1)
+                    for chain in chain_set["chains"])
+                if chain_set is not None
+                and isinstance(chain_length, int)
+                and not isinstance(chain_length, bool)
+                and chain_length >= 2 else 0
+            )
+            if (
+                group.get("kind") != "site_cascade"
+                or group.get("resource") != "SLICE_MACRO"
+                or not isinstance(chain_template, Mapping)
+                or chain_template.get("kind") != "directed-site-chain/v1"
+                or chain_set is None
+                or expected_count <= 0
+                or group.get("window_count") != expected_count
+                or "windows" in group
+                or "window_template" in group
+                or group.get("window_set") is not None
+            ):
+                raise ValidationError("typed hardblock site-chain reference is invalid")
+            referenced_site_chains.add(chain_set_id)
+            result.append({**group, "site_chain_set": chain_set})
+            continue
         window_set_id = group.get("window_set")
         if window_set_id is None:
             result.append(group)
@@ -450,6 +508,8 @@ def _load_physical_macro_groups(
         result.append({**group, "windows": window_set["windows"]})
     if referenced != set(window_sets):
         raise ValidationError("typed hardblock contract has an unused window set")
+    if referenced_site_chains != set(site_chain_sets):
+        raise ValidationError("typed hardblock contract has an unused site-chain set")
     return result
 
 
@@ -2008,17 +2068,150 @@ def export_xilinx_openparf_atomic(
         })
     hardblock_groups = []
     singleton_window_sets: Dict[str, Dict[str, Any]] = {}
+    site_chain_sets: List[Dict[str, Any]] = []
     slice_macros = [
         macro for macro in macro_contract.get("site_macros", [])
         if macro.get("kind") in {
             "muxf7-cone", "muxf8-cone", "muxf9-cone", "carry8-lut6_2",
         }
     ]
+    carry_macro_by_instance: Dict[str, Mapping[str, Any]] = {}
+    for macro in slice_macros:
+        if macro.get("kind") != "carry8-lut6_2":
+            continue
+        carry_members = [
+            member for member in macro.get("members", [])
+            if member.get("cell_type") == "CARRY8"
+        ]
+        if len(carry_members) != 1:
+            raise ValidationError(
+                f"CARRY8 site macro {macro.get('id')!r} has invalid ownership"
+            )
+        carry_instance = carry_members[0]["instance"]
+        if carry_instance in carry_macro_by_instance:
+            raise ValidationError("CARRY8 instance belongs to two site macros")
+        carry_macro_by_instance[carry_instance] = macro
+    logical_carry_chains = [
+        chain for chain in packed.get("cascade_chains", [])
+        if chain.get("cell_type") == "CARRY8"
+        and isinstance(chain.get("instances"), list)
+        and len(chain["instances"]) >= 2
+    ]
+    cascade_owned_carry = set()
+    if logical_carry_chains and typed_hardblock_mode:
+        native_carry_family = next((
+            family
+            for family in native.get("payload", {}).get("dedicated_adjacency", [])
+            if isinstance(family, Mapping) and family.get("kind") == "CARRY_NEXT"
+        ), None)
+        native_carry_chains = (
+            native_carry_family.get("chains")
+            if isinstance(native_carry_family, Mapping) else None
+        )
+        if (
+            not isinstance(native_carry_chains, list)
+            or not native_carry_chains
+            or any(
+                not isinstance(chain, list) or len(chain) < 2
+                or not all(isinstance(site, str) and site for site in chain)
+                for chain in native_carry_chains
+            )
+        ):
+            raise ValidationError("native constraints contain no valid CARRY_NEXT chains")
+        chain_set_id = "native:CARRY_NEXT"
+        site_chain_sets.append({
+            "id": chain_set_id,
+            "site_resource": "LUT",
+            "chains": native_carry_chains,
+        })
+        for chain in logical_carry_chains:
+            carry_instances = chain["instances"]
+            overlap = cascade_owned_carry.intersection(carry_instances)
+            if overlap:
+                raise ValidationError(
+                    f"CARRY8 cascade ownership overlaps: {sorted(overlap)!r}"
+                )
+            cascade_owned_carry.update(carry_instances)
+            try:
+                unit_macros = [
+                    carry_macro_by_instance[instance]
+                    for instance in carry_instances
+                ]
+            except KeyError as error:
+                raise ValidationError(
+                    "CARRY8 cascade has no complete full-slice macro"
+                ) from error
+            unit_signatures = [
+                [
+                    (
+                        member["cell_type"], member["physical_role"],
+                        (
+                            "LUT" if member["cell_type"] in _SLICE_LUT_TYPES
+                            else "CARRY8"
+                        ),
+                        _slice_role_slot(
+                            member["cell_type"], member["physical_role"]
+                        ),
+                    )
+                    for member in macro["members"]
+                ]
+                for macro in unit_macros
+            ]
+            if any(
+                signature != unit_signatures[0]
+                for signature in unit_signatures[1:]
+            ):
+                raise ValidationError(
+                    "CARRY8 cascade units do not share one physical slice template"
+                )
+            source_instances = [
+                member["instance"]
+                for macro in unit_macros for member in macro["members"]
+            ]
+            chain_length = len(unit_macros)
+            window_count = sum(
+                max(0, len(physical_chain) - chain_length + 1)
+                for physical_chain in native_carry_chains
+            )
+            if window_count <= 0:
+                raise ValidationError(
+                    f"CARRY8 cascade {chain.get('id')!r} has no native legal window"
+                )
+            hardblock_groups.append({
+                "id": str(chain.get("id")),
+                "kind": "site_cascade", "resource": "SLICE_MACRO",
+                "owned_resources": ["CARRY8"],
+                "instances": [names[name] for name in source_instances],
+                "source_instances": source_instances,
+                "window_count": window_count,
+                "chain_template": {
+                    "kind": "directed-site-chain/v1",
+                    "chain_set": chain_set_id,
+                    "chain_length": chain_length,
+                    "unit_members": [
+                        {"resource": resource, "z": z, "bel": bel}
+                        for _cell_type, bel, resource, z in unit_signatures[0]
+                    ],
+                },
+            })
+        # The exact full-slice cascade legalizer consumes source-certified
+        # CARRY_NEXT chains.  OpenPARF's rectangle-based chain legalizer cannot
+        # represent native seams or holes and must not run on the same atoms.
+        config["carry_chain_legalization_flag"] = 0
     slice_window_count = sum(
         len(item.get("physical_sites", {}).get("LUT", [])) == 1
         for item in coordinate_system["sites"]
     )
     for macro in slice_macros:
+        if (
+            macro.get("kind") == "carry8-lut6_2"
+            and any(
+                member.get("cell_type") == "CARRY8"
+                and member.get("instance") in cascade_owned_carry
+                for member in macro.get("members", [])
+            )
+        ):
+            continue
         members = macro["members"]
         source_instances = [member["instance"] for member in members]
         if not slice_window_count:
@@ -2245,6 +2438,7 @@ def export_xilinx_openparf_atomic(
                 singleton_window_sets[resource]
                 for resource in sorted(singleton_window_sets)
             ],
+            "site_chain_sets": site_chain_sets,
             "source": source_identity,
             "site_database": site_database_descriptor,
         }, compact=True)
@@ -2313,7 +2507,13 @@ def export_xilinx_openparf_atomic(
             "carry8_site_macros_use_internal_legalizer": any(
                 macro["kind"] == "carry8-lut6_2" for macro in slice_macros
             ),
-            "carry8_chains_use_native_legalizer": has_carry8,
+            "carry8_chains_use_native_legalizer": (
+                has_carry8
+                and not bool(logical_carry_chains and typed_hardblock_mode)
+            ),
+            "carry8_chains_use_directed_site_legalizer": bool(
+                logical_carry_chains and typed_hardblock_mode
+            ),
             "dedicated_or_relative_constraints": (
                 "native-physical-macro-legalizer"
                 if hardblock_groups else "fail-closed"
@@ -2618,7 +2818,71 @@ def validate_xilinx_openparf_atomic_placement(
                     "typed hardblock group references an unknown instance"
                 ) from error
             template = group.get("window_template")
-            if group.get("kind") == "site_macro" and template is not None:
+            chain_template = group.get("chain_template")
+            if group.get("kind") == "site_cascade" and chain_template is not None:
+                unit_members = (
+                    chain_template.get("unit_members")
+                    if isinstance(chain_template, Mapping) else None
+                )
+                chain_length = (
+                    chain_template.get("chain_length")
+                    if isinstance(chain_template, Mapping) else None
+                )
+                chain_set = group.get("site_chain_set")
+                if (
+                    not isinstance(chain_template, Mapping)
+                    or chain_template.get("kind") != "directed-site-chain/v1"
+                    or not isinstance(unit_members, list)
+                    or not unit_members
+                    or not isinstance(chain_length, int)
+                    or isinstance(chain_length, bool)
+                    or chain_length < 2
+                    or len(selected) != chain_length * len(unit_members)
+                    or not isinstance(chain_set, Mapping)
+                ):
+                    raise ValidationError(
+                        "OpenPARF site cascade has an invalid compact template"
+                    )
+                units = [
+                    selected[index:index + len(unit_members)]
+                    for index in range(0, len(selected), len(unit_members))
+                ]
+                unit_sites = []
+                for unit in units:
+                    if (
+                        len({item["site"] for item in unit}) != 1
+                        or not all(
+                            member.get("resource") == item["resource"]
+                            and member.get("bel") == item["bel"]
+                            and isinstance(member.get("z"), (int, float))
+                            and not isinstance(member.get("z"), bool)
+                            and float(member["z"]) == float(item["z"])
+                            for member, item in zip(unit_members, unit)
+                        )
+                    ):
+                        raise ValidationError(
+                            "OpenPARF site cascade unit violates its slice template"
+                        )
+                    unit_sites.append(unit[0]["site"])
+                matching_chains = sum(
+                    chain[start:start + chain_length] == unit_sites
+                    for chain in chain_set["chains"]
+                    for start in range(len(chain) - chain_length + 1)
+                )
+                if matching_chains != 1:
+                    raise ValidationError(
+                        "OpenPARF site cascade does not match one directed site window"
+                    )
+                selected_window = [
+                    {
+                        **dict(member), "site": item["site"],
+                        "x": item["x"], "y": item["y"],
+                        "claims": _site_claim(item["site"]),
+                    }
+                    for unit in units
+                    for member, item in zip(unit_members, unit)
+                ]
+            elif group.get("kind") == "site_macro" and template is not None:
                 members = (
                     template.get("members")
                     if isinstance(template, Mapping) else None
@@ -2691,6 +2955,10 @@ def validate_xilinx_openparf_atomic_placement(
                 group.get("kind") == "site_macro"
                 and len({item["site"] for item in selected}) == 1
                 and unique_claims == {"site:" + selected[0]["site"]}
+            ) or (
+                group.get("kind") == "site_cascade"
+                and unique_claims == {"site:" + site for site in unit_sites}
+                and len(unit_sites) == len(set(unit_sites))
             ) or len(claims) == len(unique_claims)
             if not internally_valid or occupied_claims.intersection(unique_claims):
                 raise ValidationError(
@@ -2721,7 +2989,8 @@ def validate_xilinx_openparf_atomic_placement(
                         )
                     checked_native_edges += 1
         has_site_macro_groups = any(
-            group.get("kind") == "site_macro" for group in hardblock_groups
+            group.get("kind") in {"site_macro", "site_cascade"}
+            for group in hardblock_groups
         )
         derived_macro_contract = (
             build_xilinx_physical_macro_contract(

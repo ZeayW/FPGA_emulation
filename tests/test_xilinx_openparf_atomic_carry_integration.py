@@ -101,16 +101,23 @@ class XilinxOpenparfAtomicCarryIntegrationTest(unittest.TestCase):
                 provider_manifest_path=provider,
             )
             config = read_json(output / "openparf.json")
-            self.assertEqual(config["carry_chain_legalization_flag"], 1)
+            self.assertEqual(config["carry_chain_legalization_flag"], 0)
             self.assertEqual(config["resource_categories"]["CARRY8"], "Carry")
-            groups = read_json(output / "physical-macro-groups.json")["groups"]
+            constraints = read_json(output / "physical-macro-groups.json")
+            groups = constraints["groups"]
             self.assertEqual(
-                sum(group["kind"] == "site_macro" for group in groups), 2
+                sum(group["kind"] == "site_cascade" for group in groups), 1
             )
-            self.assertTrue(all(
-                group["owned_resources"] == ["CARRY8"]
-                for group in groups if group["kind"] == "site_macro"
-            ))
+            carry_group = next(
+                group for group in groups if group["kind"] == "site_cascade"
+            )
+            self.assertEqual(carry_group["owned_resources"], ["CARRY8"])
+            self.assertEqual(
+                carry_group["chain_template"]["kind"],
+                "directed-site-chain/v1",
+            )
+            self.assertEqual(carry_group["chain_template"]["chain_length"], 2)
+            self.assertEqual(len(constraints["site_chain_sets"]), 1)
 
             placement = root / "native.pl"
             _write_atomic_placement(placement, read_json(output / "name_map.json"))

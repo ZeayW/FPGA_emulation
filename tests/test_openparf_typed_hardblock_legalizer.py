@@ -280,6 +280,59 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
         self.assertEqual(pos.tolist(), [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
         self.assertTrue(torch.all(data.inst_lock_mask))
 
+    def test_directed_site_chain_never_infers_a_gap_or_crosses_columns(self):
+        value = {
+            "schema": "openparf.physical-macro-groups/v3", "status": "pass",
+            "site_chain_sets": [{
+                "id": "carry-next", "site_resource": "LUT",
+                "chains": [
+                    ["SLICE_X0Y0", "SLICE_X0Y1"],
+                    ["SLICE_X0Y3", "SLICE_X0Y4"],
+                    ["SLICE_X1Y0", "SLICE_X1Y1"],
+                ],
+            }],
+            "groups": [{
+                "id": "carry-chain", "kind": "site_cascade",
+                "resource": "SLICE_MACRO", "owned_resources": ["CARRY8"],
+                "instances": ["c0", "l0", "c1", "l1"],
+                "window_count": 3,
+                "chain_template": {
+                    "kind": "directed-site-chain/v1",
+                    "chain_set": "carry-next", "chain_length": 2,
+                    "unit_members": [
+                        {"resource": "CARRY8", "z": 0, "bel": "CARRY8"},
+                        {"resource": "LUT", "z": 1, "bel": "A6LUT"},
+                    ],
+                },
+            }],
+        }
+        operator, data = self._operator(
+            value,
+            ["c0", "l0", "c1", "l1"],
+            site_rows=[
+                (0, 0, "SLICE_X0Y0", 0.0, 0.0),
+                (0, 1, "SLICE_X0Y1", 0.0, 1.0),
+                (0, 3, "SLICE_X0Y3", 0.0, 3.0),
+                (0, 4, "SLICE_X0Y4", 0.0, 4.0),
+                (1, 0, "SLICE_X1Y0", 10.0, 0.0),
+                (1, 1, "SLICE_X1Y1", 10.0, 1.0),
+            ],
+        )
+        # A coordinate-only legalizer would prefer an inferred window starting
+        # at Y1.  It is absent from the sealed directed graph, so the exact
+        # legalizer must select the certified Y0->Y1 edge instead.
+        pos = torch.tensor([
+            [0.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+            [0.0, 2.0, 0.0], [0.0, 2.0, 0.0],
+        ])
+        operator.legalize_site_macros(pos)
+        self.assertEqual(
+            [item["site"] for item in operator.last_assignment],
+            ["SLICE_X0Y0", "SLICE_X0Y1", "SLICE_X0Y0", "SLICE_X0Y1"],
+        )
+        self.assertEqual(len(operator._compact_chain_indexes), 1)
+        self.assertTrue(torch.all(data.inst_lock_mask))
+
     def test_compact_site_search_is_exact_cached_and_sublinear(self):
         def group(group_id, instances):
             return {
