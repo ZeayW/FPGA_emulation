@@ -10,6 +10,7 @@ import logging
 import numpy as np
 import torch
 from .metric import array2str, array2d2str
+from .filler import compute_filler_geometry
 from ..custom_data.chain_info import chain_info_cpp
 from ..custom_data.ssr_chain_info import ssr_chain_info_cpp
 import pdb
@@ -214,6 +215,22 @@ class DataCollections(object):
                 np.array(x, dtype=np.int32) for x in placedb.areaTypeInstGroups().tolist()]
             self.num_insts = np.array(
                 [len(x) for x in self.area_type_inst_groups], dtype=np.int32)
+            raw_filler_caps = params.gp_max_fillers_per_area_type
+            if raw_filler_caps is False:
+                raw_filler_caps = {}
+            if not isinstance(raw_filler_caps, dict):
+                raise ValueError(
+                    "gp_max_fillers_per_area_type must be an area-type map"
+                )
+            filler_caps = {}
+            for area_type_name, cap in raw_filler_caps.items():
+                if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+                    raise ValueError(
+                        "gp_max_fillers_per_area_type values must be positive integers"
+                    )
+                filler_caps[
+                    placedb.getAreaTypeIndexFromName(area_type_name)
+                ] = cap
             # inst_area_types = np.array(placedb.instAreaTypes().tolist(), dtype=np.uint8)
             for area_type in range(placedb.numAreaTypes()):
                 if total_movable_areas[area_type] > 0:
@@ -241,18 +258,13 @@ class DataCollections(object):
                     # HARD CODED FF filler: make it consistent with elfplace
                     if area_type == 1:
                         filler_sizes = self.filler_sizes[0]
-                    self.num_fillers[area_type] = int(
-                        self.total_filler_areas[area_type] /
-                        (filler_sizes[0] * filler_sizes[1]))
-                    # compute filler area from #fillers
-                    filler_area = self.total_filler_areas[
-                        area_type] / self.num_fillers[area_type]
-                    aspect_ratio = filler_sizes[1] / filler_sizes[0]
-                    # actual filler size
-                    self.filler_sizes[area_type][0] = np.sqrt(filler_area /
-                                                              aspect_ratio)
-                    self.filler_sizes[area_type][1] = np.sqrt(filler_area *
-                                                              aspect_ratio)
+                    filler_count, filler_size = compute_filler_geometry(
+                        self.total_filler_areas[area_type],
+                        filler_sizes,
+                        filler_caps.get(area_type),
+                    )
+                    self.num_fillers[area_type] = filler_count
+                    self.filler_sizes[area_type] = filler_size
             self.filler_range = (self.fixed_range[1],
                                  self.fixed_range[1] + self.num_fillers.sum())
             # centers for movable and fixed instances

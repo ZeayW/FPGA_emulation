@@ -1261,6 +1261,13 @@ density and filler headroom for every active resource.  Collinear, disconnected,
 or target-density-saturated crops fail before OpenPARF starts; the adapter never folds
 such a crop into a synthetic grid or waits for nonlinear placement to produce
 NaN/infinite coordinates.
+Capacity-normalized LUT/FF models no longer allocate one analytical filler per
+unused logical slot.  The native adapter bounds filler samples per active logic
+area type and rescales their dimensions to preserve exactly the same total
+density area; source-sealed hard-resource area types need only one inactive
+filler sample because the typed legalizer owns all of their movable instances.
+This keeps full-device tensor sizes proportional to the density grid rather
+than to the product of site count and intra-site capacity.
 EmuFlow does not claim an open Xilinx bitstream flow. The Vivado provider ends
 at routed checkpoints and timing reports; success there cannot satisfy the
 default open-flow completion gate or replace board-level sign-off.

@@ -843,6 +843,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_model2area_types_map"]["FDRE"]["FF"], [0.25, 0.25])
         self.assertEqual(config["CLB_capacity"], 16)
         self.assertEqual(config["BLE_capacity"], 2)
+        self.assertEqual(
+            config["gp_max_fillers_per_area_type"],
+            {"FF": 65536, "LUT": 65536},
+        )
         self.assertIn("PIN C INPUT CLOCK", library)
         self.assertIn("PIN CE INPUT CTRL_CE", library)
         self.assertIn("PIN R INPUT CTRL_SR", library)
@@ -1052,6 +1056,16 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(
             config["gp_model2area_types_map"]["DSP48E2"]["DSP48E2"],
             [1.0, 1.0],
+        )
+        self.assertEqual(
+            config["gp_max_fillers_per_area_type"],
+            {
+                "DSP48E2": 1,
+                "FF": 65536,
+                "LUT": 65536,
+                "RAMB36E2": 1,
+                "URAM288": 1,
+            },
         )
         self.assertIn("PIN A[0] INPUT", library)
         self.assertIn("PIN P[1] OUTPUT", library)

@@ -83,6 +83,7 @@ _FF_CLOCK = "C"
 _FF_ENABLE = "CE"
 _FF_SR = {"FDCE": "R", "FDRE": "R", "FDPE": "S", "FDSE": "S"}
 _TARGET_DENSITY = 0.75
+_LOGIC_FILLER_LIMIT = 65_536
 _CLOCK_REGION_NAME = re.compile(r"^X([0-9]+)Y([0-9]+)$")
 _MAX_CLOCKS_PER_REGION = 24
 _DEVICE_STATIC_CACHE_LIMIT = 4
@@ -1744,6 +1745,17 @@ def export_xilinx_openparf_atomic(
         "plot_target_at_names": sorted(demand, key=_resource_sort_key),
         "io_at_names": [], "num_threads": 8,
         "gp_model2area_types_map": model_map,
+        # Sixteen capacity-normalized LUT/FF slots share one physical slice.
+        # Median-cell fillers would therefore materialize roughly sixteen
+        # Python/Torch rows per unused site (millions on XCVU19P).  Sixteen
+        # samples per density bin are already finer than the analytical grid;
+        # preserve exact filler area while bounding the tensor population.
+        "gp_max_fillers_per_area_type": {
+            resource: (
+                _LOGIC_FILLER_LIMIT if resource in {"LUT", "FF"} else 1
+            )
+            for resource in sorted(demand, key=_resource_sort_key)
+        },
         "gp_resource2area_types_map": resource_map,
         "resource_categories": resource_categories,
         "CLB_capacity": 16, "BLE_capacity": 2,

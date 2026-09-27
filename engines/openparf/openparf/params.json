@@ -198,6 +198,10 @@
     "description": "Map model to area types with sizes",
     "default": {}
   },
+  "gp_max_fillers_per_area_type": {
+    "description": "Optional positive per-area-type cap on analytical filler count; filler size is rescaled to preserve exact total density area",
+    "default": {}
+  },
   "gp_resource2area_types_map": {
     "description": "Map resource to area types",
     "default": {}
