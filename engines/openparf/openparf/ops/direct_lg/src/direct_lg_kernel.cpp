@@ -9,6 +9,7 @@
 
 // C++ system libraries headers
 #include <algorithm>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -216,6 +217,7 @@ void initDLProblemSiteMap(database::PlaceDB const &db,
   // Reserve every site occupied by a previously legalized macro.  Multiple
   // members may intentionally share the same physical site, so the operation
   // is idempotent and site based rather than member based.
+  std::set<std::pair<int32_t, int32_t>> reserved_sites;
   for (int32_t i = 0; i < num_masked_insts; ++i) {
     IndexType inst_id = masked_inst_ids[i];
     int32_t   x       = static_cast<int32_t>(prob.instXYs[inst_id].x());
@@ -227,12 +229,14 @@ void initDLProblemSiteMap(database::PlaceDB const &db,
             inst_id,
             x,
             y);
-    openparfAssertMsg(prob.siteTypes(x, y) != DLSiteType::DONTCARE,
-                      "masked instance %u does not occupy a legal LUT/FF site (%d, %d)",
-                      inst_id,
-                      x,
-                      y);
-    prob.siteTypes(x, y) = DLSiteType::DONTCARE;
+    if (reserved_sites.emplace(x, y).second) {
+      openparfAssertMsg(prob.siteTypes(x, y) != DLSiteType::DONTCARE,
+                        "masked instance %u does not occupy a legal LUT/FF site (%d, %d)",
+                        inst_id,
+                        x,
+                        y);
+      prob.siteTypes(x, y) = DLSiteType::DONTCARE;
+    }
   }
   openparfPrint(kDebug, "#CLB-SLICE: %d, #LUTs per Site: %d, #FFs per Site: %d\n", numSLICE, num_LUTs, num_FFs);
 }
