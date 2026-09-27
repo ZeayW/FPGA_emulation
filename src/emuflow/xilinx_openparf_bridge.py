@@ -9,7 +9,6 @@ PackedSiteNetlist and Xilinx placement schemas consumed by RWRoute.
 from __future__ import annotations
 
 from collections import Counter
-import hashlib
 import math
 import os
 from pathlib import Path
@@ -18,7 +17,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .architecture import ArchitectureDB
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_PROVIDER,
@@ -59,11 +58,7 @@ _CERTIFICATE_ASSIGNMENT_KEYS = {
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _select_module(
@@ -442,14 +437,19 @@ def materialize_xilinx_openparf_atomic_contract(
     source_packed_path: Optional[Path] = None,
     native_constraints_path: Optional[Path] = None,
     provider_manifest_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    architecture: Optional[ArchitectureDB] = None,
 ) -> Dict[str, Any]:
     """Materialize standard physical contracts without repacking/replacing."""
 
-    mapped = read_json(mapped_path)
+    mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     certificate = read_json(atomic_placement_path)
     if not isinstance(mapped, Mapping) or not isinstance(certificate, Mapping):
         raise ValidationError("OpenPARF bridge inputs are invalid")
-    architecture = ArchitectureDB.load(architecture_path)
+    architecture = (
+        ArchitectureDB.load(architecture_path)
+        if architecture is None else architecture
+    )
     source_packed: Optional[Mapping[str, Any]] = None
     if source_packed_path is not None:
         loaded_source_packed = read_json(source_packed_path)

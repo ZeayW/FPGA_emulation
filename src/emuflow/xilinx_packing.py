@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .xilinx_primitives import (
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     audit_xilinx_mapped_json,
@@ -71,11 +70,7 @@ CASCADE_PORTS = {
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _select_module(source: Mapping[str, Any], top: Optional[str]) -> Tuple[str, Dict[str, Any]]:
@@ -539,10 +534,12 @@ def validate_xilinx_packing(
     *,
     top: Optional[str] = None,
     architecture_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    architecture: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Independently re-check ownership, capacities, BELs, and templates."""
 
-    source = read_json(mapped_json)
+    source = read_json(mapped_json) if mapped_value is None else mapped_value
     selected_top, module = _select_module(source, top)
     cells = module.get("cells")
     packed = read_json(packed_path)
@@ -562,8 +559,13 @@ def validate_xilinx_packing(
 
     template_bels: Dict[str, Dict[str, set]] = {}
     if architecture_path is not None:
-        architecture = read_json(architecture_path)
-        templates = architecture.get("site_templates") if isinstance(architecture, dict) else None
+        architecture_value = (
+            read_json(architecture_path) if architecture is None else architecture
+        )
+        templates = (
+            architecture_value.get("site_templates")
+            if isinstance(architecture_value, Mapping) else None
+        )
         if not isinstance(templates, dict):
             raise ValidationError("ArchitectureDB site templates are invalid")
         for template, contract in templates.items():

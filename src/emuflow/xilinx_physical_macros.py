@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .xilinx_packing import (
     CASCADE_PORTS,
     DUAL_OUTPUT_LUT_TYPE,
@@ -53,11 +53,7 @@ _CASCADE_RESOURCES = {
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _signal_contract(bits: Sequence[Any], context: str) -> Dict[str, Any]:
@@ -430,10 +426,13 @@ def _cascade_contracts(
 
 
 def _derive_contract(
-    mapped_path: Path, *, top: Optional[str]
+    mapped_path: Path,
+    *,
+    top: Optional[str],
+    source: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    audit = audit_xilinx_mapped_json(mapped_path, top=top)
-    source = read_json(mapped_path)
+    source = read_json(mapped_path) if source is None else source
+    audit = audit_xilinx_mapped_json(mapped_path, top=top, source=source)
     selected_top, module = _select_module(source, top)
     cells = module.get("cells")
     if not isinstance(cells, dict):
@@ -520,7 +519,10 @@ def _derive_contract(
 
 
 def build_xilinx_physical_macro_contract(
-    mapped_path: Path, *, top: Optional[str] = None
+    mapped_path: Path,
+    *,
+    top: Optional[str] = None,
+    source: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Derive the source-sealed physical-macro contract in memory.
 
@@ -530,7 +532,7 @@ def build_xilinx_physical_macro_contract(
     hot path.
     """
 
-    return _derive_contract(mapped_path, top=top)
+    return _derive_contract(mapped_path, top=top, source=source)
 
 
 def _validate_shape(value: Mapping[str, Any], cells: Mapping[str, Any]) -> None:

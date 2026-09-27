@@ -1,13 +1,54 @@
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.io import json_write_policy, read_json, write_json
+from emuflow.architecture import ArchitectureDB
+from emuflow.io import file_sha256, json_write_policy, read_json, write_json
 from emuflow.managed_json_storage import pack_managed_json
 
 
 class JsonIoTest(unittest.TestCase):
+    def test_hash_cache_reuses_only_unchanged_file_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "artifact.bin"
+            output.write_bytes(b"first")
+            with patch(
+                "emuflow.io.hashlib.sha256", wraps=hashlib.sha256
+            ) as sha256:
+                first = file_sha256(output)
+                self.assertEqual(file_sha256(output), first)
+                self.assertEqual(sha256.call_count, 1)
+                output.write_bytes(b"second-generation")
+                self.assertNotEqual(file_sha256(output), first)
+                self.assertEqual(sha256.call_count, 2)
+
+    def test_architecture_load_reuses_unchanged_parsed_object(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "architecture.json"
+            value = {
+                "schema": "emuflow.archdb/v1",
+                "part": "test-part",
+                "source": {"format": "test/v1"},
+                "policy": {"name": "test"},
+                "sites": [{
+                    "name": "SLICE_X0Y0", "type": "SLICEL", "x": 0, "y": 0,
+                    "bels": [{
+                        "name": "A6LUT", "type": "LUT6", "z": 0,
+                        "compatible_cells": ["LUT6"],
+                    }],
+                }],
+            }
+            write_json(path, value, compact=True)
+            first = ArchitectureDB.load(path)
+            self.assertIs(ArchitectureDB.load(path), first)
+            value["part"] = "changed-part"
+            write_json(path, value, compact=True)
+            changed = ArchitectureDB.load(path)
+            self.assertIsNot(changed, first)
+            self.assertEqual(changed.part, "changed-part")
+
     def test_managed_staging_skips_per_artifact_fsync(self):
         with tempfile.TemporaryDirectory() as temporary, patch(
             "emuflow.io.os.fsync"

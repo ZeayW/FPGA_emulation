@@ -13,7 +13,6 @@ before producing a compact EmuFlow placement certificate.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-import hashlib
 import math
 from pathlib import Path
 import re
@@ -22,7 +21,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .openparf import run_openparf, validate_openparf_runtime
 from .xilinx_native_device_constraints import (
     load_xilinx_native_device_constraints,
@@ -120,11 +119,7 @@ def _bram_claims(tile: str, role: str) -> List[str]:
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _write_site_database(
@@ -917,10 +912,11 @@ def build_xilinx_openparf_atomic_source(
     output_path: Path,
     *,
     top: Optional[str] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build an unplaced singleton-atom source without legacy site packing."""
 
-    mapped = read_json(mapped_path)
+    mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     selected_top, module = _select_module(mapped, top)
     cells = module.get("cells")
     if not isinstance(cells, Mapping) or not cells:
@@ -952,7 +948,9 @@ def build_xilinx_openparf_atomic_source(
         for cell in cells.values()
     )
     macro_contract = (
-        build_xilinx_physical_macro_contract(mapped_path, top=selected_top)
+        build_xilinx_physical_macro_contract(
+            mapped_path, top=selected_top, source=mapped
+        )
         if has_slice_macro else {"site_macros": []}
     )
     unsupported_site_macros = [
@@ -1478,10 +1476,12 @@ def export_xilinx_openparf_atomic(
     top: Optional[str] = None,
     native_constraints_path: Optional[Path] = None,
     provider_manifest_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    architecture: Optional[ArchitectureDB] = None,
 ) -> Dict[str, Any]:
     """Export the fail-closed native mixed-resource qualification subset."""
 
-    mapped = read_json(mapped_path)
+    mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     packed = read_json(packed_path)
     if (
         not isinstance(packed, Mapping)
@@ -1498,7 +1498,10 @@ def export_xilinx_openparf_atomic(
             or source.get("mapped_sha256") != _sha256(mapped_path)
         ):
             raise ValidationError("OpenPARF atomic source identity is invalid")
-    architecture = ArchitectureDB.load(architecture_path)
+    architecture = (
+        ArchitectureDB.load(architecture_path)
+        if architecture is None else architecture
+    )
     typed_hardblock_mode = (
         native_constraints_path is not None or provider_manifest_path is not None
     )
@@ -1528,7 +1531,7 @@ def export_xilinx_openparf_atomic(
     )
     macro_contract = (
         build_xilinx_physical_macro_contract(
-            mapped_path, top=selected_module_name
+            mapped_path, top=selected_module_name, source=mapped
         )
         if has_site_macro else {"site_macros": []}
     )
@@ -2017,12 +2020,17 @@ def validate_xilinx_openparf_atomic_placement(
     *,
     native_constraints_path: Optional[Path] = None,
     provider_manifest_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    architecture: Optional[ArchitectureDB] = None,
 ) -> Dict[str, Any]:
     """Validate and aggregate native atom placement without fallback."""
 
     name_map = read_json(name_map_path)
-    mapped = read_json(mapped_path)
-    architecture = ArchitectureDB.load(architecture_path)
+    mapped = read_json(mapped_path) if mapped_value is None else mapped_value
+    architecture = (
+        ArchitectureDB.load(architecture_path)
+        if architecture is None else architecture
+    )
     if name_map.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA:
         raise ValidationError("OpenPARF atomic name map is invalid")
     _top, module = _select_module(mapped, name_map.get("top"))
@@ -2560,6 +2568,8 @@ def run_xilinx_openparf_atomic_qualification(
     openparf_python: Optional[Path] = None,
     native_constraints_path: Optional[Path] = None,
     provider_manifest_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    architecture: Optional[ArchitectureDB] = None,
 ) -> Dict[str, Any]:
     """Run one native SSSIR-MCF/direct-LG/ISM flow for the audited subset."""
 
@@ -2570,6 +2580,8 @@ def run_xilinx_openparf_atomic_qualification(
         mapped_path, packed_path, architecture_path, output_dir, top=top,
         native_constraints_path=native_constraints_path,
         provider_manifest_path=provider_manifest_path,
+        mapped_value=mapped_value,
+        architecture=architecture,
     )
     placement = run_openparf(
         output_dir / "openparf.json",
@@ -2582,6 +2594,8 @@ def run_xilinx_openparf_atomic_qualification(
         architecture_path, output_dir / "placement-certificate.json",
         native_constraints_path=native_constraints_path,
         provider_manifest_path=provider_manifest_path,
+        mapped_value=mapped_value,
+        architecture=architecture,
     )
     installation = Path(str(runtime.get("installation", "")))
     python = Path(str(runtime.get("python", "")))

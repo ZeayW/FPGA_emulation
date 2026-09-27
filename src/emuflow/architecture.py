@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
@@ -46,7 +47,18 @@ class ArchitectureDB:
 
     @classmethod
     def load(cls, path: Path) -> "ArchitectureDB":
-        return cls(read_json(path))
+        resolved = path.resolve()
+        stat = resolved.stat()
+        if cls is ArchitectureDB:
+            return _load_architecture_db(
+                str(resolved),
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ctime_ns,
+            )
+        return cls(read_json(resolved))
 
     @classmethod
     def from_vivado_tsv(cls, path: Path) -> "ArchitectureDB":
@@ -338,3 +350,18 @@ class ArchitectureDB:
 
     def to_dict(self) -> Dict[str, Any]:
         return dict(self.value)
+
+
+@lru_cache(maxsize=4)
+def _load_architecture_db(
+    path: str,
+    device: int,
+    inode: int,
+    size: int,
+    mtime_ns: int,
+    ctime_ns: int,
+) -> ArchitectureDB:
+    """Parse one immutable ArchitectureDB identity once per process."""
+
+    del device, inode, size, mtime_ns, ctime_ns
+    return ArchitectureDB(read_json(Path(path)))

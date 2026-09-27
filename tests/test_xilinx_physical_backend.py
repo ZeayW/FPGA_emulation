@@ -19,12 +19,17 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             physical = root / "physical"
             packed_path = physical / "packed-sites.json"
             placement_path = physical / "placement.json"
+            mapped_value = {"modules": {}}
+            architecture_value = {"site_templates": {}}
+            architecture_object = SimpleNamespace(
+                part="xcvu19p-test", value=architecture_value
+            )
 
             def materialize(
-                mapped, architecture, certificate, packed, placement, **kwargs
+                mapped, architecture_path, certificate, packed, placement, **kwargs
             ):
                 self.assertEqual(mapped, physical / "partition.mapped.json")
-                self.assertEqual(architecture, root / "architecture.json")
+                self.assertEqual(architecture_path, root / "architecture.json")
                 self.assertEqual(
                     certificate,
                     physical / "openparf-native/placement-certificate.json",
@@ -34,6 +39,8 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     "source_packed_path": physical / "openparf-atomic-source.json",
                     "native_constraints_path": None,
                     "provider_manifest_path": None,
+                    "mapped_value": mapped_value,
+                    "architecture": architecture_object,
                 })
                 packed.write_text(
                     __import__("json").dumps({"summary": {"clusters": 2}}),
@@ -56,12 +63,20 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             with (
                 mock.patch(
                     "emuflow.xilinx_physical_backend.ArchitectureDB.load",
-                    return_value=SimpleNamespace(part="xcvu19p-test"),
+                    return_value=architecture_object,
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.emit_xilinx_mapped_json",
                     return_value={"top": "top"},
                 ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.read_json",
+                    side_effect=[
+                        mapped_value,
+                        {"summary": {"clusters": 2}},
+                        {"summary": {"clusters": 1}},
+                    ],
+                ) as read,
                 mock.patch(
                     "emuflow.xilinx_physical_backend.build_xilinx_openparf_atomic_source",
                     return_value={"summary": {"physical_atoms": 2}},
@@ -123,6 +138,13 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             qualify.assert_called_once()
             bridge.assert_called_once()
             export.assert_called_once()
+            self.assertEqual(read.call_count, 3)
+            self.assertIs(
+                build_source.call_args.kwargs["mapped_value"], mapped_value
+            )
+            self.assertIs(
+                qualify.call_args.kwargs["mapped_value"], mapped_value
+            )
 
     def test_physical_clocks_only_include_emuir_clocks(self):
         runtime = {

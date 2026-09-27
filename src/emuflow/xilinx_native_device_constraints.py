@@ -18,7 +18,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .architecture import ArchitectureDB
 from .errors import ValidationError
-from .io import read_json
+from .io import file_sha256, read_json
 from .rapidwright_provider import (
     RAPIDWRIGHT_ROUTE_BACKEND,
     load_rapidwright_provider_manifest,
@@ -62,11 +62,7 @@ _FAMILY_CONTRACTS = {
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:

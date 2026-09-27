@@ -1122,6 +1122,17 @@ a 583,923x size reduction, 1,130x parse speedup, and 1,035x peak-memory
 reduction.  Placement clusters and summaries, certificate clusters and
 summaries, routed nets and timing, routed path timing, and final OpenSTA
 WNS/TNS all matched the former contract exactly.
+The native RapidWright backend also treats the source-sealed ArchitectureDB and
+each per-partition mapped netlist as immutable process-local inputs. A complete
+ArchitectureDB is parsed and indexed once per file identity, then shared by the
+parallel physical workers; a mapped netlist is parsed once by its owning worker
+and passed in memory through atomic-source construction, macro derivation,
+OpenPARF export, certificate validation, bridge materialization, packing checks,
+and placement checks. SHA-256 results use an inode/size/mtime/ctime-invalidated
+process cache, so repeated contract checks do not reread the same hundreds of
+MiB artifact. Replacement or in-place modification changes the cache identity
+and forces a fresh parse/hash. Unit gates assert both invalidation behavior and
+single mapped-netlist loading in the production call graph.
 The same in-core contract now admits connectivity-derived MUXF7/F8/F9 cones.
 Each cone records exact LUT and MUX BEL roles, offers only complete same-slice
 windows, lets OpenPARF choose the window from global-placement displacement,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 from bisect import bisect_left
@@ -12,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 
 from .architecture import ArchitectureDB
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from .xilinx_native_device_constraints import (
     load_xilinx_native_device_constraints,
@@ -41,14 +40,7 @@ class XilinxSingleSlrInfeasible(ValidationError):
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while True:
-            chunk = stream.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _nonempty(value: Any, context: str) -> str:
@@ -1257,12 +1249,16 @@ def validate_xilinx_placement(
     constraints_path: Optional[Path] = None,
     native_constraints_path: Optional[Path] = None,
     provider_manifest_path: Optional[Path] = None,
+    architecture: Optional[ArchitectureDB] = None,
 ) -> Dict[str, Any]:
     """Independently re-check cluster ownership, sites, BELs, and cascades."""
 
     packed = read_json(packed_path)
     placement = read_json(placement_path)
-    architecture = ArchitectureDB.load(architecture_path)
+    architecture = (
+        ArchitectureDB.load(architecture_path)
+        if architecture is None else architecture
+    )
     if not isinstance(packed, dict) or packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA:
         raise ValidationError("PackedSiteNetlist header is invalid")
     if not isinstance(placement, dict) or placement.get("schema") != XILINX_PLACEMENT_SCHEMA:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 from collections import Counter
 from pathlib import Path
@@ -10,7 +9,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .architecture import ArchitectureDB
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA
 from .xilinx_netlist import emit_xilinx_mapped_json
 from .xilinx_openparf import run_xilinx_openparf_guidance
@@ -111,11 +110,7 @@ def _select_xilinx_slr_window(
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _artifact(path: Path) -> Dict[str, str]:
@@ -505,9 +500,17 @@ def run_rapidwright_openparf_native_candidate_backend(
         mapped_path,
         output_dir / "mapped-netlist-report.json",
     )
+    # The mapped netlist is hundreds of MiB for realistic DLA partitions.
+    # Parse it once and pass the immutable object through packing, native
+    # placement, bridge, and validation instead of reparsing it at every
+    # contract boundary.
+    mapped_value = read_json(mapped_path)
     atomic_source_path = output_dir / "openparf-atomic-source.json"
     atomic_source = build_xilinx_openparf_atomic_source(
-        mapped_path, atomic_source_path, top=mapped_report["top"]
+        mapped_path,
+        atomic_source_path,
+        top=mapped_report["top"],
+        mapped_value=mapped_value,
     )
     qualification_root = output_dir / "openparf-native"
     qualification = run_xilinx_openparf_atomic_qualification(
@@ -520,6 +523,8 @@ def run_rapidwright_openparf_native_candidate_backend(
         openparf_python=openparf_python,
         native_constraints_path=openparf_native_constraints,
         provider_manifest_path=openparf_provider_manifest,
+        mapped_value=mapped_value,
+        architecture=architecture,
     )
     certificate_path = qualification_root / "placement-certificate.json"
     packed_path = output_dir / "packed-sites.json"
@@ -534,14 +539,23 @@ def run_rapidwright_openparf_native_candidate_backend(
         source_packed_path=atomic_source_path,
         native_constraints_path=openparf_native_constraints,
         provider_manifest_path=openparf_provider_manifest,
+        mapped_value=mapped_value,
+        architecture=architecture,
     )
     packed = read_json(packed_path)
     placement = read_json(placement_path)
     packing_check = validate_xilinx_packing(
-        mapped_path, packed_path, architecture_path=architecture_path
+        mapped_path,
+        packed_path,
+        architecture_path=architecture_path,
+        mapped_value=mapped_value,
+        architecture=architecture.value,
     )
     placement_check = validate_xilinx_placement(
-        packed_path, architecture_path, placement_path
+        packed_path,
+        architecture_path,
+        placement_path,
+        architecture=architecture,
     )
     return _run_rapidwright_routed_backend_tail(
         fpga=fpga,
