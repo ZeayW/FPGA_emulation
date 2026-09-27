@@ -26,7 +26,7 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 | Route | Implemented evidence | Remaining production blockers | Decision |
 |---|---|---|---|
 | OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; bounded CARRY8, DSP48E2, RAMB36E2, and URAM288 fixtures also pass that complete chain; source-sealed real-device facts cover CARRY, DSP, RAMB36, and URAM chain adjacency | MUXF7/8/9, explicit RAMB18 upper/lower/whole tile groups, clock legality, authoritative half-column limits, unified production candidate backend, and Koios DLA medium | Primary route; qualified subsets only, not yet the default |
-| DREAMPlaceFPGA (`feature/phase7-dreamplacefpga`) | Pinned-source probe; Yosys mapped JSON to official FPGA Interchange logical netlist; physical netlist to validated placement certificate; real Cap'n Proto schema roundtrip | Upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
+| DREAMPlaceFPGA (`feature/phase7-dreamplacefpga-native`) | Pinned-source and compiled-runtime gate; mapped/packed/ArchitectureDB to official FPGA Interchange logical netlist; real Cap'n Proto LUT/FF/DSP48E2/RAMB36E2 roundtrip; `.phys` to a packed-cluster-preserving candidate certificate; sealed fail-closed RapidWright boundary | The official supported PyTorch 1.6--1.8 runtime has not completed a native fixture in the current environment; upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
 | AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result |
 
 The integration branch is `feature/phase7-placer-integration`.  It contains
@@ -142,6 +142,28 @@ front end and analytical placement behavior.  Because upstream does not
 provide the required UltraScale+ detailed placement and macro/clock/SLR
 contracts, this route remains ineligible for default promotion unless those
 missing core capabilities are implemented and independently verified.
+
+The branch now has one internal native-run boundary rather than a public CLI
+or provider selector.  It accepts the same mapped netlist, PackedSiteNetlist,
+and ArchitectureDB identities used by the other candidates, serializes only
+the natively supported LUT1--LUT6/LUT6_2, FDRE, DSP48E2, and RAMB36E2 subset,
+and invokes the pinned official `Placer.py` process.  It does not contain a
+fake placer or a fallback to EmuFlow's old greedy site legalizer.  A returned
+`.phys` must preserve every packed cluster, exact legal BEL candidate, cell
+type, and complete cell ownership before a diagnostic candidate certificate
+is emitted.  The following RapidWright boundary remains `blocked` and cannot
+be converted into `emuflow.xilinx-placement/v1` while detailed placement,
+cascade, clock-region, and multi-SLR capabilities are missing.
+
+The resource-covering adapter fixture has passed real official-schema
+serialization for LUT6, FDRE, DSP48E2, and RAMB36E2 and strict certificate
+revalidation.  This is adapter evidence, not a native optimization result.
+The runtime gate additionally requires the exact upstream revision, compiled
+`place_io`, successful compiled-module import, and an upstream-qualified
+PyTorch 1.6, 1.7, or 1.8 runtime.  The available local PyTorch 2.8 toolchain
+requires C++17 while the pinned upstream compiles its extensions as C++14, so
+the current environment is reported as `core_missing:torch_version`; no
+native runtime pass is claimed.
 
 ### Route C: AMF-Placer secondary candidate
 

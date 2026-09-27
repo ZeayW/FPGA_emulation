@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 from .architecture import ArchitectureDB
 from .errors import ValidationError
 from .io import read_json, write_json
+from .xilinx_packing import validate_xilinx_packing
 from .xilinx_primitives import audit_xilinx_mapped_json
 
 
@@ -267,7 +268,12 @@ def _load_capnp_schema(schema_root: Path, filename: str) -> Any:
     schema_path = schema_root / filename
     if not schema_path.is_file():
         raise ValidationError(f"FPGA Interchange schema is missing: {schema_path}")
-    import_roots = [str(schema_root), str(Path(capnp.__file__).resolve().parent.parent)]
+    interchange_root = schema_root.parent
+    import_roots = [
+        str(schema_root),
+        str(interchange_root / "third_party" / "capnproto-java"),
+        str(Path(capnp.__file__).resolve().parent.parent),
+    ]
     try:
         return capnp.load(str(schema_path), imports=import_roots)
     except Exception as error:
@@ -475,7 +481,7 @@ def read_dreamplacefpga_physical_placements(
 
 def _site_bel_contract(
     architecture: ArchitectureDB, site_name: str, bel_name: str, cell_type: str
-) -> Mapping[str, Any]:
+) -> tuple[Mapping[str, Any], str]:
     site = architecture.site_named(site_name)
     if site is None:
         raise ValidationError(f"DREAMPlaceFPGA placed a cell at unknown site {site_name!r}")
@@ -491,7 +497,12 @@ def _site_bel_contract(
             raise ValidationError(
                 f"cell {cell_type!r} is incompatible with {site_name}/{bel_name}"
             )
-        return site
+        placement_mode = bel.get("placement_mode", template_name)
+        if not isinstance(placement_mode, str) or not placement_mode:
+            raise ValidationError(
+                f"BEL {site_name}/{bel_name} has no placement mode"
+            )
+        return site, placement_mode
     raise ValidationError(f"site {site_name!r} has no BEL {bel_name!r}")
 
 
@@ -512,11 +523,21 @@ def build_dreamplacefpga_placement_candidate(
     *,
     top: Optional[str] = None,
     decoded: Optional[Mapping[str, Any]] = None,
+    packed_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Create a checked diagnostic placement certificate from `.phys`."""
 
     selected_top, mapped_cells = _mapped_cell_inventory(mapped_json, top=top)
     architecture = ArchitectureDB.load(architecture_path)
+    packed = None
+    if packed_path is not None:
+        validate_xilinx_packing(
+            mapped_json,
+            packed_path,
+            top=selected_top,
+            architecture_path=architecture_path,
+        )
+        packed = read_json(packed_path)
     physical = (
         dict(decoded)
         if decoded is not None
@@ -549,7 +570,7 @@ def build_dreamplacefpga_placement_candidate(
             raise ValidationError(
                 f"DREAMPlaceFPGA overlaps BEL {site_name}/{bel_name}"
             )
-        site = _site_bel_contract(
+        site, placement_mode = _site_bel_contract(
             architecture, site_name, bel_name, str(cell_type)
         )
         occupied.add((site_name, bel_name))
@@ -560,7 +581,7 @@ def build_dreamplacefpga_placement_candidate(
             "bel": bel_name,
             "site_fixed": bool(record.get("site_fixed")),
             "bel_fixed": bool(record.get("bel_fixed")),
-            "placement_mode": "dreamplacefpga-interchange-candidate",
+            "placement_mode": placement_mode,
             "site": site_name,
         })
     if set(observed) != set(mapped_cells):
@@ -570,11 +591,65 @@ def build_dreamplacefpga_placement_candidate(
         )
 
     clusters = []
-    for site_name, assignments in sorted(by_site.items()):
+    exact_packed_bels = True
+    if packed is None:
+        cluster_specs = [
+            (f"dreamplacefpga:{site_name}", site_name, assignments)
+            for site_name, assignments in sorted(by_site.items())
+        ]
+    else:
+        cluster_specs = []
+        occupied_cluster_sites = set()
+        for cluster in packed.get("clusters", []):
+            cluster_id = cluster.get("id")
+            assignments = cluster.get("assignments")
+            if not isinstance(cluster_id, str) or not isinstance(assignments, list):
+                raise ValidationError("PackedSiteNetlist cluster contract is invalid")
+            names = [item.get("instance") for item in assignments]
+            sites = {observed[name].get("site") for name in names if name in observed}
+            if len(sites) != 1:
+                raise ValidationError(
+                    f"DREAMPlaceFPGA split packed cluster {cluster_id!r}"
+                )
+            site_name = next(iter(sites))
+            if site_name in occupied_cluster_sites:
+                raise ValidationError(
+                    "DREAMPlaceFPGA merged distinct packed clusters into one site"
+                )
+            occupied_cluster_sites.add(site_name)
+            site = architecture.site_named(site_name)
+            if site is None or site.get("template", site.get("type")) not in (
+                cluster.get("site_templates") or []
+            ):
+                raise ValidationError(
+                    f"DREAMPlaceFPGA placed cluster {cluster_id!r} on an "
+                    "incompatible site template"
+                )
+            actual_assignments = []
+            for expected in assignments:
+                name = expected.get("instance")
+                actual = next(
+                    item for item in by_site[site_name]
+                    if item["instance"] == name
+                )
+                candidates = expected.get("bel_candidates") or [expected.get("bel")]
+                if actual["bel"] not in candidates:
+                    raise ValidationError(
+                        f"DREAMPlaceFPGA changed the packed BEL contract for {name!r}"
+                    )
+                exact_bel = expected.get("bel")
+                if exact_bel is None and len(candidates) == 1:
+                    exact_bel = candidates[0]
+                if exact_bel != actual["bel"]:
+                    exact_packed_bels = False
+                actual_assignments.append(actual)
+            cluster_specs.append((cluster_id, site_name, actual_assignments))
+
+    for cluster_id, site_name, assignments in cluster_specs:
         site = architecture.site_named(site_name)
         assert site is not None
         clusters.append({
-            "cluster": f"dreamplacefpga:{site_name}",
+            "cluster": cluster_id,
             "site": site_name,
             "site_type": site["type"],
             "x": site["x"],
@@ -596,19 +671,23 @@ def build_dreamplacefpga_placement_candidate(
             "mapped_sha256": _sha256(mapped_json),
             "architecture_sha256": _sha256(architecture_path),
             "physical_netlist_sha256": _sha256(physical_netlist),
+            "packed_sha256": _sha256(packed_path) if packed_path else None,
         },
         "clusters": clusters,
         "summary": {
             "cells": len(observed),
             "sites": len(clusters),
             "cell_types": dict(sorted(Counter(mapped_cells.values()).items())),
+            "packed_clusters_preserved": packed is not None,
+            "exact_packed_bels": exact_packed_bels if packed is not None else None,
         },
         "production_qualified": False,
         "qualification_boundary": DREAMPLACEFPGA_QUALIFICATION_BOUNDARY,
     }
     write_json(output_path, result, compact=True)
     validate_dreamplacefpga_placement_candidate(
-        mapped_json, architecture_path, physical_netlist, output_path, top=top
+        mapped_json, architecture_path, physical_netlist, output_path,
+        top=top, packed_path=packed_path,
     )
     return result
 
@@ -620,6 +699,7 @@ def validate_dreamplacefpga_placement_candidate(
     placement_path: Path,
     *,
     top: Optional[str] = None,
+    packed_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Independently validate the saved candidate certificate."""
 
@@ -645,6 +725,7 @@ def validate_dreamplacefpga_placement_candidate(
         "mapped_sha256": _sha256(mapped_json),
         "architecture_sha256": _sha256(architecture_path),
         "physical_netlist_sha256": _sha256(physical_netlist),
+        "packed_sha256": _sha256(packed_path) if packed_path else None,
     }
     if source != expected_source:
         raise ValidationError("DREAMPlaceFPGA placement candidate source is invalid")
@@ -661,8 +742,7 @@ def validate_dreamplacefpga_placement_candidate(
         if site is None:
             raise ValidationError("DREAMPlaceFPGA placement site is invalid")
         if (
-            cluster.get("cluster") != f"dreamplacefpga:{site_name}"
-            or cluster.get("site_type") != site["type"]
+            cluster.get("site_type") != site["type"]
             or (cluster.get("x"), cluster.get("y")) != (site["x"], site["y"])
             or cluster.get("physical_region") != site.get("physical_region")
         ):
@@ -688,15 +768,15 @@ def validate_dreamplacefpga_placement_candidate(
                 or instance in seen_cells
                 or cell_type != mapped_cells[instance]
                 or assignment.get("site") != site_name
-                or assignment.get("placement_mode")
-                != "dreamplacefpga-interchange-candidate"
             ):
                 raise ValidationError("DREAMPlaceFPGA cell assignment is invalid")
             if (site_name, bel_name) in occupied:
                 raise ValidationError("DREAMPlaceFPGA placement has a BEL overlap")
-            _site_bel_contract(
+            _site, placement_mode = _site_bel_contract(
                 architecture, site_name, str(bel_name), str(cell_type)
             )
+            if assignment.get("placement_mode") != placement_mode:
+                raise ValidationError("DREAMPlaceFPGA placement mode is invalid")
             occupied.add((site_name, bel_name))
             seen_cells.add(instance)
     if seen_cells != set(mapped_cells):
@@ -705,6 +785,11 @@ def validate_dreamplacefpga_placement_candidate(
         "cells": len(seen_cells),
         "sites": len(clusters),
         "cell_types": dict(sorted(Counter(mapped_cells.values()).items())),
+        "packed_clusters_preserved": packed_path is not None,
+        "exact_packed_bels": (
+            value.get("summary", {}).get("exact_packed_bels")
+            if packed_path is not None else None
+        ),
     }
     if value.get("summary") != expected_summary:
         raise ValidationError("DREAMPlaceFPGA placement summary is invalid")
@@ -734,6 +819,42 @@ def validate_dreamplacefpga_placement_candidate(
         raise ValidationError(
             "DREAMPlaceFPGA placement certificate disagrees with .phys"
         )
+    if packed_path is not None:
+        validate_xilinx_packing(
+            mapped_json,
+            packed_path,
+            top=selected_top,
+            architecture_path=architecture_path,
+        )
+        packed = read_json(packed_path)
+        expected_clusters = {
+            cluster["id"]: cluster for cluster in packed.get("clusters", [])
+        }
+        if {cluster.get("cluster") for cluster in clusters} != set(expected_clusters):
+            raise ValidationError(
+                "DREAMPlaceFPGA candidate does not preserve packed clusters"
+            )
+        exact_bels = True
+        for cluster in clusters:
+            expected = {
+                item["instance"]: item for item in
+                expected_clusters[cluster["cluster"]]["assignments"]
+            }
+            for assignment in cluster["assignments"]:
+                contract = expected[assignment["instance"]]
+                candidates = contract.get("bel_candidates") or [contract.get("bel")]
+                if assignment["bel"] not in candidates:
+                    raise ValidationError(
+                        "DREAMPlaceFPGA candidate violates a packed BEL contract"
+                    )
+                exact_bel = contract.get("bel")
+                if exact_bel is None and len(candidates) == 1:
+                    exact_bel = candidates[0]
+                exact_bels &= exact_bel == assignment["bel"]
+        if value["summary"]["exact_packed_bels"] is not exact_bels:
+            raise ValidationError(
+                "DREAMPlaceFPGA exact packed-BEL summary is invalid"
+            )
     return {
         "status": "pass",
         "schema": "emuflow.dreamplacefpga-placement-candidate-validation/v1",

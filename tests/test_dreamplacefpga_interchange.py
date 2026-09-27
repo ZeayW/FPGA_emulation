@@ -1,3 +1,4 @@
+import gzip
 import json
 import tempfile
 import unittest
@@ -7,12 +8,15 @@ from unittest import mock
 from emuflow.dreamplacefpga_interchange import (
     DREAMPLACEFPGA_LOGICAL_MODEL_SCHEMA,
     DREAMPLACEFPGA_PLACEMENT_CANDIDATE_SCHEMA,
+    DEFAULT_INTERCHANGE_SCHEMA_ROOT,
+    _load_capnp_schema,
     build_dreamplacefpga_logical_model,
     build_dreamplacefpga_placement_candidate,
     validate_dreamplacefpga_placement_candidate,
     write_dreamplacefpga_logical_netlist,
 )
 from emuflow.errors import ValidationError
+from emuflow.xilinx_packing import pack_xilinx_sites
 
 
 def _cell(cell_type, input_port, output_port, input_net, output_net, **parameters):
@@ -73,13 +77,18 @@ class DreamplaceFPGAInterchangeTest(unittest.TestCase):
                 "SLICEL": template(
                     bel("A6LUT", "LUT6"), bel("AFF", "FDRE", 1)
                 ),
-                "DSP48E2": template(bel("DSP48E2", "DSP48E2")),
-                "RAMB36E2": template(bel("RAMB36E2", "RAMB36E2")),
+                "DSP48E2": template(bel("DSP_ALU", "DSP48E2")),
+                "RAMB36": template(bel("RAMB36E2", "RAMB36E2")),
             },
             "sites": [
                 {
                     "name": "SLICE_X0Y0", "type": "SLICEL",
                     "template": "SLICEL", "x": 0, "y": 0,
+                    "physical_region": {"slr": "SLR0", "clock_region": "X0Y0"},
+                },
+                {
+                    "name": "SLICE_X1Y0", "type": "SLICEL",
+                    "template": "SLICEL", "x": 3, "y": 0,
                     "physical_region": {"slr": "SLR0", "clock_region": "X0Y0"},
                 },
                 {
@@ -89,7 +98,7 @@ class DreamplaceFPGAInterchangeTest(unittest.TestCase):
                 },
                 {
                     "name": "RAMB36_X0Y0", "type": "RAMBFIFO36",
-                    "template": "RAMB36E2", "x": 2, "y": 0,
+                    "template": "RAMB36", "x": 2, "y": 0,
                     "physical_region": {"slr": "SLR0", "clock_region": "X0Y0"},
                 },
             ],
@@ -111,7 +120,7 @@ class DreamplaceFPGAInterchangeTest(unittest.TestCase):
                 },
                 {
                     "instance": "dsp", "cell_type": "DSP48E2",
-                    "site": "DSP48E2_X0Y0", "bel": "DSP48E2",
+                    "site": "DSP48E2_X0Y0", "bel": "DSP_ALU",
                     "site_fixed": True, "bel_fixed": True,
                 },
                 {
@@ -182,6 +191,31 @@ class DreamplaceFPGAInterchangeTest(unittest.TestCase):
                     )
             self.assertFalse((root / "design.netlist").exists())
 
+    def test_binary_writer_roundtrips_resource_fixture_with_official_schema(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, _architecture, _physical = self._write_inputs(root)
+            output = root / "design.netlist"
+            result = write_dreamplacefpga_logical_netlist(mapped, output)
+            schema = _load_capnp_schema(
+                DEFAULT_INTERCHANGE_SCHEMA_ROOT, "LogicalNetlist.capnp"
+            )
+            with gzip.open(output, "rb") as stream:
+                payload = stream.read()
+            reader = schema.Netlist.from_bytes(payload)
+            with reader as value:
+                self.assertEqual(value.name, "top")
+                self.assertEqual(len(value.instList), 4)
+                strings = list(value.strList)
+                instance_types = {
+                    strings[value.cellDecls[item.cell].name]
+                    for item in value.instList
+                }
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(
+            instance_types, {"LUT6", "FDRE", "DSP48E2", "RAMB36E2"}
+        )
+
     def test_physical_adapter_builds_checked_candidate_certificate(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -206,6 +240,56 @@ class DreamplaceFPGAInterchangeTest(unittest.TestCase):
         self.assertEqual(result["summary"]["cells"], 4)
         self.assertEqual(result["summary"]["sites"], 3)
         self.assertEqual(checked["status"], "pass")
+
+    def test_physical_adapter_preserves_packed_resource_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, architecture, physical = self._write_inputs(root)
+            packed = root / "packed.json"
+            pack_xilinx_sites(mapped, packed)
+            output = root / "placement.json"
+            decoded = self._physical()
+            with mock.patch(
+                "emuflow.dreamplacefpga_interchange."
+                "read_dreamplacefpga_physical_placements",
+                return_value=decoded,
+            ):
+                result = build_dreamplacefpga_placement_candidate(
+                    mapped,
+                    architecture,
+                    physical,
+                    output,
+                    decoded=decoded,
+                    packed_path=packed,
+                )
+                checked = validate_dreamplacefpga_placement_candidate(
+                    mapped,
+                    architecture,
+                    physical,
+                    output,
+                    packed_path=packed,
+                )
+        self.assertTrue(result["summary"]["packed_clusters_preserved"])
+        self.assertTrue(result["summary"]["exact_packed_bels"])
+        self.assertEqual(checked["status"], "pass")
+
+    def test_physical_adapter_rejects_split_packed_cluster(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, architecture, physical = self._write_inputs(root)
+            packed = root / "packed.json"
+            pack_xilinx_sites(mapped, packed)
+            decoded = self._physical()
+            decoded["placements"][1]["site"] = "SLICE_X1Y0"
+            with self.assertRaisesRegex(ValidationError, "split packed cluster"):
+                build_dreamplacefpga_placement_candidate(
+                    mapped,
+                    architecture,
+                    physical,
+                    root / "placement.json",
+                    decoded=decoded,
+                    packed_path=packed,
+                )
 
     def test_physical_adapter_rejects_missing_cell(self):
         with tempfile.TemporaryDirectory() as temporary:

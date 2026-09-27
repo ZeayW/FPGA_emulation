@@ -10,6 +10,7 @@ from emuflow.dreamplacefpga_candidate import (
     DREAMPLACEFPGA_CAPABILITY_SCHEMA,
     DREAMPLACEFPGA_UPSTREAM_REVISION,
     assess_dreamplacefpga_candidate,
+    probe_dreamplacefpga_runtime,
     require_dreamplacefpga_execution_ready,
     run_dreamplacefpga_interchange_probe,
 )
@@ -57,6 +58,7 @@ class DreamplaceFPGACandidateTest(unittest.TestCase):
             "native_supported",
         )
         self.assertFalse(report["execution_ready"])
+        self.assertFalse(report["fixture_execution_ready"])
         self.assertIn("stages.detailed_placement", report["blockers"])
         self.assertIn("constraints.multi_slr_regions", report["blockers"])
         self.assertEqual(
@@ -109,6 +111,37 @@ class DreamplaceFPGACandidateTest(unittest.TestCase):
         self.assertEqual(report["runtime"]["state"], "core_missing")
         self.assertIn("compiled_place_io", report["runtime"]["missing"])
 
+    def test_runtime_probe_rejects_unqualified_torch_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = root / "dreamplacefpga"
+            (package / "ops" / "place_io").mkdir(parents=True)
+            (package / "Placer.py").write_text("", encoding="utf-8")
+            (package / "IFWriter.py").write_text("", encoding="utf-8")
+            (package / "configure.py").write_text("", encoding="utf-8")
+            (package / "ops" / "place_io" / "place_io.test.so").write_bytes(
+                b"fixture"
+            )
+            with mock.patch(
+                "emuflow.dreamplacefpga_candidate._probe_python_modules",
+                return_value={
+                    "modules": {
+                        "capnp": True, "torch": True, "dreamplacefpga": True,
+                    },
+                    "versions": {"capnp": "2.0.0", "torch": "2.8.0"},
+                },
+            ), mock.patch(
+                "emuflow.dreamplacefpga_candidate._source_revision",
+                return_value=DREAMPLACEFPGA_UPSTREAM_REVISION,
+            ), mock.patch(
+                "emuflow.dreamplacefpga_candidate._compiled_runtime_import",
+                return_value=True,
+            ):
+                runtime = probe_dreamplacefpga_runtime(root)
+        self.assertEqual(runtime["state"], "core_missing")
+        self.assertFalse(runtime["qualified_torch_version"])
+        self.assertIn("torch_version", runtime["missing"])
+
     def test_probe_runner_is_bounded_and_marks_output_diagnostic(self):
         def entry(status="native_supported"):
             return {"status": status, "evidence": ["fixture"]}
@@ -137,8 +170,10 @@ class DreamplaceFPGACandidateTest(unittest.TestCase):
                     "device": {"path": str(device)},
                     "logical_netlist": {"path": str(netlist)},
                 },
-                "execution_ready": True,
+                "execution_ready": False,
+                "fixture_execution_ready": True,
                 "blockers": [],
+                "fixture_blockers": [],
             }
 
             def fake_run(*args, **kwargs):
@@ -154,7 +189,8 @@ class DreamplaceFPGACandidateTest(unittest.TestCase):
             ) as invoked:
                 result = run_dreamplacefpga_interchange_probe(report, output)
         self.assertEqual(result["status"], "pass")
-        self.assertIn("diagnostic", result["qualification_boundary"])
+        self.assertEqual(result["runtime_validation"], "native-upstream-process")
+        self.assertIn("native fixture", result["qualification_boundary"])
         command = invoked.call_args.args[0]
         self.assertEqual(command[1], str(placer))
 
@@ -186,8 +222,10 @@ class DreamplaceFPGACandidateTest(unittest.TestCase):
                     "device": {"path": str(device)},
                     "logical_netlist": {"path": str(netlist)},
                 },
-                "execution_ready": True,
+                "execution_ready": False,
+                "fixture_execution_ready": True,
                 "blockers": [],
+                "fixture_blockers": [],
             }
 
             def fake_run(*args, **kwargs):
