@@ -31,7 +31,7 @@ from .xilinx_packing import (
     LUT_TYPES,
     MUX_TYPES,
     PACKED_SITE_NETLIST_SCHEMA,
-    _ff_control_set,
+    _slice_ff_control_sets,
     validate_xilinx_packing,
 )
 from .xilinx_placement import (
@@ -311,6 +311,7 @@ def _validate_certificate(
                 raise ValidationError(f"{assignment_context}: unsupported primitive")
         if slice_assignments and hard_assignments:
             raise ValidationError(f"{context}: mixes slice and hard resources")
+        control_sets = []
         if hard_assignments:
             hard_types = {item["cell_type"] for item in hard_assignments}
             if hard_types == {"RAMB18E2"}:
@@ -339,12 +340,7 @@ def _validate_certificate(
             ]
             if len(ff_names) > 16:
                 raise ValidationError(f"{context}: exceeds physical FF capacity")
-            control_sets = {_ff_control_set(cells[name]) for name in ff_names}
-            if len(control_sets) > 1:
-                raise ValidationError(
-                    f"{context}: cannot represent multiple FF control sets in "
-                    "the conservative PackedSiteNetlist contract"
-                )
+            control_sets = _slice_ff_control_sets(cells, slice_assignments)
             carry_counts = Counter(
                 item["cell_type"] for item in slice_assignments
                 if item["cell_type"] in {"CARRY8", DUAL_OUTPUT_LUT_TYPE}
@@ -363,7 +359,7 @@ def _validate_certificate(
                 kind = "carry"
             else:
                 kind = "slice"
-            control_set = next(iter(control_sets), None)
+            control_set = control_sets[0] if len(control_sets) == 1 else None
         modes = sorted({
             assignment["placement_mode"] for assignment in assignments
         })
@@ -375,6 +371,8 @@ def _validate_certificate(
                 key=lambda item: item["instance"],
             ),
         }
+        if len(control_sets) > 1:
+            physical_cluster["control_sets"] = control_sets
         if hard_assignments and {
             item["cell_type"] for item in hard_assignments
         } == {"RAMB18E2"}:
@@ -521,7 +519,9 @@ def materialize_xilinx_openparf_atomic_contract(
             "provider": "openparf-native-atomic-site-group-bridge-v1",
             "source_grouping": "one-cluster-per-certified-physical-site",
             "repacking": False,
-            "ff_control_sets_per_slice": 1,
+            "ff_control_set_model": (
+                "ultrascaleplus-half-slice-cksr-ff-lane-ce-v1"
+            ),
         },
         "clusters": clusters,
         "cascade_chains": cascades,

@@ -123,6 +123,68 @@ def _ff_control_set(cell: Mapping[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _slice_ff_control_sets(
+    cells: Mapping[str, Any], assignments: Sequence[Mapping[str, Any]]
+) -> List[str]:
+    """Validate UltraScale+ slice FF controls and return their exact sets.
+
+    UltraScale+ does not require one control set across a complete slice.  It
+    shares clock and set/reset within each half-slice, while clock-enable is
+    shared independently by the FF and FF2 lanes in that half.  Keep this
+    physical rule in one place so native-placement bridging and the
+    independent PackedSiteNetlist checker cannot drift apart.
+    """
+
+    half_cksr: Dict[int, Tuple[Tuple[Any, ...], Tuple[Any, ...]]] = {}
+    lane_ce: Dict[Tuple[int, int], Tuple[Any, ...]] = {}
+    control_sets = set()
+    for assignment in assignments:
+        name = assignment.get("instance")
+        if name not in cells or cells[name].get("type") not in FF_TYPES:
+            continue
+        bel = assignment.get("bel")
+        if bel not in SLICE_FF_BELS:
+            raise ValidationError(
+                f"FF {name!r} has invalid concrete slice BEL {bel!r}"
+            )
+        bel_index = SLICE_FF_BELS.index(bel)
+        half = 0 if bel_index < 8 else 1
+        lane = bel_index % 2
+        cell = cells[name]
+        cell_type = cell["type"]
+        control_port = "R" if cell_type in {"FDCE", "FDRE"} else "S"
+        clock_sr = (_bits(cell, "C"), _bits(cell, control_port))
+        enable = _bits(cell, "CE")
+        previous_cksr = half_cksr.setdefault(half, clock_sr)
+        previous_ce = lane_ce.setdefault((half, lane), enable)
+        if previous_cksr != clock_sr or previous_ce != enable:
+            raise ValidationError(
+                "slice cluster violates UltraScale+ half-slice FF control legality"
+            )
+        control_sets.add(_ff_control_set(cell))
+    return sorted(control_sets)
+
+
+def _validate_declared_slice_control_sets(
+    cluster: Mapping[str, Any], expected: Sequence[str]
+) -> None:
+    """Check the non-duplicated scalar/list control-set representation."""
+
+    scalar = cluster.get("control_set")
+    multiple = cluster.get("control_sets")
+    if len(expected) <= 1:
+        expected_scalar = expected[0] if expected else None
+        if scalar != expected_scalar or multiple is not None:
+            raise ValidationError(
+                "slice cluster FF control-set certificate is invalid"
+            )
+        return
+    if scalar is not None or multiple != list(expected):
+        raise ValidationError(
+            "slice cluster multi-control-set certificate is invalid"
+        )
+
+
 def _slice_cluster(
     cluster_id: str,
     lut_names: Sequence[str],
@@ -611,9 +673,8 @@ def validate_xilinx_packing(
             ff_names = [name for name in instances if cells[name].get("type") in FF_TYPES]
             if lut_count > len(SLICE_LUT_BELS) or len(ff_names) > len(SLICE_FF_BELS):
                 raise ValidationError("slice cluster exceeds physical capacity")
-            control_sets = {_ff_control_set(cells[name]) for name in ff_names}
-            if len(control_sets) > 1:
-                raise ValidationError("slice cluster mixes FF control sets")
+            control_sets = _slice_ff_control_sets(cells, assignments)
+            _validate_declared_slice_control_sets(cluster, control_sets)
             assignment_bels = {
                 assignment["instance"]: assignment.get("bel")
                 for assignment in assignments

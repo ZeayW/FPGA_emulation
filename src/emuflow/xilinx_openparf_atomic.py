@@ -74,7 +74,8 @@ _SUPPORTED = (
     | set(_HARD_RESOURCES) | set(_MUX_RESOURCES)
 )
 _ALLOWED_CLUSTER_KEYS = {
-    "id", "kind", "site_templates", "site_mode", "control_set", "assignments",
+    "id", "kind", "site_templates", "site_mode", "control_set",
+    "control_sets", "assignments",
 }
 _ALLOWED_ASSIGNMENT_KEYS = {
     "instance", "cell_type", "bel", "bel_candidates",

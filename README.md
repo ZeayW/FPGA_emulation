@@ -1280,8 +1280,15 @@ window, and native edge.  OpenPARF's rectangle-based carry legalizer is
 disabled when this contract is present because it cannot represent chain
 holes and was observed to cross both an SLR seam and a slice column on Koios
 DLA medium.  The compact adversarial gate and 71 related unit/integration
-tests pass; renewed real-DLA placement, routing, and OpenSTA qualification are
-still pending and no final Phase 7 QoR is claimed yet.
+tests pass.  Renewed real-DLA placement and its independent certificate check
+now pass for 223,389 atoms in 14,648 occupied sites, including 5,505 CARRY8
+macros and 3,373 certified native carry edges.  The native bridge preserves
+legal UltraScale+ FF control topology rather than imposing the conservative
+packer's one-control-set-per-slice policy: clock and set/reset must agree in
+each half-slice, while enable is checked independently on the FF and FF2 lanes.
+Multiple exact control sets are represented explicitly in the packed-site
+certificate.  Routing and OpenSTA qualification are still pending, so no final
+Phase 7 QoR is claimed yet.
 The internal
 `probe_xilinx_openparf_carry_native_support` qualification API separates the
 source audit from runtime qualification against a two-CARRY8 macro contract
@@ -4548,8 +4555,8 @@ Dedicated carry, DSP, BRAM,
 and URAM cascade
 connectivity is emitted as an exact non-branching adjacency certificate. The
 independent validator reloads the mapped design and ArchitectureDB and rejects
-duplicate ownership, capacity overflow, mixed control sets, incompatible BELs,
-broken mux topology, or a modified cascade chain.
+duplicate ownership, capacity overflow, illegal half-slice control topology,
+incompatible BELs, broken mux topology, or a modified cascade chain.
 
 ```bash
 emuflow arch pack-xilinx \

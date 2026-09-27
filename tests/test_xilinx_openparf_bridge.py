@@ -19,10 +19,18 @@ from emuflow.xilinx_rwroute import export_rwroute_input
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
 
-def _native_certificate(root: Path, *, include_hard: bool):
+def _native_certificate(
+    root: Path, *, include_hard: bool, split_ff_control_sets: bool = False
+):
     mapped, source_packed, architecture = write_openparf_runtime_fixture(
         root, include_hard=include_hard
     )
+    if split_ff_control_sets:
+        mapped_value = json.loads(mapped.read_text())
+        mapped_value["modules"]["top"]["cells"]["ff_03"][
+            "connections"
+        ]["C"] = [1_000_001]
+        mapped.write_text(json.dumps(mapped_value), encoding="utf-8")
     export_dir = root / "openparf"
     export_xilinx_openparf_atomic(
         mapped, source_packed, architecture, export_dir
@@ -46,6 +54,8 @@ def _native_certificate(root: Path, *, include_hard: bool):
             indexes[resource] += 1
             site = slices[index // 4]
             z = 2 * (index % 4) + (1 if resource == "LUT" else 0)
+            if split_ff_control_sets and atom["instance"] == "ff_03":
+                z = 8
         else:
             site = hard_sites[resource]
             z = 0
@@ -67,6 +77,30 @@ def _native_certificate(root: Path, *, include_hard: bool):
 
 
 class XilinxOpenparfBridgeTest(unittest.TestCase):
+    def test_native_legal_multi_control_set_slice_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, architecture, certificate = _native_certificate(
+                root, include_hard=False, split_ff_control_sets=True
+            )
+            packed = root / "native-packed.json"
+            placement = root / "native-placement.json"
+            materialize_xilinx_openparf_atomic_contract(
+                mapped, architecture, certificate, packed, placement
+            )
+            check = validate_xilinx_packing(
+                mapped, packed, architecture_path=architecture
+            )
+            self.assertEqual(check["status"], "pass")
+            value = json.loads(packed.read_text())
+            cluster = next(
+                item for item in value["clusters"]
+                if {assignment["instance"] for assignment in item["assignments"]}
+                >= {"ff_00", "ff_03"}
+            )
+            self.assertIsNone(cluster["control_set"])
+            self.assertEqual(len(cluster["control_sets"]), 2)
+
     def test_mixed_atomic_result_converts_and_feeds_rwroute(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
