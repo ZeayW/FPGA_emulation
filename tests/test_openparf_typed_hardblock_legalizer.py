@@ -83,7 +83,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_uses_global_placement_cost_and_avoids_overlap(self):
         value = {
-            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v3", "status": "pass",
             "groups": [
                 {
                     "id": "chain", "kind": "cascade", "resource": "DSP48E2",
@@ -96,12 +96,16 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
                 {
                     "id": "singleton", "kind": "singleton", "resource": "DSP48E2",
                     "instances": ["d2"],
-                    "windows": [
-                        [_site("D0", "DSP48E2", 0, 0)],
-                        [_site("D2", "DSP48E2", 0, 2)],
-                    ],
+                    "window_set": "dsp-sites", "window_count": 2,
                 },
             ],
+            "window_sets": [{
+                "id": "dsp-sites", "resource": "DSP48E2",
+                "windows": [
+                    [_site("D0", "DSP48E2", 0, 0)],
+                    [_site("D2", "DSP48E2", 0, 2)],
+                ],
+            }],
         }
         operator, data = self._operator(value, ["d0", "d1", "d2"])
         pos = torch.tensor([[0.0, 1.1, 0.0], [0.0, 2.1, 0.0], [0.0, 0.1, 0.0]])
@@ -115,7 +119,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_fails_closed_when_no_conflict_free_window_exists(self):
         value = {
-            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v3", "status": "pass",
             "groups": [
                 {"id": "a", "kind": "singleton", "resource": "URAM288", "instances": ["u0"],
                  "windows": [[_site("U0", "URAM288", 0, 0)]]},
@@ -129,7 +133,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_rejects_duplicate_instance_ownership(self):
         value = {
-            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v3", "status": "pass",
             "groups": [
                 {"id": "a", "kind": "singleton", "resource": "DSP48E2", "instances": ["d0"],
                  "windows": [[_site("D0", "DSP48E2", 0, 0)]]},
@@ -150,7 +154,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
             "x": 3, "y": 4, "z": 1, "claims": ["bram:BRAM_X0Y0:upper"],
         }
         value = {
-            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v3", "status": "pass",
             "groups": [
                 {
                     "id": "lo", "kind": "singleton", "resource": "RAMB18E2", "instances": ["r0"],
@@ -192,7 +196,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
             }
 
         value = {
-            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v3", "status": "pass",
             "groups": [{
                 "id": "mux", "kind": "site_macro", "resource": "SLICE_MACRO",
                 "owned_resources": ["MUXF7"],
@@ -214,7 +218,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_compact_same_site_template_streams_indexed_windows(self):
         value = {
-            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v3", "status": "pass",
             "groups": [{
                 "id": "mux", "kind": "site_macro", "resource": "SLICE_MACRO",
                 "owned_resources": ["MUXF7"],
@@ -249,7 +253,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
     def test_compact_carry8_site_template_is_a_native_slice_resource(self):
         value = {
-            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v3", "status": "pass",
             "groups": [{
                 "id": "carry", "kind": "site_macro",
                 "resource": "SLICE_MACRO", "owned_resources": ["CARRY8"],
@@ -293,7 +297,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
         names = ["carry0", "lut0", "carry1", "lut1"]
         value = {
-            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
+            "schema": "openparf.physical-macro-groups/v3", "status": "pass",
             "groups": [
                 group("a", names[:2]),
                 group("b", names[2:]),

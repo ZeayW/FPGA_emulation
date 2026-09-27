@@ -17,7 +17,7 @@ import sqlite3
 import torch
 
 
-CONSTRAINT_SCHEMA = "openparf.physical-macro-groups/v2"
+CONSTRAINT_SCHEMA = "openparf.physical-macro-groups/v3"
 SITE_DATABASE_SCHEMA = "emuflow.openparf-atomic-site-database/v1"
 SUPPORTED_RESOURCES = {"DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"}
 SUPPORTED_SITE_RESOURCES = {"LUT", "CARRY8", "MUXF7", "MUXF8", "MUXF9"}
@@ -106,6 +106,31 @@ class TypedHardblockLegalizer(object):
 
         self.data_cls = data_cls
         self.groups = []
+        shared_window_sets = {}
+        for set_index, raw_set in enumerate(value.get("window_sets", [])):
+            context = "window_sets[{}]".format(set_index)
+            if not isinstance(raw_set, dict):
+                raise ValueError("{} must be an object".format(context))
+            set_id = _string(raw_set.get("id"), context + ".id")
+            resource = _string(raw_set.get("resource"), context + ".resource")
+            if resource not in SUPPORTED_RESOURCES:
+                raise ValueError("{} uses unsupported resource {}".format(context, resource))
+            if set_id in shared_window_sets:
+                raise ValueError("shared hardblock window-set id appears twice")
+            windows = []
+            for window_index, raw_window in enumerate(raw_set.get("windows", [])):
+                window_context = "{}.windows[{}]".format(context, window_index)
+                if not isinstance(raw_window, list) or len(raw_window) != 1:
+                    raise ValueError("{} must contain one singleton site".format(window_context))
+                windows.append([
+                    _site(raw_window[0], resource, window_context + "[0]")
+                ])
+            if not windows:
+                raise ValueError("{} has no legal windows".format(context))
+            shared_window_sets[set_id] = {
+                "resource": resource, "windows": windows,
+            }
+        referenced_window_sets = set()
         instance_names = set()
         for index, raw in enumerate(value.get("groups", [])):
             context = "groups[{}]".format(index)
@@ -131,6 +156,11 @@ class TypedHardblockLegalizer(object):
             instance_names.update(names)
             windows = []
             window_template = raw.get("window_template")
+            window_set_id = raw.get("window_set")
+            if window_template is not None and window_set_id is not None:
+                raise ValueError(
+                    "{} cannot use both window_template and window_set".format(context)
+                )
             if window_template is not None:
                 if resource != "SLICE_MACRO" or kind != "site_macro":
                     raise ValueError(
@@ -184,6 +214,21 @@ class TypedHardblockLegalizer(object):
                 window_template = {
                     "site_resource": "LUT", "members": normalized_members,
                 }
+            elif window_set_id is not None:
+                window_set_id = _string(window_set_id, context + ".window_set")
+                window_set = shared_window_sets.get(window_set_id)
+                if (
+                    kind != "singleton"
+                    or len(names) != 1
+                    or window_set is None
+                    or window_set["resource"] != resource
+                    or "windows" in raw
+                    or raw.get("window_count") != len(window_set["windows"])
+                ):
+                    raise ValueError("{}.window_set is invalid".format(context))
+                windows = window_set["windows"]
+                window_count = len(windows)
+                referenced_window_sets.add(window_set_id)
             else:
                 for window_index, raw_window in enumerate(raw.get("windows", [])):
                     window_context = "{}.windows[{}]".format(context, window_index)
@@ -246,6 +291,9 @@ class TypedHardblockLegalizer(object):
                 "window_template": window_template,
                 "window_count": window_count,
             })
+
+        if referenced_window_sets != set(shared_window_sets):
+            raise ValueError("typed hardblock constraints contain an unused window set")
 
         if not self.groups:
             raise ValueError("typed hardblock chain constraints contain no groups")

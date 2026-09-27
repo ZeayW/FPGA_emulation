@@ -1248,11 +1248,21 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 {("ramb18_lo",), ("ramb18_hi",)},
             )
             self.assertTrue(all(item["kind"] == "singleton" for item in groups))
-            self.assertTrue(all(len(item["windows"]) == 4 for item in groups))
+            self.assertTrue(all("windows" not in item for item in groups))
+            self.assertEqual(
+                {item["window_set"] for item in groups},
+                {"singleton-resource:RAMB18E2"},
+            )
+            window_set = next(
+                item for item in contract["window_sets"]
+                if item["id"] == "singleton-resource:RAMB18E2"
+            )
+            self.assertEqual(len(window_set["windows"]), 4)
+            self.assertTrue(all(item["window_count"] == 4 for item in groups))
 
-            lo_window = groups[0]["windows"][0][0]
+            lo_window = window_set["windows"][0][0]
             hi_window = next(
-                window[0] for window in groups[1]["windows"]
+                window[0] for window in window_set["windows"]
                 if window[0]["anchor"] == lo_window["anchor"]
                 and window[0]["z"] != lo_window["z"]
             )

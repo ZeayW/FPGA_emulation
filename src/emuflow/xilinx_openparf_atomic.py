@@ -49,7 +49,7 @@ XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-site-database/v1"
 )
 OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA = (
-    "openparf.physical-macro-groups/v2"
+    "openparf.physical-macro-groups/v3"
 )
 
 _HARD_RESOURCES = {
@@ -405,14 +405,52 @@ def _load_physical_macro_groups(
         raise ValidationError("typed hardblock constraint descriptor is invalid")
     contract = read_json(name_map_path.parent / relative)
     groups = contract.get("groups")
+    raw_window_sets = contract.get("window_sets", [])
     if (
         contract.get("schema") != OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA
         or contract.get("status") != "pass"
         or not isinstance(groups, list) or len(groups) != count
+        or not isinstance(raw_window_sets, list)
         or contract.get("site_database") != name_map.get("site_database")
     ):
         raise ValidationError("typed hardblock constraint contract is invalid")
-    return groups
+    window_sets: Dict[str, Mapping[str, Any]] = {}
+    for item in raw_window_sets:
+        if (
+            not isinstance(item, Mapping)
+            or not isinstance(item.get("id"), str)
+            or not item["id"]
+            or item["id"] in window_sets
+            or item.get("resource") not in _HARD_RESOURCES.values()
+            or not isinstance(item.get("windows"), list)
+            or not item["windows"]
+        ):
+            raise ValidationError("typed hardblock shared window set is invalid")
+        window_sets[item["id"]] = item
+    result = []
+    referenced = set()
+    for group in groups:
+        if not isinstance(group, Mapping):
+            raise ValidationError("typed hardblock group is invalid")
+        window_set_id = group.get("window_set")
+        if window_set_id is None:
+            result.append(group)
+            continue
+        window_set = window_sets.get(window_set_id)
+        if (
+            window_set is None
+            or group.get("kind") != "singleton"
+            or group.get("resource") != window_set.get("resource")
+            or "windows" in group
+            or "window_template" in group
+            or group.get("window_count") != len(window_set["windows"])
+        ):
+            raise ValidationError("typed hardblock window-set reference is invalid")
+        referenced.add(window_set_id)
+        result.append({**group, "windows": window_set["windows"]})
+    if referenced != set(window_sets):
+        raise ValidationError("typed hardblock contract has an unused window set")
+    return result
 
 
 def _resource_sort_key(resource: str) -> Tuple[int, str]:
@@ -1963,6 +2001,7 @@ def export_xilinx_openparf_atomic(
             "align_carry_chain_flag": 1,
         })
     hardblock_groups = []
+    singleton_window_sets: Dict[str, Dict[str, Any]] = {}
     slice_macros = [
         macro for macro in macro_contract.get("site_macros", [])
         if macro.get("kind") in {
@@ -2112,29 +2151,26 @@ def export_xilinx_openparf_atomic(
             resource = atom["resource"]
             if resource not in _HARD_RESOURCES.values() or atom["instance"] in owned_hardblocks:
                 continue
-            if resource in bram_candidates:
-                candidates = [dict(item) for item in bram_candidates[resource]]
-            else:
-                candidates = [
-                    {
-                        **item, "site": site_name, "hardblock_z": z,
-                        "claims": _site_claim(site_name),
-                    }
-                    for item in coordinate_system["sites"]
-                    for z, site_name in enumerate(
-                        item.get("physical_sites", {}).get(resource, [])
+            window_set = singleton_window_sets.get(resource)
+            if window_set is None:
+                if resource in bram_candidates:
+                    candidates = [dict(item) for item in bram_candidates[resource]]
+                else:
+                    candidates = [
+                        {
+                            **item, "site": site_name, "hardblock_z": z,
+                            "claims": _site_claim(site_name),
+                        }
+                        for item in coordinate_system["sites"]
+                        for z, site_name in enumerate(
+                            item.get("physical_sites", {}).get(resource, [])
+                        )
+                    ]
+                if not candidates:
+                    raise ValidationError(
+                        f"typed hardblock {resource} has no legal singleton site"
                     )
-                ]
-            if not candidates:
-                raise ValidationError(
-                    f"typed hardblock singleton {atom['instance']!r} has no legal site"
-                )
-            hardblock_groups.append({
-                "id": "singleton:" + atom["instance"], "kind": "singleton",
-                "resource": resource,
-                "instances": [names[atom["instance"]]],
-                "source_instances": [atom["instance"]],
-                "windows": [[{
+                windows = [[{
                     "site": item["site"], "resource": resource,
                     "x": (
                         item["placement_x"] if "placement_x" in item else item["x"]
@@ -2151,7 +2187,20 @@ def export_xilinx_openparf_atomic(
                         "placement_mode": item["placement_mode"],
                         "tile": item["tile"],
                     } if resource in bram_candidates else {}),
-                }] for item in candidates],
+                }] for item in candidates]
+                window_set = {
+                    "id": "singleton-resource:" + resource,
+                    "resource": resource,
+                    "windows": windows,
+                }
+                singleton_window_sets[resource] = window_set
+            hardblock_groups.append({
+                "id": "singleton:" + atom["instance"], "kind": "singleton",
+                "resource": resource,
+                "instances": [names[atom["instance"]]],
+                "source_instances": [atom["instance"]],
+                "window_set": window_set["id"],
+                "window_count": len(window_set["windows"]),
             })
         expected_hardblocks = {
             atom["instance"] for atom in atoms
@@ -2186,6 +2235,10 @@ def export_xilinx_openparf_atomic(
         write_json(constraint_path, {
             "schema": OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA,
             "status": "pass", "groups": hardblock_groups,
+            "window_sets": [
+                singleton_window_sets[resource]
+                for resource in sorted(singleton_window_sets)
+            ],
             "source": source_identity,
             "site_database": site_database_descriptor,
         }, compact=True)

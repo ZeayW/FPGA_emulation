@@ -4817,6 +4817,10 @@ the hundreds of thousands of sites merely to construct placement geometry;
 inline-BEL architectures retain the same strict per-site validation.  The
 normalized site index is bulk-built in memory and written once as sequential
 SQLite pages, avoiding per-row random writes on the shared experiment volume.
+The v3 physical-macro contract likewise stores each resource class's certified
+singleton-site windows once and lets all DSP/BRAM/URAM singleton groups refer
+to that set by identity.  It never duplicates the same device-wide candidate
+list once per placed instance; cascades retain their distinct directed windows.
 Every typed hard-resource area type must be completely owned by that contract.
 Those instances remain movable under the wirelength objective, but their area
 types are removed from generic electrostatic density and from its convergence

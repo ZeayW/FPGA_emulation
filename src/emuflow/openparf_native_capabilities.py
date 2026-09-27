@@ -166,7 +166,7 @@ def audit_pinned_openparf_source(source_root: Path) -> Dict[str, Any]:
         "typed_hardblock_legalizer": _source_check(
             root / "openparf/ops/typed_hardblock_legalizer/typed_hardblock_legalizer.py",
             (
-                "openparf.physical-macro-groups/v2",
+                "openparf.physical-macro-groups/v3",
                 'SUPPORTED_RESOURCES = {"DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"}',
                 'site["claims"]',
                 "sqlite3.connect(uri, uri=True)",
