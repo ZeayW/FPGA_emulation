@@ -1804,10 +1804,8 @@ def export_xilinx_openparf_atomic(
                     else "LUT"
                 )
                 for member in members
-                if (
-                    macro["kind"] == "carry8-lut6_2"
-                    or member["cell_type"] in _MUX_RESOURCES
-                )
+                if member["cell_type"] == "CARRY8"
+                or member["cell_type"] in _MUX_RESOURCES
             }),
             "instances": [names[name] for name in source_instances],
             "source_instances": source_instances,

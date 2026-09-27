@@ -107,6 +107,10 @@ class XilinxOpenparfAtomicCarryIntegrationTest(unittest.TestCase):
             self.assertEqual(
                 sum(group["kind"] == "site_macro" for group in groups), 2
             )
+            self.assertTrue(all(
+                group["owned_resources"] == ["CARRY8"]
+                for group in groups if group["kind"] == "site_macro"
+            ))
 
             placement = root / "native.pl"
             _write_atomic_placement(placement, read_json(output / "name_map.json"))
