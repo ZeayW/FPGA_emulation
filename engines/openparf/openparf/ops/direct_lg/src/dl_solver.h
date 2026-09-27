@@ -540,6 +540,14 @@ inline bool DLSolver::twoLUTsAreCompatible(const DLInstance &lutA, const DLInsta
   IndexType numInputs = lutA.dem + lutB.dem;
   IndexType idxA      = findInstInputPinIndex(lutA, 0);
   IndexType idxB      = findInstInputPinIndex(lutB, 0);
+  // Constant and partially disconnected LUTs are legal netlist objects.  The
+  // original implementation unconditionally dereferenced the first input pin
+  // of both LUTs, so pairing a zero-input LUT caused slot assignment to read
+  // past pinIdArray and segfault.  With no input on either side there can be no
+  // shared input to subtract from the declared demand.
+  if (idxA == lutA.numPins() || idxB == lutB.numPins()) {
+    return numInputs <= 5;
+  }
   IndexType netA      = _pinArray[lutA.pinIdArray[idxA]].netId;
   IndexType netB      = _pinArray[lutB.pinIdArray[idxB]].netId;
   while (numInputs > 5) {
@@ -640,6 +648,11 @@ inline IndexType DLSolver::computeNumShareInputs(const DLInstance &a, const DLIn
   IndexType res  = 0;
   IndexType idxA = findInstInputPinIndex(a, 0);
   IndexType idxB = findInstInputPinIndex(b, 0);
+  // Match twoLUTsAreCompatible(): a LUT without an input pin shares no input
+  // net.  Do not dereference the one-past-the-end iterator index.
+  if (idxA == a.numPins() || idxB == b.numPins()) {
+    return 0;
+  }
   IndexType netA = _pinArray[a.pinIdArray[idxA]].netId;
   IndexType netB = _pinArray[b.pinIdArray[idxB]].netId;
   while (true) {

@@ -203,6 +203,10 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
         self.assertEqual(feature["single_site_resource_mcf_legalization"]["status"], "adapter_required")
         self.assertEqual(feature["packed_cluster_detailed_placement"]["status"], "core_missing")
         self.assertEqual(feature["atomic_lut_ff_detailed_placement"]["status"], "adapter_required")
+        self.assertEqual(
+            matrix["source_audit"]["checks"]["constant_lut_slot_assignment"]["status"],
+            "native_supported",
+        )
         self.assertTrue(matrix["native_packed_cluster_smoke"]["eligible"])
         for item in matrix["provider_features"] + matrix["primitive_inventory"]:
             self.assertIn(item["status"], CAPABILITY_STATUSES)

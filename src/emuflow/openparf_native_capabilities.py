@@ -99,6 +99,13 @@ def audit_pinned_openparf_source(source_root: Path) -> Dict[str, Any]:
             root / "openparf/ops/direct_lg/direct_lg.py",
             ("class DirectLegalize",),
         ),
+        "constant_lut_slot_assignment": _source_check(
+            root / "openparf/ops/direct_lg/src/dl_solver.h",
+            (
+                "if (idxA == lutA.numPins() || idxB == lutB.numPins())",
+                "if (idxA == a.numPins() || idxB == b.numPins())",
+            ),
+        ),
         "atomic_detailed_placer": _source_check(
             root / "openparf/ops/ism_dp/ism_dp.py",
             ("class ISMDetailedPlace",),

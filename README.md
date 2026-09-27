@@ -1162,6 +1162,11 @@ preserves their XYZ result while running the upstream slot assignment for all
 remaining logic.  The mask accepts arbitrary cardinality (a valid F7 cone has
 three members), and the Python/C++ boundary canonicalizes its IDs to the C++
 `int32_t` contract instead of reinterpreting PyTorch's default `int64` tensor.
+The shared native slot assigner also handles constant or partially disconnected
+LUTs explicitly: LUT-pair compatibility and input-sharing scoring treat a LUT
+with no input pin as sharing zero input nets instead of dereferencing a missing
+pin.  This removes the upstream zero-input-LUT segmentation fault exposed by
+the real DLA netlist without changing ordinary LUT/FF pairing semantics.
 ISM detailed placement preserves locked macro BELs through its final
 intra-slice pin-access pass; only unlocked slices are locally reordered.
 F7/F8/F9 export, conflict legalization, independent certificate
