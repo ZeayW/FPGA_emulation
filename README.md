@@ -1215,7 +1215,10 @@ alongside MUXF7/F8/F9, so a real carry macro is accepted by the same native
 window contract exercised by the bounded fixtures. Its ownership mask names
 only the dedicated CARRY8 area type; the eight associated LUT6_2 cells remain
 ordinary LUT demand and are locked through macro membership, not falsely
-declared as a dedicated area type.
+declared as a dedicated area type. The UltraScale resource-area estimator
+accepts the complete LUT1--LUT6 range emitted by the real mapper; its six-bin
+C++ kernel already modeled LUT1, so the former Python-side LUT1 rejection was
+removed and widths above six still fail closed.
 The adapter invokes GP, native chain legalization, masked LUT/FF legalization,
 and ISM, then independently validates exact BEL roles and RapidWright-certified
 CARRY_NEXT adjacency.  Parsed `.shape` records still have no consumer and are
