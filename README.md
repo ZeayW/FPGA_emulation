@@ -1076,6 +1076,19 @@ density and filler headroom for every active resource.  Collinear, disconnected,
 or target-density-saturated crops fail before OpenPARF starts; the adapter never folds
 such a crop into a synthetic grid or waits for nonlinear placement to produce
 NaN/infinite coordinates.
+An internal DREAMPlaceFPGA research path now exposes the same mapped,
+PackedSiteNetlist, and ArchitectureDB identities through a narrow FPGA
+Interchange adapter.  The LUT1--LUT6/LUT6_2, FDRE, DSP48E2, and RAMB36E2
+fixture roundtrips through the official Cap'n Proto LogicalNetlist schema;
+candidate `.phys` import then rechecks complete ownership, site/BEL legality,
+packed-cluster co-location, and exact BEL candidates.  The runner invokes only
+the pinned upstream `Placer.py` process and has no fake placement or greedy
+legalizer fallback.  It remains an internal, non-default research candidate:
+the pinned upstream lacks detailed placement plus cascade, clock-region, and
+multi-SLR contracts, so its RapidWright handoff is emitted only as an explicit
+blocked boundary.  Native execution also fails closed unless the exact source
+revision, compiled `place_io`, and upstream-qualified PyTorch 1.6--1.8 runtime
+are present; no result from an unqualified PyTorch 2.x build is accepted.
 EmuFlow does not claim an open Xilinx bitstream flow. The Vivado provider ends
 at routed checkpoints and timing reports; success there cannot satisfy the
 default open-flow completion gate or replace board-level sign-off.

@@ -11,7 +11,9 @@ EmuFlow placement certificate.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
+import os
 import subprocess
 import sys
 from collections import Counter
@@ -31,14 +33,24 @@ from .xilinx_primitives import audit_xilinx_mapped_json
 
 DREAMPLACEFPGA_CAPABILITY_SCHEMA = XILINX_PLACER_CAPABILITY_SCHEMA
 DREAMPLACEFPGA_PROBE_SCHEMA = "emuflow.dreamplacefpga-probe-result/v1"
+DREAMPLACEFPGA_NATIVE_RUN_SCHEMA = "emuflow.dreamplacefpga-native-run/v1"
 DREAMPLACEFPGA_UPSTREAM_REVISION = (
     "004494318453ba4ad7053b12d0c924a2a2a34356"
 )
 DREAMPLACEFPGA_UPSTREAM_URL = (
     "https://github.com/rachelselinar/DREAMPlaceFPGA"
 )
+DREAMPLACEFPGA_QUALIFIED_TORCH_VERSIONS = ("1.6", "1.7", "1.8")
 
 CAPABILITY_STATES = XILINX_PLACER_CAPABILITY_STATUSES
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _capability(
@@ -251,6 +263,20 @@ _CONSTRAINT_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     ),
 }
 
+_FIXTURE_REQUIRED_STAGES = (
+    "global_placement", "packing", "legalization", "physical_export",
+)
+_FIXTURE_REQUIRED_CONSTRAINTS = (
+    "site_bel_compatibility", "ff_control_sets",
+)
+
+
+def _entry_ready(entry: Mapping[str, Any]) -> bool:
+    return entry.get("status") == "native_supported" or (
+        entry.get("status") == "adapter_required"
+        and entry.get("adapter_validation") == "pass"
+    )
+
 
 def _select_top(source: Mapping[str, Any], top: Optional[str]) -> tuple[str, Mapping[str, Any]]:
     modules = source.get("modules")
@@ -275,12 +301,24 @@ def _select_top(source: Mapping[str, Any], top: Optional[str]) -> tuple[str, Map
     return marked[0], modules[marked[0]]
 
 
-def _probe_python_modules(python: Path) -> Dict[str, bool]:
+def _probe_python_modules(
+    python: Path, root: Optional[Path]
+) -> Dict[str, Any]:
     script = (
         "import importlib.util,json;"
-        "print(json.dumps({n:bool(importlib.util.find_spec(n)) "
-        "for n in ('capnp','torch','dreamplacefpga')},sort_keys=True))"
+        "mods={n:bool(importlib.util.find_spec(n)) "
+        "for n in ('capnp','torch','dreamplacefpga')};"
+        "versions={};"
+        "\nif mods['torch']:\n import torch; versions['torch']=torch.__version__"
+        "\nif mods['capnp']:\n import capnp; versions['capnp']=capnp.__version__"
+        "\nprint(json.dumps({'modules':mods,'versions':versions},sort_keys=True))"
     )
+    environment = os.environ.copy()
+    if root is not None:
+        previous = environment.get("PYTHONPATH")
+        environment["PYTHONPATH"] = (
+            str(root) if not previous else f"{root}{os.pathsep}{previous}"
+        )
     try:
         completed = subprocess.run(
             [str(python), "-c", script],
@@ -288,16 +326,93 @@ def _probe_python_modules(python: Path) -> Dict[str, bool]:
             capture_output=True,
             text=True,
             timeout=30,
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return {"capnp": False, "torch": False, "dreamplacefpga": False}
+        return {
+            "modules": {
+                "capnp": False, "torch": False, "dreamplacefpga": False,
+            },
+            "versions": {},
+        }
     if completed.returncode != 0:
-        return {"capnp": False, "torch": False, "dreamplacefpga": False}
+        return {
+            "modules": {
+                "capnp": False, "torch": False, "dreamplacefpga": False,
+            },
+            "versions": {},
+        }
     try:
         value = json.loads(completed.stdout)
     except json.JSONDecodeError:
-        return {"capnp": False, "torch": False, "dreamplacefpga": False}
-    return {name: value.get(name) is True for name in ("capnp", "torch", "dreamplacefpga")}
+        return {
+            "modules": {
+                "capnp": False, "torch": False, "dreamplacefpga": False,
+            },
+            "versions": {},
+        }
+    modules = value.get("modules", {})
+    versions = value.get("versions", {})
+    return {
+        "modules": {
+            name: modules.get(name) is True
+            for name in ("capnp", "torch", "dreamplacefpga")
+        },
+        "versions": (
+            {str(name): str(version) for name, version in versions.items()}
+            if isinstance(versions, dict) else {}
+        ),
+    }
+
+
+def _source_revision(root: Optional[Path]) -> Optional[str]:
+    if root is None:
+        return None
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    revision = completed.stdout.strip().lower()
+    if (
+        completed.returncode != 0
+        or len(revision) != 40
+        or any(character not in "0123456789abcdef" for character in revision)
+    ):
+        return None
+    return revision
+
+
+def _compiled_runtime_import(
+    python: Path, root: Optional[Path]
+) -> bool:
+    if root is None:
+        return False
+    environment = os.environ.copy()
+    previous = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        str(root) if not previous else f"{root}{os.pathsep}{previous}"
+    )
+    try:
+        completed = subprocess.run(
+            [
+                str(python), "-c",
+                "import dreamplacefpga.ops.place_io.place_io",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
 
 
 def probe_dreamplacefpga_runtime(
@@ -305,7 +420,8 @@ def probe_dreamplacefpga_runtime(
 ) -> Dict[str, Any]:
     """Inspect a candidate installation without importing it into EmuFlow."""
 
-    modules = _probe_python_modules(python)
+    python_probe = _probe_python_modules(python, root)
+    modules = python_probe["modules"]
     files = {}
     if root is not None:
         root = root.resolve()
@@ -324,16 +440,33 @@ def probe_dreamplacefpga_runtime(
             "configuration": False,
             "compiled_place_io": False,
         }
+    revision = _source_revision(root)
+    compiled_import = _compiled_runtime_import(python, root)
+    torch_version = python_probe["versions"].get("torch")
+    qualified_torch_version = isinstance(torch_version, str) and any(
+        torch_version == version or torch_version.startswith(f"{version}.")
+        for version in DREAMPLACEFPGA_QUALIFIED_TORCH_VERSIONS
+    )
     missing = sorted(
         [name for name, present in modules.items() if not present]
         + [name for name, present in files.items() if not present]
+        + ([] if revision == DREAMPLACEFPGA_UPSTREAM_REVISION else ["revision"])
+        + ([] if compiled_import else ["compiled_runtime_import"])
+        + ([] if qualified_torch_version else ["torch_version"])
     )
     return {
         "state": "native_supported" if not missing else "core_missing",
         "python": str(python),
         "root": str(root) if root is not None else None,
         "python_modules": modules,
+        "python_versions": python_probe["versions"],
+        "qualified_torch_versions": list(
+            DREAMPLACEFPGA_QUALIFIED_TORCH_VERSIONS
+        ),
+        "qualified_torch_version": qualified_torch_version,
         "files": files,
+        "revision": revision,
+        "compiled_runtime_import": compiled_import,
         "missing": missing,
     }
 
@@ -411,6 +544,23 @@ def assess_dreamplacefpga_candidate(
     blockers.extend(qualification["missing_entries"])
     blockers.extend(qualification["blocked_entries"])
 
+    fixture_blockers = []
+    if runtime["state"] != "native_supported":
+        fixture_blockers.append("runtime:core_missing")
+    for name, value in inputs.items():
+        if value["state"] != "native_supported":
+            fixture_blockers.append(f"input:{name}:adapter_required")
+    for stage in _FIXTURE_REQUIRED_STAGES:
+        if not _entry_ready(_STAGE_CAPABILITIES[stage]):
+            fixture_blockers.append(f"stages.{stage}")
+    for constraint in _FIXTURE_REQUIRED_CONSTRAINTS:
+        if not _entry_ready(_CONSTRAINT_CAPABILITIES[constraint]):
+            fixture_blockers.append(f"constraints.{constraint}")
+    for cell_type in sorted(inventory, key=str):
+        capability = _PRIMITIVE_CAPABILITIES.get(str(cell_type))
+        if capability is None or not _entry_ready(capability):
+            fixture_blockers.append(f"primitives.{cell_type}")
+
     result = {
         **common_report,
         "status": "pass",
@@ -424,6 +574,12 @@ def assess_dreamplacefpga_candidate(
         "qualification": qualification,
         "execution_ready": not blockers,
         "blockers": sorted(set(blockers)),
+        "fixture_execution_ready": not fixture_blockers,
+        "fixture_blockers": sorted(set(fixture_blockers)),
+        "fixture_qualification_boundary": (
+            "resource-covering diagnostic only; detailed placement and full "
+            "Route-A constraints remain required for production"
+        ),
         "qualification_boundary": (
             "standalone diagnostic only; not an EmuFlow placement certificate"
         ),
@@ -439,6 +595,22 @@ def require_dreamplacefpga_execution_ready(report: Mapping[str, Any]) -> None:
         blockers = report.get("blockers")
         detail = ", ".join(blockers) if isinstance(blockers, list) else "unknown"
         raise ValidationError(f"DREAMPlaceFPGA candidate is not execution-ready: {detail}")
+
+
+def require_dreamplacefpga_fixture_ready(report: Mapping[str, Any]) -> None:
+    """Admit only the bounded real-runtime fixture, never production Phase 7."""
+
+    validate_xilinx_placer_capability_report(report)
+    if report.get("fixture_execution_ready") is not True:
+        blockers = report.get("fixture_blockers")
+        detail = ", ".join(blockers) if isinstance(blockers, list) else "unknown"
+        raise ValidationError(
+            "DREAMPlaceFPGA fixture is not execution-ready: " + detail
+        )
+    if report.get("execution_ready") is True:
+        raise ValidationError(
+            "DREAMPlaceFPGA fixture gate must not assert production readiness"
+        )
 
 
 def _validate_phys_container(path: Path) -> None:
@@ -459,6 +631,7 @@ def run_dreamplacefpga_interchange_probe(
     *,
     python: Path = Path(sys.executable),
     extra_args: Sequence[str] = (),
+    timeout_seconds: int = 1800,
 ) -> Dict[str, Any]:
     """Run a bounded official IF probe after the capability gate passes.
 
@@ -467,7 +640,7 @@ def run_dreamplacefpga_interchange_probe(
     requirement, so a successful result is diagnostic rather than qualifying.
     """
 
-    require_dreamplacefpga_execution_ready(report)
+    require_dreamplacefpga_fixture_ready(report)
     root = Path(str(report["runtime"]["root"]))
     device = Path(str(report["inputs"]["device"]["path"]))
     netlist = Path(str(report["inputs"]["logical_netlist"]["path"]))
@@ -510,13 +683,28 @@ def run_dreamplacefpga_interchange_probe(
         str(config_path),
         *extra_args,
     ]
-    completed = subprocess.run(
-        command,
-        cwd=root,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env={
+                **os.environ,
+                "PYTHONPATH": (
+                    str(root)
+                    if not os.environ.get("PYTHONPATH")
+                    else f"{root}{os.pathsep}{os.environ['PYTHONPATH']}"
+                ),
+            },
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ValidationError(
+            "DREAMPlaceFPGA standalone Interchange probe exceeded its "
+            f"{timeout_seconds}-second limit"
+        ) from error
     if completed.returncode != 0:
         raise ValidationError(
             "DREAMPlaceFPGA standalone Interchange probe failed with exit code "
@@ -534,7 +722,11 @@ def run_dreamplacefpga_interchange_probe(
         "provider": "dreamplacefpga-interchange-candidate",
         "upstream_revision": DREAMPLACEFPGA_UPSTREAM_REVISION,
         "physical_netlist": str(phys_outputs[0]),
+        "physical_netlist_sha256": _sha256(phys_outputs[0]),
+        "runtime_validation": "native-upstream-process",
+        "stdout_tail": completed.stdout[-2000:],
         "qualification_boundary": (
-            "container-only standalone diagnostic; semantic placement import pending"
+            "resource-covering native fixture only; production detailed "
+            "placement and constraint qualification remain blocked"
         ),
     }
