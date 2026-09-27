@@ -4814,7 +4814,9 @@ The exporter scans compact physical-site records once and validates LUT/FF,
 CARRY8, mux, and hard-resource compatibility once per distinct site template.
 It does not materialize the complete repeated BEL inventory for every one of
 the hundreds of thousands of sites merely to construct placement geometry;
-inline-BEL architectures retain the same strict per-site validation.
+inline-BEL architectures retain the same strict per-site validation.  The
+normalized site index is bulk-built in memory and written once as sequential
+SQLite pages, avoiding per-row random writes on the shared experiment volume.
 Every typed hard-resource area type must be completely owned by that contract.
 Those instances remain movable under the wirelength objective, but their area
 types are removed from generic electrostatic density and from its convergence

@@ -140,8 +140,14 @@ def _write_site_database(
     sites = coordinate_system.get("sites")
     if not isinstance(sites, list) or not sites:
         raise ValidationError("OpenPARF atomic coordinate system is empty")
-    with sqlite3.connect(path) as database:
+    # Populating several ordered B-trees directly on shared NFS turns roughly
+    # two million small inserts into minutes of random writes.  Construct the
+    # database in memory, create indexes after the bulk inserts, then emit its
+    # pages once through SQLite's backup API.  The final bytes retain the same
+    # read-only schema and remain under the required /research run directory.
+    with sqlite3.connect(":memory:") as database:
         database.executescript("""
+            PRAGMA page_size = 65536;
             PRAGMA journal_mode = OFF;
             PRAGMA synchronous = OFF;
             PRAGMA temp_store = MEMORY;
@@ -171,11 +177,8 @@ def _write_site_database(
                 physical_site TEXT NOT NULL,
                 dense_x INTEGER NOT NULL,
                 dense_y INTEGER NOT NULL,
-                slot INTEGER NOT NULL,
-                PRIMARY KEY (resource, physical_site)
-            ) WITHOUT ROWID;
-            CREATE INDEX physical_sites_coordinate
-                ON physical_sites (dense_x, dense_y, resource, slot);
+                slot INTEGER NOT NULL
+            );
         """)
         database.execute(
             "INSERT INTO metadata(key, value) VALUES (?, ?)",
@@ -220,6 +223,19 @@ def _write_site_database(
                 for slot, site_name in enumerate(site_names)
             ),
         )
+        database.executescript("""
+            CREATE UNIQUE INDEX physical_sites_identity
+                ON physical_sites (resource, physical_site);
+            CREATE INDEX physical_sites_coordinate
+                ON physical_sites (dense_x, dense_y, resource, slot);
+        """)
+        database.commit()
+        with sqlite3.connect(path) as destination:
+            destination.executescript("""
+                PRAGMA journal_mode = OFF;
+                PRAGMA synchronous = OFF;
+            """)
+            database.backup(destination, pages=4096)
     return len(sites)
 
 
