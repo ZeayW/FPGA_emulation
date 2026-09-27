@@ -1256,6 +1256,14 @@ Two independent upstream plumbing defects found during that audit are now
 fixed: Bookshelf `OUTPUT CAS` dispatches to the output-cascade callback, and
 ISM freezes both carry primitives and their associated LUTs whenever carry
 legalization is active rather than depending on IO legalization.  The internal
+real-device adapter also derives the dense placement Y-axis orientation from
+the directed, source-sealed `CARRY_NEXT` graph.  UltraScale+ tile grid rows run
+opposite to CARRY8 site-Y order, so assuming increasing tile row would place a
+logically ordered chain on physically reversed dedicated edges.  Mixed or
+nonvertical native directions fail closed; the qualification fixture models
+the real inverted tile-row convention rather than a same-direction synthetic
+grid.
+The internal
 `probe_xilinx_openparf_carry_native_support` qualification API separates the
 source audit from runtime qualification against a two-CARRY8 macro contract
 and forbids fallback or preplacement.  That compiled gate now passes: native

@@ -24,6 +24,7 @@ from .xilinx_native_device_constraints import (
 from .xilinx_openparf_atomic import (
     XILINX_OPENPARF_SITE_DATABASE_SCHEMA,
     _expanded_pins,
+    _native_carry_y_axis_order,
     _physical_coordinate,
     _render_nets,
     _render_site_geometry,
@@ -278,7 +279,10 @@ def export_xilinx_openparf_carry8(
     names = {atom["instance"]: f"a{index}" for index, atom in enumerate(atoms)}
     library = _render_library(cells, atoms)
     nets, net_count, dropped = _render_nets(cells, atoms, names)
-    site_prefix, site_suffix, coordinate_system = _render_site_geometry(sites)
+    site_prefix, site_suffix, coordinate_system = _render_site_geometry(
+        sites,
+        y_axis_order=_native_carry_y_axis_order(architecture, native),
+    )
     site_text = _render_sites({
         "site_prefix": site_prefix,
         "site_suffix": site_suffix,
@@ -367,6 +371,7 @@ def export_xilinx_openparf_carry8(
         "coordinate_system": {
             "x_axis": coordinate_system["x_axis"],
             "y_axis": coordinate_system["y_axis"],
+            "y_axis_order": coordinate_system["y_axis_order"],
         },
         "site_database": {
             "schema": XILINX_OPENPARF_SITE_DATABASE_SCHEMA,

@@ -91,6 +91,7 @@ _DEVICE_STATIC_CACHE_LOCK = threading.RLock()
 _DEVICE_STATIC_CACHE: "OrderedDict[Tuple[Any, ...], Dict[str, Any]]" = (
     OrderedDict()
 )
+_NATIVE_CARRY_Y_AXIS_ORDER_CACHE: Dict[Tuple[Any, str], str] = {}
 
 
 def _site_claim(site_name: str) -> List[str]:
@@ -450,6 +451,68 @@ def _physical_coordinate(site: Mapping[str, Any]) -> Tuple[int, int]:
         ):
             return col, row
     return int(site["x"]), int(site["y"])
+
+
+def _native_carry_y_axis_order(
+    architecture: ArchitectureDB,
+    native: Optional[Mapping[str, Any]],
+) -> str:
+    """Orient dense Y so increasing coordinates follow native CARRY_NEXT.
+
+    RapidWright tile rows increase from top to bottom on UltraScale+, while
+    CARRY8 site Y and the directed CARRY_NEXT graph increase from bottom to
+    top. OpenPARF's chain legalizer always lays source-to-sink instances at
+    increasing dense Y. Derive the dense-axis orientation from the certified
+    native graph instead of assuming tile-row and cascade directions agree.
+    """
+
+    if native is None:
+        return "ascending"
+    payload_sha256 = native.get("payload_sha256")
+    cache_key = (
+        (architecture, payload_sha256)
+        if isinstance(payload_sha256, str) and payload_sha256
+        else None
+    )
+    if cache_key is not None:
+        with _DEVICE_STATIC_CACHE_LOCK:
+            cached = _NATIVE_CARRY_Y_AXIS_ORDER_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+    directions = set()
+    checked_edges = 0
+    for family in native.get("payload", {}).get("dedicated_adjacency", []):
+        if not isinstance(family, Mapping) or family.get("kind") != "CARRY_NEXT":
+            continue
+        for chain in family.get("chains", []):
+            if not isinstance(chain, list):
+                raise ValidationError("native CARRY_NEXT chain is invalid")
+            for source_name, target_name in zip(chain, chain[1:]):
+                source = architecture.site_named(source_name)
+                target = architecture.site_named(target_name)
+                if source is None or target is None:
+                    raise ValidationError(
+                        "native CARRY_NEXT references an unknown architecture site"
+                    )
+                source_x, source_y = _physical_coordinate(source)
+                target_x, target_y = _physical_coordinate(target)
+                if source_x != target_x or source_y == target_y:
+                    raise ValidationError(
+                        "native CARRY_NEXT is not a directed vertical tile edge"
+                    )
+                directions.add("ascending" if target_y > source_y else "descending")
+                checked_edges += 1
+    if checked_edges == 0:
+        return "ascending"
+    if len(directions) != 1:
+        raise ValidationError(
+            "native CARRY_NEXT edges disagree on physical Y orientation"
+        )
+    result = directions.pop()
+    if cache_key is not None:
+        with _DEVICE_STATIC_CACHE_LOCK:
+            _NATIVE_CARRY_Y_AXIS_ORDER_CACHE[cache_key] = result
+    return result
 
 
 def _pin_bit(cell: Mapping[str, Any], port: str) -> Any:
@@ -1194,6 +1257,8 @@ def _render_nets(
 
 def _render_site_geometry(
     sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
+    *,
+    y_axis_order: str = "ascending",
 ) -> Tuple[str, str, Dict[str, Any]]:
     grouped: Dict[Tuple[int, int], Dict[str, Any]] = {}
     for site, resources in sites:
@@ -1254,7 +1319,12 @@ def _render_site_geometry(
 
     coordinates = list(grouped)
     x_axis = sorted({coordinate[0] for coordinate in coordinates})
-    y_axis = sorted({coordinate[1] for coordinate in coordinates})
+    if y_axis_order not in {"ascending", "descending"}:
+        raise ValidationError("OpenPARF physical Y-axis order is invalid")
+    y_axis = sorted(
+        {coordinate[1] for coordinate in coordinates},
+        reverse=y_axis_order == "descending",
+    )
     x_index = {value: index for index, value in enumerate(x_axis)}
     y_index = {value: index for index, value in enumerate(y_axis)}
     signatures = sorted({
@@ -1404,7 +1474,8 @@ def _render_site_geometry(
             "regions": contract_regions,
         }
     return site_prefix, "\n".join(lines) + "\n", {
-        "x_axis": x_axis, "y_axis": y_axis, "sites": site_map,
+        "x_axis": x_axis, "y_axis": y_axis,
+        "y_axis_order": y_axis_order, "sites": site_map,
         "clock_regions": clock_region_contract,
     }
 
@@ -1438,14 +1509,17 @@ def _device_static_geometry(
     mux_resources: Sequence[str],
     *,
     require_carry8: bool,
+    native: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build immutable device geometry once across parallel FPGA workers."""
 
+    y_axis_order = _native_carry_y_axis_order(architecture, native)
     key = (
         architecture,
         tuple(sorted(hard_resources)),
         tuple(sorted(mux_resources)),
         bool(require_carry8),
+        y_axis_order,
     )
     # The derivation is Python/GIL bound and produces a multi-GiB object for a
     # complete XCVU19P. Holding the lock during the first build prevents a
@@ -1462,7 +1536,9 @@ def _device_static_geometry(
             require_carry8=require_carry8,
         )
         placement_region = _validate_native_placement_region(sites)
-        site_prefix, site_suffix, coordinate_system = _render_site_geometry(sites)
+        site_prefix, site_suffix, coordinate_system = _render_site_geometry(
+            sites, y_axis_order=y_axis_order
+        )
         value: Dict[str, Any] = {
             "sites": sites,
             "placement_region": placement_region,
@@ -1641,7 +1717,7 @@ def export_xilinx_openparf_atomic(
     })
     has_carry8 = any(atom["cell_type"] == "CARRY8" for atom in atoms)
     device_static = _device_static_geometry(
-        architecture, hard, mux, require_carry8=has_carry8
+        architecture, hard, mux, require_carry8=has_carry8, native=native
     )
     sites = device_static["sites"]
     placement_region = device_static["placement_region"]
@@ -2035,6 +2111,7 @@ def export_xilinx_openparf_atomic(
         "coordinate_system": {
             "x_axis": coordinate_system["x_axis"],
             "y_axis": coordinate_system["y_axis"],
+            "y_axis_order": coordinate_system["y_axis_order"],
         },
         "site_database": site_database_descriptor,
     }

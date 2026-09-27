@@ -14,6 +14,8 @@ from emuflow.xilinx_openparf_carry8 import (
     run_xilinx_openparf_carry8_qualification,
     validate_xilinx_openparf_carry8_placement,
 )
+from emuflow.xilinx_openparf_atomic import _native_carry_y_axis_order
+from emuflow.architecture import ArchitectureDB
 from emuflow.xilinx_packing import pack_xilinx_sites
 
 
@@ -111,7 +113,10 @@ def _write_fixture(root):
         for y in range(4):
             sites.append({
                 "name": f"SLICE_X{x}Y{y}", "type": "SLICEL", "template": "SLICEL",
-                "x": x, "y": y, "tile": {"grid_col": x, "grid_row": y},
+                # Match real UltraScale+: tile rows increase top-to-bottom,
+                # opposite the directed bottom-to-top CARRY_NEXT site order.
+                "x": x, "y": y,
+                "tile": {"grid_col": x, "grid_row": 3 - y},
                 "physical_region": {"slr": "SLR0", "clock_region": "X0Y0"},
             })
     architecture.write_text(json.dumps({
@@ -211,6 +216,21 @@ def _write_placement(path, name_map, *, break_chain=False, permute_macro_slots=F
 
 
 class XilinxOpenparfCarry8Test(unittest.TestCase):
+    def test_native_carry_axis_rejects_mixed_physical_directions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _mapped, _packed, architecture, native, _provider = _write_fixture(root)
+            native_value = read_json(native)
+            native_value["payload"]["dedicated_adjacency"][0]["chains"].append(
+                ["SLICE_X3Y1", "SLICE_X3Y0"]
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "disagree on physical Y orientation"
+            ):
+                _native_carry_y_axis_order(
+                    ArchitectureDB.load(architecture), native_value
+                )
+
     def test_export_is_unplaced_and_enables_native_full_slice_chain(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -236,6 +256,10 @@ class XilinxOpenparfCarry8Test(unittest.TestCase):
         self.assertEqual(placement_seed, "")
         self.assertEqual(
             name_map["schema"], "emuflow.openparf-carry8-name-map/v2"
+        )
+        self.assertEqual(name_map["coordinate_system"]["y_axis"], [3, 2, 1, 0])
+        self.assertEqual(
+            name_map["coordinate_system"]["y_axis_order"], "descending"
         )
         self.assertNotIn("sites", name_map["coordinate_system"])
         self.assertEqual(name_map["site_database"]["sites"], 16)
