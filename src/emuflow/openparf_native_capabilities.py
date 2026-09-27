@@ -126,9 +126,9 @@ def audit_pinned_openparf_source(source_root: Path) -> Dict[str, Any]:
         "direct_lg_preserves_non_slice_xy": _source_check(
             root / "openparf/ops/direct_lg/src/direct_lg_kernel.h",
             (
-                "if (db.isInstLUT(i) || db.isInstFF(i))",
-                "pos[i * 3]     = init_pos[i * 2]",
-                "pos[i * 3 + 1] = init_pos[i * 2 + 1]",
+                "if (prob.instTypes[i] != DLInstanceType::DONTCARE)",
+                "pos[i * 3]     = init_pos[i * init_pos_stride]",
+                "pos[i * 3 + 1] = init_pos[i * init_pos_stride + 1]",
             ),
         ),
         "typed_hardblock_legalizer": _source_check(

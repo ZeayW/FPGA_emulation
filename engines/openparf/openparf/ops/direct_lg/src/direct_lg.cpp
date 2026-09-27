@@ -59,6 +59,54 @@ at::Tensor directLegalizeForward(database::PlaceDB const &placedb, py::object py
                                      xy_to_half_column_idx_functor,
                                      dummy,
                                      at::get_num_threads(),
+                                     0,
+                                     nullptr,
+                                     2,
+                                     OPENPARF_TENSOR_DATA_PTR(pos, scalar_t),
+                                     OPENPARF_TENSOR_DATA_PTR(hc_avail_map, uint8_t));
+  });
+  return pos;
+}
+
+/**
+ * @brief Legalize ordinary LUT/FF instances while preserving a set of
+ *        already-legalized site-macro members.
+ */
+at::Tensor maskedDirectLegalizeForward(database::PlaceDB const &placedb,
+                                       py::object               pyparam,
+                                       at::Tensor               masked_inst_ids,
+                                       at::Tensor               init_pos) {
+  using direct_lg::directLegalizeLauncher;
+  using direct_lg::DirectLegalizeParam;
+
+  CHECK_FLAT_CPU(masked_inst_ids);
+  CHECK_CONTIGUOUS(masked_inst_ids);
+  CHECK_FLAT_CPU(init_pos);
+  CHECK_DIVISIBLE(init_pos, 3);
+  CHECK_CONTIGUOUS(init_pos);
+
+  auto                pos                            = at::zeros({placedb.numInsts(), 3}, init_pos.options());
+  DirectLegalizeParam param                          = DirectLegalizeParam::ParseFromPyObject(pyparam);
+  param.honorHalfColumnConstraint                    = false;
+  param.honorClockRegionConstraint                   = false;
+  auto                              hc_avail_map     = at::zeros({1}, torch::dtype(torch::kUInt8));
+  int32_t                           num_masked_insts = masked_inst_ids.numel();
+  std::vector<std::vector<int32_t>> dummy;
+
+  OPENPARF_DISPATCH_FLOATING_TYPES(pos, "directLegalizeLauncher", [&] {
+    ClockAvailCheckerType<scalar_t> legality_check_functor(
+            [](int32_t instance_id, const scalar_t &site_x, const scalar_t &site_y) -> bool { return true; });
+    LayoutXy2GridIndexFunctorType<scalar_t> xy_to_half_column_idx_functor = [](scalar_t x, scalar_t y) { return -1; };
+    directLegalizeLauncher<scalar_t>(placedb,
+                                     param,
+                                     OPENPARF_TENSOR_DATA_PTR(init_pos, scalar_t),
+                                     legality_check_functor,
+                                     xy_to_half_column_idx_functor,
+                                     dummy,
+                                     at::get_num_threads(),
+                                     num_masked_insts,
+                                     OPENPARF_TENSOR_DATA_PTR(masked_inst_ids, int32_t),
+                                     3,
                                      OPENPARF_TENSOR_DATA_PTR(pos, scalar_t),
                                      OPENPARF_TENSOR_DATA_PTR(hc_avail_map, uint8_t));
   });
@@ -112,6 +160,9 @@ std::tuple<at::Tensor, at::Tensor> ClockAwareDirectLegalizeForward(
                                      xy_to_half_column_idx_functor,
                                      inst_to_clock_indexes,
                                      at::get_num_threads(),
+                                     0,
+                                     nullptr,
+                                     2,
                                      OPENPARF_TENSOR_DATA_PTR(pos, scalar_t),
                                      OPENPARF_TENSOR_DATA_PTR(hc_avail_map, uint8_t));
   });
@@ -122,6 +173,8 @@ OPENPARF_END_NAMESPACE
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("forward", &OPENPARF_NAMESPACE::directLegalizeForward, "Direct legalization forward")
+          .def("masked_forward", &OPENPARF_NAMESPACE::maskedDirectLegalizeForward,
+               "Direct legalization with reserved site-macro instances")
           .def("clock_aware_forward",
                &OPENPARF_NAMESPACE::ClockAwareDirectLegalizeForward,
                "Clock-aware direct legalization forward");

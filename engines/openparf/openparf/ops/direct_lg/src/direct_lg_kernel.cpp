@@ -20,7 +20,10 @@ OPENPARF_BEGIN_NAMESPACE
 namespace direct_lg {
 
 /// Initialize the netlist information
-void initDLProblemNetlist(database::PlaceDB const &db, DLProblem &prob) {
+void initDLProblemNetlist(database::PlaceDB const &db,
+                          DLProblem &              prob,
+                          int32_t                  num_masked_insts,
+                          int32_t *                masked_inst_ids) {
   RealType   avgLUTArea = 0;
   RealType   avgFFArea  = 0;
   IndexType &numLUT     = (prob.numLUTInst = 0);
@@ -80,6 +83,7 @@ void initDLProblemNetlist(database::PlaceDB const &db, DLProblem &prob) {
       ++numFF;
     }
   }
+
   avgLUTArea /= numLUT;
   avgFFArea /= numFF;
 
@@ -117,6 +121,16 @@ void initDLProblemNetlist(database::PlaceDB const &db, DLProblem &prob) {
     }
   }
 
+  // Site-macro members have already been legalized as indivisible physical
+  // objects.  Remove them from the ordinary LUT/FF problem while retaining
+  // their locations for site reservation below.
+  for (int32_t i = 0; i < num_masked_insts; ++i) {
+    IndexType inst_id = masked_inst_ids[i];
+    openparfAssertMsg(inst_id < db.numInsts(), "masked instance ID %u is out of range", inst_id);
+    prob.isInstFixed[inst_id] = true;
+    prob.instTypes[inst_id]   = DLInstanceType::DONTCARE;
+  }
+
   // Compute the instance weight
   for (IndexType pid = 0; pid < prob.pinToNet.size(); ++pid) {
     prob.instWts[prob.pinToInst[pid]] += prob.netWts[prob.pinToNet[pid]];
@@ -138,7 +152,10 @@ void initDLProblemNetlist(database::PlaceDB const &db, DLProblem &prob) {
 }
 
 /// Initialize the site map information for the DL problem
-void initDLProblemSiteMap(database::PlaceDB const &db, DLProblem &prob) {
+void initDLProblemSiteMap(database::PlaceDB const &db,
+                          DLProblem &              prob,
+                          int32_t                  num_masked_insts,
+                          int32_t *                masked_inst_ids) {
   auto const &layout   = db.db()->layout();
   IndexType & numSLICE = (prob.numSiteSLICE = 0);
   IndexType & num_LUTs = (prob.num_LUTs = 0);
@@ -195,6 +212,28 @@ void initDLProblemSiteMap(database::PlaceDB const &db, DLProblem &prob) {
       }
     }
   }
+
+  // Reserve every site occupied by a previously legalized macro.  Multiple
+  // members may intentionally share the same physical site, so the operation
+  // is idempotent and site based rather than member based.
+  for (int32_t i = 0; i < num_masked_insts; ++i) {
+    IndexType inst_id = masked_inst_ids[i];
+    int32_t   x       = static_cast<int32_t>(prob.instXYs[inst_id].x());
+    int32_t   y       = static_cast<int32_t>(prob.instXYs[inst_id].y());
+    openparfAssertMsg(
+            x >= 0 && x < static_cast<int32_t>(db.siteMapDim().x()) && y >= 0 &&
+                    y < static_cast<int32_t>(db.siteMapDim().y()),
+            "masked instance %u has out-of-range site (%d, %d)",
+            inst_id,
+            x,
+            y);
+    openparfAssertMsg(prob.siteTypes(x, y) != DLSiteType::DONTCARE,
+                      "masked instance %u does not occupy a legal LUT/FF site (%d, %d)",
+                      inst_id,
+                      x,
+                      y);
+    prob.siteTypes(x, y) = DLSiteType::DONTCARE;
+  }
   openparfPrint(kDebug, "#CLB-SLICE: %d, #LUTs per Site: %d, #FFs per Site: %d\n", numSLICE, num_LUTs, num_FFs);
 }
 
@@ -205,11 +244,14 @@ void initDLProblemSlrInfo(database::PlaceDB const &db, DLProblem &prob) {
 }
 
 /// Initialize the DL problem
-void initDLProblem(database::PlaceDB const &db, DLProblem &prob) {
+void initDLProblem(database::PlaceDB const &db,
+                   DLProblem &              prob,
+                   int32_t                  num_masked_insts,
+                   int32_t *                masked_inst_ids) {
   // Initialize netlist information
-  initDLProblemNetlist(db, prob);
+  initDLProblemNetlist(db, prob, num_masked_insts, masked_inst_ids);
   // Initialize the site map information
-  initDLProblemSiteMap(db, prob);
+  initDLProblemSiteMap(db, prob, num_masked_insts, masked_inst_ids);
   // Initialize the SLR information
   initDLProblemSlrInfo(db, prob);
 }
@@ -232,6 +274,9 @@ void writeHalfColumnAvailabilityMapSolution(database::PlaceDB const &db, DLSolve
           LayoutXy2GridIndexFunctorType<T>         xy_to_half_column_functor,                                          \
           const std::vector<std::vector<int32_t>> &inst_to_clock_indexes,                                              \
           int32_t                                  num_threads,                                                        \
+          int32_t                                  num_masked_insts,                                                   \
+          int32_t *                                masked_inst_ids,                                                    \
+          int32_t                                  init_pos_stride,                                                    \
           T *                                      pos,                                                                \
           uint8_t *                                hc_avail_map);
 

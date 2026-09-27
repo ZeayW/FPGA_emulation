@@ -1149,10 +1149,13 @@ The same in-core contract now admits connectivity-derived MUXF7/F8/F9 cones.
 Each cone records exact LUT and MUX BEL roles, offers only complete same-slice
 windows, lets OpenPARF choose the window from global-placement displacement,
 and masks the selected slice before ordinary LUT/FF legalization. No
-post-placement greedy repair is used.  The masked direct legalizer accepts an
-arbitrary number of reserved instances; it no longer assumes that every mask
-is an even-sized set of LUT pairs, because a valid F7 cone has three members.
-The Python/C++ operator boundary also canonicalizes those IDs to the C++
+post-placement greedy repair is used.  Reserved macros now use a thin mask
+entry point on OpenPARF's native `direct_lg` implementation rather than a
+second copied C++ legalizer.  The common solver removes the locked members
+from the ordinary LUT/FF problem, reserves each occupied slice once, and
+preserves their XYZ result while running the upstream slot assignment for all
+remaining logic.  The mask accepts arbitrary cardinality (a valid F7 cone has
+three members), and the Python/C++ boundary canonicalizes its IDs to the C++
 `int32_t` contract instead of reinterpreting PyTorch's default `int64` tensor.
 ISM detailed placement preserves locked macro BELs through its final
 intra-slice pin-access pass; only unlocked slices are locally reordered.
@@ -1225,7 +1228,7 @@ declared as a dedicated area type. The UltraScale resource-area estimator
 accepts the complete LUT1--LUT6 range emitted by the real mapper; its six-bin
 C++ kernel already modeled LUT1, so the former Python-side LUT1 rejection was
 removed and widths above six still fail closed.
-The adapter invokes GP, native chain legalization, masked LUT/FF legalization,
+The adapter invokes GP, native chain legalization, native mask-aware LUT/FF legalization,
 and ISM, then independently validates exact BEL roles and RapidWright-certified
 CARRY_NEXT adjacency.  Parsed `.shape` records still have no consumer and are
 not used as evidence.

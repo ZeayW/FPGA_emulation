@@ -48,7 +48,6 @@ from ..ops.chain_legalizer import chain_legalizer
 from ..ops.chain_alignment import chain_alignment
 from ..ops.delay_estimation import delay_estimation
 from ..ops.static_timing_analysis import static_timing_analysis
-from ..ops.masked_direct_lg import masked_direct_lg
 from ..ops.ssr_abacus_lg import ssr_abacus_lg
 from ..ops.sll import sll
 from ..ops.soft_floor import soft_floor
@@ -668,8 +667,8 @@ class OpCollections(object):
                 self.typed_hardblock_legalization_op.site_macro_ids.cpu()
             )
         if masked_slice_ids:
-            self.masked_direct_lg_op = masked_direct_lg.DirectLegalize(
-                placedb, data_cls, params,
+            self.masked_direct_lg_op = direct_lg.MaskedDirectLegalize(
+                placedb, params,
                 torch.unique(torch.cat(masked_slice_ids)),
             )
         else:
