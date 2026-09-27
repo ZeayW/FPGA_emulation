@@ -1346,7 +1346,15 @@ def _render_site_geometry(
     site_prefix = "\n".join([*lines, "RESOURCES"]) + "\n"
     lines = ["END RESOURCES", "", f"SITEMAP {len(x_axis)} {len(y_axis)}"]
     site_map = []
-    for coordinate, group in sorted(grouped.items()):
+    # Bookshelf requires site records in increasing dense coordinate order;
+    # physical tile-row order may be reversed to align dense Y with a directed
+    # native cascade graph.
+    for coordinate, group in sorted(
+        grouped.items(),
+        key=lambda item: (
+            x_index[item[0][0]], y_index[item[0][1]], item[0]
+        ),
+    ):
         resources = group["resources"]
         dense = (x_index[coordinate[0]], y_index[coordinate[1]])
         signature = tuple(sorted(

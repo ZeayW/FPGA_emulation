@@ -242,6 +242,7 @@ class XilinxOpenparfCarry8Test(unittest.TestCase):
             config = read_json(output / "openparf.json")
             name_map = read_json(output / "name_map.json")
             library = (output / "design.lib").read_text(encoding="utf-8")
+            scl = (output / "design.scl").read_text(encoding="utf-8")
             placement_seed = (output / "design.pl").read_text(encoding="utf-8")
             site_database_exists = (output / "site-map.sqlite3").is_file()
         self.assertEqual(report["macro_units"], 2)
@@ -260,6 +261,13 @@ class XilinxOpenparfCarry8Test(unittest.TestCase):
         self.assertEqual(name_map["coordinate_system"]["y_axis"], [3, 2, 1, 0])
         self.assertEqual(
             name_map["coordinate_system"]["y_axis_order"], "descending"
+        )
+        site_lines = scl.split("SITEMAP 4 4\n", 1)[1].split(
+            "END SITEMAP", 1
+        )[0].strip().splitlines()
+        self.assertEqual(
+            [(int(line.split()[0]), int(line.split()[1])) for line in site_lines],
+            [(x, y) for x in range(4) for y in range(4)],
         )
         self.assertNotIn("sites", name_map["coordinate_system"])
         self.assertEqual(name_map["site_database"]["sites"], 16)
