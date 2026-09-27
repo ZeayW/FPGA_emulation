@@ -19,7 +19,7 @@ import torch
 CONSTRAINT_SCHEMA = "openparf.physical-macro-groups/v2"
 SITE_DATABASE_SCHEMA = "emuflow.openparf-atomic-site-database/v1"
 SUPPORTED_RESOURCES = {"DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"}
-SUPPORTED_SITE_RESOURCES = {"LUT", "MUXF7", "MUXF8", "MUXF9"}
+SUPPORTED_SITE_RESOURCES = {"LUT", "CARRY8", "MUXF7", "MUXF8", "MUXF9"}
 
 
 def _string(value, context):
@@ -230,7 +230,9 @@ class TypedHardblockLegalizer(object):
                 )
             ):
                 raise ValueError(
-                    "{}.owned_resources must name the MUX area types".format(context)
+                    "{}.owned_resources must name dedicated slice area types".format(
+                        context
+                    )
                 )
             self.groups.append({
                 "id": _string(raw.get("id"), context + ".id"),

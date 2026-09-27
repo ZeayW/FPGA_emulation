@@ -1210,6 +1210,9 @@ their bounded real-width fixtures.
 The isolated A2 branch extends the pinned native extractor and legalizer while
 retaining the XArch CLA4 path: typed CARRY8 units select eight ordered LUT6_2
 members from S[0:7], verify the paired DI drivers, and occupy one full slice.
+The compact same-site legalizer treats CARRY8 as a dedicated slice area type,
+alongside MUXF7/F8/F9, so a real carry macro is accepted by the same native
+window contract exercised by the bounded fixtures.
 The adapter invokes GP, native chain legalization, masked LUT/FF legalization,
 and ISM, then independently validates exact BEL roles and RapidWright-certified
 CARRY_NEXT adjacency.  Parsed `.shape` records still have no consumer and are

@@ -247,6 +247,35 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
         ])
         self.assertTrue(torch.all(data.inst_lock_mask))
 
+    def test_compact_carry8_site_template_is_a_native_slice_resource(self):
+        value = {
+            "schema": "openparf.physical-macro-groups/v2", "status": "pass",
+            "groups": [{
+                "id": "carry", "kind": "site_macro",
+                "resource": "SLICE_MACRO", "owned_resources": ["CARRY8"],
+                "instances": ["carry", "lut"], "window_count": 2,
+                "window_template": {
+                    "kind": "same-site-slice/v1", "site_resource": "LUT",
+                    "members": [
+                        {"resource": "CARRY8", "z": 0, "bel": "CARRY8"},
+                        {"resource": "LUT", "z": 1, "bel": "A6LUT"},
+                    ],
+                },
+            }],
+        }
+        operator, data = self._operator(
+            value,
+            ["carry", "lut"],
+            site_rows=[
+                (0, 0, "SLICE_X0Y0", 0.0, 0.0),
+                (1, 0, "SLICE_X1Y0", 9.0, 4.0),
+            ],
+        )
+        pos = torch.tensor([[8.5, 4.0, 0.0], [9.2, 4.0, 0.0]])
+        operator.legalize_site_macros(pos)
+        self.assertEqual(pos.tolist(), [[9.0, 4.0, 0.0], [9.0, 4.0, 1.0]])
+        self.assertTrue(torch.all(data.inst_lock_mask))
+
 
 if __name__ == "__main__":
     unittest.main()
