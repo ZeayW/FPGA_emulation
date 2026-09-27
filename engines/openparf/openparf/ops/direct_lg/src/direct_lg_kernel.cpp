@@ -220,6 +220,13 @@ void initDLProblemSiteMap(database::PlaceDB const &db,
   std::set<std::pair<int32_t, int32_t>> reserved_sites;
   for (int32_t i = 0; i < num_masked_insts; ++i) {
     IndexType inst_id = masked_inst_ids[i];
+    // The mask also contains dedicated MUX/carry/hardblock members so they
+    // remain outside the ordinary LUT/FF solver.  Only LUT/FF members consume
+    // a slice site; the remaining members are reserved by their typed
+    // legalizers and may legitimately sit on a non-slice coordinate.
+    if (!db.isInstLUT(inst_id) && !db.isInstFF(inst_id)) {
+      continue;
+    }
     int32_t   x       = static_cast<int32_t>(prob.instXYs[inst_id].x());
     int32_t   y       = static_cast<int32_t>(prob.instXYs[inst_id].y());
     openparfAssertMsg(
