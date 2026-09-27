@@ -479,6 +479,16 @@ def _native_carry_y_axis_order(
             cached = _NATIVE_CARRY_Y_AXIS_ORDER_CACHE.get(cache_key)
         if cached is not None:
             return cached
+    raw_sites = architecture.value.get("sites")
+    if not isinstance(raw_sites, list):
+        raise ValidationError("ArchitectureDB sites are invalid")
+    sites_by_name = {
+        site.get("name"): site
+        for site in raw_sites
+        if isinstance(site, Mapping) and isinstance(site.get("name"), str)
+    }
+    if len(sites_by_name) != len(raw_sites):
+        raise ValidationError("ArchitectureDB site names are incomplete or duplicated")
     directions = set()
     checked_edges = 0
     for family in native.get("payload", {}).get("dedicated_adjacency", []):
@@ -488,8 +498,8 @@ def _native_carry_y_axis_order(
             if not isinstance(chain, list):
                 raise ValidationError("native CARRY_NEXT chain is invalid")
             for source_name, target_name in zip(chain, chain[1:]):
-                source = architecture.site_named(source_name)
-                target = architecture.site_named(target_name)
+                source = sites_by_name.get(source_name)
+                target = sites_by_name.get(target_name)
                 if source is None or target is None:
                     raise ValidationError(
                         "native CARRY_NEXT references an unknown architecture site"

@@ -224,11 +224,14 @@ class XilinxOpenparfCarry8Test(unittest.TestCase):
             native_value["payload"]["dedicated_adjacency"][0]["chains"].append(
                 ["SLICE_X3Y1", "SLICE_X3Y0"]
             )
+            architecture_db = ArchitectureDB.load(architecture)
             with self.assertRaisesRegex(
                 ValidationError, "disagree on physical Y orientation"
+            ), mock.patch.object(
+                architecture_db, "site_named", side_effect=AssertionError
             ):
                 _native_carry_y_axis_order(
-                    ArchitectureDB.load(architecture), native_value
+                    architecture_db, native_value
                 )
 
     def test_export_is_unplaced_and_enables_native_full_slice_chain(self):
