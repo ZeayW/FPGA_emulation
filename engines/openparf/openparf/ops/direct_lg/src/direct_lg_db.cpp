@@ -39,6 +39,7 @@ DirectLegalizeParam DirectLegalizeParam::ParseFromPyObject(const py::object &pyp
   param.verbose                = pyparam.attr("verbose").cast<decltype(param.verbose)>();
   param.CLB_capacity           = pyparam.attr("CLB_capacity").cast<decltype(param.CLB_capacity)>();
   param.BLE_capacity           = pyparam.attr("BLE_capacity").cast<decltype(param.BLE_capacity)>();
+  param.allowPairedLUTs        = pyparam.attr("allowPairedLUTs").cast<decltype(param.allowPairedLUTs)>();
   param.half_CLB_capacity      = param.CLB_capacity / 2;
   param.num_BLEs_per_CLB       = param.CLB_capacity / param.BLE_capacity;
   param.num_BLEs_per_half_CLB  = param.half_CLB_capacity / param.BLE_capacity;

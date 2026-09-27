@@ -843,6 +843,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_model2area_types_map"]["FDRE"]["FF"], [0.25, 0.25])
         self.assertEqual(config["CLB_capacity"], 16)
         self.assertEqual(config["BLE_capacity"], 2)
+        self.assertEqual(config["allow_paired_luts"], 0)
         self.assertEqual(
             config["gp_max_fillers_per_area_type"],
             {"FF": 65536, "LUT": 65536},

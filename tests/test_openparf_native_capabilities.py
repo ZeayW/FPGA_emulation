@@ -208,6 +208,10 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
             "native_supported",
         )
         self.assertEqual(
+            matrix["source_audit"]["checks"]["independent_6lut_legalization"]["status"],
+            "native_supported",
+        )
+        self.assertEqual(
             matrix["source_audit"]["checks"]["sparse_site_center_search"]["status"],
             "native_supported",
         )

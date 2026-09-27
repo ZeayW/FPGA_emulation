@@ -63,6 +63,11 @@ class DirectLegalizeParam(object):
 
         self.CLB_capacity = None
         self.BLE_capacity = None
+        # A physical adapter may expose the 16 UltraScale LUT slot indices
+        # while qualifying only the eight independent 6LUT BELs.  Keep the
+        # upstream paired-LUT policy by default; device exporters must opt out
+        # explicitly when a shared 5LUT implementation is not source-sealed.
+        self.allowPairedLUTs = bool(params.allow_paired_luts)
         self.omp_dynamic_chunk_size = 64
 
         # Clock Region Attribute

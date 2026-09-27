@@ -1759,6 +1759,10 @@ def export_xilinx_openparf_atomic(
         "gp_resource2area_types_map": resource_map,
         "resource_categories": resource_categories,
         "CLB_capacity": 16, "BLE_capacity": 2,
+        # The source-sealed UltraScale+ template qualifies eight independent
+        # 6LUT BELs.  It does not qualify arbitrary cells for the paired 5LUT
+        # position, so native direct legalization must never consume it.
+        "allow_paired_luts": 0,
         "num_ControlSets_per_CLB": 2,
         "gp_adjust_area": 0, "gp_adjust_area_types": [],
         "gp_adjust_route_area": 0, "gp_adjust_pin_area": 0,

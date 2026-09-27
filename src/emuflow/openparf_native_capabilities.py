@@ -106,6 +106,14 @@ def audit_pinned_openparf_source(source_root: Path) -> Dict[str, Any]:
                 "if (idxA == a.numPins() || idxB == b.numPins())",
             ),
         ),
+        "independent_6lut_legalization": _source_check(
+            root / "openparf/ops/direct_lg/src/dl_solver.cpp",
+            (
+                "if (!_param.allowPairedLUTs)",
+                "const IndexType firstSlot = (_param.allowPairedLUTs ? 0 : 1)",
+                "mem.bleP.clear();",
+            ),
+        ),
         "sparse_site_center_search": _source_check(
             root / "openparf/ops/direct_lg/src/dl_solver.cpp",
             (

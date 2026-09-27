@@ -218,6 +218,10 @@
     "description": "number of LUT/FF pairs in a basic logic block (BLE)",
     "default": 2
   },
+  "allow_paired_luts": {
+    "description": "whether direct legalization may occupy both 5LUT/6LUT positions in one BLE",
+    "default": 1
+  },
   "num_ControlSets_per_CLB": {
     "description": "number of Clock/ControlSetSR/ControlSetCE tuples in a CLB",
     "default": 2

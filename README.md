@@ -1114,6 +1114,12 @@ visits a sparse, variable-height site exactly once at its geometric center.
 This keeps global placement, macro legalization, ordinary LUT/FF legalization,
 ISM, and the independent legality checker on one coordinate contract instead
 of silently mixing dense-cell and bounding-box centers.
+The atomic XCVU19P exporter also disables OpenPARF's generic paired-LUT mode.
+Native direct legalization therefore admits at most one LUT per BLE and writes
+it to the qualified odd 6LUT slot; max-matching cannot silently introduce an
+unqualified 5LUT occupant.  This enforces the source-sealed eight-independent-
+6LUT policy in the optimizer itself, before the independent placement
+certificate maps slot indices to RapidWright BELs.
 For a same-site macro, minimizing displacement of the member centroid is
 algebraically identical to the former exhaustive sum-of-squared-displacement
 scan; strict lower-bound pruning and the original site-name tie break preserve

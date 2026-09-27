@@ -87,6 +87,7 @@ struct DirectLegalizeParam {
 
   uint32_t                   CLB_capacity;             // Number of LUT/FF slots in each slice
   uint32_t                   BLE_capacity;             // Number of LUT/FF slots in each BLE
+  bool                       allowPairedLUTs;          // Whether both LUT positions in a BLE may be used
   uint32_t                   half_CLB_capacity;        // Half number of LUT/FF slots in each slice
   uint32_t                   num_BLEs_per_CLB;         // Number of BLEs per slice
   uint32_t                   num_BLEs_per_half_CLB;    // Number of BLEs per half slice
