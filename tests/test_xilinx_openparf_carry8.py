@@ -229,6 +229,7 @@ class XilinxOpenparfCarry8Test(unittest.TestCase):
         self.assertEqual(config["carry_chain_module_name"], "CARRY8")
         self.assertEqual(config["carry_chain_at_name"], "CARRY8")
         self.assertEqual(config["carry_chain_legalization_flag"], 1)
+        self.assertEqual(config["allow_paired_luts"], 0)
         self.assertEqual(config["resource_categories"]["CARRY8"], "Carry")
         self.assertIn("PIN CI INPUT CAS", library)
         self.assertIn("PIN CO[7] OUTPUT CAS", library)

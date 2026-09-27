@@ -26,6 +26,7 @@ from .xilinx_openparf_atomic import (
     _expanded_pins,
     _physical_coordinate,
     _render_nets,
+    _render_site_geometry,
     _render_sites,
     _resource_sort_key,
     _select_module,
@@ -277,7 +278,11 @@ def export_xilinx_openparf_carry8(
     names = {atom["instance"]: f"a{index}" for index, atom in enumerate(atoms)}
     library = _render_library(cells, atoms)
     nets, net_count, dropped = _render_nets(cells, atoms, names)
-    site_text, coordinate_system = _render_sites(sites, atoms)
+    site_prefix, site_suffix, coordinate_system = _render_site_geometry(sites)
+    site_text = _render_sites({
+        "site_prefix": site_prefix,
+        "site_suffix": site_suffix,
+    }, atoms)
     output_dir.mkdir(parents=True, exist_ok=True)
     site_database_path = output_dir / "site-map.sqlite3"
     site_count = _write_site_database(site_database_path, coordinate_system)
@@ -339,6 +344,7 @@ def export_xilinx_openparf_carry8(
         "align_carry_chain_flag": 1,
         "CLB_capacity": 16,
         "BLE_capacity": 2,
+        "allow_paired_luts": 0,
         "num_ControlSets_per_CLB": 2,
         "gp_adjust_area": 0,
         "gp_adjust_area_types": [],

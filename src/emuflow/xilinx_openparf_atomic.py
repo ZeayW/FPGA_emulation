@@ -2545,7 +2545,9 @@ def validate_xilinx_openparf_atomic_placement(
             for edge in zip(sites, sites[1:]):
                 if edge not in native_carry_edges:
                     raise ValidationError(
-                        "OpenPARF CARRY8 chain violates native adjacency"
+                        "OpenPARF CARRY8 chain "
+                        f"{chain.get('id')!r} violates native adjacency at "
+                        f"{edge!r}; placed sites are {sites!r}"
                     )
                 checked_carry_edges += 1
 
