@@ -535,6 +535,8 @@ def run_multi_fpga_physical_flow(
     rapidwright_timing_data: Optional[Path] = None,
     rapidwright_opensta: Optional[str] = None,
     rapidwright_placer: str = "legacy",
+    rapidwright_native_constraints: Optional[Path] = None,
+    rapidwright_provider_manifest: Optional[Path] = None,
     original_ir_path: Optional[Path] = None,
     assignment_path: Optional[Path] = None,
     routes_path: Optional[Path] = None,
@@ -552,6 +554,21 @@ def run_multi_fpga_physical_flow(
     if backend != "rapidwright" and rapidwright_placer != "legacy":
         raise ValidationError(
             "--rapidwright-placer applies only to the RapidWright backend"
+        )
+    if (rapidwright_native_constraints is None) != (
+        rapidwright_provider_manifest is None
+    ):
+        raise ValidationError(
+            "RapidWright native placement requires both the native constraints "
+            "and provider manifest"
+        )
+    if rapidwright_placer == "openparf-native" and (
+        rapidwright_native_constraints is None
+        or rapidwright_provider_manifest is None
+    ):
+        raise ValidationError(
+            "openparf-native requires source-sealed RapidWright native "
+            "constraints and provider manifest"
         )
     if logic_path_database_path is not None and path_database_path is None:
         raise ValidationError(
@@ -1238,6 +1255,8 @@ def run_multi_fpga_physical_flow(
                 timing_data_dir=rapidwright_timing_data,
                 openparf_install=openparf_install,
                 openparf_python=openparf_python,
+                openparf_native_constraints=rapidwright_native_constraints,
+                openparf_provider_manifest=rapidwright_provider_manifest,
                 opensta=rapidwright_opensta,
                 logic_identity_path=logic_identity_path,
                 local_identity_path=local_identity_path,

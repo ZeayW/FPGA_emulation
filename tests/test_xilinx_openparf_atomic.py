@@ -933,14 +933,16 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 }],
             })
             packed.write_text(json.dumps(value), encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "cluster kind 'carry'"):
+            with self.assertRaisesRegex(
+                ValidationError, "must expose eight DI and S bits"
+            ):
                 export_xilinx_openparf_atomic(
                     mapped, packed, architecture, root / "carry"
                 )
 
     def test_dual_lut_and_unsupported_hard_cluster_kinds_fail_closed(self):
         cases = (
-            ("LUT6_2", "slice", "primitive 'LUT6_2'"),
+            ("LUT6_2", "slice", "physical macro topology is incomplete"),
             ("DSP48E2", "dsp", "cluster kind 'dsp'"),
             ("RAMB36E2", "bram", "cluster kind 'bram'"),
         )

@@ -1219,6 +1219,16 @@ explicitly as `--physical-rapidwright-placer openparf-native` (or
 `multi-fpga physical --rapidwright-placer openparf-native`).  The selector is
 valid only with the RapidWright physical backend; an unsupported primitive or
 constraint aborts instead of falling back to the historical placer.
+The native route also requires the source-sealed device facts explicitly:
+`--physical-rapidwright-native-constraints` and
+`--physical-rapidwright-provider-manifest` for `multi-fpga compile`, or the
+corresponding `--rapidwright-native-constraints` and
+`--rapidwright-provider-manifest` physical-stage options. CARRY8 plus its
+eight LUT6_2 adapters is one exclusive slice macro, CARRY_NEXT chains use the
+native carry legalizer, and each RAMB18E2 remains an independent lower/upper
+half-site occupant until native legalization. The no-search bridge groups the
+resulting legal half-site assignments by their physical RAMB36 tile; it does
+not reuse the legacy name-ordered RAMB18 packer.
 Native OpenPARF qualification also requires the supplied ArchitectureDB logic
 crop to form one connected, genuinely two-dimensional site region with finite
 density and filler headroom for every active resource.  Collinear, disconnected,
@@ -4569,6 +4579,9 @@ emuflow multi-fpga compile design.v \
   --physical-architecture /external/xcvu19p.architecture.json \
   --physical-openparf-install /external/openparf-install \
   --physical-openparf-python /external/openparf-python \
+  --physical-rapidwright-placer openparf-native \
+  --physical-rapidwright-native-constraints /external/xcvu19p.native-device-constraints.json \
+  --physical-rapidwright-provider-manifest resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json \
   --physical-rapidwright-jar /external/rapidwright-standalone.jar \
   --physical-rapidwright-java /external/jdk17/bin/java \
   --physical-rapidwright-device-data /external/RapidWright \

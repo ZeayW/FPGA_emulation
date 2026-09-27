@@ -30,6 +30,7 @@ from .xilinx_native_device_constraints import (
 )
 from .xilinx_packing import (
     CONSTANT_TYPES,
+    DUAL_OUTPUT_LUT_TYPE,
     FF_TYPES,
     LUT_TYPES,
     PACKED_SITE_NETLIST_SCHEMA,
@@ -66,7 +67,11 @@ _MUX_BELS = {
     "MUXF8": ("F8MUX_BOT", "F8MUX_TOP"),
     "MUXF9": ("F9MUX",),
 }
-_SUPPORTED = LUT_TYPES | FF_TYPES | set(_HARD_RESOURCES) | set(_MUX_RESOURCES)
+_SLICE_LUT_TYPES = LUT_TYPES | {DUAL_OUTPUT_LUT_TYPE}
+_SUPPORTED = (
+    _SLICE_LUT_TYPES | FF_TYPES | {"CARRY8"}
+    | set(_HARD_RESOURCES) | set(_MUX_RESOURCES)
+)
 _ALLOWED_CLUSTER_KEYS = {
     "id", "kind", "site_templates", "site_mode", "control_set", "assignments",
 }
@@ -88,10 +93,14 @@ def _site_claim(site_name: str) -> List[str]:
 def _slice_role_slot(cell_type: str, bel: str) -> int:
     """Map one source-sealed UltraScale+ slice BEL role to OpenPARF z."""
 
-    if cell_type in LUT_TYPES:
+    if cell_type in _SLICE_LUT_TYPES:
         if bel not in {f"{letter}6LUT" for letter in "ABCDEFGH"}:
             raise ValidationError(f"unsupported LUT macro BEL role {bel!r}")
         return 2 * "ABCDEFGH".index(bel[0]) + 1
+    if cell_type == "CARRY8":
+        if bel != "CARRY8":
+            raise ValidationError(f"unsupported CARRY8 macro BEL role {bel!r}")
+        return 0
     roles = _MUX_BELS.get(cell_type)
     if roles is None or bel not in roles:
         raise ValidationError(
@@ -457,6 +466,7 @@ def _placement_sites(
     architecture: ArchitectureDB,
     hard_resources: Sequence[str],
     mux_resources: Sequence[str] = (),
+    *, require_carry8: bool = False,
 ) -> List[Tuple[Dict[str, Any], Dict[str, int]]]:
     slice_sites = [
         site for site in architecture.sites
@@ -513,6 +523,22 @@ def _placement_sites(
                 f"slice site {site['name']!r} does not expose the required "
                 "8 6LUT and 16 FF BELs"
             )
+        if require_carry8:
+            carry_bels = [
+                bel for bel in site["bels"]
+                if bel.get("name") == "CARRY8"
+                and "CARRY8" in bel.get("compatible_cells", [])
+            ]
+            dual_lut_bels = {
+                bel["name"] for bel in site["bels"]
+                if DUAL_OUTPUT_LUT_TYPE in bel.get("compatible_cells", [])
+                and bel["name"] in {f"{letter}6LUT" for letter in "ABCDEFGH"}
+            }
+            if len(carry_bels) != 1 or len(dual_lut_bels) != 8:
+                raise ValidationError(
+                    f"slice site {site['name']!r} lacks the complete "
+                    "CARRY8/LUT6_2 physical model"
+                )
         for primitive in mux_resources:
             expected_bels = set(_MUX_BELS[primitive])
             compatible_bels = {
@@ -533,6 +559,7 @@ def _placement_sites(
                 primitive: len(_MUX_BELS[primitive])
                 for primitive in mux_resources
             },
+            **({"CARRY8": 1} if require_carry8 else {}),
         },
     ) for site in slice_sites]
     hard_capacity = Counter()
@@ -682,7 +709,7 @@ def _collect_atoms(
         for chain in cascades:
             if (
                 not isinstance(chain, Mapping)
-                or chain.get("cell_type") not in _HARD_RESOURCES
+                or chain.get("cell_type") not in set(_HARD_RESOURCES) | {"CARRY8"}
                 or not isinstance(chain.get("instances"), list)
                 or len(chain["instances"]) < 2
             ):
@@ -696,23 +723,30 @@ def _collect_atoms(
                 )
     atoms: List[Dict[str, str]] = []
     seen = set()
-    mux_macros = []
+    site_macros = []
     if physical_macro_contract is not None:
-        mux_macros = [
+        site_macros = [
             macro for macro in physical_macro_contract.get("site_macros", [])
             if isinstance(macro, Mapping)
-            and macro.get("kind") in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
+            and macro.get("kind") in {
+                "muxf7-cone", "muxf8-cone", "muxf9-cone", "carry8-lut6_2",
+                *(
+                    {"ramb18-half-site-occupancy"}
+                    if packed.get("schema") == OPENPARF_ATOMIC_SOURCE_SCHEMA
+                    else set()
+                ),
+            }
         ]
-    mux_macro_by_members = {
+    site_macro_by_members = {
         frozenset(
             member["instance"] for member in macro.get("members", [])
             if isinstance(member, Mapping)
         ): macro
-        for macro in mux_macros
+        for macro in site_macros
     }
-    if len(mux_macro_by_members) != len(mux_macros):
-        raise ValidationError("physical MUX macro ownership is ambiguous")
-    covered_mux_macros = set()
+    if len(site_macro_by_members) != len(site_macros):
+        raise ValidationError("physical slice macro ownership is ambiguous")
+    covered_site_macros = set()
     clusters = packed.get("clusters")
     if not isinstance(clusters, list) or not clusters:
         raise ValidationError("PackedSiteNetlist clusters are invalid")
@@ -726,28 +760,36 @@ def _collect_atoms(
                 f"constraints {sorted(extra)!r}"
             )
         kind = cluster.get("kind")
-        if kind not in {"slice", "hard"}:
+        if kind not in {"slice", "carry", "hard"}:
             raise ValidationError(
                 f"atomic mixed-resource adapter rejects cluster kind {kind!r}"
             )
         assignments = cluster.get("assignments")
         if not isinstance(assignments, list) or not assignments:
             raise ValidationError(f"cluster {cluster.get('id')!r} has no assignments")
-        mux_assignments = [
+        constrained_assignments = [
             assignment for assignment in assignments
             if isinstance(assignment, Mapping)
-            and assignment.get("cell_type") in _MUX_RESOURCES
+            and assignment.get("cell_type") in set(_MUX_RESOURCES) | {
+                "CARRY8", DUAL_OUTPUT_LUT_TYPE,
+            }
         ]
-        if mux_assignments:
-            if kind != "slice":
-                raise ValidationError("MUX physical macro must be a slice cluster")
-            macro = mux_macro_by_members.get(frozenset(
+        if constrained_assignments:
+            expected_kind = "carry" if any(
+                assignment.get("cell_type") == "CARRY8"
+                for assignment in constrained_assignments
+            ) else "slice"
+            if kind != expected_kind:
+                raise ValidationError(
+                    "physical slice macro has an invalid cluster kind"
+                )
+            macro = site_macro_by_members.get(frozenset(
                 assignment.get("instance") for assignment in assignments
                 if isinstance(assignment, Mapping)
             ))
             if macro is None:
                 raise ValidationError(
-                    "MUX slice cluster does not match one complete connectivity-derived macro"
+                    "slice cluster does not match one complete connectivity-derived macro"
                 )
             expected_roles = {
                 member["instance"]: member["physical_role"]
@@ -759,22 +801,41 @@ def _collect_atoms(
             }
             if actual_roles != expected_roles:
                 raise ValidationError(
-                    "MUX slice cluster differs from the connectivity-derived BEL roles"
+                    "slice cluster differs from the connectivity-derived BEL roles"
                 )
-            covered_mux_macros.add(macro["id"])
+            covered_site_macros.add(macro["id"])
         hard_types = {
             assignment.get("cell_type")
             for assignment in assignments if isinstance(assignment, Mapping)
         }
         if kind == "hard" and hard_types == {"RAMB18E2"}:
-            bels = [assignment.get("bel") for assignment in assignments]
-            if (
-                len(assignments) > 2
-                or len(bels) != len(set(bels))
-                or set(bels) - {"RAMB18E2_L", "RAMB18E2_U"}
-                or cluster.get("site_mode") != f"RAMB18E2x{len(assignments)}"
-            ):
-                raise ValidationError("RAMB18E2 source packing is invalid")
+            if packed.get("schema") == OPENPARF_ATOMIC_SOURCE_SCHEMA:
+                macro = site_macro_by_members.get(frozenset(
+                    assignment.get("instance") for assignment in assignments
+                    if isinstance(assignment, Mapping)
+                ))
+                if (
+                    len(assignments) != 1
+                    or cluster.get("site_mode") is not None
+                    or macro is None
+                    or macro.get("kind") != "ramb18-half-site-occupancy"
+                    or assignments[0].get("bel") is not None
+                    or assignments[0].get("bel_candidates")
+                    != ["RAMB18E2_L", "RAMB18E2_U"]
+                ):
+                    raise ValidationError(
+                        "RAMB18E2 atomic half-site occupancy is invalid"
+                    )
+                covered_site_macros.add(macro["id"])
+            else:
+                bels = [assignment.get("bel") for assignment in assignments]
+                if (
+                    len(assignments) > 2
+                    or len(bels) != len(set(bels))
+                    or set(bels) - {"RAMB18E2_L", "RAMB18E2_U"}
+                    or cluster.get("site_mode") != f"RAMB18E2x{len(assignments)}"
+                ):
+                    raise ValidationError("RAMB18E2 source packing is invalid")
         elif kind == "hard" and (
             len(assignments) != 1
             or len(hard_types) != 1
@@ -807,6 +868,12 @@ def _collect_atoms(
                 raise ValidationError(
                     f"slice cluster contains hard primitive {cell_type!r}"
                 )
+            if kind == "carry" and cell_type not in {
+                "CARRY8", DUAL_OUTPUT_LUT_TYPE,
+            }:
+                raise ValidationError(
+                    f"carry cluster contains unsupported primitive {cell_type!r}"
+                )
             if kind == "hard" and cell_type not in _HARD_RESOURCES:
                 raise ValidationError("hard cluster contains an unsupported primitive")
             if instance in seen:
@@ -818,14 +885,15 @@ def _collect_atoms(
                 "source_cluster": str(cluster.get("id")),
                 "resource": (
                     "FF" if cell_type in FF_TYPES
-                    else "LUT" if cell_type in LUT_TYPES
+                    else "LUT" if cell_type in _SLICE_LUT_TYPES
+                    else "CARRY8" if cell_type == "CARRY8"
                     else _MUX_RESOURCES[cell_type] if cell_type in _MUX_RESOURCES
                     else _HARD_RESOURCES[cell_type]
                 ),
             })
-    expected_mux_macros = {macro["id"] for macro in mux_macros}
-    if covered_mux_macros != expected_mux_macros:
-        raise ValidationError("connectivity-derived MUX macro coverage is incomplete")
+    expected_site_macros = {macro["id"] for macro in site_macros}
+    if covered_site_macros != expected_site_macros:
+        raise ValidationError("connectivity-derived slice macro coverage is incomplete")
     physical_cells = {
         name for name, cell in cells.items()
         if isinstance(cell, Mapping) and cell.get("type") not in {"GND", "VCC"}
@@ -872,22 +940,27 @@ def build_xilinx_openparf_atomic_source(
             + ", ".join(str(item) for item in unsupported)
         )
     cascades = _derive_cascade_chains(cells)
-    if cascades:
+    unsupported_cascades = [
+        chain for chain in cascades if chain.get("cell_type") != "CARRY8"
+    ]
+    if unsupported_cascades:
         raise ValidationError(
-            "OpenPARF atomic source rejects dedicated cascade connectivity"
+            "OpenPARF atomic source rejects non-CARRY8 dedicated cascade connectivity"
         )
-    if any(cell.get("type") == "RAMB18E2" for cell in cells.values()):
-        raise ValidationError(
-            "RAMB18E2 requires the real site packer to provide source identity"
-        )
-    has_mux = any(cell.get("type") in _MUX_RESOURCES for cell in cells.values())
+    has_slice_macro = any(
+        cell.get("type") in set(_MUX_RESOURCES) | {"CARRY8", DUAL_OUTPUT_LUT_TYPE}
+        for cell in cells.values()
+    )
     macro_contract = (
         build_xilinx_physical_macro_contract(mapped_path, top=selected_top)
-        if has_mux else {"site_macros": []}
+        if has_slice_macro else {"site_macros": []}
     )
     unsupported_site_macros = [
         macro for macro in macro_contract.get("site_macros", [])
-        if macro.get("kind") not in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
+        if macro.get("kind") not in {
+            "muxf7-cone", "muxf8-cone", "muxf9-cone", "carry8-lut6_2",
+            "ramb18-half-site-occupancy",
+        }
     ]
     if unsupported_site_macros:
         raise ValidationError(
@@ -902,16 +975,27 @@ def build_xilinx_openparf_atomic_source(
         for member in macro["members"]:
             instance = member["instance"]
             macro_owned.add(instance)
-            assignments.append({
-                "instance": instance,
-                "cell_type": member["cell_type"],
-                "bel": member["physical_role"],
-                "bel_candidates": [member["physical_role"]],
-            })
+            if macro["kind"] == "ramb18-half-site-occupancy":
+                assignments.append({
+                    "instance": instance,
+                    "cell_type": member["cell_type"],
+                    "bel_candidates": list(member["physical_roles"]),
+                })
+            else:
+                assignments.append({
+                    "instance": instance,
+                    "cell_type": member["cell_type"],
+                    "bel": member["physical_role"],
+                    "bel_candidates": [member["physical_role"]],
+                })
+        carry_macro = macro["kind"] == "carry8-lut6_2"
+        ramb18_macro = macro["kind"] == "ramb18-half-site-occupancy"
         clusters.append({
             "id": macro["id"],
-            "kind": "slice",
-            "site_templates": ["SLICEL", "SLICEM"],
+            "kind": "carry" if carry_macro else "hard" if ramb18_macro else "slice",
+            "site_templates": (
+                ["RAMB18E2"] if ramb18_macro else ["SLICEL", "SLICEM"]
+            ),
             "control_set": None,
             "assignments": assignments,
         })
@@ -923,6 +1007,11 @@ def build_xilinx_openparf_atomic_source(
         if name in macro_owned:
             continue
         hard = cell_type in _HARD_RESOURCES
+        hard_bel_candidates = (
+            ["RAMB18E2_L", "RAMB18E2_U"]
+            if cell_type == "RAMB18E2"
+            else [cell_type]
+        )
         clusters.append({
             "id": f"atomic-source-{index:06d}",
             "kind": "hard" if hard else "slice",
@@ -932,9 +1021,9 @@ def build_xilinx_openparf_atomic_source(
                 "instance": name,
                 "cell_type": cell_type,
                 "bel_candidates": (
-                    [cell_type] if hard
+                    hard_bel_candidates if hard
                     else [f"{letter}6LUT" for letter in "ABCDEFGH"]
-                    if cell_type in LUT_TYPES
+                    if cell_type in _SLICE_LUT_TYPES
                     else [
                         bel for letter in "ABCDEFGH"
                         for bel in (f"{letter}FF", f"{letter}FF2")
@@ -958,7 +1047,7 @@ def build_xilinx_openparf_atomic_source(
             "dedicated_or_relative_constraints": "fail-closed",
         },
         "clusters": clusters,
-        "cascade_chains": [],
+        "cascade_chains": cascades,
         "unplaced_constants": constants,
         "summary": summary,
     }
@@ -1036,6 +1125,8 @@ def _render_library(cells: Mapping[str, Any], atoms: Sequence[Mapping[str, str]]
                 suffix = " CTRL_CE"
             elif cell_type in FF_TYPES and port == _FF_SR[cell_type]:
                 suffix = " CTRL_SR"
+            elif cell_type == "CARRY8" and port in {"CI", "CO[7]"}:
+                suffix = " CAS"
             lines.append(f"  PIN {port} {direction.upper()}{suffix}")
         lines.append("END CELL")
         blocks.append("\n".join(lines))
@@ -1428,15 +1519,18 @@ def export_xilinx_openparf_atomic(
         mapped, top if top is not None else packed.get("top")
     )
     selected_cells = selected_module.get("cells", {})
-    has_mux = any(
-        isinstance(cell, Mapping) and cell.get("type") in _MUX_RESOURCES
+    has_site_macro = any(
+        isinstance(cell, Mapping)
+        and cell.get("type") in set(_MUX_RESOURCES) | {
+            "CARRY8", DUAL_OUTPUT_LUT_TYPE,
+        }
         for cell in selected_cells.values()
     )
     macro_contract = (
         build_xilinx_physical_macro_contract(
             mapped_path, top=selected_module_name
         )
-        if has_mux else {"site_macros": []}
+        if has_site_macro else {"site_macros": []}
     )
     selected_top, cells, atoms = _collect_atoms(
         mapped, packed, top if top is not None else packed.get("top"),
@@ -1451,7 +1545,10 @@ def export_xilinx_openparf_atomic(
         atom["cell_type"] for atom in atoms
         if atom["cell_type"] in _MUX_RESOURCES
     })
-    sites = _placement_sites(architecture, hard, mux)
+    has_carry8 = any(atom["cell_type"] == "CARRY8" for atom in atoms)
+    sites = _placement_sites(
+        architecture, hard, mux, require_carry8=has_carry8
+    )
     placement_region = _validate_native_placement_region(sites)
     per_site_capacity, density_contract = _validate_native_density_contract(
         sites, atoms
@@ -1495,8 +1592,9 @@ def export_xilinx_openparf_atomic(
         {atom["cell_type"] for atom in atoms}, key=_primitive_sort_key
     ):
         resource = (
-            "LUT" if primitive in LUT_TYPES
+            "LUT" if primitive in _SLICE_LUT_TYPES
             else "FF" if primitive in FF_TYPES
+            else "CARRY8" if primitive == "CARRY8"
             else _MUX_RESOURCES[primitive] if primitive in _MUX_RESOURCES
             else _HARD_RESOURCES[primitive]
         )
@@ -1505,10 +1603,17 @@ def export_xilinx_openparf_atomic(
             model_map[primitive] = {
                 "FF": [unit_dimension, unit_dimension], "isFF": 1,
             }
-        elif primitive in LUT_TYPES:
+        elif primitive in _SLICE_LUT_TYPES:
             model_map[primitive] = {
                 "LUT": [unit_dimension, unit_dimension],
-                "isLUT": int(primitive[3:]),
+                "isLUT": (
+                    6 if primitive == DUAL_OUTPUT_LUT_TYPE
+                    else int(primitive[3:])
+                ),
+            }
+        elif primitive == "CARRY8":
+            model_map[primitive] = {
+                "CARRY8": [unit_dimension, unit_dimension]
             }
         elif primitive in _MUX_RESOURCES:
             model_map[primitive] = {
@@ -1526,6 +1631,7 @@ def export_xilinx_openparf_atomic(
         resource: (
             "LUTL" if resource == "LUT"
             else "FF" if resource == "FF"
+            else "Carry" if resource == "CARRY8"
             else "SSSIR"
         )
         for resource in sorted(demand, key=_resource_sort_key)
@@ -1565,16 +1671,26 @@ def export_xilinx_openparf_atomic(
         "route_flag": 0, "slr_aware_flag": 0,
         "result_dir": str((output_dir / "results").resolve()),
     }
+    if has_carry8:
+        config.update({
+            "architecture_type": "ultrascale",
+            "carry_chain_module_name": "CARRY8",
+            "carry_chain_at_name": "CARRY8",
+            "carry_chain_legalization_flag": 1,
+            "align_carry_chain_flag": 1,
+        })
     hardblock_groups = []
-    mux_macros = [
+    slice_macros = [
         macro for macro in macro_contract.get("site_macros", [])
-        if macro.get("kind") in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
+        if macro.get("kind") in {
+            "muxf7-cone", "muxf8-cone", "muxf9-cone", "carry8-lut6_2",
+        }
     ]
     slice_window_count = sum(
         len(item.get("physical_sites", {}).get("LUT", [])) == 1
         for item in coordinate_system["sites"]
     )
-    for macro in mux_macros:
+    for macro in slice_macros:
         members = macro["members"]
         source_instances = [member["instance"] for member in members]
         if not slice_window_count:
@@ -1586,9 +1702,17 @@ def export_xilinx_openparf_atomic(
             "kind": "site_macro",
             "resource": "SLICE_MACRO",
             "owned_resources": sorted({
-                _MUX_RESOURCES[member["cell_type"]]
+                (
+                    _MUX_RESOURCES[member["cell_type"]]
+                    if member["cell_type"] in _MUX_RESOURCES
+                    else "CARRY8" if member["cell_type"] == "CARRY8"
+                    else "LUT"
+                )
                 for member in members
-                if member["cell_type"] in _MUX_RESOURCES
+                if (
+                    macro["kind"] == "carry8-lut6_2"
+                    or member["cell_type"] in _MUX_RESOURCES
+                )
             }),
             "instances": [names[name] for name in source_instances],
             "source_instances": source_instances,
@@ -1599,7 +1723,8 @@ def export_xilinx_openparf_atomic(
                 "members": [
                     {
                         "resource": (
-                            "LUT" if member["cell_type"] in LUT_TYPES
+                            "LUT" if member["cell_type"] in _SLICE_LUT_TYPES
+                            else "CARRY8" if member["cell_type"] == "CARRY8"
                             else _MUX_RESOURCES[member["cell_type"]]
                         ),
                         "z": _slice_role_slot(
@@ -1641,6 +1766,12 @@ def export_xilinx_openparf_atomic(
         owned_hardblocks = set()
         for chain in packed.get("cascade_chains", []):
             resource = chain["cell_type"]
+            if resource == "CARRY8":
+                # The native carry-chain extractor/legalizer owns CARRY_NEXT;
+                # site-macro groups below own each full-slice CARRY8/LUT6_2
+                # unit.  Do not duplicate the same instances in the generic
+                # typed hardblock legalizer.
+                continue
             if resource == "RAMB18E2":
                 raise ValidationError(
                     "RAMB18E2 dedicated cascades are not yet qualified"
@@ -1798,6 +1929,11 @@ def export_xilinx_openparf_atomic(
         },
         "site_database": site_database_descriptor,
     }
+    if has_carry8:
+        name_map["carry_cascade_chains"] = [
+            chain for chain in packed.get("cascade_chains", [])
+            if chain.get("cell_type") == "CARRY8"
+        ]
     if hardblock_groups:
         name_map["physical_macro_constraints"] = {
             "schema": OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA,
@@ -1830,7 +1966,13 @@ def export_xilinx_openparf_atomic(
             "typed_hardblock_chains_use_internal_legalizer": (
                 typed_hardblock_mode
             ),
-            "mux_site_macros_use_internal_legalizer": bool(mux_macros),
+            "mux_site_macros_use_internal_legalizer": any(
+                macro["kind"] != "carry8-lut6_2" for macro in slice_macros
+            ),
+            "carry8_site_macros_use_internal_legalizer": any(
+                macro["kind"] == "carry8-lut6_2" for macro in slice_macros
+            ),
+            "carry8_chains_use_native_legalizer": has_carry8,
             "dedicated_or_relative_constraints": (
                 "native-physical-macro-legalizer"
                 if hardblock_groups else "fail-closed"
@@ -1860,7 +2002,7 @@ def _slot_bel(resource: str, z: int, cell_type: str) -> str:
                 "OpenPARF used an even/paired LUT slot that has no qualified "
                 "physical 5LUT mapping"
             )
-        if cell_type not in LUT_TYPES:
+        if cell_type not in _SLICE_LUT_TYPES:
             raise ValidationError("OpenPARF LUT slot contains a non-LUT primitive")
         return f"{letter}6LUT"
     return f"{letter}FF" if z % 2 == 0 else f"{letter}FF2"
@@ -1927,6 +2069,15 @@ def validate_xilinx_openparf_atomic_placement(
         )
     }
     hardblock_groups = _load_physical_macro_groups(name_map_path, name_map)
+    carry_cascade_chains = name_map.get("carry_cascade_chains", [])
+    if not isinstance(carry_cascade_chains, list) or any(
+        not isinstance(chain, Mapping)
+        or chain.get("cell_type") != "CARRY8"
+        or not isinstance(chain.get("instances"), list)
+        or len(chain["instances"]) < 2
+        for chain in carry_cascade_chains
+    ):
+        raise ValidationError("OpenPARF CARRY8 cascade contract is invalid")
     native_hardblock_groups = [
         group for group in hardblock_groups
         if group.get("resource") in _HARD_RESOURCES.values()
@@ -1934,7 +2085,7 @@ def validate_xilinx_openparf_atomic_placement(
     native = None
     native_report = None
     bram_view_by_slot: Dict[Tuple[int, int, str, int], Mapping[str, Any]] = {}
-    if native_hardblock_groups:
+    if native_hardblock_groups or carry_cascade_chains:
         if native_constraints_path is None or provider_manifest_path is None:
             raise ValidationError(
                 "typed hardblock placement validation requires native constraints"
@@ -1980,7 +2131,8 @@ def validate_xilinx_openparf_atomic_placement(
             if (
                 not isinstance(resources, Mapping)
                 or (
-                    resource not in {"LUT", "FF"} | set(_MUX_RESOURCES.values())
+                    resource not in {"LUT", "FF", "CARRY8"}
+                    | set(_MUX_RESOURCES.values())
                     and resources.get(resource, 0) < 1
                 )
             ):
@@ -2004,6 +2156,18 @@ def validate_xilinx_openparf_atomic_placement(
                 if not isinstance(physical_sites, list) or len(physical_sites) != 1:
                     raise ValidationError(
                         "OpenPARF MUX placement has no unique physical slice"
+                    )
+                site_name = physical_sites[0]
+            elif resource == "CARRY8":
+                if z != 0 or cell_type != "CARRY8":
+                    raise ValidationError(
+                        "OpenPARF CARRY8 placement uses an invalid resource slot"
+                    )
+                bel_name = "CARRY8"
+                physical_sites = site_entry.get("physical_sites", {}).get(resource)
+                if not isinstance(physical_sites, list) or len(physical_sites) != 1:
+                    raise ValidationError(
+                        "OpenPARF CARRY8 placement has no unique physical slice"
                     )
                 site_name = physical_sites[0]
             elif resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot:
@@ -2225,12 +2389,51 @@ def validate_xilinx_openparf_atomic_placement(
             if macro.get("kind") in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
             for member in macro.get("members", [])
         }
+        expected_carry_members = {
+            member["instance"]
+            for macro in derived_macro_contract.get("site_macros", [])
+            if macro.get("kind") == "carry8-lut6_2"
+            for member in macro.get("members", [])
+        }
         expected = {
             item["instance"] for item in placed.values()
             if item["resource"] in _HARD_RESOURCES.values()
-        } | expected_mux_members
+        } | expected_mux_members | expected_carry_members
         if covered != expected:
             raise ValidationError("typed hardblock placement coverage is incomplete")
+
+    checked_carry_edges = 0
+    if carry_cascade_chains:
+        assert native is not None and native_report is not None
+        require_xilinx_native_constraint_capability(
+            native_report, "dedicated_adjacency.CARRY_NEXT"
+        )
+        carry_family = next((
+            family
+            for family in native.get("payload", {}).get("dedicated_adjacency", [])
+            if isinstance(family, Mapping) and family.get("kind") == "CARRY_NEXT"
+        ), None)
+        if not isinstance(carry_family, Mapping):
+            raise ValidationError("native constraints contain no CARRY_NEXT family")
+        native_carry_edges = {
+            edge for chain in carry_family.get("chains", [])
+            if isinstance(chain, list) for edge in zip(chain, chain[1:])
+        }
+        by_instance = {item["instance"]: item for item in placed.values()}
+        for chain in carry_cascade_chains:
+            instances = chain["instances"]
+            try:
+                sites = [by_instance[name]["site"] for name in instances]
+            except KeyError as error:
+                raise ValidationError(
+                    "CARRY8 cascade references an unknown placed instance"
+                ) from error
+            for edge in zip(sites, sites[1:]):
+                if edge not in native_carry_edges:
+                    raise ValidationError(
+                        "OpenPARF CARRY8 chain violates native adjacency"
+                    )
+                checked_carry_edges += 1
 
     by_site: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for item in placed.values():
@@ -2240,6 +2443,20 @@ def validate_xilinx_openparf_atomic_placement(
             raise ValidationError(f"site {site_name!r} exceeds physical LUT capacity")
         if sum(item["resource"] == "FF" for item in items) > 16:
             raise ValidationError(f"site {site_name!r} exceeds physical FF capacity")
+        carry_items = [item for item in items if item["resource"] == "CARRY8"]
+        if carry_items:
+            if (
+                len(carry_items) != 1
+                or len(items) != 9
+                or Counter(item["cell_type"] for item in items)
+                != Counter({"CARRY8": 1, DUAL_OUTPUT_LUT_TYPE: 8})
+                or {item["bel"] for item in items}
+                != {"CARRY8", *{f"{letter}6LUT" for letter in "ABCDEFGH"}}
+            ):
+                raise ValidationError(
+                    f"site {site_name!r} does not contain one exclusive full-slice "
+                    "CARRY8/LUT6_2 macro"
+                )
         hard_items = [
             item for item in items if item["resource"] in _HARD_RESOURCES.values()
         ]
@@ -2310,8 +2527,15 @@ def validate_xilinx_openparf_atomic_placement(
             ).items())),
         },
     }
+    carry8_macro_count = sum(
+        item["resource"] == "CARRY8" for item in placed.values()
+    )
+    if carry8_macro_count:
+        result["summary"]["carry8_macros"] = carry8_macro_count
+    if checked_carry_edges:
+        result["summary"]["native_carry_edges"] = checked_carry_edges
     if hardblock_groups:
-        if native_hardblock_groups:
+        if native_hardblock_groups or carry_cascade_chains:
             assert native_constraints_path is not None
             assert provider_manifest_path is not None
             result["source"].update({
@@ -2334,6 +2558,8 @@ def run_xilinx_openparf_atomic_qualification(
     top: Optional[str] = None,
     openparf_install: Optional[Path] = None,
     openparf_python: Optional[Path] = None,
+    native_constraints_path: Optional[Path] = None,
+    provider_manifest_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Run one native SSSIR-MCF/direct-LG/ISM flow for the audited subset."""
 
@@ -2341,7 +2567,9 @@ def run_xilinx_openparf_atomic_qualification(
         install_root=openparf_install, python_executable=openparf_python
     )
     manifest = export_xilinx_openparf_atomic(
-        mapped_path, packed_path, architecture_path, output_dir, top=top
+        mapped_path, packed_path, architecture_path, output_dir, top=top,
+        native_constraints_path=native_constraints_path,
+        provider_manifest_path=provider_manifest_path,
     )
     placement = run_openparf(
         output_dir / "openparf.json",
@@ -2352,6 +2580,8 @@ def run_xilinx_openparf_atomic_qualification(
     certificate = validate_xilinx_openparf_atomic_placement(
         placement, output_dir / "name_map.json", mapped_path,
         architecture_path, output_dir / "placement-certificate.json",
+        native_constraints_path=native_constraints_path,
+        provider_manifest_path=provider_manifest_path,
     )
     installation = Path(str(runtime.get("installation", "")))
     python = Path(str(runtime.get("python", "")))
@@ -2369,9 +2599,9 @@ def run_xilinx_openparf_atomic_qualification(
         "manifest": manifest, "placement": str(placement),
         "certificate": certificate,
         "qualification_scope": (
-            "small unconstrained LUT/FF plus independent singleton "
-            "DSP48E2/RAMB36E2/URAM288 fixture; no carry, RAMB18 half-site, "
-            "cascade, relative placement, clock-region, half-column, or SLR claim"
+            "native mixed-resource placement with exact MUX and CARRY8/LUT6_2 "
+            "site macros, CARRY_NEXT adjacency, and typed DSP/BRAM/URAM "
+            "legalization; clock and SLR constraints remain fail-closed"
         ),
     }
 

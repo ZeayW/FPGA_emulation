@@ -29,7 +29,12 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     certificate,
                     physical / "openparf-native/placement-certificate.json",
                 )
-                self.assertEqual(kwargs, {"top": "top"})
+                self.assertEqual(kwargs, {
+                    "top": "top",
+                    "source_packed_path": physical / "openparf-atomic-source.json",
+                    "native_constraints_path": None,
+                    "provider_manifest_path": None,
+                })
                 packed.write_text(
                     __import__("json").dumps({"summary": {"clusters": 2}}),
                     encoding="utf-8",

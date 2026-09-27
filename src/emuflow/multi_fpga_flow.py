@@ -1261,6 +1261,8 @@ def run_multi_fpga_flow(
     physical_rapidwright_timing_data: Optional[Path] = None,
     physical_rapidwright_opensta: Optional[str] = None,
     physical_rapidwright_placer: str = "legacy",
+    physical_rapidwright_native_constraints: Optional[Path] = None,
+    physical_rapidwright_provider_manifest: Optional[Path] = None,
     physical_workers: int = 1,
     global_sta_executable: Optional[str] = None,
     global_timing_engine: str = "opensta",
@@ -2187,6 +2189,12 @@ def run_multi_fpga_flow(
             rapidwright_timing_data=physical_rapidwright_timing_data,
             rapidwright_opensta=physical_rapidwright_opensta,
             rapidwright_placer=physical_rapidwright_placer,
+            rapidwright_native_constraints=(
+                physical_rapidwright_native_constraints
+            ),
+            rapidwright_provider_manifest=(
+                physical_rapidwright_provider_manifest
+            ),
             original_ir_path=ir_path,
             assignment_path=assignment_path,
             routes_path=routes_path,

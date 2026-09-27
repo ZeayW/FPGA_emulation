@@ -1437,8 +1437,9 @@ def validate_xilinx_placement(
                 for native_chain in family["chains"]
                 for edge in zip(native_chain, native_chain[1:])
             }
-        kind_by_cell_type = {
-            "DSP48E2": "DSP_CASCADE",
+            kind_by_cell_type = {
+                "CARRY8": "CARRY_NEXT",
+                "DSP48E2": "DSP_CASCADE",
             "RAMB36E2": "BRAM_CASCADE",
             "URAM288": "URAM_CASCADE",
         }

@@ -22,9 +22,11 @@ from .io import read_json, write_json
 from .xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_PROVIDER,
+    OPENPARF_ATOMIC_SOURCE_SCHEMA,
 )
 from .xilinx_packing import (
     CONSTANT_TYPES,
+    DUAL_OUTPUT_LUT_TYPE,
     FF_TYPES,
     HARD_BINDINGS,
     LUT_TYPES,
@@ -47,7 +49,8 @@ OPENPARF_ATOMIC_BRIDGE_REPORT_SCHEMA = (
 )
 _SUPPORTED_HARD_TYPES = set(HARD_BINDINGS) | {"RAMB18E2"}
 _SUPPORTED_PHYSICAL_TYPES = (
-    LUT_TYPES | FF_TYPES | MUX_TYPES | _SUPPORTED_HARD_TYPES
+    LUT_TYPES | {DUAL_OUTPUT_LUT_TYPE, "CARRY8"}
+    | FF_TYPES | MUX_TYPES | _SUPPORTED_HARD_TYPES
 )
 _CERTIFICATE_ASSIGNMENT_KEYS = {
     "instance", "cell_type", "bel", "physical_site", "placement_mode",
@@ -178,7 +181,9 @@ def _validate_certificate(
     source_owner: Dict[str, str] = {}
     if source_packed is not None:
         if (
-            source_packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA
+            source_packed.get("schema") not in {
+                PACKED_SITE_NETLIST_SCHEMA, OPENPARF_ATOMIC_SOURCE_SCHEMA,
+            }
             or source_packed.get("status") != "pass"
             or source_packed.get("top") != selected_top
         ):
@@ -295,9 +300,12 @@ def _validate_certificate(
             normalized = {
                 "instance": name, "cell_type": cell_type, "bel": bel_name,
             }
-            if cell_type in LUT_TYPES | FF_TYPES | MUX_TYPES:
+            if cell_type in (
+                LUT_TYPES | {DUAL_OUTPUT_LUT_TYPE, "CARRY8"}
+                | FF_TYPES | MUX_TYPES
+            ):
                 slice_assignments.append(normalized)
-                if cell_type in LUT_TYPES:
+                if cell_type in LUT_TYPES | {DUAL_OUTPUT_LUT_TYPE}:
                     lut_count += 1
                 elif cell_type in FF_TYPES:
                     ff_count += 1
@@ -325,7 +333,10 @@ def _validate_certificate(
             kind = "hard"
             control_set = None
         else:
-            if sum(item["cell_type"] in LUT_TYPES for item in slice_assignments) > 8:
+            if sum(
+                item["cell_type"] in LUT_TYPES | {DUAL_OUTPUT_LUT_TYPE}
+                for item in slice_assignments
+            ) > 8:
                 raise ValidationError(f"{context}: exceeds conservative LUT capacity")
             ff_names = [
                 item["instance"] for item in slice_assignments
@@ -339,7 +350,24 @@ def _validate_certificate(
                     f"{context}: cannot represent multiple FF control sets in "
                     "the conservative PackedSiteNetlist contract"
                 )
-            kind = "slice"
+            carry_counts = Counter(
+                item["cell_type"] for item in slice_assignments
+                if item["cell_type"] in {"CARRY8", DUAL_OUTPUT_LUT_TYPE}
+            )
+            if carry_counts:
+                if (
+                    len(slice_assignments) != 9
+                    or carry_counts
+                    != Counter({"CARRY8": 1, DUAL_OUTPUT_LUT_TYPE: 8})
+                    or {item["bel"] for item in slice_assignments}
+                    != {"CARRY8", *{f"{letter}6LUT" for letter in "ABCDEFGH"}}
+                ):
+                    raise ValidationError(
+                        f"{context}: invalid exclusive CARRY8/LUT6_2 full-slice macro"
+                    )
+                kind = "carry"
+            else:
+                kind = "slice"
             control_set = next(iter(control_sets), None)
         modes = sorted({
             assignment["placement_mode"] for assignment in assignments
@@ -370,16 +398,32 @@ def _validate_certificate(
         "luts": lut_count, "ffs": ff_count,
         "hard_resources": dict(sorted(hard_counts.items())),
     }
-    native_edges = sum(
+    native_hardblock_edges = sum(
         max(0, len(chain.get("instances", [])) - 1)
         for chain in cascades
-        if isinstance(chain, Mapping)
+        if isinstance(chain, Mapping) and chain.get("cell_type") != "CARRY8"
     )
-    if native_edges:
-        expected_summary["native_hardblock_edges"] = native_edges
+    native_carry_edges = sum(
+        max(0, len(chain.get("instances", [])) - 1)
+        for chain in cascades
+        if isinstance(chain, Mapping) and chain.get("cell_type") == "CARRY8"
+    )
+    carry8_macros = sum(
+        cluster["kind"] == "carry" for cluster in physical_clusters
+    )
+    if carry8_macros:
+        expected_summary["carry8_macros"] = carry8_macros
+    if native_hardblock_edges:
+        expected_summary["native_hardblock_edges"] = native_hardblock_edges
     elif certificate.get("summary", {}).get("native_hardblock_edges"):
         raise ValidationError(
             "OpenPARF atomic cascade certificate requires its source packing"
+        )
+    if native_carry_edges:
+        expected_summary["native_carry_edges"] = native_carry_edges
+    elif certificate.get("summary", {}).get("native_carry_edges"):
+        raise ValidationError(
+            "OpenPARF atomic carry certificate requires its source packing"
         )
     if certificate.get("summary") != expected_summary:
         raise ValidationError("OpenPARF atomic placement summary is invalid")
@@ -413,8 +457,11 @@ def materialize_xilinx_openparf_atomic_contract(
             raise ValidationError(
                 "OpenPARF atomic source PackedSiteNetlist is invalid"
             )
-        if loaded_source_packed.get("source", {}).get(
-            "mapped_json_sha256"
+        source_identity = loaded_source_packed.get("source", {})
+        if not isinstance(source_identity, Mapping) or (
+            source_identity.get("mapped_json_sha256")
+            if loaded_source_packed.get("schema") == PACKED_SITE_NETLIST_SCHEMA
+            else source_identity.get("mapped_sha256")
         ) != _sha256(mapped_path):
             raise ValidationError(
                 "OpenPARF atomic source PackedSiteNetlist seal is invalid"

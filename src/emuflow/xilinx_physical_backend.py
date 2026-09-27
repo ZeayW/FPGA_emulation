@@ -365,6 +365,8 @@ def run_rapidwright_partition_backend(
     timing_data_dir: Path,
     openparf_install: Optional[Path] = None,
     openparf_python: Optional[Path] = None,
+    openparf_native_constraints: Optional[Path] = None,
+    openparf_provider_manifest: Optional[Path] = None,
     opensta: Optional[str] = None,
     logic_identity_path: Optional[Path] = None,
     local_identity_path: Optional[Path] = None,
@@ -405,6 +407,8 @@ def run_rapidwright_partition_backend(
         top=mapped_report["top"],
         openparf_install=openparf_install,
         openparf_python=openparf_python,
+        native_constraints_path=openparf_native_constraints,
+        provider_manifest_path=openparf_provider_manifest,
         slrs=selected_slrs,
     )
     guidance_path = guidance_root / "guidance.json"
@@ -480,6 +484,8 @@ def run_rapidwright_openparf_native_candidate_backend(
     timing_data_dir: Path,
     openparf_install: Optional[Path] = None,
     openparf_python: Optional[Path] = None,
+    openparf_native_constraints: Optional[Path] = None,
+    openparf_provider_manifest: Optional[Path] = None,
     opensta: Optional[str] = None,
     logic_identity_path: Optional[Path] = None,
     local_identity_path: Optional[Path] = None,
@@ -512,6 +518,8 @@ def run_rapidwright_openparf_native_candidate_backend(
         top=mapped_report["top"],
         openparf_install=openparf_install,
         openparf_python=openparf_python,
+        native_constraints_path=openparf_native_constraints,
+        provider_manifest_path=openparf_provider_manifest,
     )
     certificate_path = qualification_root / "placement-certificate.json"
     packed_path = output_dir / "packed-sites.json"
@@ -523,6 +531,9 @@ def run_rapidwright_openparf_native_candidate_backend(
         packed_path,
         placement_path,
         top=mapped_report["top"],
+        source_packed_path=atomic_source_path,
+        native_constraints_path=openparf_native_constraints,
+        provider_manifest_path=openparf_provider_manifest,
     )
     packed = read_json(packed_path)
     placement = read_json(placement_path)
