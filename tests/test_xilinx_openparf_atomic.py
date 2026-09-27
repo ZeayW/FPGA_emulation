@@ -2,10 +2,13 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
+from emuflow.architecture import ArchitectureDB
 from emuflow.errors import ImportError, ValidationError
+import emuflow.xilinx_openparf_atomic as atomic_adapter
 from emuflow.openparf_native_capabilities import (
     probe_openparf_native_capabilities,
 )
@@ -519,6 +522,51 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 )
             with self.assertRaisesRegex(ValidationError, "metadata is invalid"):
                 load_xilinx_openparf_atomic_sites(name_map_path)
+
+    def test_parallel_exports_share_immutable_device_geometry_and_database(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture_path = write_openparf_runtime_fixture(
+                root, include_hard=True
+            )
+            architecture = ArchitectureDB.load(architecture_path)
+            outputs = [root / "fpga0", root / "fpga1"]
+            with (
+                mock.patch.object(
+                    atomic_adapter,
+                    "_placement_sites",
+                    wraps=atomic_adapter._placement_sites,
+                ) as placement_sites,
+                mock.patch.object(
+                    atomic_adapter,
+                    "_render_site_geometry",
+                    wraps=atomic_adapter._render_site_geometry,
+                ) as render_geometry,
+                ThreadPoolExecutor(max_workers=2) as executor,
+            ):
+                manifests = list(executor.map(
+                    lambda output: export_xilinx_openparf_atomic(
+                        mapped,
+                        packed,
+                        architecture_path,
+                        output,
+                        architecture=architecture,
+                    ),
+                    outputs,
+                ))
+
+            self.assertEqual(placement_sites.call_count, 1)
+            self.assertEqual(render_geometry.call_count, 1)
+            self.assertEqual(manifests[0]["placement_region"],
+                             manifests[1]["placement_region"])
+            databases = [output / "site-map.sqlite3" for output in outputs]
+            stats = [path.stat() for path in databases]
+            self.assertEqual(stats[0].st_ino, stats[1].st_ino)
+            self.assertGreaterEqual(stats[0].st_nlink, 2)
+            self.assertEqual(
+                (outputs[0] / "design.scl").read_text(encoding="utf-8"),
+                (outputs[1] / "design.scl").read_text(encoding="utf-8"),
+            )
 
     def test_collinear_and_disconnected_logic_crops_fail_before_runtime(self):
         with tempfile.TemporaryDirectory() as temporary:

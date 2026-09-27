@@ -1132,7 +1132,13 @@ and placement checks. SHA-256 results use an inode/size/mtime/ctime-invalidated
 process cache, so repeated contract checks do not reread the same hundreds of
 MiB artifact. Replacement or in-place modification changes the cache identity
 and forces a fresh parse/hash. Unit gates assert both invalidation behavior and
-single mapped-netlist loading in the production call graph.
+single mapped-netlist loading in the production call graph. Parallel FPGA
+workers also share one immutable derivation of the device-wide placement
+geometry. The first worker materializes the indexed site database; subsequent
+workers on the same filesystem receive a hard link to that closed immutable
+SQLite contract instead of rescanning every site and rewriting the same rows.
+Partition-specific resource/model declarations remain separate, so sharing
+does not conflate the two logical designs.
 The same in-core contract now admits connectivity-derived MUXF7/F8/F9 cones.
 Each cone records exact LUT and MUX BEL roles, offers only complete same-slice
 windows, lets OpenPARF choose the window from global-placement displacement,

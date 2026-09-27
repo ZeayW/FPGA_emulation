@@ -12,11 +12,13 @@ before producing a compact EmuFlow placement certificate.
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 import math
+import os
 from pathlib import Path
 import re
 import sqlite3
+import threading
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .architecture import ArchitectureDB
@@ -83,6 +85,11 @@ _FF_SR = {"FDCE": "R", "FDRE": "R", "FDPE": "S", "FDSE": "S"}
 _TARGET_DENSITY = 0.75
 _CLOCK_REGION_NAME = re.compile(r"^X([0-9]+)Y([0-9]+)$")
 _MAX_CLOCKS_PER_REGION = 24
+_DEVICE_STATIC_CACHE_LIMIT = 4
+_DEVICE_STATIC_CACHE_LOCK = threading.RLock()
+_DEVICE_STATIC_CACHE: "OrderedDict[Tuple[Any, ...], Dict[str, Any]]" = (
+    OrderedDict()
+)
 
 
 def _site_claim(site_name: str) -> List[str]:
@@ -212,6 +219,29 @@ def _write_site_database(
             ),
         )
     return len(sites)
+
+
+def _materialize_site_database(
+    path: Path, device_static: Dict[str, Any]
+) -> int:
+    """Write one immutable device site database, then hard-link later users."""
+
+    with _DEVICE_STATIC_CACHE_LOCK:
+        source = device_static.get("site_database")
+        if isinstance(source, Path) and source.is_file():
+            path.unlink(missing_ok=True)
+            try:
+                os.link(source, path)
+                return int(device_static["site_count"])
+            except OSError:
+                # A different filesystem cannot share an inode. Preserve the
+                # contract by materializing normally instead of copying a
+                # mutable SQLite file behind the cache's back.
+                pass
+        count = _write_site_database(path, device_static["coordinate_system"])
+        device_static["site_database"] = path
+        device_static["site_count"] = count
+        return count
 
 
 def _site_database_path(
@@ -1161,10 +1191,9 @@ def _render_nets(
     return "\n".join(lines) + "\n", emitted, dropped_single_endpoint
 
 
-def _render_sites(
+def _render_site_geometry(
     sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
-    atoms: Sequence[Mapping[str, str]],
-) -> Tuple[str, Dict[str, Any]]:
+) -> Tuple[str, str, Dict[str, Any]]:
     grouped: Dict[Tuple[int, int], Dict[str, Any]] = {}
     for site, resources in sites:
         coordinate = _physical_coordinate(site)
@@ -1243,17 +1272,8 @@ def _render_sites(
         lines.append(f"SITE {signature_names[signature]}")
         lines.extend(f"  {resource} {count}" for resource, count in signature)
         lines.extend(["END SITE", ""])
-    models_by_resource: Dict[str, set[str]] = defaultdict(set)
-    for atom in atoms:
-        models_by_resource[atom["resource"]].add(atom["cell_type"])
-    lines.append("RESOURCES")
-    for resource, models in sorted(
-        models_by_resource.items(), key=lambda item: _resource_sort_key(item[0])
-    ):
-        lines.append(f"  {resource} {' '.join(sorted(models))}")
-    lines.extend([
-        "END RESOURCES", "", f"SITEMAP {len(x_axis)} {len(y_axis)}",
-    ])
+    site_prefix = "\n".join([*lines, "RESOURCES"]) + "\n"
+    lines = ["END RESOURCES", "", f"SITEMAP {len(x_axis)} {len(y_axis)}"]
     site_map = []
     for coordinate, group in sorted(grouped.items()):
         resources = group["resources"]
@@ -1382,10 +1402,80 @@ def _render_sites(
             ),
             "regions": contract_regions,
         }
-    return "\n".join(lines) + "\n", {
+    return site_prefix, "\n".join(lines) + "\n", {
         "x_axis": x_axis, "y_axis": y_axis, "sites": site_map,
         "clock_regions": clock_region_contract,
     }
+
+
+def _render_sites(
+    device_static: Mapping[str, Any],
+    atoms: Sequence[Mapping[str, str]],
+) -> str:
+    """Add partition-specific model declarations to shared device geometry."""
+
+    models_by_resource: Dict[str, set[str]] = defaultdict(set)
+    for atom in atoms:
+        models_by_resource[atom["resource"]].add(atom["cell_type"])
+    resources = "".join(
+        f"  {resource} {' '.join(sorted(models))}\n"
+        for resource, models in sorted(
+            models_by_resource.items(),
+            key=lambda item: _resource_sort_key(item[0]),
+        )
+    )
+    return (
+        str(device_static["site_prefix"])
+        + resources
+        + str(device_static["site_suffix"])
+    )
+
+
+def _device_static_geometry(
+    architecture: ArchitectureDB,
+    hard_resources: Sequence[str],
+    mux_resources: Sequence[str],
+    *,
+    require_carry8: bool,
+) -> Dict[str, Any]:
+    """Build immutable device geometry once across parallel FPGA workers."""
+
+    key = (
+        architecture,
+        tuple(sorted(hard_resources)),
+        tuple(sorted(mux_resources)),
+        bool(require_carry8),
+    )
+    # The derivation is Python/GIL bound and produces a multi-GiB object for a
+    # complete XCVU19P. Holding the lock during the first build prevents a
+    # second physical worker from repeating the same scan and doubling RSS.
+    with _DEVICE_STATIC_CACHE_LOCK:
+        cached = _DEVICE_STATIC_CACHE.get(key)
+        if cached is not None:
+            _DEVICE_STATIC_CACHE.move_to_end(key)
+            return cached
+        sites = _placement_sites(
+            architecture,
+            hard_resources,
+            mux_resources,
+            require_carry8=require_carry8,
+        )
+        placement_region = _validate_native_placement_region(sites)
+        site_prefix, site_suffix, coordinate_system = _render_site_geometry(sites)
+        value: Dict[str, Any] = {
+            "sites": sites,
+            "placement_region": placement_region,
+            "site_prefix": site_prefix,
+            "site_suffix": site_suffix,
+            "coordinate_system": coordinate_system,
+            "site_database": None,
+            "site_count": len(coordinate_system["sites"]),
+        }
+        _DEVICE_STATIC_CACHE[key] = value
+        _DEVICE_STATIC_CACHE.move_to_end(key)
+        while len(_DEVICE_STATIC_CACHE) > _DEVICE_STATIC_CACHE_LIMIT:
+            _DEVICE_STATIC_CACHE.popitem(last=False)
+        return value
 
 
 def _native_bram_candidates(
@@ -1549,10 +1639,11 @@ def export_xilinx_openparf_atomic(
         if atom["cell_type"] in _MUX_RESOURCES
     })
     has_carry8 = any(atom["cell_type"] == "CARRY8" for atom in atoms)
-    sites = _placement_sites(
+    device_static = _device_static_geometry(
         architecture, hard, mux, require_carry8=has_carry8
     )
-    placement_region = _validate_native_placement_region(sites)
+    sites = device_static["sites"]
+    placement_region = device_static["placement_region"]
     per_site_capacity, density_contract = _validate_native_density_contract(
         sites, atoms
     )
@@ -1576,7 +1667,8 @@ def export_xilinx_openparf_atomic(
     nets, net_count, dropped_single_endpoint_nets = _render_nets(
         cells, atoms, names
     )
-    site_text, coordinate_system = _render_sites(sites, atoms)
+    coordinate_system = device_static["coordinate_system"]
+    site_text = _render_sites(device_static, atoms)
     output_dir.mkdir(parents=True, exist_ok=True)
     files = {
         "design.nodes": "".join(
@@ -1887,7 +1979,7 @@ def export_xilinx_openparf_atomic(
         if covered_hardblocks != expected_hardblocks:
             raise ValidationError("typed hardblock constraints have incomplete ownership")
     site_database_path = output_dir / "site-map.sqlite3"
-    site_count = _write_site_database(site_database_path, coordinate_system)
+    site_count = _materialize_site_database(site_database_path, device_static)
     site_database_descriptor = {
         "schema": XILINX_OPENPARF_SITE_DATABASE_SCHEMA,
         "file": site_database_path.name,
