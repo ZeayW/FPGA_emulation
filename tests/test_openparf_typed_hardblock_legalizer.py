@@ -311,11 +311,11 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
             ["c0", "l0", "c1", "l1"],
             site_rows=[
                 (0, 0, "SLICE_X0Y0", 0.0, 0.0),
-                (0, 1, "SLICE_X0Y1", 0.0, 1.0),
-                (0, 3, "SLICE_X0Y3", 0.0, 3.0),
-                (0, 4, "SLICE_X0Y4", 0.0, 4.0),
+                (0, 1, "SLICE_X0Y1", 0.0, 2.0),
+                (0, 3, "SLICE_X0Y3", 0.0, 7.0),
+                (0, 4, "SLICE_X0Y4", 0.0, 9.0),
                 (1, 0, "SLICE_X1Y0", 10.0, 0.0),
-                (1, 1, "SLICE_X1Y1", 10.0, 1.0),
+                (1, 1, "SLICE_X1Y1", 10.0, 2.0),
             ],
         )
         # A coordinate-only legalizer would prefer an inferred window starting
@@ -323,7 +323,7 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
         # legalizer must select the certified Y0->Y1 edge instead.
         pos = torch.tensor([
             [0.0, 1.0, 0.0], [0.0, 1.0, 0.0],
-            [0.0, 2.0, 0.0], [0.0, 2.0, 0.0],
+            [0.0, 3.0, 0.0], [0.0, 3.0, 0.0],
         ])
         operator.legalize_site_macros(pos)
         self.assertEqual(

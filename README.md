@@ -1271,7 +1271,10 @@ one full-slice `site_cascade`; its CARRY8 plus eight LUT6_2 members are
 legalized together against compact `directed-site-chain/v1` windows derived
 only from the source-sealed RapidWright `CARRY_NEXT` chains.  Candidate chains
 are indexed lazily by logical length, so native chains are stored once rather
-than expanded once per logical cascade.  The independent placement validator
+than expanded once per logical cascade.  The exact nearest-window index uses
+the complete per-site placement-coordinate vector; it does not assume that a
+valid native edge advances placement Y by one because intervening non-slice
+tile rows make real XCVU19P chain coordinates nonuniform.  The independent placement validator
 checks every unit's BEL roles, same-site ownership, exact directed chain
 window, and native edge.  OpenPARF's rectangle-based carry legalizer is
 disabled when this contract is present because it cannot represent chain

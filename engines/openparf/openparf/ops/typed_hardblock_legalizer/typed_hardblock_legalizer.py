@@ -614,17 +614,15 @@ class TypedHardblockLegalizer(object):
                 for start in range(len(chain) - chain_length + 1):
                     sites = chain[start:start + chain_length]
                     site_coordinates = [coordinates[site] for site in sites]
-                    x, y = site_coordinates[0]
-                    if any(
-                        candidate_x != x or candidate_y != y + offset
-                        for offset, (candidate_x, candidate_y)
-                        in enumerate(site_coordinates)
-                    ):
+                    x = site_coordinates[0][0]
+                    if any(candidate_x != x for candidate_x, _y in site_coordinates):
                         raise RuntimeError(
-                            "directed site-chain coordinates are not a unit-stride "
-                            "placement column"
+                            "directed site-chain coordinates cross placement columns"
                         )
-                    columns.setdefault(x, []).append((y, sites))
+                    mean_y = sum(y for _x, y in site_coordinates) / chain_length
+                    columns.setdefault(x, []).append((
+                        mean_y, sites, tuple(site_coordinates),
+                    ))
                     count += 1
             xs = sorted(columns)
             ordered_columns = []
@@ -640,12 +638,13 @@ class TypedHardblockLegalizer(object):
         return cached
 
     @staticmethod
-    def _chain_template_window(template, sites, x, y):
+    def _chain_template_window(template, sites, coordinates):
         return [
             {
                 "site": site,
                 "resource": member["resource"],
-                "x": x, "y": y + unit_index, "z": member["z"],
+                "x": coordinates[unit_index][0],
+                "y": coordinates[unit_index][1], "z": member["z"],
                 "claims": ["site:" + site],
             }
             for unit_index, site in enumerate(sites)
@@ -656,19 +655,17 @@ class TypedHardblockLegalizer(object):
         """Select the exact nearest conflict-free certified chain window."""
         template = group["chain_template"]
         index = self._compact_chain_index(template, group["window_count"])
-        unit_size = len(template["unit_members"])
         count = len(group["ids"])
         mean_x = sum(float(pos_xyz[inst_id, 0]) for inst_id in group["ids"]) / count
         mean_y = sum(
-            float(pos_xyz[inst_id, 1]) - (index_in_group // unit_size)
-            for index_in_group, inst_id in enumerate(group["ids"])
+            float(pos_xyz[inst_id, 1]) for inst_id in group["ids"]
         ) / count
         xs = index["xs"]
         columns = index["columns"]
         right = bisect_left(xs, mean_x)
         left = right - 1
         best = None
-        best_distance = None
+        best_cost = None
 
         while left >= 0 or right < len(xs):
             left_distance = (
@@ -685,7 +682,7 @@ class TypedHardblockLegalizer(object):
                 column_index = right
                 x_distance = right_distance
                 right += 1
-            if best_distance is not None and x_distance > best_distance:
+            if best_cost is not None and count * x_distance > best_cost:
                 break
 
             x = xs[column_index]
@@ -709,14 +706,14 @@ class TypedHardblockLegalizer(object):
                     row_index = upper
                     y_distance = upper_distance
                     upper += 1
-                distance = x_distance + y_distance
-                if best_distance is not None and distance > best_distance:
+                lower_bound = count * (x_distance + y_distance)
+                if best_cost is not None and lower_bound > best_cost:
                     break
-                y, sites = rows[row_index]
+                _candidate_mean_y, sites, coordinates = rows[row_index]
                 claims = tuple("site:" + site for site in sites)
                 if occupied.isdisjoint(claims):
                     window = self._chain_template_window(
-                        template, sites, x, y
+                        template, sites, coordinates
                     )
                     site_names = tuple(item["site"] for item in window)
                     candidate = (
@@ -725,8 +722,7 @@ class TypedHardblockLegalizer(object):
                     )
                     if best is None or candidate[:3] < best[:3]:
                         best = candidate
-                    if best_distance is None or distance < best_distance:
-                        best_distance = distance
+                        best_cost = candidate[0]
         return best
 
     def _iter_windows(self, group):
@@ -735,10 +731,10 @@ class TypedHardblockLegalizer(object):
             index = self._compact_chain_index(
                 chain_template, group["window_count"]
             )
-            for x, (rows, _ys) in zip(index["xs"], index["columns"]):
-                for y, sites in rows:
+            for _x, (rows, _ys) in zip(index["xs"], index["columns"]):
+                for _mean_y, sites, coordinates in rows:
                     yield self._chain_template_window(
-                        chain_template, sites, x, y
+                        chain_template, sites, coordinates
                     )
             return
         template = group["window_template"]
