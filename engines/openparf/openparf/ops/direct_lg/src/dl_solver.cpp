@@ -1985,6 +1985,14 @@ void DLSolver::findBestFFs(const IndexVector     &ff,
 
 /// Perform max-weighted matching based LUT pairing
 void DLSolver::pairLUTs(SlotAssignMemory &mem) {
+  if (!_param.allowPairedLUTs) {
+    openparfAssertMsg(
+            mem.lut.size() <= _param.num_BLEs_per_CLB,
+            "6LUT-only legalization produced more LUTs than independent BLEs");
+    mem.ble = mem.bleS;
+    return;
+  }
+
   auto &graph = *(mem.graphPtr);
   auto &nodes = mem.nodes;
   auto &edges = mem.edges;

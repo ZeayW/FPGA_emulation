@@ -112,6 +112,8 @@ def audit_pinned_openparf_source(source_root: Path) -> Dict[str, Any]:
                 "if (!_param.allowPairedLUTs)",
                 "const IndexType firstSlot = (_param.allowPairedLUTs ? 0 : 1)",
                 "mem.bleP.clear();",
+                "6LUT-only legalization produced more LUTs than independent BLEs",
+                "mem.ble = mem.bleS;",
             ),
         ),
         "sparse_site_center_search": _source_check(
