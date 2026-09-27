@@ -1105,6 +1105,11 @@ member resource/BEL-slot template and the sealed legal-window count.  The
 OpenPARF legalizer loads candidate slice coordinates from the same immutable
 SQLite site contract once, groups them into a deterministic two-dimensional
 index, and performs an exact nearest-unoccupied-site query for every macro.
+Same-slice LUT/MUX/CARRY macros use the center of the dense Bookshelf cell,
+which is the coordinate convention consumed by native `direct_lg` and emitted
+by the final `.pl`; sparse bounding-box centers remain reserved for tall
+DSP/BRAM/URAM resources.  Mixing those two coordinate systems is rejected by
+the native mask boundary instead of silently reserving a nonexistent slice.
 For a same-site macro, minimizing displacement of the member centroid is
 algebraically identical to the former exhaustive sum-of-squared-displacement
 scan; strict lower-bound pruning and the original site-name tie break preserve
@@ -4788,9 +4793,11 @@ types are removed from generic electrostatic density and from its convergence
 gate; exact window selection supplies their capacity/non-overlap proof. Partial
 ownership fails before placement, so an unconstrained hard block cannot be
 silently hidden from density.
-The typed contract records OpenPARF's in-core site-center coordinate separately
-from the lower-left dense coordinate serialized in the final Bookshelf `.pl`;
-the independent importer resolves the latter back to the exact physical site.
+The typed contract records OpenPARF's in-core legal coordinate separately from
+the lower-left dense coordinate serialized in the final Bookshelf `.pl`.
+Single-cell slice macros use `dense + 0.5`; sparse tall hard-blocks use their
+complete site-bounding-box center.  The independent importer resolves the
+serialized lower-left coordinate back to the exact physical site.
 An illegal typed placement aborts before ISM detailed placement rather than
 continuing with a malformed site index.
 ISM now treats empty coordinates in a sparse real-device SITEMAP as inert

@@ -284,7 +284,13 @@ class TypedHardblockLegalizer(object):
         if cached is None:
             uri = "file:{}?mode=ro&immutable=1".format(self.site_database)
             query = (
-                "SELECT p.physical_site, s.placement_x, s.placement_y "
+                # Native direct_lg represents a one-site slice member at the
+                # center of its dense Bookshelf cell.  placement_x/y instead
+                # describe the center of the complete sparse site bounding
+                # box and are required for tall hard-block sites; using them
+                # for LUT/MUX/CARRY same-site macros can serialize a different
+                # (or nonexistent) dense coordinate.
+                "SELECT p.physical_site, s.dense_x + 0.5, s.dense_y + 0.5 "
                 "FROM physical_sites p JOIN sites s USING(dense_x, dense_y) "
                 "WHERE p.resource = ? "
                 "ORDER BY s.dense_x, s.dense_y, p.slot, p.physical_site"

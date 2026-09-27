@@ -239,11 +239,11 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
             ],
         )
         pos = torch.tensor([
-            [8.5, 4.0, 0.0], [9.2, 4.0, 0.0], [9.0, 3.8, 0.0],
+            [1.4, 0.5, 0.0], [1.6, 0.5, 0.0], [1.5, 0.4, 0.0],
         ])
         operator.legalize_site_macros(pos)
         self.assertEqual(pos.tolist(), [
-            [9.0, 4.0, 1.0], [9.0, 4.0, 3.0], [9.0, 4.0, 0.0],
+            [1.5, 0.5, 1.0], [1.5, 0.5, 3.0], [1.5, 0.5, 0.0],
         ])
         self.assertTrue(torch.all(data.inst_lock_mask))
 
@@ -271,9 +271,9 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
                 (1, 0, "SLICE_X1Y0", 9.0, 4.0),
             ],
         )
-        pos = torch.tensor([[8.5, 4.0, 0.0], [9.2, 4.0, 0.0]])
+        pos = torch.tensor([[1.4, 0.5, 0.0], [1.6, 0.5, 0.0]])
         operator.legalize_site_macros(pos)
-        self.assertEqual(pos.tolist(), [[9.0, 4.0, 0.0], [9.0, 4.0, 1.0]])
+        self.assertEqual(pos.tolist(), [[1.5, 0.5, 0.0], [1.5, 0.5, 1.0]])
         self.assertTrue(torch.all(data.inst_lock_mask))
 
     def test_compact_site_search_is_exact_cached_and_sublinear(self):
@@ -313,8 +313,8 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
 
         operator._cost = counted_cost
         pos = torch.tensor([
-            [10.0, 10.0, 0.0], [10.0, 10.0, 0.0],
-            [10.0, 10.0, 0.0], [10.0, 10.0, 0.0],
+            [10.5, 10.5, 0.0], [10.5, 10.5, 0.0],
+            [10.5, 10.5, 0.0], [10.5, 10.5, 0.0],
         ])
         operator.legalize_site_macros(pos)
         assigned = [item["site"] for item in operator.last_assignment]
