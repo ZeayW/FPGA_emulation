@@ -15,8 +15,10 @@ from .ir import EmuIR
 from .opensta import (
     DEFAULT_TIMING_MODEL,
     load_timing_model,
+    require_opensta_engine,
     run_opensta_path_database,
 )
+from .native_tools import resolve_native_executable
 from .resources import ResourceVector
 from .sta import validate_sta_path_database
 from .xilinx_timing import (
@@ -335,6 +337,12 @@ def run_xilinx_routed_opensta(
     log_path: Optional[Path] = None,
     timing_validation: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
+    # Engine availability is a constant-time prerequisite.  Check it before
+    # expanding hundreds of thousands of routed endpoints into the temporary
+    # OpenSTA graph so a missing runtime dependency fails immediately rather
+    # than after minutes of staging work.
+    opensta = resolve_native_executable("sta", executable)
+    require_opensta_engine(opensta)
     routed_ir, model, metadata = build_xilinx_routed_opensta_inputs(
         mapped_path, timing_path, timing_validation=timing_validation
     )
@@ -346,7 +354,7 @@ def run_xilinx_routed_opensta(
         write_json(model_path, model, compact=True)
         report = run_opensta_path_database(
             ir_path, output_path, clocks=clocks,
-            timing_model_path=model_path, executable=executable,
+            timing_model_path=model_path, executable=opensta,
             max_paths=max_paths, log_path=log_path,
         )
         validate_sta_path_database(output_path, ir_path)

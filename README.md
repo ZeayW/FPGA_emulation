@@ -1170,6 +1170,9 @@ checks use the same stat-invalidated process cache, so source identity remains
 fail-closed while the normal Phase 7 path performs only the one full route
 parse required to bind physical delays. Standalone validation commands remain
 independent and still perform a fresh semantic check when explicitly invoked.
+The OpenSTA executable/version gate also runs before expanding the routed
+endpoint graph, so a missing shared library or unsupported engine fails in
+constant time instead of after the large staging artifact has been built.
 The same in-core contract now admits connectivity-derived MUXF7/F8/F9 cones.
 Each cone records exact LUT and MUX BEL roles, offers only complete same-slice
 windows, lets OpenPARF choose the window from global-placement displacement,

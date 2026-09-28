@@ -3,14 +3,30 @@ import json
 import tempfile
 from pathlib import Path
 
+import pytest
+
+from emuflow.errors import ValidationError
 from emuflow.xilinx_opensta import (
     build_xilinx_routed_opensta_inputs,
+    run_xilinx_routed_opensta,
     validate_xilinx_routed_opensta_summary,
 )
 
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_routed_opensta_rejects_engine_before_expanding_inputs(tmp_path):
+    with pytest.raises(ValidationError, match="semantic version"):
+        run_xilinx_routed_opensta(
+            tmp_path / "missing-mapped.json",
+            tmp_path / "missing-timing.json",
+            tmp_path / "paths.json",
+            tmp_path / "summary.json",
+            clocks={"clk": 10.0},
+            executable="/usr/bin/false",
+        )
 
 
 def test_routed_opensta_staging_inserts_one_exact_delay_per_sink():
