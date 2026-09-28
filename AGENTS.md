@@ -59,6 +59,22 @@ These requirements apply to all work in this repository.
   selected instances onto different FPGAs. Qualification cuts must arise from
   the normal algorithm under the declared capacity, topology, and seed.
 
+## Remote source and TTY discipline
+
+- Deploy source to Linux/HPC hosts only through an exact pushed Git commit and
+  a versioned checkout.  Never transport repository files through an
+  interactive TTY with base64, tar streams, heredocs, terminal paste, or
+  ad-hoc file reconstruction, and never repair a remote checkout by copying
+  selected source files around Git provenance.
+- When policy requires `ssh -tt`, use the TTY only as a control channel.  Turn
+  terminal echo off before issuing a bounded one-shot nested command, keep its
+  output compact, and restore/close the shell promptly.  Do not dump large
+  JSON, source trees, or verbose traces through the TTY.
+- Long-running computation must be detached from the observation shell and
+  verified by PID/session/TTY identity.  An observer connection failure or
+  terminal disconnect is not a computation failure and must never trigger an
+  automatic restart.
+
 ## Phase 3 must not predict downstream Static Exact correctness
 
 - Never evaluate, rank, reject, or constrain a Phase 3 assignment with a
