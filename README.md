@@ -1303,7 +1303,8 @@ of assignments.  Per-FPGA physical reports no longer embed a second copy of
 that assignment payload: they retain only its schema/provider identity, source
 seals, constant-size resource summary, byte count, and SHA-256.  This preserves
 the exact audit boundary while removing a tens-of-megabytes JSON serialization
-and parse path from terminal report generation.
+and parse path from terminal report generation.  The producer also releases
+the full in-memory assignment tree before RWRoute and OpenSTA begin.
 The internal
 `probe_xilinx_openparf_carry_native_support` qualification API separates the
 source audit from runtime qualification against a two-CARRY8 macro contract
