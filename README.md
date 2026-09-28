@@ -4528,7 +4528,16 @@ independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks
 that the certificate belongs to the exact mapped, packed, and placed inputs.
 The same live routed design is evaluated once with RapidWright's lightweight
-UltraScale+ timing model.  Every routed sink carries its route delay in
+UltraScale+ timing model. Extraction follows effective PIP direction (including reversed
+PIPs) back to the actual physical source, including equivalent alternate site
+exits, before invoking the unchanged native timing groups and coefficients.
+It is independent of PIP list order; missing, cyclic or ambiguous predecessor
+paths fail instead of producing a truncated delay. Routes are not modified.
+Historical delay values may change under this correction; compare results
+produced by the same adapter version. The native path regression can be run
+with `RAPIDWRIGHT_JAR=/path/to/rapidwright.jar python -m unittest discover -s tests -p test_rapidwright_rooted_path.py`
+(JDK required).
+Every routed sink carries its route delay in
 picoseconds; the independent checker requires complete sink coverage and
 recomputes the endpoint count and maximum delay instead of trusting the
 summary.  This is research-grade setup-route evidence, not vendor sign-off:
