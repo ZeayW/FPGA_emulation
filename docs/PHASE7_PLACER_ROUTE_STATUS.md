@@ -40,6 +40,17 @@ summary, byte count, and SHA-256; they do not embed a second copy of the full
 cluster payload.  This storage change is common to the selection branch and
 does not weaken the promotion gate.
 
+The route-aware-v3 qualification has now produced its first terminal routing
+result on one DLA-medium partition: first-iteration overlap fell from 840,507
+to 215,895 and first-iteration runtime from 5,366.75 seconds to 69.25 seconds;
+RWRoute reached zero PIP overlap in 462.64 seconds.  The second partition is
+still in the same uninterrupted RWRoute process.  These are routing-progress
+facts, not yet default-promotion evidence; per-partition and global OpenSTA
+remain required.  The downstream implementation no longer reopens and
+rehashes the near-gigabyte route artifact at every wrapper boundary: the
+single validated route certificate is handed to timing binding, and the
+resulting timing certificate is handed to OpenSTA.
+
 ## Promotion sequence
 
 1. Run each candidate's smallest supported fixture against its real compiled

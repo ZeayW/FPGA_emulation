@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from .xilinx_placement import XILINX_PLACEMENT_SCHEMA
 
@@ -40,11 +40,7 @@ RAPIDWRIGHT_DEVICE_DATA_MD5 = {
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _md5(path: Path) -> str:
@@ -283,6 +279,9 @@ def run_rwroute(
     device_data_root: Path,
     timing_data_dir: Path,
     log_path: Optional[Path] = None,
+    mapped_path: Optional[Path] = None,
+    packed_path: Optional[Path] = None,
+    placement_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     classes_dir.mkdir(parents=True, exist_ok=True)
     runtime_home = classes_dir.parent / "rapidwright-runtime-home"
@@ -362,8 +361,13 @@ def run_rwroute(
     timing["source_revision"] = RAPIDWRIGHT_TIMING_DATA_REVISION
     timing["source_data_sha256"] = dict(RAPIDWRIGHT_TIMING_DATA_SHA256)
     timing["device_data_md5"] = device_data_md5
-    write_json(output_path, value, compact=True)
-    report = validate_xilinx_route_db(output_path)
+    report = validate_xilinx_route_db(
+        output_path,
+        mapped_path=mapped_path,
+        packed_path=packed_path,
+        placement_path=placement_path,
+        _value=value,
+    )
     return {**report, "output": str(output_path), "log": str(log_path) if log_path else None}
 
 
@@ -373,8 +377,13 @@ def validate_xilinx_route_db(
     mapped_path: Optional[Path] = None,
     packed_path: Optional[Path] = None,
     placement_path: Optional[Path] = None,
+    _value: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    value = read_json(path)
+    # RWRoute already materializes a very large in-memory object.  Accepting
+    # that exact object internally avoids immediately parsing the same route
+    # database a second time before it is sealed.  External callers retain the
+    # ordinary path-only validation API.
+    value = read_json(path) if _value is None else _value
     if not isinstance(value, dict) or value.get("schema") != XILINX_ROUTE_DB_SCHEMA:
         raise ValidationError("XilinxRouteDB header is invalid")
     if value.get("status") not in {"candidate", "pass"}:
@@ -720,8 +729,9 @@ def validate_xilinx_route_db(
         )
     ):
         raise ValidationError("XilinxRouteDB maximum route delay disagrees")
-    value["status"] = "pass"
-    write_json(path, value, compact=True)
+    if value.get("status") != "pass" or _value is not None:
+        value["status"] = "pass"
+        write_json(path, value, compact=True)
     return {
         "status": "pass", "schema": "emuflow.xilinx-route-validation/v1",
         "nets": checked_nets, "sinks": checked_sinks,

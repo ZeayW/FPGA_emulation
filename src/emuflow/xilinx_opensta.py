@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 import tempfile
@@ -11,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .ir import EmuIR
 from .opensta import (
     DEFAULT_TIMING_MODEL,
@@ -33,11 +32,7 @@ _RAM_TYPES = {"RAMB18E2", "RAMB36E2", "URAM288"}
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _pin_identity(instance: str, pin: str) -> tuple[str, str, int]:
@@ -84,6 +79,8 @@ def _scalar_pins(pins: set[tuple[str, int]]) -> list[str]:
 def build_xilinx_routed_opensta_inputs(
     mapped_path: Path,
     timing_path: Path,
+    *,
+    timing_validation: Optional[Mapping[str, Any]] = None,
 ) -> tuple[EmuIR, Dict[str, Any], Dict[str, Any]]:
     """Insert one exact routed-delay arc per logical sink.
 
@@ -92,10 +89,22 @@ def build_xilinx_routed_opensta_inputs(
     the two sealed inputs.
     """
 
-    validate_xilinx_routed_timing(timing_path, mapped_path=mapped_path)
+    if timing_validation is None:
+        timing_validation = validate_xilinx_routed_timing(
+            timing_path, mapped_path=mapped_path
+        )
+    if (
+        timing_validation.get("status") != "pass"
+        or timing_validation.get("schema")
+        != "emuflow.xilinx-routed-timing-validation/v1"
+        or timing_validation.get("timing_sha256") != _sha256(timing_path)
+    ):
+        raise ValidationError("RapidWright routed timing validation seal is invalid")
     timing = read_json(timing_path)
     if timing.get("schema") != XILINX_ROUTED_TIMING_SCHEMA:
         raise ValidationError("RapidWright routed timing input has the wrong schema")
+    if timing.get("source", {}).get("mapped_sha256") != _sha256(mapped_path):
+        raise ValidationError("RapidWright routed timing mapped source seal is stale")
     source = import_yosys_json(mapped_path)
     delays: Dict[tuple[str, str, int], float] = {}
     for record in timing["endpoints"]:
@@ -324,9 +333,10 @@ def run_xilinx_routed_opensta(
     executable: Optional[str] = None,
     max_paths: int = 200000,
     log_path: Optional[Path] = None,
+    timing_validation: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     routed_ir, model, metadata = build_xilinx_routed_opensta_inputs(
-        mapped_path, timing_path
+        mapped_path, timing_path, timing_validation=timing_validation
     )
     with tempfile.TemporaryDirectory(prefix="emuflow-rw-opensta-") as temporary:
         root = Path(temporary)

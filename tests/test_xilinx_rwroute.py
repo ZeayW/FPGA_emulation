@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.errors import ValidationError
 from emuflow.xilinx_rwroute import (
@@ -309,6 +310,65 @@ class XilinxRWRouteTest(unittest.TestCase):
             [item["route_delay_ns"] for item in value["endpoints"]],
             [0.012, 0.0275],
         )
+
+    def test_routed_timing_reuses_exact_route_validation_seal(self):
+        mapped = {
+            "modules": {"top": {"cells": {
+                "src": {
+                    "type": "LUT1", "port_directions": {"O": "output"},
+                    "connections": {"O": [1]},
+                },
+                "sink_a": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [1]},
+                },
+                "sink_b": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [1]},
+                },
+            }}}
+        }
+        packed = {"schema": "emuflow.packed-site-netlist/v1", "top": "top"}
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [
+                {"site": "S0", "assignments": [{"instance": "src", "bel": "A6LUT"}]},
+                {"site": "S1", "assignments": [{"instance": "sink_a", "bel": "AFF"}]},
+                {"site": "S2", "assignments": [{"instance": "sink_b", "bel": "AFF"}]},
+            ],
+        }
+        route = self._route()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped_path, packed_path, placement_path = (
+                root / "mapped.json", root / "packed.json", root / "placement.json"
+            )
+            for path, value in (
+                (mapped_path, mapped), (packed_path, packed),
+                (placement_path, placement),
+            ):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            for key, path in (
+                ("mapped_sha256", mapped_path), ("packed_sha256", packed_path),
+                ("placement_sha256", placement_path),
+            ):
+                route["source"][key] = hashlib.sha256(path.read_bytes()).hexdigest()
+            route_path = root / "route.json"
+            route_path.write_text(json.dumps(route), encoding="utf-8")
+            validation = validate_xilinx_route_db(
+                route_path, mapped_path=mapped_path, packed_path=packed_path,
+                placement_path=placement_path,
+            )
+            output = root / "routed-timing.json"
+            with patch(
+                "emuflow.xilinx_timing.validate_xilinx_route_db",
+                side_effect=AssertionError("route validator ran twice"),
+            ):
+                report = build_xilinx_routed_timing(
+                    mapped_path, packed_path, placement_path, route_path, output,
+                    route_validation=validation,
+                )
+        self.assertEqual(report["logical_endpoints"], 2)
 
     def test_exporter_excludes_intra_site_net(self):
         mapped = {

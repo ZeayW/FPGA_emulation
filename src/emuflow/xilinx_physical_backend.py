@@ -26,7 +26,6 @@ from .xilinx_placement import place_xilinx_clusters, validate_xilinx_placement
 from .xilinx_rwroute import (
     export_rwroute_input,
     run_rwroute,
-    validate_xilinx_route_db,
 )
 from .xilinx_segment_timing import (
     build_xilinx_boundary_timing,
@@ -35,7 +34,6 @@ from .xilinx_segment_timing import (
 )
 from .xilinx_timing import (
     build_xilinx_routed_timing,
-    validate_xilinx_routed_timing,
 )
 
 
@@ -222,13 +220,14 @@ def _run_rapidwright_routed_backend_tail(
         device_data_root=device_data_root,
         timing_data_dir=timing_data_dir,
         log_path=output_dir / "rwroute.log",
-    )
-    route_check = validate_xilinx_route_db(
-        route_path,
         mapped_path=mapped_path,
         packed_path=packed_path,
         placement_path=placement_path,
     )
+    route_check = {
+        key: value for key, value in route_report.items()
+        if key not in {"output", "log"}
+    }
     routed_timing_path = output_dir / "routed-timing.json"
     routed_timing = build_xilinx_routed_timing(
         mapped_path,
@@ -236,14 +235,9 @@ def _run_rapidwright_routed_backend_tail(
         placement_path,
         route_path,
         routed_timing_path,
+        route_validation=route_check,
     )
-    timing_check = validate_xilinx_routed_timing(
-        routed_timing_path,
-        mapped_path=mapped_path,
-        packed_path=packed_path,
-        placement_path=placement_path,
-        route_path=route_path,
-    )
+    timing_check = dict(routed_timing)
     mapped_ir = read_json(merged_ir_path)
     clocks = _physical_clock_periods(mapped_ir, runtime)
     path_database_path = output_dir / "opensta-paths.json"
@@ -256,6 +250,7 @@ def _run_rapidwright_routed_backend_tail(
         clocks=clocks,
         executable=opensta,
         log_path=output_dir / "opensta.log",
+        timing_validation=timing_check,
     )
     boundary_timing_path = output_dir / "boundary-timing.json"
     boundary_import = build_xilinx_boundary_timing(

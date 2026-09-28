@@ -1160,6 +1160,16 @@ workers on the same filesystem receive a hard link to that closed immutable
 SQLite contract instead of rescanning every site and rewriting the same rows.
 Partition-specific resource/model declarations remain separate, so sharing
 does not conflate the two logical designs.
+
+The routed physical tail follows the same rule. RWRoute now validates and
+seals its in-memory route object once while publishing it; routed-timing
+binding consumes that exact validation certificate instead of reopening,
+rewriting, and revalidating the often near-gigabyte route database. The timing
+certificate is then passed directly to the selected OpenSTA run. SHA-256
+checks use the same stat-invalidated process cache, so source identity remains
+fail-closed while the normal Phase 7 path performs only the one full route
+parse required to bind physical delays. Standalone validation commands remain
+independent and still perform a fresh semantic check when explicitly invoked.
 The same in-core contract now admits connectivity-derived MUXF7/F8/F9 cones.
 Each cone records exact LUT and MUX BEL roles, offers only complete same-slice
 windows, lets OpenPARF choose the window from global-placement displacement,
