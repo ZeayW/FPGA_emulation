@@ -134,6 +134,49 @@ def _physical_clock_periods(
     return clocks
 
 
+def _compact_openparf_qualification(
+    qualification: Mapping[str, Any], certificate_path: Path
+) -> Dict[str, Any]:
+    """Keep the native certificate authoritative without embedding its payload.
+
+    Real partitions contain hundreds of thousands of atomic assignments.  The
+    independently checked placement certificate therefore belongs in its own
+    scratch artifact; copying its complete ``clusters`` array into every
+    physical report only creates a second large JSON hot path.  The report
+    retains the constant-size certificate identity, source seals, summary, and
+    exact artifact digest needed for audit.
+    """
+
+    certificate = qualification.get("certificate")
+    if qualification.get("status") != "pass" or not isinstance(
+        certificate, Mapping
+    ):
+        raise ValidationError("native OpenPARF qualification is invalid")
+    required = {
+        "schema", "status", "part", "provider", "runtime_validation",
+        "source", "summary",
+    }
+    if not required.issubset(certificate):
+        raise ValidationError(
+            "native OpenPARF placement certificate identity is incomplete"
+        )
+    compact = {
+        key: value for key, value in qualification.items()
+        if key != "certificate"
+    }
+    compact["certificate"] = {
+        key: certificate[key] for key in (
+            "schema", "status", "part", "provider", "runtime_validation",
+            "source", "summary",
+        )
+    }
+    compact["certificate"]["artifact"] = {
+        **_artifact(certificate_path),
+        "bytes": certificate_path.stat().st_size,
+    }
+    return compact
+
+
 def _run_rapidwright_routed_backend_tail(
     *,
     fpga: str,
@@ -527,6 +570,9 @@ def run_rapidwright_openparf_native_candidate_backend(
         architecture=architecture,
     )
     certificate_path = qualification_root / "placement-certificate.json"
+    compact_qualification = _compact_openparf_qualification(
+        qualification, certificate_path
+    )
     packed_path = output_dir / "packed-sites.json"
     placement_path = output_dir / "placement.json"
     bridge = materialize_xilinx_openparf_atomic_contract(
@@ -589,7 +635,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         },
         placement_stage={
             "region": {"scope": "openparf-native-full-device"},
-            "native_openparf": qualification,
+            "native_openparf": compact_qualification,
             "bridge": bridge,
             "result": placement["summary"],
             "validation": placement_check,

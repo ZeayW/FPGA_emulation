@@ -1297,6 +1297,13 @@ sealed CARRY_NEXT chains are clipped only at reserved-site gaps, so neither
 ordinary logic nor typed hard blocks can consume routing headroom that the
 independent gate will later reject.  Renewed routing and OpenSTA qualification
 are still pending, so no final Phase 7 QoR is claimed yet.
+The independently checked atomic placement certificate remains a standalone
+scratch artifact because a real DLA partition contains hundreds of thousands
+of assignments.  Per-FPGA physical reports no longer embed a second copy of
+that assignment payload: they retain only its schema/provider identity, source
+seals, constant-size resource summary, byte count, and SHA-256.  This preserves
+the exact audit boundary while removing a tens-of-megabytes JSON serialization
+and parse path from terminal report generation.
 The internal
 `probe_xilinx_openparf_carry_native_support` qualification API separates the
 source audit from runtime qualification against a two-CARRY8 macro contract
