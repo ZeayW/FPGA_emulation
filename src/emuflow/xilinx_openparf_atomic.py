@@ -44,7 +44,9 @@ OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
 OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v2"
 OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v1"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
-OPENPARF_ATOMIC_PROVIDER = "openparf-native-mcf-direct-lg-ism-atomic-v1"
+OPENPARF_ATOMIC_PROVIDER = (
+    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v2"
+)
 XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-site-database/v1"
 )
@@ -85,6 +87,10 @@ _FF_ENABLE = "CE"
 _FF_SR = {"FDCE": "R", "FDRE": "R", "FDPE": "S", "FDSE": "S"}
 _TARGET_DENSITY = 0.75
 _CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
+_ROUTABILITY_ADJUSTMENT_ITERATIONS = 6
+_ROUTE_AREA_ADJUSTMENT_EXPONENT = 2.0
+_MAX_ROUTE_AREA_ADJUSTMENT_RATE = 2.0
+_MAX_PIN_AREA_ADJUSTMENT_RATE = 1.6
 _LOGIC_FILLER_LIMIT = 65_536
 _CLOCK_REGION_NAME = re.compile(r"^X([0-9]+)Y([0-9]+)$")
 _MAX_CLOCKS_PER_REGION = 24
@@ -2166,8 +2172,26 @@ def export_xilinx_openparf_atomic(
         # position, so native direct legalization must never consume it.
         "allow_paired_luts": 0,
         "num_ControlSets_per_CLB": 2,
-        "gp_adjust_area": 0, "gp_adjust_area_types": [],
-        "gp_adjust_route_area": 0, "gp_adjust_pin_area": 0,
+        # OpenPARF's native ISPD flow applies RUDY- and pin-utilization-aware
+        # inflation to LUT/FF area types before exact legalization.  Leaving
+        # this disabled is not a neutral simplification: a sparse whole-device
+        # design can collapse into a few locally full clock regions, producing
+        # a legal placement with catastrophic negotiated-routing overlap.
+        # Keep hard blocks out of this analytical adjustment; their exact
+        # source-sealed windows remain owned by the typed macro legalizer.
+        "gp_adjust_area": 1, "gp_adjust_area_types": ["LUT", "FF"],
+        "gp_max_adjust_area_iters": _ROUTABILITY_ADJUSTMENT_ITERATIONS,
+        "gp_adjust_route_area": 1,
+        "gp_adjust_area_route_opt_adjust_exponent": (
+            _ROUTE_AREA_ADJUSTMENT_EXPONENT
+        ),
+        "gp_adjust_area_max_route_opt_adjust_rate": (
+            _MAX_ROUTE_AREA_ADJUSTMENT_RATE
+        ),
+        "gp_adjust_pin_area": 1,
+        "gp_adjust_area_max_pin_opt_adjust_rate": (
+            _MAX_PIN_AREA_ADJUSTMENT_RATE
+        ),
         "gp_adjust_resource_area": 0,
         # CLOCKREGIONS remains part of the source-sealed Bookshelf database,
         # but native enforcement stays off until clock-source primitives and
@@ -2641,6 +2665,15 @@ def export_xilinx_openparf_atomic(
         "clock_region_contract": coordinate_system["clock_regions"],
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
+        "routability_contract": {
+            "provider": "openparf-rudy-pin-area-inflation-v1",
+            "area_types": ["LUT", "FF"],
+            "maximum_iterations": _ROUTABILITY_ADJUSTMENT_ITERATIONS,
+            "route_adjustment_exponent": _ROUTE_AREA_ADJUSTMENT_EXPONENT,
+            "maximum_route_adjustment_rate": _MAX_ROUTE_AREA_ADJUSTMENT_RATE,
+            "maximum_pin_adjustment_rate": _MAX_PIN_AREA_ADJUSTMENT_RATE,
+            "resource_area_adjustment": False,
+        },
         "runtime_validation": "unverified",
         "constraint_policy": {
             "ordinary_slice_clusters_are_repackable": True,

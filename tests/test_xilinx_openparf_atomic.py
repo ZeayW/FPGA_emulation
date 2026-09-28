@@ -510,6 +510,24 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["global_place_flag"], 1)
         self.assertEqual(config["legalize_flag"], 1)
         self.assertEqual(config["detailed_place_flag"], 1)
+        self.assertEqual(config["gp_adjust_area"], 1)
+        self.assertEqual(config["gp_adjust_area_types"], ["LUT", "FF"])
+        self.assertEqual(config["gp_max_adjust_area_iters"], 6)
+        self.assertEqual(config["gp_adjust_route_area"], 1)
+        self.assertEqual(config["gp_adjust_area_route_opt_adjust_exponent"], 2.0)
+        self.assertEqual(config["gp_adjust_area_max_route_opt_adjust_rate"], 2.0)
+        self.assertEqual(config["gp_adjust_pin_area"], 1)
+        self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
+        self.assertEqual(config["gp_adjust_resource_area"], 0)
+        self.assertEqual(manifest["routability_contract"], {
+            "provider": "openparf-rudy-pin-area-inflation-v1",
+            "area_types": ["LUT", "FF"],
+            "maximum_iterations": 6,
+            "route_adjustment_exponent": 2.0,
+            "maximum_route_adjustment_rate": 2.0,
+            "maximum_pin_adjustment_rate": 1.6,
+            "resource_area_adjustment": False,
+        })
         self.assertNotIn("fallback", config)
 
     def test_clock_region_grid_is_exported_without_unsafe_native_enforcement(self):

@@ -1295,8 +1295,16 @@ derates the legal site inventory itself to at most 75% for every
 legalizer runs.  Retained sites form contiguous vertical runs, and source-
 sealed CARRY_NEXT chains are clipped only at reserved-site gaps, so neither
 ordinary logic nor typed hard blocks can consume routing headroom that the
-independent gate will later reject.  Renewed routing and OpenSTA qualification
-are still pending, so no final Phase 7 QoR is claimed yet.
+independent gate will later reject.  The first DLA-medium route using that
+inventory still concentrated roughly 80% of occupied sites in six clock
+regions and produced 765k/841k overlapping routing nodes after RWRoute's first
+negotiated-congestion iteration.  That run is diagnostic evidence, not an
+acceptance result.  The version-2 native provider therefore also enables
+OpenPARF's upstream RUDY routing-utilization and pin-density area inflation for
+the LUT and FF area types, using the published ISPD-style six adjustment
+stages; DSP/BRAM/URAM and exact macro legality remain owned by their
+source-sealed legalizers.  Renewed routing and OpenSTA qualification of this
+route-aware provider are pending, so no final Phase 7 QoR is claimed yet.
 The independently checked atomic placement certificate remains a standalone
 scratch artifact because a real DLA partition contains hundreds of thousands
 of assignments.  Per-FPGA physical reports no longer embed a second copy of
