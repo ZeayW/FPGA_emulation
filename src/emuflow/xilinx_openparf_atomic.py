@@ -45,7 +45,7 @@ OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v2"
 OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v1"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = (
-    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v2"
+    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v3"
 )
 XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-site-database/v1"
@@ -87,6 +87,8 @@ _FF_ENABLE = "CE"
 _FF_SR = {"FDCE": "R", "FDRE": "R", "FDPE": "S", "FDSE": "S"}
 _TARGET_DENSITY = 0.75
 _CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
+_GLOBAL_PLACEMENT_STOP_OVERFLOW = 0.10
+_ROUTABILITY_ADJUSTMENT_OVERFLOW_THRESHOLD = 0.15
 _ROUTABILITY_ADJUSTMENT_ITERATIONS = 6
 _ROUTE_AREA_ADJUSTMENT_EXPONENT = 2.0
 _MAX_ROUTE_AREA_ADJUSTMENT_RATE = 2.0
@@ -2145,6 +2147,12 @@ def export_xilinx_openparf_atomic(
         "benchmark_format": "bookshelf", "architecture_name": "ultrascale",
         "aux_input": str((output_dir / "design.aux").resolve()),
         "gpu": 0, "dtype": "float64", "target_density": _TARGET_DENSITY,
+        # Match the upstream ISPD reference recipes. OpenPARF's generic
+        # default stops global placement at overflow 0.20, but its native
+        # routability adjustment is only eligible at overflow <= 0.15. If
+        # stop_overflow is implicit, RUDY/pin inflation is enabled in the
+        # configuration yet never executes on a realistic design.
+        "stop_overflow": _GLOBAL_PLACEMENT_STOP_OVERFLOW,
         "random_seed": 1000, "max_global_place_iters": 2000,
         "global_place_flag": 1, "legalize_flag": 1,
         "detailed_place_flag": 1, "generic_cluster_placement_flag": 0,
@@ -2181,6 +2189,9 @@ def export_xilinx_openparf_atomic(
         # source-sealed windows remain owned by the typed macro legalizer.
         "gp_adjust_area": 1, "gp_adjust_area_types": ["LUT", "FF"],
         "gp_max_adjust_area_iters": _ROUTABILITY_ADJUSTMENT_ITERATIONS,
+        "gp_adjust_area_overflow_threshold": (
+            _ROUTABILITY_ADJUSTMENT_OVERFLOW_THRESHOLD
+        ),
         "gp_adjust_route_area": 1,
         "gp_adjust_area_route_opt_adjust_exponent": (
             _ROUTE_AREA_ADJUSTMENT_EXPONENT
@@ -2666,8 +2677,14 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-area-inflation-v1",
+            "provider": "openparf-rudy-pin-area-inflation-v2",
             "area_types": ["LUT", "FF"],
+            "global_placement_stop_overflow": (
+                _GLOBAL_PLACEMENT_STOP_OVERFLOW
+            ),
+            "adjustment_overflow_threshold": (
+                _ROUTABILITY_ADJUSTMENT_OVERFLOW_THRESHOLD
+            ),
             "maximum_iterations": _ROUTABILITY_ADJUSTMENT_ITERATIONS,
             "route_adjustment_exponent": _ROUTE_AREA_ADJUSTMENT_EXPONENT,
             "maximum_route_adjustment_rate": _MAX_ROUTE_AREA_ADJUSTMENT_RATE,

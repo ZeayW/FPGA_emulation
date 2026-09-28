@@ -4767,7 +4767,12 @@ coordinate: that key distinguishes multiple sites in one tile but would
 stretch horizontal distance by `site_stride` and corrupt the wirelength
 objective.  The continuous driver emits a compact convergence
 certificate and fails closed when any populated non-I/O area type remains
-above OpenPARF's declared guidance limit.  This preserves OpenPARF's own
+above OpenPARF's declared guidance limit.  It explicitly pins the upstream
+ISPD reference stopping rule (`stop_overflow=0.10`) and the native
+routability-adjustment threshold (`0.15`).  This ordering is essential:
+OpenPARF's generic `0.20` stopping default would otherwise terminate global
+placement before an enabled RUDY or pin-density adjustment can execute.  This
+preserves OpenPARF's own
 two-tier rule: packed slice logic must reach `stop_overflow`, while sparse
 single-site DSP/BRAM resources may use at most twice that value before the
 exact Xilinx legalizer.  The driver stops at the first valid point so continued
