@@ -423,8 +423,15 @@ def import_sta_path_database_tsv(
     *,
     provider: str,
     source: Optional[Mapping[str, Any]] = None,
+    _ir: Optional[EmuIR] = None,
+    _return_value: bool = False,
 ) -> Dict[str, Any]:
-    ir = EmuIR.load(ir_path)
+    # Large physical timing graphs can exceed hundreds of MiB.  The OpenSTA
+    # producer already owns the validated EmuIR object, so let that producer
+    # pass the object through rather than reparsing the same JSON solely for
+    # TSV import.  The private arguments deliberately stay out of the public
+    # CLI contract; ordinary standalone callers retain the path-based load.
+    ir = _ir if _ir is not None else EmuIR.load(ir_path)
     known_nets = {net["id"] for net in ir.value["nets"]}
     object_index = sta_object_index(ir)
     instances_by_id = (
@@ -565,7 +572,7 @@ def import_sta_path_database_tsv(
         "paths": paths,
     }
     write_json(output_path, artifact)
-    return {
+    result = {
         "status": "pass",
         "design": artifact["design"],
         "paths": len(paths),
@@ -577,6 +584,9 @@ def import_sta_path_database_tsv(
         ),
         "output": str(output_path),
     }
+    if _return_value:
+        result["_value"] = artifact
+    return result
 
 
 def import_vivado_path_database_tsv(

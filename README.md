@@ -2162,6 +2162,17 @@ The cache exists only for that process: every later standalone validator starts
 a fresh session and therefore still detects filesystem changes. This avoids
 quadratic NFS reads without converting a previous run's `pass` label into trust.
 
+The routed-Xilinx OpenSTA path follows the same single-process rule.  The
+OpenSTA exporter loads the staged routed EmuIR once, reuses that exact object
+while importing and validating the path TSV, and passes the newly produced
+path database directly to the routed-timing summary validator.  It does not
+reparse the routed EmuIR or the potentially large path JSON merely to compute
+QoR or to repeat the producer's validation.  A later standalone validation
+still reloads both artifacts and remains an independent filesystem check.
+Boundary, Static Exact logic-segment, and same-FPGA local-path timing likewise
+share one routed-Xilinx graph load inside the physical backend instead of
+parsing the same mapped netlist once per projection.
+
 Managed execution also enforces a runtime budget at every phase boundary.
 Producer checks are limited to local schema/legality invariants and one linear
 in-memory pass over newly produced data. Expensive semantic reconstruction is

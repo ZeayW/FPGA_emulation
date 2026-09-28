@@ -3,9 +3,11 @@ import json
 import tempfile
 from pathlib import Path
 
+import emuflow.xilinx_segment_timing as xilinx_segment_timing
 from emuflow.xilinx_segment_timing import (
     build_xilinx_boundary_timing,
     build_xilinx_local_path_timing,
+    build_xilinx_segment_timing_bundle,
 )
 
 
@@ -235,3 +237,52 @@ def test_local_path_timing_is_source_bound_and_uses_routed_graph():
         "endpoint-longest-path-fallback": 1,
     }
     assert abs(database["paths"][0]["delay_ns"] - 0.595) < 1e-12
+
+
+def test_segment_timing_bundle_loads_the_routed_graph_once(
+    monkeypatch, tmp_path,
+):
+    graph = object()
+    loads = []
+    projections = []
+
+    def load_graph(mapped_path, timing_path):
+        loads.append((mapped_path, timing_path))
+        return graph
+
+    def project(name):
+        def implementation(*_args, _timing_graph=None, **_kwargs):
+            assert _timing_graph is graph
+            projections.append(name)
+            return {"status": "pass", "kind": name}
+        return implementation
+
+    monkeypatch.setattr(xilinx_segment_timing, "_graph", load_graph)
+    monkeypatch.setattr(
+        xilinx_segment_timing,
+        "build_xilinx_boundary_timing",
+        project("boundary"),
+    )
+    monkeypatch.setattr(
+        xilinx_segment_timing,
+        "build_xilinx_logic_segment_timing",
+        project("logic_segment"),
+    )
+    monkeypatch.setattr(
+        xilinx_segment_timing,
+        "build_xilinx_local_path_timing",
+        project("local_path"),
+    )
+    result = build_xilinx_segment_timing_bundle(
+        boundary_identity_path=tmp_path / "boundary-identity.json",
+        mapped_path=tmp_path / "mapped.json",
+        timing_path=tmp_path / "timing.json",
+        boundary_output_path=tmp_path / "boundary.json",
+        logic_identity_path=tmp_path / "logic-identity.json",
+        logic_output_path=tmp_path / "logic.json",
+        local_identity_path=tmp_path / "local-identity.json",
+        local_output_path=tmp_path / "local.json",
+    )
+    assert len(loads) == 1
+    assert projections == ["boundary", "logic_segment", "local_path"]
+    assert set(result) == {"boundary", "logic_segment", "local_path"}

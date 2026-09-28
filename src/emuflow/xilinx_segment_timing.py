@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Sequence, Tuple
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from .boundary_timing import (
     build_boundary_timing_database,
@@ -215,9 +215,15 @@ def build_xilinx_boundary_timing(
     mapped_path: Path,
     timing_path: Path,
     output_path: Path,
+    *,
+    _timing_graph: Optional[_TimingGraph] = None,
 ) -> Dict[str, Any]:
     identity = read_json(identity_path)
-    graph = _graph(mapped_path, timing_path)
+    graph = (
+        _timing_graph
+        if _timing_graph is not None
+        else _graph(mapped_path, timing_path)
+    )
     measurements = {}
     graph_nodes = set(graph.edges) | set(graph.reverse)
     tx_solution = None
@@ -278,10 +284,16 @@ def build_xilinx_logic_segment_timing(
     mapped_path: Path,
     timing_path: Path,
     output_path: Path,
+    *,
+    _timing_graph: Optional[_TimingGraph] = None,
 ) -> Dict[str, Any]:
     identity = read_json(identity_path)
     validate_logic_segment_identity(identity)
-    graph = _graph(mapped_path, timing_path)
+    graph = (
+        _timing_graph
+        if _timing_graph is not None
+        else _graph(mapped_path, timing_path)
+    )
     records = []
     for segment in identity["segments"]:
         delay, actual_start = graph.longest(
@@ -325,11 +337,17 @@ def build_xilinx_local_path_timing(
     mapped_path: Path,
     timing_path: Path,
     output_path: Path,
+    *,
+    _timing_graph: Optional[_TimingGraph] = None,
 ) -> Dict[str, Any]:
     """Measure all original same-FPGA paths on the routed Xilinx graph."""
     identity = read_json(identity_path)
     validate_local_path_identity(identity)
-    graph = _graph(mapped_path, timing_path)
+    graph = (
+        _timing_graph
+        if _timing_graph is not None
+        else _graph(mapped_path, timing_path)
+    )
     records = []
     for path in identity["paths"]:
         delay, _actual_start = graph.longest(
@@ -354,3 +372,60 @@ def build_xilinx_local_path_timing(
     validation = validate_local_path_timing(database)
     write_json(output_path, database)
     return {**validation, "output": str(output_path)}
+
+
+def build_xilinx_segment_timing_bundle(
+    *,
+    boundary_identity_path: Path,
+    mapped_path: Path,
+    timing_path: Path,
+    boundary_output_path: Path,
+    logic_identity_path: Optional[Path] = None,
+    logic_output_path: Optional[Path] = None,
+    local_identity_path: Optional[Path] = None,
+    local_output_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Build all requested physical timing views from one routed graph.
+
+    Boundary, Static Exact logic-segment, and same-FPGA local-path timing are
+    three projections of the same mapped netlist and routed endpoint database.
+    Loading that graph independently for every projection multiplies a large
+    JSON parse without adding validation.  This bundle keeps the standalone
+    builders intact while giving the production backend one canonical load.
+    """
+
+    if (logic_identity_path is None) != (logic_output_path is None):
+        raise ValidationError(
+            "logic segment identity and output must be provided together"
+        )
+    if (local_identity_path is None) != (local_output_path is None):
+        raise ValidationError(
+            "local path identity and output must be provided together"
+        )
+    graph = _graph(mapped_path, timing_path)
+    result: Dict[str, Any] = {
+        "boundary": build_xilinx_boundary_timing(
+            boundary_identity_path,
+            mapped_path,
+            timing_path,
+            boundary_output_path,
+            _timing_graph=graph,
+        )
+    }
+    if logic_identity_path is not None and logic_output_path is not None:
+        result["logic_segment"] = build_xilinx_logic_segment_timing(
+            logic_identity_path,
+            mapped_path,
+            timing_path,
+            logic_output_path,
+            _timing_graph=graph,
+        )
+    if local_identity_path is not None and local_output_path is not None:
+        result["local_path"] = build_xilinx_local_path_timing(
+            local_identity_path,
+            mapped_path,
+            timing_path,
+            local_output_path,
+            _timing_graph=graph,
+        )
+    return result

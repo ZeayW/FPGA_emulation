@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import emuflow.xilinx_opensta as xilinx_opensta
 from emuflow.errors import ValidationError
 from emuflow.xilinx_opensta import (
     build_xilinx_routed_opensta_inputs,
@@ -115,6 +116,7 @@ def test_routed_opensta_staging_inserts_one_exact_delay_per_sink():
             if instance["type"].startswith("EMUFLOW_RW_ROUTE_DELAY_")
         ]
         assert len(delay_instances) == 1
+        assert metadata["logical_route_endpoints"] == 1
         assert metadata["inserted_route_delay_cells"] == 1
         assert model["cells"][delay_instances[0]["type"]]["delay_ns"] == 0.123
         assert model["cells"]["LUT1"]["delay_ns"] == 0.07
@@ -224,3 +226,42 @@ def test_opensta_summary_recomputes_wns_and_tns():
         )
         assert checked["wns_ns"] == -2.0
         assert checked["tns_ns"] == -2.5
+
+
+def test_opensta_summary_reuses_preloaded_path_database(monkeypatch):
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        output = root / "paths.json"
+        database = {"paths": [
+            {"slack_ns": -1.25}, {"slack_ns": 0.75},
+        ]}
+        output.write_text(json.dumps(database), encoding="utf-8")
+        summary = root / "summary.json"
+        summary.write_text(json.dumps({
+            "schema": "emuflow.xilinx-routed-opensta-summary/v1",
+            "status": "pass",
+            "authority": "opensta",
+            "source": {
+                "mapped_sha256": "0" * 64,
+                "routed_timing_sha256": "1" * 64,
+                "timing_path_database_sha256": _sha(output),
+            },
+            "qor": {
+                "wns_ns": -1.25,
+                "tns_ns": -1.25,
+                "failing_endpoints": 1,
+                "timed_endpoints": 2,
+            },
+        }), encoding="utf-8")
+        original_read_json = xilinx_opensta.read_json
+
+        def guarded_read_json(path):
+            if Path(path) == output:
+                raise AssertionError("preloaded path database was reparsed")
+            return original_read_json(path)
+
+        monkeypatch.setattr(xilinx_opensta, "read_json", guarded_read_json)
+        checked = validate_xilinx_routed_opensta_summary(
+            summary, output_path=output, _database=database,
+        )
+        assert checked["wns_ns"] == -1.25

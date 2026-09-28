@@ -20,7 +20,7 @@ from .opensta import (
 )
 from .native_tools import resolve_native_executable
 from .resources import ResourceVector
-from .sta import validate_sta_path_database
+from .sta import validate_sta_path_database_value
 from .xilinx_timing import (
     XILINX_ROUTED_TIMING_SCHEMA,
     validate_xilinx_routed_timing,
@@ -272,15 +272,15 @@ def build_xilinx_routed_opensta_inputs(
             hard_blocks.append(cell_type)
             continue
         if cell_type.startswith("EMUFLOW_RW_ROUTE_DELAY_"):
-            delays = {
+            instance_delays = {
                 float(instance["attributes"]["emuflow_route_delay_ns"])
                 for instance in typed_instances
             }
-            if len(delays) != 1:
+            if len(instance_delays) != 1:
                 raise ValidationError(
                     "shared routed-delay timing cell type has unequal delays"
                 )
-            delay = delays.pop()
+            delay = instance_delays.pop()
             model["cells"][cell_type] = {
                 "kind": "combinational", "inputs": ["A"],
                 "output": "Y", "delay_ns": delay,
@@ -356,13 +356,13 @@ def run_xilinx_routed_opensta(
             ir_path, output_path, clocks=clocks,
             timing_model_path=model_path, executable=opensta,
             max_paths=max_paths, log_path=log_path,
+            _return_database=True,
         )
-        validate_sta_path_database(output_path, ir_path)
+        database = report.pop("_database")
     if report["path_limit_reached"]:
         raise ValidationError(
             "RapidWright OpenSTA path limit was reached; global TNS is incomplete"
         )
-    database = read_json(output_path)
     summary = {
         "schema": XILINX_ROUTED_OPENSTA_SCHEMA,
         "status": "pass",
@@ -382,6 +382,7 @@ def run_xilinx_routed_opensta(
     return validate_xilinx_routed_opensta_summary(
         summary_path, output_path=output_path,
         mapped_path=mapped_path, timing_path=timing_path,
+        _database=database,
     )
 
 
@@ -391,6 +392,7 @@ def validate_xilinx_routed_opensta_summary(
     output_path: Path,
     mapped_path: Optional[Path] = None,
     timing_path: Optional[Path] = None,
+    _database: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     value = read_json(summary_path)
     if value.get("schema") != XILINX_ROUTED_OPENSTA_SCHEMA or value.get("status") != "pass":
@@ -406,7 +408,9 @@ def validate_xilinx_routed_opensta_summary(
             raise ValidationError(f"RapidWright OpenSTA source.{field} is invalid")
         if path is not None and digest != _sha256(path):
             raise ValidationError(f"RapidWright OpenSTA source.{field} disagrees")
-    database = read_json(output_path)
+    database = (
+        _database if _database is not None else read_json(output_path)
+    )
     recomputed = _qor(database)
     reported = value.get("qor")
     if not isinstance(reported, dict):

@@ -19,7 +19,7 @@ from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .sta import (
     import_sta_path_database_tsv,
-    validate_sta_path_database,
+    validate_sta_path_database_value,
     write_emuir_net_map,
 )
 from .verilog import mapped_verilog
@@ -1384,6 +1384,7 @@ def run_opensta_path_database(
     through_nets: Optional[Sequence[str]] = None,
     through_coverage_path: Optional[Path] = None,
     validate_output: bool = True,
+    _return_database: bool = False,
 ) -> Dict[str, Any]:
     if max_paths <= 0:
         raise ValidationError("OpenSTA max_paths must be positive")
@@ -1531,7 +1532,10 @@ def run_opensta_path_database(
                     else None
                 ),
             },
+            _ir=ir,
+            _return_value=True,
         )
+        database = imported.pop("_value")
 
         through_query_records = (
             _read_through_coverage_tsv(
@@ -1542,14 +1546,13 @@ def run_opensta_path_database(
         )
 
     checked = (
-        validate_sta_path_database(output_path, ir_path)
+        validate_sta_path_database_value(database, ir)
         if validate_output
         else {"status": "deferred-to-managed-stage"}
     )
     covered_through_nets = []
     through_coverage: Dict[str, Any] | None = None
     if through_net_ids:
-        database = read_json(output_path)
         path_nets = {
             net
             for path in database["paths"]
@@ -1615,7 +1618,7 @@ def run_opensta_path_database(
         }
         if through_coverage_path is not None:
             write_json(through_coverage_path, through_coverage)
-    return {
+    result = {
         "status": "pass",
         "design": ir.value["design"]["name"],
         "provider": OPENSTA_PROVIDER,
@@ -1635,3 +1638,6 @@ def run_opensta_path_database(
         "output": str(output_path),
         "log": str(log_path) if log_path is not None else None,
     }
+    if _return_database:
+        result["_database"] = database
+    return result

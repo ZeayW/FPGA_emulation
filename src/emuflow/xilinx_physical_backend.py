@@ -28,9 +28,7 @@ from .xilinx_rwroute import (
     run_rwroute,
 )
 from .xilinx_segment_timing import (
-    build_xilinx_boundary_timing,
-    build_xilinx_local_path_timing,
-    build_xilinx_logic_segment_timing,
+    build_xilinx_segment_timing_bundle,
 )
 from .xilinx_timing import (
     build_xilinx_routed_timing,
@@ -253,32 +251,33 @@ def _run_rapidwright_routed_backend_tail(
         timing_validation=timing_check,
     )
     boundary_timing_path = output_dir / "boundary-timing.json"
-    boundary_import = build_xilinx_boundary_timing(
-        boundary_identity_path,
-        mapped_path,
-        routed_timing_path,
-        boundary_timing_path,
+    logic_timing_path = (
+        output_dir / "logic-segment-timing.json"
+        if logic_identity_path is not None else None
     )
-    logic_stage = None
-    if logic_identity_path is not None:
-        logic_timing_path = output_dir / "logic-segment-timing.json"
-        logic_import = build_xilinx_logic_segment_timing(
-            logic_identity_path,
-            mapped_path,
-            routed_timing_path,
-            logic_timing_path,
-        )
-        logic_stage = {"status": "pass", "import": logic_import}
-    local_stage = None
-    if local_identity_path is not None:
-        local_timing_path = output_dir / "local-path-timing.json"
-        local_import = build_xilinx_local_path_timing(
-            local_identity_path,
-            mapped_path,
-            routed_timing_path,
-            local_timing_path,
-        )
-        local_stage = {"status": "pass", "import": local_import}
+    local_timing_path = (
+        output_dir / "local-path-timing.json"
+        if local_identity_path is not None else None
+    )
+    segment_imports = build_xilinx_segment_timing_bundle(
+        boundary_identity_path=boundary_identity_path,
+        mapped_path=mapped_path,
+        timing_path=routed_timing_path,
+        boundary_output_path=boundary_timing_path,
+        logic_identity_path=logic_identity_path,
+        logic_output_path=logic_timing_path,
+        local_identity_path=local_identity_path,
+        local_output_path=local_timing_path,
+    )
+    boundary_import = segment_imports["boundary"]
+    logic_stage = (
+        {"status": "pass", "import": segment_imports["logic_segment"]}
+        if "logic_segment" in segment_imports else None
+    )
+    local_stage = (
+        {"status": "pass", "import": segment_imports["local_path"]}
+        if "local_path" in segment_imports else None
+    )
 
     opensta_database = read_json(path_database_path)
     critical_path_ns = max(
