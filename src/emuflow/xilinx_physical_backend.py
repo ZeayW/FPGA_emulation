@@ -573,6 +573,9 @@ def run_rapidwright_openparf_native_candidate_backend(
     compact_qualification = _compact_openparf_qualification(
         qualification, certificate_path
     )
+    # The serialized certificate remains the independently checked boundary.
+    # The complete Python assignment tree is not needed during RWRoute/OpenSTA.
+    del qualification
     packed_path = output_dir / "packed-sites.json"
     placement_path = output_dir / "placement.json"
     bridge = materialize_xilinx_openparf_atomic_contract(
