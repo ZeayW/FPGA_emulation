@@ -7,6 +7,7 @@ from pathlib import Path
 from emuflow.errors import ValidationError
 from emuflow.xilinx_openparf_atomic import (
     export_xilinx_openparf_atomic,
+    load_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_sites,
     validate_xilinx_openparf_atomic_placement,
 )
@@ -17,6 +18,15 @@ from emuflow.xilinx_packing import validate_xilinx_packing
 from emuflow.xilinx_placement import validate_xilinx_placement
 from emuflow.xilinx_rwroute import export_rwroute_input
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
+
+
+def _inline_certificate(path: Path):
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["clusters"] = load_xilinx_openparf_atomic_placement_clusters(
+        path, value
+    )
+    value.pop("cluster_storage", None)
+    return value
 
 
 def _native_certificate(
@@ -70,8 +80,10 @@ def _native_certificate(
         architecture, certificate_path,
     )
     certificate["runtime_validation"] = "native-openparf"
+    persisted = json.loads(certificate_path.read_text(encoding="utf-8"))
+    persisted["runtime_validation"] = "native-openparf"
     certificate_path.write_text(
-        json.dumps(certificate, sort_keys=True), encoding="utf-8"
+        json.dumps(persisted, sort_keys=True), encoding="utf-8"
     )
     return mapped, architecture, certificate_path
 
@@ -166,7 +178,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             mapped, architecture, certificate = _native_certificate(
                 root, include_hard=False
             )
-            value = json.loads(certificate.read_text())
+            value = _inline_certificate(certificate)
             value["clusters"][0]["assignments"].pop()
             certificate.write_text(json.dumps(value), encoding="utf-8")
             packed = root / "converted-packed.json"
@@ -184,7 +196,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             mapped, architecture, certificate = _native_certificate(
                 root, include_hard=False
             )
-            value = json.loads(certificate.read_text())
+            value = _inline_certificate(certificate)
             assignment = value["clusters"][0]["assignments"][0]
             assignment["bel"] = "NOT_A_BEL"
             certificate.write_text(json.dumps(value), encoding="utf-8")
@@ -231,7 +243,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             mapped, architecture, certificate = _native_certificate(
                 root, include_hard=False
             )
-            value = json.loads(certificate.read_text())
+            value = _inline_certificate(certificate)
             value["clusters"].append(dict(value["clusters"][0]))
             certificate.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "duplicate physical site"):

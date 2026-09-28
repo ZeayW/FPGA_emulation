@@ -18,11 +18,13 @@ from emuflow.xilinx_placer_capability import (
 from emuflow.yosys import import_yosys_json
 from emuflow.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_MANIFEST_SCHEMA,
+    OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_SOURCE_SCHEMA,
     OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA,
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
+    load_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_sites,
     run_xilinx_openparf_atomic_qualification,
     validate_xilinx_openparf_atomic_placement,
@@ -1035,6 +1037,42 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(
             {item["source_cluster"] for item in assignments}, {"ordinary"}
         )
+
+    def test_import_persists_compact_queryable_certificate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "placed.pl"
+            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+            certificate_path = output / "certificate.json"
+            returned = validate_xilinx_openparf_atomic_placement(
+                placement,
+                output / "name_map.json",
+                mapped,
+                architecture,
+                certificate_path,
+            )
+            persisted = json.loads(certificate_path.read_text(encoding="utf-8"))
+            self.assertNotIn("clusters", persisted)
+            self.assertEqual(
+                persisted["cluster_storage"]["schema"],
+                OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
+            )
+            self.assertEqual(
+                load_xilinx_openparf_atomic_placement_clusters(
+                    certificate_path, persisted
+                ),
+                returned["clusters"],
+            )
+            database_path = output / persisted["cluster_storage"]["file"]
+            with database_path.open("ab") as stream:
+                stream.write(b"tamper")
+            with self.assertRaisesRegex(ValidationError, "database seal"):
+                load_xilinx_openparf_atomic_placement_clusters(
+                    certificate_path, persisted
+                )
 
     def test_even_lut_slot_and_control_set_violation_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:

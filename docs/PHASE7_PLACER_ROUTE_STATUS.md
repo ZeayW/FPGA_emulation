@@ -25,7 +25,7 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 
 | Route | Implemented evidence | Remaining production blockers | Decision |
 |---|---|---|---|
-| OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; bounded MUXF7/8/9, CARRY8, DSP48E2, RAMB18E2/RAMB36E2, and URAM288 fixtures pass exact placement validation, and the resource-covering hard-block fixtures pass the complete physical chain; source-sealed real-device facts cover slice macros, split-BRAM modes, CARRY, DSP, BRAM, and URAM adjacency; renewed Koios DLA medium native placement and independent certification pass on both partitions. Provider v3 pins the upstream ISPD `stop_overflow=0.10` together with the 0.15 adjustment threshold so native RUDY and pin-density inflation execute. Provider v4 additionally replaces the one-step native termination decision with a consecutive feasible settling window, HPWL patience, restoration of the best feasible iterate, and a compact fail-closed convergence certificate | Fresh v4 DLA placement, terminal RWRoute on both partitions, per-partition OpenSTA, and global OpenSTA evidence; authoritative half-column clock limits remain fail-closed | Primary route and only production-eligible candidate; not yet the default until terminal DLA evidence passes |
+| OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; bounded MUXF7/8/9, CARRY8, DSP48E2, RAMB18E2/RAMB36E2, and URAM288 fixtures pass exact placement validation, and the resource-covering hard-block fixtures pass the complete physical chain; source-sealed real-device facts cover slice macros, split-BRAM modes, CARRY, DSP, BRAM, and URAM adjacency; renewed Koios DLA medium native placement and independent certification pass on both partitions. Provider v3 pins the upstream ISPD `stop_overflow=0.10` together with the 0.15 adjustment threshold so native RUDY and pin-density inflation execute. Provider v4 replaces the one-step native termination decision with a consecutive feasible settling window, HPWL patience, restoration of the best feasible iterate, and a compact fail-closed convergence certificate. Fresh v4 placements completed at 8.8232553M and 4.1540576M legal HPWL | Terminal RWRoute on both partitions, per-partition OpenSTA, and global OpenSTA evidence; authoritative half-column clock limits remain fail-closed | Primary route and only production-eligible candidate; not yet the default until terminal DLA evidence passes |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga-native`) | Pinned-source and compiled-runtime gate; mapped/packed/ArchitectureDB to official FPGA Interchange logical netlist; real Cap'n Proto LUT/FF/DSP48E2/RAMB36E2 roundtrip; `.phys` to a packed-cluster-preserving candidate certificate; sealed fail-closed RapidWright boundary | The official supported PyTorch 1.6--1.8 runtime has not completed a native fixture in the current environment; upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
 | AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; opaque PaToH binary replacement; headless runner; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result, and the pinned public runtime is not source-complete |
 
@@ -34,11 +34,15 @@ the shared contract, deterministic comparison gate, and the validated adapter
 work from all three branches.  No branch adds a public CLI selector or changes
 the default provider yet.
 
-Large atomic placement assignments remain in one independently checked scratch
-certificate.  Terminal per-FPGA reports retain only its identity, source seals,
-summary, byte count, and SHA-256; they do not embed a second copy of the full
-cluster payload.  This storage change is common to the selection branch and
-does not weaken the promotion gate.
+Large atomic placement assignments now live in one independently checked,
+byte-sealed SQLite sidecar.  Its compact JSON certificate contains identity,
+source seals, summary, convergence metrics, row counts, byte count, and
+SHA-256; terminal per-FPGA reports do not embed another copy of the cluster
+payload.  The bridge reads the table once in cluster order and indexes sites
+once, replacing both the 60--65 MiB certificate JSON and the previous
+quadratic site lookup.  Historical inline certificates remain readable for
+audit.  This storage change is common to the selection branch and does not
+weaken the promotion gate.
 
 The route-aware-v3 qualification produced one terminal DLA-medium partition:
 first-iteration overlap fell from 840,507 to 215,895 and first-iteration
@@ -49,12 +53,14 @@ without a route artifact after about five hours.  Postmortem evidence showed
 that the failing partition's native placement stopped during a strong
 post-inflation HPWL oscillation and legalized at 8.936M HPWL versus 4.066M for
 the routed sibling.  Provider v4 addresses that general termination-policy
-defect before another router attempt.  These are diagnostic facts, not yet
-default-promotion evidence; renewed placement, both routes, per-partition
-OpenSTA, and global OpenSTA remain required.  The downstream implementation no longer reopens and
-rehashes the near-gigabyte route artifact at every wrapper boundary: the
-single validated route certificate is handed to timing binding, and the
-resulting timing certificate is handed to OpenSTA.
+defect.  Fresh placement passed on both partitions: the 223,389-atom partition
+stopped at iteration 1,699 and legalized to 8.8232553M HPWL; the 240,377-atom
+partition stopped at iteration 1,676 and legalized to 4.1540576M HPWL.  These
+are placement diagnostics, not default-promotion evidence; both routes,
+per-partition OpenSTA, and global OpenSTA remain required.  The downstream
+implementation no longer reopens and rehashes the near-gigabyte route artifact
+at every wrapper boundary: the single validated route certificate is handed
+to timing binding, and the resulting timing certificate is handed to OpenSTA.
 
 ## Promotion sequence
 

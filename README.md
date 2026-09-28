@@ -1327,16 +1327,25 @@ Atomic provider v4 keeps native OpenPARF global placement, legalization, and
 detailed placement, but requires a consecutive feasible settling window,
 waits for bounded HPWL patience, restores the best feasible global-placement
 iterate, and emits a compact convergence certificate.  Hitting the iteration
-ceiling is now a failure, not a successful placement.  Renewed routing and
-OpenSTA qualification of v4 are pending, so no final Phase 7 QoR is claimed.
-The independently checked atomic placement certificate remains a standalone
-scratch artifact because a real DLA partition contains hundreds of thousands
-of assignments.  Per-FPGA physical reports no longer embed a second copy of
-that assignment payload: they retain only its schema/provider identity, source
-seals, constant-size resource summary, byte count, and SHA-256.  This preserves
-the exact audit boundary while removing a tens-of-megabytes JSON serialization
-and parse path from terminal report generation.  The producer also releases
-the full in-memory assignment tree before RWRoute and OpenSTA begin.
+ceiling is now a failure, not a successful placement.  A fresh two-partition
+DLA-medium placement completed with the declared settling rule: the
+223,389-atom partition stopped at iteration 1,699 and legalized to 8.8232553M
+HPWL, while the 240,377-atom partition stopped at iteration 1,676 and legalized
+to 4.1540576M HPWL.  This removes the prior immediate-predecessor termination
+defect, but renewed RWRoute and OpenSTA qualification are still pending, so no
+final Phase 7 QoR is claimed.
+
+The independently checked atomic placement certificate now stores its large
+assignment table in a byte-sealed SQLite sidecar and keeps only identity,
+source seals, constant-size summary, convergence metrics, and the sidecar
+descriptor in the JSON header.  The bridge accepts the historical inline
+certificate but consumes the new table in one indexed pass; it no longer
+performs one full certificate scan for every occupied site.  Per-FPGA reports
+retain only the compact certificate identity and never embed another copy of
+the assignments.  This preserves the exact audit boundary while removing the
+60--65 MiB JSON parse and the former quadratic site lookup from the production
+handoff.  The producer also releases the full in-memory assignment tree before
+RWRoute and OpenSTA begin.
 The shared three-route selection work is maintained on
 `feature/phase7-placer-selection`; it combines the OpenPARF implementation with
 the fail-closed DREAMPlaceFPGA and AMF capability probes without treating an
