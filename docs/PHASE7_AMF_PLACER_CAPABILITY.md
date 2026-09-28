@@ -24,7 +24,12 @@ It is not directly usable by the current open XCVU19P backend:
 - no explicit SLR object or multi-SLR legality model was found in the audited
   public source; and
 - the documented reference platform is VCU108/UltraScale, not a complete
-  XCVU19P/UltraScale+ qualification.
+  XCVU19P/UltraScale+ qualification;
+- the public build downloads a precompiled PaToH archive and the executed
+  cluster-placement path calls that library, so the pinned release is not a
+  source-complete open runtime; and
+- the public executable requires Qt5 Widgets and waits on GUI paint state; a
+  separate headless runner has not been validated.
 
 The production route therefore remains fail-closed. P2 implements and validates
 the three conversion boundaries for a single-SLR, single-clock-region fixture:
@@ -70,6 +75,8 @@ remain blocked.
 | Multi-SLR legality | `core_missing` | no explicit SLR model in the audited public source |
 | Clock legality | `unverified` | clock-region checks exist; CTS is still a public TODO |
 | Vivado-free EmuFlow execution | `adapter_required` | Adapters are Vivado-free; a pinned AMF runner is not integrated |
+| Source-complete runtime | `core_missing` | The build downloads and links opaque `libpatoh.a`, used by cluster placement |
+| Headless runtime | `adapter_required` | The public executable is Qt5/GUI-coupled; no validated headless runner exists |
 
 ## Adapter boundary
 
@@ -113,6 +120,13 @@ that a synthetic fixture qualifies XCVU19P behavior.
 The public core also contains an unconditional PCIE-site lookup during design
 loading. A pinned runner must remove or safely generalize that assumption
 instead of adding a fake PCIE site to an unrelated device fixture.
+
+The PaToH dependency is a harder boundary than ordinary format adaptation. A
+source-complete EmuFlow provider must replace that executed partitioning path
+with an auditable source implementation and requalify the placement result; it
+may not silently download the upstream binary archive. Removing the GUI loop
+is also required before an unattended HPC runner can be considered real AMF
+execution evidence.
 
 ## P2 outcome and next cost
 

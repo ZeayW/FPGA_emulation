@@ -114,10 +114,16 @@ def _source_audit(source_root: Optional[Path]) -> Dict[str, Any]:
 
     required = {
         "readme": Path("README.MD"),
+        "build": Path("src/CMakeLists.txt"),
+        "main": Path("src/app/AMFPlacer/main.cc"),
         "design_types": Path("src/lib/HiFPlacer/designInfo/DesignInfo.h"),
         "design_import": Path("src/lib/HiFPlacer/designInfo/DesignInfo.cc"),
         "device_import": Path("src/lib/HiFPlacer/deviceInfo/DeviceInfo.cc"),
         "flow": Path("src/app/AMFPlacer/AMFPlacer.h"),
+        "patoh_adapter": Path("src/lib/3rdParty/partitionHyperGraph.cc"),
+        "cluster_placer": Path(
+            "src/lib/HiFPlacer/placement/globalPlacement/ClusterPlacer.h"
+        ),
         "packing": Path(
             "src/lib/HiFPlacer/placement/packing/ParallelCLBPacker.h"
         ),
@@ -145,6 +151,21 @@ def _source_audit(source_root: Optional[Path]) -> Dict[str, Any]:
         "final_clb_packing": "ParallelCLBPacker" in text["flow"],
         "detailed_placement": "timingDrivenDetailedPlacement"
         in text["packing"],
+        "downloads_opaque_patoh_archive": (
+            "patoh-Linux-x86_64.tar.gz" in text["build"]
+            and "libpatoh.a" in text["build"]
+        ),
+        "patoh_is_in_execution_path": (
+            '#include "patoh.h"' in text["patoh_adapter"]
+            and "PaToH_Part" in text["patoh_adapter"]
+            and "partitioning based on PaToH" in text["cluster_placer"]
+        ),
+        "qt5_is_required_by_executable": (
+            "find_package(Qt5Widgets REQUIRED)" in text["build"]
+            and "Qt5::Widgets" in text["build"]
+        ),
+        "public_main_waits_for_gui_state": "while (!placer->paintData)"
+        in text["main"],
         "native_primitive_types": all(
             f'"{cell_type}"' in text["design_types"]
             for cell_type in _NATIVE_PRIMITIVES
@@ -230,6 +251,7 @@ def build_amf_placer_adapter_contract() -> Dict[str, Any]:
             "the device requires unqualified multi-SLR or clock legality",
             "the result fails EmuFlow site/BEL/cascade validation",
             "runtime Vivado extraction or Tcl execution is required",
+            "the runtime still downloads or links an opaque PaToH archive",
         ],
         "production_provider_ready": False,
     }
@@ -369,6 +391,21 @@ def probe_amf_placer_capabilities(
             (
                 "standalone AMF can consume extracted files, but EmuFlow must "
                 "replace extraction and Tcl loading",
+            ),
+        ),
+        "source_complete_runtime": _capability(
+            "core_missing",
+            (
+                "the pinned public build downloads a precompiled PaToH archive, "
+                "links libpatoh.a, and calls PaToH from the executed cluster "
+                "placement path",
+            ),
+        ),
+        "headless_runtime": _capability(
+            "adapter_required",
+            (
+                "the public executable requires Qt5 Widgets and its main loop "
+                "waits on GUI paint state; no validated headless runner exists",
             ),
         ),
     }

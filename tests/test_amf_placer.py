@@ -105,6 +105,12 @@ class AMFPlacerCapabilityTest(unittest.TestCase):
                     "basic implementation of AMF-Placer 2.0\n"
                     "VCU108\nclock tree synthesis\n"
                 ),
+                "src/CMakeLists.txt": (
+                    "find_package(Qt5Widgets REQUIRED)\n"
+                    "wget patoh-Linux-x86_64.tar.gz\n"
+                    "libpatoh.a Qt5::Widgets\n"
+                ),
+                "src/app/AMFPlacer/main.cc": "while (!placer->paintData) {}\n",
                 "src/lib/HiFPlacer/designInfo/DesignInfo.h": "\n".join(
                     f'"{cell_type}"'
                     for cell_type in (
@@ -117,6 +123,12 @@ class AMFPlacerCapabilityTest(unittest.TestCase):
                     "vivado extracted design information file\n"
                 ),
                 "src/lib/HiFPlacer/deviceInfo/DeviceInfo.cc": "device parser\n",
+                "src/lib/3rdParty/partitionHyperGraph.cc": (
+                    '#include "patoh.h"\nPaToH_Part();\n'
+                ),
+                "src/lib/HiFPlacer/placement/globalPlacement/ClusterPlacer.h": (
+                    "partitioning based on PaToH\n"
+                ),
                 "src/app/AMFPlacer/AMFPlacer.h": (
                     "vivado extracted device information file\n"
                     "InitialPacker GlobalPlacer ParallelCLBPacker\n"
@@ -161,6 +173,15 @@ class AMFPlacerCapabilityTest(unittest.TestCase):
         self.assertEqual(
             constraints["vivado_free_runtime"]["adapter_validation"],
             "missing",
+        )
+        self.assertEqual(
+            constraints["source_complete_runtime"]["status"], "core_missing"
+        )
+        self.assertEqual(
+            constraints["headless_runtime"]["status"], "adapter_required"
+        )
+        self.assertEqual(
+            constraints["headless_runtime"]["adapter_validation"], "missing"
         )
 
 

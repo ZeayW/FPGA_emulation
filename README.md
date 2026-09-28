@@ -4768,7 +4768,10 @@ it is not a selectable provider or default. The public basic release contains
 real mixed-size global placement, macro legalization, CLB packing, and detailed
 placement; it also consumes Vivado-extracted input formats, lacks public core
 support for the current `MUXF9` and `URAM288` inventory, and has not qualified
-XCVU19P multi-SLR or clock legality. EmuFlow therefore exposes only an internal
+XCVU19P multi-SLR or clock legality. Its public build also downloads and
+executes a precompiled PaToH archive and links the GUI-coupled executable
+against Qt5; therefore the pinned runtime is neither source-complete nor a
+validated headless HPC provider. EmuFlow exposes only an internal
 fail-closed capability and adapter contract at this milestone. The pinned
 source audit, primitive matrix, and adaptation boundary are documented in
 [`docs/PHASE7_AMF_PLACER_CAPABILITY.md`](docs/PHASE7_AMF_PLACER_CAPABILITY.md).
