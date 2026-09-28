@@ -281,6 +281,31 @@ def _add_mux_bels(architecture, primitives):
 
 
 class XilinxOpenparfAtomicTest(unittest.TestCase):
+    def test_clock_region_site_headroom_is_reserved_before_placement(self):
+        sites = []
+        for x in range(2):
+            for y in range(4):
+                sites.append(({
+                    "name": f"SLICE_X{x}Y{y}",
+                    "type": "SLICEL", "x": x, "y": y,
+                    "physical_region": {
+                        "slr": "SLR0", "clock_region": "X0Y0",
+                    },
+                }, {"LUT": 16, "FF": 16}))
+
+        available, contract = atomic_adapter._derate_clock_region_sites(sites)
+
+        self.assertEqual(contract["status"], "pass")
+        self.assertEqual(contract["limit"], 0.75)
+        self.assertEqual(contract["original_sites"], 8)
+        self.assertEqual(contract["available_sites"], 6)
+        self.assertEqual(contract["reserved_sites"], 2)
+        by_x = {}
+        for site, _resources in available:
+            by_x.setdefault(site["x"], []).append(site["y"])
+        self.assertEqual(sorted(by_x[0]), [0, 1, 2])
+        self.assertEqual(sorted(by_x[1]), [1, 2, 3])
+
     def test_site_geometry_preserves_empty_physical_rows(self):
         sites = [
             (
@@ -435,6 +460,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "dense_width": 4,
             "dense_height": 4,
             "occupied_fraction": 1.0,
+            "available_logic_sites": 16,
         })
         self.assertEqual(manifest["density_contract"]["LUT"], {
             "movable_area": 4.0,

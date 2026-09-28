@@ -84,6 +84,7 @@ _FF_CLOCK = "C"
 _FF_ENABLE = "CE"
 _FF_SR = {"FDCE": "R", "FDRE": "R", "FDPE": "S", "FDSE": "S"}
 _TARGET_DENSITY = 0.75
+_CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
 _LOGIC_FILLER_LIMIT = 65_536
 _CLOCK_REGION_NAME = re.compile(r"^X([0-9]+)Y([0-9]+)$")
 _MAX_CLOCKS_PER_REGION = 24
@@ -922,6 +923,121 @@ def _validate_native_placement_region(
     }
 
 
+def _clock_region_site_key(
+    site: Mapping[str, Any],
+) -> Optional[Tuple[str, str, str]]:
+    region = site.get("physical_region")
+    if not isinstance(region, Mapping):
+        return None
+    slr = region.get("slr")
+    clock_region = region.get("clock_region")
+    site_type = site.get("type")
+    if not all(
+        isinstance(value, str) and value
+        for value in (slr, clock_region, site_type)
+    ):
+        raise ValidationError("ArchitectureDB physical-region metadata is invalid")
+    return slr, clock_region, site_type
+
+
+def _derate_clock_region_sites(
+    sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
+) -> Tuple[
+    List[Tuple[Mapping[str, Any], Mapping[str, int]]], Dict[str, Any]
+]:
+    """Reserve physical placement headroom before OpenPARF legalization.
+
+    Global analytical target density is not a local clock-region occupancy
+    constraint.  Expose at most 75% of each (SLR, clock region, site type) to
+    every downstream legalizer.  Each physical column retains one contiguous
+    run, alternating its reserved edge across columns, so dedicated vertical
+    chains remain useful while the reservation is spatially distributed.
+    """
+
+    groups: Dict[
+        Tuple[str, str, str],
+        List[Tuple[Mapping[str, Any], Mapping[str, int]]],
+    ] = defaultdict(list)
+    passthrough = []
+    for item in sites:
+        key = _clock_region_site_key(item[0])
+        if key is None:
+            passthrough.append(item)
+        else:
+            groups[key].append(item)
+    if not groups:
+        return list(sites), {
+            "status": "not-applicable", "limit": None,
+            "groups": 0, "original_sites": len(sites),
+            "available_sites": len(sites), "reserved_sites": 0,
+        }
+
+    selected_names = {item[0]["name"] for item in passthrough}
+    group_available = []
+    for key, group in sorted(groups.items()):
+        limit = max(
+            1,
+            int(math.ceil(
+                len(group) * _CLOCK_REGION_SITE_UTILIZATION_LIMIT
+            )),
+        )
+        columns: Dict[int, List[Tuple[Mapping[str, Any], Mapping[str, int]]]] = (
+            defaultdict(list)
+        )
+        for item in group:
+            columns[int(item[0]["x"])].append(item)
+        ordered_columns = []
+        for x, column in sorted(columns.items()):
+            column.sort(key=lambda item: (int(item[0]["y"]), item[0]["name"]))
+            ordered_columns.append((x, column))
+
+        allocations = [
+            int(math.floor(
+                len(column) * _CLOCK_REGION_SITE_UTILIZATION_LIMIT
+            ))
+            for _x, column in ordered_columns
+        ]
+        remaining = limit - sum(allocations)
+        for index in range(remaining):
+            allocations[index % len(allocations)] += 1
+
+        for index, ((_x, column), count) in enumerate(
+            zip(ordered_columns, allocations)
+        ):
+            if count <= 0:
+                continue
+            if len(ordered_columns) == 1:
+                start = (len(column) - count) // 2
+            elif index % 2:
+                start = len(column) - count
+            else:
+                start = 0
+            selected_names.update(
+                item[0]["name"] for item in column[start:start + count]
+            )
+        available = sum(
+            item[0]["name"] in selected_names for item in group
+        )
+        if available != limit:
+            raise ValidationError(
+                f"clock-region site derating failed for {key!r}: "
+                f"available={available}, limit={limit}"
+            )
+        group_available.append(available)
+
+    result = [item for item in sites if item[0]["name"] in selected_names]
+    return result, {
+        "status": "pass",
+        "limit": _CLOCK_REGION_SITE_UTILIZATION_LIMIT,
+        "groups": len(groups),
+        "original_sites": len(sites),
+        "available_sites": len(result),
+        "reserved_sites": len(sites) - len(result),
+        "minimum_group_available_sites": min(group_available),
+        "maximum_group_available_sites": max(group_available),
+    }
+
+
 def _validate_native_density_contract(
     sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
     atoms: Sequence[Mapping[str, str]],
@@ -1737,6 +1853,14 @@ def _device_static_geometry(
             require_carry8=require_carry8,
         )
         placement_region = _validate_native_placement_region(sites)
+        sites, site_headroom_contract = _derate_clock_region_sites(sites)
+        placement_region = {
+            **placement_region,
+            "available_logic_sites": sum(
+                "LUT" in resources and "FF" in resources
+                for _site, resources in sites
+            ),
+        }
         site_prefix, site_suffix, coordinate_system = _render_site_geometry(
             sites, y_axis_order=y_axis_order
         )
@@ -1748,6 +1872,7 @@ def _device_static_geometry(
             "coordinate_system": coordinate_system,
             "site_database": None,
             "site_count": len(coordinate_system["sites"]),
+            "site_headroom_contract": site_headroom_contract,
         }
         _DEVICE_STATIC_CACHE[key] = value
         _DEVICE_STATIC_CACHE.move_to_end(key)
@@ -2119,6 +2244,28 @@ def export_xilinx_openparf_atomic(
             )
         ):
             raise ValidationError("native constraints contain no valid CARRY_NEXT chains")
+        available_carry_sites = {
+            site_name
+            for item in coordinate_system["sites"]
+            for site_name in item.get("physical_sites", {}).get("LUT", [])
+        }
+        filtered_native_carry_chains = []
+        for physical_chain in native_carry_chains:
+            run = []
+            for site_name in physical_chain:
+                if site_name in available_carry_sites:
+                    run.append(site_name)
+                    continue
+                if len(run) >= 2:
+                    filtered_native_carry_chains.append(run)
+                run = []
+            if len(run) >= 2:
+                filtered_native_carry_chains.append(run)
+        native_carry_chains = filtered_native_carry_chains
+        if not native_carry_chains:
+            raise ValidationError(
+                "clock-region site derating removed every CARRY_NEXT window"
+            )
         chain_set_id = "native:CARRY_NEXT"
         site_chain_sets.append({
             "id": chain_set_id,
@@ -2492,6 +2639,7 @@ def export_xilinx_openparf_atomic(
         },
         "placement_region": placement_region,
         "clock_region_contract": coordinate_system["clock_regions"],
+        "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "runtime_validation": "unverified",
         "constraint_policy": {

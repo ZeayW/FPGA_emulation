@@ -1287,8 +1287,16 @@ legal UltraScale+ FF control topology rather than imposing the conservative
 packer's one-control-set-per-slice policy: clock and set/reset must agree in
 each half-slice, while enable is checked independently on the FF and FF2 lanes.
 Multiple exact control sets are represented explicitly in the packed-site
-certificate.  Routing and OpenSTA qualification are still pending, so no final
-Phase 7 QoR is claimed yet.
+certificate.  A renewed two-FPGA run then exposed a separate local-density
+defect: global `target_density=0.75` allowed hot clock regions to consume
+99--100% of their SLICEL, SLICEM, DSP, and BRAM sites.  The exporter now
+derates the legal site inventory itself to at most 75% for every
+`(SLR, clock-region, site-type)` group before global placement or any exact
+legalizer runs.  Retained sites form contiguous vertical runs, and source-
+sealed CARRY_NEXT chains are clipped only at reserved-site gaps, so neither
+ordinary logic nor typed hard blocks can consume routing headroom that the
+independent gate will later reject.  Renewed routing and OpenSTA qualification
+are still pending, so no final Phase 7 QoR is claimed yet.
 The internal
 `probe_xilinx_openparf_carry_native_support` qualification API separates the
 source audit from runtime qualification against a two-CARRY8 macro contract

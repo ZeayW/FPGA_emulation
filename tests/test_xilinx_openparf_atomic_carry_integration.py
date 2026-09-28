@@ -21,9 +21,9 @@ def _write_atomic_placement(path: Path, name_map: dict) -> None:
     for atom in name_map["atoms"]:
         instance = atom["instance"]
         if instance == "src_ff":
-            x, y, z = 1, 0, 0
+            x, y, z = 2, 0, 0
         elif instance == "ff":
-            x, y, z = 1, 0, 2
+            x, y, z = 2, 0, 2
         elif instance.startswith("carry0$lut"):
             x, y, z = 0, 0, 2 * int(instance.rsplit("lut", 1)[1]) + 1
         elif instance.startswith("carry1$lut"):
