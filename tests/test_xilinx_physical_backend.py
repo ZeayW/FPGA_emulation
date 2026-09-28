@@ -29,11 +29,23 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     "runtime_validation": "native-openparf",
                     "source": {"mapped_sha256": "a" * 64},
                     "summary": {"atoms": 200_000, "occupied_sites": 10_000},
+                    "native_convergence": {
+                        "metrics": {
+                            "stop_reason": "feasible-hpwl-patience",
+                            "iterations": 1700,
+                        },
+                    },
                     "clusters": [{"large": "payload"}],
                 },
             }, certificate_path)
         self.assertNotIn("clusters", report["certificate"])
         self.assertEqual(report["certificate"]["summary"]["atoms"], 200_000)
+        self.assertEqual(
+            report["certificate"]["native_convergence"]["metrics"][
+                "stop_reason"
+            ],
+            "feasible-hpwl-patience",
+        )
         self.assertEqual(
             report["certificate"]["artifact"]["bytes"],
             len("sealed-certificate\n"),

@@ -166,6 +166,10 @@ def _compact_openparf_qualification(
             "source", "summary",
         )
     }
+    if "native_convergence" in certificate:
+        compact["certificate"]["native_convergence"] = certificate[
+            "native_convergence"
+        ]
     compact["certificate"]["artifact"] = {
         **_artifact(certificate_path),
         "bytes": certificate_path.stat().st_size,

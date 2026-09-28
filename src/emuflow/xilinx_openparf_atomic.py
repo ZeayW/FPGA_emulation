@@ -25,6 +25,10 @@ from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
 from .io import file_sha256, read_json, write_json
 from .openparf import run_openparf, validate_openparf_runtime
+from .openparf_native_driver import (
+    native_metrics_path,
+    validate_openparf_native_metrics,
+)
 from .xilinx_native_device_constraints import (
     load_xilinx_native_device_constraints,
     require_xilinx_native_constraint_capability,
@@ -45,7 +49,7 @@ OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v2"
 OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v1"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = (
-    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v3"
+    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v4"
 )
 XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-site-database/v1"
@@ -2154,6 +2158,14 @@ def export_xilinx_openparf_atomic(
         # configuration yet never executes on a realistic design.
         "stop_overflow": _GLOBAL_PLACEMENT_STOP_OVERFLOW,
         "random_seed": 1000, "max_global_place_iters": 2000,
+        # The first density-feasible iterate after RUDY/pin inflation can be
+        # a transient HPWL spike.  Require a bounded feasible settling window
+        # and restore the best feasible global placement before native
+        # legalization/detailed placement.
+        "emuflow_stable_global_placement": True,
+        "emuflow_min_feasible_iterations": 96,
+        "emuflow_convergence_patience": 64,
+        "emuflow_relative_hpwl_improvement": 1.0e-4,
         "global_place_flag": 1, "legalize_flag": 1,
         "detailed_place_flag": 1, "generic_cluster_placement_flag": 0,
         "logic_area_type_names": ["LUT", "FF"],
@@ -2677,7 +2689,7 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-area-inflation-v2",
+            "provider": "openparf-rudy-pin-stable-feasible-v3",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW
@@ -2690,6 +2702,13 @@ def export_xilinx_openparf_atomic(
             "maximum_route_adjustment_rate": _MAX_ROUTE_AREA_ADJUSTMENT_RATE,
             "maximum_pin_adjustment_rate": _MAX_PIN_AREA_ADJUSTMENT_RATE,
             "resource_area_adjustment": False,
+            "convergence": {
+                "provider": "best-feasible-hpwl-patience-v1",
+                "minimum_feasible_iterations": 96,
+                "patience": 64,
+                "relative_hpwl_improvement": 1.0e-4,
+                "maximum_iterations_is_failure": True,
+            },
         },
         "runtime_validation": "unverified",
         "constraint_policy": {
@@ -3405,6 +3424,19 @@ def run_xilinx_openparf_atomic_qualification(
         mapped_value=mapped_value,
         architecture=architecture,
     )
+    convergence_path = native_metrics_path(placement)
+    if convergence_path.is_file():
+        certificate["native_convergence"] = {
+            "artifact": {
+                "path": str(convergence_path),
+                "bytes": convergence_path.stat().st_size,
+                "sha256": _sha256(convergence_path),
+            },
+            "metrics": validate_openparf_native_metrics(convergence_path),
+        }
+        write_json(
+            output_dir / "placement-certificate.json", certificate, compact=True
+        )
     installation = Path(str(runtime.get("installation", "")))
     python = Path(str(runtime.get("python", "")))
     if (
@@ -3462,6 +3494,16 @@ def run_xilinx_openparf_hardblock_qualification(
         native_constraints_path=native_constraints_path,
         provider_manifest_path=provider_manifest_path,
     )
+    convergence_path = native_metrics_path(placement)
+    if convergence_path.is_file():
+        certificate["native_convergence"] = {
+            "artifact": {
+                "path": str(convergence_path),
+                "bytes": convergence_path.stat().st_size,
+                "sha256": _sha256(convergence_path),
+            },
+            "metrics": validate_openparf_native_metrics(convergence_path),
+        }
     certificate["runtime_validation"] = "native-openparf"
     write_json(output_dir / "placement-certificate.json", certificate, compact=True)
     return {

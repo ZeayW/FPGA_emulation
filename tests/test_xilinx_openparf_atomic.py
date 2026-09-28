@@ -510,6 +510,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["global_place_flag"], 1)
         self.assertEqual(config["legalize_flag"], 1)
         self.assertEqual(config["detailed_place_flag"], 1)
+        self.assertTrue(config["emuflow_stable_global_placement"])
+        self.assertEqual(config["emuflow_min_feasible_iterations"], 96)
+        self.assertEqual(config["emuflow_convergence_patience"], 64)
+        self.assertEqual(config["emuflow_relative_hpwl_improvement"], 1.0e-4)
         self.assertEqual(config["stop_overflow"], 0.10)
         self.assertEqual(config["gp_adjust_area"], 1)
         self.assertEqual(config["gp_adjust_area_types"], ["LUT", "FF"])
@@ -522,7 +526,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-area-inflation-v2",
+            "provider": "openparf-rudy-pin-stable-feasible-v3",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": 0.10,
             "adjustment_overflow_threshold": 0.15,
@@ -531,6 +535,13 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "maximum_route_adjustment_rate": 2.0,
             "maximum_pin_adjustment_rate": 1.6,
             "resource_area_adjustment": False,
+            "convergence": {
+                "provider": "best-feasible-hpwl-patience-v1",
+                "minimum_feasible_iterations": 96,
+                "patience": 64,
+                "relative_hpwl_improvement": 1.0e-4,
+                "maximum_iterations_is_failure": True,
+            },
         })
         self.assertNotIn("fallback", config)
 
@@ -1667,6 +1678,18 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 placement = output / "results" / "xilinx_atomic_lut_ff.pl"
                 placement.parent.mkdir(parents=True, exist_ok=True)
                 placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+                placement.with_suffix(".native-metrics.json").write_text(
+                    json.dumps({
+                        "schema": "emuflow.openparf-native-convergence/v1",
+                        "status": "pass",
+                        "stop_reason": "feasible-hpwl-patience",
+                        "iterations": 42,
+                        "restored_best_feasible": True,
+                        "best_feasible_hpwl": 10.0,
+                        "final_legal_hpwl": 11.0,
+                    }),
+                    encoding="utf-8",
+                )
                 return placement
 
             with mock.patch(
@@ -1686,6 +1709,12 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(report["runtime"]["installation"], "contract-fixture")
         self.assertEqual(
             report["certificate"]["runtime_validation"], "unverified"
+        )
+        self.assertEqual(
+            report["certificate"]["native_convergence"]["metrics"][
+                "stop_reason"
+            ],
+            "feasible-hpwl-patience",
         )
         self.assertNotIn("fallback", report)
 

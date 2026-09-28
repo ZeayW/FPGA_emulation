@@ -1316,8 +1316,19 @@ acceptance result.  The version-2 native provider therefore also enables
 OpenPARF's upstream RUDY routing-utilization and pin-density area inflation for
 the LUT and FF area types, using the published ISPD-style six adjustment
 stages; DSP/BRAM/URAM and exact macro legality remain owned by their
-source-sealed legalizers.  Renewed routing and OpenSTA qualification of this
-route-aware provider are pending, so no final Phase 7 QoR is claimed yet.
+source-sealed legalizers.  The first route-aware-v3 DLA run proved that the
+adjustment executes, but also exposed a separate upstream termination defect:
+the generic OpenPARF stop rule accepted the first density-feasible iterate
+whose HPWL did not beat only its immediate predecessor, even while
+post-inflation HPWL was still oscillating.  One partition therefore legalized
+at 8.936M HPWL and its 57.9M-node RWRoute failed to converge after roughly five
+hours; the sibling partition legalized at 4.066M HPWL and routed successfully.
+Atomic provider v4 keeps native OpenPARF global placement, legalization, and
+detailed placement, but requires a consecutive feasible settling window,
+waits for bounded HPWL patience, restores the best feasible global-placement
+iterate, and emits a compact convergence certificate.  Hitting the iteration
+ceiling is now a failure, not a successful placement.  Renewed routing and
+OpenSTA qualification of v4 are pending, so no final Phase 7 QoR is claimed.
 The independently checked atomic placement certificate remains a standalone
 scratch artifact because a real DLA partition contains hundreds of thousands
 of assignments.  Per-FPGA physical reports no longer embed a second copy of
@@ -4789,7 +4800,7 @@ to the same tile grid afterward.  The exporter never uses ArchitectureDB's
 unique site key `tile_col * site_stride + site_index` as a geometric
 coordinate: that key distinguishes multiple sites in one tile but would
 stretch horizontal distance by `site_stride` and corrupt the wirelength
-objective.  The continuous driver emits a compact convergence
+objective.  The continuous guidance driver emits a compact convergence
 certificate and fails closed when any populated non-I/O area type remains
 above OpenPARF's declared guidance limit.  It explicitly pins the upstream
 ISPD reference stopping rule (`stop_overflow=0.10`) and the native
@@ -4802,7 +4813,10 @@ single-site DSP/BRAM resources may use at most twice that value before the
 exact Xilinx legalizer.  The driver stops at the first valid point so continued
 augmented-multiplier growth cannot turn a converged guidance solution into a
 late numerical divergence; reaching the 1000-iteration ceiling is not accepted
-as successful guidance.  Upstream bitmap plots remain suppressed, so
+as successful guidance.  The full native atomic route uses the separate
+stable-feasible termination contract described above; it never substitutes
+the continuous guidance driver for native legalization or detailed placement.
+Upstream bitmap plots remain suppressed, so
 diagnostic rendering is not part of the physical hot path.
 RapidWright's external `data/parts.db` and XCVU19P device database are checked
 against the provider-pinned digests and mounted read-only into each isolated
