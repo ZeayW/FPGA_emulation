@@ -181,8 +181,8 @@ def _write_atomic_placement_database(
             ) WITHOUT ROWID;
             CREATE TABLE clusters (
                 cluster_index INTEGER PRIMARY KEY,
-                cluster TEXT NOT NULL UNIQUE,
-                site TEXT NOT NULL UNIQUE,
+                cluster TEXT NOT NULL,
+                site TEXT NOT NULL,
                 site_type TEXT NOT NULL,
                 x INTEGER NOT NULL,
                 y INTEGER NOT NULL
@@ -190,7 +190,7 @@ def _write_atomic_placement_database(
             CREATE TABLE assignments (
                 cluster_index INTEGER NOT NULL,
                 assignment_index INTEGER NOT NULL,
-                instance TEXT NOT NULL UNIQUE,
+                instance TEXT NOT NULL,
                 cell_type TEXT NOT NULL,
                 bel TEXT NOT NULL,
                 physical_site TEXT NOT NULL,
@@ -325,7 +325,17 @@ def load_xilinx_openparf_atomic_placement_clusters(
             "FROM clusters ORDER BY cluster_index"
         ))
         by_index: Dict[int, Dict[str, Any]] = {}
+        cluster_names = set()
+        site_names = set()
         for row in cluster_rows:
+            if (
+                row[0] in by_index
+                or row[1] in cluster_names
+                or row[2] in site_names
+            ):
+                raise ValidationError(
+                    "OpenPARF atomic placement database has duplicate clusters"
+                )
             cluster = {
                 "cluster": row[1],
                 "site": row[2],
@@ -335,8 +345,11 @@ def load_xilinx_openparf_atomic_placement_clusters(
                 "assignments": [],
             }
             by_index[row[0]] = cluster
+            cluster_names.add(row[1])
+            site_names.add(row[2])
             clusters.append(cluster)
         assignment_total = 0
+        instances = set()
         for assignment in database.execute(
             "SELECT cluster_index, instance, cell_type, bel, physical_site, "
             "placement_mode, source_cluster FROM assignments "
@@ -347,6 +360,11 @@ def load_xilinx_openparf_atomic_placement_clusters(
                 raise ValidationError(
                     "OpenPARF atomic placement database has an orphan assignment"
                 )
+            if assignment[1] in instances:
+                raise ValidationError(
+                    "OpenPARF atomic placement database has duplicate assignments"
+                )
+            instances.add(assignment[1])
             cluster["assignments"].append({
                 "instance": assignment[1],
                 "cell_type": assignment[2],
