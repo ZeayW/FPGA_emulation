@@ -19,6 +19,8 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             physical = root / "physical"
             packed_path = physical / "packed-sites.json"
             placement_path = physical / "placement.json"
+            native_constraints = root / "native-constraints.json"
+            provider_manifest = root / "provider-manifest.json"
             mapped_value = {"modules": {}}
             architecture_value = {"site_templates": {}}
             architecture_object = SimpleNamespace(
@@ -37,8 +39,8 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 self.assertEqual(kwargs, {
                     "top": "top",
                     "source_packed_path": physical / "openparf-atomic-source.json",
-                    "native_constraints_path": None,
-                    "provider_manifest_path": None,
+                    "native_constraints_path": native_constraints,
+                    "provider_manifest_path": provider_manifest,
                     "mapped_value": mapped_value,
                     "architecture": architecture_object,
                 })
@@ -96,7 +98,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 mock.patch(
                     "emuflow.xilinx_physical_backend.validate_xilinx_placement",
                     return_value={"status": "pass"},
-                ),
+                ) as validate_placement,
                 mock.patch(
                     "emuflow.xilinx_physical_backend.export_rwroute_input",
                     side_effect=stop_at_export,
@@ -133,11 +135,21 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                         java_source=root / "route.java",
                         device_data_root=root / "device-data",
                         timing_data_dir=root / "timing-data",
+                        openparf_native_constraints=native_constraints,
+                        openparf_provider_manifest=provider_manifest,
                     )
             build_source.assert_called_once()
             qualify.assert_called_once()
             bridge.assert_called_once()
             export.assert_called_once()
+            validate_placement.assert_called_once_with(
+                packed_path,
+                root / "architecture.json",
+                placement_path,
+                native_constraints_path=native_constraints,
+                provider_manifest_path=provider_manifest,
+                architecture=architecture_object,
+            )
             self.assertEqual(read.call_count, 3)
             self.assertIs(
                 build_source.call_args.kwargs["mapped_value"], mapped_value

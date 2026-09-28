@@ -1326,6 +1326,10 @@ directed-site-chain legalizer, and each RAMB18E2 remains an independent lower/up
 half-site occupant until native legalization. The no-search bridge groups the
 resulting legal half-site assignments by their physical RAMB36 tile; it does
 not reuse the legacy name-ordered RAMB18 packer.
+The same native-constraints and provider-manifest paths are forwarded to the
+post-bridge independent placement validator, which reopens and hash-checks
+both sources before RWRoute starts.  They are not only producer inputs; a
+missing or different source at this validation boundary fails closed.
 Native OpenPARF qualification also requires the supplied ArchitectureDB logic
 crop to form one connected, genuinely two-dimensional site region with finite
 density and filler headroom for every active resource.  Collinear, disconnected,
