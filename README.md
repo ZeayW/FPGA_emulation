@@ -1304,6 +1304,10 @@ that assignment payload: they retain only its schema/provider identity, source
 seals, constant-size resource summary, byte count, and SHA-256.  This preserves
 the exact audit boundary while removing a tens-of-megabytes JSON serialization
 and parse path from terminal report generation.
+The shared three-route selection work is maintained on
+`feature/phase7-placer-selection`; it combines the OpenPARF implementation with
+the fail-closed DREAMPlaceFPGA and AMF capability probes without treating an
+adapter-only roundtrip as production placement evidence.
 The internal
 `probe_xilinx_openparf_carry_native_support` qualification API separates the
 source audit from runtime qualification against a two-CARRY8 macro contract

@@ -25,14 +25,20 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 
 | Route | Implemented evidence | Remaining production blockers | Decision |
 |---|---|---|---|
-| OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; bounded CARRY8, DSP48E2, RAMB36E2, and URAM288 fixtures also pass that complete chain; source-sealed real-device facts cover CARRY, DSP, RAMB36, and URAM chain adjacency | MUXF7/8/9, explicit RAMB18 upper/lower/whole tile groups, clock legality, authoritative half-column limits, unified production candidate backend, and Koios DLA medium | Primary route; qualified subsets only, not yet the default |
+| OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; bounded MUXF7/8/9, CARRY8, DSP48E2, RAMB18E2/RAMB36E2, and URAM288 fixtures pass exact placement validation, and the resource-covering hard-block fixtures pass the complete physical chain; source-sealed real-device facts cover slice macros, split-BRAM modes, CARRY, DSP, BRAM, and URAM adjacency; renewed Koios DLA medium native placement and independent certification pass on both partitions | Terminal Koios DLA medium RWRoute, per-partition OpenSTA, and global OpenSTA evidence; authoritative half-column clock limits remain fail-closed | Primary route and only production-eligible candidate; not yet the default until terminal DLA evidence passes |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga-native`) | Pinned-source and compiled-runtime gate; mapped/packed/ArchitectureDB to official FPGA Interchange logical netlist; real Cap'n Proto LUT/FF/DSP48E2/RAMB36E2 roundtrip; `.phys` to a packed-cluster-preserving candidate certificate; sealed fail-closed RapidWright boundary | The official supported PyTorch 1.6--1.8 runtime has not completed a native fixture in the current environment; upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
 | AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; opaque PaToH binary replacement; headless runner; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result, and the pinned public runtime is not source-complete |
 
-The integration branch is `feature/phase7-placer-integration`.  It contains
+The integration/selection branch is `feature/phase7-placer-selection`.  It contains
 the shared contract, deterministic comparison gate, and the validated adapter
 work from all three branches.  No branch adds a public CLI selector or changes
 the default provider yet.
+
+Large atomic placement assignments remain in one independently checked scratch
+certificate.  Terminal per-FPGA reports retain only its identity, source seals,
+summary, byte count, and SHA-256; they do not embed a second copy of the full
+cluster payload.  This storage change is common to the selection branch and
+does not weaken the promotion gate.
 
 ## Promotion sequence
 
