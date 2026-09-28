@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from emuflow.xilinx_physical_backend import (
+    _compact_openparf_qualification,
     _physical_clock_periods,
     _select_xilinx_slr_window,
     run_rapidwright_openparf_native_candidate_backend,
@@ -13,6 +14,31 @@ from emuflow.xilinx_physical_backend import (
 
 
 class XilinxPhysicalBackendTest(unittest.TestCase):
+    def test_native_qualification_report_references_large_certificate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            certificate_path = Path(temporary) / "placement-certificate.json"
+            certificate_path.write_text("sealed-certificate\n", encoding="utf-8")
+            report = _compact_openparf_qualification({
+                "status": "pass",
+                "runtime": {"installation": "/versioned/openparf"},
+                "certificate": {
+                    "schema": "emuflow.openparf-atomic-placement/v1",
+                    "status": "pass",
+                    "part": "xcvu19p-test",
+                    "provider": "native-openparf",
+                    "runtime_validation": "native-openparf",
+                    "source": {"mapped_sha256": "a" * 64},
+                    "summary": {"atoms": 200_000, "occupied_sites": 10_000},
+                    "clusters": [{"large": "payload"}],
+                },
+            }, certificate_path)
+        self.assertNotIn("clusters", report["certificate"])
+        self.assertEqual(report["certificate"]["summary"]["atoms"], 200_000)
+        self.assertEqual(
+            report["certificate"]["artifact"]["bytes"],
+            len("sealed-certificate\n"),
+        )
+
     def test_native_candidate_bypasses_legacy_placement_call_graph(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -61,6 +87,25 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 self.assertEqual(output, physical / "rwroute.tsv")
                 raise RuntimeError("native-bridge-reached-rwroute")
 
+            def qualify(*_args, **_kwargs):
+                certificate_path = (
+                    physical / "openparf-native/placement-certificate.json"
+                )
+                certificate_path.parent.mkdir(parents=True, exist_ok=True)
+                certificate_path.write_text("{}\n", encoding="utf-8")
+                return {
+                    "status": "pass",
+                    "certificate": {
+                        "schema": "emuflow.openparf-atomic-placement/v1",
+                        "status": "pass",
+                        "part": "xcvu19p-test",
+                        "provider": "native-openparf",
+                        "runtime_validation": "native-openparf",
+                        "source": {},
+                        "summary": {},
+                    },
+                }
+
             forbidden = AssertionError("legacy placement path was called")
             with (
                 mock.patch(
@@ -85,7 +130,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 ) as build_source,
                 mock.patch(
                     "emuflow.xilinx_physical_backend.run_xilinx_openparf_atomic_qualification",
-                    return_value={"status": "pass"},
+                    side_effect=qualify,
                 ) as qualify,
                 mock.patch(
                     "emuflow.xilinx_physical_backend.materialize_xilinx_openparf_atomic_contract",
