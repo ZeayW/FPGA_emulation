@@ -4494,7 +4494,10 @@ explicitly marked `test-double`/`test-only` and is not native AMF evidence.
 Until the patched upstream binary itself passes the resource-covering fixture,
 AMF remains unqualified and unavailable as a provider or default. MUXF9, URAM,
 cascades, real clock legality, XCVU19P, and multi-SLR requests continue to fail
-closed.
+closed. A bounded public build probe identified and fixed the pinned upstream
+CMake file's retired Boost download URL while preserving its expected archive
+digest; the subsequent real build/runtime qualification remains incomplete and
+is not represented as a native pass.
 
 Route A's Phase 6 macro-cycle checker evaluates the Xilinx primitives emitted
 by the pinned open Yosys mapping rather than accepting a generic-LUT surrogate.

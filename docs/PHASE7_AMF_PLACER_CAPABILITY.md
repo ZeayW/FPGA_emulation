@@ -131,6 +131,14 @@ A production resource placement is intentionally not claimed: the patched
 public binary has not yet passed the real fixture. The complete current
 primitive profile additionally needs MUXF9 and URAM core work.
 
+The first bounded public build probe also exposed a reproducible upstream
+packaging defect: the pinned CMake file still fetched Boost 1.65.1 from a
+retired JFrog URL, whose response did not match the upstream-pinned SHA-256.
+The reviewed portability patch now redirects that exact version and digest to
+the official Boost archive. The follow-up build did not finish before the
+remote session was lost, so this change is a build fix, not native runtime
+qualification.
+
 Estimated engineering cost, before performance qualification:
 
 - build and real-fixture qualification of the pinned public executable:

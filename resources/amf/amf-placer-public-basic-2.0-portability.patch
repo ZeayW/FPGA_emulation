@@ -1,3 +1,8 @@
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -50 +50 @@
+-  set(BOOST_URL "https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VER}/source/boost_${BOOST_VER_}.tar.bz2" CACHE STRING "Boost download URL")
++  set(BOOST_URL "https://archives.boost.io/release/${BOOST_VER}/source/boost_${BOOST_VER_}.tar.bz2" CACHE STRING "Boost download URL")
 --- a/src/lib/HiFPlacer/designInfo/DesignInfo.cc
 +++ b/src/lib/HiFPlacer/designInfo/DesignInfo.cc
 @@ -279,5 +279 @@
