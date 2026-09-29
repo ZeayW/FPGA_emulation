@@ -134,10 +134,12 @@ The RAMB18 native-device audit found that ArchitectureDB currently retains one
 `RAMB181` anchor per physical BRAM tile, while RapidWright exposes three
 overlapping native views: upper RAMB18, lower RAMB18, and whole RAMB36.  The
 names and coordinates are not a sufficient binding between those views.
-Accordingly RAMB18 remains `adapter_required`: the production path must first
-export a source-sealed tile group with exact native site/BEL identities and
-then make OpenPARF choose conflict-free half/full claims.  `Y-1`, `Y/2`, name
-rewrites, and forced instance pairing are forbidden.
+Accordingly RAMB18 is supported only through the source-sealed tile-group
+adapter: the production path exports exact native site/BEL identities and
+OpenPARF chooses conflict-free half/full claims. `Y-1`, `Y/2`, name rewrites,
+and forced instance pairing are forbidden. The placement certificate carries
+the selected tile/anchor/role/claim identity through the standard bridge, whose
+independent validator rejects corruption and whole-versus-half overlap.
 
 The pinned RapidWright device probe further showed that logical placement and
 primary database identities differ.  Lower, upper, and whole placement use

@@ -46,9 +46,9 @@ from .xilinx_physical_macros import build_xilinx_physical_macro_contract
 
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
 OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v2"
-OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v1"
+OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v2"
 OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA = (
-    "emuflow.openparf-atomic-placement-database/v1"
+    "emuflow.openparf-atomic-placement-database/v2"
 )
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = (
@@ -196,6 +196,7 @@ def _write_atomic_placement_database(
                 physical_site TEXT NOT NULL,
                 placement_mode TEXT NOT NULL,
                 source_cluster TEXT NOT NULL,
+                bram_tile_group TEXT,
                 PRIMARY KEY (cluster_index, assignment_index)
             ) WITHOUT ROWID;
         """)
@@ -222,7 +223,7 @@ def _write_atomic_placement_database(
             ),
         )
         database.executemany(
-            "INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 (
                     cluster_index,
@@ -233,6 +234,15 @@ def _write_atomic_placement_database(
                     str(assignment["physical_site"]),
                     str(assignment["placement_mode"]),
                     str(assignment["source_cluster"]),
+                    (
+                        json.dumps(
+                            assignment["bram_tile_group"],
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        if assignment.get("bram_tile_group") is not None
+                        else None
+                    ),
                 )
                 for cluster_index, cluster in enumerate(clusters)
                 for assignment_index, assignment in enumerate(
@@ -352,7 +362,7 @@ def load_xilinx_openparf_atomic_placement_clusters(
         instances = set()
         for assignment in database.execute(
             "SELECT cluster_index, instance, cell_type, bel, physical_site, "
-            "placement_mode, source_cluster FROM assignments "
+            "placement_mode, source_cluster, bram_tile_group FROM assignments "
             "ORDER BY cluster_index, assignment_index"
         ):
             cluster = by_index.get(assignment[0])
@@ -372,6 +382,10 @@ def load_xilinx_openparf_atomic_placement_clusters(
                 "physical_site": assignment[4],
                 "placement_mode": assignment[5],
                 "source_cluster": assignment[6],
+                "bram_tile_group": (
+                    json.loads(assignment[7])
+                    if assignment[7] is not None else None
+                ),
             })
             assignment_total += 1
         if any(not cluster["assignments"] for cluster in clusters):
@@ -2195,6 +2209,7 @@ def _native_bram_candidates(
                     "claims": _bram_claims(tile, role),
                     "placement_mode": view["site_type"],
                     "resource": resource,
+                    "role": role,
                     "site": view["site"],
                     "tile": tile,
                     "x": coordinate["placement_x"],
@@ -3238,6 +3253,15 @@ def validate_xilinx_openparf_atomic_placement(
                     else physical_bel.get("placement_mode", site["type"])
                 ),
                 "anchor_site": anchor_name,
+                "bram_tile_group": (
+                    {
+                        "anchor": candidate["anchor"],
+                        "claims": list(candidate["claims"]),
+                        "role": candidate["role"],
+                        "tile": candidate["tile"],
+                    }
+                    if candidate is not None else None
+                ),
             }
 
     checked_native_edges = 0
@@ -3578,6 +3602,7 @@ def validate_xilinx_openparf_atomic_placement(
                     "cell_type": item["cell_type"], "bel": item["bel"],
                     "placement_mode": item["placement_mode"],
                     "physical_site": item["site"],
+                    "bram_tile_group": item["bram_tile_group"],
                     "source_cluster": item["source_cluster"],
                 }
                 for item in sorted(items, key=lambda value: value["instance"])

@@ -15,7 +15,7 @@ not perform packing, placement, or search.
 | --- | --- | --- |
 | CARRY8 with eight LUT6_2 O5/O6 adapters | Implemented, fail-closed | Same UltraScale+ slice |
 | MUXF7/MUXF8/MUXF9 cone | Implemented, fail-closed | Same UltraScale+ slice with explicit BEL roles |
-| RAMB18E2 half-site demand | Implemented without name-based pairing | RapidWright exposes overlapping upper/lower/whole native views, but ArchitectureDB currently retains one anchor; an explicit source-sealed tile-group adapter is required |
+| RAMB18E2 half-site demand | Implemented, source-sealed, fail-closed | Explicit RapidWright tile groups bind upper/lower/whole views and mutual-exclusion claims; no coordinate/name inference |
 | CARRY8/DSP48E2/RAMB18E2/RAMB36E2/URAM288 cascade | Logical chain order and exact port signals implemented | Typed native adjacency is adapter-required |
 
 Cascade placement deliberately does not assume adjacent sites are related by
@@ -28,13 +28,15 @@ The same rule applies within a BRAM tile.  The native database exposes upper
 RAMB18, lower RAMB18, and whole RAMB36 as overlapping site views.  The current
 ArchitectureDB anchor and its alternative templates do not prove their exact
 native site/BEL mapping, so coordinate parity and site-name arithmetic are not
-accepted.  RAMB18 placement remains fail-closed until a source-sealed tile
-group proves those identities and whole-versus-half mutual exclusion.
+accepted. RAMB18 placement is enabled only when a source-sealed tile group
+proves those identities and whole-versus-half mutual exclusion.
 The version-3 native-device exporter and validator now implement that compact
 tile-group contract, including exact native site type, site index, primitive
-BEL, anchor coverage, view uniqueness, and payload/source seals.  Its real
-XCVU19P runtime gate is pending; the contract alone does not enable RAMB18 in
-the placer.
+BEL, anchor coverage, view uniqueness, and payload/source seals. Its real
+XCVU19P runtime gate has passed through native OpenPARF placement, RapidWright
+routing, and standalone OpenSTA timing. The version-2 placement certificate
+preserves the tile/anchor/role/claims tuple and the independent bridge rejects
+any corrupted view or conflicting whole-versus-half occupancy.
 The first pinned-XCVU19P probe rejected an incorrect assumption that both half
 views expose a native BEL named `RAMB18E2`.  RapidWright materializes the legal
 placement views as `RAMB180/RAMB18E2_L`, `RAMB181/RAMB18E2_U`, and

@@ -177,7 +177,7 @@ class XilinxPlacementTest(unittest.TestCase):
                 "clock_region_site_utilization_limit": 0.75,
                 "capacity_rounding": "ceil-with-one-site-minimum",
                 "packing": "native-openparf-atomic-site-groups-v1",
-                "placement_certificate": "emuflow.openparf-atomic-placement/v1",
+                "placement_certificate": "emuflow.openparf-atomic-placement/v2",
             }
             value["source"].update({
                 "guidance_sha256": None,
@@ -570,7 +570,7 @@ class XilinxPlacementTest(unittest.TestCase):
             ):
                 validate_xilinx_placement(packed_path, arch_path, output)
 
-    def test_bram_anchor_expands_to_exact_rapidwright_sites(self):
+    def test_bram_anchor_requires_source_sealed_native_tile_group(self):
         architecture = {
             "schema": "emuflow.archdb/v1", "part": "xcvu19p-test",
             "source": {"format": "unit-test/v1"},
@@ -612,16 +612,11 @@ class XilinxPlacementTest(unittest.TestCase):
             output = root / "place.json"
             arch.write_text(json.dumps(architecture), encoding="utf-8")
             packed_path.write_text(json.dumps(packed), encoding="utf-8")
-            place_xilinx_clusters(packed_path, arch, output)
-            value = json.loads(output.read_text(encoding="utf-8"))
-            validate_xilinx_placement(packed_path, arch, output)
-        sites = {
-            item["instance"]: item["site"]
-            for item in value["clusters"][0]["assignments"]
-        }
-        self.assertEqual(
-            sites, {"lo": "RAMB18_X4Y240", "hi": "RAMB18_X4Y241"}
-        )
+            with self.assertRaisesRegex(
+                ValidationError, "source-sealed native BRAM tile group"
+            ):
+                place_xilinx_clusters(packed_path, arch, output)
+            self.assertFalse(output.exists())
 
     def test_single_slr_planner_uses_legal_guidance_not_slr_name(self):
         with tempfile.TemporaryDirectory() as temporary:

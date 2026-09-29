@@ -126,10 +126,6 @@ def _materialize_assignment_sites(
         native_bram_groups.get(anchor_site)
         if native_bram_groups is not None else None
     )
-    kind = None
-    physical_x = physical_y = 0
-    if native_group is None:
-        kind, physical_x, physical_y = _physical_site_coordinate(anchor_site)
     result: List[Dict[str, Any]] = []
     for assignment in assignments:
         physical_site = anchor_site
@@ -151,19 +147,16 @@ def _materialize_assignment_sites(
             physical_site = view.get("site")
             if not isinstance(physical_site, str) or not physical_site:
                 raise ValidationError("certified BRAM view has no physical site")
-        elif kind == "RAMB18":
-            bel = assignment.get("bel")
-            cell_type = assignment.get("cell_type")
-            if cell_type == "RAMB18E2" and bel == "RAMB18E2_U":
-                physical_site = f"RAMB18_X{physical_x}Y{physical_y}"
-            elif cell_type == "RAMB18E2" and bel == "RAMB18E2_L" and physical_y > 0:
-                physical_site = f"RAMB18_X{physical_x}Y{physical_y - 1}"
-            elif cell_type == "RAMB36E2" and bel == "RAMB36E2":
-                physical_site = f"RAMB36_X{physical_x}Y{physical_y // 2}"
-            else:
+        elif assignment.get("cell_type") in {"RAMB18E2", "RAMB36E2"}:
+            # An unambiguous direct-site certificate may already name its
+            # physical site.  Split/overlapping BRAM modes require the native
+            # tile group; never reconstruct a half or whole site from an
+            # anchor coordinate or a naming convention.
+            physical_site = assignment.get("site")
+            if physical_site != anchor_site:
                 raise ValidationError(
-                    f"BRAM anchor {anchor_site!r} cannot materialize "
-                    f"{cell_type!r} on {bel!r}"
+                    f"BRAM anchor {anchor_site!r} requires a source-sealed native "
+                    "BRAM tile group; coordinate/name inference is forbidden"
                 )
         result.append({**assignment, "site": physical_site})
     return result
@@ -1284,7 +1277,7 @@ def validate_xilinx_placement(
     if provider == XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER:
         expected_policy.update({
             "packing": "native-openparf-atomic-site-groups-v1",
-            "placement_certificate": "emuflow.openparf-atomic-placement/v1",
+            "placement_certificate": "emuflow.openparf-atomic-placement/v2",
         })
     elif provider == XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER:
         expected_policy.update({
@@ -1386,6 +1379,21 @@ def validate_xilinx_placement(
             raise ValidationError(f"{context}: placement constraint is violated")
         resolved = _resolve_cluster_bels(cluster, contracts[site_base[site_name]])
         if resolved is not None:
+            explicit_sites = {
+                assignment.get("instance"): assignment.get("site")
+                for assignment in entry.get("assignments", [])
+                if isinstance(assignment, Mapping)
+            }
+            resolved = [
+                {
+                    **assignment,
+                    **(
+                        {"site": explicit_sites[assignment["instance"]]}
+                        if assignment["instance"] in explicit_sites else {}
+                    ),
+                }
+                for assignment in resolved
+            ]
             resolved = _materialize_assignment_sites(
                 site_name, resolved,
                 native_bram_groups=(native_bram_groups or None),
