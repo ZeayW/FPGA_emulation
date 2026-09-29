@@ -24,14 +24,23 @@ def _cell(cell_type, connections, outputs):
 
 
 def write_openparf_runtime_fixture(
-    root: Path, *, include_hard: bool = False, clock_regions: bool = False
+    root: Path,
+    *,
+    include_hard: bool = False,
+    clock_regions: bool = False,
+    multi_slr: bool = False,
 ) -> Tuple[Path, Path, Path]:
     """Write a 64-LUT/64-FF, 4x4-slice runtime smoke fixture.
 
     ``include_hard`` inserts independent DSP48E2, RAMB36E2, and URAM288
     instances into three existing FF-to-LUT ring edges.  No disconnected or
-    synthetic load-only net is added.
+    synthetic load-only net is added. ``multi_slr`` divides the dense logic
+    rows into two complete rectangular SLRs and therefore requires
+    ``clock_regions``.
     """
+
+    if multi_slr and not clock_regions:
+        raise ValueError("multi_slr requires clock_regions")
 
     root.mkdir(parents=True, exist_ok=True)
     mapped_path = root / "mapped.json"
@@ -184,12 +193,16 @@ def write_openparf_runtime_fixture(
     if clock_regions:
         x_midpoint = (min(site["tile"]["grid_col"] for site in sites)
                       + max(site["tile"]["grid_col"] for site in sites) + 1) // 2
+        y_midpoint = (min(site["tile"]["grid_row"] for site in sites)
+                      + max(site["tile"]["grid_row"] for site in sites) + 1) // 2
         for site in sites:
+            slr_y = int(
+                multi_slr and site["tile"]["grid_row"] >= y_midpoint
+            )
             site["physical_region"] = {
-                "slr": "SLR0",
+                "slr": f"SLR{slr_y}",
                 "clock_region": (
-                    "X0Y0" if site["tile"]["grid_col"] < x_midpoint
-                    else "X1Y0"
+                    f"X{int(site['tile']['grid_col'] >= x_midpoint)}Y{slr_y}"
                 ),
             }
     architecture_path.write_text(json.dumps({

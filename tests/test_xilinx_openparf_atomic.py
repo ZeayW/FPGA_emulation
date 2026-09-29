@@ -645,6 +645,27 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             ],
         })
 
+    def test_non_degenerate_multi_slr_runtime_fixture_export_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_runtime_fixture(
+                root, clock_regions=True, multi_slr=True
+            )
+            output = root / "output"
+            manifest = export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output
+            )
+            config = json.loads((output / "openparf.json").read_text())
+            sites = (output / "design.scl").read_text()
+
+        self.assertIn("SUPERLOGICREGIONS 1 2", sites)
+        self.assertEqual(config["slr_aware_flag"], 1)
+        self.assertEqual(manifest["slr_contract"]["native_enforcement"], "enabled")
+        self.assertEqual(
+            [region["name"] for region in manifest["slr_contract"]["regions"]],
+            ["SLR0", "SLR1"],
+        )
+
     def test_partial_or_incomplete_clock_region_grid_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
