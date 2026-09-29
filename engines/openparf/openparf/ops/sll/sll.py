@@ -6,14 +6,13 @@
 # Last Modified Date: 11.17.2023
 # Last Modified By  : Runzhe Tao <rztao@my.swjtu.edu.cn>
 
-import os
-import numpy as np
 import torch
 from torch import nn
 from torch.autograd import Function
 import logging
 
 from . import sll_cpp
+from .sll_table import build_sll_counts_table_values
 from openparf import configure
 
 if configure.compile_configurations["CUDA_FOUND"] == "TRUE":
@@ -135,39 +134,10 @@ class SLL(nn.Module):
         # It is important for users to define their own SLL counts table here, particularly
         # tailored to the unique specifications of their Multi-die FPGA architecture. This customization
         # ensures accurate mapping and functionality in line with specific architecture designs.
-        if num_slrX == 1 and num_slrY == 4:
-            # Binary SLR maps -> SLL counts
-            # 0b0000 -> 0, 0b0001 -> 0, 0b0010 -> 0, 0b0011 -> 1
-            # 0b0100 -> 0, 0b0101 -> 2, 0b0110 -> 1, 0b0111 -> 2
-            # 0b1000 -> 0, 0b1001 -> 3, 0b1010 -> 2, 0b1011 -> 3
-            # 0b1100 -> 1, 0b1101 -> 3, 0b1110 -> 2, 0b1111 -> 3
-            self.sll_counts_table = torch.tensor(
-                [0, 0, 0, 1, 0, 2, 1, 2, 0, 3, 2, 3, 1, 3, 2, 3],
-                dtype=torch.int32)
-        elif num_slrX == 2 and num_slrY == 2:
-            # Binary SLR maps -> SLL counts
-            # 0b0000 -> 0, 0b0001 -> 0, 0b0010 -> 0, 0b0011 -> 1
-            # 0b0100 -> 0, 0b0101 -> 1, 0b0110 -> 2, 0b0111 -> 2
-            # 0b1000 -> 0, 0b1001 -> 2, 0b1010 -> 1, 0b1011 -> 2
-            # 0b1100 -> 1, 0b1101 -> 2, 0b1110 -> 2, 0b1111 -> 3
-            self.sll_counts_table = torch.tensor(
-                [0, 0, 0, 1, 0, 1, 2, 2, 0, 2, 1, 2, 1, 2, 2, 3],
-                dtype=torch.int32)
-        else:
-            self.sll_counts_table = None
-            # load numpy data, see `scripts/compute_sll_counts_table.py`
-            # self.sll_counts_table = torch.from_numpy(
-            #     np.load(
-            #         os.path.join(
-            #             os.path.dirname(os.path.abspath(__file__)),
-            #             "sll_counts_table.npy"))).to(dtype=torch.int32)
-
-            try:
-                assert self.sll_counts_table is not None
-            except AssertionError:
-                logger.debug(
-                    f"The SLL count lookup table is not defined for the SLR topology {self.num_slrX} x {self.num_slrY}."
-                )
+        self.sll_counts_table = torch.tensor(
+            build_sll_counts_table_values(num_slrX, num_slrY),
+            dtype=torch.int32,
+        )
 
     def forward(self, pos):
         if pos.is_cuda and not self.sll_counts_table.is_cuda:

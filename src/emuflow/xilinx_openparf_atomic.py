@@ -3819,7 +3819,8 @@ def run_xilinx_openparf_atomic_qualification(
         "qualification_scope": (
             "native mixed-resource placement with exact MUX and CARRY8/LUT6_2 "
             "site macros, CARRY_NEXT adjacency, and typed DSP/BRAM/URAM "
-            "legalization; clock and SLR constraints remain fail-closed"
+            "legalization plus the rectangular multi-SLR SLL objective; "
+            "clock and half-column constraints remain fail-closed"
         ),
     }
 

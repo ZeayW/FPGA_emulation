@@ -1231,8 +1231,12 @@ UltraScale+ devices.  A new `SUPERLOGICREGIONS` block constructs the native
 `SuperLogicRegionMap` instead of retaining SLR names only as sidecar metadata.
 Equal-size rectangular SLRs enable OpenPARF's native SLL objective;
 incomplete, overlapping, non-contiguous, or unequal-size SLR grids fail closed.
-This source/unit gate is implemented, but a rebuilt compiled runtime and a
-renewed DLA route are still required before multi-SLR support is promoted.
+The first compiled 1x2 gate exposed that upstream only hard-coded SLL lookup
+tables for 1x4 and 2x2 grids and passed `None` to the native op for other
+rectangular topologies.  The pinned engine now constructs the exact
+rectilinear-MST table for reviewed grids of up to 12 SLRs; unit tests reproduce
+both upstream reference tables and cover 1x2.  A rebuilt compiled runtime and
+a renewed DLA route are still required before multi-SLR support is promoted.
 Active UTPlaceFX clock assignment remains deliberately
 disabled: that upstream implementation assumes one SLICE, one DSP, and one RAM
 site class and discovers clocks only from explicit clock-source models, while
