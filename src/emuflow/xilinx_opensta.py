@@ -95,12 +95,25 @@ def build_xilinx_routed_opensta_inputs(
     the two sealed inputs.
     """
 
-    if timing_validation is None:
-        timing_validation = validate_xilinx_routed_timing(
-            timing_path, mapped_path=mapped_path
-        )
+    # Standalone staging follows the same single-pass contract as the
+    # production in-memory path: load each large input once, hash it once, and
+    # hand the exact object to the independent validator and consumer.
+    mapped_value = (
+        read_json(mapped_path) if _mapped_value is None else _mapped_value
+    )
+    timing_value = (
+        read_json(timing_path) if _timing_value is None else _timing_value
+    )
     timing_sha256 = _timing_sha256 or _sha256(timing_path)
     mapped_sha256 = _mapped_sha256 or _sha256(mapped_path)
+    if timing_validation is None:
+        timing_validation = validate_xilinx_routed_timing(
+            timing_path,
+            mapped_path=mapped_path,
+            source_sha256={"mapped_sha256": mapped_sha256},
+            _value=timing_value,
+            _timing_sha256=timing_sha256,
+        )
     if (
         timing_validation.get("status") != "pass"
         or timing_validation.get("schema")
@@ -108,12 +121,12 @@ def build_xilinx_routed_opensta_inputs(
         or timing_validation.get("timing_sha256") != timing_sha256
     ):
         raise ValidationError("RapidWright routed timing validation seal is invalid")
-    timing = read_json(timing_path) if _timing_value is None else _timing_value
+    timing = timing_value
     if timing.get("schema") != XILINX_ROUTED_TIMING_SCHEMA:
         raise ValidationError("RapidWright routed timing input has the wrong schema")
     if timing.get("source", {}).get("mapped_sha256") != mapped_sha256:
         raise ValidationError("RapidWright routed timing mapped source seal is stale")
-    source = import_yosys_json(mapped_path, _source_value=_mapped_value)
+    source = import_yosys_json(mapped_path, _source_value=mapped_value)
     delays: Dict[tuple[str, str, int], float] = {}
     for record in timing["endpoints"]:
         sink = record["sink"]
@@ -352,6 +365,12 @@ def run_xilinx_routed_opensta(
     # than after minutes of staging work.
     opensta = resolve_native_executable("sta", executable)
     require_opensta_engine(opensta)
+    mapped_value = (
+        read_json(mapped_path) if mapped_value is None else mapped_value
+    )
+    timing_value = (
+        read_json(timing_path) if timing_value is None else timing_value
+    )
     input_sha256 = (
         {
             "mapped_sha256": _sha256(mapped_path),

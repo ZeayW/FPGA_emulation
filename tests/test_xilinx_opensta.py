@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import emuflow.xilinx_opensta as xilinx_opensta
+import emuflow.xilinx_timing as xilinx_timing
 from emuflow.errors import ValidationError
 from emuflow.xilinx_opensta import (
     build_xilinx_routed_opensta_inputs,
@@ -30,7 +31,7 @@ def test_routed_opensta_rejects_engine_before_expanding_inputs(tmp_path):
         )
 
 
-def test_routed_opensta_staging_inserts_one_exact_delay_per_sink():
+def test_routed_opensta_staging_inserts_one_exact_delay_per_sink(monkeypatch):
     mapped = {
         "modules": {
             "top": {
@@ -108,9 +109,40 @@ def test_routed_opensta_staging_inserts_one_exact_delay_per_sink():
             },
         }
         timing_path.write_text(json.dumps(timing), encoding="utf-8")
+        original_opensta_read = xilinx_opensta.read_json
+        original_opensta_sha256 = xilinx_opensta._sha256
+        opensta_reads = []
+        opensta_hashes = []
+
+        def tracked_read(path):
+            opensta_reads.append(Path(path))
+            return original_opensta_read(path)
+
+        def tracked_sha256(path):
+            opensta_hashes.append(Path(path))
+            return original_opensta_sha256(path)
+
+        monkeypatch.setattr(xilinx_opensta, "read_json", tracked_read)
+        monkeypatch.setattr(xilinx_opensta, "_sha256", tracked_sha256)
+        monkeypatch.setattr(
+            xilinx_timing,
+            "read_json",
+            lambda _path: (_ for _ in ()).throw(
+                AssertionError("timing validator reparsed a preloaded input")
+            ),
+        )
+        monkeypatch.setattr(
+            xilinx_timing,
+            "_sha256",
+            lambda _path: (_ for _ in ()).throw(
+                AssertionError("timing validator rehashed a sealed input")
+            ),
+        )
         routed_ir, model, metadata = build_xilinx_routed_opensta_inputs(
             mapped_path, timing_path
         )
+        assert opensta_reads == [mapped_path, timing_path]
+        assert opensta_hashes == [timing_path, mapped_path]
         delay_instances = [
             instance for instance in routed_ir.value["instances"]
             if instance["type"].startswith("EMUFLOW_RW_ROUTE_DELAY_")

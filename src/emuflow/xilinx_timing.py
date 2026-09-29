@@ -286,8 +286,11 @@ def validate_xilinx_routed_timing(
     packed_path: Optional[Path] = None,
     placement_path: Optional[Path] = None,
     route_path: Optional[Path] = None,
+    source_sha256: Optional[Mapping[str, str]] = None,
+    _value: Optional[Mapping[str, Any]] = None,
+    _timing_sha256: Optional[str] = None,
 ) -> Dict[str, Any]:
-    value = read_json(path)
+    value = read_json(path) if _value is None else _value
     if value.get("schema") != XILINX_ROUTED_TIMING_SCHEMA or value.get("status") != "pass":
         raise ValidationError("XilinxRoutedTimingDB header is invalid")
     sources = {
@@ -296,11 +299,23 @@ def validate_xilinx_routed_timing(
         "placement_sha256": placement_path,
         "route_sha256": route_path,
     }
+    required_source_keys = {
+        key for key, source_path in sources.items() if source_path is not None
+    }
+    if source_sha256 is not None and set(source_sha256) != required_source_keys:
+        raise ValidationError(
+            "XilinxRoutedTimingDB validated source digests are incomplete"
+        )
     for key, source_path in sources.items():
         digest = value.get("source", {}).get(key)
         if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise ValidationError(f"XilinxRoutedTimingDB source.{key} is invalid")
-        if source_path is not None and digest != _sha256(source_path):
+        expected_digest = (
+            source_sha256.get(key)
+            if source_sha256 is not None and source_path is not None
+            else _sha256(source_path) if source_path is not None else None
+        )
+        if source_path is not None and digest != expected_digest:
             raise ValidationError(f"XilinxRoutedTimingDB source.{key} disagrees")
     endpoints = value.get("endpoints")
     if not isinstance(endpoints, list):
@@ -346,5 +361,5 @@ def validate_xilinx_routed_timing(
         "status": "pass",
         "schema": "emuflow.xilinx-routed-timing-validation/v1",
         **summary,
-        "timing_sha256": _sha256(path),
+        "timing_sha256": _timing_sha256 or _sha256(path),
     }

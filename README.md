@@ -5045,7 +5045,10 @@ not parse or hash it again after validation and it does not rewrite an
 already-passing RouteDB.  This removes duplicate whole-document I/O without
 weakening the independent topology, source, or timing checks.  It does not
 claim that the current complete route certificate is already sharded or
-streaming.
+streaming.  The following routed-timing-to-OpenSTA staging boundary applies
+the same rule: the mapped netlist and endpoint timing database are each read
+and hashed once, and the validator and OpenSTA graph builder share those exact
+in-memory objects and seals.
 An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks
