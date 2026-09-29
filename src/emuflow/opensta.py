@@ -1102,6 +1102,27 @@ def validate_timing_model_coverage(
     }
 
 
+def _sealed_string_set_summary(values: Iterable[str]) -> Dict[str, Any]:
+    """Describe a string set without copying a potentially huge list.
+
+    Generated route-delay cells can create tens of thousands of distinct
+    timing-model cell names.  The complete set remains available to the
+    coverage checker above, but a persisted run report only needs a stable
+    population count and content seal.
+    """
+
+    ordered = sorted(set(values))
+    digest = hashlib.sha256()
+    for value in ordered:
+        encoded = value.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, byteorder="big"))
+        digest.update(encoded)
+    return {
+        "count": len(ordered),
+        "sha256": digest.hexdigest(),
+    }
+
+
 def _scalar_endpoint_pin(
     endpoint: Mapping[str, Any],
     pin_sets: Mapping[str, Mapping[str, set[tuple[str, int]]]],
@@ -1633,7 +1654,9 @@ def run_opensta_path_database(
         "through_net_coverage": through_coverage,
         "path_limit_reached": imported["paths"] >= max_paths,
         "unique_path_nets": imported["unique_path_nets"],
-        "used_cell_types": coverage["used_cell_types"],
+        "used_cell_type_summary": _sealed_string_set_summary(
+            coverage["used_cell_types"]
+        ),
         "checker": checked,
         "output": str(output_path),
         "log": str(log_path) if log_path is not None else None,

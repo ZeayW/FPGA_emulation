@@ -5067,6 +5067,10 @@ optimization removes repeated whole-document allocation and serialization,
 not validation strength.  The independent validator returns a separate
 passing promotion certificate instead of rewriting either immutable artifact
 merely to change its status field.
+OpenSTA coverage still checks every mapped and generated cell type against the
+timing model, but the run summary does not duplicate the complete generated
+route-delay type set.  It records only the deterministic set cardinality and
+SHA-256 seal; the timing model remains the canonical owner of the names.
 An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks

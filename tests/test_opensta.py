@@ -414,6 +414,13 @@ print("fake OpenSTA pass")
         )
         self.assertEqual(report["engine"]["version"], "3.1.0")
         self.assertEqual(artifact["source"]["engine"]["version"], "3.1.0")
+        self.assertNotIn("used_cell_types", report)
+        self.assertGreater(
+            report["used_cell_type_summary"]["count"], 0
+        )
+        self.assertRegex(
+            report["used_cell_type_summary"]["sha256"], r"^[0-9a-f]{64}$"
+        )
 
     def test_structural_endpoint_classifier_distinguishes_data_and_control(self) -> None:
         model = load_timing_model(DEFAULT_TIMING_MODEL)
