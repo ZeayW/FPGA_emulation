@@ -1,0 +1,47 @@
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -50 +50 @@
+-  set(BOOST_URL "https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VER}/source/boost_${BOOST_VER_}.tar.bz2" CACHE STRING "Boost download URL")
++  set(BOOST_URL "https://archives.boost.io/release/${BOOST_VER}/source/boost_${BOOST_VER_}.tar.bz2" CACHE STRING "Boost download URL")
+--- a/src/lib/HiFPlacer/designInfo/DesignInfo.cc
++++ b/src/lib/HiFPlacer/designInfo/DesignInfo.cc
+@@ -279,5 +279 @@
+-    assert(deviceInfo->getSitesInType(STR_PCIE_3_1).size() > 0 && "info for PCIE should be included in deviceInfo.");
+-    DeviceInfo::DeviceSite::DeviceSitePinInfos *PCIESitePinInfo =
+-        deviceInfo->getSitesInType(STR_PCIE_3_1)[0]->getSitePinInfos();
+-    assert(PCIESitePinInfo);
+-    for (DesignCell *PCIECell : type2Cells[CellType_PCIE_3_1])
++    if (!type2Cells[CellType_PCIE_3_1].empty())
+@@ -285 +281,6 @@
+-        for (DesignPin *curPin : PCIECell->getPins())
++        assert(deviceInfo->getSitesInType(STR_PCIE_3_1).size() > 0 &&
++               "info for PCIE should be included in deviceInfo when the design contains PCIE cells.");
++        DeviceInfo::DeviceSite::DeviceSitePinInfos *PCIESitePinInfo =
++            deviceInfo->getSitesInType(STR_PCIE_3_1)[0]->getSitePinInfos();
++        assert(PCIESitePinInfo);
++        for (DesignCell *PCIECell : type2Cells[CellType_PCIE_3_1])
+@@ -287,3 +288,7 @@
+-            assert(PCIESitePinInfo->name2offsetX.find(curPin->getRefPinName()) != PCIESitePinInfo->name2offsetX.end());
+-            curPin->setOffsetInCell(PCIESitePinInfo->name2offsetX[curPin->getRefPinName()],
+-                                    PCIESitePinInfo->name2offsetY[curPin->getRefPinName()]);
++            for (DesignPin *curPin : PCIECell->getPins())
++            {
++                assert(PCIESitePinInfo->name2offsetX.find(curPin->getRefPinName()) !=
++                       PCIESitePinInfo->name2offsetX.end());
++                curPin->setOffsetInCell(PCIESitePinInfo->name2offsetX[curPin->getRefPinName()],
++                                        PCIESitePinInfo->name2offsetY[curPin->getRefPinName()]);
++            }
+--- a/src/lib/HiFPlacer/placement/packing/InitialPacker.cc
++++ b/src/lib/HiFPlacer/placement/packing/InitialPacker.cc
+@@ -60,5 +60,6 @@
+-        print_error(
+-            "No fixed cell in the design. Floating placement is not allowed temporarily."); // this can be disabled but
+-                                                                                            // might lead to
+-                                                                                            // unpredictable placement.
+-        assert(false && "No fixed cell in the design. Floating placement is not allowed temporarily.");
++        print_warning(
++            "No fixed cell in the design. Continuing with floating placement because "
++            "RandomInitialPlacement is enabled by the caller.");
++        assert(JSONCfg.find("RandomInitialPlacement") != JSONCfg.end() &&
++               JSONCfg["RandomInitialPlacement"] == "true" &&
++               "floating placement requires explicit RandomInitialPlacement=true");

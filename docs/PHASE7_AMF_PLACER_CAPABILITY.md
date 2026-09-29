@@ -58,9 +58,11 @@ The checked-in probe emits the shared
 `native_supported`, `adapter_required`, `core_missing`, and `unverified`.
 Unknown cells remain `unverified`; no paper or README claim promotes them.
 An `adapter_required` entry becomes usable only after a focused adapter test
-passes. The three fixture adapters and GND/VCC lowering are now `pass`; AMF
-execution integration remains `missing`, and production capabilities below
-remain blocked.
+passes. The three fixture adapters and GND/VCC lowering are now `pass`. The
+native-runner contract is implemented, including executable/source/patch
+sealing and independent result certification, but the public optimizer has not
+yet passed the real resource fixture. Execution qualification therefore remains
+`missing`, and production capabilities below remain blocked.
 
 ## Import, placement, and output audit
 
@@ -74,7 +76,7 @@ remain blocked.
 | XCVU19P UltraScale+ | `unverified` | public reference input is VCU108 and the docs warn of portability work |
 | Multi-SLR legality | `core_missing` | no explicit SLR model in the audited public source |
 | Clock legality | `unverified` | clock-region checks exist; CTS is still a public TODO |
-| Vivado-free EmuFlow execution | `adapter_required` | Adapters are Vivado-free; a pinned AMF runner is not integrated |
+| Vivado-free EmuFlow execution | `adapter_required` | Pinned runner/validator implemented; real patched upstream fixture run still required |
 | Source-complete runtime | `core_missing` | The build downloads and links opaque `libpatoh.a`, used by cluster placement |
 | Headless runtime | `adapter_required` | The public executable is Qt5/GUI-coupled; no validated headless runner exists |
 
@@ -114,8 +116,8 @@ DI/S adapters, and explicit GND/VCC pseudo-cells. It proves:
    independent EmuFlow legalizer and placement checker.
 
 This does not run the AMF optimization core. It validates the adapter boundary
-needed before an executable runner can be added, while avoiding a fake claim
-that a synthetic fixture qualifies XCVU19P behavior.
+used by the executable runner, while avoiding a fake claim that a synthetic
+fixture qualifies XCVU19P behavior.
 
 The public core also contains an unconditional PCIE-site lookup during design
 loading. A pinned runner must remove or safely generalize that assumption
@@ -130,16 +132,31 @@ execution evidence.
 
 ## P2 outcome and next cost
 
-The source/capability probe and all three fixture adapters are executable now.
-A production resource placement is intentionally not claimed: integrating the
-public executable still needs a pinned runner and robust archive/config
-emission, while the complete current primitive profile additionally needs
-MUXF9 and URAM core work.
+The source/capability probe, all three fixture adapters, and the fail-closed
+native-runner boundary are executable now. The runner checks the exact public
+revision, binary SHA-256, usage contract, and portability patch; emits AMF's
+documented archives/configuration in an isolated disposable directory; requires
+packing/global-placement/detailed-placement/completion stage evidence; and
+converts the final answer directly into a standard placement artifact plus an
+independently reconstructed certificate. It never calls the historical greedy
+legalizer or treats a test double as native evidence.
+
+A production resource placement is intentionally not claimed: the patched
+public binary has not yet passed the real fixture. The complete current
+primitive profile additionally needs MUXF9 and URAM core work.
+
+The first bounded public build probe also exposed a reproducible upstream
+packaging defect: the pinned CMake file still fetched Boost 1.65.1 from a
+retired JFrog URL, whose response did not match the upstream-pinned SHA-256.
+The reviewed portability patch now redirects that exact version and digest to
+the official Boost archive. The follow-up build did not finish before the
+remote session was lost, so this change is a build fix, not native runtime
+qualification.
 
 Estimated engineering cost, before performance qualification:
 
-- pinned public executable runner plus robust archive/config compatibility:
-  about 1 engineer-week;
+- build and real-fixture qualification of the pinned public executable:
+  external dependency/runtime work remains;
 - MUXF9 and URAM core support plus focused legality tests: about 1--2 weeks;
 - XCVU19P clock-region and multi-SLR modeling/qualification: about 2--4 weeks;
 - medium-design robustness and Phase 7 routing/timing qualification: additional

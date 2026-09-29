@@ -31,6 +31,9 @@ XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER = (
 XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER = (
     "openparf-native-carry8-full-slice-bridge-v1"
 )
+XILINX_AMF_NATIVE_BRIDGE_PROVIDER = (
+    "amf-placer-public-basic-2.0-native-bridge-v1"
+)
 XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 0.75
 _SITE_XY_RE = re.compile(r"^(?P<kind>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 
@@ -1268,6 +1271,7 @@ def validate_xilinx_placement(
         XILINX_EXACT_SITE_LEGALIZER_PROVIDER,
         XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER,
         XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER,
+        XILINX_AMF_NATIVE_BRIDGE_PROVIDER,
     }:
         raise ValidationError("Xilinx placement provider is invalid")
     expected_policy = {
@@ -1283,6 +1287,11 @@ def validate_xilinx_placement(
         expected_policy.update({
             "packing": "preserved-carry8-full-slice-macros-v1",
             "placement_certificate": "emuflow.openparf-carry8-placement/v1",
+        })
+    elif provider == XILINX_AMF_NATIVE_BRIDGE_PROVIDER:
+        expected_policy.update({
+            "packing": "emuflow-packed-site-netlist-authoritative-v1",
+            "placement_certificate": "emuflow.amf-native-placement/v1",
         })
     if placement.get("policy") != expected_policy:
         raise ValidationError("Xilinx placement routability policy is invalid")
@@ -1377,27 +1386,77 @@ def validate_xilinx_placement(
             site, _cluster_constraint(constraints, cluster_id)
         ):
             raise ValidationError(f"{context}: placement constraint is violated")
-        resolved = _resolve_cluster_bels(cluster, contracts[site_base[site_name]])
-        if resolved is not None:
-            explicit_sites = {
-                assignment.get("instance"): assignment.get("site")
-                for assignment in entry.get("assignments", [])
+        if provider == XILINX_AMF_NATIVE_BRIDGE_PROVIDER:
+            expected_assignments = {
+                assignment.get("instance"): assignment
+                for assignment in cluster.get("assignments", [])
                 if isinstance(assignment, Mapping)
             }
-            resolved = [
-                {
-                    **assignment,
-                    **(
-                        {"site": explicit_sites[assignment["instance"]]}
-                        if assignment["instance"] in explicit_sites else {}
-                    ),
-                }
-                for assignment in resolved
-            ]
-            resolved = _materialize_assignment_sites(
-                site_name, resolved,
-                native_bram_groups=(native_bram_groups or None),
+            actual_assignments = entry.get("assignments")
+            if (
+                not isinstance(actual_assignments, list)
+                or len(actual_assignments) != len(expected_assignments)
+            ):
+                raise ValidationError(f"{context}: AMF assignment count is invalid")
+            resolved = []
+            used_bels = set()
+            site_contract = contracts[site_base[site_name]]
+            for actual in actual_assignments:
+                if not isinstance(actual, Mapping):
+                    raise ValidationError(f"{context}: AMF assignment is invalid")
+                instance = actual.get("instance")
+                expected = expected_assignments.get(instance)
+                if expected is None or actual.get("cell_type") != expected.get("cell_type"):
+                    raise ValidationError(f"{context}: AMF cell identity is invalid")
+                bel_name = actual.get("bel")
+                allowed = expected.get("bel_candidates") or [expected.get("bel")]
+                bel = site_contract.get(bel_name) if isinstance(bel_name, str) else None
+                if (
+                    bel_name not in allowed
+                    or bel_name in used_bels
+                    or bel is None
+                    or actual.get("cell_type") not in bel.get("compatible_cells", [])
+                    or bel.get("placement_mode") not in cluster.get("site_templates", [])
+                ):
+                    raise ValidationError(f"{context}: AMF BEL assignment is invalid")
+                used_bels.add(bel_name)
+                resolved.append({
+                    "instance": instance,
+                    "cell_type": actual.get("cell_type"),
+                    "bel": bel_name,
+                    "placement_mode": bel.get("placement_mode"),
+                    "site": site_name,
+                })
+            resolved.sort(key=lambda item: item["instance"])
+            actual_normalized = sorted(
+                (dict(item) for item in actual_assignments),
+                key=lambda item: item.get("instance", ""),
             )
+            if actual_normalized != resolved:
+                raise ValidationError(f"{context}: AMF assignment metadata is invalid")
+        else:
+            resolved = _resolve_cluster_bels(cluster, contracts[site_base[site_name]])
+            if resolved is not None:
+                explicit_sites = {
+                    assignment.get("instance"): assignment.get("site")
+                    for assignment in entry.get("assignments", [])
+                    if isinstance(assignment, Mapping)
+                }
+                resolved = [
+                    {
+                        **assignment,
+                        **(
+                            {"site": explicit_sites[assignment["instance"]]}
+                            if assignment["instance"] in explicit_sites else {}
+                        ),
+                    }
+                    for assignment in resolved
+                ]
+                resolved = _materialize_assignment_sites(
+                    site_name,
+                    resolved,
+                    native_bram_groups=(native_bram_groups or None),
+                )
         if resolved is None or entry.get("assignments") != resolved:
             raise ValidationError(f"{context}: exact BEL assignment is invalid")
         for assignment in resolved:

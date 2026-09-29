@@ -8,6 +8,7 @@ MUXF9, and URAM288 remain fail-closed in :mod:`emuflow.amf_placer`.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -32,10 +33,39 @@ _FIXTURE_CELL_TYPES = {
     "FDRE",
     "FDSE",
     "CARRY8",
+    "DSP48E2",
+    "MUXF7",
+    "MUXF8",
+    "RAMB18E2",
+    "RAMB36E2",
 }
 _NAME_RE = re.compile(r"^\S+$")
 _CLOCK_REGION_RE = re.compile(r"^X(?P<x>\d+)Y(?P<y>\d+)$")
 _PLACE_CELL_OPEN_RE = re.compile(r"\bplace_cell\s*\{")
+
+_AMF_SHARED_RESOURCE = {
+    **{
+        cell_type: "SLICEL_LUT"
+        for cell_type in {*{f"LUT{width}" for width in range(1, 7)}, "LUT6_2"}
+    },
+    **{
+        cell_type: "SLICEL_FF"
+        for cell_type in {"FDCE", "FDPE", "FDRE", "FDSE"}
+    },
+    "CARRY8": "SLICEL_CARRY8",
+    "MUXF7": "SLICEL_MUXF7",
+    "MUXF8": "SLICEL_MUXF8",
+    "DSP48E2": "DSP_ALU",
+    "RAMB18E2": "RAMB18E2_L",
+    "RAMB36E2": "RAMB18E2_L",
+}
+
+_AMF_OCCUPATION = {
+    **{cell_type: 1 for cell_type in _FIXTURE_CELL_TYPES},
+    "LUT6": 2,
+    "LUT6_2": 2,
+    "RAMB36E2": 2,
+}
 
 
 def _name(value: object, context: str) -> str:
@@ -313,19 +343,27 @@ def export_amf_fixture_device(architecture_value: Mapping[str, Any]) -> Dict[str
     }
     occupation_lines = []
     cell_to_shared_lines = []
-    shared_to_bel_lines = []
+    shared_contracts: Dict[str, Tuple[str, Tuple[str, ...]]] = {}
     for cell_type, site_types in normalized_compatibility.items():
-        occupation = 2 if cell_type in {"LUT6", "LUT6_2"} else 1
-        occupation_lines.append(f"{cell_type} {occupation}")
-        shared_types = [
-            f"AMF_{site_type}_{cell_type}" for site_type in site_types
-        ]
-        cell_to_shared_lines.append(f"{cell_type} {','.join(shared_types)}")
-        for site_type, shared_type in zip(site_types, shared_types):
-            shared_to_bel_lines.append(
-                f"{shared_type} {site_type} "
-                + ",".join(site_types[site_type])
+        shared_type = _AMF_SHARED_RESOURCE.get(cell_type)
+        if shared_type is None:
+            raise ValidationError(
+                f"AMF public core has no shared-resource model for {cell_type!r}"
             )
+        occupation_lines.append(f"{cell_type} {_AMF_OCCUPATION[cell_type]}")
+        cell_to_shared_lines.append(f"{cell_type} {shared_type}")
+        for site_type, bels in site_types.items():
+            candidate = (site_type, tuple(bels))
+            existing = shared_contracts.get(shared_type)
+            if existing is not None and existing != candidate:
+                raise ValidationError(
+                    f"AMF shared resource {shared_type!r} has ambiguous sites"
+                )
+            shared_contracts[shared_type] = candidate
+    shared_to_bel_lines = [
+        f"{shared_type} {site_type} {','.join(bels)}"
+        for shared_type, (site_type, bels) in sorted(shared_contracts.items())
+    ]
     result = {
         "schema": AMF_DEVICE_ADAPTER_SCHEMA,
         "status": "pass",
@@ -594,6 +632,24 @@ def validate_amf_fixture_result(value: Mapping[str, Any]) -> Dict[str, Any]:
     if len(instances) != len(assignments) or len(instances) != len(set(instances)):
         raise ValidationError("AMF result adapter assignment ownership is invalid")
     return dict(value)
+
+
+def amf_assignment_sha256(assignments: Sequence[Mapping[str, Any]]) -> str:
+    """Seal the canonical AMF cell/site/BEL ownership vector once."""
+
+    canonical = "\n".join(
+        "\t".join(
+            str(item[key])
+            for key in ("cluster", "instance", "cell_type", "site", "bel")
+        )
+        for item in sorted(
+            assignments,
+            key=lambda item: (
+                str(item.get("cluster")), str(item.get("instance"))
+            ),
+        )
+    )
+    return hashlib.sha256((canonical + "\n").encode("utf-8")).hexdigest()
 
 
 def validate_amf_fixture_roundtrip(

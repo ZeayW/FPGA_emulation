@@ -27,7 +27,7 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 |---|---|---|---|
 | OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; bounded MUXF7/8/9, CARRY8, DSP48E2, RAMB18E2/RAMB36E2, and URAM288 fixtures pass exact placement validation, and the resource-covering hard-block fixtures pass the complete physical chain; source-sealed real-device facts cover slice macros, split-BRAM modes, CARRY, DSP, BRAM, and URAM adjacency; renewed Koios DLA medium native placement and independent certification pass on both partitions. Provider v3 pins the upstream ISPD `stop_overflow=0.10` together with the 0.15 adjustment threshold so native RUDY and pin-density inflation execute. Provider v4 replaces the one-step native termination decision with a consecutive feasible settling window, HPWL patience, restoration of the best feasible iterate, and a compact fail-closed convergence certificate. Fresh v4 placements completed at 8.8232553M and 4.1540576M legal HPWL | Terminal RWRoute on both partitions, per-partition OpenSTA, and global OpenSTA evidence; authoritative half-column clock limits remain fail-closed | Primary route and only production-eligible candidate; not yet the default until terminal DLA evidence passes |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga-native`) | Pinned-source and compiled-runtime gate; mapped/packed/ArchitectureDB to official FPGA Interchange logical netlist; real Cap'n Proto LUT/FF/DSP48E2/RAMB36E2 roundtrip; `.phys` to a packed-cluster-preserving candidate certificate; sealed fail-closed RapidWright boundary | The official supported PyTorch 1.6--1.8 runtime has not completed a native fixture in the current environment; upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
-| AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; opaque PaToH binary replacement; headless runner; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result, and the pinned public runtime is not source-complete |
+| AMF-Placer (`feature/phase7-amf-native`) | Pinned-source probe; bounded design/device/result adapters; sealed executable manifest; isolated native subprocess/config boundary; LUT/FF/CARRY8 constant-normalization fixture; direct placement certificate and independent validator; explicit test-double evidence separation | Real patched public optimizer fixture run; MUXF9/URAM; cascade, XCVU19P clock legality and multi-SLR support; routed Phase 7 | Secondary candidate; implemented runner is not a native pass until the actual public binary passes it |
 
 The integration/selection branch is `feature/phase7-placer-selection`.  It contains
 the shared contract, deterministic comparison gate, and the validated adapter
@@ -202,11 +202,13 @@ native runtime pass is claimed.
 
 ### Route C: AMF-Placer secondary candidate
 
-The AMF branch first establishes typed UltraScale+ physical constraints and a
-bounded adapter.  It becomes a real candidate only after the public AMF
-optimization core, configuration, and result path run end to end; an adapter
-roundtrip alone is not placement evidence.  It is subject to the same
-RapidWright routing and OpenSTA gates as Route A.
+The AMF branch establishes a bounded adapter and a sealed native-runner path.
+The runner requires exact source/binary/patch identity, calls one external AMF
+process, requires evidence for packing, global placement, detailed placement,
+and completion, then independently certifies the returned site/BEL ownership.
+The test-double subprocess regression is labelled `test-only`; AMF becomes a
+real candidate only after the patched public optimizer itself runs this path.
+It is subject to the same RapidWright routing and OpenSTA gates as Route A.
 
 ### Final comparison
 
