@@ -206,6 +206,8 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 native_constraints_path=native_constraints,
                 provider_manifest_path=provider_manifest,
                 architecture=architecture_object,
+                packed_value={"summary": {"clusters": 2}},
+                placement_value={"summary": {"clusters": 1}},
             )
             self.assertEqual(read.call_count, 3)
             self.assertIs(

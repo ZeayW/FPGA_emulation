@@ -659,11 +659,16 @@ def materialize_xilinx_openparf_atomic_contract(
         validate_xilinx_packing(
             mapped_path, packed_temp, top=selected_top,
             architecture_path=architecture_path,
+            mapped_value=mapped,
+            architecture=architecture.value,
         )
         validate_xilinx_placement(
             packed_temp, architecture_path, placement_temp,
             native_constraints_path=native_constraints_path,
             provider_manifest_path=provider_manifest_path,
+            architecture=architecture,
+            packed_value=packed,
+            placement_value=placement,
         )
         os.replace(packed_temp, packed_output_path)
         os.replace(placement_temp, placement_output_path)

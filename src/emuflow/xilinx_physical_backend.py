@@ -605,6 +605,8 @@ def run_rapidwright_openparf_native_candidate_backend(
         native_constraints_path=openparf_native_constraints,
         provider_manifest_path=openparf_provider_manifest,
         architecture=architecture,
+        packed_value=packed,
+        placement_value=placement,
     )
     return _run_rapidwright_routed_backend_tail(
         fpga=fpga,

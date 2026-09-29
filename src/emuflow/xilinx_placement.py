@@ -1250,11 +1250,16 @@ def validate_xilinx_placement(
     native_constraints_path: Optional[Path] = None,
     provider_manifest_path: Optional[Path] = None,
     architecture: Optional[ArchitectureDB] = None,
+    packed_value: Optional[Mapping[str, Any]] = None,
+    placement_value: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Independently re-check cluster ownership, sites, BELs, and cascades."""
 
-    packed = read_json(packed_path)
-    placement = read_json(placement_path)
+    packed = read_json(packed_path) if packed_value is None else packed_value
+    placement = (
+        read_json(placement_path)
+        if placement_value is None else placement_value
+    )
     architecture = (
         ArchitectureDB.load(architecture_path)
         if architecture is None else architecture
