@@ -27,7 +27,7 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 |---|---|---|---|
 | OpenPARF native (`feature/phase7-openparf-native`) | Pinned-source probe; ordinary LUT1–LUT6/FD* atomization; singleton DSP48E2/RAMB36E2/URAM288 support; real compiled GP → hard-resource MCF/direct-LG → ISM; independently validated placement certificate; no-search bridge to standard packed/placement contracts; real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1 qualification; exact CARRY8 core-gap reproduction | CARRY8/LUT6_2 is confirmed `core_missing`; MUX/RAMB18/cascade and clock/half-column/SLR remain incomplete | A1 atomic route passed end to end; A2 native-macro work is now the primary route and remains fail-closed until its resource-covering gates pass |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga`) | Pinned-source probe; Yosys mapped JSON to official FPGA Interchange logical netlist; physical netlist to validated placement certificate; real Cap'n Proto schema roundtrip | Upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
-| AMF-Placer (`feature/phase7-amf-placer`) | Pinned-source probe; bounded design/device/result adapters; LUT/FF/CARRY8 and explicit constant-normalization fixture; independent exact placement revalidation | Public optimization-core runner/config integration; MUXF9/URAM; XCVU19P clock legality; multi-SLR support; full RapidWright export and routed Phase 7 | Secondary candidate; adapter roundtrip is not an AMF optimization result |
+| AMF-Placer (`feature/phase7-amf-native`) | Pinned-source probe; bounded design/device/result adapters; sealed executable manifest; isolated native subprocess/config boundary; LUT/FF/CARRY8 constant-normalization fixture; direct placement certificate and independent validator; explicit test-double evidence separation | Real patched public optimizer fixture run; MUXF9/URAM; cascade, XCVU19P clock legality and multi-SLR support; routed Phase 7 | Secondary candidate; implemented runner is not a native pass until the actual public binary passes it |
 
 The integration branch is `feature/phase7-placer-integration`.  It contains
 the shared contract, deterministic comparison gate, and the validated adapter
@@ -102,11 +102,13 @@ missing core capabilities are implemented and independently verified.
 
 ### Route C: AMF-Placer secondary candidate
 
-The AMF branch first establishes typed UltraScale+ physical constraints and a
-bounded adapter.  It becomes a real candidate only after the public AMF
-optimization core, configuration, and result path run end to end; an adapter
-roundtrip alone is not placement evidence.  It is subject to the same
-RapidWright routing and OpenSTA gates as Route A.
+The AMF branch establishes a bounded adapter and a sealed native-runner path.
+The runner requires exact source/binary/patch identity, calls one external AMF
+process, requires evidence for packing, global placement, detailed placement,
+and completion, then independently certifies the returned site/BEL ownership.
+The test-double subprocess regression is labelled `test-only`; AMF becomes a
+real candidate only after the patched public optimizer itself runs this path.
+It is subject to the same RapidWright routing and OpenSTA gates as Route A.
 
 ### Final comparison
 

@@ -4475,14 +4475,26 @@ real mixed-size global placement, macro legalization, CLB packing, and detailed
 placement; it also consumes Vivado-extracted input formats, lacks public core
 support for the current `MUXF9` and `URAM288` inventory, and has not qualified
 XCVU19P multi-SLR or clock legality. EmuFlow therefore exposes only an internal
-fail-closed capability and adapter contract at this milestone. The pinned
+fail-closed capability, adapter contract, and sealed native-runner boundary at
+this milestone. The pinned
 source audit, primitive matrix, and adaptation boundary are documented in
 [`docs/PHASE7_AMF_PLACER_CAPABILITY.md`](docs/PHASE7_AMF_PLACER_CAPABILITY.md).
 The three Vivado-free adapters now pass a single-region LUT/FF/CARRY8 fixture:
 mapped JSON is serialized to AMF text with explicit GND/VCC normalization,
 fixture ArchitectureDB sites/BELs are serialized to device text, and AMF
 `place_cell` records are parsed as data and re-certified by EmuFlow's exact
-legalizer. This is an adapter-contract test, not XCVU19P or multi-SLR support.
+legalizer. A new internal runner additionally requires the pinned public source
+revision, executable SHA-256, usage probe, and reviewed portability-patch
+SHA-256 before it will launch the optimizer. It checks native packing, global
+placement, detailed-placement, and completion markers; imports the final
+`place_cell` archive without evaluating Tcl; emits an exact placement
+certificate; and independently revalidates all site/BEL ownership before the
+standard RapidWright routing boundary. Its checked-in subprocess regression is
+explicitly marked `test-double`/`test-only` and is not native AMF evidence.
+Until the patched upstream binary itself passes the resource-covering fixture,
+AMF remains unqualified and unavailable as a provider or default. MUXF9, URAM,
+cascades, real clock legality, XCVU19P, and multi-SLR requests continue to fail
+closed.
 
 Route A's Phase 6 macro-cycle checker evaluates the Xilinx primitives emitted
 by the pinned open Yosys mapping rather than accepting a generic-LUT surrogate.
