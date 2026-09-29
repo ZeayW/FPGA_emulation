@@ -1,3 +1,4 @@
+import hashlib
 import json
 import stat
 import tempfile
@@ -22,6 +23,7 @@ from emuflow.opensta import (
 from emuflow.sta import (
     import_sta_path_database_tsv_streaming,
     iter_sta_path_database_paths,
+    sta_object_index,
     sta_path_database_qor,
     validate_sta_path_database,
 )
@@ -80,11 +82,13 @@ class OpenStaProviderTest(unittest.TestCase):
             ir_path = root / "ir.json"
             ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
             net = self.ir.value["nets"][0]["id"]
+            objects = sorted(sta_object_index(self.ir))
+            path_id = f"{objects[0]}->{objects[-1]}#00000000"
             raw = root / "paths.tsv"
             raw.write_text(
                 "path_id_hex\tclock_domain_hex\tclock_period_ns\t"
                 "slack_ns\tfixed_delay_ns\tpath_nets_hex\n"
-                f"{'path0'.encode().hex()}\t{'clk'.encode().hex()}\t"
+                f"{path_id.encode().hex()}\t{'clk'.encode().hex()}\t"
                 f"10\t-0.5\t0.25\t{net.encode().hex()}\n",
                 encoding="utf-8",
             )
@@ -103,12 +107,16 @@ class OpenStaProviderTest(unittest.TestCase):
             self.assertNotIn("paths", manifest)
             self.assertEqual(
                 manifest["payloads"]["paths"]["format"],
-                "jsonl-sta-path-raw/v2",
+                "jsonl-sta-path-row/v3",
             )
-            self.assertEqual(records[0]["id"], "path0")
+            self.assertEqual(records[0]["id"], path_id)
+            self.assertIn("startpoint", records[0])
+            self.assertIn("endpoint", records[0])
             payload = output.parent / manifest["payloads"]["paths"]["path"]
             raw_record = json.loads(payload.read_text(encoding="utf-8"))
-            self.assertNotIn("normalized_slack", raw_record)
+            self.assertIsInstance(raw_record, list)
+            self.assertEqual(raw_record[:2], [path_id, "clk"])
+            self.assertEqual(len(raw_record), 8)
             self.assertIn("normalized_slack", records[0])
             self.assertEqual(checked["paths"], 1)
             self.assertEqual(qor["wns_ns"], -0.5)
@@ -116,6 +124,90 @@ class OpenStaProviderTest(unittest.TestCase):
                 stream.write(b"{}\n")
             with self.assertRaisesRegex(Exception, "record 1 is invalid"):
                 list(iter_sta_path_database_paths(output, manifest))
+
+    def test_streamed_path_rows_avoid_repeated_object_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            net = self.ir.value["nets"][0]["id"]
+            raw = root / "paths.tsv"
+            rows = [
+                "path_id_hex\tclock_domain_hex\tclock_period_ns\t"
+                "slack_ns\tfixed_delay_ns\tpath_nets_hex"
+            ]
+            for index in range(1000):
+                path_id = f"path{index:04d}"
+                rows.append(
+                    f"{path_id.encode().hex()}\t{'clk'.encode().hex()}\t"
+                    f"10\t-0.5\t0.25\t{net.encode().hex()}"
+                )
+            raw.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            output = root / "paths.json"
+            import_sta_path_database_tsv_streaming(
+                raw,
+                ir_path,
+                output,
+                provider=OPENSTA_PROVIDER,
+            )
+            manifest = json.loads(output.read_text(encoding="utf-8"))
+            payload = output.parent / manifest["payloads"]["paths"]["path"]
+            records = list(iter_sta_path_database_paths(output, manifest))
+            object_encoded = b"".join(
+                json.dumps(
+                    {
+                        key: value
+                        for key, value in record.items()
+                        if key != "normalized_slack"
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                + b"\n"
+                for record in records
+            )
+            self.assertLess(payload.stat().st_size, len(object_encoded) * 0.7)
+
+    def test_streamed_path_reader_accepts_previous_raw_v2_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "paths.json"
+            payload = root / "paths.json.paths.jsonl"
+            record = {
+                "id": "path0",
+                "clock_domain": "clk",
+                "clock_period_ns": 10.0,
+                "slack_ns": -0.5,
+                "fixed_delay_ns": 0.25,
+                "path_nets": [self.ir.value["nets"][0]["id"]],
+            }
+            encoded = (
+                json.dumps(
+                    record, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+                + b"\n"
+            )
+            payload.write_bytes(encoded)
+            manifest = {
+                "schema": "emuflow.sta-path-database/v2",
+                "normalization": {
+                    "positive_slack_scale_ns": 1.0,
+                    "negative_slack_scale_ns": 0.5,
+                    "max_clock_period_ns": 10.0,
+                },
+                "payloads": {
+                    "paths": {
+                        "format": "jsonl-sta-path-raw/v2",
+                        "path": payload.name,
+                        "sha256": hashlib.sha256(encoded).hexdigest(),
+                        "records": 1,
+                    }
+                },
+            }
+            output.write_text(json.dumps(manifest), encoding="utf-8")
+            records = list(iter_sta_path_database_paths(output, manifest))
+            self.assertEqual(records[0]["id"], "path0")
+            self.assertEqual(records[0]["normalized_slack"], -0.1)
 
     def test_legacy_opensta_is_rejected_before_timing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

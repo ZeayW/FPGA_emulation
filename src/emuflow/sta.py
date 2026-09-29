@@ -26,7 +26,8 @@ VIVADO_CUT_NET_MAP_HEADER = "vivado_net_hex\tcut_net_hex"
 STA_PATH_DATABASE_SCHEMA = "emuflow.sta-path-database/v1"
 STA_PATH_DATABASE_STREAM_SCHEMA = "emuflow.sta-path-database/v2"
 STA_PATH_DATABASE_PAYLOAD_FORMAT_V1 = "jsonl-object/v1"
-STA_PATH_DATABASE_PAYLOAD_FORMAT = "jsonl-sta-path-raw/v2"
+STA_PATH_DATABASE_PAYLOAD_FORMAT_V2 = "jsonl-sta-path-raw/v2"
+STA_PATH_DATABASE_PAYLOAD_FORMAT = "jsonl-sta-path-row/v3"
 PARTITION_NET_WEIGHTS_SCHEMA = "emuflow.partition-net-weights/v1"
 STA_PATH_DATABASE_PROVIDERS = {
     "opensta-fpga-path-database-v1",
@@ -62,6 +63,7 @@ def _sta_path_payload(
     if (
         descriptor.get("format") not in {
             STA_PATH_DATABASE_PAYLOAD_FORMAT_V1,
+            STA_PATH_DATABASE_PAYLOAD_FORMAT_V2,
             STA_PATH_DATABASE_PAYLOAD_FORMAT,
         }
         or not isinstance(relative, str)
@@ -79,6 +81,80 @@ def _sta_path_payload(
     if not path.is_file():
         raise ValidationError("STA path database payload is missing")
     return path, digest, records, str(descriptor["format"])
+
+
+def _sta_path_endpoint_row(endpoint: Mapping[str, Any]) -> list[Any]:
+    return [
+        endpoint.get("object"),
+        endpoint.get("instance"),
+        endpoint.get("port"),
+        endpoint.get("bit"),
+    ]
+
+
+def _sta_path_record_row(record: Mapping[str, Any]) -> list[Any]:
+    """Encode one path without repeating JSON object keys per endpoint."""
+
+    row: list[Any] = [
+        record.get("id"),
+        record.get("clock_domain"),
+        record.get("clock_period_ns"),
+        record.get("slack_ns"),
+        record.get("fixed_delay_ns"),
+        record.get("path_nets"),
+    ]
+    has_startpoint = "startpoint" in record
+    has_endpoint = "endpoint" in record
+    if has_startpoint != has_endpoint:
+        raise ValidationError("STA path database record endpoints are invalid")
+    if has_startpoint:
+        startpoint = record["startpoint"]
+        endpoint = record["endpoint"]
+        if not isinstance(startpoint, Mapping) or not isinstance(
+            endpoint, Mapping
+        ):
+            raise ValidationError(
+                "STA path database record endpoints are invalid"
+            )
+        row.extend(
+            [
+                _sta_path_endpoint_row(startpoint),
+                _sta_path_endpoint_row(endpoint),
+            ]
+        )
+    return row
+
+
+def _sta_path_record_from_row(value: Any, index: int) -> Dict[str, Any]:
+    if not isinstance(value, list) or len(value) not in {6, 8}:
+        raise ValidationError(
+            f"STA path database payload record {index} is invalid"
+        )
+    record: Dict[str, Any] = {
+        "id": value[0],
+        "clock_domain": value[1],
+        "clock_period_ns": value[2],
+        "slack_ns": value[3],
+        "fixed_delay_ns": value[4],
+        "path_nets": value[5],
+    }
+    if len(value) == 8:
+        endpoints = value[6:8]
+        if any(
+            not isinstance(endpoint, list) or len(endpoint) != 4
+            for endpoint in endpoints
+        ):
+            raise ValidationError(
+                f"STA path database payload record {index} is invalid"
+            )
+        for name, endpoint in zip(("startpoint", "endpoint"), endpoints):
+            record[name] = {
+                "object": endpoint[0],
+                "instance": endpoint[1],
+                "port": endpoint[2],
+                "bit": endpoint[3],
+            }
+    return record
 
 
 def iter_sta_path_database_paths(
@@ -100,7 +176,10 @@ def iter_sta_path_database_paths(
     )
     normalization = (
         _validate_database_normalization(value.get("normalization"))
-        if payload_format == STA_PATH_DATABASE_PAYLOAD_FORMAT
+        if payload_format in {
+            STA_PATH_DATABASE_PAYLOAD_FORMAT_V2,
+            STA_PATH_DATABASE_PAYLOAD_FORMAT,
+        }
         else None
     )
     digest = hashlib.sha256()
@@ -116,8 +195,13 @@ def iter_sta_path_database_paths(
                 raise ValidationError(
                     f"STA path database payload record {count} is invalid"
                 ) from error
+            if payload_format == STA_PATH_DATABASE_PAYLOAD_FORMAT:
+                record = _sta_path_record_from_row(record, count)
             count += 1
-            if normalization is not None:
+            if payload_format in {
+                STA_PATH_DATABASE_PAYLOAD_FORMAT_V2,
+                STA_PATH_DATABASE_PAYLOAD_FORMAT,
+            }:
                 if not isinstance(record, dict) or "normalized_slack" in record:
                     raise ValidationError(
                         f"STA path database payload record {count - 1} is invalid"
@@ -823,7 +907,10 @@ def import_sta_path_database_tsv_streaming(
                     "startpoint" in record and "endpoint" in record
                 )
                 encoded = (
-                    json.dumps(record, sort_keys=True, separators=(",", ":"))
+                    json.dumps(
+                        _sta_path_record_row(record),
+                        separators=(",", ":"),
+                    )
                     .encode("utf-8")
                     + b"\n"
                 )
