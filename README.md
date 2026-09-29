@@ -1235,8 +1235,11 @@ The first compiled 1x2 gate exposed that upstream only hard-coded SLL lookup
 tables for 1x4 and 2x2 grids and passed `None` to the native op for other
 rectangular topologies.  The pinned engine now constructs the exact
 rectilinear-MST table for reviewed grids of up to 12 SLRs; unit tests reproduce
-both upstream reference tables and cover 1x2.  A rebuilt compiled runtime and
-a renewed DLA route are still required before multi-SLR support is promoted.
+both upstream reference tables and cover 1x2.  The rebuilt compiled 1x2 gate
+then placed and independently certified 128 LUT/FF atoms across two SLRs with
+native SLL enforcement enabled; its compact qualification SHA-256 is
+`72178d2f51d1ba12883f56200c16fe680cf1d6344cb7686d9b194aa8a9f51fc1`.
+A renewed DLA route is still required before multi-SLR support is promoted.
 Active UTPlaceFX clock assignment remains deliberately
 disabled: that upstream implementation assumes one SLICE, one DSP, and one RAM
 site class and discovers clocks only from explicit clock-source models, while

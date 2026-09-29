@@ -173,6 +173,15 @@ def audit_pinned_openparf_source(source_root: Path) -> Dict[str, Any]:
                 "occupied.update(claims)",
             ),
         ),
+        "rectangular_slr_objective": _source_check(
+            root / "openparf/ops/sll/sll_table.py",
+            (
+                "def build_sll_counts_table_values",
+                "_manhattan_mst_cost",
+                "if num_slrs > 12:",
+                "1 << (num_slrs - index - 1)",
+            ),
+        ),
         "chain_legalizer": _source_check(
             root / "openparf/ops/chain_legalizer/chain_legalizer.py",
             ("class ChainLegalizer",),
@@ -735,6 +744,7 @@ def probe_openparf_native_capabilities(
     mcf_lock = _source_has(source_audit, "mcf_locks_sssir_solution")
     direct_preserve = _source_has(source_audit, "direct_lg_preserves_non_slice_xy")
     typed_hardblock = _source_has(source_audit, "typed_hardblock_legalizer")
+    slr_objective = _source_has(source_audit, "rectangular_slr_objective")
     from .xilinx_openparf_atomic import (
         probe_xilinx_openparf_atomic_eligibility,
     )
@@ -902,17 +912,20 @@ def probe_openparf_native_capabilities(
         ),
         feature(
             "multi_slr_constraints",
-            "unverified",
+            "adapter_required" if slr_objective else "core_missing",
             (
                 "the atomic adapter now emits a fail-closed rectangular SLR "
-                "map and enables OpenPARF's native SLL objective, but the "
-                "rebuilt real-device runtime and routing qualification are "
-                "not complete"
+                "map and enables OpenPARF's native SLL objective; the exact "
+                "lookup-table builder covers reviewed rectangular grids, but "
+                "real-device routing qualification is not complete"
+                if slr_objective else
+                "the native SLL objective cannot represent reviewed rectangular grids"
             ),
             (
                 "src/emuflow/xilinx_openparf_atomic.py",
                 "openparf/io/bookshelf/bookshelf_parser.yy",
                 "openparf/placement/op_collections.py",
+                "openparf/ops/sll/sll_table.py",
             ),
         ),
     ]
@@ -977,9 +990,15 @@ def probe_openparf_native_capabilities(
             "adapter_validation": "missing",
         },
         "multi_slr": {
-            "status": "adapter_required",
-            "evidence": ["src/emuflow/xilinx_openparf.py"],
-            "adapter_validation": "missing",
+            "status": "adapter_required" if slr_objective else "core_missing",
+            "evidence": [
+                "src/emuflow/xilinx_openparf_atomic.py",
+                "openparf/ops/sll/sll_table.py",
+            ],
+            **(
+                {"adapter_validation": "pass"}
+                if slr_objective else {}
+            ),
         },
         "dedicated_cascade": {
             "status": "adapter_required" if carry_source_ready else (

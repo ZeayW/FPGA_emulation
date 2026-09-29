@@ -205,8 +205,9 @@ Any rejected certificate returns to the owning upstream placer implementation.
    and unit gates.  The Bookshelf contract now carries an explicit rectangular
    SLR map and enables the native SLL objective for multi-SLR devices.  The
    first compiled 1x2 run exposed and repaired upstream's hard-coded 1x4/2x2
-   SLL lookup-table gap; rebuilt runtime, renewed routing, and clock legality
-   remain gates.  RWRoute's exceptional recovery tree now prunes stable connections
+   SLL lookup-table gap.  The rebuilt 1x2 runtime gate now passes native
+   placement and independent 128-atom certification; renewed routing and clock
+   legality remain gates.  RWRoute's exceptional recovery tree now prunes stable connections
    instead of retaining every historically unroutable connection forever;
    renewed DLA routing must quantify its convergence before promotion.
 3. **RAMB tile-group export and consumption gates -- complete.**

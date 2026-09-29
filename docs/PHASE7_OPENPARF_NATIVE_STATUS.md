@@ -101,7 +101,10 @@ validated WNS +38.742802 ns, TNS 0 ns, and zero failing endpoints.  The compact
 OpenSTA summary SHA-256 is
 `b21f290069a48ee6e2c63ad9cd057328e6d9c12a6417c5cbe44bf518e8fc0e56`.
 
-This qualifies the CARRY8 subset only.  MUXF7/8/9 relative placement,
-RAMB18 half-site modes, DSP/BRAM/URAM cascades, clock legality, and multi-SLR
-capacity remain fail-closed and must pass equivalent runtime, RWRoute, and
-OpenSTA gates before Koios DLA medium is admitted.
+The resource-covering fixture work now also qualifies MUXF7/8/9, RAMB18
+half-site modes, and the bounded DSP/BRAM/URAM cases.  A compiled 1x2-SLR
+fixture places and independently certifies 128 LUT/FF atoms with the native
+SLL objective enabled after replacing upstream's 1x4/2x2-only lookup table
+with an exact rectangular-grid builder.  Clock and half-column legality remain
+fail-closed, and the multi-SLR path still requires renewed Koios DLA medium
+RWRoute and OpenSTA evidence before provider promotion.
