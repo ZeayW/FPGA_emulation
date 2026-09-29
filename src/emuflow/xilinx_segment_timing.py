@@ -205,9 +205,20 @@ class _TimingGraph:
         return sorted(self.source_offsets)
 
 
-def _graph(mapped_path: Path, timing_path: Path) -> _TimingGraph:
-    validate_xilinx_routed_timing(timing_path, mapped_path=mapped_path)
-    return _TimingGraph(read_json(mapped_path), read_json(timing_path))
+def _graph(
+    mapped_path: Path,
+    timing_path: Path,
+    *,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    timing_value: Optional[Mapping[str, Any]] = None,
+    timing_validation: Optional[Mapping[str, Any]] = None,
+) -> _TimingGraph:
+    if timing_validation is None:
+        validate_xilinx_routed_timing(timing_path, mapped_path=mapped_path)
+    return _TimingGraph(
+        read_json(mapped_path) if mapped_value is None else mapped_value,
+        read_json(timing_path) if timing_value is None else timing_value,
+    )
 
 
 def build_xilinx_boundary_timing(
@@ -384,6 +395,9 @@ def build_xilinx_segment_timing_bundle(
     logic_output_path: Optional[Path] = None,
     local_identity_path: Optional[Path] = None,
     local_output_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    timing_value: Optional[Mapping[str, Any]] = None,
+    timing_validation: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build all requested physical timing views from one routed graph.
 
@@ -402,7 +416,14 @@ def build_xilinx_segment_timing_bundle(
         raise ValidationError(
             "local path identity and output must be provided together"
         )
-    graph = _graph(mapped_path, timing_path)
+    graph_options: Dict[str, Any] = {}
+    if mapped_value is not None:
+        graph_options["mapped_value"] = mapped_value
+    if timing_value is not None:
+        graph_options["timing_value"] = timing_value
+    if timing_validation is not None:
+        graph_options["timing_validation"] = timing_validation
+    graph = _graph(mapped_path, timing_path, **graph_options)
     result: Dict[str, Any] = {
         "boundary": build_xilinx_boundary_timing(
             boundary_identity_path,

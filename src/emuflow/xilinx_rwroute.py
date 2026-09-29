@@ -106,10 +106,31 @@ def export_rwroute_input(
     packed_path: Path,
     placement_path: Path,
     output_path: Path,
+    *,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    packed_value: Optional[Mapping[str, Any]] = None,
+    placement_value: Optional[Mapping[str, Any]] = None,
+    source_sha256: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
-    mapped, packed, placement = (
-        read_json(mapped_path), read_json(packed_path), read_json(placement_path)
+    mapped = read_json(mapped_path) if mapped_value is None else mapped_value
+    packed = read_json(packed_path) if packed_value is None else packed_value
+    placement = (
+        read_json(placement_path)
+        if placement_value is None else placement_value
     )
+    digests = {
+        "mapped_sha256": _sha256(mapped_path),
+        "packed_sha256": _sha256(packed_path),
+        "placement_sha256": _sha256(placement_path),
+    } if source_sha256 is None else dict(source_sha256)
+    if set(digests) != {
+        "mapped_sha256", "packed_sha256", "placement_sha256"
+    } or any(
+        not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        for digest in digests.values()
+    ):
+        raise ValidationError("RWRoute source digests are invalid")
     if packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA:
         raise ValidationError("PackedSiteNetlist header is invalid")
     if placement.get("schema") != XILINX_PLACEMENT_SCHEMA:
@@ -168,9 +189,9 @@ def export_rwroute_input(
     }
     lines = [
         f"META\tpart\t{placement['part']}",
-        f"META\tmapped_sha256\t{_sha256(mapped_path)}",
-        f"META\tpacked_sha256\t{_sha256(packed_path)}",
-        f"META\tplacement_sha256\t{_sha256(placement_path)}",
+        f"META\tmapped_sha256\t{digests['mapped_sha256']}",
+        f"META\tpacked_sha256\t{digests['packed_sha256']}",
+        f"META\tplacement_sha256\t{digests['placement_sha256']}",
     ]
     for route_name in sorted(route_cells):
         display_name, cell_type, site, bel = route_cells[route_name]
@@ -282,6 +303,10 @@ def run_rwroute(
     mapped_path: Optional[Path] = None,
     packed_path: Optional[Path] = None,
     placement_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    packed_value: Optional[Mapping[str, Any]] = None,
+    source_sha256: Optional[Mapping[str, str]] = None,
+    route_value_sink: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     classes_dir.mkdir(parents=True, exist_ok=True)
     runtime_home = classes_dir.parent / "rapidwright-runtime-home"
@@ -366,8 +391,14 @@ def run_rwroute(
         mapped_path=mapped_path,
         packed_path=packed_path,
         placement_path=placement_path,
+        mapped_value=mapped_value,
+        packed_value=packed_value,
+        source_sha256=source_sha256,
         _value=value,
     )
+    if route_value_sink is not None:
+        route_value_sink.clear()
+        route_value_sink.update(value)
     return {**report, "output": str(output_path), "log": str(log_path) if log_path else None}
 
 
@@ -377,6 +408,9 @@ def validate_xilinx_route_db(
     mapped_path: Optional[Path] = None,
     packed_path: Optional[Path] = None,
     placement_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    packed_value: Optional[Mapping[str, Any]] = None,
+    source_sha256: Optional[Mapping[str, str]] = None,
     _value: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     # RWRoute already materializes a very large in-memory object.  Accepting
@@ -421,20 +455,25 @@ def validate_xilinx_route_db(
     source = value.get("source")
     if not isinstance(source, dict):
         raise ValidationError("XilinxRouteDB source seal is missing")
-    expected_sources = {
+    expected_paths = {
         "mapped_sha256": mapped_path,
         "packed_sha256": packed_path,
         "placement_sha256": placement_path,
     }
-    for key, source_path in expected_sources.items():
+    expected_sources = (
+        {key: _sha256(source_path) for key, source_path in expected_paths.items()
+         if source_path is not None}
+        if source_sha256 is None else dict(source_sha256)
+    )
+    for key, source_path in expected_paths.items():
         digest = source.get(key)
         if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise ValidationError(f"XilinxRouteDB source.{key} is invalid")
-        if source_path is not None and digest != _sha256(source_path):
+        if source_path is not None and digest != expected_sources.get(key):
             raise ValidationError(f"XilinxRouteDB source.{key} does not match input")
     if mapped_path is not None and packed_path is not None:
-        mapped = read_json(mapped_path)
-        packed = read_json(packed_path)
+        mapped = read_json(mapped_path) if mapped_value is None else mapped_value
+        packed = read_json(packed_path) if packed_value is None else packed_value
         top = packed.get("top")
         if not isinstance(top, str):
             raise ValidationError("PackedSiteNetlist top is invalid")

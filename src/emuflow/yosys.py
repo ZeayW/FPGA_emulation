@@ -110,9 +110,13 @@ def _canonical_net_name(
 
 
 def import_yosys_json(
-    path: Path, top: Optional[str] = None, clocks: Iterable[str] = ()
+    path: Path,
+    top: Optional[str] = None,
+    clocks: Iterable[str] = (),
+    *,
+    _source_value: Optional[Mapping[str, Any]] = None,
 ) -> EmuIR:
-    source = read_json(path)
+    source = read_json(path) if _source_value is None else _source_value
     modules = source.get("modules")
     if not isinstance(modules, dict):
         raise ImportError(f"{path}: missing Yosys 'modules' object")

@@ -92,11 +92,24 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 )
                 return {"status": "pass"}
 
-            def stop_at_export(mapped, packed, placement, output):
+            def stop_at_export(mapped, packed, placement, output, **kwargs):
                 self.assertEqual(mapped, physical / "partition.mapped.json")
                 self.assertEqual(packed, packed_path)
                 self.assertEqual(placement, placement_path)
                 self.assertEqual(output, physical / "rwroute.tsv")
+                self.assertIs(kwargs["mapped_value"], mapped_value)
+                self.assertEqual(kwargs["packed_value"], {"summary": {"clusters": 2}})
+                self.assertEqual(
+                    kwargs["placement_value"], {"summary": {"clusters": 1}}
+                )
+                self.assertEqual(
+                    kwargs["source_sha256"],
+                    {
+                        "mapped_sha256": "0" * 64,
+                        "packed_sha256": "0" * 64,
+                        "placement_sha256": "0" * 64,
+                    },
+                )
                 raise RuntimeError("native-bridge-reached-rwroute")
 
             def qualify(*_args, **_kwargs):
@@ -160,6 +173,10 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     "emuflow.xilinx_physical_backend.export_rwroute_input",
                     side_effect=stop_at_export,
                 ) as export,
+                mock.patch(
+                    "emuflow.xilinx_physical_backend._sha256",
+                    return_value="0" * 64,
+                ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.pack_xilinx_sites",
                     side_effect=forbidden,
@@ -330,6 +347,10 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 mock.patch(
                     "emuflow.xilinx_physical_backend.emit_xilinx_mapped_json",
                     return_value={"top": "top"},
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.read_json",
+                    return_value={"modules": {}},
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.pack_xilinx_sites",

@@ -109,8 +109,8 @@ def _sha256(path: Path) -> str:
     return file_sha256(path)
 
 
-def _artifact(path: Path) -> Dict[str, str]:
-    return {"path": str(path), "sha256": _sha256(path)}
+def _artifact(path: Path, sha256: Optional[str] = None) -> Dict[str, str]:
+    return {"path": str(path), "sha256": sha256 or _sha256(path)}
 
 
 def _physical_clock_periods(
@@ -186,6 +186,9 @@ def _run_rapidwright_routed_backend_tail(
     mapped_report: Mapping[str, Any],
     packed_path: Path,
     placement_path: Path,
+    mapped_value: Mapping[str, Any],
+    packed_value: Mapping[str, Any],
+    placement_value: Mapping[str, Any],
     runtime: Mapping[str, Any],
     original_cells: int,
     transport_cells: int,
@@ -207,11 +210,24 @@ def _run_rapidwright_routed_backend_tail(
 ) -> Dict[str, Any]:
     """Route and time one already materialized packed placement."""
 
+    source_sha256 = {
+        "mapped_sha256": _sha256(mapped_path),
+        "packed_sha256": _sha256(packed_path),
+        "placement_sha256": _sha256(placement_path),
+    }
     rwroute_input = output_dir / "rwroute.tsv"
     route_input_report = export_rwroute_input(
-        mapped_path, packed_path, placement_path, rwroute_input
+        mapped_path,
+        packed_path,
+        placement_path,
+        rwroute_input,
+        mapped_value=mapped_value,
+        packed_value=packed_value,
+        placement_value=placement_value,
+        source_sha256=source_sha256,
     )
     route_path = output_dir / "route.json"
+    route_value: Dict[str, Any] = {}
     route_report = run_rwroute(
         rwroute_input,
         route_path,
@@ -225,12 +241,17 @@ def _run_rapidwright_routed_backend_tail(
         mapped_path=mapped_path,
         packed_path=packed_path,
         placement_path=placement_path,
+        mapped_value=mapped_value,
+        packed_value=packed_value,
+        source_sha256=source_sha256,
+        route_value_sink=route_value,
     )
     route_check = {
         key: value for key, value in route_report.items()
         if key not in {"output", "log"}
     }
     routed_timing_path = output_dir / "routed-timing.json"
+    routed_timing_value: Dict[str, Any] = {}
     routed_timing = build_xilinx_routed_timing(
         mapped_path,
         packed_path,
@@ -238,6 +259,11 @@ def _run_rapidwright_routed_backend_tail(
         route_path,
         routed_timing_path,
         route_validation=route_check,
+        mapped_value=mapped_value,
+        placement_value=placement_value,
+        route_value=route_value,
+        source_sha256=source_sha256,
+        timing_value_sink=routed_timing_value,
     )
     timing_check = dict(routed_timing)
     mapped_ir = read_json(merged_ir_path)
@@ -253,6 +279,12 @@ def _run_rapidwright_routed_backend_tail(
         executable=opensta,
         log_path=output_dir / "opensta.log",
         timing_validation=timing_check,
+        mapped_value=mapped_value,
+        timing_value=routed_timing_value,
+        source_sha256={
+            "mapped_sha256": source_sha256["mapped_sha256"],
+            "routed_timing_sha256": timing_check["timing_sha256"],
+        },
     )
     boundary_timing_path = output_dir / "boundary-timing.json"
     logic_timing_path = (
@@ -272,6 +304,9 @@ def _run_rapidwright_routed_backend_tail(
         logic_output_path=logic_timing_path,
         local_identity_path=local_identity_path,
         local_output_path=local_timing_path,
+        mapped_value=mapped_value,
+        timing_value=routed_timing_value,
+        timing_validation=timing_check,
     )
     boundary_import = segment_imports["boundary"]
     logic_stage = (
@@ -293,21 +328,25 @@ def _run_rapidwright_routed_backend_tail(
     qor = opensta_summary["qor"]
     inventory = Counter(
         cell["type"]
-        for cell in read_json(mapped_path)["modules"][
-            mapped_report["top"]
-        ]["cells"].values()
+        for cell in mapped_value["modules"][mapped_report["top"]]["cells"].values()
     )
     expansion_cells = (
         int(route_input_report["expanded_lut6_2_cells"])
         + 7 * int(route_input_report["transformed_dsp48e2_cells"])
     )
     artifacts = {
-        "mapped": _artifact(mapped_path),
-        "packed": _artifact(packed_path),
-        "placement": _artifact(placement_path),
-        "route": _artifact(route_path),
-        "routed_timing": _artifact(routed_timing_path),
-        "opensta_summary": _artifact(opensta_summary_path),
+        "mapped": _artifact(mapped_path, source_sha256["mapped_sha256"]),
+        "packed": _artifact(packed_path, source_sha256["packed_sha256"]),
+        "placement": _artifact(
+            placement_path, source_sha256["placement_sha256"]
+        ),
+        "route": _artifact(route_path, route_check["route_sha256"]),
+        "routed_timing": _artifact(
+            routed_timing_path, timing_check["timing_sha256"]
+        ),
+        "opensta_summary": _artifact(
+            opensta_summary_path, opensta_check["summary_sha256"]
+        ),
     }
     artifacts.update({
         name: _artifact(path) for name, path in placement_artifacts.items()
@@ -422,6 +461,7 @@ def run_rapidwright_partition_backend(
         mapped_path,
         output_dir / "mapped-netlist-report.json",
     )
+    mapped_value = read_json(mapped_path)
     packed_path = output_dir / "packed-sites.json"
     packed = pack_xilinx_sites(mapped_path, packed_path)
     packing_check = validate_xilinx_packing(
@@ -470,6 +510,9 @@ def run_rapidwright_partition_backend(
         mapped_report=mapped_report,
         packed_path=packed_path,
         placement_path=placement_path,
+        mapped_value=mapped_value,
+        packed_value=packed,
+        placement_value=placement,
         runtime=runtime,
         original_cells=original_cells,
         transport_cells=transport_cells,
@@ -616,6 +659,9 @@ def run_rapidwright_openparf_native_candidate_backend(
         mapped_report=mapped_report,
         packed_path=packed_path,
         placement_path=placement_path,
+        mapped_value=mapped_value,
+        packed_value=packed,
+        placement_value=placement,
         runtime=runtime,
         original_cells=original_cells,
         transport_cells=transport_cells,

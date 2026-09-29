@@ -187,6 +187,11 @@ def build_xilinx_routed_timing(
     output_path: Path,
     *,
     route_validation: Optional[Mapping[str, Any]] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    placement_value: Optional[Mapping[str, Any]] = None,
+    route_value: Optional[Mapping[str, Any]] = None,
+    source_sha256: Optional[Mapping[str, str]] = None,
+    timing_value_sink: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if route_validation is None:
         route_validation = validate_xilinx_route_db(
@@ -195,24 +200,31 @@ def build_xilinx_routed_timing(
             packed_path=packed_path,
             placement_path=placement_path,
         )
+    route_sha256 = _sha256(route_path)
     if (
         route_validation.get("status") != "pass"
         or route_validation.get("schema")
         != "emuflow.xilinx-route-validation/v1"
-        or route_validation.get("route_sha256") != _sha256(route_path)
+        or route_validation.get("route_sha256") != route_sha256
     ):
         raise ValidationError("XilinxRouteDB validation seal is invalid")
-    mapped = read_json(mapped_path)
-    placement = read_json(placement_path)
-    route = read_json(route_path)
+    mapped = read_json(mapped_path) if mapped_value is None else mapped_value
+    placement = (
+        read_json(placement_path)
+        if placement_value is None else placement_value
+    )
+    route = read_json(route_path) if route_value is None else route_value
     source_paths = {
         "mapped_sha256": mapped_path,
         "packed_sha256": packed_path,
         "placement_sha256": placement_path,
     }
-    source_digests = {
-        name: _sha256(path) for name, path in source_paths.items()
-    }
+    source_digests = (
+        {name: _sha256(path) for name, path in source_paths.items()}
+        if source_sha256 is None else dict(source_sha256)
+    )
+    if set(source_digests) != set(source_paths):
+        raise ValidationError("Xilinx routed timing source digests are incomplete")
     route_sources = route.get("source")
     if not isinstance(route_sources, dict) or any(
         route_sources.get(name) != digest
@@ -225,11 +237,14 @@ def build_xilinx_routed_timing(
         "status": "pass",
         "source": {
             **source_digests,
-            "route_sha256": _sha256(route_path),
+            "route_sha256": route_sha256,
         },
         **payload,
     }
     write_json(output_path, value, compact=True)
+    if timing_value_sink is not None:
+        timing_value_sink.clear()
+        timing_value_sink.update(value)
     return {
         "status": "pass",
         "schema": "emuflow.xilinx-routed-timing-validation/v1",

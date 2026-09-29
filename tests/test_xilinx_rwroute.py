@@ -3,6 +3,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -434,6 +435,50 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertIn(
             "EXCLUDED\tn1\tboundary_clock\tideal-boundary-clock", text
         )
+
+    def test_exporter_reuses_preloaded_large_objects(self):
+        mapped = {
+            "modules": {"top": {"cells": {
+                "ff": {
+                    "type": "FDRE", "port_directions": {"C": "input"},
+                    "connections": {"C": [1]},
+                },
+            }}}
+        }
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+            "clusters": [{"assignments": [
+                {"instance": "ff", "cell_type": "FDRE", "bel": "AFF"},
+            ]}],
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
+                {"instance": "ff", "bel": "AFF"},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "route.tsv"
+            with mock.patch(
+                "emuflow.xilinx_rwroute.read_json",
+                side_effect=AssertionError("preloaded objects were reparsed"),
+            ):
+                report = export_rwroute_input(
+                    root / "mapped.json",
+                    root / "packed.json",
+                    root / "placement.json",
+                    output,
+                    mapped_value=mapped,
+                    packed_value=packed,
+                    placement_value=placement,
+                    source_sha256={
+                        "mapped_sha256": "1" * 64,
+                        "packed_sha256": "2" * 64,
+                        "placement_sha256": "3" * 64,
+                    },
+                )
+        self.assertEqual(report["logical_cells"], 1)
 
     def test_exporter_physically_expands_lut6_2_for_rapidwright(self):
         mapped = {
