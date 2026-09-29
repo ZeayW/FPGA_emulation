@@ -5089,6 +5089,14 @@ QoR recomputation stream the payload.  The upstream logical
 TimingPathDB retains readable v1 compatibility for partition/routing consumers,
 while new physical path evidence no longer creates or reparses a 100+ MiB JSON
 tree.
+On the frozen real-DLA `fpga1` routed-timing input (115,706 timed endpoints),
+the compact-row producer completed in 10:40.42 with a 102,347,409-byte path
+stream.  The former monolithic path database required 152,272,744 bytes and
+10:41.33 on the same input.  Independent streamed validation of the new result
+completed in 6.02 seconds at 36,704 KiB peak RSS, and reproduced the same
+per-FPGA physical WNS -1.8418 ns, TNS -221.443887 ns, and 560 failing
+endpoints.  These figures qualify the storage/runtime contract for one routed
+partition; they are not the final system-global Phase 7 timing result.
 An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks
