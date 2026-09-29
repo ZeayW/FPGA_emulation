@@ -5080,8 +5080,9 @@ route-delay type set.  It records only the deterministic set cardinality and
 SHA-256 seal; the timing model remains the canonical owner of the names.
 The RapidWright physical OpenSTA tail likewise emits TimingPathDB v2 as a
 small manifest plus a sealed path JSONL stream.  TSV import derives global
-normalization in a bounded first pass and emits records in a second pass;
-validation and QoR recomputation stream the payload.  The upstream logical
+normalization while writing raw path records in one pass; readers derive
+normalized slack lazily from the sealed manifest, and validation and QoR
+recomputation stream the payload.  The upstream logical
 TimingPathDB retains readable v1 compatibility for partition/routing consumers,
 while new physical path evidence no longer creates or reparses a 100+ MiB JSON
 tree.

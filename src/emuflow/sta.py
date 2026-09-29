@@ -25,7 +25,8 @@ VIVADO_STA_TSV_HEADER = (
 VIVADO_CUT_NET_MAP_HEADER = "vivado_net_hex\tcut_net_hex"
 STA_PATH_DATABASE_SCHEMA = "emuflow.sta-path-database/v1"
 STA_PATH_DATABASE_STREAM_SCHEMA = "emuflow.sta-path-database/v2"
-STA_PATH_DATABASE_PAYLOAD_FORMAT = "jsonl-object/v1"
+STA_PATH_DATABASE_PAYLOAD_FORMAT_V1 = "jsonl-object/v1"
+STA_PATH_DATABASE_PAYLOAD_FORMAT = "jsonl-sta-path-raw/v2"
 PARTITION_NET_WEIGHTS_SCHEMA = "emuflow.partition-net-weights/v1"
 STA_PATH_DATABASE_PROVIDERS = {
     "opensta-fpga-path-database-v1",
@@ -50,7 +51,7 @@ def _file_sha256(path: Path) -> str:
 
 def _sta_path_payload(
     manifest_path: Path, value: Mapping[str, Any]
-) -> tuple[Path, str, int]:
+) -> tuple[Path, str, int, str]:
     payloads = value.get("payloads")
     descriptor = payloads.get("paths") if isinstance(payloads, Mapping) else None
     if not isinstance(descriptor, Mapping):
@@ -59,7 +60,10 @@ def _sta_path_payload(
     digest = descriptor.get("sha256")
     records = descriptor.get("records")
     if (
-        descriptor.get("format") != STA_PATH_DATABASE_PAYLOAD_FORMAT
+        descriptor.get("format") not in {
+            STA_PATH_DATABASE_PAYLOAD_FORMAT_V1,
+            STA_PATH_DATABASE_PAYLOAD_FORMAT,
+        }
         or not isinstance(relative, str)
         or not relative
         or Path(relative).is_absolute()
@@ -74,7 +78,7 @@ def _sta_path_payload(
     path = manifest_path.parent / relative
     if not path.is_file():
         raise ValidationError("STA path database payload is missing")
-    return path, digest, records
+    return path, digest, records, str(descriptor["format"])
 
 
 def iter_sta_path_database_paths(
@@ -91,8 +95,13 @@ def iter_sta_path_database_paths(
         return
     if schema != STA_PATH_DATABASE_STREAM_SCHEMA:
         raise ValidationError("STA path database schema is invalid")
-    payload_path, expected_digest, expected_records = _sta_path_payload(
+    payload_path, expected_digest, expected_records, payload_format = _sta_path_payload(
         path, value
+    )
+    normalization = (
+        _validate_database_normalization(value.get("normalization"))
+        if payload_format == STA_PATH_DATABASE_PAYLOAD_FORMAT
+        else None
     )
     digest = hashlib.sha256()
     count = 0
@@ -108,6 +117,22 @@ def iter_sta_path_database_paths(
                     f"STA path database payload record {count} is invalid"
                 ) from error
             count += 1
+            if normalization is not None:
+                if not isinstance(record, dict) or "normalized_slack" in record:
+                    raise ValidationError(
+                        f"STA path database payload record {count - 1} is invalid"
+                    )
+                record = dict(record)
+                try:
+                    record["normalized_slack"] = _normalized_slack(
+                        float(record["clock_period_ns"]),
+                        float(record["slack_ns"]),
+                        normalization,
+                    )
+                except (KeyError, TypeError, ValueError) as error:
+                    raise ValidationError(
+                        f"STA path database payload record {count - 1} is invalid"
+                    ) from error
             yield record
     if count != expected_records:
         raise ValidationError("STA path database payload count disagrees")
@@ -706,9 +731,10 @@ def import_sta_path_database_tsv_streaming(
 ) -> Dict[str, Any]:
     """Convert an STA TSV to a small manifest plus a sealed JSONL stream.
 
-    The first pass validates identities and derives global normalization.  The
-    second pass emits normalized records atomically.  At no point is the path
-    population materialized as one Python list or JSON document.
+    One pass validates identities, derives global normalization, and emits raw
+    records atomically.  Readers derive ``normalized_slack`` lazily from the
+    sealed manifest.  At no point is the path population materialized as one
+    Python list or JSON document.
     """
 
     if provider not in STA_PATH_DATABASE_PROVIDERS:
@@ -727,74 +753,6 @@ def import_sta_path_database_tsv_streaming(
         else {}
     )
 
-    path_ids: set[str] = set()
-    path_nets_union: set[str] = set()
-    positive_scale_value: Optional[float] = None
-    most_negative_value: Optional[float] = None
-    max_period = 0.0
-    count = 0
-    structured = 0
-    negative_slacks: list[float] = []
-    worst_slack: Optional[float] = None
-    with input_path.open("r", encoding="utf-8") as stream:
-        header = stream.readline().rstrip("\r\n")
-        if header != STA_PATH_DATABASE_TSV_HEADER:
-            raise ValidationError("STA path database TSV: invalid header")
-        for index, raw in enumerate(stream, start=2):
-            line = raw.rstrip("\r\n")
-            if not line:
-                continue
-            record = _parse_sta_path_database_tsv_record(
-                line,
-                index,
-                provider=provider,
-                known_nets=known_nets,
-                object_index=object_index,
-                instances_by_id=instances_by_id,
-                nets_by_id=nets_by_id,
-            )
-            path_id = record["id"]
-            if path_id in path_ids:
-                raise ValidationError(
-                    f"STA path database TSV line {index}: duplicate path"
-                )
-            path_ids.add(path_id)
-            path_nets_union.update(record["path_nets"])
-            slack = float(record["slack_ns"])
-            period = float(record["clock_period_ns"])
-            if slack >= 0.0:
-                positive_scale_value = (
-                    slack
-                    if positive_scale_value is None
-                    else max(positive_scale_value, slack)
-                )
-            else:
-                most_negative_value = (
-                    slack
-                    if most_negative_value is None
-                    else min(most_negative_value, slack)
-                )
-                negative_slacks.append(slack)
-            max_period = max(max_period, period)
-            worst_slack = slack if worst_slack is None else min(worst_slack, slack)
-            structured += int("startpoint" in record and "endpoint" in record)
-            count += 1
-    if count == 0:
-        raise ValidationError("STA path database TSV contains no mapped timing paths")
-    positive_scale = (
-        1.0
-        if positive_scale_value in {None, 0.0}
-        else float(positive_scale_value)
-    )
-    most_negative = (
-        -1.0 if most_negative_value is None else float(most_negative_value)
-    )
-    normalization = {
-        "positive_slack_scale_ns": positive_scale,
-        "negative_slack_scale_ns": abs(most_negative),
-        "max_clock_period_ns": max_period,
-    }
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload_path = output_path.with_name(output_path.name + ".paths.jsonl")
     descriptor, temporary_name = tempfile.mkstemp(
@@ -805,15 +763,23 @@ def import_sta_path_database_tsv_streaming(
     os.close(descriptor)
     temporary_path = Path(temporary_name)
     payload_digest = hashlib.sha256()
-    emitted = 0
+    path_ids: set[str] = set()
+    path_nets_union: set[str] = set()
+    positive_scale_value: Optional[float] = None
+    most_negative_value: Optional[float] = None
+    max_period = 0.0
+    count = 0
+    structured = 0
+    negative_slacks: list[float] = []
+    worst_slack: Optional[float] = None
     try:
         with (
             input_path.open("r", encoding="utf-8") as source_stream,
             temporary_path.open("wb") as output_stream,
         ):
-            if source_stream.readline().rstrip("\r\n") != STA_PATH_DATABASE_TSV_HEADER:
-                raise ValidationError("STA path database TSV changed during import")
-            second_ids: set[str] = set()
+            header = source_stream.readline().rstrip("\r\n")
+            if header != STA_PATH_DATABASE_TSV_HEADER:
+                raise ValidationError("STA path database TSV: invalid header")
             for index, raw in enumerate(source_stream, start=2):
                 line = raw.rstrip("\r\n")
                 if not line:
@@ -827,15 +793,34 @@ def import_sta_path_database_tsv_streaming(
                     instances_by_id=instances_by_id,
                     nets_by_id=nets_by_id,
                 )
-                if record["id"] in second_ids:
+                path_id = record["id"]
+                if path_id in path_ids:
                     raise ValidationError(
                         f"STA path database TSV line {index}: duplicate path"
                     )
-                second_ids.add(record["id"])
-                record["normalized_slack"] = _normalized_slack(
-                    float(record["clock_period_ns"]),
-                    float(record["slack_ns"]),
-                    normalization,
+                path_ids.add(path_id)
+                path_nets_union.update(record["path_nets"])
+                slack = float(record["slack_ns"])
+                period = float(record["clock_period_ns"])
+                if slack >= 0.0:
+                    positive_scale_value = (
+                        slack
+                        if positive_scale_value is None
+                        else max(positive_scale_value, slack)
+                    )
+                else:
+                    most_negative_value = (
+                        slack
+                        if most_negative_value is None
+                        else min(most_negative_value, slack)
+                    )
+                    negative_slacks.append(slack)
+                max_period = max(max_period, period)
+                worst_slack = (
+                    slack if worst_slack is None else min(worst_slack, slack)
+                )
+                structured += int(
+                    "startpoint" in record and "endpoint" in record
                 )
                 encoded = (
                     json.dumps(record, sort_keys=True, separators=(",", ":"))
@@ -844,12 +829,27 @@ def import_sta_path_database_tsv_streaming(
                 )
                 output_stream.write(encoded)
                 payload_digest.update(encoded)
-                emitted += 1
-        if emitted != count:
-            raise ValidationError("STA path database TSV changed during import")
+                count += 1
+        if count == 0:
+            raise ValidationError(
+                "STA path database TSV contains no mapped timing paths"
+            )
         os.replace(temporary_path, payload_path)
     finally:
         temporary_path.unlink(missing_ok=True)
+    positive_scale = (
+        1.0
+        if positive_scale_value in {None, 0.0}
+        else float(positive_scale_value)
+    )
+    most_negative = (
+        -1.0 if most_negative_value is None else float(most_negative_value)
+    )
+    normalization = {
+        "positive_slack_scale_ns": positive_scale,
+        "negative_slack_scale_ns": abs(most_negative),
+        "max_clock_period_ns": max_period,
+    }
 
     source_value = dict(source) if source is not None else {}
     source_value.update({"provider": provider, "input": str(input_path)})

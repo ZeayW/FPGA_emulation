@@ -101,13 +101,20 @@ class OpenStaProviderTest(unittest.TestCase):
             qor = sta_path_database_qor(output, manifest)
             self.assertEqual(imported["paths"], 1)
             self.assertNotIn("paths", manifest)
+            self.assertEqual(
+                manifest["payloads"]["paths"]["format"],
+                "jsonl-sta-path-raw/v2",
+            )
             self.assertEqual(records[0]["id"], "path0")
+            payload = output.parent / manifest["payloads"]["paths"]["path"]
+            raw_record = json.loads(payload.read_text(encoding="utf-8"))
+            self.assertNotIn("normalized_slack", raw_record)
+            self.assertIn("normalized_slack", records[0])
             self.assertEqual(checked["paths"], 1)
             self.assertEqual(qor["wns_ns"], -0.5)
-            payload = output.parent / manifest["payloads"]["paths"]["path"]
             with payload.open("ab") as stream:
                 stream.write(b"{}\n")
-            with self.assertRaisesRegex(Exception, "count disagrees"):
+            with self.assertRaisesRegex(Exception, "record 1 is invalid"):
                 list(iter_sta_path_database_paths(output, manifest))
 
     def test_legacy_opensta_is_rejected_before_timing(self) -> None:
