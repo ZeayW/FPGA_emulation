@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from .errors import ValidationError
-from .io import file_sha256, read_json, write_json
+from .io import file_sha256, read_json
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from .xilinx_placement import XILINX_PLACEMENT_SCHEMA
 
@@ -348,6 +348,11 @@ def run_rwroute(
         str(java), "-Xmx32g", f"-Duser.home={runtime_home}",
         "-cp", f"{classes_dir}:{rapidwright_jar}",
         "EmuFlowRWRoute", str(input_path), str(output_path),
+        RAPIDWRIGHT_TIMING_DATA_REVISION,
+        RAPIDWRIGHT_TIMING_DATA_SHA256["intersite_delay_terms.txt"],
+        RAPIDWRIGHT_TIMING_DATA_SHA256["intrasite_delay_terms.txt"],
+        device_data_md5["data/parts.db"],
+        device_data_md5["data/devices/virtexuplus/xcvu19p_db.dat"],
     ]
     temporary_log = log_path is None
     if temporary_log:
@@ -380,12 +385,8 @@ def run_rwroute(
             + "\n".join(failure_tail.splitlines()[-80:])
         )
     value = read_json(output_path)
-    timing = value.get("timing")
-    if not isinstance(timing, dict):
+    if not isinstance(value.get("timing"), dict):
         raise ValidationError("RWRoute output lacks its timing qualification")
-    timing["source_revision"] = RAPIDWRIGHT_TIMING_DATA_REVISION
-    timing["source_data_sha256"] = dict(RAPIDWRIGHT_TIMING_DATA_SHA256)
-    timing["device_data_md5"] = device_data_md5
     report = validate_xilinx_route_db(
         output_path,
         mapped_path=mapped_path,
@@ -768,14 +769,9 @@ def validate_xilinx_route_db(
         )
     ):
         raise ValidationError("XilinxRouteDB maximum route delay disagrees")
-    # A caller may hand the exact in-memory object produced by RWRoute to this
-    # checker.  Mutate and serialize it only while promoting a candidate to a
-    # validated route.  Rewriting an already-passing production route merely
-    # because it was preloaded turns a near-gigabyte validation into an
-    # unnecessary second full artifact write.
-    if value.get("status") != "pass":
-        value["status"] = "pass"
-        write_json(path, value, compact=True)
+    # The independent validation report is the promotion certificate.  Keep
+    # the Java-produced route artifact immutable rather than rewriting a
+    # near-gigabyte JSON document merely to change candidate -> pass.
     report = {
         "status": "pass", "schema": "emuflow.xilinx-route-validation/v1",
         "nets": checked_nets, "sinks": checked_sinks,

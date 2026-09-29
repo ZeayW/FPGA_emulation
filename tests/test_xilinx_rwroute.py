@@ -58,6 +58,21 @@ class XilinxRWRouteTest(unittest.TestCase):
                 f'physicalPin.replace("{logical}", "{physical}")', source
             )
 
+    def test_rapidwright_writer_seals_pinned_timing_inputs_directly(self):
+        source = (
+            Path(__file__).parents[1]
+            / "scripts/rapidwright/EmuFlowRWRoute.java"
+        ).read_text(encoding="utf-8")
+        for field, argument in (
+            ("source_revision", 2),
+            ("intersite_delay_terms.txt", 3),
+            ("intrasite_delay_terms.txt", 4),
+            ("data/parts.db", 5),
+            ("data/devices/virtexuplus/xcvu19p_db.dat", 6),
+        ):
+            self.assertIn(f'"{field}"', source)
+            self.assertIn(f"args[{argument}]", source)
+
     def test_device_data_provider_fails_closed_on_unpinned_database(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -147,19 +162,18 @@ class XilinxRWRouteTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 validate_xilinx_route_db(path)
 
-    def test_checker_does_not_rewrite_prevalidated_route(self):
-        value = self._route()
-        value["status"] = "pass"
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "route.json"
-            path.write_text(json.dumps(value), encoding="utf-8")
-            with mock.patch(
-                "emuflow.xilinx_rwroute.write_json",
-                side_effect=AssertionError("prevalidated route was rewritten"),
-            ):
+    def test_checker_never_rewrites_route_artifact(self):
+        for status in ("candidate", "pass"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                value = self._route()
+                value["status"] = status
+                path = Path(temporary) / "route.json"
+                path.write_text(json.dumps(value), encoding="utf-8")
+                original = path.read_bytes()
                 report = validate_xilinx_route_db(path, _value=value)
-        self.assertEqual(report["status"], "pass")
-        self.assertNotIn("source_sha256", report)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(report["status"], "pass")
+                self.assertNotIn("source_sha256", report)
 
     def test_checker_accepts_equivalent_alternate_physical_source(self):
         value = self._route()

@@ -5037,12 +5037,14 @@ than being silently counted as routed or invented as a global clock network.
 The adapter emits a source-sealed route certificate without the router's
 search trace.  The complete PIP and sink proof can nevertheless be hundreds of
 megabytes on a real design, so the production handoff treats it as a single-
-pass object rather than a small report.  RWRoute validation reuses the exact
-in-memory route object, returns the source seals it has already checked, and
-the routed-timing binder consumes that object and those seals directly.  The
-standalone RouteDB-to-timing command likewise reads the RouteDB once; it does
-not parse or hash it again after validation and it does not rewrite an
-already-passing RouteDB.  This removes duplicate whole-document I/O without
+pass object rather than a small report.  The Java producer writes the pinned
+timing-data and device-data identities directly into its immutable candidate;
+the independent validator returns a separate passing promotion certificate
+instead of rewriting the entire RouteDB merely to change its status field.
+Validation reuses the exact in-memory route object, returns the source seals it
+has already checked, and the routed-timing binder consumes that object and
+those seals directly.  The standalone RouteDB-to-timing command likewise reads
+and hashes the RouteDB once.  This removes duplicate whole-document I/O without
 weakening the independent topology, source, or timing checks.  It does not
 claim that the current complete route certificate is already sharded or
 streaming.  The following routed-timing-to-OpenSTA staging boundary applies

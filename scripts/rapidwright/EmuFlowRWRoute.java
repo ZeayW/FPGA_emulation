@@ -656,8 +656,12 @@ public final class EmuFlowRWRoute {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 2) {
-            throw new IllegalArgumentException("usage: EmuFlowRWRoute <input.tsv> <output.json>");
+        if (args.length != 7) {
+            throw new IllegalArgumentException(
+                "usage: EmuFlowRWRoute <input.tsv> <output.json> "
+                + "<timing-revision> <intersite-sha256> <intrasite-sha256> "
+                + "<parts-db-md5> <device-db-md5>"
+            );
         }
         List<String> lines = Files.readAllLines(Path.of(args[0]));
         String part = null;
@@ -990,6 +994,16 @@ public final class EmuFlowRWRoute {
             .put("setup_route_delays", "available")
             .put("hold_analysis", "unavailable")
             .put("hard_block_clock_timing", "unqualified")
+            .put("source_revision", args[2])
+            .put("source_data_sha256", new JSONObject()
+                .put("intersite_delay_terms.txt", args[3])
+                .put("intrasite_delay_terms.txt", args[4]))
+            .put("device_data_md5", new JSONObject()
+                .put("data/parts.db", args[5])
+                .put(
+                    "data/devices/virtexuplus/xcvu19p_db.dat",
+                    args[6]
+                ))
             .put("logic_coefficients_ps", new JSONObject()
                 .put("ff_clock_to_q", timingModel.LOGIC_FF_DELAY)
                 .put("carry_co", timingModel.CARRY_CO_DELAY)
