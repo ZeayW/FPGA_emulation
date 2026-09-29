@@ -1255,8 +1255,12 @@ longer considers that connection unrouted, congested, or timing-selected.  The
 previous monotonically growing set could rebuild a larger recovery tree around
 already-stable routes in every negotiated-congestion iteration.  The active
 pre-fix DLA route is deliberately left untouched and therefore does not count
-as evidence for this correction; the next sealed run will report the active
-recovery-set size per iteration.
+as evidence for this correction.  On the first sealed DLA fpga1 rerun, active
+recovery membership fell throughout negotiation, RWRoute wall time improved
+from 11:58.56 to 7:52.45 (about 34%), and the independent OpenSTA result kept
+WNS at -1.8418 ns while improving TNS from -221.443887 to -220.033683 ns and
+failing endpoints from 560 to 557.  The larger fpga0 route remains a terminal
+promotion gate rather than being inferred from this result.
 The first real-device probe also established that the three identities must be
 kept separate: placement uses `RAMB180/RAMB18E2_L`,
 `RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`, while the database's primary
