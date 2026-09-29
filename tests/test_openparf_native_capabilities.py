@@ -203,6 +203,11 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
         self.assertEqual(feature["single_site_resource_mcf_legalization"]["status"], "adapter_required")
         self.assertEqual(feature["packed_cluster_detailed_placement"]["status"], "core_missing")
         self.assertEqual(feature["atomic_lut_ff_detailed_placement"]["status"], "adapter_required")
+        self.assertEqual(feature["multi_slr_constraints"]["status"], "unverified")
+        self.assertIn(
+            "enables OpenPARF's native SLL objective",
+            feature["multi_slr_constraints"]["reason"],
+        )
         self.assertEqual(
             matrix["source_audit"]["checks"]["constant_lut_slot_assignment"]["status"],
             "native_supported",

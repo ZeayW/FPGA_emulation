@@ -24,6 +24,15 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_recovery_tree_drops_stable_connections_between_iterations(self):
+        source = (
+            Path(__file__).parents[1]
+            / "scripts/rapidwright/EmuFlowRWRoute.java"
+        ).read_text(encoding="utf-8")
+        self.assertIn("recoveryConnections.removeIf(", source)
+        self.assertIn("!super.shouldRoute(connection)", source)
+        self.assertIn("EmuFlow active recovery connections", source)
+
     def test_rapidwright_block_ram_aliases_match_yosys_ports(self):
         source = (
             Path(__file__).parents[1]

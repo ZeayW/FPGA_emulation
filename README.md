@@ -1222,12 +1222,18 @@ PIPs with 0.256100006 ns maximum route delay, and reached WNS +9.009399 ns/TNS
 qualify the MUX hierarchy itself; clock legality, multi-SLR capacity, the
 resource-covering gate, and DLA medium still prevent provider promotion.
 The native atomic exporter now also translates complete ArchitectureDB clock
-regions into OpenPARF's Bookshelf clock-region model.  It emits the region
-geometry only when every placement site belongs to a canonical, rectangular,
+regions and SLR ownership into OpenPARF's Bookshelf physical model.  It emits
+the region geometry only when every placement site belongs to a canonical, rectangular,
 gap-free grid; partial coverage, non-rectangular regions, and missing grid
 coordinates fail before placement.  The bundled Bookshelf reader accepts
 multi-digit region names such as `X4Y10`, which are required by real
-UltraScale+ devices.  Active UTPlaceFX clock assignment remains deliberately
+UltraScale+ devices.  A new `SUPERLOGICREGIONS` block constructs the native
+`SuperLogicRegionMap` instead of retaining SLR names only as sidecar metadata.
+Equal-size rectangular SLRs enable OpenPARF's native SLL objective;
+incomplete, overlapping, non-contiguous, or unequal-size SLR grids fail closed.
+This source/unit gate is implemented, but a rebuilt compiled runtime and a
+renewed DLA route are still required before multi-SLR support is promoted.
+Active UTPlaceFX clock assignment remains deliberately
 disabled: that upstream implementation assumes one SLICE, one DSP, and one RAM
 site class and discovers clocks only from explicit clock-source models, while
 the real device model contains multiple BRAM views plus URAM and the current
@@ -1236,6 +1242,14 @@ the wrong capacity model.  Half-column limits likewise remain disabled until
 their boundaries are source sealed.  Clock-source import, safe multi-resource
 clock planning, and compiled real-device clock/multi-SLR evidence remain
 promotion gates.
+The RapidWright recovery specialization now also prunes a connection from its
+exceptional full-device partition tree as soon as the upstream router no
+longer considers that connection unrouted, congested, or timing-selected.  The
+previous monotonically growing set could rebuild a larger recovery tree around
+already-stable routes in every negotiated-congestion iteration.  The active
+pre-fix DLA route is deliberately left untouched and therefore does not count
+as evidence for this correction; the next sealed run will report the active
+recovery-set size per iteration.
 The first real-device probe also established that the three identities must be
 kept separate: placement uses `RAMB180/RAMB18E2_L`,
 `RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`, while the database's primary

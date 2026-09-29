@@ -84,7 +84,8 @@ def _resource_rows(sites: str):
 
 
 def _fixture(
-    root: Path, *, coincident=False, mixed=False, clock_regions=False
+    root: Path, *, coincident=False, mixed=False, clock_regions=False,
+    multi_slr=False,
 ):
     mapped = root / "mapped.json"
     packed = root / "packed.json"
@@ -171,11 +172,14 @@ def _fixture(
     ]
     if clock_regions:
         columns = sorted({site["tile"]["grid_col"] for site in sites})
+        rows = sorted({site["tile"]["grid_row"] for site in sites})
         for site in sites:
+            row = rows.index(site["tile"]["grid_row"])
             site["physical_region"] = {
-                "slr": "SLR0",
+                "slr": f"SLR{row}" if multi_slr else "SLR0",
                 "clock_region": (
-                    f"X{columns.index(site['tile']['grid_col'])}Y0"
+                    f"X{columns.index(site['tile']['grid_col'])}"
+                    f"Y{row if multi_slr else 0}"
                 ),
             }
     templates = {"SLICEL": {
@@ -564,6 +568,11 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertIn("CLOCKREGION X0Y0 : 0 0 0 1 1 0", sites)
         self.assertIn("CLOCKREGION X1Y0 : 1 0 1 1 1 1", sites)
         self.assertIn("END CLOCKREGIONS", sites)
+        self.assertIn("SUPERLOGICREGIONS 1 1", sites)
+        self.assertIn(
+            "SUPERLOGICREGION SLR0 ULTRASCALE_PLUS : 0 0 2 2", sites
+        )
+        self.assertIn("END SUPERLOGICREGIONS", sites)
         self.assertEqual(config["honor_clock_region_constraints"], 0)
         self.assertEqual(config["confine_clock_region_flag"], 0)
         self.assertEqual(config["count_ck_cr"], 0)
@@ -589,6 +598,50 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     "name": "X1Y0", "x": 1, "y": 0, "slr": "SLR0",
                     "bbox": [1, 0, 1, 1],
                 },
+            ],
+        })
+        self.assertEqual(config["slr_aware_flag"], 0)
+        self.assertEqual(manifest["slr_contract"], {
+            "width": 1,
+            "height": 1,
+            "native_enforcement": "not-required",
+            "regions": [{
+                "name": "SLR0", "x": 0, "y": 0,
+                "bbox": [0, 0, 1, 1],
+            }],
+        })
+
+    def test_multi_slr_grid_enables_native_slr_objective(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(
+                root, clock_regions=True, multi_slr=True
+            )
+            output = root / "output"
+            manifest = export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output
+            )
+            config = json.loads((output / "openparf.json").read_text())
+            sites = (output / "design.scl").read_text()
+
+        self.assertIn("CLOCKREGIONS 2 2", sites)
+        self.assertIn("SUPERLOGICREGIONS 1 2", sites)
+        self.assertIn(
+            "SUPERLOGICREGION SLR0 ULTRASCALE_PLUS : 0 0 2 1", sites
+        )
+        self.assertIn(
+            "SUPERLOGICREGION SLR1 ULTRASCALE_PLUS : 0 1 2 1", sites
+        )
+        self.assertEqual(config["slr_aware_flag"], 1)
+        self.assertEqual(manifest["slr_contract"], {
+            "width": 1,
+            "height": 2,
+            "native_enforcement": "enabled",
+            "regions": [
+                {"name": "SLR0", "x": 0, "y": 0,
+                 "bbox": [0, 0, 1, 0]},
+                {"name": "SLR1", "x": 0, "y": 1,
+                 "bbox": [0, 1, 1, 1]},
             ],
         })
 

@@ -189,7 +189,9 @@ class BookshelfDatabaseCallbacks : public bookshelfparser::BookshelfDatabase {
 
   void initClockRegionsCbk(unsigned width, unsigned height) { db_.layout().clockRegionMap().reshape(width, height); }
 
-  void initSuperLogicRegionsCbk(unsigned width, unsigned height) { db_.layout().superLogicRegionMap().reshape(width, height); }
+  void initSuperLogicRegionsCbk(unsigned width, unsigned height) override {
+    db_.layout().superLogicRegionMap().reshape(width, height);
+  }
 
   /// @brief add clock region.
   /// We assume the site width/height is 1, so the site indices are the same as
@@ -356,7 +358,7 @@ class BookshelfDatabaseCallbacks : public bookshelfparser::BookshelfDatabase {
                               unsigned           slr_ix,
                               unsigned           slr_iy,
                               unsigned           slr_width,
-                              unsigned           slr_height) {
+                              unsigned           slr_height) override {
     using BoxType = geometry::Box<int32_t>;
 
     auto   &super_logic_region = db_.layout().superLogicRegionMap().at(slr_ix, slr_iy);

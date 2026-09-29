@@ -1986,6 +1986,7 @@ def _render_site_geometry(
             "ArchitectureDB clock-region coverage is partial"
         )
     clock_region_contract = None
+    slr_contract = None
     if present_regions:
         by_name: Dict[str, Dict[str, Any]] = {}
         for item in site_map:
@@ -2059,10 +2060,90 @@ def _render_site_geometry(
             ),
             "regions": contract_regions,
         }
+        by_slr: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
+        for item in site_map:
+            slr = item["physical_region"].get("slr")
+            if not isinstance(slr, str) or not re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_\-]*", slr
+            ):
+                raise ValidationError(
+                    f"ArchitectureDB SLR name {slr!r} is not canonical"
+                )
+            by_slr[slr].append((item["dense_x"], item["dense_y"]))
+        slr_bboxes: Dict[str, Tuple[int, int, int, int]] = {}
+        for slr, coordinates in by_slr.items():
+            xs = [coordinate[0] for coordinate in coordinates]
+            ys = [coordinate[1] for coordinate in coordinates]
+            bbox = (min(xs), min(ys), max(xs), max(ys))
+            for item in site_map:
+                if (
+                    bbox[0] <= item["dense_x"] <= bbox[2]
+                    and bbox[1] <= item["dense_y"] <= bbox[3]
+                    and item["physical_region"]["slr"] != slr
+                ):
+                    raise ValidationError(
+                        f"ArchitectureDB SLR {slr!r} is not rectangular"
+                    )
+            slr_bboxes[slr] = bbox
+        x_spans = sorted({(bbox[0], bbox[2]) for bbox in slr_bboxes.values()})
+        y_spans = sorted({(bbox[1], bbox[3]) for bbox in slr_bboxes.values()})
+        expected_slr_bboxes = {
+            (x_span[0], y_span[0], x_span[1], y_span[1])
+            for x_span in x_spans for y_span in y_spans
+        }
+        if set(slr_bboxes.values()) != expected_slr_bboxes:
+            raise ValidationError("ArchitectureDB SLR grid is incomplete")
+
+        def validate_axis_spans(
+            spans: Sequence[Tuple[int, int]], extent: int, axis: str,
+        ) -> int:
+            if not spans or spans[0][0] != 0 or spans[-1][1] != extent - 1:
+                raise ValidationError(
+                    f"ArchitectureDB SLR {axis}-axis does not cover the device"
+                )
+            for previous, current in zip(spans, spans[1:]):
+                if previous[1] + 1 != current[0]:
+                    raise ValidationError(
+                        f"ArchitectureDB SLR {axis}-axis is not contiguous"
+                    )
+            sizes = {end - start + 1 for start, end in spans}
+            if len(sizes) != 1:
+                raise ValidationError(
+                    "OpenPARF requires equal-size rectangular SLRs"
+                )
+            return next(iter(sizes))
+
+        slr_width = validate_axis_spans(x_spans, len(x_axis), "x")
+        slr_height = validate_axis_spans(y_spans, len(y_axis), "y")
+        bbox_to_slr = {bbox: slr for slr, bbox in slr_bboxes.items()}
+        slr_regions = []
+        lines.extend(["", f"SUPERLOGICREGIONS {len(x_spans)} {len(y_spans)}"])
+        for slr_x, x_span in enumerate(x_spans):
+            for slr_y, y_span in enumerate(y_spans):
+                bbox = (x_span[0], y_span[0], x_span[1], y_span[1])
+                slr = bbox_to_slr[bbox]
+                lines.append(
+                    "  SUPERLOGICREGION "
+                    f"{slr} ULTRASCALE_PLUS : {slr_x} {slr_y} "
+                    f"{slr_width} {slr_height}"
+                )
+                slr_regions.append({
+                    "name": slr, "x": slr_x, "y": slr_y,
+                    "bbox": list(bbox),
+                })
+        lines.append("END SUPERLOGICREGIONS")
+        slr_contract = {
+            "width": len(x_spans), "height": len(y_spans),
+            "native_enforcement": (
+                "enabled" if len(slr_regions) > 1 else "not-required"
+            ),
+            "regions": slr_regions,
+        }
     return site_prefix, "\n".join(lines) + "\n", {
         "x_axis": x_axis, "y_axis": y_axis,
         "y_axis_order": y_axis_order, "sites": site_map,
         "clock_regions": clock_region_contract,
+        "super_logic_regions": slr_contract,
     }
 
 
@@ -2486,7 +2567,11 @@ def export_xilinx_openparf_atomic(
         "maximum_clock_per_clock_region": _MAX_CLOCKS_PER_REGION,
         "maximum_clock_per_half_column": 0,
         "clock_region_capacity": _MAX_CLOCKS_PER_REGION,
-        "route_flag": 0, "slr_aware_flag": 0,
+        "route_flag": 0,
+        "slr_aware_flag": int(
+            coordinate_system["super_logic_regions"] is not None
+            and len(coordinate_system["super_logic_regions"]["regions"]) > 1
+        ),
         "result_dir": str((output_dir / "results").resolve()),
     }
     if has_carry8:
@@ -2944,6 +3029,7 @@ def export_xilinx_openparf_atomic(
         },
         "placement_region": placement_region,
         "clock_region_contract": coordinate_system["clock_regions"],
+        "slr_contract": coordinate_system["super_logic_regions"],
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {

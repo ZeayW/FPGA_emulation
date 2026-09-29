@@ -89,6 +89,11 @@ public:
   void addClockRegionCbk(std::string const &name, unsigned xlo, unsigned ylo,
                          unsigned xhi, unsigned yhi, unsigned ymid,
                          unsigned hcxmin);
+  void initSuperLogicRegionsCbk(unsigned width, unsigned height);
+  void addSuperLogicRegionCbk(std::string const &name,
+                              std::string const &type, unsigned slr_x,
+                              unsigned slr_y, unsigned slr_width,
+                              unsigned slr_height);
 
   /* parsing nodes file */
   void addNodeCbk(std::string const &node_name, std::string const &cell_name);

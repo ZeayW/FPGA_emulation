@@ -64,9 +64,10 @@ public final class EmuFlowRWRoute {
      * Route A therefore widens only connections for which the current search
      * found no route. Those exceptional connections are routed through their
      * own recursive partitioning ternary tree before the unchanged main tree
-     * on every later iteration and are skipped by the main tree itself. This
-     * preserves CUFR's original parallel decomposition without serializing a
-     * large exceptional set: rebuilding the complete tree around even a few
+     * while they remain active and are skipped by the main tree itself. Stable
+     * connections are pruned before the next tree is built. This preserves
+     * CUFR's original parallel decomposition without serializing a large
+     * exceptional set: rebuilding the complete tree around even a few
      * enlarged connections can move ordinary reroutes towards its sequential
      * middle branches.
      * Congested-but-routed connections remain under negotiated congestion and
@@ -267,8 +268,19 @@ public final class EmuFlowRWRoute {
 
         @Override
         protected void routeIndirectConnections(Collection<Connection> connections) {
+            // A connection only needs the exceptional full-device recovery
+            // tree while it remains unrouted, congested, or selected for a
+            // timing-driven reroute. Keeping every connection that was ever
+            // unroutable makes this tree grow monotonically and repeatedly
+            // partitions already-stable routes in later iterations.
+            recoveryConnections.removeIf(
+                connection -> !super.shouldRoute(connection)
+            );
             if (!recoveryConnections.isEmpty()) {
                 List<Connection> snapshot = new ArrayList<>(recoveryConnections);
+                System.out.println(
+                    "INFO: EmuFlow active recovery connections: " + snapshot.size()
+                );
                 RecoveryPartitionTree tree = new RecoveryPartitionTree(
                     snapshot, design.getDevice().getColumns(), design.getDevice().getRows()
                 );

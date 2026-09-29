@@ -902,9 +902,18 @@ def probe_openparf_native_capabilities(
         ),
         feature(
             "multi_slr_constraints",
-            "adapter_required",
-            "the current adapter restricts a site window but does not construct OpenPARF SLR geometry or enable slr_aware_flag",
-            ("src/emuflow/xilinx_openparf.py",),
+            "unverified",
+            (
+                "the atomic adapter now emits a fail-closed rectangular SLR "
+                "map and enables OpenPARF's native SLL objective, but the "
+                "rebuilt real-device runtime and routing qualification are "
+                "not complete"
+            ),
+            (
+                "src/emuflow/xilinx_openparf_atomic.py",
+                "openparf/io/bookshelf/bookshelf_parser.yy",
+                "openparf/placement/op_collections.py",
+            ),
         ),
     ]
 
