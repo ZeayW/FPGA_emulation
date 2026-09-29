@@ -53,6 +53,21 @@ There is no provider fallback.  A route either admits the complete design and
 produces a certified result, or it fails closed with an exact missing
 capability.  Unsupported candidates do not delay the OpenPARF primary route.
 
+### Qualification snapshot
+
+The independent branches have now reached the following audited boundaries:
+
+| Route | Branch / sealed revision | Executable evidence | Selection consequence |
+| --- | --- | --- | --- |
+| OpenPARF native | `feature/phase7-placer-selection` / `b7e7017f` | Compiled native LUT/FF, CARRY8, DSP, BRAM, and URAM fixture gates pass; RAMB18 lower/upper and RAMB36 whole ownership is source sealed; the DLA-medium RapidWright/OpenSTA tail remains in progress | remains the only production candidate |
+| DREAMPlaceFPGA | `feature/phase7-dreamplacefpga-native` / `06fdfea1` | FPGA-Interchange adapters and independent placement checks pass, but the pinned upstream requires PyTorch 1.6--1.8 and lacks the required detailed-placement, cascade, clock-region, and multi-SLR contracts | research control only |
+| AMF-Placer | `feature/phase7-amf-native` / `8e0872ec` | The sealed subprocess runner, archive/config adapters, stage checks, result importer, and independent validator pass; the real patched upstream optimizer has not completed its first native fixture run | secondary blocked candidate |
+
+The branch/revision rows identify implementation evidence, not promotion.
+Neither an adapter roundtrip nor a test double is counted as a native placer
+pass.  Final selection still requires the same RapidWright route, routed-delay
+binding, standalone OpenSTA global WNS/TNS, and fresh one-shot Phase 1--7 gate.
+
 ## Phase 7 decomposition
 
 ### 7A-1: source and capability admission

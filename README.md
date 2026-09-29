@@ -1357,6 +1357,13 @@ The shared three-route selection work is maintained on
 `feature/phase7-placer-selection`; it combines the OpenPARF implementation with
 the fail-closed DREAMPlaceFPGA and AMF capability probes without treating an
 adapter-only roundtrip as production placement evidence.
+The current sealed comparison snapshot is recorded in
+[`docs/PHASE7_PLACER_REFACTOR_PLAN.md`](docs/PHASE7_PLACER_REFACTOR_PLAN.md):
+OpenPARF remains the sole production candidate; DREAMPlaceFPGA is a research
+control because its pinned public runtime and physical contracts are
+insufficient; and AMF remains blocked until its patched public optimizer
+completes a real native fixture run.  All three routes share the same
+RapidWright routing and standalone OpenSTA promotion boundary.
 The internal
 `probe_xilinx_openparf_carry_native_support` qualification API separates the
 source audit from runtime qualification against a two-CARRY8 macro contract
