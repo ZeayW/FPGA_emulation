@@ -22,7 +22,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 "status": "pass",
                 "runtime": {"installation": "/versioned/openparf"},
                 "certificate": {
-                    "schema": "emuflow.openparf-atomic-placement/v1",
+                    "schema": "emuflow.openparf-atomic-placement/v2",
                     "status": "pass",
                     "part": "xcvu19p-test",
                     "provider": "native-openparf",
@@ -96,7 +96,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 return {
                     "status": "pass",
                     "certificate": {
-                        "schema": "emuflow.openparf-atomic-placement/v1",
+                        "schema": "emuflow.openparf-atomic-placement/v2",
                         "status": "pass",
                         "part": "xcvu19p-test",
                         "provider": "native-openparf",

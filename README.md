@@ -1090,7 +1090,14 @@ OpenPARF hard-block decision over the source-sealed lower/upper views; it does
 not pair instances by name or packing order.  Explicit lower/upper occupancy
 claims allow two RAMB18 cells to share a tile while a RAMB36 whole-tile claim
 excludes both halves.  Export, legalization, certificate, and tamper-focused
-unit gates pass.  The compiled real-device fixture also passed native OpenPARF
+unit gates pass.  The version-2 atomic placement certificate carries the
+source-sealed tile, anchor, lower/upper/whole role, and exact occupancy claims
+for every split-BRAM assignment; its independent bridge validator rejects
+corrupted roles, claims, physical views, and whole-versus-half overlap.
+Legacy placement no longer reconstructs BRAM sites with coordinate parity or
+site-name arithmetic: split modes require the native tile-group contract, and
+only an already-explicit direct physical site may omit it.  The compiled
+real-device fixture also passed native OpenPARF
 placement, RapidWright routing, and standalone OpenSTA 3.1 timing; this remains
 branch-local and non-default until the remaining primitive/clock and DLA-medium
 gates pass.
@@ -4912,10 +4919,13 @@ pseudo-density is not treated as physical legality because the downstream
 architecture-aware legalizer checks every DSP/BRAM/URAM site exactly. Every
 dedicated cascade chain must remain within one SLR, and the independent
 validator checks that physical boundary explicitly.
-For split BRAM tiles, the placement certificate retains the FPGA-Interchange
-tile anchor and also materializes the exact RapidWright site of every
-RAMB18E2/RAMB36E2 assignment; this prevents the lower and upper BRAM views from
-being conflated at the pack/place-to-route boundary.
+For split BRAM tiles, the version-2 placement certificate retains the
+FPGA-Interchange tile anchor, source-sealed native tile identity,
+lower/upper/whole occupancy role and claims, and the exact RapidWright site of
+every RAMB18E2/RAMB36E2 assignment. This prevents the lower and upper BRAM
+views from being conflated at the pack/place-to-route boundary and makes a
+RAMB36 whole-site assignment conflict with either half without relying on
+coordinate parity or site-name rewriting.
 RWRoute is likewise a physical routing provider, not the acceptance oracle.
 Large designs use RapidWright CUFR, the parallel full-design specialization of
 RWRoute: it retains RWRoute's negotiated-congestion legality model while

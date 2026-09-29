@@ -1377,6 +1377,20 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 {item["bel"] for item in assignments},
                 {"RAMB18E2_L", "RAMB18E2_U"},
             )
+            groups = [item["bram_tile_group"] for item in assignments]
+            self.assertEqual(
+                {item["role"] for item in groups}, {"lower", "upper"}
+            )
+            self.assertEqual(
+                {item["anchor"] for item in groups}, {lo_window["anchor"]}
+            )
+            self.assertEqual(
+                {tuple(item["claims"]) for item in groups},
+                {
+                    (f"bram:{lo_window['tile']}:lower",),
+                    (f"bram:{lo_window['tile']}:upper",),
+                },
+            )
 
     def test_half_site_and_hard_cascade_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:

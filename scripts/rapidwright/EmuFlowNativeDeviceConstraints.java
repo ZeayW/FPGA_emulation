@@ -426,13 +426,19 @@ public final class EmuFlowNativeDeviceConstraints {
                 logicalBel, nativeBel, nativeType, site, siteIndex, placementType);
     }
 
+    private static boolean ownsPrimitiveBel(Site site, String belName) {
+        if (site == null) return false;
+        BEL bel = site.getBEL(belName);
+        return bel != null && bel.getBELClass() != BELClass.PORT;
+    }
+
     private static List<BramTileGroup> bramTileGroups(
             Device device, Set<String> eligibleSites) {
         List<String> anchors = new ArrayList<>();
         for (String name : eligibleSites) {
             Site site = device.getSite(name);
             require(site != null, "native device lacks ArchitectureDB site " + name);
-            if (site.getSiteTypeEnum().name().equals("RAMB181")) anchors.add(name);
+            if (ownsPrimitiveBel(site, "RAMB18E2_U")) anchors.add(name);
         }
         Collections.sort(anchors);
         List<BramTileGroup> result = new ArrayList<>();
@@ -453,17 +459,22 @@ public final class EmuFlowNativeDeviceConstraints {
             for (int index = 0; index < tileSites.length; ++index) {
                 Site site = tileSites[index];
                 if (site == null) continue;
-                String type = site.getSiteTypeEnum().name();
-                if (type.equals("RAMB181")) {
+                boolean isUpper = ownsPrimitiveBel(site, "RAMB18E2_U");
+                boolean isLower = ownsPrimitiveBel(site, "RAMBFIFO18");
+                boolean isWhole = ownsPrimitiveBel(site, "RAMBFIFO36E2");
+                require((isUpper ? 1 : 0) + (isLower ? 1 : 0)
+                                + (isWhole ? 1 : 0) <= 1,
+                        tile.getName() + " has an ambiguous native BRAM view");
+                if (isUpper) {
                     require(upperIndex == -1, tile.getName() + " has multiple RAMB181 views");
                     upperSite = site;
                     upperIndex = index;
-                } else if (type.equals("RAMBFIFO18")) {
+                } else if (isLower) {
                     require(lowerIndex == -1,
                             tile.getName() + " has multiple RAMBFIFO18 views");
                     lowerSite = site;
                     lowerIndex = index;
-                } else if (type.equals("RAMBFIFO36")) {
+                } else if (isWhole) {
                     require(wholeIndex == -1,
                             tile.getName() + " has multiple RAMBFIFO36 views");
                     wholeSite = site;
@@ -486,6 +497,19 @@ public final class EmuFlowNativeDeviceConstraints {
                     tile.getName() + " reuses a native BRAM site");
             result.add(new BramTileGroup(
                     anchor, lower, tile.getName(), upper, whole));
+        }
+        return result;
+    }
+
+    private static Map<String, String> bramAnchorByNativeSite(
+            List<BramTileGroup> groups) {
+        Map<String, String> result = new HashMap<>();
+        for (BramTileGroup group : groups) {
+            for (BramView view : Arrays.asList(
+                    group.lower, group.upper, group.whole)) {
+                require(result.put(view.site, group.anchor) == null,
+                        view.site + " belongs to multiple BRAM tile groups");
+            }
         }
         return result;
     }
@@ -577,29 +601,25 @@ public final class EmuFlowNativeDeviceConstraints {
     }
 
     private static String contractSiteName(
-            Site site, Family family, Set<String> eligibleSites) {
+            Site site, Family family, Set<String> eligibleSites,
+            Map<String, String> bramAnchorByNativeSite) {
         if (eligibleSites.contains(site.getName())) return site.getName();
         if (!"BRAM_CASCADE".equals(family.kind)) return null;
-        List<String> anchors = new ArrayList<>();
-        for (Site tileSite : site.getTile().getSites()) {
-            if (tileSite != null && eligibleSites.contains(tileSite.getName())
-                    && tileSite.getName().startsWith("RAMB18_")) {
-                anchors.add(tileSite.getName());
-            }
-        }
-        require(anchors.size() == 1,
-                site.getName() + " does not have exactly one ArchitectureDB "
-                        + "RAMB18/RAMB36 mode anchor");
-        return anchors.get(0);
+        String anchor = bramAnchorByNativeSite.get(site.getName());
+        require(anchor != null,
+                site.getName() + " has no source-sealed BRAM tile group");
+        return anchor;
     }
 
     private static List<Edge> edges(
-            Device device, Family family, Set<String> eligibleSites) {
+            Device device, Family family, Set<String> eligibleSites,
+            Map<String, String> bramAnchorByNativeSite) {
         List<EndpointVector> sources = new ArrayList<>();
         List<EndpointVector> targetVectors = new ArrayList<>();
         for (Site site : device.getAllSites()) {
             if (site == null || !site.getName().startsWith(family.sitePrefix)) continue;
-            String contractSiteName = contractSiteName(site, family, eligibleSites);
+            String contractSiteName = contractSiteName(
+                    site, family, eligibleSites, bramAnchorByNativeSite);
             if (contractSiteName == null) continue;
             EndpointVector source = vector(site, contractSiteName, family, true);
             EndpointVector target = vector(site, contractSiteName, family, false);
@@ -859,9 +879,12 @@ public final class EmuFlowNativeDeviceConstraints {
         Set<String> eligibleSites = eligibleSites(Paths.get(args[7]));
         TreeMap<CapacityKey, Long> capacity = capacity(device, eligibleSites);
         List<BramTileGroup> bramGroups = bramTileGroups(device, eligibleSites);
+        Map<String, String> bramAnchorByNativeSite =
+                bramAnchorByNativeSite(bramGroups);
         List<FamilyResult> results = new ArrayList<>();
         for (Family family : families()) {
-            List<Edge> edges = edges(device, family, eligibleSites);
+            List<Edge> edges = edges(
+                    device, family, eligibleSites, bramAnchorByNativeSite);
             results.add(new FamilyResult(family, edges, chains(family.kind, edges)));
         }
         String payload = payload(args[0], args[1], args[2], args[3], args[4],

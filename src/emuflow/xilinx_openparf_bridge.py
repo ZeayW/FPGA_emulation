@@ -23,6 +23,9 @@ from .xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PROVIDER,
     OPENPARF_ATOMIC_SOURCE_SCHEMA,
 )
+from .xilinx_native_device_constraints import (
+    load_xilinx_native_device_constraints,
+)
 from .xilinx_packing import (
     CONSTANT_TYPES,
     DUAL_OUTPUT_LUT_TYPE,
@@ -53,7 +56,7 @@ _SUPPORTED_PHYSICAL_TYPES = (
 )
 _CERTIFICATE_ASSIGNMENT_KEYS = {
     "instance", "cell_type", "bel", "physical_site", "placement_mode",
-    "source_cluster",
+    "source_cluster", "bram_tile_group",
 }
 
 
@@ -139,6 +142,7 @@ def _validate_certificate(
     architecture: ArchitectureDB,
     top: Optional[str],
     source_packed: Optional[Mapping[str, Any]] = None,
+    native_bram_groups: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Tuple[
     str, Mapping[str, Any], list[Dict[str, Any]], list[str], list[Dict[str, Any]]
 ]:
@@ -291,6 +295,68 @@ def _validate_certificate(
             if cell_type not in {"RAMB18E2", "RAMB36E2"} and physical_site != site_name:
                 raise ValidationError(
                     f"{assignment_context}: physical site disagrees with anchor"
+                )
+            bram_group = assignment.get("bram_tile_group")
+            if cell_type in {"RAMB18E2", "RAMB36E2"}:
+                if bram_group is None:
+                    if native_bram_groups is not None:
+                        raise ValidationError(
+                            f"{assignment_context}: BRAM tile group is missing"
+                        )
+                else:
+                    if (
+                        not isinstance(bram_group, Mapping)
+                        or set(bram_group) != {"anchor", "claims", "role", "tile"}
+                        or bram_group.get("anchor") != site_name
+                        or not isinstance(bram_group.get("tile"), str)
+                    ):
+                        raise ValidationError(
+                            f"{assignment_context}: BRAM tile group is invalid"
+                        )
+                    role = (
+                        "lower"
+                        if cell_type == "RAMB18E2" and bel_name == "RAMB18E2_L"
+                        else "upper"
+                        if cell_type == "RAMB18E2" and bel_name == "RAMB18E2_U"
+                        else "whole"
+                        if cell_type == "RAMB36E2" and bel_name == "RAMB36E2"
+                        else None
+                    )
+                    native_group = (
+                        native_bram_groups.get(site_name)
+                        if native_bram_groups is not None else None
+                    )
+                    native_view = (
+                        native_group.get(role)
+                        if native_group is not None and role is not None else None
+                    )
+                    expected_claims = (
+                        [f"bram:{bram_group['tile']}:{role}"]
+                        if role in {"lower", "upper"}
+                        else [
+                            f"bram:{bram_group['tile']}:lower",
+                            f"bram:{bram_group['tile']}:upper",
+                        ]
+                        if role == "whole" else None
+                    )
+                    if (
+                        role is None
+                        or bram_group.get("role") != role
+                        or bram_group.get("claims") != expected_claims
+                        or not isinstance(native_view, Mapping)
+                        or native_group.get("tile") != bram_group.get("tile")
+                        or native_view.get("site") != physical_site
+                        or native_view.get("bel") != bel_name
+                        or native_view.get("site_type")
+                        != assignment.get("placement_mode")
+                    ):
+                        raise ValidationError(
+                            f"{assignment_context}: BRAM tile group disagrees "
+                            "with native constraints"
+                        )
+            elif bram_group is not None:
+                raise ValidationError(
+                    f"{assignment_context}: non-BRAM assignment has a BRAM tile group"
                 )
             normalized = {
                 "instance": name, "cell_type": cell_type, "bel": bel_name,
@@ -474,14 +540,11 @@ def materialize_xilinx_openparf_atomic_contract(
         or not isinstance(source.get("name_map_sha256"), str)
     ):
         raise ValidationError("OpenPARF atomic placement source identity is invalid")
-    selected_top, cells, clusters, constants, cascades = _validate_certificate(
-        mapped, certificate, architecture, top, source_packed
-    )
     has_native_seal = any(
         key in source
         for key in ("native_constraints_sha256", "provider_manifest_sha256")
     )
-    if cascades or has_native_seal:
+    if has_native_seal:
         if native_constraints_path is None or provider_manifest_path is None:
             raise ValidationError(
                 "OpenPARF native hardblock bridge requires its constraints "
@@ -497,6 +560,26 @@ def materialize_xilinx_openparf_atomic_contract(
             raise ValidationError(
                 "OpenPARF native certificate source identity is invalid"
             )
+    native_bram_groups = None
+    if has_native_seal:
+        native, _native_report = load_xilinx_native_device_constraints(
+            native_constraints_path,
+            architecture_path=architecture_path,
+            provider_manifest_path=provider_manifest_path,
+        )
+        native_bram_groups = {
+            group["anchor"]: group
+            for group in native["payload"].get("bram_tile_groups", [])
+        }
+    selected_top, cells, clusters, constants, cascades = _validate_certificate(
+        mapped, certificate, architecture, top, source_packed,
+        native_bram_groups=native_bram_groups,
+    )
+    if cascades and not has_native_seal:
+        raise ValidationError(
+            "OpenPARF native hardblock bridge requires a source-sealed "
+            "native placement certificate"
+        )
     certificate_sha = _sha256(atomic_placement_path)
     mapped_sha = _sha256(mapped_path)
     architecture_sha = _sha256(architecture_path)

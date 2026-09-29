@@ -42,7 +42,7 @@ from .xilinx_physical_macros import build_xilinx_physical_macro_contract
 
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
 OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v2"
-OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v1"
+OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v2"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = "openparf-native-mcf-direct-lg-ism-atomic-v1"
 XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
@@ -1940,6 +1940,7 @@ def _native_bram_candidates(
                     "claims": _bram_claims(tile, role),
                     "placement_mode": view["site_type"],
                     "resource": resource,
+                    "role": role,
                     "site": view["site"],
                     "tile": tile,
                     "x": coordinate["placement_x"],
@@ -2926,6 +2927,15 @@ def validate_xilinx_openparf_atomic_placement(
                     else physical_bel.get("placement_mode", site["type"])
                 ),
                 "anchor_site": anchor_name,
+                "bram_tile_group": (
+                    {
+                        "anchor": candidate["anchor"],
+                        "claims": list(candidate["claims"]),
+                        "role": candidate["role"],
+                        "tile": candidate["tile"],
+                    }
+                    if candidate is not None else None
+                ),
             }
 
     checked_native_edges = 0
@@ -3266,6 +3276,7 @@ def validate_xilinx_openparf_atomic_placement(
                     "cell_type": item["cell_type"], "bel": item["bel"],
                     "placement_mode": item["placement_mode"],
                     "physical_site": item["site"],
+                    "bram_tile_group": item["bram_tile_group"],
                     "source_cluster": item["source_cluster"],
                 }
                 for item in sorted(items, key=lambda value: value["instance"])

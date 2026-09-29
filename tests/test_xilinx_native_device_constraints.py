@@ -463,6 +463,8 @@ class XilinxNativeDeviceConstraintsTest(unittest.TestCase):
             "PCOUT",
             "CAS_OUT_",
             "bramTileGroups",
+            "ownsPrimitiveBel",
+            "bramAnchorByNativeSite",
             "RAMBFIFO18",
             "RAMBFIFO36",
             "getAlternateSiteTypeEnums",
@@ -475,6 +477,7 @@ class XilinxNativeDeviceConstraintsTest(unittest.TestCase):
             "getInstanceY",
             "IntentCode",
             "NODE_DEDICATED",
+            "startsWith(\"RAMB18_\")",
         ):
             self.assertNotIn(forbidden, source)
 
