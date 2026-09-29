@@ -21,12 +21,15 @@ from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from .xilinx_placement import XILINX_GUIDANCE_SCHEMA
 
 
-XILINX_OPENPARF_MANIFEST_SCHEMA = "emuflow.xilinx-openparf-manifest/v4"
+XILINX_OPENPARF_MANIFEST_SCHEMA = "emuflow.xilinx-openparf-manifest/v5"
 XILINX_OPENPARF_NAME_MAP_SCHEMA = "emuflow.xilinx-openparf-name-map/v3"
 XILINX_OPENPARF_COORDINATE_SYSTEM_SCHEMA = (
     "emuflow.xilinx-openparf-physical-tile-grid/v2"
 )
 XILINX_OPENPARF_TARGET_DENSITY = 0.80
+XILINX_OPENPARF_HIGH_FANOUT_THRESHOLD = 64
+XILINX_OPENPARF_HIGH_FANOUT_EXPONENT = 0.5
+XILINX_OPENPARF_HIGH_FANOUT_MAXIMUM = 4.0
 
 
 def _cluster_resource(cluster: Mapping[str, Any]) -> str:
@@ -436,6 +439,19 @@ def export_xilinx_cluster_bookshelf(
         "gp_adjust_route_area": int(not native_packed_cluster_legalization),
         "gp_adjust_pin_area": int(not native_packed_cluster_legalization),
         "gp_adjust_resource_area": 0, "honor_clock_region_constraints": 0,
+        # HPWL assigns one bounding box to a net irrespective of the number of
+        # sinks.  A bounded square-root fanout multiplier makes the analytical
+        # objective reflect the distribution-tree demand of reset/state nets
+        # without changing the netlist or overpowering local connectivity.
+        "emuflow_high_fanout_weight_threshold": (
+            XILINX_OPENPARF_HIGH_FANOUT_THRESHOLD
+        ),
+        "emuflow_high_fanout_weight_exponent": (
+            XILINX_OPENPARF_HIGH_FANOUT_EXPONENT
+        ),
+        "emuflow_high_fanout_weight_maximum": (
+            XILINX_OPENPARF_HIGH_FANOUT_MAXIMUM
+        ),
         "honor_half_column_constraints": 0,
         "result_dir": str((output_dir / "results").resolve()),
         "route_flag": 0, "slr_aware_flag": 0,
@@ -497,6 +513,16 @@ def export_xilinx_cluster_bookshelf(
             "native-packed-cluster-mcf-smoke"
             if native_packed_cluster_legalization
             else "continuous-guidance"
+        ),
+        "high_fanout_net_weighting": (
+            None
+            if native_packed_cluster_legalization
+            else {
+                "policy": "bounded-sqrt-fanout-v1",
+                "threshold": XILINX_OPENPARF_HIGH_FANOUT_THRESHOLD,
+                "exponent": XILINX_OPENPARF_HIGH_FANOUT_EXPONENT,
+                "maximum_weight": XILINX_OPENPARF_HIGH_FANOUT_MAXIMUM,
+            }
         ),
         "files": sorted([*files, "openparf.json", "name_map.json"]),
     }

@@ -49,6 +49,7 @@ public final class EmuFlowRWRoute {
     private static final String SCHEMA = "emuflow.xilinx-route-db/v2";
     private static final String ROUTER_STRATEGY =
         "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-recovery";
+    private static final double MAX_RECOVERY_ITERATION_SECONDS = 600.0;
     private static final String[] DSP48E2_COMPONENTS = new String[] {
         "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
         "DSP_ALU", "DSP_M_DATA", "DSP_OUTPUT", "DSP_PREADD"
@@ -268,6 +269,7 @@ public final class EmuFlowRWRoute {
 
         @Override
         protected void routeIndirectConnections(Collection<Connection> connections) {
+            long iterationStartNanos = System.nanoTime();
             // A connection only needs the exceptional full-device recovery
             // tree while it remains unrouted, congested, or selected for a
             // timing-driven reroute. Keeping every connection that was ever
@@ -287,6 +289,18 @@ public final class EmuFlowRWRoute {
                 routeRecoveryTree(tree.root);
             }
             super.routeIndirectConnections(connections);
+            double elapsedSeconds = (
+                System.nanoTime() - iterationStartNanos
+            ) / 1_000_000_000.0;
+            if (!recoveryConnections.isEmpty()
+                && elapsedSeconds > MAX_RECOVERY_ITERATION_SECONDS) {
+                throw new IllegalStateException(
+                    "RWRoute recovery iteration " + routeIteration + " took "
+                    + elapsedSeconds + " seconds with " + recoveryConnections.size()
+                    + " active connections; refusing an unbounded recovery tail. "
+                    + "Re-run placement with high-fanout routability weighting."
+                );
+            }
         }
 
         private void routeRecoveryTree(RecoveryPartitionTree.Node node) {

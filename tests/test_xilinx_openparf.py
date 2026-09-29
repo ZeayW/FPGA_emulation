@@ -4,8 +4,11 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import torch
+
 from emuflow.errors import ValidationError
 from emuflow.openparf_continuous_driver import (
+    apply_high_fanout_net_weights,
     build_convergence_certificate,
     guidance_stop_condition,
     skip_diagnostic_plot,
@@ -82,6 +85,47 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_types"], ["X_SLICE"])
         self.assertEqual(config["gp_adjust_route_area"], 1)
         self.assertEqual(config["gp_adjust_pin_area"], 1)
+        self.assertEqual(config["emuflow_high_fanout_weight_threshold"], 64)
+        self.assertEqual(config["emuflow_high_fanout_weight_exponent"], 0.5)
+        self.assertEqual(config["emuflow_high_fanout_weight_maximum"], 4.0)
+        self.assertEqual(
+            report["high_fanout_net_weighting"]["policy"],
+            "bounded-sqrt-fanout-v1",
+        )
+
+    def test_high_fanout_weighting_is_bounded_and_updates_preconditioner(self):
+        class Data:
+            def __init__(self):
+                self.net_pin_map = SimpleNamespace(
+                    b_starts=torch.tensor([0, 2, 66, 1090], dtype=torch.int64)
+                )
+                self.net_weights = torch.ones(3, dtype=torch.float64)
+                self.preconditioner_updates = 0
+
+            def compute_wl_precond(self, *_arguments):
+                self.preconditioner_updates += 1
+
+        data = Data()
+        engine = SimpleNamespace(
+            params=SimpleNamespace(
+                emuflow_high_fanout_weight_threshold=64,
+                emuflow_high_fanout_weight_exponent=0.5,
+                emuflow_high_fanout_weight_maximum=4.0,
+            ),
+            data_cls=data,
+            placedb=object(),
+            dtype=torch.float64,
+            device=torch.device("cpu"),
+        )
+        report = apply_high_fanout_net_weights(engine)
+        self.assertTrue(torch.allclose(
+            data.net_weights,
+            torch.tensor([1.0, 1.0, 4.0], dtype=torch.float64),
+        ))
+        self.assertEqual(data.preconditioner_updates, 1)
+        self.assertEqual(report["weighted_nets"], 1)
+        self.assertEqual(report["maximum_degree"], 1024)
+        self.assertEqual(report["observed_maximum_weight"], 4.0)
 
     def test_cluster_export_can_limit_guidance_to_one_physical_slr(self):
         with tempfile.TemporaryDirectory() as temporary:

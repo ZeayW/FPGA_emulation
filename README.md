@@ -5041,7 +5041,14 @@ OpenPARF guidance uses its native RUDY- and pin-utilization-driven area
 inflation for packed slice clusters before exact legalization: this preserves
 the bounded routing search region while preventing one-site density alone from
 hiding large differences in external routing demand. Its continuous
-convergence certificate gates the inflated slice density; sparse hard-macro
+wirelength objective additionally applies a bounded square-root fanout weight
+to nets above 64 pins (capped at 4x). This compensates for the fact
+that one HPWL bounding box otherwise gives a 1000-sink reset/state distribution
+tree the same objective weight as an ordinary local net; it does not alter the
+logical netlist or replace exact routing. The compact convergence certificate
+records the applied policy, weighted-net count, and observed maximum degree.
+The continuous convergence certificate gates the inflated slice density;
+sparse hard-macro
 pseudo-density is not treated as physical legality because the downstream
 architecture-aware legalizer checks every DSP/BRAM/URAM site exactly. Every
 dedicated cascade chain must remain within one SLR, and the independent
@@ -5071,7 +5078,12 @@ Ordinary negotiated congestion retains a fixed bounding box. Only a connection
 for which the current search found no route is enlarged. Such exceptional
 connections are routed through a separate recursive partitioning ternary tree
 before CUFR's unchanged main tree on each later iteration and skipped inside
-the main tree. This avoids both a large serial recovery tail and RapidWright's
+the main tree. A recovery iteration is bounded to ten minutes: if placement
+creates a pathological search region, the route fails with a compact
+diagnostic instead of spending hours repeatedly expanding it. The watchdog is
+time-based rather than iteration-based, so ordinary negotiated-congestion
+closure may still use as many fast iterations as it needs. This
+avoids both a large serial recovery tail and RapidWright's
 fixed-box behavior of abandoning a truly unroutable connection while
 preserving CUFR's original parallel decomposition, rather than rebuilding the
 tree around enlarged connections or using the upstream blanket adaptive mode
