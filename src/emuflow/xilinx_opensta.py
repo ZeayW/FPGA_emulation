@@ -23,6 +23,8 @@ from .resources import ResourceVector
 from .sta import validate_sta_path_database_value
 from .xilinx_timing import (
     XILINX_ROUTED_TIMING_SCHEMA,
+    XILINX_ROUTED_TIMING_STREAM_SCHEMA,
+    iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
 )
 from .yosys import import_yosys_json
@@ -106,6 +108,15 @@ def build_xilinx_routed_opensta_inputs(
     )
     timing_sha256 = _timing_sha256 or _sha256(timing_path)
     mapped_sha256 = _mapped_sha256 or _sha256(mapped_path)
+    delays: Dict[tuple[str, str, int], float] = {}
+
+    def consume_endpoint(record: Mapping[str, Any]) -> None:
+        sink = record["sink"]
+        key = _pin_identity(sink["instance"], sink["pin"])
+        if key in delays:
+            raise ValidationError("RapidWright timing repeats a logical sink")
+        delays[key] = float(record["route_delay_ns"])
+
     if timing_validation is None:
         timing_validation = validate_xilinx_routed_timing(
             timing_path,
@@ -113,7 +124,13 @@ def build_xilinx_routed_opensta_inputs(
             source_sha256={"mapped_sha256": mapped_sha256},
             _value=timing_value,
             _timing_sha256=timing_sha256,
+            _endpoint_consumer=consume_endpoint,
         )
+    else:
+        for endpoint in iter_xilinx_routed_timing_endpoints(
+            timing_path, timing_value
+        ):
+            consume_endpoint(endpoint)
     if (
         timing_validation.get("status") != "pass"
         or timing_validation.get("schema")
@@ -122,19 +139,13 @@ def build_xilinx_routed_opensta_inputs(
     ):
         raise ValidationError("RapidWright routed timing validation seal is invalid")
     timing = timing_value
-    if timing.get("schema") != XILINX_ROUTED_TIMING_SCHEMA:
+    if timing.get("schema") not in {
+        XILINX_ROUTED_TIMING_SCHEMA, XILINX_ROUTED_TIMING_STREAM_SCHEMA,
+    }:
         raise ValidationError("RapidWright routed timing input has the wrong schema")
     if timing.get("source", {}).get("mapped_sha256") != mapped_sha256:
         raise ValidationError("RapidWright routed timing mapped source seal is stale")
     source = import_yosys_json(mapped_path, _source_value=mapped_value)
-    delays: Dict[tuple[str, str, int], float] = {}
-    for record in timing["endpoints"]:
-        sink = record["sink"]
-        key = _pin_identity(sink["instance"], sink["pin"])
-        if key in delays:
-            raise ValidationError("RapidWright timing repeats a logical sink")
-        delays[key] = float(record["route_delay_ns"])
-
     value = deepcopy(source.value)
     instances = list(value["instances"])
     nets = []

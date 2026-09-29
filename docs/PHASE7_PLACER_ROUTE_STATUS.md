@@ -58,9 +58,14 @@ stopped at iteration 1,699 and legalized to 8.8232553M HPWL; the 240,377-atom
 partition stopped at iteration 1,676 and legalized to 4.1540576M HPWL.  These
 are placement diagnostics, not default-promotion evidence; both routes,
 per-partition OpenSTA, and global OpenSTA remain required.  The downstream
-implementation no longer reopens and rehashes the near-gigabyte route artifact
-at every wrapper boundary: the single validated route certificate is handed
-to timing binding, and the resulting timing certificate is handed to OpenSTA.
+v2 implementation no longer materializes the near-gigabyte route proof as one
+JSON tree.  RapidWright writes a small sealed manifest plus deterministic net
+and compact PIP JSONL streams; validation reconstructs one net at a time with
+bounded-memory global PIP ownership, while timing binding reads only the net
+stream.  Routed endpoint timing is likewise a small manifest plus one sealed
+JSONL stream, and validation hands each checked endpoint directly to OpenSTA
+staging in the same pass.  Legacy v1 artifacts remain readable, but new
+production artifacts use the streaming v2 schemas.
 
 ## Promotion sequence
 

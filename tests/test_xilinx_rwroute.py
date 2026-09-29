@@ -15,6 +15,7 @@ from emuflow.xilinx_rwroute import (
 )
 from emuflow.xilinx_timing import (
     build_xilinx_routed_timing,
+    iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
 )
 
@@ -72,6 +73,11 @@ class XilinxRWRouteTest(unittest.TestCase):
         ):
             self.assertIn(f'"{field}"', source)
             self.assertIn(f"args[{argument}]", source)
+        self.assertIn('"emuflow.xilinx-route-db/v2"', source)
+        self.assertIn("DigestOutputStream", source)
+        self.assertIn('"jsonl-object/v1"', source)
+        self.assertIn('"jsonl-array/v1"', source)
+        self.assertNotIn('output.put("nets"', source)
 
     def test_device_data_provider_fails_closed_on_unpinned_database(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -148,6 +154,45 @@ class XilinxRWRouteTest(unittest.TestCase):
             }],
         }
 
+    def _stream_route(self, root: Path, value=None):
+        value = copy.deepcopy(self._route() if value is None else value)
+        nets = value.pop("nets")
+        net_payload = root / "route.json.nets.jsonl"
+        pip_payload = root / "route.json.pips.jsonl"
+        net_lines = []
+        pip_lines = []
+        for net in nets:
+            record = copy.deepcopy(net)
+            pips = record.pop("pips")
+            record["pip_count"] = len(pips)
+            net_lines.append(
+                json.dumps(record, sort_keys=True, separators=(",", ":"))
+            )
+            for pip in pips:
+                pip_lines.append(json.dumps([
+                    net["net"], pip["tile"], pip["start_wire"],
+                    pip["end_wire"], pip["start_node"], pip["end_node"],
+                    pip.get("bidirectional", False), pip.get("reversed", False),
+                ], separators=(",", ":")))
+        net_payload.write_text("\n".join(net_lines) + "\n", encoding="utf-8")
+        pip_payload.write_text("\n".join(pip_lines) + "\n", encoding="utf-8")
+        value["schema"] = "emuflow.xilinx-route-db/v2"
+        value["payloads"] = {
+            "nets": {
+                "format": "jsonl-object/v1", "path": net_payload.name,
+                "sha256": hashlib.sha256(net_payload.read_bytes()).hexdigest(),
+                "records": len(net_lines),
+            },
+            "pips": {
+                "format": "jsonl-array/v1", "path": pip_payload.name,
+                "sha256": hashlib.sha256(pip_payload.read_bytes()).hexdigest(),
+                "records": len(pip_lines),
+            },
+        }
+        path = root / "route.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path, net_payload, pip_payload
+
     def test_checker_accepts_connected_tree_and_rejects_tampering(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "route.json"
@@ -160,6 +205,36 @@ class XilinxRWRouteTest(unittest.TestCase):
             broken["nets"][0]["pips"].pop()
             path.write_text(json.dumps(broken), encoding="utf-8")
             with self.assertRaises(ValidationError):
+                validate_xilinx_route_db(path)
+
+    def test_streaming_checker_reads_sealed_payloads_without_monolithic_nets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, net_payload, pip_payload = self._stream_route(Path(temporary))
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotIn("nets", manifest)
+            report = validate_xilinx_route_db(path)
+            self.assertEqual(report["nets"], 1)
+            self.assertEqual(report["pips"], 3)
+            pip_payload.write_text(
+                pip_payload.read_text(encoding="utf-8").replace('"T2"', '"T9"'),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "digest disagrees"):
+                validate_xilinx_route_db(path)
+            self.assertTrue(net_payload.is_file())
+
+    def test_streaming_checker_rejects_truncation_and_path_escape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path, _net_payload, pip_payload = self._stream_route(root)
+            pip_payload.write_bytes(pip_payload.read_bytes()[:-1])
+            with self.assertRaisesRegex(ValidationError, "truncated record"):
+                validate_xilinx_route_db(path)
+            path, _net_payload, _pip_payload = self._stream_route(root)
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifest["payloads"]["nets"]["path"] = "../escape.jsonl"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "payloads.nets is invalid"):
                 validate_xilinx_route_db(path)
 
     def test_checker_never_rewrites_route_artifact(self):
@@ -322,8 +397,9 @@ class XilinxRWRouteTest(unittest.TestCase):
                 ("placement_sha256", placement_path),
             ):
                 route["source"][key] = hashlib.sha256(path.read_bytes()).hexdigest()
-            route_path = root / "route.json"
-            route_path.write_text(json.dumps(route), encoding="utf-8")
+            route_path, _net_payload, _pip_payload = self._stream_route(
+                root, route
+            )
             output = root / "routed-timing.json"
             from emuflow import xilinx_rwroute, xilinx_timing
 
@@ -372,10 +448,22 @@ class XilinxRWRouteTest(unittest.TestCase):
                 placement_path=placement_path, route_path=route_path,
             )
             value = json.loads(output.read_text())
+            endpoints = list(
+                iter_xilinx_routed_timing_endpoints(output, value)
+            )
+            endpoint_payload = output.parent / value["payloads"]["endpoints"]["path"]
+            endpoint_payload.write_text(
+                endpoint_payload.read_text(encoding="utf-8").replace(
+                    "0.012", "0.013", 1
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "digest disagrees"):
+                validate_xilinx_routed_timing(output)
         self.assertEqual(report["logical_endpoints"], 2)
         self.assertEqual(checked["physical_route_sinks"], 2)
         self.assertEqual(
-            [item["route_delay_ns"] for item in value["endpoints"]],
+            [item["route_delay_ns"] for item in endpoints],
             [0.012, 0.0275],
         )
 

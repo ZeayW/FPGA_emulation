@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import json
+import os
 import re
+import tempfile
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional
 
 from .errors import ValidationError
 from .io import file_sha256, read_json, write_json
-from .xilinx_rwroute import validate_xilinx_route_db
+from .xilinx_rwroute import iter_xilinx_route_nets, validate_xilinx_route_db
 
 
 XILINX_ROUTED_TIMING_SCHEMA = "emuflow.xilinx-routed-timing/v1"
+XILINX_ROUTED_TIMING_STREAM_SCHEMA = "emuflow.xilinx-routed-timing/v2"
+XILINX_ROUTED_TIMING_PAYLOAD_FORMAT = "jsonl-object/v1"
 
 
 def _sha256(path: Path) -> str:
@@ -54,7 +60,12 @@ def _logical_pin(port: str, index: int, width: int) -> str:
 
 
 def _build_payload(
-    mapped: Mapping[str, Any], placement: Mapping[str, Any], route: Mapping[str, Any]
+    mapped: Mapping[str, Any],
+    placement: Mapping[str, Any],
+    route: Mapping[str, Any],
+    route_path: Path,
+    *,
+    record_sink: Optional[Callable[[Mapping[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     sites = _placement_sites(placement)
     top, module = _mapped_module(mapped, set(sites))
@@ -76,8 +87,17 @@ def _build_payload(
                         (instance, _logical_pin(port, index, len(bits)), role)
                     )
 
-    route_by_bit: Dict[int, Mapping[str, Any]] = {}
-    for net in route.get("nets", []):
+    records = [] if record_sink is None else None
+    logical_endpoints = 0
+    physical_sinks = 0
+    exact_site_bindings = 0
+    shared_site_bindings = 0
+    intra_site_endpoints = 0
+    maximum = 0.0
+    seen_bits: set[int] = set()
+    for net in iter_xilinx_route_nets(
+        route_path, route, include_pips=False
+    ):
         # build_xilinx_routed_timing validates the complete physical route
         # certificate first, including static roots, reachability and conflicts.
         # Device-tied constants have no mapped integer bit/timed data endpoint.
@@ -96,16 +116,9 @@ def _build_payload(
         if match is None:
             raise ValidationError("Xilinx route net does not encode a mapped bit")
         bit = int(match.group(1))
-        if bit in route_by_bit:
+        if bit in seen_bits:
             raise ValidationError("Xilinx route repeats a mapped bit")
-        route_by_bit[bit] = net
-
-    records = []
-    physical_sinks = 0
-    exact_site_bindings = 0
-    shared_site_bindings = 0
-    intra_site_endpoints = 0
-    for bit in sorted(route_by_bit):
+        seen_bits.add(bit)
         logical = endpoints.get(bit, [])
         drivers = [value for value in logical if value[2] == "driver"]
         sinks = [value for value in logical if value[2] == "sink"]
@@ -113,7 +126,7 @@ def _build_payload(
             raise ValidationError(f"routed bit {bit} lacks one mapped driver and sinks")
         driver, driver_pin, _ = drivers[0]
         driver_site = sites[driver]
-        route_net = route_by_bit[bit]
+        route_net = net
         route_sources = [pin for pin in route_net["pins"] if pin["is_output"]]
         if len(route_sources) != 1 or route_sources[0]["site"] != driver_site:
             raise ValidationError(f"routed bit {bit} driver site disagrees")
@@ -143,19 +156,27 @@ def _build_payload(
                 raise ValidationError(
                     f"routed bit {bit} sink {instance!r}/{sink_pin} has no physical binding"
                 )
-            records.append(
-                {
-                    "id": f"n{bit}:{instance}/{sink_pin}",
-                    "net": f"n{bit}",
-                    "mapped_bit": bit,
-                    "driver": {"instance": driver, "pin": driver_pin, "site": driver_site},
-                    "sink": {"instance": instance, "pin": sink_pin, "site": sink_site},
-                    "route_delay_ns": delay_ps / 1000.0,
-                    "binding": binding,
-                }
-            )
-    maximum = max((item["route_delay_ns"] for item in records), default=0.0)
-    return {
+            record = {
+                "id": f"n{bit}:{instance}/{sink_pin}",
+                "net": f"n{bit}",
+                "mapped_bit": bit,
+                "driver": {
+                    "instance": driver, "pin": driver_pin, "site": driver_site,
+                },
+                "sink": {
+                    "instance": instance, "pin": sink_pin, "site": sink_site,
+                },
+                "route_delay_ns": delay_ps / 1000.0,
+                "binding": binding,
+            }
+            logical_endpoints += 1
+            maximum = max(maximum, record["route_delay_ns"])
+            if record_sink is None:
+                assert records is not None
+                records.append(record)
+            else:
+                record_sink(record)
+    result = {
         "top": top,
         "part": route["part"],
         "qualification": {
@@ -167,9 +188,8 @@ def _build_payload(
                 route["timing"]["logic_coefficients_ps"]
             ),
         },
-        "endpoints": records,
         "summary": {
-            "logical_endpoints": len(records),
+            "logical_endpoints": logical_endpoints,
             "physical_route_sinks": physical_sinks,
             "exact_site_bindings": exact_site_bindings,
             "shared_site_bindings": shared_site_bindings,
@@ -177,6 +197,80 @@ def _build_payload(
             "maximum_route_delay_ns": maximum,
         },
     }
+    if records is not None:
+        result["endpoints"] = records
+    return result
+
+
+def _timing_payload_path(
+    manifest_path: Path, value: Mapping[str, Any]
+) -> tuple[Path, str, int]:
+    payloads = value.get("payloads")
+    descriptor = payloads.get("endpoints") if isinstance(payloads, Mapping) else None
+    if not isinstance(descriptor, Mapping):
+        raise ValidationError("XilinxRoutedTimingDB endpoint payload is invalid")
+    relative = descriptor.get("path")
+    digest = descriptor.get("sha256")
+    records = descriptor.get("records")
+    if (
+        descriptor.get("format") != XILINX_ROUTED_TIMING_PAYLOAD_FORMAT
+        or not isinstance(relative, str)
+        or not relative
+        or Path(relative).is_absolute()
+        or Path(relative).name != relative
+        or not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        or isinstance(records, bool)
+        or not isinstance(records, int)
+        or records < 0
+    ):
+        raise ValidationError("XilinxRoutedTimingDB endpoint payload is invalid")
+    path = manifest_path.parent / relative
+    if not path.is_file():
+        raise ValidationError("XilinxRoutedTimingDB endpoint payload is missing")
+    return path, digest, records
+
+
+def iter_xilinx_routed_timing_endpoints(
+    path: Path, value: Mapping[str, Any]
+) -> Iterator[Mapping[str, Any]]:
+    schema = value.get("schema")
+    if schema == XILINX_ROUTED_TIMING_SCHEMA:
+        endpoints = value.get("endpoints")
+        if not isinstance(endpoints, list):
+            raise ValidationError("XilinxRoutedTimingDB endpoints are invalid")
+        yield from endpoints
+        return
+    if schema != XILINX_ROUTED_TIMING_STREAM_SCHEMA:
+        raise ValidationError("XilinxRoutedTimingDB header is invalid")
+    payload_path, expected_digest, expected_records = _timing_payload_path(
+        path, value
+    )
+    digest = hashlib.sha256()
+    count = 0
+    with payload_path.open("rb") as stream:
+        for raw in stream:
+            digest.update(raw)
+            if not raw.endswith(b"\n"):
+                raise ValidationError(
+                    "XilinxRoutedTimingDB endpoint payload is truncated"
+                )
+            try:
+                endpoint = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValidationError(
+                    f"XilinxRoutedTimingDB endpoint {count} is invalid"
+                ) from error
+            count += 1
+            yield endpoint
+    if count != expected_records:
+        raise ValidationError(
+            "XilinxRoutedTimingDB endpoint payload record count disagrees"
+        )
+    if digest.hexdigest() != expected_digest:
+        raise ValidationError(
+            "XilinxRoutedTimingDB endpoint payload digest disagrees"
+        )
 
 
 def build_xilinx_routed_timing(
@@ -257,13 +351,50 @@ def build_xilinx_routed_timing(
         for name, digest in source_digests.items()
     ):
         raise ValidationError("XilinxRouteDB validated source seal is stale")
-    payload = _build_payload(mapped, placement, route)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    endpoint_path = output_path.with_name(output_path.name + ".endpoints.jsonl")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=endpoint_path.name + ".", suffix=".tmp", dir=output_path.parent
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    endpoint_digest = hashlib.sha256()
+    try:
+        with temporary_path.open("wb") as stream:
+            def emit_endpoint(record: Mapping[str, Any]) -> None:
+                encoded = (
+                    json.dumps(
+                        record, sort_keys=True, separators=(",", ":"),
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                stream.write(encoded)
+                endpoint_digest.update(encoded)
+
+            payload = _build_payload(
+                mapped,
+                placement,
+                route,
+                route_path,
+                record_sink=emit_endpoint,
+            )
+        os.replace(temporary_path, endpoint_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     value = {
-        "schema": XILINX_ROUTED_TIMING_SCHEMA,
+        "schema": XILINX_ROUTED_TIMING_STREAM_SCHEMA,
         "status": "pass",
         "source": {
             **source_digests,
             "route_sha256": route_sha256,
+        },
+        "payloads": {
+            "endpoints": {
+                "format": XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
+                "path": endpoint_path.name,
+                "sha256": endpoint_digest.hexdigest(),
+                "records": payload["summary"]["logical_endpoints"],
+            }
         },
         **payload,
     }
@@ -289,9 +420,14 @@ def validate_xilinx_routed_timing(
     source_sha256: Optional[Mapping[str, str]] = None,
     _value: Optional[Mapping[str, Any]] = None,
     _timing_sha256: Optional[str] = None,
+    _endpoint_consumer: Optional[Callable[[Mapping[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     value = read_json(path) if _value is None else _value
-    if value.get("schema") != XILINX_ROUTED_TIMING_SCHEMA or value.get("status") != "pass":
+    if (
+        value.get("schema")
+        not in {XILINX_ROUTED_TIMING_SCHEMA, XILINX_ROUTED_TIMING_STREAM_SCHEMA}
+        or value.get("status") != "pass"
+    ):
         raise ValidationError("XilinxRoutedTimingDB header is invalid")
     sources = {
         "mapped_sha256": mapped_path,
@@ -317,12 +453,12 @@ def validate_xilinx_routed_timing(
         )
         if source_path is not None and digest != expected_digest:
             raise ValidationError(f"XilinxRoutedTimingDB source.{key} disagrees")
-    endpoints = value.get("endpoints")
-    if not isinstance(endpoints, list):
-        raise ValidationError("XilinxRoutedTimingDB endpoints are invalid")
     seen = set()
     maximum = 0.0
-    for index, endpoint in enumerate(endpoints):
+    endpoint_count = 0
+    for index, endpoint in enumerate(
+        iter_xilinx_routed_timing_endpoints(path, value)
+    ):
         endpoint_id = endpoint.get("id") if isinstance(endpoint, dict) else None
         delay = endpoint.get("route_delay_ns") if isinstance(endpoint, dict) else None
         if not isinstance(endpoint_id, str) or endpoint_id in seen:
@@ -331,6 +467,9 @@ def validate_xilinx_routed_timing(
             raise ValidationError(f"XilinxRoutedTimingDB endpoint {index} delay is invalid")
         seen.add(endpoint_id)
         maximum = max(maximum, float(delay))
+        endpoint_count += 1
+        if _endpoint_consumer is not None:
+            _endpoint_consumer(endpoint)
     qualification = value.get("qualification")
     if not isinstance(qualification, dict):
         raise ValidationError("XilinxRoutedTimingDB qualification is invalid")
@@ -352,7 +491,7 @@ def validate_xilinx_routed_timing(
                 f"XilinxRoutedTimingDB logic coefficient {name!r} is invalid"
             )
     summary = value.get("summary", {})
-    if summary.get("logical_endpoints") != len(endpoints) or not math.isclose(
+    if summary.get("logical_endpoints") != endpoint_count or not math.isclose(
         float(summary.get("maximum_route_delay_ns", -1.0)), maximum,
         rel_tol=1.0e-9, abs_tol=1.0e-12,
     ):

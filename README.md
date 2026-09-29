@@ -5035,22 +5035,28 @@ Top-level clocks have no physical source primitive in the out-of-context
 partition, so they are separately qualified as `ideal-boundary-clock` rather
 than being silently counted as routed or invented as a global clock network.
 The adapter emits a source-sealed route certificate without the router's
-search trace.  The complete PIP and sink proof can nevertheless be hundreds of
-megabytes on a real design, so the production handoff treats it as a single-
-pass object rather than a small report.  The Java producer writes the pinned
-timing-data and device-data identities directly into its immutable candidate;
-the independent validator returns a separate passing promotion certificate
-instead of rewriting the entire RouteDB merely to change its status field.
-Validation reuses the exact in-memory route object, returns the source seals it
-has already checked, and the routed-timing binder consumes that object and
-those seals directly.  The standalone RouteDB-to-timing command likewise reads
-and hashes the RouteDB once.  This removes duplicate whole-document I/O without
-weakening the independent topology, source, or timing checks.  It does not
-claim that the current complete route certificate is already sharded or
-streaming.  The following routed-timing-to-OpenSTA staging boundary applies
-the same rule: the mapped netlist and endpoint timing database are each read
-and hashed once, and the validator and OpenSTA graph builder share those exact
-in-memory objects and seals.
+search trace.  Because the complete PIP and sink proof can be hundreds of
+megabytes on a real design, the v2 production handoff is not a monolithic JSON
+tree.  Its small manifest owns source, device, timing, summary, and payload
+seals; sibling deterministic JSONL streams own the per-net records and compact
+PIP arrays.  The Java producer hashes each stream while writing it.  The
+independent validator reads each stream once, reconstructs one routed net at a
+time, and uses a bounded-memory/temporary-SQLite ownership index for global PIP
+conflict checking.  The routed-timing binder reads only the net stream and
+never parses the PIP stream.  Legacy v1 RouteDB artifacts remain read-only
+inputs for historical evidence, while all new RapidWright production emits
+v2.
+
+The routed-timing handoff follows the same ownership rule.  A small v2
+manifest seals a deterministic endpoint JSONL stream instead of duplicating
+all endpoints in another large JSON object.  Its validator and OpenSTA staging
+share one streaming pass: every endpoint is independently checked and handed
+to the graph builder as it is read.  The route and timing validators still
+recompute exact counts, maxima, reachability, and content digests; the
+optimization removes repeated whole-document allocation and serialization,
+not validation strength.  The independent validator returns a separate
+passing promotion certificate instead of rewriting either immutable artifact
+merely to change its status field.
 An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks
