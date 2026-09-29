@@ -260,6 +260,55 @@ def test_opensta_summary_recomputes_wns_and_tns():
         assert checked["tns_ns"] == -2.5
 
 
+def test_opensta_summary_streams_sealed_path_payload():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        output = root / "paths.json"
+        payload = root / "paths.json.paths.jsonl"
+        records = [
+            {"slack_ns": -2.0},
+            {"slack_ns": -0.5},
+            {"slack_ns": 1.0},
+        ]
+        encoded = b"".join(
+            json.dumps(item, sort_keys=True, separators=(",", ":")).encode()
+            + b"\n"
+            for item in records
+        )
+        payload.write_bytes(encoded)
+        output.write_text(json.dumps({
+            "schema": "emuflow.sta-path-database/v2",
+            "payloads": {"paths": {
+                "format": "jsonl-object/v1",
+                "path": payload.name,
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+                "records": 3,
+            }},
+        }), encoding="utf-8")
+        summary = root / "summary.json"
+        summary.write_text(json.dumps({
+            "schema": "emuflow.xilinx-routed-opensta-summary/v1",
+            "status": "pass",
+            "authority": "opensta",
+            "source": {
+                "mapped_sha256": "0" * 64,
+                "routed_timing_sha256": "1" * 64,
+                "timing_path_database_sha256": _sha(output),
+            },
+            "qor": {
+                "wns_ns": -2.0,
+                "tns_ns": -2.5,
+                "failing_endpoints": 2,
+                "timed_endpoints": 3,
+            },
+        }), encoding="utf-8")
+        checked = validate_xilinx_routed_opensta_summary(
+            summary, output_path=output
+        )
+        assert checked["wns_ns"] == -2.0
+        assert checked["tns_ns"] == -2.5
+
+
 def test_opensta_summary_reuses_preloaded_path_database(monkeypatch):
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)

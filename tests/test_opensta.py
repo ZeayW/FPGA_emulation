@@ -19,7 +19,12 @@ from emuflow.opensta import (
     validate_timing_model_coverage,
     _write_emuir_timing_pin_map,
 )
-from emuflow.sta import validate_sta_path_database
+from emuflow.sta import (
+    import_sta_path_database_tsv_streaming,
+    iter_sta_path_database_paths,
+    sta_path_database_qor,
+    validate_sta_path_database,
+)
 from emuflow.verilog import mapped_verilog
 from emuflow.vtr_architecture import run_vtr_architecture_import
 from emuflow.yosys import import_yosys_json
@@ -68,6 +73,42 @@ class OpenStaProviderTest(unittest.TestCase):
             parse_clock_definitions(["clk=10", "clk=5"])
         with self.assertRaisesRegex(Exception, "expected CLOCK"):
             parse_clock_definitions(["clk"])
+
+    def test_streamed_path_database_is_sealed_and_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            net = self.ir.value["nets"][0]["id"]
+            raw = root / "paths.tsv"
+            raw.write_text(
+                "path_id_hex\tclock_domain_hex\tclock_period_ns\t"
+                "slack_ns\tfixed_delay_ns\tpath_nets_hex\n"
+                f"{'path0'.encode().hex()}\t{'clk'.encode().hex()}\t"
+                f"10\t-0.5\t0.25\t{net.encode().hex()}\n",
+                encoding="utf-8",
+            )
+            output = root / "paths.json"
+            imported = import_sta_path_database_tsv_streaming(
+                raw,
+                ir_path,
+                output,
+                provider=OPENSTA_PROVIDER,
+            )
+            manifest = json.loads(output.read_text(encoding="utf-8"))
+            records = list(iter_sta_path_database_paths(output, manifest))
+            checked = validate_sta_path_database(output, ir_path)
+            qor = sta_path_database_qor(output, manifest)
+            self.assertEqual(imported["paths"], 1)
+            self.assertNotIn("paths", manifest)
+            self.assertEqual(records[0]["id"], "path0")
+            self.assertEqual(checked["paths"], 1)
+            self.assertEqual(qor["wns_ns"], -0.5)
+            payload = output.parent / manifest["payloads"]["paths"]["path"]
+            with payload.open("ab") as stream:
+                stream.write(b"{}\n")
+            with self.assertRaisesRegex(Exception, "count disagrees"):
+                list(iter_sta_path_database_paths(output, manifest))
 
     def test_legacy_opensta_is_rejected_before_timing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -421,6 +462,47 @@ print("fake OpenSTA pass")
         self.assertRegex(
             report["used_cell_type_summary"]["sha256"], r"^[0-9a-f]{64}$"
         )
+
+    def test_runner_streams_physical_path_database(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            output_path = root / "database.json"
+            executable = root / "fake-opensta"
+            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            net = self.ir.value["nets"][0]["id"]
+            executable.write_text(
+                f"""#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+if sys.argv[1:] == ["-version"]:
+    print("3.1.0")
+    raise SystemExit(0)
+header = ("path_id_hex\\tclock_domain_hex\\tclock_period_ns\\t"
+          "slack_ns\\tfixed_delay_ns\\tpath_nets_hex")
+Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
+    header + "\\n" + "{{}}\\t{{}}\\t10\\t-0.25\\t0.5\\t{{}}\\n".format(
+        "path0".encode().hex(), "clk".encode().hex(), {net!r}.encode().hex()
+    )
+)
+""",
+                encoding="utf-8",
+            )
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            report = run_opensta_path_database(
+                ir_path=ir_path,
+                output_path=output_path,
+                clocks={"clk": 10.0},
+                executable=str(executable),
+                _stream_output=True,
+            )
+            manifest = json.loads(output_path.read_text(encoding="utf-8"))
+            checked = validate_sta_path_database(output_path, ir_path)
+        self.assertEqual(manifest["schema"], "emuflow.sta-path-database/v2")
+        self.assertNotIn("paths", manifest)
+        self.assertEqual(report["path_qor"]["wns_ns"], -0.25)
+        self.assertEqual(checked["paths"], 1)
 
     def test_structural_endpoint_classifier_distinguishes_data_and_control(self) -> None:
         model = load_timing_model(DEFAULT_TIMING_MODEL)

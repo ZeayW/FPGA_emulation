@@ -19,7 +19,8 @@ from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .sta import (
     import_sta_path_database_tsv,
-    validate_sta_path_database_value,
+    import_sta_path_database_tsv_streaming,
+    validate_sta_path_database_path_value,
     write_emuir_net_map,
 )
 from .verilog import mapped_verilog
@@ -1406,11 +1407,20 @@ def run_opensta_path_database(
     through_coverage_path: Optional[Path] = None,
     validate_output: bool = True,
     _return_database: bool = False,
+    _stream_output: bool = False,
 ) -> Dict[str, Any]:
     if max_paths <= 0:
         raise ValidationError("OpenSTA max_paths must be positive")
+    if _stream_output and _return_database:
+        raise ValidationError(
+            "streamed OpenSTA output cannot return an inline database"
+        )
     ir = EmuIR.load(ir_path)
     through_net_ids = list(through_nets or [])
+    if _stream_output and through_net_ids:
+        raise ValidationError(
+            "streamed OpenSTA output does not support directed through-net queries"
+        )
     if (
         any(not isinstance(net, str) or not net for net in through_net_ids)
         or len(through_net_ids) != len(set(through_net_ids))
@@ -1536,27 +1546,36 @@ def run_opensta_path_database(
             raise EmuFlowError(
                 "OpenSTA reported success but did not create its path TSV"
             )
-        imported = import_sta_path_database_tsv(
-            raw_path,
-            ir_path,
-            output_path,
-            provider=OPENSTA_PROVIDER,
-            source={
-                "timing_model": model["name"],
-                "timing_model_qualification": model["source"][
-                    "qualification"
-                ],
-                "engine": engine,
-                "architecture_timing_db": (
-                    str(architecture_timing_db_path)
-                    if architecture_timing_db_path is not None
-                    else None
-                ),
-            },
-            _ir=ir,
-            _return_value=True,
-        )
-        database = imported.pop("_value")
+        source_value = {
+            "timing_model": model["name"],
+            "timing_model_qualification": model["source"]["qualification"],
+            "engine": engine,
+            "architecture_timing_db": (
+                str(architecture_timing_db_path)
+                if architecture_timing_db_path is not None else None
+            ),
+        }
+        if _stream_output:
+            imported = import_sta_path_database_tsv_streaming(
+                raw_path,
+                ir_path,
+                output_path,
+                provider=OPENSTA_PROVIDER,
+                source=source_value,
+                _ir=ir,
+            )
+            database = read_json(output_path)
+        else:
+            imported = import_sta_path_database_tsv(
+                raw_path,
+                ir_path,
+                output_path,
+                provider=OPENSTA_PROVIDER,
+                source=source_value,
+                _ir=ir,
+                _return_value=True,
+            )
+            database = imported.pop("_value")
 
         through_query_records = (
             _read_through_coverage_tsv(
@@ -1567,7 +1586,7 @@ def run_opensta_path_database(
         )
 
     checked = (
-        validate_sta_path_database_value(database, ir)
+        validate_sta_path_database_path_value(output_path, database, ir)
         if validate_output
         else {"status": "deferred-to-managed-stage"}
     )
@@ -1661,6 +1680,8 @@ def run_opensta_path_database(
         "output": str(output_path),
         "log": str(log_path) if log_path is not None else None,
     }
+    if "path_qor" in imported:
+        result["path_qor"] = imported["path_qor"]
     if _return_database:
         result["_database"] = database
     return result

@@ -20,7 +20,11 @@ from .opensta import (
 )
 from .native_tools import resolve_native_executable
 from .resources import ResourceVector
-from .sta import validate_sta_path_database_value
+from .sta import (
+    STA_PATH_DATABASE_SCHEMA,
+    STA_PATH_DATABASE_STREAM_SCHEMA,
+    sta_path_database_qor,
+)
 from .xilinx_timing import (
     XILINX_ROUTED_TIMING_SCHEMA,
     XILINX_ROUTED_TIMING_STREAM_SCHEMA,
@@ -355,6 +359,17 @@ def _qor(database: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _qor_path(path: Path) -> Dict[str, Any]:
+    database = read_json(path)
+    if database.get("schema") in {
+        STA_PATH_DATABASE_SCHEMA,
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+    }:
+        return sta_path_database_qor(path, database)
+    # Preserve the minimal schema-less fixture accepted by historical tests.
+    return _qor(database)
+
+
 def run_xilinx_routed_opensta(
     mapped_path: Path,
     timing_path: Path,
@@ -408,9 +423,8 @@ def run_xilinx_routed_opensta(
             ir_path, output_path, clocks=clocks,
             timing_model_path=model_path, executable=opensta,
             max_paths=max_paths, log_path=log_path,
-            _return_database=True,
+            _stream_output=True,
         )
-        database = report.pop("_database")
     if report["path_limit_reached"]:
         raise ValidationError(
             "RapidWright OpenSTA path limit was reached; global TNS is incomplete"
@@ -427,7 +441,7 @@ def run_xilinx_routed_opensta(
         },
         "clocks": dict(sorted(clocks.items())),
         "staging": metadata,
-        "qor": _qor(database),
+        "qor": report["path_qor"],
         "opensta": report,
     }
     write_json(summary_path, summary, compact=True)
@@ -438,7 +452,7 @@ def run_xilinx_routed_opensta(
             **input_sha256,
             "timing_path_database_sha256": path_database_sha256,
         },
-        _database=database,
+        _qor_value=report["path_qor"],
     )
 
 
@@ -450,6 +464,7 @@ def validate_xilinx_routed_opensta_summary(
     timing_path: Optional[Path] = None,
     source_sha256: Optional[Mapping[str, str]] = None,
     _database: Optional[Mapping[str, Any]] = None,
+    _qor_value: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     value = read_json(summary_path)
     if value.get("schema") != XILINX_ROUTED_OPENSTA_SCHEMA or value.get("status") != "pass":
@@ -470,10 +485,15 @@ def validate_xilinx_routed_opensta_summary(
             raise ValidationError(f"RapidWright OpenSTA source.{field} is invalid")
         if path is not None and digest != expected_sha256.get(field):
             raise ValidationError(f"RapidWright OpenSTA source.{field} disagrees")
-    database = (
-        _database if _database is not None else read_json(output_path)
+    recomputed = (
+        dict(_qor_value)
+        if _qor_value is not None
+        else (
+            _qor(_database)
+            if _database is not None
+            else _qor_path(output_path)
+        )
     )
-    recomputed = _qor(database)
     reported = value.get("qor")
     if not isinstance(reported, dict):
         raise ValidationError("RapidWright OpenSTA QoR is invalid")
