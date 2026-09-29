@@ -5034,7 +5034,19 @@ in this Route A adapter are explicitly qualified as fabric-routed clocks.
 Top-level clocks have no physical source primitive in the out-of-context
 partition, so they are separately qualified as `ideal-boundary-clock` rather
 than being silently counted as routed or invented as a global clock network.
-The adapter emits only a compact, source-sealed route certificate. An
+The adapter emits a source-sealed route certificate without the router's
+search trace.  The complete PIP and sink proof can nevertheless be hundreds of
+megabytes on a real design, so the production handoff treats it as a single-
+pass object rather than a small report.  RWRoute validation reuses the exact
+in-memory route object, returns the source seals it has already checked, and
+the routed-timing binder consumes that object and those seals directly.  The
+standalone RouteDB-to-timing command likewise reads the RouteDB once; it does
+not parse or hash it again after validation and it does not rewrite an
+already-passing RouteDB.  This removes duplicate whole-document I/O without
+weakening the independent topology, source, or timing checks.  It does not
+claim that the current complete route certificate is already sharded or
+streaming.
+An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks
 that the certificate belongs to the exact mapped, packed, and placed inputs.

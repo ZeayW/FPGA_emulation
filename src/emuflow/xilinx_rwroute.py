@@ -768,10 +768,15 @@ def validate_xilinx_route_db(
         )
     ):
         raise ValidationError("XilinxRouteDB maximum route delay disagrees")
-    if value.get("status") != "pass" or _value is not None:
+    # A caller may hand the exact in-memory object produced by RWRoute to this
+    # checker.  Mutate and serialize it only while promoting a candidate to a
+    # validated route.  Rewriting an already-passing production route merely
+    # because it was preloaded turns a near-gigabyte validation into an
+    # unnecessary second full artifact write.
+    if value.get("status") != "pass":
         value["status"] = "pass"
         write_json(path, value, compact=True)
-    return {
+    report = {
         "status": "pass", "schema": "emuflow.xilinx-route-validation/v1",
         "nets": checked_nets, "sinks": checked_sinks,
         "pips": len(used_pips), "route_sha256": _sha256(path),
@@ -788,3 +793,15 @@ def validate_xilinx_route_db(
         "static_sinks": static_sinks,
         "clock_nets": clock_nets,
     }
+    if all(path is not None for path in expected_paths.values()):
+        # These digests were checked against the supplied source paths above.
+        # Returning the seal lets the immediately following timing binder
+        # reuse it instead of hashing the same large inputs again.  A
+        # path-free structural check deliberately does not mint such a seal.
+        report["source_sha256"] = {
+            key: source[key]
+            for key in (
+                "mapped_sha256", "packed_sha256", "placement_sha256"
+            )
+        }
+    return report

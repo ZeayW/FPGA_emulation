@@ -188,19 +188,43 @@ def build_xilinx_routed_timing(
     *,
     route_validation: Optional[Mapping[str, Any]] = None,
     mapped_value: Optional[Mapping[str, Any]] = None,
+    packed_value: Optional[Mapping[str, Any]] = None,
     placement_value: Optional[Mapping[str, Any]] = None,
     route_value: Optional[Mapping[str, Any]] = None,
     source_sha256: Optional[Mapping[str, str]] = None,
     timing_value_sink: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    # Load every large object at most once.  The standalone CLI used to parse
+    # RouteDB once inside the validator and immediately parse it again here;
+    # a real DLA partition makes that object close to one gigabyte.
+    mapped = read_json(mapped_path) if mapped_value is None else mapped_value
+    packed = read_json(packed_path) if packed_value is None else packed_value
+    placement = (
+        read_json(placement_path)
+        if placement_value is None else placement_value
+    )
+    route = read_json(route_path) if route_value is None else route_value
     if route_validation is None:
         route_validation = validate_xilinx_route_db(
             route_path,
             mapped_path=mapped_path,
             packed_path=packed_path,
             placement_path=placement_path,
+            mapped_value=mapped,
+            packed_value=packed,
+            source_sha256=source_sha256,
+            _value=route,
         )
-    route_sha256 = _sha256(route_path)
+        route_sha256 = route_validation.get("route_sha256")
+    else:
+        # An externally supplied seal may outlive the in-memory producer, so
+        # retain the mutation check for that public API.  The production
+        # one-shot flow supplies both the seal and exact in-memory RouteDB and
+        # therefore does not reread or rehash it.
+        route_sha256 = (
+            route_validation.get("route_sha256")
+            if route_value is not None else _sha256(route_path)
+        )
     if (
         route_validation.get("status") != "pass"
         or route_validation.get("schema")
@@ -208,21 +232,23 @@ def build_xilinx_routed_timing(
         or route_validation.get("route_sha256") != route_sha256
     ):
         raise ValidationError("XilinxRouteDB validation seal is invalid")
-    mapped = read_json(mapped_path) if mapped_value is None else mapped_value
-    placement = (
-        read_json(placement_path)
-        if placement_value is None else placement_value
-    )
-    route = read_json(route_path) if route_value is None else route_value
     source_paths = {
         "mapped_sha256": mapped_path,
         "packed_sha256": packed_path,
         "placement_sha256": placement_path,
     }
-    source_digests = (
-        {name: _sha256(path) for name, path in source_paths.items()}
-        if source_sha256 is None else dict(source_sha256)
-    )
+    validated_sources = route_validation.get("source_sha256")
+    if source_sha256 is not None:
+        source_digests = dict(source_sha256)
+    elif (
+        isinstance(validated_sources, Mapping)
+        and set(validated_sources) == set(source_paths)
+    ):
+        source_digests = dict(validated_sources)
+    else:
+        source_digests = {
+            name: _sha256(path) for name, path in source_paths.items()
+        }
     if set(source_digests) != set(source_paths):
         raise ValidationError("Xilinx routed timing source digests are incomplete")
     route_sources = route.get("source")

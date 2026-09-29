@@ -147,6 +147,20 @@ class XilinxRWRouteTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 validate_xilinx_route_db(path)
 
+    def test_checker_does_not_rewrite_prevalidated_route(self):
+        value = self._route()
+        value["status"] = "pass"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "route.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with mock.patch(
+                "emuflow.xilinx_rwroute.write_json",
+                side_effect=AssertionError("prevalidated route was rewritten"),
+            ):
+                report = validate_xilinx_route_db(path, _value=value)
+        self.assertEqual(report["status"], "pass")
+        self.assertNotIn("source_sha256", report)
+
     def test_checker_accepts_equivalent_alternate_physical_source(self):
         value = self._route()
         net = value["nets"][0]
@@ -297,8 +311,47 @@ class XilinxRWRouteTest(unittest.TestCase):
             route_path = root / "route.json"
             route_path.write_text(json.dumps(route), encoding="utf-8")
             output = root / "routed-timing.json"
-            report = build_xilinx_routed_timing(
-                mapped_path, packed_path, placement_path, route_path, output
+            from emuflow import xilinx_rwroute, xilinx_timing
+
+            real_timing_read = xilinx_timing.read_json
+            real_rwroute_sha256 = xilinx_rwroute._sha256
+            real_timing_sha256 = xilinx_timing._sha256
+            with (
+                mock.patch(
+                    "emuflow.xilinx_timing.read_json",
+                    wraps=real_timing_read,
+                ) as timing_read,
+                mock.patch(
+                    "emuflow.xilinx_rwroute.read_json",
+                    side_effect=AssertionError(
+                        "route validator reparsed preloaded objects"
+                    ),
+                ),
+                mock.patch(
+                    "emuflow.xilinx_rwroute._sha256",
+                    wraps=real_rwroute_sha256,
+                ) as rwroute_sha256,
+                mock.patch(
+                    "emuflow.xilinx_timing._sha256",
+                    wraps=real_timing_sha256,
+                ) as timing_sha256,
+            ):
+                report = build_xilinx_routed_timing(
+                    mapped_path, packed_path, placement_path, route_path, output
+                )
+            self.assertEqual(
+                [call.args[0] for call in timing_read.call_args_list].count(
+                    route_path
+                ),
+                1,
+            )
+            self.assertEqual(
+                [call.args[0] for call in rwroute_sha256.call_args_list],
+                [mapped_path, packed_path, placement_path, route_path],
+            )
+            self.assertEqual(
+                [call.args[0] for call in timing_sha256.call_args_list],
+                [output],
             )
             checked = validate_xilinx_routed_timing(
                 output, mapped_path=mapped_path, packed_path=packed_path,

@@ -260,6 +260,7 @@ def _run_rapidwright_routed_backend_tail(
         routed_timing_path,
         route_validation=route_check,
         mapped_value=mapped_value,
+        packed_value=packed_value,
         placement_value=placement_value,
         route_value=route_value,
         source_sha256=source_sha256,
