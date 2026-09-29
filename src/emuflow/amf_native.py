@@ -46,7 +46,7 @@ AMF_EXECUTABLE_MANIFEST_SCHEMA = "emuflow.amf-native-executable/v1"
 AMF_NATIVE_CERTIFICATE_SCHEMA = "emuflow.amf-native-placement/v1"
 AMF_RAPIDWRIGHT_BRIDGE_SCHEMA = "emuflow.amf-rapidwright-bridge/v1"
 AMF_PORTABILITY_PATCH_SHA256 = (
-    "36f35f57cf6e4800598d08f46cffc5adf5f54707ce8816006ec49502cfdb6ad4"
+    "ffada114b9020097892c747dba18bf4c348b6b0c811bb87ba75ff2550a311133"
 )
 
 _RUNTIME_KINDS = {"upstream-native", "test-double"}

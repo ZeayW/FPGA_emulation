@@ -1,16 +1,13 @@
 --- a/src/lib/HiFPlacer/designInfo/DesignInfo.cc
 +++ b/src/lib/HiFPlacer/designInfo/DesignInfo.cc
-@@ -276,17 +276,22 @@
- 
-     std::string STR_PCIE_3_1 = "PCIE_3_1";
- 
+@@ -279,5 +279 @@
 -    assert(deviceInfo->getSitesInType(STR_PCIE_3_1).size() > 0 && "info for PCIE should be included in deviceInfo.");
 -    DeviceInfo::DeviceSite::DeviceSitePinInfos *PCIESitePinInfo =
 -        deviceInfo->getSitesInType(STR_PCIE_3_1)[0]->getSitePinInfos();
 -    assert(PCIESitePinInfo);
 -    for (DesignCell *PCIECell : type2Cells[CellType_PCIE_3_1])
 +    if (!type2Cells[CellType_PCIE_3_1].empty())
-     {
+@@ -285 +281,6 @@
 -        for (DesignPin *curPin : PCIECell->getPins())
 +        assert(deviceInfo->getSitesInType(STR_PCIE_3_1).size() > 0 &&
 +               "info for PCIE should be included in deviceInfo when the design contains PCIE cells.");
@@ -18,7 +15,7 @@
 +            deviceInfo->getSitesInType(STR_PCIE_3_1)[0]->getSitePinInfos();
 +        assert(PCIESitePinInfo);
 +        for (DesignCell *PCIECell : type2Cells[CellType_PCIE_3_1])
-         {
+@@ -287,3 +288,7 @@
 -            assert(PCIESitePinInfo->name2offsetX.find(curPin->getRefPinName()) != PCIESitePinInfo->name2offsetX.end());
 -            curPin->setOffsetInCell(PCIESitePinInfo->name2offsetX[curPin->getRefPinName()],
 -                                    PCIESitePinInfo->name2offsetY[curPin->getRefPinName()]);
@@ -29,15 +26,9 @@
 +                curPin->setOffsetInCell(PCIESitePinInfo->name2offsetX[curPin->getRefPinName()],
 +                                        PCIESitePinInfo->name2offsetY[curPin->getRefPinName()]);
 +            }
-         }
-     }
- 
 --- a/src/lib/HiFPlacer/placement/packing/InitialPacker.cc
 +++ b/src/lib/HiFPlacer/placement/packing/InitialPacker.cc
-@@ -57,11 +57,12 @@
-     }
-     else
-     {
+@@ -60,5 +60,6 @@
 -        print_error(
 -            "No fixed cell in the design. Floating placement is not allowed temporarily."); // this can be disabled but
 -                                                                                            // might lead to
@@ -49,6 +40,3 @@
 +        assert(JSONCfg.find("RandomInitialPlacement") != JSONCfg.end() &&
 +               JSONCfg["RandomInitialPlacement"] == "true" &&
 +               "floating placement requires explicit RandomInitialPlacement=true");
-     }
- 
-     print_info("#Cells In Macro = " + std::to_string(cellInMacros.size()));
