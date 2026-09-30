@@ -3069,6 +3069,18 @@ class Placer(nn.Module):
             )
         temporary = "%s.tmp.%d" % (filename, os.getpid())
         try:
+            # The C++ Bookshelf writer does not serialize the integer point
+            # verbatim.  It first finds the physical site bbox covering that
+            # point and emits the bbox origin.  Build the same compact lookup
+            # without mutating the C++ PlaceDB.  Some UltraScale+ sites span
+            # multiple dense coordinates, so merely truncating x/y can name an
+            # interior coordinate which is not a site origin.
+            valid_site_map = {}
+            for bbox in self.placedb.collectSiteBoxes():
+                origin = (int(bbox.xl()), int(bbox.yl()))
+                for site_x in range(origin[0], int(bbox.xh())):
+                    for site_y in range(origin[1], int(bbox.yh())):
+                        valid_site_map[(site_x, site_y)] = origin
             with open(temporary, "w", encoding="utf-8") as stream:
                 for inst_id in range(num_insts):
                     coordinates = [float(value) for value in locations[inst_id, :3]]
@@ -3078,13 +3090,27 @@ class Placer(nn.Module):
                             "for instance %s" % self.placedb.instName(inst_id)
                         )
                     # PlaceDB::apply constructs an integer InstAttr::PointType
-                    # from the floating point placement center.  Match that
-                    # truncation exactly; the downstream certificate maps the
-                    # dense coordinate to a physical site and proves legality.
-                    site_coordinates = [int(value) for value in coordinates]
+                    # from the floating point placement center, then the C++
+                    # writer maps that point to its covering site bbox.  Match
+                    # both operations exactly; the downstream certificate
+                    # independently proves resource and occupancy legality.
+                    integer_coordinates = [int(value) for value in coordinates]
+                    site_coordinates = valid_site_map.get(
+                        tuple(integer_coordinates[:2])
+                    )
+                    if site_coordinates is None:
+                        raise RuntimeError(
+                            "final placement is outside every valid site for "
+                            "instance %s" % self.placedb.instName(inst_id)
+                        )
                     stream.write(
                         "%s %d %d %d\n"
-                        % (self.placedb.instName(inst_id), *site_coordinates)
+                        % (
+                            self.placedb.instName(inst_id),
+                            site_coordinates[0],
+                            site_coordinates[1],
+                            integer_coordinates[2],
+                        )
                     )
                 stream.flush()
                 os.fsync(stream.fileno())

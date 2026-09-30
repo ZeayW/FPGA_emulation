@@ -421,7 +421,10 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
             "\n    def ", 1
         )[0]
         self.assertIn("self.data_cls.inst_locs_xyz.detach().cpu()", writer)
-        self.assertIn("site_coordinates = [int(value)", writer)
+        self.assertIn("self.placedb.collectSiteBoxes()", writer)
+        self.assertIn("valid_site_map[(site_x, site_y)] = origin", writer)
+        self.assertIn("integer_coordinates = [int(value)", writer)
+        self.assertIn("site_coordinates = valid_site_map.get(", writer)
         self.assertIn("math.isfinite(value)", writer)
         self.assertIn("os.replace(temporary, filename)", writer)
         self.assertNotIn("self.apply()", writer)

@@ -1300,11 +1300,15 @@ not used as evidence.
 Final native placement materialization streams the legalized OpenPARF tensor
 directly to an atomically replaced Bookshelf placement file.  It deliberately
 does not copy the same coordinates back through `PlaceDB::apply()` and then
-read them again through the C++ writer.  Besides removing a redundant full
-design pass, this avoids an upstream allocator-corruption failure observed
-after otherwise successful detailed placement on a real mixed-resource DLA
-partition.  The independent placement certificate remains the authority for
-integrality, site capacity, macro legality, and source seals.
+read them again through the C++ writer.  The streaming path reproduces the
+writer's site semantics by mapping each integer placement point to the origin
+of its covering site bounding box; this matters for sparse or multi-coordinate
+UltraScale+ sites whose interior grid points are not standalone site origins.
+Besides removing a redundant full-design pass, this avoids an upstream
+allocator-corruption failure observed after otherwise successful detailed
+placement on a real mixed-resource DLA partition.  The independent placement
+certificate remains the authority for site capacity, macro legality, and
+source seals.
 Two independent upstream plumbing defects found during that audit are now
 fixed: Bookshelf `OUTPUT CAS` dispatches to the output-cascade callback, and
 ISM freezes both carry primitives and their associated LUTs whenever carry
