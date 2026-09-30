@@ -1182,6 +1182,37 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     certificate_path, persisted
                 )
 
+    def test_compact_certificate_serializes_bram_tile_group(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "placed.pl"
+            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+            certificate = validate_xilinx_openparf_atomic_placement(
+                placement,
+                output / "name_map.json",
+                mapped,
+                architecture,
+            )
+            tile_group = {"tile": "RAMB_X0Y0", "half": "lower"}
+            certificate["clusters"][0]["assignments"][0][
+                "bram_tile_group"
+            ] = tile_group
+            certificate_path = output / "certificate-with-bram-group.json"
+            atomic_adapter.write_xilinx_openparf_atomic_placement_certificate(
+                certificate_path, certificate
+            )
+            persisted = json.loads(certificate_path.read_text(encoding="utf-8"))
+            database_path = output / persisted["cluster_storage"]["file"]
+            with sqlite3.connect(database_path) as database:
+                encoded = database.execute(
+                    "SELECT bram_tile_group FROM assignments "
+                    "WHERE bram_tile_group IS NOT NULL"
+                ).fetchone()[0]
+            self.assertEqual(json.loads(encoded), tile_group)
+
     def test_even_lut_slot_and_control_set_violation_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

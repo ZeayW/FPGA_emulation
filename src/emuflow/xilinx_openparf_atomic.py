@@ -13,6 +13,7 @@ before producing a compact EmuFlow placement certificate.
 from __future__ import annotations
 
 from collections import Counter, OrderedDict, defaultdict
+import json
 import math
 import os
 from pathlib import Path

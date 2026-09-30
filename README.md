@@ -1377,7 +1377,10 @@ retain only the compact certificate identity and never embed another copy of
 the assignments.  This preserves the exact audit boundary while removing the
 60--65 MiB JSON parse and the former quadratic site lookup from the production
 handoff.  The producer also releases the full in-memory assignment tree before
-RWRoute and OpenSTA begin.
+RWRoute and OpenSTA begin.  Optional split-BRAM tile-group metadata is
+canonical JSON inside the SQLite row and is covered by the same sidecar seal;
+the production writer and its regression test therefore exercise the metadata
+path instead of leaving it as an unexecuted schema branch.
 The shared three-route selection work is maintained on
 `feature/phase7-placer-selection`; it combines the OpenPARF implementation with
 the fail-closed DREAMPlaceFPGA and AMF capability probes without treating an
