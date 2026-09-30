@@ -1,9 +1,9 @@
 # Phase 7 native placer refactor plan
 
-This is the implementation plan for replacing the historical
-``OpenPARF guidance -> custom site packing -> greedy legalization`` path.  It
-does not change the public Phase 7 default until the complete promotion gate
-passes.
+This is the implementation plan and completion record for replacing the
+historical ``OpenPARF guidance -> custom site packing -> greedy legalization``
+path.  The complete promotion gate has passed, and the resulting native
+OpenPARF route is now the public RapidWright Phase 7 default.
 
 ## Decision
 
@@ -45,7 +45,7 @@ share one placement certificate and one physical/timing tail.
 
 | Route | Intended ownership | Current role | Promotion blocker |
 | --- | --- | --- | --- |
-| OpenPARF native | packing, analytical global placement, resource/macro legalization, detailed placement | primary implementation | complete UltraScale+ primitive/constraint coverage and DLA-medium evidence |
+| OpenPARF native | packing, analytical global placement, resource/macro legalization, detailed placement | selected production implementation | none for admitted designs; unsupported clock/half-column contracts remain fail-closed |
 | DREAMPlaceFPGA | its native FPGA packing/placement/legalization pipeline | research comparison | source-backed XCVU19P resource model, hard macros, clocks/SLRs, and an executable native detailed-placement gate |
 | AMF-Placer | its public mixed-size placement, macro legalization, CLB packing, and detailed placement | secondary comparison | public-core support for the required primitive set plus XCVU19P clock/multi-SLR qualification |
 
@@ -59,14 +59,14 @@ The independent branches have now reached the following audited boundaries:
 
 | Route | Branch / sealed revision | Executable evidence | Selection consequence |
 | --- | --- | --- | --- |
-| OpenPARF native | `feature/phase7-placer-selection` / `b7e7017f` | Compiled native LUT/FF, CARRY8, DSP, BRAM, and URAM fixture gates pass; RAMB18 lower/upper and RAMB36 whole ownership is source sealed; the DLA-medium RapidWright/OpenSTA tail remains in progress | remains the only production candidate |
+| OpenPARF native | `feature/phase7-placer-selection` / `be674ff1` | Compiled native LUT/FF, CARRY8, DSP, BRAM, and URAM fixture gates pass; RAMB18 lower/upper and RAMB36 whole ownership is source sealed; a fresh Koios DLA medium one-shot Phase 1--7 run placed and routed both partitions with zero unrouted nets, zero DRC violations, complete original-path OpenSTA coverage, target-clock WNS/TNS -1.1815997069675177 ns / -116.50223008530247 ns, and virtual-runtime WNS/TNS +116.8183985100768 ns / 0 ns | selected default |
 | DREAMPlaceFPGA | `feature/phase7-dreamplacefpga-native` / `06fdfea1` | FPGA-Interchange adapters and independent placement checks pass, but the pinned upstream requires PyTorch 1.6--1.8 and lacks the required detailed-placement, cascade, clock-region, and multi-SLR contracts | research control only |
 | AMF-Placer | `feature/phase7-amf-native` / `8e0872ec` | The sealed subprocess runner, archive/config adapters, stage checks, result importer, and independent validator pass; the real patched upstream optimizer has not completed its first native fixture run | secondary blocked candidate |
 
-The branch/revision rows identify implementation evidence, not promotion.
-Neither an adapter roundtrip nor a test double is counted as a native placer
-pass.  Final selection still requires the same RapidWright route, routed-delay
-binding, standalone OpenSTA global WNS/TNS, and fresh one-shot Phase 1--7 gate.
+The branch/revision rows identify implementation evidence.  Neither an adapter
+roundtrip nor a test double is counted as a native placer pass.  OpenPARF alone
+has completed the RapidWright route, routed-delay binding, standalone OpenSTA
+global WNS/TNS, and fresh one-shot Phase 1--7 gate required for selection.
 
 ## Phase 7 decomposition
 

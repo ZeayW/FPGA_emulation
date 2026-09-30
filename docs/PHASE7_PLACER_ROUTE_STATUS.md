@@ -1,9 +1,10 @@
 # Phase 7 placer route status
 
 This document records implementation evidence for the parallel placer study.
-It is not a declaration that any candidate is a production backend.  The
-existing Phase 7 default remains unchanged until one route passes the complete
-physical and system-timing promotion gate.
+OpenPARF native has now passed the complete physical and system-timing
+promotion gate and is the RapidWright Phase 7 default.  DREAMPlaceFPGA and
+AMF-Placer remain fail-closed research candidates; their adapter evidence is
+not represented as native placement evidence.
 
 ## Shared contract
 
@@ -25,14 +26,14 @@ global OpenSTA WNS/TNS are available on identical inputs and seed.
 
 | Route | Implemented evidence | Remaining production blockers | Decision |
 |---|---|---|---|
-| OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; bounded MUXF7/8/9, CARRY8, DSP48E2, RAMB18E2/RAMB36E2, and URAM288 fixtures pass exact placement validation, and the resource-covering hard-block fixtures pass the complete physical chain; source-sealed real-device facts cover slice macros, split-BRAM modes, CARRY, DSP, BRAM, and URAM adjacency; renewed Koios DLA medium native placement and independent certification pass on both partitions. Provider v3 pins the upstream ISPD `stop_overflow=0.10` together with the 0.15 adjustment threshold so native RUDY and pin-density inflation execute. Provider v4 replaces the one-step native termination decision with a consecutive feasible settling window, HPWL patience, restoration of the best feasible iterate, and a compact fail-closed convergence certificate. Fresh v4 placements completed at 8.8232553M and 4.1540576M legal HPWL. The compiled 1x2-SLR gate now passes native SLL placement and independent 128-atom certification. Recovery pruning reduced the sealed DLA fpga1 RWRoute wall time by about 34% with unchanged WNS and slightly improved TNS | Terminal RWRoute on the larger DLA fpga0 partition and global OpenSTA evidence; authoritative clock and half-column limits remain fail-closed | Primary route and only production-eligible candidate; not yet the default until terminal DLA evidence passes |
+| OpenPARF native (`feature/phase7-openparf-native-hardblocks`) | A1 atomic route passed real XCVU19P placement → RWRoute → routed-delay → standalone OpenSTA 3.1; bounded MUXF7/8/9, CARRY8, DSP48E2, RAMB18E2/RAMB36E2, and URAM288 fixtures pass exact placement validation, and the resource-covering hard-block fixtures pass the complete physical chain; source-sealed real-device facts cover slice macros, split-BRAM modes, CARRY, DSP, BRAM, and URAM adjacency. The fresh Koios DLA medium one-shot Phase 1--7 gate at `be674ff1` placed and routed both partitions, produced zero unrouted nets and zero DRC violations, covered every original global timing path, and passed independent physical validation. Same-site physical macros are preserved through global placement and legalized before the masked LUT/FF and typed hard-block stages. The two legalizations took 76.727 s and 77.401 s; complete placements took 348.197 s and 357.592 s; RWRoute took 206.72 s and 160.67 s with zero PIP overlap. Global OpenSTA reported target-clock WNS/TNS of -1.1815997069675177 ns / -116.50223008530247 ns and virtual-runtime WNS/TNS of +116.8183985100768 ns / 0 ns at the 128 ns frame period. | Authoritative half-column clock limits remain fail-closed when requested but do not affect the admitted DLA gate. | Selected production route and RapidWright Phase 7 default. |
 | DREAMPlaceFPGA (`feature/phase7-dreamplacefpga-native`) | Pinned-source and compiled-runtime gate; mapped/packed/ArchitectureDB to official FPGA Interchange logical netlist; real Cap'n Proto LUT/FF/DSP48E2/RAMB36E2 roundtrip; `.phys` to a packed-cluster-preserving candidate certificate; sealed fail-closed RapidWright boundary | The official supported PyTorch 1.6--1.8 runtime has not completed a native fixture in the current environment; upstream detailed placement is absent; several UltraScale+ primitives, cascade, clock-region, and multi-SLR constraints are missing | Research candidate only; not eligible for the production route |
 | AMF-Placer (`feature/phase7-amf-native`) | Pinned-source probe; bounded design/device/result adapters; sealed executable manifest; isolated native subprocess/config boundary; LUT/FF/CARRY8 constant-normalization fixture; direct placement certificate and independent validator; explicit test-double evidence separation | Real patched public optimizer fixture run; MUXF9/URAM; cascade, XCVU19P clock legality and multi-SLR support; routed Phase 7 | Secondary candidate; implemented runner is not a native pass until the actual public binary passes it |
 
-The integration/selection branch is `feature/phase7-placer-selection`.  It contains
-the shared contract, deterministic comparison gate, and the validated adapter
-work from all three branches.  No branch adds a public CLI selector or changes
-the default provider yet.
+The integration/selection branch is `feature/phase7-placer-selection`.  It
+contains the shared contract, deterministic comparison gate, and the validated
+adapter work from all three branches.  The public RapidWright path defaults to
+`openparf-native`; unsupported candidates never fall back to it silently.
 
 Large atomic placement assignments now live in one independently checked,
 byte-sealed SQLite sidecar.  Its compact JSON certificate contains identity,
@@ -56,8 +57,10 @@ the routed sibling.  Provider v4 addresses that general termination-policy
 defect.  Fresh placement passed on both partitions: the 223,389-atom partition
 stopped at iteration 1,699 and legalized to 8.8232553M HPWL; the 240,377-atom
 partition stopped at iteration 1,676 and legalized to 4.1540576M HPWL.  These
-are placement diagnostics, not default-promotion evidence; both routes,
-per-partition OpenSTA, and global OpenSTA remain required.  The downstream
+were placement diagnostics rather than default-promotion evidence.  The later
+atomic-macro gate removed the late macro snap that caused the inflated HPWL
+and legalization runtime, and the fresh one-shot gate completed both routes,
+per-partition OpenSTA, and global OpenSTA.  The downstream
 v2 implementation no longer materializes the near-gigabyte route proof as one
 JSON tree.  RapidWright writes a small sealed manifest plus deterministic net
 and compact PIP JSONL streams; validation reconstructs one net at a time with
