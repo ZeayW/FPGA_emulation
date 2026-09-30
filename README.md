@@ -1297,6 +1297,14 @@ The adapter invokes GP, native chain legalization, native mask-aware LUT/FF lega
 and ISM, then independently validates exact BEL roles and RapidWright-certified
 CARRY_NEXT adjacency.  Parsed `.shape` records still have no consumer and are
 not used as evidence.
+Final native placement materialization streams the legalized OpenPARF tensor
+directly to an atomically replaced Bookshelf placement file.  It deliberately
+does not copy the same coordinates back through `PlaceDB::apply()` and then
+read them again through the C++ writer.  Besides removing a redundant full
+design pass, this avoids an upstream allocator-corruption failure observed
+after otherwise successful detailed placement on a real mixed-resource DLA
+partition.  The independent placement certificate remains the authority for
+integrality, site capacity, macro legality, and source seals.
 Two independent upstream plumbing defects found during that audit are now
 fixed: Bookshelf `OUTPUT CAS` dispatches to the output-cascade callback, and
 ISM freezes both carry primitives and their associated LUTs whenever carry

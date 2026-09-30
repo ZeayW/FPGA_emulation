@@ -417,6 +417,13 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
                 "loc_xyz = self.op_cls.ism_dp_op", 1
             )[0],
         )
+        writer = placer.split("    def write(self, filename):", 1)[1].split(
+            "\n    def ", 1
+        )[0]
+        self.assertIn("self.data_cls.inst_locs_xyz.detach().cpu()", writer)
+        self.assertIn("os.replace(temporary, filename)", writer)
+        self.assertNotIn("self.apply()", writer)
+        self.assertNotIn("writeBookshelfPl", writer)
 
     def test_carry_probe_is_unverified_when_pinned_source_is_missing(self):
         with tempfile.TemporaryDirectory() as temporary:

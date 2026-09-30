@@ -3047,7 +3047,45 @@ class Placer(nn.Module):
 
     def write(self, filename):
         """@brief write to file"""
-        self.apply()
         if not os.path.exists(os.path.dirname(filename)):
             os.makedirs(os.path.dirname(filename))
-        self.placedb.writeBookshelfPl(filename)
+        # The placement tensor is already the authoritative result after
+        # legalization and detailed placement.  Copying hundreds of thousands
+        # of locations back through PlaceDB::apply() only so the C++ Bookshelf
+        # writer can read them again is both redundant and unsafe: the pinned
+        # upstream implementation corrupts the allocator for some real-device
+        # mixed-resource designs during that round trip.  Stream the final
+        # tensor directly instead.  This also keeps result materialization
+        # linear and avoids a second full placement representation.
+        locations = self.data_cls.inst_locs_xyz.detach().cpu()
+        num_insts = self.placedb.numInsts()
+        if (
+            locations.dim() != 2
+            or locations.shape[0] != num_insts
+            or locations.shape[1] < 3
+        ):
+            raise RuntimeError(
+                "final placement tensor shape disagrees with PlaceDB instances"
+            )
+        temporary = "%s.tmp.%d" % (filename, os.getpid())
+        try:
+            with open(temporary, "w", encoding="utf-8") as stream:
+                for inst_id in range(num_insts):
+                    coordinates = [float(value) for value in locations[inst_id, :3]]
+                    rounded = [int(round(value)) for value in coordinates]
+                    if any(abs(value - integer) > 1e-4
+                           for value, integer in zip(coordinates, rounded)):
+                        raise RuntimeError(
+                            "final placement contains a non-integral coordinate "
+                            "for instance %s" % self.placedb.instName(inst_id)
+                        )
+                    stream.write(
+                        "%s %d %d %d\n"
+                        % (self.placedb.instName(inst_id), *rounded)
+                    )
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, filename)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
