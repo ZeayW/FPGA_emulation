@@ -77,6 +77,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 self.assertEqual(kwargs, {
                     "top": "top",
                     "source_packed_path": physical / "openparf-atomic-source.json",
+                    "constraints_path": physical / "placement-region.json",
                     "native_constraints_path": native_constraints,
                     "provider_manifest_path": provider_manifest,
                     "mapped_value": mapped_value,
@@ -154,6 +155,10 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     return_value={"summary": {"physical_atoms": 2}},
                 ) as build_source,
                 mock.patch(
+                    "emuflow.xilinx_physical_backend._select_xilinx_slr_window",
+                    return_value=("SLR1",),
+                ),
+                mock.patch(
                     "emuflow.xilinx_physical_backend.run_xilinx_openparf_atomic_qualification",
                     side_effect=qualify,
                 ) as qualify,
@@ -220,6 +225,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 packed_path,
                 root / "architecture.json",
                 placement_path,
+                constraints_path=physical / "placement-region.json",
                 native_constraints_path=native_constraints,
                 provider_manifest_path=provider_manifest,
                 architecture=architecture_object,
@@ -251,7 +257,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             {"clk": 40.0, "fabric_clk": 4.0},
         )
 
-    def test_slr_window_exposes_complete_device_after_capacity_check(self):
+    def test_slr_window_uses_smallest_central_window_with_headroom(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             arch = root / "arch.json"
@@ -287,10 +293,10 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             }), encoding="utf-8")
             self.assertEqual(
                 _select_xilinx_slr_window(packed, arch),
-                ("SLR0", "SLR1", "SLR2", "SLR3"),
+                ("SLR1", "SLR2"),
             )
 
-    def test_slr_window_does_not_infer_routing_capacity_from_site_demand(self):
+    def test_slr_window_uses_one_central_slr_for_sparse_partition(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             arch = root / "arch.json"
@@ -325,7 +331,61 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             }), encoding="utf-8")
             self.assertEqual(
                 _select_xilinx_slr_window(packed, arch),
-                ("SLR0", "SLR1", "SLR2", "SLR3"),
+                ("SLR1",),
+            )
+
+    def test_atomic_slr_window_counts_slice_site_equivalents_not_atoms(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch = root / "arch.json"
+            packed = root / "atomic.json"
+            sites = [
+                {
+                    "name": f"SLICE_X{x}Y{slr}", "type": "SLICEL",
+                    "template": "SLICEL", "x": x, "y": slr,
+                    "tile": {"grid_col": x, "grid_row": slr * 10},
+                    "physical_region": {"slr": f"SLR{slr}"},
+                }
+                for slr in range(3) for x in range(16)
+            ]
+            arch.write_text(__import__("json").dumps({
+                "schema": "emuflow.archdb/v1", "part": "test",
+                "source": {"format": "test/v1"}, "policy": {"name": "test"},
+                "site_templates": {"SLICEL": {
+                    "bels": [{
+                        "name": "A6LUT", "type": "LUT6", "z": 0,
+                        "compatible_cells": ["LUT6"],
+                    }],
+                    "alternative_templates": [],
+                }},
+                "sites": sites,
+            }), encoding="utf-8")
+            clusters = [
+                {
+                    "id": f"lut-{index}", "kind": "slice",
+                    "assignments": [{
+                        "instance": f"lut-{index}", "cell_type": "LUT6",
+                    }],
+                }
+                for index in range(64)
+            ] + [
+                {
+                    "id": f"ff-{index}", "kind": "slice",
+                    "assignments": [{
+                        "instance": f"ff-{index}", "cell_type": "FDRE",
+                    }],
+                }
+                for index in range(64)
+            ]
+            packed.write_text(__import__("json").dumps({
+                "schema": "emuflow.openparf-atomic-source/v1",
+                "clusters": clusters,
+            }), encoding="utf-8")
+            # 64 LUTs and 64 FFs require eight slice sites, not 128 sites;
+            # one 16-site SLR therefore has the required 1.5x headroom.
+            self.assertEqual(
+                _select_xilinx_slr_window(packed, arch),
+                ("SLR1",),
             )
 
     def test_production_backend_uses_compact_two_slr_window(self):

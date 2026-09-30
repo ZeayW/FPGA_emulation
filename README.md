@@ -5028,15 +5028,18 @@ cannot cause each other's legal AC/BC input or output ports to disappear.
 The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.
-The production RapidWright backend uses the complete physical device after
-checking the packed partition against the 75% whole-device capacity contract.
-It does not infer routing capacity from site counts by squeezing a partition
-into the smallest capacity-feasible SLR subset: Phase 6 transport can add far
-more physical connections than the original DUT resource vector records, and
-site capacity is not a routing-headroom certificate. Explicit single-SLR
-experiments remain available through the separately named regional planner.
-The complete ordered SLR inventory is recorded once as a global
-`allowed_slrs` constraint; it is not duplicated into every cluster record.
+The production RapidWright backends now choose a compact contiguous SLR window
+from the final post-Phase-6 packed/atomic netlist, so transport cells are part
+of the decision rather than an unmodelled later addition.  The selector uses
+the exact ArchitectureDB resource inventory, requires 1.5x site headroom for
+every represented slice/DSP/BRAM/URAM resource, and chooses the smallest
+capacity-feasible window (with a deterministic central tie break).  If no
+proper subset has that headroom, it retains the complete device.  This avoids
+spreading a sparse partition across all XCVU19P SLRs, which can multiply the
+span of reset/state distribution trees and force RWRoute into very long
+negotiated-routing recovery.  The selected inventory is source-bound once as
+a global `allowed_slrs` constraint and independently rechecked after the
+native OpenPARF bridge; it is not duplicated into every cluster record.
 OpenPARF guidance uses its native RUDY- and pin-utilization-driven area
 inflation for packed slice clusters before exact legalization: this preserves
 the bounded routing search region while preventing one-site density alone from

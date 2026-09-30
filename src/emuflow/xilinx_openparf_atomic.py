@@ -2006,6 +2006,14 @@ def _render_site_geometry(
                     f"ArchitectureDB clock region {name!r} is inconsistent"
                 )
             entry["sites"].append((item["dense_x"], item["dense_y"]))
+        minimum_x = min(entry["index"][0] for entry in by_name.values())
+        minimum_y = min(entry["index"][1] for entry in by_name.values())
+        for entry in by_name.values():
+            entry["source_index"] = entry["index"]
+            entry["index"] = (
+                entry["index"][0] - minimum_x,
+                entry["index"][1] - minimum_y,
+            )
         width = max(entry["index"][0] for entry in by_name.values()) + 1
         height = max(entry["index"][1] for entry in by_name.values()) + 1
         expected = {(x, y) for x in range(width) for y in range(height)}
@@ -2019,6 +2027,7 @@ def _render_site_geometry(
         for name, entry in sorted(
             by_name.items(), key=lambda item: item[1]["index"]
         ):
+            exported_name = f"X{entry['index'][0]}Y{entry['index'][1]}"
             xs = [coordinate[0] for coordinate in entry["sites"]]
             ys = [coordinate[1] for coordinate in entry["sites"]]
             xl, xh = min(xs), max(xs)
@@ -2034,13 +2043,17 @@ def _render_site_geometry(
                     )
             ymid = yl + (yh - yl + 1) // 2
             lines.append(
-                f"  CLOCKREGION {name} : {xl} {yl} {xh} {yh} {ymid} {xl}"
+                f"  CLOCKREGION {exported_name} : "
+                f"{xl} {yl} {xh} {yh} {ymid} {xl}"
             )
-            contract_regions.append({
-                "name": name, "x": entry["index"][0],
+            contract_region = {
+                "name": exported_name, "x": entry["index"][0],
                 "y": entry["index"][1], "slr": entry["slr"],
                 "bbox": [xl, yl, xh, yh],
-            })
+            }
+            if exported_name != name:
+                contract_region["source_name"] = name
+            contract_regions.append(contract_region)
         lines.append("END CLOCKREGIONS")
         clock_region_contract = {
             "width": width, "height": height,
@@ -2177,16 +2190,19 @@ def _device_static_geometry(
     *,
     require_carry8: bool,
     native: Optional[Mapping[str, Any]] = None,
+    allowed_slrs: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Build immutable device geometry once across parallel FPGA workers."""
 
     y_axis_order = _native_carry_y_axis_order(architecture, native)
+    selected_slrs = tuple(allowed_slrs) if allowed_slrs is not None else None
     key = (
         architecture,
         tuple(sorted(hard_resources)),
         tuple(sorted(mux_resources)),
         bool(require_carry8),
         y_axis_order,
+        selected_slrs,
     )
     # The derivation is Python/GIL bound and produces a multi-GiB object for a
     # complete XCVU19P. Holding the lock during the first build prevents a
@@ -2202,6 +2218,25 @@ def _device_static_geometry(
             mux_resources,
             require_carry8=require_carry8,
         )
+        if selected_slrs is not None:
+            if not selected_slrs or len(set(selected_slrs)) != len(selected_slrs):
+                raise ValidationError("OpenPARF allowed SLR list is empty or duplicated")
+            known_slrs = {
+                region.get("slr")
+                for site, _resources in sites
+                if isinstance((region := site.get("physical_region")), Mapping)
+                and isinstance(region.get("slr"), str)
+            }
+            unknown = set(selected_slrs) - known_slrs
+            if unknown:
+                raise ValidationError(
+                    f"OpenPARF allowed SLR list contains unknown regions {sorted(unknown)!r}"
+                )
+            sites = [
+                item for item in sites
+                if isinstance(item[0].get("physical_region"), Mapping)
+                and item[0]["physical_region"].get("slr") in selected_slrs
+            ]
         placement_region = _validate_native_placement_region(sites)
         sites, site_headroom_contract = _derate_clock_region_sites(sites)
         placement_region = {
@@ -2211,6 +2246,8 @@ def _device_static_geometry(
                 for _site, resources in sites
             ),
         }
+        if selected_slrs is not None:
+            placement_region["allowed_slrs"] = list(selected_slrs)
         site_prefix, site_suffix, coordinate_system = _render_site_geometry(
             sites, y_axis_order=y_axis_order
         )
@@ -2322,6 +2359,7 @@ def export_xilinx_openparf_atomic(
     provider_manifest_path: Optional[Path] = None,
     mapped_value: Optional[Mapping[str, Any]] = None,
     architecture: Optional[ArchitectureDB] = None,
+    allowed_slrs: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Export the fail-closed native mixed-resource qualification subset."""
 
@@ -2394,7 +2432,8 @@ def export_xilinx_openparf_atomic(
     })
     has_carry8 = any(atom["cell_type"] == "CARRY8" for atom in atoms)
     device_static = _device_static_geometry(
-        architecture, hard, mux, require_carry8=has_carry8, native=native
+        architecture, hard, mux, require_carry8=has_carry8, native=native,
+        allowed_slrs=allowed_slrs,
     )
     sites = device_static["sites"]
     placement_region = device_static["placement_region"]
@@ -3751,6 +3790,7 @@ def run_xilinx_openparf_atomic_qualification(
     provider_manifest_path: Optional[Path] = None,
     mapped_value: Optional[Mapping[str, Any]] = None,
     architecture: Optional[ArchitectureDB] = None,
+    allowed_slrs: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Run one native SSSIR-MCF/direct-LG/ISM flow for the audited subset."""
 
@@ -3763,6 +3803,7 @@ def run_xilinx_openparf_atomic_qualification(
         provider_manifest_path=provider_manifest_path,
         mapped_value=mapped_value,
         architecture=architecture,
+        allowed_slrs=allowed_slrs,
     )
     placement = run_openparf(
         output_dir / "openparf.json",

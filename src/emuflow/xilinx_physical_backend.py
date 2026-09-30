@@ -35,6 +35,9 @@ from .xilinx_timing import (
 )
 
 
+_ACTIVE_REGION_RESOURCE_HEADROOM = 1.5
+
+
 def _cluster_resource(cluster: Mapping[str, Any]) -> str:
     kind = cluster.get("kind")
     if kind in {"slice", "carry"}:
@@ -65,18 +68,51 @@ def _site_resource(site_type: str) -> Optional[str]:
 def _select_xilinx_slr_window(
     packed_path: Path, architecture_path: Path
 ) -> Tuple[str, ...]:
-    """Certify full-device SLR capacity for production implementation.
+    """Choose the smallest contiguous SLR window with explicit headroom.
 
-    Capacity proves that the packed sites fit, but it does not prove that a
-    smaller SLR subset has enough routing resources for the post-split design.
-    Production implementation therefore exposes the complete physical device
-    to OpenPARF and RWRoute.  Explicit regional experiments continue to use
-    the separately named single-SLR planning path.
+    A sparse partition must not be analytically spread over the whole device:
+    that needlessly lengthens ordinary and high-fanout nets and makes detailed
+    routing recovery dominate Phase 7.  The input is the final post-Phase-6
+    packed/atomic netlist, so transport logic is included.  Require 1.5x site
+    headroom for every represented resource, then choose the most central
+    capacity-feasible contiguous window.  If only the complete device fits,
+    the complete device remains the result.
     """
 
     packed = read_json(packed_path)
     architecture = ArchitectureDB.load(architecture_path)
-    demand = Counter(_cluster_resource(cluster) for cluster in packed["clusters"])
+    clusters = packed.get("clusters")
+    if not isinstance(clusters, list) or not clusters:
+        raise ValidationError("packed partition has no clusters")
+    if packed.get("schema") == "emuflow.openparf-atomic-source/v1":
+        atoms = Counter(
+            assignment.get("cell_type")
+            for cluster in clusters
+            for assignment in cluster.get("assignments", [])
+        )
+        demand = Counter({
+            "slice": max(
+                math.ceil(sum(
+                    count for cell_type, count in atoms.items()
+                    if isinstance(cell_type, str)
+                    and (cell_type.startswith("LUT") or cell_type == "LUT6_2")
+                ) / 8),
+                math.ceil(sum(
+                    count for cell_type, count in atoms.items()
+                    if isinstance(cell_type, str) and cell_type.startswith("FD")
+                ) / 16),
+                atoms["CARRY8"],
+                math.ceil(atoms["MUXF7"] / 4),
+                math.ceil(atoms["MUXF8"] / 2),
+                atoms["MUXF9"],
+            ),
+            "dsp": atoms["DSP48E2"],
+            "bram": atoms["RAMB18E2"] + atoms["RAMB36E2"],
+            "uram": atoms["URAM288"],
+        })
+        demand += Counter()
+    else:
+        demand = Counter(_cluster_resource(cluster) for cluster in clusters)
     capacities: Dict[str, Counter] = {}
     rows: Dict[str, list[int]] = {}
     for site in architecture.value["sites"]:
@@ -94,15 +130,37 @@ def _select_xilinx_slr_window(
     if not capacities or set(capacities) != set(rows):
         raise ValidationError("ArchitectureDB has no complete physical SLR inventory")
     ordered = sorted(capacities, key=lambda name: (sum(rows[name]) / len(rows[name]), name))
+    required = Counter({
+        resource: math.ceil(count * _ACTIVE_REGION_RESOURCE_HEADROOM)
+        for resource, count in demand.items()
+        if count
+    })
     device_capacity = sum((capacities[name] for name in ordered), Counter())
-    if any(
-        demand[key] > math.floor(0.75 * device_capacity[key])
-        for key in demand
-    ):
+    if any(required[key] > device_capacity[key] for key in required):
         raise ValidationError(
-            "packed partition exceeds the complete Xilinx device capacity"
+            "packed partition exceeds the complete Xilinx device capacity "
+            f"with {_ACTIVE_REGION_RESOURCE_HEADROOM:g}x placement headroom"
         )
-    return tuple(ordered)
+    device_center = (len(ordered) - 1) / 2.0
+    for width in range(1, len(ordered) + 1):
+        feasible = []
+        for start in range(0, len(ordered) - width + 1):
+            names = tuple(ordered[start:start + width])
+            capacity = sum((capacities[name] for name in names), Counter())
+            if any(required[key] > capacity[key] for key in required):
+                continue
+            center_distance = abs((start + (width - 1) / 2.0) - device_center)
+            minimum_margin = min(
+                (
+                    (capacity[key] - required[key]) / required[key]
+                    for key in required
+                ),
+                default=0.0,
+            )
+            feasible.append((center_distance, -minimum_margin, start, names))
+        if feasible:
+            return min(feasible)[-1]
+    raise ValidationError("no contiguous Xilinx SLR placement window is feasible")
 
 
 def _sha256(path: Path) -> str:
@@ -597,6 +655,19 @@ def run_rapidwright_openparf_native_candidate_backend(
         top=mapped_report["top"],
         mapped_value=mapped_value,
     )
+    selected_slrs = _select_xilinx_slr_window(
+        atomic_source_path, architecture_path
+    )
+    region_path = output_dir / "placement-region.json"
+    write_json(region_path, {
+        "schema": "emuflow.xilinx-placement-constraints/v1",
+        "policy": {
+            "provider": "compact-contiguous-slr-window-v1",
+            "resource_headroom": _ACTIVE_REGION_RESOURCE_HEADROOM,
+        },
+        "global": {"allowed_slrs": list(selected_slrs)},
+        "clusters": [],
+    }, compact=True)
     qualification_root = output_dir / "openparf-native"
     qualification = run_xilinx_openparf_atomic_qualification(
         mapped_path,
@@ -610,6 +681,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         provider_manifest_path=openparf_provider_manifest,
         mapped_value=mapped_value,
         architecture=architecture,
+        allowed_slrs=selected_slrs,
     )
     certificate_path = qualification_root / "placement-certificate.json"
     compact_qualification = _compact_openparf_qualification(
@@ -628,6 +700,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         placement_path,
         top=mapped_report["top"],
         source_packed_path=atomic_source_path,
+        constraints_path=region_path,
         native_constraints_path=openparf_native_constraints,
         provider_manifest_path=openparf_provider_manifest,
         mapped_value=mapped_value,
@@ -646,6 +719,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         packed_path,
         architecture_path,
         placement_path,
+        constraints_path=region_path,
         native_constraints_path=openparf_native_constraints,
         provider_manifest_path=openparf_provider_manifest,
         architecture=architecture,
@@ -684,13 +758,18 @@ def run_rapidwright_openparf_native_candidate_backend(
             "validation": packing_check,
         },
         placement_stage={
-            "region": {"scope": "openparf-native-full-device"},
+            "region": {
+                "scope": "compact-contiguous-slr-window",
+                "allowed_slrs": list(selected_slrs),
+                "resource_headroom": _ACTIVE_REGION_RESOURCE_HEADROOM,
+            },
             "native_openparf": compact_qualification,
             "bridge": bridge,
             "result": placement["summary"],
             "validation": placement_check,
         },
         placement_artifacts={
+            "placement_region": region_path,
             "openparf_atomic_source": atomic_source_path,
             "openparf_atomic_certificate": certificate_path,
         },

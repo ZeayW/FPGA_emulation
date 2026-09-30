@@ -504,6 +504,7 @@ def materialize_xilinx_openparf_atomic_contract(
     *,
     top: Optional[str] = None,
     source_packed_path: Optional[Path] = None,
+    constraints_path: Optional[Path] = None,
     native_constraints_path: Optional[Path] = None,
     provider_manifest_path: Optional[Path] = None,
     mapped_value: Optional[Mapping[str, Any]] = None,
@@ -711,7 +712,11 @@ def materialize_xilinx_openparf_atomic_contract(
             "source": {
                 "packed_sha256": _sha256(packed_temp),
                 "architecture_sha256": architecture_sha,
-                "guidance_sha256": None, "constraints_sha256": None,
+                "guidance_sha256": None,
+                "constraints_sha256": (
+                    _sha256(constraints_path)
+                    if constraints_path is not None else None
+                ),
                 "openparf_atomic_placement_sha256": certificate_sha,
             },
             "clusters": placement_clusters,
@@ -743,6 +748,7 @@ def materialize_xilinx_openparf_atomic_contract(
         )
         validate_xilinx_placement(
             packed_temp, architecture_path, placement_temp,
+            constraints_path=constraints_path,
             native_constraints_path=native_constraints_path,
             provider_manifest_path=provider_manifest_path,
             architecture=architecture,
@@ -765,6 +771,10 @@ def materialize_xilinx_openparf_atomic_contract(
             "source_packed_sha256": (
                 _sha256(source_packed_path)
                 if source_packed_path is not None else None
+            ),
+            "constraints_sha256": (
+                _sha256(constraints_path)
+                if constraints_path is not None else None
             ),
         },
         "packed_sha256": _sha256(packed_output_path),

@@ -551,6 +551,40 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         })
         self.assertNotIn("fallback", config)
 
+    def test_export_limits_native_site_database_to_allowed_slrs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            value = json.loads(architecture.read_text(encoding="utf-8"))
+            original = value["sites"]
+            for site in original:
+                site["physical_region"] = {
+                    "slr": "SLR1", "clock_region": "X0Y1",
+                }
+            replicas = []
+            for site in original:
+                replica = json.loads(json.dumps(site))
+                replica["name"] += "_SLR0"
+                replica["y"] += 10
+                replica["tile"]["grid_row"] += 10
+                replica["physical_region"] = {
+                    "slr": "SLR0", "clock_region": "X0Y0",
+                }
+                replicas.append(replica)
+            value["sites"] = replicas + original
+            architecture.write_text(json.dumps(value), encoding="utf-8")
+
+            output = root / "output"
+            manifest = export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output,
+                allowed_slrs=("SLR1",),
+            )
+            sites = load_xilinx_openparf_atomic_sites(output / "name_map.json")
+
+        self.assertEqual(manifest["placement_region"]["allowed_slrs"], ["SLR1"])
+        self.assertTrue(sites)
+        self.assertTrue(all(not item["site"].endswith("_SLR0") for item in sites))
+
     def test_clock_region_grid_is_exported_without_unsafe_native_enforcement(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
