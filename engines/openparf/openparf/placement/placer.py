@@ -1410,15 +1410,17 @@ class Placer(nn.Module):
             
             self.data_cls.sll_flag = False
 
-            self.plot(
-                os.path.join(
-                    self.params.plot_dir,
-                    "iter%s_initial.bmp" % ("{:04}".format(opt_iter.iteration)),
-                ),
-                opt_iter,
-                plot_target_at_names=self.params.plot_target_at_names,
-                filler_flag=False,
-            )
+            if self.params.plot_flag:
+                self.plot(
+                    os.path.join(
+                        self.params.plot_dir,
+                        "iter%s_initial.bmp"
+                        % ("{:04}".format(opt_iter.iteration)),
+                    ),
+                    opt_iter,
+                    plot_target_at_names=self.params.plot_target_at_names,
+                    filler_flag=False,
+                )
             logger.info("<initial metric>: " + str(cur_metric))
             metrics.append(cur_metric)
             # logger.info("<initial metric>: " + str(cur_metric))
@@ -1494,19 +1496,22 @@ class Placer(nn.Module):
 
                     # adjust instance areas
                     if self._gp_adjust_area_condition(metrics[-1]) is True:
-                        self.plot(
-                            os.path.join(
-                                self.params.plot_dir,
-                                "iter%s_before_area_adjustment_%d.bmp"
-                                % (
-                                    "{:04}".format(opt_iter.iteration),
-                                    self.num_gp_adjust_area,
+                        if self.params.plot_flag:
+                            self.plot(
+                                os.path.join(
+                                    self.params.plot_dir,
+                                    "iter%s_before_area_adjustment_%d.bmp"
+                                    % (
+                                        "{:04}".format(opt_iter.iteration),
+                                        self.num_gp_adjust_area,
+                                    ),
                                 ),
-                            ),
-                            opt_iter,
-                            plot_target_at_names=self.params.plot_target_at_names,
-                            filler_flag=True,
-                        )
+                                opt_iter,
+                                plot_target_at_names=(
+                                    self.params.plot_target_at_names
+                                ),
+                                filler_flag=True,
+                            )
                         self._gp_adjust_area(metrics[-1], opt_iter, self.data_cls.sll_flag)
                         self.last_area_inflation_iter = cur_metric.opt_iter.iteration
                         continue
@@ -1532,16 +1537,19 @@ class Placer(nn.Module):
                             self.optimizer.state_dict()
                         )
                         self.initialize_learning_rate(self.model, self.optimizer, 0.1)
-                        self.plot(
-                            os.path.join(
-                                self.params.plot_dir,
-                                "iter%s_after_ck_assignment.bmp"
-                                % ("{:04}".format(opt_iter.iteration)),
-                            ),
-                            opt_iter,
-                            plot_target_at_names=self.params.plot_target_at_names,
-                            filler_flag=True,
-                        )
+                        if self.params.plot_flag:
+                            self.plot(
+                                os.path.join(
+                                    self.params.plot_dir,
+                                    "iter%s_after_ck_assignment.bmp"
+                                    % ("{:04}".format(opt_iter.iteration)),
+                                ),
+                                opt_iter,
+                                plot_target_at_names=(
+                                    self.params.plot_target_at_names
+                                ),
+                                filler_flag=True,
+                            )
                         self.best_pos_before_ck_ssir_lg = None
                         self.best_sol_metric = None
                         continue
@@ -1828,16 +1836,32 @@ class Placer(nn.Module):
                     )
                 if self.params.carry_chain_legalization_flag:
                     logger.info("Start Carry Chain Legalization...")
+                    stage_tt = time.time()
                     self.op_cls.chain_legalization_op(pos_xyz)
+                    logger.info(
+                        "carry-chain legalization takes %.3f seconds",
+                        time.time() - stage_tt,
+                    )
                 if (
                     self.op_cls.typed_hardblock_legalization_op is not None
                     and self.op_cls.typed_hardblock_legalization_op.site_macro_ids.numel()
                 ):
                     logger.info("Start same-site physical macro legalization...")
+                    stage_tt = time.time()
                     self.op_cls.typed_hardblock_legalization_op.legalize_site_macros(
                         pos_xyz
                     )
+                    logger.info(
+                        "same-site physical macro legalization takes %.3f seconds",
+                        time.time() - stage_tt,
+                    )
+                logger.info("Start masked LUT/FF direct legalization...")
+                stage_tt = time.time()
                 self.op_cls.masked_direct_lg_op(pos_xyz)
+                logger.info(
+                    "masked LUT/FF direct legalization takes %.3f seconds",
+                    time.time() - stage_tt,
+                )
             else:
                 if self.params.confine_clock_region_flag:
                     self.op_cls.direct_lg_op.reset_honor_fence_region_constraints(
@@ -1865,8 +1889,13 @@ class Placer(nn.Module):
                 and self.op_cls.typed_hardblock_legalization_op.hardblock_ids.numel()
             ):
                 logger.info("Start typed hardblock chain legalization...")
+                stage_tt = time.time()
                 self.op_cls.typed_hardblock_legalization_op.legalize_hardblocks(
                     pos_xyz
+                )
+                logger.info(
+                    "typed hardblock chain legalization takes %.3f seconds",
+                    time.time() - stage_tt,
                 )
 
             # apply solution
@@ -1881,6 +1910,7 @@ class Placer(nn.Module):
             ].data.copy_(loc_xyz)
 
             # evaluate
+            stage_tt = time.time()
             opt_iter.iteration += 1
             cur_metric = EvalMetric(self.params, copy.deepcopy(opt_iter))
             cur_metric.evaluate(self.data_cls, eval_ops, self.data_cls.pos[0])
@@ -1913,6 +1943,10 @@ class Placer(nn.Module):
                         )
                     logger.warning("Placement is not LEGAL")
                 legality_check_done = True
+            logger.info(
+                "post-legalization evaluation takes %.3f seconds",
+                time.time() - stage_tt,
+            )
             if self.params.gp_timing_analysis_flag or debug_timing_flag:
                 max_dly, wns, tns = self.timing_analysis(self.data_cls.pos[0], opt_iter)
                 logger.info(
