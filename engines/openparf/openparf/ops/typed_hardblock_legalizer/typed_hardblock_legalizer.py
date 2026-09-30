@@ -11,6 +11,7 @@ OpenPARF has returned.
 import json
 import math
 from bisect import bisect_left
+from collections import Counter
 from pathlib import Path
 import sqlite3
 
@@ -500,8 +501,14 @@ class TypedHardblockLegalizer(object):
                     unit_offsets = [
                         (x - mean_x, y - mean_y) for x, y in unit_coordinates
                     ]
-                    # A single vectorized rigid projection is valid only when
-                    # all certified windows have the same relative geometry.
+                    # Global placement needs one canonical shape per macro,
+                    # while the exact legalizer below still selects among all
+                    # source-certified windows.  Real devices can insert a
+                    # larger coordinate gap at a clock/region boundary, so use
+                    # the most common exact window geometry as the continuous
+                    # placement guide instead of requiring every window to be
+                    # geometrically identical.
+                    offset_patterns = Counter()
                     for chain in chain_set["chains"]:
                         for start in range(len(chain) - chain_length + 1):
                             candidate = [
@@ -518,11 +525,15 @@ class TypedHardblockLegalizer(object):
                                 (x - candidate_mean_x, y - candidate_mean_y)
                                 for x, y in candidate
                             ]
-                            if candidate_offsets != unit_offsets:
-                                raise ValueError(
-                                    "directed site-chain windows do not share one "
-                                    "rigid placement geometry"
-                                )
+                            offset_patterns[tuple(candidate_offsets)] += 1
+                    if not offset_patterns:
+                        raise ValueError(
+                            "directed site-chain set has no placement geometry"
+                        )
+                    unit_offsets = list(min(
+                        offset_patterns,
+                        key=lambda pattern: (-offset_patterns[pattern], pattern),
+                    ))
                     chain_offset_cache[cache_key] = unit_offsets
                 offsets = [
                     unit_offsets[unit_index]
