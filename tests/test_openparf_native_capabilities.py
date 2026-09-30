@@ -421,6 +421,8 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
             "\n    def ", 1
         )[0]
         self.assertIn("self.data_cls.inst_locs_xyz.detach().cpu()", writer)
+        self.assertIn("site_coordinates = [int(value)", writer)
+        self.assertIn("math.isfinite(value)", writer)
         self.assertIn("os.replace(temporary, filename)", writer)
         self.assertNotIn("self.apply()", writer)
         self.assertNotIn("writeBookshelfPl", writer)

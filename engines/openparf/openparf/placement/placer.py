@@ -3072,16 +3072,19 @@ class Placer(nn.Module):
             with open(temporary, "w", encoding="utf-8") as stream:
                 for inst_id in range(num_insts):
                     coordinates = [float(value) for value in locations[inst_id, :3]]
-                    rounded = [int(round(value)) for value in coordinates]
-                    if any(abs(value - integer) > 1e-4
-                           for value, integer in zip(coordinates, rounded)):
+                    if not all(math.isfinite(value) for value in coordinates):
                         raise RuntimeError(
-                            "final placement contains a non-integral coordinate "
+                            "final placement contains a non-finite coordinate "
                             "for instance %s" % self.placedb.instName(inst_id)
                         )
+                    # PlaceDB::apply constructs an integer InstAttr::PointType
+                    # from the floating point placement center.  Match that
+                    # truncation exactly; the downstream certificate maps the
+                    # dense coordinate to a physical site and proves legality.
+                    site_coordinates = [int(value) for value in coordinates]
                     stream.write(
                         "%s %d %d %d\n"
-                        % (self.placedb.instName(inst_id), *rounded)
+                        % (self.placedb.instName(inst_id), *site_coordinates)
                     )
                 stream.flush()
                 os.fsync(stream.fileno())
