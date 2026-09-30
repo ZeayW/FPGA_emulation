@@ -437,7 +437,153 @@ class TypedHardblockLegalizer(object):
         # small legalization problem into an O(macros * device-sites) pass.
         self._compact_site_indexes = {}
         self._compact_chain_indexes = {}
+        self._alignment_device_cache = {}
+        self._build_site_macro_alignment()
         self.last_assignment = None
+
+    def _build_site_macro_alignment(self):
+        """Build a vectorized rigid-macro projection for global placement.
+
+        Site macros used to be enforced only after global placement.  That is
+        too late for realistic carry-heavy designs: tens of thousands of LUT,
+        FF, MUX, and CARRY members may be optimized independently and then
+        snapped to a few thousand legal chains.  The snap destroys the global
+        placement objective and can make both legalization and routing
+        pathological.  Keep every same-site/cascade group rigid during global
+        placement, using only geometry from the sealed site-chain contract.
+        """
+        macro_groups = [
+            group for group in self.groups
+            if group["kind"] in {"site_macro", "site_cascade"}
+        ]
+        alignment_ids = []
+        alignment_group_ids = []
+        alignment_offsets = []
+        coordinate_cache = None
+        chain_offset_cache = {}
+
+        def coordinates():
+            nonlocal coordinate_cache
+            if coordinate_cache is None:
+                uri = "file:{}?mode=ro&immutable=1".format(self.site_database)
+                coordinate_cache = {}
+                with sqlite3.connect(uri, uri=True) as database:
+                    for site, x, y in database.execute(
+                        "SELECT p.physical_site, s.placement_x, s.placement_y "
+                        "FROM physical_sites p JOIN sites s USING(dense_x, dense_y) "
+                        "WHERE p.resource = 'LUT'"
+                    ):
+                        coordinate_cache[str(site)] = (float(x), float(y))
+            return coordinate_cache
+
+        for group_index, group in enumerate(macro_groups):
+            if group["kind"] == "site_macro":
+                offsets = [(0.0, 0.0)] * len(group["ids"])
+            else:
+                template = group["chain_template"]
+                chain_length = template["chain_length"]
+                unit_members = len(template["unit_members"])
+                chain_set_id = template["chain_set"]
+                cache_key = (chain_set_id, chain_length)
+                unit_offsets = chain_offset_cache.get(cache_key)
+                if unit_offsets is None:
+                    chain_set = self._site_chain_sets[chain_set_id]
+                    reference_chain = next(
+                        chain for chain in chain_set["chains"]
+                        if len(chain) >= chain_length
+                    )[:chain_length]
+                    unit_coordinates = [
+                        coordinates()[site] for site in reference_chain
+                    ]
+                    mean_x = sum(x for x, _y in unit_coordinates) / chain_length
+                    mean_y = sum(y for _x, y in unit_coordinates) / chain_length
+                    unit_offsets = [
+                        (x - mean_x, y - mean_y) for x, y in unit_coordinates
+                    ]
+                    # A single vectorized rigid projection is valid only when
+                    # all certified windows have the same relative geometry.
+                    for chain in chain_set["chains"]:
+                        for start in range(len(chain) - chain_length + 1):
+                            candidate = [
+                                coordinates()[site]
+                                for site in chain[start:start + chain_length]
+                            ]
+                            candidate_mean_x = (
+                                sum(x for x, _y in candidate) / chain_length
+                            )
+                            candidate_mean_y = (
+                                sum(y for _x, y in candidate) / chain_length
+                            )
+                            candidate_offsets = [
+                                (x - candidate_mean_x, y - candidate_mean_y)
+                                for x, y in candidate
+                            ]
+                            if candidate_offsets != unit_offsets:
+                                raise ValueError(
+                                    "directed site-chain windows do not share one "
+                                    "rigid placement geometry"
+                                )
+                    chain_offset_cache[cache_key] = unit_offsets
+                offsets = [
+                    unit_offsets[unit_index]
+                    for unit_index in range(chain_length)
+                    for _member_index in range(unit_members)
+                ]
+            if len(offsets) != len(group["ids"]):
+                raise ValueError("site-macro alignment shape is inconsistent")
+            alignment_ids.extend(group["ids"])
+            alignment_group_ids.extend([group_index] * len(group["ids"]))
+            alignment_offsets.extend(offsets)
+
+        self.alignment_group_count = len(macro_groups)
+        self.alignment_ids = torch.tensor(alignment_ids, dtype=torch.int64)
+        self.alignment_group_ids = torch.tensor(
+            alignment_group_ids, dtype=torch.int64
+        )
+        self.alignment_offsets = torch.tensor(
+            alignment_offsets, dtype=torch.float64
+        ).reshape((-1, 2))
+        if self.alignment_group_count:
+            self.alignment_group_counts = torch.bincount(
+                self.alignment_group_ids,
+                minlength=self.alignment_group_count,
+            ).to(torch.float64).reshape((-1, 1))
+        else:
+            self.alignment_group_counts = torch.empty((0, 1), dtype=torch.float64)
+
+    def align_site_macros(self, pos):
+        """Project site-macro members onto their rigid relative geometry."""
+        if not self.alignment_group_count:
+            return pos
+        if pos.ndim == 1:
+            if pos.numel() % 2:
+                raise ValueError("global placement position vector is not XY paired")
+            xy = pos.reshape((-1, 2))
+        elif pos.ndim == 2 and pos.shape[1] == 2:
+            xy = pos
+        else:
+            raise ValueError("global placement position tensor must be Nx2")
+        cache_key = (pos.device.type, pos.device.index, pos.dtype)
+        cached = self._alignment_device_cache.get(cache_key)
+        if cached is None:
+            cached = (
+                self.alignment_ids.to(device=pos.device),
+                self.alignment_group_ids.to(device=pos.device),
+                self.alignment_offsets.to(device=pos.device, dtype=pos.dtype),
+                self.alignment_group_counts.to(device=pos.device, dtype=pos.dtype),
+            )
+            self._alignment_device_cache[cache_key] = cached
+        ids, group_ids, offsets, counts = cached
+        with torch.no_grad():
+            centers = torch.zeros(
+                (self.alignment_group_count, 2),
+                dtype=pos.dtype,
+                device=pos.device,
+            )
+            centers.index_add_(0, group_ids, xy[ids] - offsets)
+            centers.div_(counts)
+            xy[ids] = centers[group_ids] + offsets
+        return pos
 
     def _compact_site_index(self, site_resource, expected_count):
         """Return a cached exact spatial index for compact template sites.

@@ -333,6 +333,73 @@ class TypedHardblockLegalizerTest(unittest.TestCase):
         self.assertEqual(len(operator._compact_chain_indexes), 1)
         self.assertTrue(torch.all(data.inst_lock_mask))
 
+    def test_global_projection_keeps_complete_site_cascade_rigid(self):
+        value = {
+            "schema": "openparf.physical-macro-groups/v3", "status": "pass",
+            "site_chain_sets": [{
+                "id": "carry-next", "site_resource": "LUT",
+                "chains": [["SLICE_X0Y0", "SLICE_X0Y1"]],
+            }],
+            "groups": [{
+                "id": "carry-chain", "kind": "site_cascade",
+                "resource": "SLICE_MACRO", "owned_resources": ["CARRY8"],
+                "instances": ["c0", "l0", "c1", "l1"],
+                "window_count": 1,
+                "chain_template": {
+                    "kind": "directed-site-chain/v1",
+                    "chain_set": "carry-next", "chain_length": 2,
+                    "unit_members": [
+                        {"resource": "CARRY8", "z": 0, "bel": "CARRY8"},
+                        {"resource": "LUT", "z": 1, "bel": "A6LUT"},
+                    ],
+                },
+            }],
+        }
+        operator, _data = self._operator(
+            value,
+            ["c0", "l0", "c1", "l1"],
+            site_rows=[
+                (0, 0, "SLICE_X0Y0", 0.0, 0.0),
+                (0, 1, "SLICE_X0Y1", 0.0, 2.0),
+            ],
+        )
+        pos = torch.tensor([
+            [4.0, 10.0], [6.0, 12.0],
+            [8.0, 20.0], [10.0, 22.0],
+        ])
+        operator.align_site_macros(pos)
+        self.assertEqual(pos.tolist(), [
+            [7.0, 15.0], [7.0, 15.0],
+            [7.0, 17.0], [7.0, 17.0],
+        ])
+
+    def test_global_projection_keeps_same_site_macro_coincident(self):
+        value = {
+            "schema": "openparf.physical-macro-groups/v3", "status": "pass",
+            "groups": [{
+                "id": "mux", "kind": "site_macro", "resource": "SLICE_MACRO",
+                "owned_resources": ["MUXF7"],
+                "instances": ["l0", "l1", "m0"],
+                "window_count": 1,
+                "window_template": {
+                    "kind": "same-site-slice/v1", "site_resource": "LUT",
+                    "members": [
+                        {"resource": "LUT", "z": 1, "bel": "A6LUT"},
+                        {"resource": "LUT", "z": 3, "bel": "B6LUT"},
+                        {"resource": "MUXF7", "z": 0, "bel": "F7MUX_AB"},
+                    ],
+                },
+            }],
+        }
+        operator, _data = self._operator(
+            value,
+            ["l0", "l1", "m0"],
+            site_rows=[(0, 0, "SLICE_X0Y0", 0.0, 0.0)],
+        )
+        pos = torch.tensor([[0.0, 2.0], [3.0, 5.0], [6.0, 8.0]])
+        operator.align_site_macros(pos)
+        self.assertEqual(pos.tolist(), [[3.0, 5.0]] * 3)
+
     def test_compact_site_search_is_exact_cached_and_sublinear(self):
         def group(group_id, instances):
             return {

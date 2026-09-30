@@ -1319,6 +1319,8 @@ class Placer(nn.Module):
             self.op_cls.move_boundary_op(pos)
             if self.params.align_carry_chain_flag:
                 self.op_cls.chain_alignment_op(pos)
+            if self.op_cls.typed_hardblock_legalization_op is not None:
+                self.op_cls.typed_hardblock_legalization_op.align_site_macros(pos)
 
         # define optimizer
         self.optimizer = NesterovAcceleratedGradientOptimizer(
