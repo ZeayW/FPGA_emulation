@@ -9,6 +9,10 @@ from emuflow.xilinx_segment_timing import (
     build_xilinx_local_path_timing,
     build_xilinx_segment_timing_bundle,
 )
+from emuflow.xilinx_timing import (
+    XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
+    XILINX_ROUTED_TIMING_STREAM_SCHEMA,
+)
 
 
 def _sha(path: Path) -> str:
@@ -116,7 +120,33 @@ def test_boundary_timing_covers_rx_and_tx_with_routed_delays():
             identity_path, mapped_path, timing_path, output
         )
         database = json.loads(output.read_text())
+        endpoints = timing.pop("endpoints")
+        encoded = b"".join(
+            json.dumps(
+                endpoint, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8") + b"\n"
+            for endpoint in endpoints
+        )
+        payload_path = root / "timing.json.endpoints.jsonl"
+        payload_path.write_bytes(encoded)
+        timing["schema"] = XILINX_ROUTED_TIMING_STREAM_SCHEMA
+        timing["payloads"] = {
+            "endpoints": {
+                "format": XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
+                "path": payload_path.name,
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+                "records": len(endpoints),
+            }
+        }
+        timing_path.write_text(json.dumps(timing), encoding="utf-8")
+        streamed_output = root / "boundary-streamed.json"
+        streamed_result = build_xilinx_boundary_timing(
+            identity_path, mapped_path, timing_path, streamed_output
+        )
+        streamed_database = json.loads(streamed_output.read_text())
     assert result["endpoints"] == 2
+    assert streamed_result["endpoints"] == 2
+    assert streamed_database == database
     delays = {item["id"]: item["delay_ns"] for item in database["endpoints"]}
     assert abs(delays["rx0"] - 0.27) < 1e-12
     assert abs(delays["tx0"] - 0.395) < 1e-12

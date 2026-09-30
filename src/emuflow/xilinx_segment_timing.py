@@ -23,7 +23,10 @@ from .local_path_timing import (
     validate_local_path_identity,
     validate_local_path_timing,
 )
-from .xilinx_timing import validate_xilinx_routed_timing
+from .xilinx_timing import (
+    iter_xilinx_routed_timing_endpoints,
+    validate_xilinx_routed_timing,
+)
 
 
 XILINX_SEGMENT_QUALIFICATION = (
@@ -46,7 +49,12 @@ def _top(port: str, index: int, width: int) -> str:
 
 
 class _TimingGraph:
-    def __init__(self, mapped: Mapping[str, Any], timing: Mapping[str, Any]):
+    def __init__(
+        self,
+        mapped: Mapping[str, Any],
+        timing: Mapping[str, Any],
+        endpoints: Iterable[Mapping[str, Any]],
+    ):
         modules = mapped.get("modules", {})
         top = timing.get("top")
         module = modules.get(top) if isinstance(modules, dict) else None
@@ -67,7 +75,7 @@ class _TimingGraph:
         route_delays = {
             (item["sink"]["instance"], item["sink"]["pin"]):
             float(item["route_delay_ns"])
-            for item in timing["endpoints"]
+            for item in endpoints
         }
 
         bit_endpoints: Dict[int, list[Tuple[str, str]]] = defaultdict(list)
@@ -213,11 +221,17 @@ def _graph(
     timing_value: Optional[Mapping[str, Any]] = None,
     timing_validation: Optional[Mapping[str, Any]] = None,
 ) -> _TimingGraph:
+    timing = read_json(timing_path) if timing_value is None else timing_value
     if timing_validation is None:
-        validate_xilinx_routed_timing(timing_path, mapped_path=mapped_path)
+        validate_xilinx_routed_timing(
+            timing_path,
+            mapped_path=mapped_path,
+            _value=timing,
+        )
     return _TimingGraph(
         read_json(mapped_path) if mapped_value is None else mapped_value,
-        read_json(timing_path) if timing_value is None else timing_value,
+        timing,
+        iter_xilinx_routed_timing_endpoints(timing_path, timing),
     )
 
 
