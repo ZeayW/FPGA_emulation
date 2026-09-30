@@ -190,8 +190,22 @@ class MultiFpgaFlowTest(unittest.TestCase):
             "--out",
             "build",
         ]
-        self.assertTrue(_build_parser().parse_args(base).timing_driven)
-        self.assertIsNone(_build_parser().parse_args(base).ratio_quantum)
+        defaults = _build_parser().parse_args(base)
+        self.assertTrue(defaults.timing_driven)
+        self.assertIsNone(defaults.ratio_quantum)
+        self.assertIsNone(defaults.physical_rapidwright_placer)
+        self.assertEqual(
+            _build_parser()
+            .parse_args(
+                [
+                    *base,
+                    "--physical-rapidwright-placer",
+                    "legacy",
+                ]
+            )
+            .physical_rapidwright_placer,
+            "legacy",
+        )
         self.assertFalse(
             _build_parser().parse_args(
                 [*base, "--no-timing-driven"]

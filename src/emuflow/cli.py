@@ -229,7 +229,11 @@ from .multi_fpga_flow import (
     validate_multi_fpga_flow_bundle,
 )
 from .multi_fpga_bsp_flow import run_multi_fpga_bsp_flow
-from .multi_fpga_physical_flow import run_multi_fpga_physical_flow
+from .multi_fpga_physical_flow import (
+    DEFAULT_RAPIDWRIGHT_PLACER,
+    RAPIDWRIGHT_PLACERS,
+    run_multi_fpga_physical_flow,
+)
 from .opensta import (
     DEFAULT_TIMING_MODEL,
     parse_clock_definitions,
@@ -2226,11 +2230,12 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--physical-rapidwright-opensta")
     multi_fpga_compile.add_argument(
         "--physical-rapidwright-placer",
-        choices=("legacy", "openparf-native"),
-        default="legacy",
+        choices=RAPIDWRIGHT_PLACERS,
+        default=None,
         help=(
-            "select the RapidWright placement producer; openparf-native is "
-            "the fail-closed native OpenPARF candidate and has no fallback"
+            "select the RapidWright placement producer; when the RapidWright "
+            f"backend is selected the default is {DEFAULT_RAPIDWRIGHT_PLACER}, "
+            "which is fail-closed and has no fallback"
         ),
     )
     multi_fpga_compile.add_argument(
@@ -2348,11 +2353,12 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_physical.add_argument("--rapidwright-opensta")
     multi_fpga_physical.add_argument(
         "--rapidwright-placer",
-        choices=("legacy", "openparf-native"),
-        default="legacy",
+        choices=RAPIDWRIGHT_PLACERS,
+        default=None,
         help=(
-            "select the RapidWright placement producer; openparf-native is "
-            "the fail-closed native OpenPARF candidate and has no fallback"
+            "select the RapidWright placement producer; the RapidWright "
+            f"backend defaults to {DEFAULT_RAPIDWRIGHT_PLACER}, which is "
+            "fail-closed and has no fallback"
         ),
     )
     multi_fpga_physical.add_argument(

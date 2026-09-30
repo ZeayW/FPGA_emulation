@@ -4844,43 +4844,28 @@ routing demand is too large for the two-device configuration.  It is a named
 complete platform configuration, not an arbitrary subset of a larger board.
 Both interconnects remain declared academic models; changing the FPGA count is
 not reported as an algorithmic QoR improvement.
-OpenPARF is used only for analytical global-placement guidance in this
-backend. Packed slice clusters are classified as logic and remain continuous;
-DSP, BRAM, and URAM clusters retain OpenPARF's single-site-resource lookahead
-so their sparse physical columns participate in a feasible global solution.
-The Bookshelf model records a zero-demand auxiliary resource in every slice
-tile because a real UltraScale+ slice is a multi-resource logic site; this
-prevents OpenPARF's structural single-resource detector from sending all packed
-slice clusters through the hard-column min-cost-flow legalizer.
-Final Bookshelf legalization remains disabled: the first-party Xilinx
-legalizer performs the authoritative site/BEL/cascade assignment and
-independently checks it before RWRoute. This keeps global hard-column guidance
-without duplicating final architecture legalization. Each physical FPGA tile
-becomes one OpenPARF site whose capacity is the sum of the supported slice,
-DSP, BRAM, and URAM sites in that tile.  Physical tile columns and rows are
-compressed onto contiguous analytical axes and mapped piecewise-linearly back
-to the same tile grid afterward.  The exporter never uses ArchitectureDB's
-unique site key `tile_col * site_stride + site_index` as a geometric
-coordinate: that key distinguishes multiple sites in one tile but would
-stretch horizontal distance by `site_stride` and corrupt the wirelength
-objective.  The continuous guidance driver emits a compact convergence
-certificate and fails closed when any populated non-I/O area type remains
-above OpenPARF's declared guidance limit.  It explicitly pins the upstream
-ISPD reference stopping rule (`stop_overflow=0.10`) and the native
-routability-adjustment threshold (`0.15`).  This ordering is essential:
-OpenPARF's generic `0.20` stopping default would otherwise terminate global
-placement before an enabled RUDY or pin-density adjustment can execute.  This
-preserves OpenPARF's own
-two-tier rule: packed slice logic must reach `stop_overflow`, while sparse
-single-site DSP/BRAM resources may use at most twice that value before the
-exact Xilinx legalizer.  The driver stops at the first valid point so continued
-augmented-multiplier growth cannot turn a converged guidance solution into a
-late numerical divergence; reaching the 1000-iteration ceiling is not accepted
-as successful guidance.  The full native atomic route uses the separate
-stable-feasible termination contract described above; it never substitutes
-the continuous guidance driver for native legalization or detailed placement.
-Upstream bitmap plots remain suppressed, so
-diagnostic rendering is not part of the physical hot path.
+The production candidate uses OpenPARF for the complete placement-owned
+sequence: connectivity-derived macro ownership, typed analytical global
+placement, resource and macro legalization, and ISM detailed placement.
+EmuFlow then imports the exact site/BEL answer into an independently checked
+certificate; it does not run a second site search or repair pass before
+RWRoute.  Sparse DLA partitions are admitted to the smallest contiguous SLR
+window that preserves 1.5x resource headroom, instead of being spread over all
+four XCVU19P SLRs.  This keeps high-fanout bounding boxes and the routing search
+domain proportional to the actual partition while retaining explicit
+multi-SLR support when capacity requires it.
+
+The historical continuous-guidance plus first-party greedy-legalization path
+remains available only as the explicitly named `legacy` RapidWright placer.
+It is not silently selected when native placement fails.  The native driver
+emits a compact convergence certificate, pins the upstream ISPD reference
+stopping rule (`stop_overflow=0.10`) and routability-adjustment threshold
+(`0.15`), requires a stable feasible settling window, restores the best
+feasible iterate, and fails closed on non-finite or unlegalizable results.
+Final placement materialization preserves the origin of each covering site
+bounding box, including sparse and multi-coordinate UltraScale+ resources.
+Upstream bitmap plots remain suppressed, so diagnostic rendering is not part
+of the physical hot path.
 RapidWright's external `data/parts.db` and XCVU19P device database are checked
 against the provider-pinned digests and mounted read-only into each isolated
 partition runtime. Missing or mismatched data fails closed; the backend never

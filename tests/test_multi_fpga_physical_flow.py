@@ -614,6 +614,20 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     rapidwright_placer="invented",
                 )
 
+    def test_rapidwright_default_is_openparf_native_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(
+                ValidationError, "openparf-native requires source-sealed"
+            ):
+                run_multi_fpga_physical_flow(
+                    root,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical",
+                    backend="rapidwright",
+                )
+
     def test_rejects_rapidwright_placer_for_other_backend(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

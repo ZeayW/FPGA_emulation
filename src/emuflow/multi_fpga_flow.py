@@ -1260,7 +1260,7 @@ def run_multi_fpga_flow(
     physical_rapidwright_device_data: Optional[Path] = None,
     physical_rapidwright_timing_data: Optional[Path] = None,
     physical_rapidwright_opensta: Optional[str] = None,
-    physical_rapidwright_placer: str = "legacy",
+    physical_rapidwright_placer: Optional[str] = None,
     physical_rapidwright_native_constraints: Optional[Path] = None,
     physical_rapidwright_provider_manifest: Optional[Path] = None,
     physical_workers: int = 1,
