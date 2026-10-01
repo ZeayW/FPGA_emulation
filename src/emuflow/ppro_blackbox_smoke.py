@@ -16,7 +16,12 @@ from typing import Any, Dict
 
 from .errors import ValidationError
 from .io import write_json
-from .ppro_blackbox_runner import MOCK_REPORT_PROFILE, RUN_SPEC_SCHEMA, validate_run_spec
+from .ppro_blackbox_runner import (
+    MOCK_REPORT_PROFILE,
+    RUN_SPEC_SCHEMA,
+    SUPPORTED_REPORT_PROFILES,
+    validate_run_spec,
+)
 
 
 _GENERATOR_ID = "ppro-blackbox-connected-smoke-v1"
@@ -92,6 +97,7 @@ def generate_connected_smoke_bundle(
     width: int = 32,
     pipeline_stages: int = 8,
     role: str = "holdout",
+    adapter_profile: str = MOCK_REPORT_PROFILE,
 ) -> GeneratedSmokeBundle:
     """Generate one idempotent C0 smoke bundle without runtime secrets.
 
@@ -110,6 +116,8 @@ def generate_connected_smoke_bundle(
         raise ValidationError("connected smoke pipeline_stages must be an integer >= 2")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValidationError("connected smoke seed must be an integer >= 0")
+    if adapter_profile not in SUPPORTED_REPORT_PROFILES:
+        raise ValidationError("connected smoke adapter profile is unsupported")
 
     root = output_dir.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -156,6 +164,7 @@ def generate_connected_smoke_bundle(
             "generator_revision": _GENERATOR_REVISION,
             "rtl_sha256": _sha256_bytes(rtl.encode("utf-8")),
             "parameters_sha256": _sha256_bytes(_canonical_bytes(parameters)),
+            "top_module": "ppro_blackbox_connected_smoke",
             "design_metrics": {
                 "pipeline_stages": pipeline_stages,
                 "rtl_width": width,
@@ -169,7 +178,7 @@ def generate_connected_smoke_bundle(
         },
         "execution": {"seed": seed},
         "adapter": {
-            "profile": MOCK_REPORT_PROFILE,
+            "profile": adapter_profile,
             "expected_reports": _REPORTS,
         },
     }

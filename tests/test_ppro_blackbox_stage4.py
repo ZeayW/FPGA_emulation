@@ -25,7 +25,7 @@ def communication_observation(
 ):
     failure = None if outcome == "pass" else "link-capacity-boundary"
     routes = (
-        [{"id": "forward", "source": "F0", "sinks": ["F1"], "effective_hops": hops}]
+        [{"id": "forward", "source": "F0", "sinks": ["F1"], "effective_hops": hops, "signal_count": 1}]
         if outcome == "pass"
         else []
     )
@@ -45,6 +45,7 @@ def communication_observation(
             "generator_revision": "2" * 64,
             "rtl_sha256": "3" * 64,
             "parameters_sha256": "4" * 64,
+            "top_module": "stage4_probe",
         },
         "experiment": {
             "kind": kind,

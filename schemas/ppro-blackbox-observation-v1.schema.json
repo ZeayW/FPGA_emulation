@@ -44,12 +44,13 @@
     "workload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["generator_id", "generator_revision", "rtl_sha256", "parameters_sha256"],
+      "required": ["generator_id", "generator_revision", "rtl_sha256", "parameters_sha256", "top_module"],
       "properties": {
         "generator_id": {"$ref": "#/$defs/id"},
         "generator_revision": {"$ref": "#/$defs/sha256"},
         "rtl_sha256": {"$ref": "#/$defs/sha256"},
-        "parameters_sha256": {"$ref": "#/$defs/sha256"}
+        "parameters_sha256": {"$ref": "#/$defs/sha256"},
+        "top_module": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}
       }
     },
     "experiment": {
@@ -139,12 +140,13 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "source", "sinks", "effective_hops"],
+            "required": ["id", "source", "sinks", "effective_hops", "signal_count"],
             "properties": {
               "id": {"$ref": "#/$defs/id"},
               "source": {"type": "string", "pattern": "^F[0-9]+$"},
               "sinks": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^F[0-9]+$"}},
-              "effective_hops": {"type": "integer", "minimum": 1}
+              "effective_hops": {"type": "integer", "minimum": 1},
+              "signal_count": {"type": "integer", "minimum": 1}
             }
           }
         },

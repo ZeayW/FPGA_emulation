@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import sys
 import tempfile
@@ -41,6 +42,7 @@ def run_spec(identifier: str = "mock-run-1"):
             "generator_revision": "1111111111111111111111111111111111111111111111111111111111111111",
             "rtl_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
             "parameters_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "top_module": "ppro_blackbox_latency",
             "design_metrics": {"clock_domains": 1, "instances": 1200, "nets": 1800},
         },
         "experiment": {
@@ -101,6 +103,43 @@ class PProBlackboxRunnerTest(unittest.TestCase):
             self.assertNotIn(forbidden, text.lower())
         self.assertNotIn("command", normalized)
         self.assertNotIn("report_paths", normalized)
+
+    def test_real_profile_uses_runtime_only_aliases_and_nested_reports(self):
+        spec = copy.deepcopy(run_spec())
+        spec["adapter"]["profile"] = "ppro-2026-ordinary-reports-v1"
+        self.assertEqual(
+            validate_run_spec(spec)["adapter"]["profile"],
+            "ppro-2026-ordinary-reports-v1",
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "case"
+            reports = root / "project" / "rtlpart" / "report"
+            paths = {
+                "resource_summary": reports / "pa0.rpt",
+                "partition_summary": reports / "pa0.rpt",
+                "route_summary": reports / "sr0.rpt",
+                "system_timing": reports / "sr0_time.rpt",
+            }
+            missing_aliases = RuntimeBinding(
+                case_dir=root,
+                command=("true",),
+                report_paths=paths,
+                output_path=root / "observation.json",
+            )
+            with self.assertRaisesRegex(ValidationError, "requires FPGA aliases"):
+                validate_runtime_binding(
+                    missing_aliases, profile="ppro-2026-ordinary-reports-v1"
+                )
+            validate_runtime_binding(
+                RuntimeBinding(
+                    case_dir=root,
+                    command=("true",),
+                    report_paths=paths,
+                    output_path=root / "observation.json",
+                    fpga_aliases={"F1": "F0", "F3": "F1"},
+                ),
+                profile="ppro-2026-ordinary-reports-v1",
+            )
 
     def test_mock_pass_emits_compact_observation_and_removes_raw_reports(self):
         with tempfile.TemporaryDirectory() as raw:

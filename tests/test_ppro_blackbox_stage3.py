@@ -42,6 +42,7 @@ def observation(
             "generator_revision": "2" * 64,
             "rtl_sha256": "3" * 64,
             "parameters_sha256": "4" * 64,
+            "top_module": "stage3_probe",
         },
         "experiment": {
             "kind": kind,
@@ -125,7 +126,7 @@ class PProBlackboxStage3Test(unittest.TestCase):
         for source, sink, outcome in ((0, 1, "pass"), (1, 0, "routing_infeasible")):
             for repeat in range(2):
                 routes = (
-                    [{"id": "route0", "source": f"F{source}", "sinks": [f"F{sink}"], "effective_hops": 2}]
+                    [{"id": "route0", "source": f"F{source}", "sinks": [f"F{sink}"], "effective_hops": 2, "signal_count": 1}]
                     if outcome == "pass"
                     else []
                 )

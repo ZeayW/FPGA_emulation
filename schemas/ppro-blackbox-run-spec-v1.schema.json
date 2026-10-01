@@ -33,12 +33,13 @@
     "workload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["generator_id", "generator_revision", "rtl_sha256", "parameters_sha256", "design_metrics"],
+      "required": ["generator_id", "generator_revision", "rtl_sha256", "parameters_sha256", "top_module", "design_metrics"],
       "properties": {
         "generator_id": {"$ref": "#/$defs/identifier"},
         "generator_revision": {"$ref": "#/$defs/sha256"},
         "rtl_sha256": {"$ref": "#/$defs/sha256"},
         "parameters_sha256": {"$ref": "#/$defs/sha256"},
+        "top_module": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
         "design_metrics": {
           "type": "object",
           "minProperties": 1,
@@ -75,7 +76,7 @@
       "additionalProperties": false,
       "required": ["profile", "expected_reports"],
       "properties": {
-        "profile": {"const": "mock-ordinary-reports-v1"},
+        "profile": {"enum": ["mock-ordinary-reports-v1", "ppro-2026-ordinary-reports-v1"]},
         "expected_reports": {
           "type": "array",
           "minItems": 4,

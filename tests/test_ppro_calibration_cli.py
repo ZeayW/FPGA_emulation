@@ -57,6 +57,33 @@ class PProCalibrationCliTest(unittest.TestCase):
                 "emuflow.ppro-blackbox-run-spec/v1",
             )
 
+    def test_generate_real_report_profile(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "real-smoke"
+            with redirect_stdout(StringIO()):
+                code = main(
+                    [
+                        "generate-smoke",
+                        "--out",
+                        str(root),
+                        "--campaign-id",
+                        "cli-real-smoke",
+                        "--configuration-id",
+                        "lx2-m1",
+                        "--tool-release",
+                        "2026.1",
+                        "--runner-revision",
+                        "a" * 64,
+                        "--adapter-profile",
+                        "ppro-2026-ordinary-reports-v1",
+                    ]
+                )
+            self.assertEqual(code, 0)
+            spec = json.loads((root / "run-spec.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                spec["adapter"]["profile"], "ppro-2026-ordinary-reports-v1"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

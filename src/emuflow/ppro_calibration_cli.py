@@ -9,6 +9,7 @@ from typing import Any, Sequence
 
 from .io import read_json, write_json
 from .ppro_blackbox_calibration import validate_redacted_artifact
+from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
 from .ppro_blackbox_runner import validate_run_spec
 from .ppro_blackbox_smoke import generate_connected_smoke_bundle
 from .ppro_blackbox_stage3 import fit_capacity_intervals, fit_effective_topology
@@ -57,6 +58,11 @@ def _parser() -> argparse.ArgumentParser:
     smoke.add_argument("--seed", type=int, default=1)
     smoke.add_argument("--width", type=int, default=32)
     smoke.add_argument("--pipeline-stages", type=int, default=8)
+    smoke.add_argument(
+        "--adapter-profile",
+        choices=["mock-ordinary-reports-v1", PPRO_2026_REPORT_PROFILE],
+        default="mock-ordinary-reports-v1",
+    )
 
     for name in ("fit-capacity", "fit-topology", "fit-payload", "fit-transport"):
         command = commands.add_parser(name)
@@ -105,6 +111,7 @@ def _dispatch(args: argparse.Namespace) -> Any:
             seed=args.seed,
             width=args.width,
             pipeline_stages=args.pipeline_stages,
+            adapter_profile=args.adapter_profile,
         )
         return {"status": "pass", "run_spec": bundle.run_spec}
     if args.command == "fit-capacity":

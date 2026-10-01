@@ -15,7 +15,12 @@ from typing import Any, Dict, Sequence
 
 from .errors import ValidationError
 from .io import write_json
-from .ppro_blackbox_runner import MOCK_REPORT_PROFILE, RUN_SPEC_SCHEMA, validate_run_spec
+from .ppro_blackbox_runner import (
+    MOCK_REPORT_PROFILE,
+    RUN_SPEC_SCHEMA,
+    SUPPORTED_REPORT_PROFILES,
+    validate_run_spec,
+)
 
 
 CAPACITY_AXES = {
@@ -171,9 +176,12 @@ def generate_capacity_probe_bundle(
     tool_release: str,
     runner_revision: str,
     seed: int,
+    adapter_profile: str = MOCK_REPORT_PROFILE,
 ) -> CapacityProbeBundle:
     if axis not in CAPACITY_AXES:
         raise ValidationError(f"capacity axis must be one of {sorted(CAPACITY_AXES)}")
+    if adapter_profile not in SUPPORTED_REPORT_PROFILES:
+        raise ValidationError("capacity adapter profile is unsupported")
     for name, value, minimum in (
         ("units", units, 2),
         ("repeat", repeat, 0),
@@ -222,6 +230,7 @@ def generate_capacity_probe_bundle(
             "generator_revision": _GENERATOR_REVISION,
             "rtl_sha256": _sha256(rtl.encode("utf-8")),
             "parameters_sha256": _sha256(_canonical(parameters)),
+            "top_module": "ppro_blackbox_capacity_probe",
             "design_metrics": {"requested_units": units},
         },
         "experiment": {
@@ -232,7 +241,7 @@ def generate_capacity_probe_bundle(
         },
         "execution": {"seed": seed},
         "adapter": {
-            "profile": MOCK_REPORT_PROFILE,
+            "profile": adapter_profile,
             "expected_reports": _EXPECTED_REPORTS,
         },
     }
@@ -262,6 +271,7 @@ def generate_capacity_matrix(
     tool_release: str,
     runner_revision: str,
     seed_base: int = 1,
+    adapter_profile: str = MOCK_REPORT_PROFILE,
 ) -> list[CapacityProbeBundle]:
     if repeats < 1:
         raise ValidationError("capacity matrix repeats must be >= 1")
@@ -286,6 +296,7 @@ def generate_capacity_matrix(
                             tool_release=tool_release,
                             runner_revision=runner_revision,
                             seed=seed_base + repeat,
+                            adapter_profile=adapter_profile,
                         )
                     )
     return bundles

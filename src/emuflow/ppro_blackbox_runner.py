@@ -20,10 +20,15 @@ from typing import Any, Dict, Mapping, Sequence
 from .errors import ValidationError
 from .io import write_json
 from .ppro_blackbox_calibration import validate_blackbox_observation
+from .ppro_blackbox_ppro_adapter import (
+    PPRO_2026_REPORT_PROFILE,
+    parse_ppro_2026_ordinary_reports,
+)
 
 
 RUN_SPEC_SCHEMA = "emuflow.ppro-blackbox-run-spec/v1"
 MOCK_REPORT_PROFILE = "mock-ordinary-reports-v1"
+SUPPORTED_REPORT_PROFILES = {MOCK_REPORT_PROFILE, PPRO_2026_REPORT_PROFILE}
 _REPORTS = {
     "resource_summary",
     "partition_summary",
@@ -31,6 +36,7 @@ _REPORTS = {
     "system_timing",
 }
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_HDL_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _LICENSE_PATTERNS = (
     re.compile(r"license[^\n]*(?:fail|denied|unavailable|checkout)", re.I),
@@ -65,6 +71,7 @@ class RuntimeBinding:
     report_paths: Mapping[str, Path]
     output_path: Path
     environment: Mapping[str, str] = field(default_factory=dict)
+    fpga_aliases: Mapping[str, str] = field(default_factory=dict)
     timeout_seconds: float = 3600.0
     cleanup_raw_reports: bool = True
 
@@ -103,6 +110,12 @@ def _string(value: Any, context: str) -> str:
 def _sha256(value: Any, context: str) -> str:
     if not isinstance(value, str) or not _HASH_RE.fullmatch(value):
         raise ValidationError(f"{context}: expected lowercase SHA-256")
+    return value
+
+
+def _hdl_identifier(value: Any, context: str) -> str:
+    if not isinstance(value, str) or not _HDL_ID_RE.fullmatch(value):
+        raise ValidationError(f"{context}: invalid HDL identifier")
     return value
 
 
@@ -177,6 +190,7 @@ def validate_run_spec(value: Mapping[str, Any]) -> Dict[str, Any]:
             "generator_revision",
             "rtl_sha256",
             "parameters_sha256",
+            "top_module",
             "design_metrics",
         },
         set(),
@@ -190,6 +204,9 @@ def validate_run_spec(value: Mapping[str, Any]) -> Dict[str, Any]:
         "rtl_sha256": _sha256(workload["rtl_sha256"], "run spec.workload.rtl_sha256"),
         "parameters_sha256": _sha256(
             workload["parameters_sha256"], "run spec.workload.parameters_sha256"
+        ),
+        "top_module": _hdl_identifier(
+            workload["top_module"], "run spec.workload.top_module"
         ),
         "design_metrics": _nonnegative_metrics(
             workload["design_metrics"], "run spec.workload.design_metrics"
@@ -230,7 +247,7 @@ def validate_run_spec(value: Mapping[str, Any]) -> Dict[str, Any]:
     adapter = _mapping(root["adapter"], "run spec.adapter")
     _strict_keys(adapter, {"profile", "expected_reports"}, set(), "run spec.adapter")
     profile = _string(adapter["profile"], "run spec.adapter.profile")
-    if profile != MOCK_REPORT_PROFILE:
+    if profile not in SUPPORTED_REPORT_PROFILES:
         raise ValidationError("run spec.adapter.profile: unsupported report profile")
     expected_reports = adapter["expected_reports"]
     if not isinstance(expected_reports, list):
@@ -254,7 +271,7 @@ def validate_run_spec(value: Mapping[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
-def validate_runtime_binding(binding: RuntimeBinding) -> None:
+def validate_runtime_binding(binding: RuntimeBinding, *, profile: str = MOCK_REPORT_PROFILE) -> None:
     if not binding.command or any(not isinstance(item, str) or not item for item in binding.command):
         raise ValidationError("runtime binding command must be a non-empty argv tuple")
     if set(binding.report_paths) != _REPORTS:
@@ -264,10 +281,15 @@ def validate_runtime_binding(binding: RuntimeBinding) -> None:
     case_dir = binding.case_dir.resolve()
     for name, raw_path in binding.report_paths.items():
         path = raw_path.resolve()
-        if path.parent != case_dir:
-            raise ValidationError(f"runtime report {name} must be directly inside the isolated case directory")
+        if not path.is_relative_to(case_dir):
+            raise ValidationError(f"runtime report {name} must stay inside the isolated case directory")
     if binding.output_path.resolve().parent != case_dir:
         raise ValidationError("runtime observation must be directly inside the isolated case directory")
+    if profile == PPRO_2026_REPORT_PROFILE:
+        if not binding.fpga_aliases:
+            raise ValidationError("real PPro runtime binding requires FPGA aliases")
+    elif binding.fpga_aliases:
+        raise ValidationError("mock runtime binding must not provide physical FPGA aliases")
 
 
 def _read_csv(path: Path, required: set[str]) -> list[Dict[str, str]]:
@@ -368,9 +390,12 @@ def parse_mock_ordinary_reports(
                 "effective_hops": _parse_nonnegative_integer(
                     row["effective_hops"], "route hops", minimum=1
                 ),
+                "signal_count": _parse_nonnegative_integer(
+                    row["path_count"], "route path count", minimum=1
+                ),
             }
         )
-        total_paths += _parse_nonnegative_integer(row["path_count"], "route path count")
+        total_paths += routes[-1]["signal_count"]
         maximum_tdm_ratio = max(
             maximum_tdm_ratio,
             _parse_nonnegative_integer(
@@ -455,7 +480,13 @@ def _failure_observation(
         "tool": dict(spec["tool"]),
         "workload": {
             key: spec["workload"][key]
-            for key in ("generator_id", "generator_revision", "rtl_sha256", "parameters_sha256")
+            for key in (
+                "generator_id",
+                "generator_revision",
+                "rtl_sha256",
+                "parameters_sha256",
+                "top_module",
+            )
         },
         "experiment": dict(spec["experiment"]),
         "execution": {
@@ -475,7 +506,7 @@ def execute_blackbox_case(
     raw_spec: Mapping[str, Any], binding: RuntimeBinding
 ) -> Dict[str, Any]:
     spec = validate_run_spec(raw_spec)
-    validate_runtime_binding(binding)
+    validate_runtime_binding(binding, profile=spec["adapter"]["profile"])
     binding.case_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = binding.case_dir / ".runner-stdout.log"
     stderr_path = binding.case_dir / ".runner-stderr.log"
@@ -511,9 +542,16 @@ def execute_blackbox_case(
             )
         else:
             try:
-                metrics = parse_mock_ordinary_reports(
-                    binding.report_paths, spec["workload"]["design_metrics"]
-                )
+                if spec["adapter"]["profile"] == MOCK_REPORT_PROFILE:
+                    metrics = parse_mock_ordinary_reports(
+                        binding.report_paths, spec["workload"]["design_metrics"]
+                    )
+                else:
+                    metrics = parse_ppro_2026_ordinary_reports(
+                        binding.report_paths,
+                        spec["workload"]["design_metrics"],
+                        binding.fpga_aliases,
+                    )
             except (OSError, UnicodeError, ValidationError):
                 observation = _failure_observation(
                     spec,
@@ -545,6 +583,7 @@ def execute_blackbox_case(
                             "generator_revision",
                             "rtl_sha256",
                             "parameters_sha256",
+                            "top_module",
                         )
                     },
                     "experiment": dict(spec["experiment"]),

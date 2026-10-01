@@ -164,7 +164,7 @@ def _ppro_pair_order(observation: Mapping[str, Any]) -> list[str]:
     loads: Dict[str, float] = defaultdict(float)
     for route in observation["metrics"]["routes"]:
         for sink in route["sinks"]:
-            loads[f"{route['source']}->{sink}"] += 1.0
+            loads[f"{route['source']}->{sink}"] += float(route["signal_count"])
     return [name for name, _ in sorted(loads.items(), key=lambda item: (-item[1], item[0]))]
 
 

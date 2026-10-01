@@ -89,6 +89,7 @@ _OFFICIAL_SOURCE_HOSTS = {
     "www.s2ceda.com",
 }
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_HDL_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _FPGA_RE = re.compile(r"^F[0-9]+$")
 _PARTITION_RE = re.compile(r"^P[0-9]+$")
@@ -147,6 +148,13 @@ def _string(value: Any, context: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValidationError(f"{context}: expected a non-empty string")
     return value.strip()
+
+
+def _hdl_identifier(value: Any, context: str) -> str:
+    text = _string(value, context)
+    if not _HDL_ID_RE.fullmatch(text):
+        raise ValidationError(f"{context}: invalid HDL identifier")
+    return text
 
 
 def _sha256(value: Any, context: str) -> str:
@@ -538,7 +546,13 @@ def validate_blackbox_observation(value: Mapping[str, Any]) -> Dict[str, Any]:
     workload = _mapping(root["workload"], "observation.workload")
     _strict_keys(
         workload,
-        {"generator_id", "generator_revision", "rtl_sha256", "parameters_sha256"},
+        {
+            "generator_id",
+            "generator_revision",
+            "rtl_sha256",
+            "parameters_sha256",
+            "top_module",
+        },
         set(),
         "observation.workload",
     )
@@ -547,6 +561,9 @@ def validate_blackbox_observation(value: Mapping[str, Any]) -> Dict[str, Any]:
         "generator_revision": _sha256(workload["generator_revision"], "observation.workload.generator_revision"),
         "rtl_sha256": _sha256(workload["rtl_sha256"], "observation.workload.rtl_sha256"),
         "parameters_sha256": _sha256(workload["parameters_sha256"], "observation.workload.parameters_sha256"),
+        "top_module": _hdl_identifier(
+            workload["top_module"], "observation.workload.top_module"
+        ),
     }
 
     experiment = _mapping(root["experiment"], "observation.experiment")
@@ -659,7 +676,12 @@ def validate_blackbox_observation(value: Mapping[str, Any]) -> Dict[str, Any]:
     for index, raw_item in enumerate(_sequence(metrics["routes"], "observation.metrics.routes")):
         context = f"observation.metrics.routes[{index}]"
         item = _mapping(raw_item, context)
-        _strict_keys(item, {"id", "source", "sinks", "effective_hops"}, set(), context)
+        _strict_keys(
+            item,
+            {"id", "source", "sinks", "effective_hops", "signal_count"},
+            set(),
+            context,
+        )
         route_id = _identifier(item["id"], f"{context}.id")
         source = _string(item["source"], f"{context}.source")
         sinks = [
@@ -677,6 +699,7 @@ def validate_blackbox_observation(value: Mapping[str, Any]) -> Dict[str, Any]:
                 "source": source,
                 "sinks": sorted(sinks),
                 "effective_hops": _integer(item["effective_hops"], f"{context}.effective_hops", minimum=1),
+                "signal_count": _integer(item["signal_count"], f"{context}.signal_count", minimum=1),
             }
         )
     communication = _normalized_metric_map(

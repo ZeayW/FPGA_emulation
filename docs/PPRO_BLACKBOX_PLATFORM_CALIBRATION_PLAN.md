@@ -294,14 +294,22 @@ raw vendor path or private configuration is serialized.
 
 ### Stage 2: black-box runner and normal-report adapter
 
-Status: **mock/dry-run boundary implemented; real smoke pending**. The current
+Status: **runner plus real ordinary-report adapter implemented; fresh smoke
+pending**. The current
 runner keeps commands, installation/license state, concrete target names, and
 report paths in a non-serializable runtime binding. It executes isolated cases
 through an explicitly bounded queue, distinguishes license/tool/infrastructure,
 missing-report, and parse failures, and deletes raw reports after producing a
 compact validated observation. A deterministic connected C0 workload generator
 emits only provider-neutral RTL, hashes, and public experiment metadata. The
-mock report profile is intentionally not accepted as real PPro evidence.
+mock report profile is intentionally not accepted as real PPro evidence. The
+separate `ppro-2026-ordinary-reports-v1` adapter has been checked against the
+format of an existing successful normal PPro result. It reads only `pa0.rpt`,
+`sr0.rpt`, and `sr0_time.rpt`, replaces physical FPGA names through a
+runtime-only alias map, and stores directed route load as a compact aggregate
+with `signal_count`. It does not read project XML, STF, BoardDB, pin maps, or
+timing tables. This format check is not a substitute for the required fresh
+runner smoke.
 
 Deliver:
 

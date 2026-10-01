@@ -10,7 +10,12 @@ from typing import Any, Dict, Sequence
 
 from .errors import ValidationError
 from .io import write_json
-from .ppro_blackbox_runner import MOCK_REPORT_PROFILE, RUN_SPEC_SCHEMA, validate_run_spec
+from .ppro_blackbox_runner import (
+    MOCK_REPORT_PROFILE,
+    RUN_SPEC_SCHEMA,
+    SUPPORTED_REPORT_PROFILES,
+    validate_run_spec,
+)
 
 
 COMMUNICATION_KINDS = {"payload_capacity", "latency", "transport_cost"}
@@ -132,9 +137,12 @@ def generate_communication_probe_bundle(
     tool_release: str,
     runner_revision: str,
     seed: int,
+    adapter_profile: str = MOCK_REPORT_PROFILE,
 ) -> CommunicationProbeBundle:
     if kind not in COMMUNICATION_KINDS:
         raise ValidationError(f"communication kind must be one of {sorted(COMMUNICATION_KINDS)}")
+    if adapter_profile not in SUPPORTED_REPORT_PROFILES:
+        raise ValidationError("communication adapter profile is unsupported")
     for name, value, minimum in (
         ("fpga_count", fpga_count, 2),
         ("width", width, 1),
@@ -231,6 +239,7 @@ def generate_communication_probe_bundle(
             "generator_revision": _GENERATOR_REVISION,
             "rtl_sha256": _sha256(rtl.encode("utf-8")),
             "parameters_sha256": _sha256(_canonical(parameters)),
+            "top_module": "ppro_blackbox_communication_probe",
             "design_metrics": {
                 "bidirectional": int(bidirectional),
                 "endpoint_count": 1 + len(sinks),
@@ -252,7 +261,7 @@ def generate_communication_probe_bundle(
         },
         "execution": {"seed": seed},
         "adapter": {
-            "profile": MOCK_REPORT_PROFILE,
+            "profile": adapter_profile,
             "expected_reports": _EXPECTED_REPORTS,
         },
     }

@@ -29,6 +29,7 @@ def ppro_observation(identifier: str, delay: float):
             "generator_revision": "2" * 64,
             "rtl_sha256": "3" * 64,
             "parameters_sha256": "4" * 64,
+            "top_module": "application_holdout",
         },
         "experiment": {
             "kind": "application_holdout",
@@ -47,8 +48,8 @@ def ppro_observation(identifier: str, delay: float):
             ],
             "assignments": [{"partition": "P0", "fpga": "F0"}],
             "routes": [
-                {"id": "r0", "source": "F0", "sinks": ["F1"], "effective_hops": 1},
-                {"id": "r1", "source": "F0", "sinks": ["F1"], "effective_hops": 1},
+                {"id": "r0", "source": "F0", "sinks": ["F1"], "effective_hops": 1, "signal_count": 1},
+                {"id": "r1", "source": "F0", "sinks": ["F1"], "effective_hops": 1, "signal_count": 1},
             ],
             "communication": {"maximum_tdm_ratio": 2},
             "timing": {"sr0_worst_cross_fpga_delay_ns": delay},

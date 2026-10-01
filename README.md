@@ -170,19 +170,24 @@ Stage 1 of that increment is implemented as a strict publication boundary:
   normalized to `F<n>` and `P<n>`; raw reports, commands, paths, credentials,
   license endpoints, internal BoardDB/STF data, pin maps, and timing tables have
   no schema slot and are rejected by the redaction validator.
+- Aggregated system-route load has one canonical record per directed FPGA pair
+  plus `signal_count`; the adapter does not expand hundreds of equivalent nets
+  into a large JSON route array.
 - License, tool, infrastructure, and missing-report failures are terminal
   diagnostics, never hardware observations. Only controlled, evaluated fitting
   experiments may set `fit_eligible=true`; the validator recomputes that value.
 
 The current prior is therefore **not** a usable calibrated BoardDB and makes no
 claim that public connector totals reveal the platform's wiring. The Stage 2
-mock/dry-run boundary now provides a deterministic connected smoke workload,
-strict redacted run specification, non-serializable runtime binding, bounded
-queue, allowlisted mock report parser, and terminal failure classification. A
-mock result is never accepted as real PPro evidence. Stage 2 is complete only
-after a normal real PPro smoke exposes an explicitly supported ordinary-report
-profile; later stages fit the missing behavior and validate it on unseen
-applications.
+boundary now provides a deterministic connected smoke workload, strict
+redacted run specification, non-serializable runtime binding, bounded queue,
+terminal failure classification, the synthetic mock adapter, and a separate
+`ppro-2026-ordinary-reports-v1` adapter. The real adapter reads only normal
+partition, system-route, and system-timing reports; a runtime-only one-to-one
+alias map removes physical FPGA names before serialization. Its parser format
+has been checked against an existing successful normal PPro result, but Stage 2
+remains pending until a fresh smoke is executed through the current runner. A
+mock result is never accepted as real PPro evidence.
 
 The Stage 3 experiment framework is also present, but contains no fitted
 vendor result yet. It generates compact connected capacity probes for seven
@@ -215,7 +220,8 @@ emuflow-ppro-calibration validate-artifact \
 emuflow-ppro-calibration generate-smoke \
   --out build/ppro-smoke --campaign-id c0-smoke \
   --configuration-id lx2-m1 --tool-release 2026.1 \
-  --runner-revision <64-hex-runner-source-sha256>
+  --runner-revision <64-hex-runner-source-sha256> \
+  --adapter-profile ppro-2026-ordinary-reports-v1
 ```
 
 The same command provides explicit `fit-capacity`, `fit-topology`,
