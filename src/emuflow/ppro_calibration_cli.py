@@ -11,6 +11,8 @@ from .io import read_json, write_json
 from .ppro_blackbox_calibration import validate_redacted_artifact
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
 from .ppro_blackbox_constraints import parse_logical_targets
+from .ppro_blackbox_communication import generate_communication_probe_bundle
+from .ppro_blackbox_microbench import CAPACITY_AXES, generate_capacity_matrix
 from .ppro_blackbox_runner import execute_blackbox_case, validate_run_spec
 from .ppro_blackbox_runtime import (
     PProRuntimeConfig,
@@ -24,6 +26,7 @@ from .ppro_blackbox_stage4 import (
     fit_payload_intervals,
     fit_transport_cost_model,
 )
+from .ppro_blackbox_topology import generate_ordered_pair_matrix
 from .ppro_calibrated_platform import (
     generate_calibrated_platform_profiles,
     validate_calibrated_platform_bundle,
@@ -38,6 +41,13 @@ def _read_many(paths: Sequence[Path]) -> list[Any]:
 
 def _write_result(path: Path, value: Any) -> None:
     write_json(path.resolve(), value, compact=True)
+
+
+def _ordered_pair(value: str) -> tuple[int, int]:
+    source, separator, sink = value.partition(":")
+    if not separator or not source.isdigit() or not sink.isdigit():
+        raise argparse.ArgumentTypeError("ordered pair must use SOURCE:SINK integers")
+    return int(source), int(sink)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -67,8 +77,59 @@ def _parser() -> argparse.ArgumentParser:
     smoke.add_argument(
         "--adapter-profile",
         choices=["mock-ordinary-reports-v1", PPRO_2026_REPORT_PROFILE],
-        default="mock-ordinary-reports-v1",
+        default=PPRO_2026_REPORT_PROFILE,
     )
+
+    def add_generation_identity(command: argparse.ArgumentParser) -> None:
+        command.add_argument("--out", type=Path, required=True)
+        command.add_argument("--campaign-id", required=True)
+        command.add_argument("--public-prior-id", default="lx2-public-prior-v1")
+        command.add_argument("--configuration-id", required=True)
+        command.add_argument("--tool-release", required=True)
+        command.add_argument("--runner-revision", required=True)
+        command.add_argument("--seed-base", type=int, default=1)
+        command.add_argument(
+            "--adapter-profile",
+            choices=["mock-ordinary-reports-v1", PPRO_2026_REPORT_PROFILE],
+            default=PPRO_2026_REPORT_PROFILE,
+        )
+
+    capacity_matrix = commands.add_parser("generate-capacity-matrix")
+    add_generation_identity(capacity_matrix)
+    capacity_matrix.add_argument("--axes", nargs="+", choices=sorted(CAPACITY_AXES), required=True)
+    capacity_matrix.add_argument("--fit-units", nargs="+", type=int, required=True)
+    capacity_matrix.add_argument("--holdout-units", nargs="+", type=int, required=True)
+    capacity_matrix.add_argument("--repeats", type=int, default=2)
+
+    topology_matrix = commands.add_parser("generate-topology-matrix")
+    add_generation_identity(topology_matrix)
+    topology_matrix.add_argument("--fpga-count", type=int, required=True)
+    topology_matrix.add_argument(
+        "--holdout-pair",
+        action="append",
+        type=_ordered_pair,
+        required=True,
+        help="withheld directed pair SOURCE:SINK; repeat for multiple pairs",
+    )
+    topology_matrix.add_argument("--repeats", type=int, default=2)
+    topology_matrix.add_argument("--width", type=int, default=32)
+    topology_matrix.add_argument("--pipeline-stages", type=int, default=8)
+
+    communication = commands.add_parser("generate-communication-probe")
+    add_generation_identity(communication)
+    communication.add_argument(
+        "--kind", choices=["payload_capacity", "latency", "transport_cost"], required=True
+    )
+    communication.add_argument("--fpga-count", type=int, required=True)
+    communication.add_argument("--source-index", type=int, required=True)
+    communication.add_argument("--sink-indices", nargs="+", type=int, required=True)
+    communication.add_argument("--width", type=int, required=True)
+    communication.add_argument("--flow-count", type=int, default=1)
+    communication.add_argument("--bidirectional", action="store_true")
+    communication.add_argument("--local-baseline", action="store_true")
+    communication.add_argument("--forced-tdm-ratio", type=int, default=0)
+    communication.add_argument("--repeat", type=int, default=0)
+    communication.add_argument("--role", choices=["fit", "holdout"], required=True)
 
     run_case = commands.add_parser("run-ppro-case")
     run_case.add_argument("--run-spec", type=Path, required=True)
@@ -134,6 +195,62 @@ def _dispatch(args: argparse.Namespace) -> Any:
             adapter_profile=args.adapter_profile,
         )
         return {"status": "pass", "run_spec": bundle.run_spec}
+    if args.command == "generate-capacity-matrix":
+        bundles = generate_capacity_matrix(
+            args.out,
+            axes=args.axes,
+            fit_units=args.fit_units,
+            holdout_units=args.holdout_units,
+            repeats=args.repeats,
+            campaign_id=args.campaign_id,
+            public_prior_id=args.public_prior_id,
+            configuration_id=args.configuration_id,
+            tool_release=args.tool_release,
+            runner_revision=args.runner_revision,
+            seed_base=args.seed_base,
+            adapter_profile=args.adapter_profile,
+        )
+        return {"status": "pass", "case_count": len(bundles)}
+    if args.command == "generate-topology-matrix":
+        bundles = generate_ordered_pair_matrix(
+            args.out,
+            fpga_count=args.fpga_count,
+            holdout_pairs=args.holdout_pair,
+            repeats=args.repeats,
+            width=args.width,
+            pipeline_stages=args.pipeline_stages,
+            campaign_id=args.campaign_id,
+            public_prior_id=args.public_prior_id,
+            configuration_id=args.configuration_id,
+            tool_release=args.tool_release,
+            runner_revision=args.runner_revision,
+            seed_base=args.seed_base,
+            adapter_profile=args.adapter_profile,
+        )
+        return {"status": "pass", "case_count": len(bundles)}
+    if args.command == "generate-communication-probe":
+        bundle = generate_communication_probe_bundle(
+            args.out,
+            kind=args.kind,
+            fpga_count=args.fpga_count,
+            source_index=args.source_index,
+            sink_indices=args.sink_indices,
+            width=args.width,
+            flow_count=args.flow_count,
+            bidirectional=args.bidirectional,
+            local_baseline=args.local_baseline,
+            forced_tdm_ratio=args.forced_tdm_ratio,
+            repeat=args.repeat,
+            role=args.role,
+            campaign_id=args.campaign_id,
+            public_prior_id=args.public_prior_id,
+            configuration_id=args.configuration_id,
+            tool_release=args.tool_release,
+            runner_revision=args.runner_revision,
+            seed=args.seed_base + args.repeat,
+            adapter_profile=args.adapter_profile,
+        )
+        return {"status": "pass", "case_id": bundle.run_spec["identity"]["id"]}
     if args.command == "run-ppro-case":
         spec = read_json(args.run_spec.resolve())
         binding = render_ppro_runtime_binding(

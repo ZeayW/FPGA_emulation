@@ -332,6 +332,11 @@ Deliver:
 - allowlisted normal-report parser; and
 - compact terminal observation output.
 
+The CLI now generates capacity matrices, complete directed-pair topology
+matrices with named holdouts, and individual communication probes. Real normal
+reports are the default; mock output must be requested explicitly. Generation
+is an active-run operation rather than a persistent checkpoint/campaign cache.
+
 Gate: mock/dry-run first, followed by one real smoke experiment.  Report PPro
 runtime scale and artifact availability; never infer missing values.
 

@@ -265,6 +265,31 @@ endpoint, internal platform file, or raw report directory as serialized input.
 `evaluate-holdouts` applies the final blind promotion gate and rejects any case
 that stops before complete Phase 7 or omits authoritative global WNS/TNS.
 
+The real ordinary-report profile is the default for all generated calibration
+cases; synthetic mock generation requires an explicit
+`--adapter-profile mock-ordinary-reports-v1`. Stage 3/4 inputs are generated
+without a persistent campaign cache:
+
+```sh
+emuflow-ppro-calibration generate-capacity-matrix \
+  --out <active-campaign>/capacity --campaign-id c1-capacity \
+  --configuration-id lx2-m2 --tool-release 2026.1 \
+  --runner-revision <64-hex-runner-source-sha256> \
+  --axes lut ff bram uram dsp mixed_lut_ff mixed_bram_dsp \
+  --fit-units 8 16 32 --holdout-units 24 --repeats 2
+emuflow-ppro-calibration generate-topology-matrix \
+  --out <active-campaign>/topology --campaign-id c2-topology \
+  --configuration-id lx2-m2 --tool-release 2026.1 \
+  --runner-revision <64-hex-runner-source-sha256> \
+  --fpga-count 4 --holdout-pair 0:3 --holdout-pair 3:0 --repeats 2
+emuflow-ppro-calibration generate-communication-probe \
+  --out <active-campaign>/latency-w64 --campaign-id c4-latency \
+  --configuration-id lx2-m2 --tool-release 2026.1 \
+  --runner-revision <64-hex-runner-source-sha256> \
+  --kind latency --fpga-count 4 --source-index 0 --sink-indices 1 \
+  --width 64 --role fit
+```
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both
