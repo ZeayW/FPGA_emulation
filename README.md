@@ -309,7 +309,9 @@ emuflow-ppro-calibration generate-communication-matrix \
 Generated cases can be consumed as one ephemeral campaign. Discovery is
 bounded by `--maximum-cases`; license concurrency defaults to one and rises
 only through an explicit `--max-workers`. Every case still owns an isolated
-directory and retains only `observation.json` after raw-project cleanup:
+directory and retains only `observation.json` after raw-project cleanup. The
+strictly allowlisted generated RTL/run-spec bundle is also removed after every
+case has a terminal observation; unknown files prevent cleanup and fail closed:
 
 ```sh
 emuflow-ppro-calibration run-ppro-campaign \

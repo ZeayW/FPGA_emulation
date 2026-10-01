@@ -12,6 +12,19 @@ from .ppro_blackbox_runner import cleanup_runtime_artifacts, execute_blackbox_qu
 from .ppro_blackbox_runtime import PProRuntimeConfig, render_ppro_runtime_binding
 
 
+_BUNDLE_FILES = {
+    "capacity_probe.v",
+    "communication_probe.v",
+    "connected_smoke.v",
+    "documented_constraints.json",
+    "files.f",
+    "parameters.json",
+    "run-spec.json",
+    "sources.f",
+    "topology_probe.v",
+}
+
+
 @dataclass(frozen=True)
 class PProCampaignRuntime:
     result_root: Path
@@ -43,6 +56,12 @@ def discover_generated_bundles(root: Path, *, maximum_cases: int) -> list[Path]:
 
 
 def _bundle_inputs(root: Path) -> tuple[Path, Path, Path]:
+    entries = list(root.iterdir()) if root.is_dir() else []
+    if any(
+        entry.is_symlink() or not entry.is_file() or entry.name not in _BUNDLE_FILES
+        for entry in entries
+    ):
+        raise ValidationError("generated PPro bundle contains an unknown or unsafe entry")
     spec = root / "run-spec.json"
     constraints = root / "documented_constraints.json"
     filelists = [path for path in (root / "sources.f", root / "files.f") if path.is_file()]
@@ -52,6 +71,36 @@ def _bundle_inputs(root: Path) -> tuple[Path, Path, Path]:
             "and exactly one sources.f/files.f"
         )
     return spec, constraints, filelists[0]
+
+
+def _cleanup_generated_bundle(root: Path) -> None:
+    for entry in root.iterdir():
+        if entry.is_symlink() or not entry.is_file() or entry.name not in _BUNDLE_FILES:
+            raise ValidationError("generated PPro bundle changed before cleanup")
+    for entry in root.iterdir():
+        entry.unlink()
+    root.rmdir()
+
+
+def prune_empty_bundle_tree(root: Path) -> None:
+    """Remove empty matrix directories without deleting any remaining file."""
+
+    root = root.resolve()
+    if not root.exists():
+        return
+    for path in sorted(
+        (item for item in root.rglob("*") if item.is_dir()),
+        key=lambda item: len(item.parts),
+        reverse=True,
+    ):
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+    try:
+        root.rmdir()
+    except OSError:
+        pass
 
 
 def execute_generated_campaign(
@@ -69,10 +118,17 @@ def execute_generated_campaign(
     if result_root == writable_root or not result_root.is_relative_to(writable_root):
         raise ValidationError("PPro campaign result root violates the authorized storage boundary")
 
+    normalized_bundle_roots = sorted(path.resolve() for path in bundle_roots)
+    if any(
+        path == writable_root or not path.is_relative_to(writable_root)
+        for path in normalized_bundle_roots
+    ):
+        raise ValidationError("PPro campaign input bundle violates the authorized storage boundary")
+
     cases = []
     identities: set[str] = set()
     try:
-        for bundle_root in sorted(path.resolve() for path in bundle_roots):
+        for bundle_root in normalized_bundle_roots:
             spec_path, constraints_path, filelist_path = _bundle_inputs(bundle_root)
             spec = read_json(spec_path)
             identity = spec.get("identity", {}).get("id") if isinstance(spec, dict) else None
@@ -107,4 +163,7 @@ def execute_generated_campaign(
             except OSError:
                 pass
         raise
-    return execute_blackbox_queue(cases, max_workers=max_workers)
+    results = execute_blackbox_queue(cases, max_workers=max_workers)
+    for bundle_root in normalized_bundle_roots:
+        _cleanup_generated_bundle(bundle_root)
+    return results

@@ -14,6 +14,7 @@ from .ppro_blackbox_campaign import (
     PProCampaignRuntime,
     discover_generated_bundles,
     execute_generated_campaign,
+    prune_empty_bundle_tree,
 )
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
 from .ppro_blackbox_constraints import parse_logical_targets
@@ -369,6 +370,7 @@ def _dispatch(args: argparse.Namespace) -> Any:
             ),
             max_workers=args.max_workers,
         )
+        prune_empty_bundle_tree(args.bundle_root)
         outcomes: dict[str, int] = {}
         for result in results:
             outcome = str(result["execution"]["outcome"])

@@ -86,6 +86,7 @@ class PProBlackboxCampaignTest(unittest.TestCase):
                 self.assertLess(observation.stat().st_size, 16384)
                 self.assertFalse((case / "project").exists())
                 self.assertFalse((case / ".run-ppro.tcl").exists())
+            self.assertFalse(any(bundle_root.rglob("run-spec.json")))
 
     def test_campaign_rejects_duplicate_case_identity(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -98,6 +99,18 @@ class PProBlackboxCampaignTest(unittest.TestCase):
                     [bundles[0], bundles[0]], runtime=self._runtime(root)
                 )
             self.assertFalse(any((root / "results").rglob(".run-ppro.tcl")))
+            self.assertEqual(len(list(bundle_root.rglob("run-spec.json"))), 2)
+
+    def test_campaign_rejects_unknown_bundle_entry_before_execution(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle_root = root / "bundles"
+            self._bundles(bundle_root)
+            bundles = discover_generated_bundles(bundle_root, maximum_cases=2)
+            (bundles[0] / "unexpected.txt").write_text("do not delete", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "unknown or unsafe"):
+                execute_generated_campaign(bundles, runtime=self._runtime(root))
+            self.assertTrue((bundles[0] / "unexpected.txt").is_file())
 
 
 if __name__ == "__main__":

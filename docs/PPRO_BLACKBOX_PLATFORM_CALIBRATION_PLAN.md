@@ -341,7 +341,10 @@ reports are the default; mock output must be requested explicitly. Generation
 is an active-run operation rather than a persistent checkpoint/campaign cache.
 A one-shot campaign runner discovers only a bounded number of generated cases,
 uses isolated result directories, defaults licensed concurrency to one, and
-retains one compact observation per case after raw-project cleanup.
+retains one compact observation per case after raw-project cleanup. Once every
+case has a terminal observation, it deletes the strictly allowlisted generated
+input bundles and prunes only empty matrix directories; unknown entries fail
+closed rather than being removed.
 Stage 4 matrices explicitly separate fit and holdout widths and repeat every
 point. Transport-cost matrices generate matched local/cross placements with
 the same RTL parameters and seed so the paired fitter can cancel DUT logic.
