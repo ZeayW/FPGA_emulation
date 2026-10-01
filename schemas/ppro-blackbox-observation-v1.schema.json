@@ -80,6 +80,7 @@
             "pass",
             "capacity_infeasible",
             "link_capacity_infeasible",
+            "routing_infeasible",
             "tool_failure",
             "infrastructure_failure",
             "license_failure",

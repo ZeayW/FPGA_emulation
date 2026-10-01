@@ -53,6 +53,7 @@ OUTCOMES = {
     "pass",
     "capacity_infeasible",
     "link_capacity_infeasible",
+    "routing_infeasible",
     "tool_failure",
     "infrastructure_failure",
     "license_failure",
@@ -63,6 +64,7 @@ EVALUATED_OUTCOMES = {
     "pass",
     "capacity_infeasible",
     "link_capacity_infeasible",
+    "routing_infeasible",
 }
 REPORT_NAMES = {
     "resource_summary",
@@ -733,8 +735,13 @@ def validate_blackbox_observation(value: Mapping[str, Any]) -> Dict[str, Any]:
             if not normalized_reports["system_timing"] or "sr0_worst_cross_fpga_delay_ns" not in timing:
                 raise ValidationError("observation: latency experiment lacks sr0 timing evidence")
     else:
-        if failure_code not in {"capacity-boundary", "link-capacity-boundary"}:
-            raise ValidationError("observation: evaluated infeasibility requires a boundary code")
+        expected_boundary_code = {
+            "capacity_infeasible": "capacity-boundary",
+            "link_capacity_infeasible": "link-capacity-boundary",
+            "routing_infeasible": "routing-boundary",
+        }[outcome]
+        if failure_code != expected_boundary_code:
+            raise ValidationError("observation: evaluated infeasibility requires its exact boundary code")
 
     normalized = {
         "schema": OBSERVATION_SCHEMA,

@@ -315,6 +315,16 @@ runtime scale and artifact availability; never infer missing values.
 
 ### Stage 3: capacity and topology calibration
 
+Status: **experiment/fitting framework implemented; real observations
+pending**. Capacity probes cover LUT-, FF-, BRAM-, URAM-, DSP-, and two mixed
+resource axes using compact parameterized RTL and public inference attributes.
+Requested units are controls, never treated as mapped resource counts. The
+ordered-pair topology matrix covers both directions, requires repeated trials,
+and reserves explicit holdout pairs. Capacity fitting emits only a measured
+pass/infeasible interval; topology fitting emits only observed directed
+reachability and stable effective hop counts. Single-flow data explicitly
+leaves shared-capacity groups `not_identifiable` instead of guessing them.
+
 Deliver resource-boundary and ordered-pair experiment matrices, fitted
 effective capacities, effective reachability, and shared-resource hypotheses.
 

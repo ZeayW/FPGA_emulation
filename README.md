@@ -184,6 +184,13 @@ after a normal real PPro smoke exposes an explicitly supported ordinary-report
 profile; later stages fit the missing behavior and validate it on unseen
 applications.
 
+The Stage 3 experiment framework is also present, but contains no fitted
+vendor result yet. It generates compact connected capacity probes for seven
+resource axes and a bidirectional ordered-pair topology matrix with repeated
+fit points and withheld points. The conservative fitters reject unstable or
+non-monotonic measurements, report pass/fail capacity intervals, and refuse to
+invent shared-link groups from single-flow reachability data.
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both
