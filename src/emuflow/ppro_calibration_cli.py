@@ -10,6 +10,7 @@ from typing import Any, Sequence
 from .io import read_json, write_json
 from .ppro_blackbox_calibration import validate_redacted_artifact
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
+from .ppro_blackbox_constraints import parse_logical_targets
 from .ppro_blackbox_runner import execute_blackbox_case, validate_run_spec
 from .ppro_blackbox_runtime import (
     PProRuntimeConfig,
@@ -75,8 +76,9 @@ def _parser() -> argparse.ArgumentParser:
     run_case.add_argument("--case-dir", type=Path, required=True)
     run_case.add_argument("--install-root", type=Path, required=True)
     run_case.add_argument("--platform-reference", type=Path, required=True)
-    run_case.add_argument("--prepartition-constraints", type=Path, required=True)
+    run_case.add_argument("--documented-constraints", type=Path, required=True)
     run_case.add_argument("--fpga-alias", action="append", default=[], required=True)
+    run_case.add_argument("--logical-target", action="append", default=[], required=True)
     run_case.add_argument("--max-processes", type=int, default=4)
     run_case.add_argument("--lut-area-percent", type=int, default=75)
     run_case.add_argument("--timeout-seconds", type=float, default=21600.0)
@@ -141,8 +143,9 @@ def _dispatch(args: argparse.Namespace) -> Any:
                 case_dir=args.case_dir,
                 install_root=args.install_root,
                 platform_reference=args.platform_reference,
-                prepartition_constraints=args.prepartition_constraints,
+                documented_constraints=args.documented_constraints,
                 fpga_aliases=parse_fpga_aliases(args.fpga_alias),
+                logical_targets=parse_logical_targets(args.logical_target),
                 max_processes=args.max_processes,
                 lut_area_percent=args.lut_area_percent,
                 timeout_seconds=args.timeout_seconds,

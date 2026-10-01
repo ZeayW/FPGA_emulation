@@ -18,7 +18,7 @@ from .ppro_blackbox_runner import (
 )
 
 
-_GENERATOR_ID = "ppro-blackbox-topology-reachability-v1"
+_GENERATOR_ID = "ppro-blackbox-topology-reachability-v2"
 _GENERATOR_REVISION = hashlib.sha256(_GENERATOR_ID.encode("utf-8")).hexdigest()
 _EXPECTED_REPORTS = [
     "partition_summary",
@@ -153,15 +153,8 @@ def generate_topology_probe_bundle(
             {"partition": "P0", "target": f"F{source_index}"},
             {"partition": "P1", "target": f"F{sink_index}"},
         ],
-        "communication": [
-            {"route": "route0", "source": f"F{source_index}", "sinks": [f"F{sink_index}"]}
-        ],
-        "control_mode": "fixed_communication",
-        "documented_actions": [
-            "net_route_constraint",
-            "partition_constraint",
-            "random_seed",
-        ],
+        "control_mode": "fixed_assignment",
+        "documented_actions": ["partition_constraint"],
         "seed": seed,
     }
     write_json(parameters_path, parameters, compact=True)
@@ -198,7 +191,7 @@ def generate_topology_probe_bundle(
         },
         "experiment": {
             "kind": "topology_reachability",
-            "control_mode": "fixed_communication",
+            "control_mode": "fixed_assignment",
             "documented_actions": constraints["documented_actions"],
             "constraints_sha256": _sha256(_canonical(constraints)),
         },

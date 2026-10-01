@@ -311,12 +311,15 @@ with `signal_count`. It does not read project XML, STF, BoardDB, pin maps, or
 timing tables. This format check is not a substitute for the required fresh
 runner smoke. A runtime-only renderer now emits the documented ordinary PPro
 project/compile/pre-partition/partition/system-route sequence. It treats the
-installed platform reference and documented pre-partition constraints as
-opaque path arguments: only existence is checked, and their contents are not
-read, copied, hashed, or serialized. Generated Tcl, launcher, absolute
-filelist, active project, and raw reports are scrubbed after the compact
-observation is validated. Its command is covered by a disposable fake-provider
-test. The production renderer also rejects case directories outside the
+installed platform reference as an opaque path argument: only existence is
+checked, and its contents are not read, copied, hashed, or serialized. The
+provider-neutral constraint JSON is translated only into the `assign_inst`
+form shown by the installed PPro user example; legal physical target names are
+runtime bindings. Route, forced-TDM, and random-seed directives fail closed
+until an equally documented user syntax is available. Generated Tcl, launcher,
+absolute filelist, translated constraints, active project, and raw reports are
+scrubbed after the compact observation is validated. Its command is covered by
+a disposable fake-provider test. The production renderer also rejects case directories outside the
 mandatory `/research/d4/gds/ziyiwang21` boundary and pins all standard temporary
 environment variables below the case. This does not replace the fresh
 authorized PPro smoke.
@@ -342,7 +345,11 @@ ordered-pair topology matrix covers both directions, requires repeated trials,
 and reserves explicit holdout pairs. Capacity fitting emits only a measured
 pass/infeasible interval; topology fitting emits only observed directed
 reachability and stable effective hop counts. Single-flow data explicitly
-leaves shared-capacity groups `not_identifiable` instead of guessing them.
+leaves shared-capacity groups `not_identifiable` instead of guessing them. The
+v2 capacity RTL places its swept payload below a real `P0` hierarchy before the
+documented `assign_inst` constraint is emitted. Topology fixes only producer
+and consumer instances and observes the tool-selected route; it does not claim
+an unavailable route constraint or applied tool seed.
 
 Deliver resource-boundary and ordered-pair experiment matrices, fitted
 effective capacities, effective reachability, and shared-resource hypotheses.
@@ -360,7 +367,9 @@ payload widths and fits non-negative endpoint, hop, serialization, TDM,
 contention, and multicast terms with deterministic bootstrap bounds. Transport
 cost uses same-RTL local/cross placement pairs so DUT logic cancels before
 fitting incremental resource cost; negative paired deltas fail closed as
-evidence that unrelated mapping changed.
+evidence that unrelated mapping changed. The real adapter currently observes
+natural TDM transitions under width/flow pressure. Nonzero forced-TDM probes
+fail closed until their user-facing PPro constraint syntax is documented.
 
 Deliver parameter sweeps, constrained fits, confidence intervals, and an
 identifiability report.

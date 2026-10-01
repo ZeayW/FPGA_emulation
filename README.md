@@ -184,12 +184,15 @@ redacted run specification, non-serializable runtime binding, bounded queue,
 terminal failure classification, the synthetic mock adapter, and a separate
 `ppro-2026-ordinary-reports-v1` adapter. A runtime-only renderer creates the
 ordinary project/compile/pre-partition/partition/system-route command sequence
-from the generated run specification. The installed platform reference and
-documented user constraints are opaque path arguments: EmuFlow checks that
-they exist but never reads, copies, hashes, or serializes them. Generated Tcl,
-launcher, absolute runtime filelist, active project, and raw reports are
-deleted after the compact observation is validated. The real adapter reads
-only normal partition, system-route, and system-timing reports; a runtime-only
+from the generated run specification. The installed platform reference is an
+opaque path argument: EmuFlow checks that it exists but never reads, copies,
+hashes, or serializes it. Provider-neutral documented constraints are
+translated only to the public user-example `assign_inst` syntax. Physical PPro
+targets remain runtime-only; route, forced-TDM, and random-seed syntax is never
+guessed. Generated Tcl, launcher, absolute runtime filelist, translated user
+constraints, active project, and raw reports are deleted after the compact
+observation is validated. The real adapter reads only normal partition,
+system-route, and system-timing reports; a runtime-only
 one-to-one alias map removes physical FPGA names before serialization. Its
 parser format has been checked against an existing successful normal PPro
 result, but Stage 2 remains pending until a fresh smoke is executed through the
@@ -200,14 +203,19 @@ vendor result yet. It generates compact connected capacity probes for seven
 resource axes and a bidirectional ordered-pair topology matrix with repeated
 fit points and withheld points. The conservative fitters reject unstable or
 non-monotonic measurements, report pass/fail capacity intervals, and refuse to
-invent shared-link groups from single-flow reachability data.
+invent shared-link groups from single-flow reachability data. Capacity v2 puts
+the swept payload under a real `P0` hierarchy before applying `assign_inst`;
+topology probes fix endpoint instances only and observe the route PPro chooses.
+They do not falsely claim a route constraint or an applied random seed.
 
 Stage 4 now has the corresponding controlled communication probe and
 dependency-free fitters for payload/TDM intervals, aggregate latency, and
 paired transport resource cost. Nominal/aggressive/conservative timing and
 cost terms come from deterministic bootstrap bounds. These are framework
 capabilities only until real PPro observations and withheld points satisfy the
-documented gates.
+documented gates. Real probes currently derive TDM transitions from width and
+traffic pressure; a nonzero forced-TDM request fails closed until a documented
+PPro user constraint is available.
 
 Stage 5 can now deterministically materialize and independently validate the
 three final profile databases plus a provenance/hash manifest. It cannot turn
@@ -245,8 +253,9 @@ emuflow-ppro-calibration run-ppro-case \
   --case-dir <authorized-isolated-case-directory> \
   --install-root <authorized-installation> \
   --platform-reference <user-selected-platform-reference> \
-  --prepartition-constraints <documented-user-constraints> \
-  --fpga-alias <physical-id>=F0 --fpga-alias <physical-id>=F1
+  --documented-constraints <generated>/documented_constraints.json \
+  --fpga-alias <report-id>=F0 --fpga-alias <report-id>=F1 \
+  --logical-target F0=<user-target> --logical-target F1=<user-target>
 ```
 
 The same command provides explicit `fit-capacity`, `fit-topology`,

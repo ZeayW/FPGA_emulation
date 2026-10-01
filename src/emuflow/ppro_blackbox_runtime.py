@@ -16,6 +16,10 @@ from typing import Any, Dict, Mapping
 
 from .errors import ValidationError
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
+from .ppro_blackbox_constraints import (
+    render_ppro_prepartition_constraints,
+    validate_logical_targets,
+)
 from .ppro_blackbox_runner import RuntimeBinding, validate_run_spec
 
 
@@ -26,8 +30,9 @@ class PProRuntimeConfig:
     case_dir: Path
     install_root: Path
     platform_reference: Path
-    prepartition_constraints: Path
+    documented_constraints: Path
     fpga_aliases: Mapping[str, str]
+    logical_targets: Mapping[str, str]
     authorized_writable_root: Path = Path("/research/d4/gds/ziyiwang21")
     max_processes: int = 4
     lut_area_percent: int = 75
@@ -102,6 +107,11 @@ def _validate_config(config: PProRuntimeConfig) -> None:
         raise ValidationError("PPro FPGA aliases must be one-to-one")
     if any(not re.fullmatch(r"F[0-9]+", value) for value in physical + logical):
         raise ValidationError("PPro physical and logical FPGA aliases must use F<n>")
+    targets = validate_logical_targets(config.logical_targets)
+    if set(targets) != set(logical):
+        raise ValidationError(
+            "PPro report aliases and logical placement targets must cover the same FPGAs"
+        )
 
     install_root = config.install_root.resolve()
     executable = install_root / "bin" / "rtlpart_linux"
@@ -112,8 +122,8 @@ def _validate_config(config: PProRuntimeConfig) -> None:
     # is opaque to the calibration framework.
     if not config.platform_reference.resolve().is_file():
         raise ValidationError("PPro platform reference does not exist")
-    if not config.prepartition_constraints.resolve().is_file():
-        raise ValidationError("PPro prepartition constraints do not exist")
+    if not config.documented_constraints.resolve().is_file():
+        raise ValidationError("documented provider-neutral constraints do not exist")
 
 
 def render_ppro_runtime_binding(
@@ -134,6 +144,7 @@ def render_ppro_runtime_binding(
     project_dir = case_dir / "project"
     temporary_dir = case_dir / ".tmp"
     runtime_filelist = case_dir / ".runtime-files.f"
+    ppro_constraints = case_dir / ".prepartition.cfg"
     tcl_path = case_dir / ".run-ppro.tcl"
     launcher_path = case_dir / ".run-ppro.sh"
     output_path = case_dir / "observation.json"
@@ -143,6 +154,7 @@ def render_ppro_runtime_binding(
             project_dir,
             temporary_dir,
             runtime_filelist,
+            ppro_constraints,
             tcl_path,
             launcher_path,
         )
@@ -151,6 +163,11 @@ def render_ppro_runtime_binding(
     if output_path.exists():
         raise ValidationError("PPro case already has an observation; use a new case directory")
     _runtime_filelist(source_filelist.resolve(), runtime_filelist)
+    render_ppro_prepartition_constraints(
+        config.documented_constraints.resolve(),
+        config.logical_targets,
+        ppro_constraints,
+    )
     temporary_dir.mkdir()
 
     top = spec["workload"]["top_module"]
@@ -167,10 +184,7 @@ def render_ppro_runtime_binding(
             "run_pre_partition -stf "
             + _tcl_word(str(config.platform_reference.resolve()), "PPro platform reference")
             + " -config "
-            + _tcl_word(
-                str(config.prepartition_constraints.resolve()),
-                "PPro prepartition constraints",
-            )
+            + _tcl_word(str(ppro_constraints), "PPro prepartition constraints")
             + f" -lut_area {config.lut_area_percent}",
             f"run_partition -costmode 1 -max_process_num {config.max_processes}",
             "run_system_route",
@@ -198,7 +212,13 @@ def render_ppro_runtime_binding(
     launcher_path.chmod(0o700)
 
     report_dir = project_dir / "rtlpart" / "report"
-    cleanup_paths = (runtime_filelist, tcl_path, launcher_path, temporary_dir)
+    cleanup_paths = (
+        runtime_filelist,
+        ppro_constraints,
+        tcl_path,
+        launcher_path,
+        temporary_dir,
+    )
     if not config.keep_raw_project:
         cleanup_paths += (project_dir,)
     return RuntimeBinding(

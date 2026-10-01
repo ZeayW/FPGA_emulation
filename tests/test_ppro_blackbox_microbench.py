@@ -41,6 +41,7 @@ class PProBlackboxMicrobenchTest(unittest.TestCase):
                 )
                 rtl = bundle.rtl_path.read_text(encoding="utf-8")
                 self.assertIn("module ppro_blackbox_capacity_probe", rtl)
+                self.assertIn("calibration_capacity_payload P0", rtl)
                 self.assertIn("digest =", rtl)
                 self.assertLess(len(rtl), 8192)
                 self.assertEqual(
@@ -48,6 +49,10 @@ class PProBlackboxMicrobenchTest(unittest.TestCase):
                     4.0,
                 )
                 self.assertEqual(bundle.run_spec["identity"]["role"], "fit")
+                self.assertEqual(
+                    bundle.run_spec["experiment"]["documented_actions"],
+                    ["partition_constraint"],
+                )
 
     def test_hard_resource_axes_use_public_inference_attributes(self):
         with tempfile.TemporaryDirectory() as raw:

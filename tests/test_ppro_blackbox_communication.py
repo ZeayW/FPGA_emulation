@@ -45,9 +45,12 @@ class PProBlackboxCommunicationTest(unittest.TestCase):
                 bundle.run_spec["experiment"]["documented_actions"],
             )
             constraints = bundle.constraints_path.read_text(encoding="utf-8")
-            self.assertIn('"route":"forward"', constraints)
-            self.assertIn('"route":"reverse0"', constraints)
+            self.assertIn('"partition":"P0"', constraints)
+            self.assertNotIn('"communication"', constraints)
             self.assertNotIn("B1.", constraints)
+            self.assertEqual(
+                bundle.run_spec["experiment"]["control_mode"], "fixed_assignment"
+            )
 
     def test_zero_tdm_does_not_claim_constraint(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -64,6 +67,13 @@ class PProBlackboxCommunicationTest(unittest.TestCase):
             values = self.kwargs()
             values["sink_indices"] = [0]
             with self.assertRaisesRegex(ValidationError, "distinct"):
+                generate_communication_probe_bundle(Path(raw), **values)
+
+    def test_real_profile_rejects_unimplemented_forced_tdm_constraint(self):
+        with tempfile.TemporaryDirectory() as raw:
+            values = self.kwargs()
+            values["adapter_profile"] = "ppro-2026-ordinary-reports-v1"
+            with self.assertRaisesRegex(ValidationError, "documented provider"):
                 generate_communication_probe_bundle(Path(raw), **values)
 
     def test_transport_local_baseline_uses_assignment_only(self):

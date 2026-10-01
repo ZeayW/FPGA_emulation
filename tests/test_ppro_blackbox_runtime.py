@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,15 +28,26 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
         platform = root / "opaque-platform.ref"
         constraints = root / "documented-user-constraints.cfg"
         platform.write_text("opaque", encoding="utf-8")
-        constraints.write_text("documented", encoding="utf-8")
+        constraints.write_text(
+            json.dumps(
+                {
+                    "assignments": [{"partition": "P0", "target": "F0"}],
+                    "control_mode": "fixed_assignment",
+                    "documented_actions": ["partition_constraint"],
+                    "seed": 7,
+                }
+            ),
+            encoding="utf-8",
+        )
         spec = run_spec()
         spec["adapter"]["profile"] = "ppro-2026-ordinary-reports-v1"
         config = PProRuntimeConfig(
             case_dir=root / "case",
             install_root=install,
             platform_reference=platform,
-            prepartition_constraints=constraints,
+            documented_constraints=constraints,
             fpga_aliases={"F11": "F0", "F33": "F1"},
+            logical_targets={"F0": "MB1.F1", "F1": "MB1.F3"},
             authorized_writable_root=root,
         )
         return spec, inputs / "files.f", config
@@ -57,6 +69,10 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             self.assertIn("run_partition -costmode 1 -max_process_num 4", script)
             self.assertIn("run_system_route", script)
             self.assertIn("rtlpart_linux", launcher)
+            ppro_constraints = (config.case_dir / ".prepartition.cfg").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("assign_inst {P0} {MB1.F1}", ppro_constraints)
             self.assertEqual(
                 runtime_files.strip(), str((filelist.parent / "probe.v").resolve())
             )
@@ -66,6 +82,7 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             self.assertEqual(binding.environment["TMPDIR"], str((config.case_dir / ".tmp").resolve()))
             self.assertNotIn(str(config.install_root), repr(spec))
             self.assertNotIn(str(config.platform_reference), repr(spec))
+            self.assertNotIn("MB1.F1", repr(spec))
 
     def test_renderer_rejects_mock_profile_and_filelist_options(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -109,8 +126,9 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
                 case_dir=root / "case",
                 install_root=config.install_root,
                 platform_reference=config.platform_reference,
-                prepartition_constraints=config.prepartition_constraints,
+                documented_constraints=config.documented_constraints,
                 fpga_aliases=config.fpga_aliases,
+                logical_targets=config.logical_targets,
                 authorized_writable_root=root / "different-root",
             )
             with self.assertRaisesRegex(ValidationError, "authorized writable root"):

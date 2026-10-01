@@ -45,7 +45,11 @@ class PProBlackboxTopologyTest(unittest.TestCase):
             constraints = bundle.constraints_path.read_text(encoding="utf-8")
             self.assertIn('"target":"F0"', constraints)
             self.assertIn('"target":"F3"', constraints)
+            self.assertNotIn('"communication"', constraints)
             self.assertNotIn("B1.", constraints)
+            self.assertEqual(
+                bundle.run_spec["experiment"]["control_mode"], "fixed_assignment"
+            )
 
     def test_matrix_covers_every_direction_and_withholds_named_pairs(self):
         with tempfile.TemporaryDirectory() as raw:

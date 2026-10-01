@@ -19,7 +19,7 @@ from .ppro_blackbox_runner import (
 
 
 COMMUNICATION_KINDS = {"payload_capacity", "latency", "transport_cost"}
-_GENERATOR_ID = "ppro-blackbox-communication-probe-v1"
+_GENERATOR_ID = "ppro-blackbox-communication-probe-v2"
 _GENERATOR_REVISION = hashlib.sha256(_GENERATOR_ID.encode("utf-8")).hexdigest()
 _EXPECTED_REPORTS = [
     "partition_summary",
@@ -143,6 +143,10 @@ def generate_communication_probe_bundle(
         raise ValidationError(f"communication kind must be one of {sorted(COMMUNICATION_KINDS)}")
     if adapter_profile not in SUPPORTED_REPORT_PROFILES:
         raise ValidationError("communication adapter profile is unsupported")
+    if adapter_profile != MOCK_REPORT_PROFILE and forced_tdm_ratio:
+        raise ValidationError(
+            "real PPro forced-TDM probes require a documented provider constraint syntax"
+        )
     for name, value, minimum in (
         ("fpga_count", fpga_count, 2),
         ("width", width, 1),
@@ -186,19 +190,9 @@ def generate_communication_probe_bundle(
         "source_index": source_index,
         "width": width,
     }
-    actions = ["partition_constraint", "random_seed"]
-    if not local_baseline:
-        actions.append("net_route_constraint")
+    actions = ["partition_constraint"]
     if forced_tdm_ratio:
         actions.append("tdm_ratio_constraint")
-    routes = [] if local_baseline else [
-        {"route": "forward", "source": f"F{source_index}", "sinks": [f"F{sink}" for sink in sinks]}
-    ]
-    if bidirectional and not local_baseline:
-        routes.extend(
-            {"route": f"reverse{index}", "source": f"F{sink}", "sinks": [f"F{source_index}"]}
-            for index, sink in enumerate(sinks)
-        )
     constraints = {
         "assignments": [
             {"partition": "P0", "target": f"F{source_index}"},
@@ -207,8 +201,7 @@ def generate_communication_probe_bundle(
                 for index, sink in enumerate(sinks)
             ],
         ],
-        "communication": routes,
-        "control_mode": "fixed_assignment" if local_baseline else "fixed_communication",
+        "control_mode": "fixed_assignment",
         "documented_actions": sorted(actions),
         "forced_tdm_ratio": forced_tdm_ratio,
         "seed": seed,
@@ -255,7 +248,7 @@ def generate_communication_probe_bundle(
         },
         "experiment": {
             "kind": kind,
-            "control_mode": "fixed_assignment" if local_baseline else "fixed_communication",
+            "control_mode": "fixed_assignment",
             "documented_actions": sorted(actions),
             "constraints_sha256": _sha256(_canonical(constraints)),
         },
