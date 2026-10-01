@@ -14,7 +14,7 @@ from .ppro_blackbox_calibration import validate_blackbox_observation
 PAYLOAD_FIT_SCHEMA = "emuflow.ppro-payload-fit/v1"
 LATENCY_FIT_SCHEMA = "emuflow.ppro-latency-fit/v1"
 TRANSPORT_FIT_SCHEMA = "emuflow.ppro-transport-cost-fit/v1"
-_GENERATOR_ID = "ppro-blackbox-communication-probe-v1"
+_GENERATOR_ID = "ppro-blackbox-communication-probe-v2"
 _FEATURES = (
     "endpoint_ns",
     "per_hop_ns",

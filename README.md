@@ -275,7 +275,9 @@ cost terms come from deterministic bootstrap bounds. These are framework
 capabilities only until real PPro observations and withheld points satisfy the
 documented gates. Real probes currently derive TDM transitions from width and
 traffic pressure; a nonzero forced-TDM request fails closed until a documented
-PPro user constraint is available.
+PPro user constraint is available.  The producer and all Stage 4 fitters are
+version-locked to `ppro-blackbox-communication-probe-v2`; observations from
+the superseded v1 fixture cannot silently enter a current fit.
 
 Stage 5 can now deterministically materialize and independently validate the
 three final profile databases plus a provenance/hash manifest. It cannot turn

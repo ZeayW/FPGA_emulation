@@ -423,6 +423,10 @@ Gate: repeated measurements and at least one withheld pair/resource boundary.
 
 ### Stage 4: bandwidth, TDM, latency, and transport calibration
 
+The communication producer and payload/latency/transport fitters share the
+version-locked `ppro-blackbox-communication-probe-v2` contract. Older v1
+observations are rejected rather than mixed into a current fit.
+
 Status: **controlled probe and fitting framework implemented; real observations
 pending**. One compact communication generator sweeps width, parallel flows,
 direction, fanout, and requested TDM level while keeping logical endpoints

@@ -41,7 +41,7 @@ def communication_observation(
         },
         "tool": {"name": "PPro mock", "release": "mock", "runner_revision": "1" * 64},
         "workload": {
-            "generator_id": "ppro-blackbox-communication-probe-v1",
+            "generator_id": "ppro-blackbox-communication-probe-v2",
             "generator_revision": "2" * 64,
             "rtl_sha256": "3" * 64,
             "parameters_sha256": "4" * 64,
