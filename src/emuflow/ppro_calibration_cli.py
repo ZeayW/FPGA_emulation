@@ -22,6 +22,7 @@ from .ppro_calibrated_platform import (
     validate_calibrated_platform_bundle,
     write_calibrated_platform_profiles,
 )
+from .ppro_holdout_validation import evaluate_holdout_promotion
 
 
 def _read_many(paths: Sequence[Path]) -> list[Any]:
@@ -81,6 +82,9 @@ def _parser() -> argparse.ArgumentParser:
 
     validate_bundle = commands.add_parser("validate-platform")
     validate_bundle.add_argument("bundle", type=Path)
+    holdouts = commands.add_parser("evaluate-holdouts")
+    holdouts.add_argument("--results", nargs="+", type=Path, required=True)
+    holdouts.add_argument("--out", type=Path, required=True)
     return parser
 
 
@@ -145,6 +149,14 @@ def _dispatch(args: argparse.Namespace) -> Any:
         return validate_calibrated_platform_bundle(args.out)
     if args.command == "validate-platform":
         return validate_calibrated_platform_bundle(args.bundle.resolve())
+    if args.command == "evaluate-holdouts":
+        result = evaluate_holdout_promotion(_read_many(args.results))
+        _write_result(args.out, result)
+        return {
+            "status": result["status"],
+            "promoted": result["promoted"],
+            "output": args.out.name,
+        }
     raise AssertionError(f"unhandled command {args.command}")
 
 

@@ -374,6 +374,18 @@ acceptance.
 
 ### Stage 6: blind large-design validation
 
+Status: **promotion contract and evaluator implemented; real blind runs
+pending**. Each case joins one passing PPro `application_holdout` observation
+to a complete EmuFlow Phase 1--7 summary produced with physical seed 1 and
+authoritative OpenSTA global timing. Promotion requires the same complete
+configuration, comparable resource utilization within 10 percentage points,
+TDM ratio within one level, cross-FPGA delay within 15%, major busiest-pair
+ordering agreement, macro-cycle/schedule legality, zero unrouted nets and DRC,
+and complete original-path coverage. It additionally requires all AES/CPU,
+large, DLA, and NVDLA tiers plus matching ranking for at least two algorithm
+variants on one workload. Global WNS/TNS are mandatory evidence, not replaced
+by an intermediate Phase 3--6 metric.
+
 Run secworks AES and one CPU holdout, then Koios GEMM/attention, Koios DLA
 medium/large, and finally NVDLA if the smaller gates pass.  Keep one physical
 seed unless a variance study is explicitly requested.

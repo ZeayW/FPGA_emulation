@@ -222,6 +222,8 @@ The same command provides explicit `fit-capacity`, `fit-topology`,
 `fit-payload`, `fit-latency`, `fit-transport`, `generate-platform`, and
 `validate-platform` operations. It never accepts an installation path, license
 endpoint, internal platform file, or raw report directory as serialized input.
+`evaluate-holdouts` applies the final blind promotion gate and rejects any case
+that stops before complete Phase 7 or omits authoritative global WNS/TNS.
 
 ## Flow roadmap
 

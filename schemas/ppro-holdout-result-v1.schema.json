@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/ppro-holdout-result-v1.schema.json",
+  "title": "EmuFlow blind PPro/Phase-1--7 holdout result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "workload_id", "tier", "algorithm_id", "ppro", "emuflow"],
+  "properties": {
+    "schema": {"const": "emuflow.ppro-holdout-result/v1"},
+    "id": {"type": "string", "minLength": 1},
+    "workload_id": {"type": "string", "minLength": 1},
+    "tier": {"enum": ["medium", "diversity", "large", "large_primary", "very_large_final"]},
+    "algorithm_id": {"type": "string", "minLength": 1},
+    "ppro": {"type": "object"},
+    "emuflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "configuration_id", "physical_seed", "resource_utilization", "maximum_tdm_ratio", "worst_cross_fpga_delay_ns", "busiest_pairs", "global_wns_ns", "global_tns_ns", "global_timing_engine", "phase1_7_complete", "macro_cycle_equivalence", "schedule_legality", "zero_unrouted_nets", "zero_drc_violations", "original_path_coverage"],
+      "properties": {
+        "status": {"const": "pass"},
+        "configuration_id": {"type": "string", "minLength": 1},
+        "physical_seed": {"const": 1},
+        "resource_utilization": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "number", "minimum": 0, "maximum": 1}},
+        "maximum_tdm_ratio": {"type": "integer", "minimum": 0},
+        "worst_cross_fpga_delay_ns": {"type": "number", "minimum": 0},
+        "busiest_pairs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^F[0-9]+->F[0-9]+$"}},
+        "global_wns_ns": {"type": "number"},
+        "global_tns_ns": {"type": "number", "maximum": 0},
+        "global_timing_engine": {"const": "opensta"},
+        "phase1_7_complete": {"type": "boolean"},
+        "macro_cycle_equivalence": {"type": "boolean"},
+        "schedule_legality": {"type": "boolean"},
+        "zero_unrouted_nets": {"type": "boolean"},
+        "zero_drc_violations": {"type": "boolean"},
+        "original_path_coverage": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    }
+  }
+}
