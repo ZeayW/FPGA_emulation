@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from emuflow.ppro_blackbox_application import generate_application_holdout_bundle
+
+
+class PProBlackboxApplicationTest(unittest.TestCase):
+    def test_catalog_holdout_is_free_partition_and_path_redacted(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "source"
+            source_root.mkdir()
+            (source_root / "top.v").write_text(
+                "module top(input wire clk, output reg q); always @(posedge clk) q <= ~q; endmodule\n",
+                encoding="utf-8",
+            )
+            benchmark = root / "benchmark.json"
+            benchmark.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.benchmark-run/v1",
+                        "id": "natural_holdout",
+                        "design_id": "natural",
+                        "top": "top",
+                        "sources": ["*.v"],
+                        "clocks": ["clk"],
+                        "clock_periods_ns": {"clk": 10.0},
+                        "platform": "unused-by-ppro.json",
+                        "synthesis": {"family": "xcup", "policy": "logic-only"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bundle = generate_application_holdout_bundle(
+                root / "bundle",
+                benchmark_run_path=benchmark,
+                source_root=source_root,
+                campaign_id="blind",
+                public_prior_id="prior-v1",
+                configuration_id="platform-v1",
+                tool_release="2026.1",
+                runner_revision="d" * 64,
+            )
+            spec = bundle.run_spec
+            self.assertEqual(spec["identity"]["role"], "holdout")
+            self.assertEqual(spec["experiment"]["kind"], "application_holdout")
+            self.assertEqual(spec["experiment"]["control_mode"], "none")
+            self.assertEqual(spec["experiment"]["documented_actions"], [])
+            self.assertEqual(spec["workload"]["design_metrics"]["source_file_count"], 1.0)
+            self.assertNotIn(str(root), json.dumps(spec))
+            constraints = json.loads(bundle.constraints_path.read_text(encoding="utf-8"))
+            self.assertEqual(constraints["control_mode"], "none")
+
+    def test_source_change_changes_rtl_identity(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "source"
+            source_root.mkdir()
+            rtl = source_root / "top.v"
+            benchmark = root / "benchmark.json"
+            benchmark.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.benchmark-run/v1",
+                        "id": "identity_test",
+                        "design_id": "identity",
+                        "top": "top",
+                        "sources": ["top.v"],
+                        "clocks": ["clk"],
+                        "platform": "unused.json",
+                        "synthesis": {"family": "xcup", "policy": "logic-only"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            kwargs = dict(
+                benchmark_run_path=benchmark,
+                source_root=source_root,
+                campaign_id="blind",
+                public_prior_id="prior-v1",
+                configuration_id="platform-v1",
+                tool_release="2026.1",
+                runner_revision="d" * 64,
+            )
+            rtl.write_text("module top(input clk); endmodule\n", encoding="utf-8")
+            first = generate_application_holdout_bundle(root / "one", **kwargs)
+            rtl.write_text("module top(input clk); wire x = clk; endmodule\n", encoding="utf-8")
+            second = generate_application_holdout_bundle(root / "two", **kwargs)
+            self.assertNotEqual(
+                first.run_spec["workload"]["rtl_sha256"],
+                second.run_spec["workload"]["rtl_sha256"],
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

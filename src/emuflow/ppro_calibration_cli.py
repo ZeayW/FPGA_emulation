@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .io import read_json, write_json
+from .ppro_blackbox_application import generate_application_holdout_bundle
 from .ppro_blackbox_calibration import validate_redacted_artifact
 from .ppro_blackbox_campaign import (
     PProCampaignRuntime,
@@ -152,6 +153,11 @@ def _parser() -> argparse.ArgumentParser:
     communication_matrix.add_argument("--flow-counts", nargs="+", type=int, required=True)
     communication_matrix.add_argument("--bidirectional", action="store_true")
     communication_matrix.add_argument("--repeats", type=int, default=2)
+
+    application = commands.add_parser("generate-application-holdout")
+    add_generation_identity(application)
+    application.add_argument("--benchmark-run", type=Path, required=True)
+    application.add_argument("--source-root", type=Path, required=True)
 
     run_case = commands.add_parser("run-ppro-case")
     run_case.add_argument("--run-spec", type=Path, required=True)
@@ -307,6 +313,19 @@ def _dispatch(args: argparse.Namespace) -> Any:
             adapter_profile=args.adapter_profile,
         )
         return {"status": "pass", "case_count": len(bundles)}
+    if args.command == "generate-application-holdout":
+        bundle = generate_application_holdout_bundle(
+            args.out,
+            benchmark_run_path=args.benchmark_run,
+            source_root=args.source_root,
+            campaign_id=args.campaign_id,
+            public_prior_id=args.public_prior_id,
+            configuration_id=args.configuration_id,
+            tool_release=args.tool_release,
+            runner_revision=args.runner_revision,
+            seed=args.seed_base,
+        )
+        return {"status": "pass", "case_id": bundle.run_spec["identity"]["id"]}
     if args.command == "run-ppro-case":
         spec = read_json(args.run_spec.resolve())
         binding = render_ppro_runtime_binding(

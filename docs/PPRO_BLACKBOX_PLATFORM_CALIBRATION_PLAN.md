@@ -417,7 +417,10 @@ acceptance.
 ### Stage 6: blind large-design validation
 
 Status: **promotion contract and evaluator implemented; real blind runs
-pending**. Each case joins one passing PPro `application_holdout` observation
+pending**. A scratch-only application bundle generator now binds an existing
+checked benchmark contract and natural RTL source tree to a free-partition
+PPro `application_holdout`; source paths and the EmuFlow platform choice never
+enter the compact observation. Each case joins one passing PPro observation
 to a complete EmuFlow Phase 1--7 summary produced with physical seed 1 and
 authoritative OpenSTA global timing. Promotion requires the same complete
 configuration, comparable resource utilization within 10 percentage points,

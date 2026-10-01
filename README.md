@@ -322,6 +322,20 @@ emuflow-ppro-calibration run-ppro-campaign \
   --maximum-cases 100 --max-workers 1
 ```
 
+Blind application runs use the existing checked benchmark contract and source
+tree, but never inherit its EmuFlow platform choice. PPro partitions the
+natural RTL freely; only source identities and compact ordinary-report metrics
+survive in the observation:
+
+```sh
+emuflow-ppro-calibration generate-application-holdout \
+  --out <active-campaign>/aes --campaign-id h1-aes \
+  --configuration-id lx2-m2 --tool-release 2026.1 \
+  --runner-revision <64-hex-runner-source-sha256> \
+  --benchmark-run benchmarks/runs/secworks_aes_l3.json \
+  --source-root third_party/rtl/secworks_aes
+```
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both
