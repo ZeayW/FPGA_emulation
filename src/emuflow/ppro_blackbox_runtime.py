@@ -108,9 +108,9 @@ def _validate_config(config: PProRuntimeConfig) -> None:
     if any(not re.fullmatch(r"F[0-9]+", value) for value in physical + logical):
         raise ValidationError("PPro physical and logical FPGA aliases must use F<n>")
     targets = validate_logical_targets(config.logical_targets)
-    if set(targets) != set(logical):
+    if not set(targets).issubset(set(logical)):
         raise ValidationError(
-            "PPro report aliases and logical placement targets must cover the same FPGAs"
+            "PPro logical placement targets must be covered by report aliases"
         )
 
     install_root = config.install_root.resolve()
@@ -242,7 +242,7 @@ def render_ppro_runtime_binding(
         },
         fpga_aliases=dict(config.fpga_aliases),
         timeout_seconds=config.timeout_seconds,
-        cleanup_raw_reports=True,
+        cleanup_raw_reports=not config.keep_raw_project,
         cleanup_paths=cleanup_paths,
         retain_failure_diagnostics=config.keep_raw_project,
     )

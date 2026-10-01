@@ -196,7 +196,11 @@ guessed. Generated Tcl, launcher, absolute runtime filelist, translated user
 constraints, active project, and raw reports are deleted after the compact
 observation is validated. The real adapter reads only normal partition,
 system-route, and system-timing reports; a runtime-only
-one-to-one alias map removes physical FPGA names before serialization. Its
+one-to-one alias map removes physical FPGA names before serialization. The
+alias map may cover transit FPGAs that are not placement targets, which is
+required for multi-hop routes. Explicit `--keep-raw-project` diagnostics retain
+the four allowlisted reports after a parse failure; normal runs still delete
+them after producing the compact observation. Its
 parser format has been checked against an existing successful normal PPro
 result, but Stage 2 remains pending until a fresh smoke is executed through the
 current runner. A mock result is never accepted as real PPro evidence.

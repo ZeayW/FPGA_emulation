@@ -59,6 +59,7 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
                 spec, source_filelist=filelist, config=config
             )
             self.assertFalse(binding.retain_failure_diagnostics)
+            self.assertTrue(binding.cleanup_raw_reports)
             script = (config.case_dir / ".run-ppro.tcl").read_text(encoding="utf-8")
             launcher = (config.case_dir / ".run-ppro.sh").read_text(encoding="utf-8")
             runtime_files = (config.case_dir / ".runtime-files.f").read_text(
@@ -208,6 +209,21 @@ EOF
                 spec, source_filelist=filelist, config=config
             )
             self.assertTrue(binding.retain_failure_diagnostics)
+            self.assertFalse(binding.cleanup_raw_reports)
+
+    def test_report_aliases_may_include_transit_fpgas(self):
+        with tempfile.TemporaryDirectory() as raw:
+            spec, filelist, config = self._fixture(Path(raw))
+            config = PProRuntimeConfig(
+                **{
+                    **config.__dict__,
+                    "fpga_aliases": {"F11": "F0", "F22": "F2", "F33": "F1"},
+                }
+            )
+            binding = render_ppro_runtime_binding(
+                spec, source_filelist=filelist, config=config
+            )
+            self.assertEqual(binding.fpga_aliases["F22"], "F2")
 
 
 if __name__ == "__main__":
