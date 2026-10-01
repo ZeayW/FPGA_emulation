@@ -29,7 +29,7 @@ def fit_artifacts():
             for axis, resource, amount in (
                 ("lut", "lut", 3_000_000),
                 ("ff", "ff", 6_000_000),
-                ("bram", "bram18k", 3_000),
+                ("bram", "bram36k", 1_500),
                 ("uram", "uram288", 240),
                 ("dsp", "dsp48", 2_800),
             )
@@ -129,6 +129,12 @@ class PProCalibratedPlatformTest(unittest.TestCase):
                 artifacts["transport_cost"], expected_platform=platform.name
             )
         self.assertEqual(result["manifest"]["fabric_clock_provenance"], "research_assumption")
+        bram_conversion = result["manifest"]["capacity_projection"][
+            "demand_unit_conversions"
+        ]["bram"]
+        self.assertEqual(bram_conversion["observation_resource"], "bram36k")
+        self.assertEqual(bram_conversion["boarddb_resource"], "bram18k")
+        self.assertEqual(bram_conversion["boarddb_units_per_observation_unit"], 2.0)
 
     def test_written_bundle_round_trips_and_detects_corruption(self):
         with tempfile.TemporaryDirectory() as raw:

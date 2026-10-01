@@ -22,11 +22,14 @@ TRANSPORT_COST_SCHEMA = "emuflow.transport-cost/v1"
 CALIBRATED_MANIFEST_SCHEMA = "emuflow.ppro-calibrated-platform-manifest/v1"
 _PROFILES = ("aggressive", "nominal", "conservative")
 _AXIS_MAP = {
-    "lut": ("clb_lut", "lut", "lut"),
-    "ff": ("clb_ff", "ff", "ff"),
-    "bram": ("bram_kib", "bram18k", "bram18k"),
-    "uram": ("uram_kib", "uram288", "uram288"),
-    "dsp": ("dsp", "dsp48", "dsp48"),
+    # public-prior key, BoardDB resource, observation resource, BoardDB units
+    # per observation unit.  PPro's ordinary BRAM report is normalized as a
+    # 36-Kib-class block, while BoardDB intentionally uses 18-Kib blocks.
+    "lut": ("clb_lut", "lut", "lut", 1.0),
+    "ff": ("clb_ff", "ff", "ff", 1.0),
+    "bram": ("bram_kib", "bram18k", "bram36k", 2.0),
+    "uram": ("uram_kib", "uram288", "uram288", 1.0),
+    "dsp": ("dsp", "dsp48", "dsp48", 1.0),
 }
 
 
@@ -60,23 +63,31 @@ def _utilization_limit(
     if not isinstance(axes, dict):
         raise ValidationError("calibrated platform capacity axes are invalid")
     ratios = {}
-    for axis, (_, board_resource, demand_resource) in _AXIS_MAP.items():
+    conversions = {}
+    for axis, (_, board_resource, demand_resource, demand_to_board_scale) in _AXIS_MAP.items():
         record = axes.get(axis)
         if not isinstance(record, dict):
             raise ValidationError(f"calibrated platform lacks the {axis} capacity axis")
         demand = record.get("resource_demand_at_lower", {}).get(demand_resource)
         if isinstance(demand, bool) or not isinstance(demand, (int, float)) or demand <= 0:
             raise ValidationError(f"calibrated platform {axis} fit lacks mapped demand")
-        ratio = float(demand) / public_capacity[board_resource]
+        mapped_demand = float(demand) * demand_to_board_scale
+        ratio = mapped_demand / public_capacity[board_resource]
         if not 0.0 < ratio <= 1.0:
             raise ValidationError(f"calibrated platform {axis} effective capacity exceeds public bounds")
         ratios[axis] = ratio
+        conversions[axis] = {
+            "observation_resource": demand_resource,
+            "boarddb_resource": board_resource,
+            "boarddb_units_per_observation_unit": demand_to_board_scale,
+        }
     # BoardDB v1 has one utilization limit.  The minimum fitted ratio is the
     # only conservative lossless projection across resource dimensions.
     value = min(ratios.values())
     return value, {
         "projection": "minimum-per-resource-effective-to-public-ratio",
         "per_resource_ratios": ratios,
+        "demand_unit_conversions": conversions,
         "selected_limit": value,
     }
 

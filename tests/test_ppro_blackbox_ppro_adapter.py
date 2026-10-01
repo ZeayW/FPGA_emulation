@@ -71,6 +71,7 @@ class PProBlackboxPProAdapterTest(unittest.TestCase):
                 {"F11": "F0", "F33": "F1"},
             )
         self.assertEqual(metrics["resource_demand"]["lut"], 1000.0)
+        self.assertEqual(metrics["resource_demand"]["bram36k"], 12.0)
         self.assertEqual(metrics["resource_demand"]["dsp48"], 20.0)
         self.assertEqual(metrics["fpga_utilization"][0]["resources"]["lut"], 0.03)
         self.assertEqual(metrics["assignments"], [{"partition": "P0", "fpga": "F0"}, {"partition": "P1", "fpga": "F1"}])

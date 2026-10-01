@@ -252,6 +252,13 @@ had no capacity identifiability. Those invalid sweeps are excluded from fits.
 Campaign completion treats explicit capacity/link/routing infeasibility as a
 successful measured terminal outcome; only provider, license, infrastructure,
 missing-report, and parse failures fail the campaign command.
+The first authorized v4 hard-memory pilot requested 68 preserved 32-Kib
+memories and PPro reported exactly 68 BRAM units at 4% utilization.  This
+one-for-one mapping plus the public XCVU19P memory bound identifies the
+ordinary-report unit as one 36-Kib-class block rather than one 18-Kib block.
+Observations therefore use the explicit `bram36k` metric; only Stage 5 converts
+one observed BRAM unit to two BoardDB `bram18k` units.  The pilot qualifies the
+unit contract but is not a capacity boundary by itself.
 
 Stage 4 now has the corresponding controlled communication probe and
 dependency-free fitters for payload/TDM intervals, aggregate latency, and

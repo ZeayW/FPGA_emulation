@@ -400,6 +400,14 @@ An authorized current-runner LUT pilot requested 150,000 v3 control units and
 PPro reported 55,886 mapped LUTs at 2% utilization in 191.05 seconds. This
 qualifies generation, execution, compact report parsing, and cleanup, but does
 not satisfy the repeated pass/infeasible interval gate by itself.
+An authorized v4 BRAM pilot requested 68 preserved 32-Kib memories and the
+ordinary PPro report returned BRAM demand 68 at 4% utilization.  The
+one-for-one demand and the public XCVU19P memory bound identify this report
+column as a 36-Kib-class block count.  The observation schema records it as
+`bram36k`; the final platform projection performs the explicit
+`1 bram36k = 2 bram18k` conversion required by BoardDB.  This pilot validates
+the measurement unit only; repeated pass/infeasible points remain mandatory
+for the capacity interval.
 
 Deliver resource-boundary and ordered-pair experiment matrices, fitted
 effective capacities, effective reachability, and shared-resource hypotheses.

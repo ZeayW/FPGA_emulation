@@ -31,7 +31,12 @@ _NORMALIZED_DELAY = re.compile(
 _RESOURCE_MAP = {
     "LUT": "lut",
     "FF": "ff",
-    "BRAM": "bram18k",
+    # A controlled 32 Kib inferred-memory probe maps one-for-one to the
+    # ordinary-report BRAM count.  Together with the reported utilization,
+    # this identifies the report unit as one RAMB36-class block, not one
+    # RAMB18.  Keep that unit explicit here; BoardDB conversion happens only
+    # when the calibrated platform is materialized.
+    "BRAM": "bram36k",
     "DSP": "dsp48",
     "URAM": "uram288",
 }
