@@ -206,6 +206,23 @@ evidence. The resulting timing qualification is characterization only, and
 fabric clock remains a published research assumption until separately
 identifiable.
 
+The redacted artifact path is exposed separately from the main flow so a
+runtime binding can never be mistaken for a publishable experiment file:
+
+```sh
+emuflow-ppro-calibration validate-artifact \
+  calibration/ppro_blackbox/priors/lx2-public-prior-v1.json
+emuflow-ppro-calibration generate-smoke \
+  --out build/ppro-smoke --campaign-id c0-smoke \
+  --configuration-id lx2-m1 --tool-release 2026.1 \
+  --runner-revision <64-hex-runner-source-sha256>
+```
+
+The same command provides explicit `fit-capacity`, `fit-topology`,
+`fit-payload`, `fit-latency`, `fit-transport`, `generate-platform`, and
+`validate-platform` operations. It never accepts an installation path, license
+endpoint, internal platform file, or raw report directory as serialized input.
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both

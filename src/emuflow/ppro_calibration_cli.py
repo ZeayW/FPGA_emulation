@@ -1,0 +1,159 @@
+"""Command-line entry point for redacted PPro calibration artifacts."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any, Sequence
+
+from .io import read_json, write_json
+from .ppro_blackbox_calibration import validate_redacted_artifact
+from .ppro_blackbox_runner import validate_run_spec
+from .ppro_blackbox_smoke import generate_connected_smoke_bundle
+from .ppro_blackbox_stage3 import fit_capacity_intervals, fit_effective_topology
+from .ppro_blackbox_stage4 import (
+    fit_latency_model,
+    fit_payload_intervals,
+    fit_transport_cost_model,
+)
+from .ppro_calibrated_platform import (
+    generate_calibrated_platform_profiles,
+    validate_calibrated_platform_bundle,
+    write_calibrated_platform_profiles,
+)
+
+
+def _read_many(paths: Sequence[Path]) -> list[Any]:
+    return [read_json(path.resolve()) for path in paths]
+
+
+def _write_result(path: Path, value: Any) -> None:
+    write_json(path.resolve(), value, compact=True)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="emuflow-ppro-calibration",
+        description="Generate, fit, and validate redacted PPro black-box calibration artifacts.",
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    validate_artifact = commands.add_parser("validate-artifact")
+    validate_artifact.add_argument("artifact", type=Path)
+
+    validate_spec = commands.add_parser("validate-run-spec")
+    validate_spec.add_argument("run_spec", type=Path)
+
+    smoke = commands.add_parser("generate-smoke")
+    smoke.add_argument("--out", type=Path, required=True)
+    smoke.add_argument("--campaign-id", required=True)
+    smoke.add_argument("--case-id", default="connected-smoke-w32-d8")
+    smoke.add_argument("--public-prior-id", default="lx2-public-prior-v1")
+    smoke.add_argument("--configuration-id", required=True)
+    smoke.add_argument("--tool-release", required=True)
+    smoke.add_argument("--runner-revision", required=True)
+    smoke.add_argument("--seed", type=int, default=1)
+    smoke.add_argument("--width", type=int, default=32)
+    smoke.add_argument("--pipeline-stages", type=int, default=8)
+
+    for name in ("fit-capacity", "fit-topology", "fit-payload", "fit-transport"):
+        command = commands.add_parser(name)
+        command.add_argument("--observations", nargs="+", type=Path, required=True)
+        command.add_argument("--out", type=Path, required=True)
+    latency = commands.add_parser("fit-latency")
+    latency.add_argument("--observations", nargs="+", type=Path, required=True)
+    latency.add_argument("--payload-bits-candidates", nargs="+", type=int, required=True)
+    latency.add_argument("--out", type=Path, required=True)
+
+    generate = commands.add_parser("generate-platform")
+    generate.add_argument("--prior", type=Path, required=True)
+    generate.add_argument("--configuration-id", required=True)
+    generate.add_argument("--capacity-fit", type=Path, required=True)
+    generate.add_argument("--topology-fit", type=Path, required=True)
+    generate.add_argument("--payload-fit", type=Path, required=True)
+    generate.add_argument("--latency-fit", type=Path, required=True)
+    generate.add_argument("--transport-fit", type=Path, required=True)
+    generate.add_argument("--aggressive-fabric-clock-mhz", type=float, required=True)
+    generate.add_argument("--nominal-fabric-clock-mhz", type=float, required=True)
+    generate.add_argument("--conservative-fabric-clock-mhz", type=float, required=True)
+    generate.add_argument("--out", type=Path, required=True)
+
+    validate_bundle = commands.add_parser("validate-platform")
+    validate_bundle.add_argument("bundle", type=Path)
+    return parser
+
+
+def _dispatch(args: argparse.Namespace) -> Any:
+    if args.command == "validate-artifact":
+        return validate_redacted_artifact(read_json(args.artifact.resolve()))
+    if args.command == "validate-run-spec":
+        return validate_run_spec(read_json(args.run_spec.resolve()))
+    if args.command == "generate-smoke":
+        bundle = generate_connected_smoke_bundle(
+            args.out,
+            campaign_id=args.campaign_id,
+            case_id=args.case_id,
+            public_prior_id=args.public_prior_id,
+            configuration_id=args.configuration_id,
+            tool_release=args.tool_release,
+            runner_revision=args.runner_revision,
+            seed=args.seed,
+            width=args.width,
+            pipeline_stages=args.pipeline_stages,
+        )
+        return {"status": "pass", "run_spec": bundle.run_spec}
+    if args.command == "fit-capacity":
+        result = fit_capacity_intervals(_read_many(args.observations))
+        _write_result(args.out, result)
+        return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
+    if args.command == "fit-topology":
+        result = fit_effective_topology(_read_many(args.observations))
+        _write_result(args.out, result)
+        return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
+    if args.command == "fit-payload":
+        result = fit_payload_intervals(_read_many(args.observations))
+        _write_result(args.out, result)
+        return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
+    if args.command == "fit-latency":
+        result = fit_latency_model(
+            _read_many(args.observations),
+            payload_bits_candidates=args.payload_bits_candidates,
+        )
+        _write_result(args.out, result)
+        return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
+    if args.command == "fit-transport":
+        result = fit_transport_cost_model(_read_many(args.observations))
+        _write_result(args.out, result)
+        return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
+    if args.command == "generate-platform":
+        bundle = generate_calibrated_platform_profiles(
+            prior=read_json(args.prior.resolve()),
+            configuration_id=args.configuration_id,
+            capacity_fit=read_json(args.capacity_fit.resolve()),
+            topology_fit=read_json(args.topology_fit.resolve()),
+            payload_fit=read_json(args.payload_fit.resolve()),
+            latency_fit=read_json(args.latency_fit.resolve()),
+            transport_fit=read_json(args.transport_fit.resolve()),
+            fabric_clock_mhz={
+                "aggressive": args.aggressive_fabric_clock_mhz,
+                "nominal": args.nominal_fabric_clock_mhz,
+                "conservative": args.conservative_fabric_clock_mhz,
+            },
+        )
+        write_calibrated_platform_profiles(args.out, bundle)
+        return validate_calibrated_platform_bundle(args.out)
+    if args.command == "validate-platform":
+        return validate_calibrated_platform_bundle(args.bundle.resolve())
+    raise AssertionError(f"unhandled command {args.command}")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    result = _dispatch(args)
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -19,6 +19,7 @@ cp-sat = ["ortools>=9.10"]
 
 [project.scripts]
 emuflow = "emuflow.cli:main"
+emuflow-ppro-calibration = "emuflow.ppro_calibration_cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
