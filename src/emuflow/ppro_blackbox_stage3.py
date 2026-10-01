@@ -148,6 +148,7 @@ def fit_effective_topology(
         raise ValidationError("topology fitting requires at least two repeats")
     normalized = _validated(observations)
     groups: dict[tuple[int, int, str], list[Dict[str, Any]]] = defaultdict(list)
+    probe_widths: set[int] = set()
     excluded = 0
     for item in normalized:
         if item["experiment"]["kind"] != "topology_reachability":
@@ -163,9 +164,13 @@ def fit_effective_topology(
         source = _integer_metric(design, "source_fpga_index", "topology observation")
         sink = _integer_metric(design, "sink_fpga_index", "topology observation")
         width = _integer_metric(design, "probe_width_bits", "topology observation")
-        if source == sink or width != 1:
-            raise ValidationError("reachability fit requires a one-bit cross-FPGA ordered pair")
+        if source == sink or width <= 0:
+            raise ValidationError("reachability fit requires a positive-width cross-FPGA ordered pair")
+        probe_widths.add(width)
         groups[(source, sink, item["identity"]["role"])].append(item)
+
+    if len(probe_widths) != 1:
+        raise ValidationError("reachability fit cannot mix probe widths")
 
     edges = []
     holdout_checks = []
@@ -216,6 +221,7 @@ def fit_effective_topology(
         raise ValidationError("topology fitting produced no fit edges")
     return {
         "schema": TOPOLOGY_FIT_SCHEMA,
+        "probe_width_bits": next(iter(probe_widths)),
         "directed_edges": edges,
         "holdout_checks": holdout_checks,
         "excluded_observations": excluded,

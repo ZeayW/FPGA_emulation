@@ -225,6 +225,9 @@ units use preserved cell hierarchy so synthesis cannot collapse the entire
 sweep into one parity-equivalent memory;
 topology probes fix endpoint instances only and observe the route PPro chooses.
 They do not falsely claim a route constraint or an applied random seed.
+Topology fitting accepts the generator's documented positive probe width,
+requires one identical width across the complete matrix, and records that width
+in the fit; mixed-width observations fail closed.
 The capacity fitter accepts only the current v4 generator identity, while the
 topology fitter accepts only its current v2 identity. A failed
 run becomes capacity evidence only when the bounded ordinary console output

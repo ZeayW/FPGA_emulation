@@ -140,7 +140,7 @@ class PProBlackboxStage3Test(unittest.TestCase):
                         design={
                             "source_fpga_index": source,
                             "sink_fpga_index": sink,
-                            "probe_width_bits": 1,
+                            "probe_width_bits": 32,
                         },
                         routes=routes,
                     )
@@ -148,6 +148,7 @@ class PProBlackboxStage3Test(unittest.TestCase):
         result = fit_effective_topology(values)
         self.assertEqual(result["directed_edges"][0]["state"], "reachable")
         self.assertEqual(result["directed_edges"][0]["effective_hops"], 2)
+        self.assertEqual(result["probe_width_bits"], 32)
         self.assertEqual(result["directed_edges"][1]["state"], "unreachable")
         self.assertEqual(result["shared_capacity_groups"]["status"], "not_identifiable")
 

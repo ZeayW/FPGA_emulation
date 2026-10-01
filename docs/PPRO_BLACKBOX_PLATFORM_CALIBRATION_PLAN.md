@@ -373,6 +373,8 @@ and reserves explicit holdout pairs. Capacity fitting emits only a measured
 pass/infeasible interval; topology fitting emits only observed directed
 reachability and stable effective hop counts. Single-flow data explicitly
 leaves shared-capacity groups `not_identifiable` instead of guessing them. The
+topology matrix must use one consistent positive probe width, which is retained
+in the fitted artifact; mixed-width matrices are rejected. The
 v4 capacity RTL places its swept payload below a real `P0` hierarchy before the
 documented `assign_inst` constraint is emitted. Topology fixes only producer
 and consumer instances and observes the tool-selected route; it does not claim
