@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/ppro-public-platform-prior-v1.schema.json",
+  "title": "EmuFlow PPro public platform prior v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "prior",
+    "sources",
+    "device",
+    "configurations",
+    "interconnect_capabilities",
+    "not_identifiable"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.ppro-public-platform-prior/v1"},
+    "prior": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "family", "publication_scope", "claim_scope"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "family": {"type": "string", "minLength": 1},
+        "publication_scope": {"const": "public-spec-only"},
+        "claim_scope": {"const": "published-upper-bounds-not-boarddb"}
+      }
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "publisher", "title", "uri", "locator", "accessed_on"],
+        "properties": {
+          "id": {"type": "string"},
+          "publisher": {"type": "string"},
+          "title": {"type": "string"},
+          "uri": {"type": "string", "format": "uri", "pattern": "^https://"},
+          "locator": {"type": "string"},
+          "accessed_on": {"type": "string", "format": "date"}
+        }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["part", "resources", "provenance"],
+      "properties": {
+        "part": {"type": "string", "minLength": 1},
+        "resources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "value", "unit", "provenance"],
+            "properties": {
+              "name": {"enum": ["clb_lut", "clb_ff", "bram_kib", "uram_kib", "dsp", "user_io", "gty"]},
+              "value": {"type": "number", "minimum": 0},
+              "unit": {"type": "string", "minLength": 1},
+              "provenance": {"$ref": "#/$defs/publicProvenance"}
+            }
+          }
+        },
+        "provenance": {"$ref": "#/$defs/publicProvenance"}
+      }
+    },
+    "configurations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "fpga_count", "published_totals", "connectors", "provenance"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+          "fpga_count": {"type": "integer", "minimum": 1},
+          "published_totals": {"$ref": "#/$defs/nonnegativeMap"},
+          "connectors": {"$ref": "#/$defs/nonnegativeIntegerMap"},
+          "provenance": {"$ref": "#/$defs/publicProvenance"}
+        }
+      }
+    },
+    "interconnect_capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "statement", "published_bounds", "provenance"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+          "statement": {"type": "string", "minLength": 1},
+          "published_bounds": {"$ref": "#/$defs/nonnegativeMap"},
+          "provenance": {"$ref": "#/$defs/publicProvenance"}
+        }
+      }
+    },
+    "not_identifiable": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"}
+    }
+  },
+  "$defs": {
+    "publicProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "source_refs"],
+      "properties": {
+        "class": {"const": "public_spec"},
+        "source_refs": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "note": {"type": "string", "minLength": 1}
+      }
+    },
+    "nonnegativeMap": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[a-z0-9][a-z0-9._-]*$"},
+      "additionalProperties": {"type": "number", "minimum": 0}
+    },
+    "nonnegativeIntegerMap": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[a-z0-9][a-z0-9._-]*$"},
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    }
+  }
+}

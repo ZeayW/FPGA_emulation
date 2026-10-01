@@ -1,0 +1,51 @@
+{
+  "schema": "emuflow.ppro-blackbox-observation/v1",
+  "identity": {
+    "id": "mock-license-failure-0001",
+    "campaign_id": "mock-stage1",
+    "case_id": "latency-single-hop-w64",
+    "role": "fit",
+    "public_prior_id": "lx2-public-prior-v1",
+    "configuration_id": "lx2-m1"
+  },
+  "tool": {
+    "name": "PPro mock",
+    "release": "mock-1",
+    "runner_revision": "5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "workload": {
+    "generator_id": "ppro-blackbox-latency",
+    "generator_revision": "1111111111111111111111111111111111111111111111111111111111111111",
+    "rtl_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "parameters_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "experiment": {
+    "kind": "latency",
+    "control_mode": "fixed_communication",
+    "documented_actions": ["net_route_constraint", "partition_constraint", "random_seed"],
+    "constraints_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+  },
+  "execution": {
+    "seed": 1,
+    "outcome": "license_failure",
+    "failure_code": "license-unavailable",
+    "runtime_seconds": null
+  },
+  "reports": {
+    "partition_summary": false,
+    "resource_summary": false,
+    "route_summary": false,
+    "system_timing": false
+  },
+  "metrics": {
+    "design": {},
+    "resource_demand": {},
+    "fpga_utilization": [],
+    "assignments": [],
+    "routes": [],
+    "communication": {},
+    "timing": {}
+  },
+  "provenance": {"class": "black_box_observation"},
+  "derived": {"fit_eligible": false, "reason": "non-hardware-failure"}
+}

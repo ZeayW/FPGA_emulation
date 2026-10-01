@@ -1,0 +1,79 @@
+{
+  "schema": "emuflow.ppro-public-platform-prior/v1",
+  "prior": {
+    "id": "lx2-public-prior-v1",
+    "family": "S2C Prodigy Logic Matrix LX2",
+    "publication_scope": "public-spec-only",
+    "claim_scope": "published-upper-bounds-not-boarddb"
+  },
+  "sources": [
+    {
+      "id": "amd-vu19p-product",
+      "publisher": "AMD",
+      "title": "Virtex UltraScale+ VU19P FPGAs",
+      "uri": "https://www.amd.com/en/products/adaptive-socs-and-fpgas/fpga/virtex-ultrascale-plus-vu19p.html",
+      "locator": "Product table and high-speed transceiver feature summary",
+      "accessed_on": "2026-10-01"
+    },
+    {
+      "id": "amd-vuplus-selection",
+      "publisher": "AMD",
+      "title": "UltraScale+ FPGA Product Tables and Product Selection Guide",
+      "uri": "https://www.amd.com/content/dam/xilinx/support/documents/selection-guides/ultrascale-plus-fpga-product-selection-guide.pdf",
+      "locator": "Virtex UltraScale+ FPGA product table, VU19P column",
+      "accessed_on": "2026-10-01"
+    },
+    {
+      "id": "s2c-lx-product",
+      "publisher": "S2C",
+      "title": "Prodigy Logic Matrix LX",
+      "uri": "https://www.s2ceda.com/product-prototyping-lx",
+      "locator": "LX2 public configuration table",
+      "accessed_on": "2026-10-01"
+    },
+    {
+      "id": "s2c-lx2-news",
+      "publisher": "S2C",
+      "title": "S2C introduces Prodigy Logic Matrix LX2",
+      "uri": "https://www.s2ceda.com/ch/info-pr-335",
+      "locator": "Published interconnect classes and MCIO/GTY upper bounds",
+      "accessed_on": "2026-10-01"
+    }
+  ],
+  "device": {
+    "part": "XCVU19P",
+    "resources": [
+      {"name": "clb_lut", "value": 4086000, "unit": "count", "provenance": {"class": "public_spec", "source_refs": ["amd-vuplus-selection"]}},
+      {"name": "clb_ff", "value": 8172000, "unit": "count", "provenance": {"class": "public_spec", "source_refs": ["amd-vuplus-selection"]}},
+      {"name": "bram_kib", "value": 77721.6, "unit": "Kib", "provenance": {"class": "public_spec", "source_refs": ["amd-vuplus-selection"]}},
+      {"name": "uram_kib", "value": 92160, "unit": "Kib", "provenance": {"class": "public_spec", "source_refs": ["amd-vuplus-selection"]}},
+      {"name": "dsp", "value": 3840, "unit": "count", "provenance": {"class": "public_spec", "source_refs": ["amd-vu19p-product", "amd-vuplus-selection"]}},
+      {"name": "user_io", "value": 2072, "unit": "count", "provenance": {"class": "public_spec", "source_refs": ["amd-vu19p-product"]}},
+      {"name": "gty", "value": 80, "unit": "count", "provenance": {"class": "public_spec", "source_refs": ["amd-vu19p-product"]}}
+    ],
+    "provenance": {"class": "public_spec", "source_refs": ["amd-vu19p-product", "amd-vuplus-selection"]}
+  },
+  "configurations": [
+    {"id": "lx2-m1", "fpga_count": 2, "published_totals": {"dsp": 7680, "fpga_memory_mib": 331.8, "high_speed_transceivers": 160, "system_logic_cells": 17876000, "user_io": 2912}, "connectors": {"mcio_4gty_8io": 40, "prodigy_144io": 18}, "provenance": {"class": "public_spec", "source_refs": ["s2c-lx-product"]}},
+    {"id": "lx2-m2", "fpga_count": 4, "published_totals": {"dsp": 15360, "fpga_memory_mib": 663.6, "high_speed_transceivers": 320, "system_logic_cells": 35752000, "user_io": 5824}, "connectors": {"mcio_4gty_8io": 80, "prodigy_144io": 36}, "provenance": {"class": "public_spec", "source_refs": ["s2c-lx-product"]}},
+    {"id": "lx2-p3", "fpga_count": 6, "published_totals": {"dsp": 23040, "fpga_memory_mib": 995.4, "high_speed_transceivers": 480, "system_logic_cells": 53628000, "user_io": 8736}, "connectors": {"mcio_4gty_8io": 120, "prodigy_144io": 54}, "provenance": {"class": "public_spec", "source_refs": ["s2c-lx-product"]}},
+    {"id": "lx2-p4", "fpga_count": 8, "published_totals": {"dsp": 30720, "fpga_memory_mib": 1327.2, "high_speed_transceivers": 640, "system_logic_cells": 71504000, "user_io": 11648}, "connectors": {"mcio_4gty_8io": 160, "prodigy_144io": 72}, "provenance": {"class": "public_spec", "source_refs": ["s2c-lx-product"]}}
+  ],
+  "interconnect_capabilities": [
+    {"name": "configuration-family", "statement": "The published LX2 family provides complete 2, 4, 6, and 8 FPGA configurations.", "published_bounds": {"maximum_fpgas_per_platform": 8}, "provenance": {"class": "public_spec", "source_refs": ["s2c-lx-product"]}},
+    {"name": "mcio-gty", "statement": "Each FPGA exposes twenty MCIO connectors carrying four GTY lanes and eight I/O signals per connector; the published GTY line-rate upper bound is 28 Gb/s.", "published_bounds": {"gty_lanes_per_connector": 4, "io_signals_per_connector": 8, "maximum_line_rate_gbps": 28, "mcio_connectors_per_fpga": 20}, "provenance": {"class": "public_spec", "source_refs": ["s2c-lx2-news"]}},
+    {"name": "interconnect-classes", "statement": "The public product description names adjacent-FPGA interconnect cards, Prodigy cables, and MCIO cables, without publishing a complete route graph.", "published_bounds": {"published_class_count": 3, "prodigy_connector_io": 144}, "provenance": {"class": "public_spec", "source_refs": ["s2c-lx-product", "s2c-lx2-news"]}}
+  ],
+  "not_identifiable": [
+    "directed-payload-capacity",
+    "effective-topology",
+    "endpoint-latency",
+    "gty-quad-map",
+    "package-pin-map",
+    "per-hop-latency",
+    "reference-clock-reset",
+    "shared-link-groups",
+    "tdm-policy",
+    "transport-resource-cost"
+  ]
+}

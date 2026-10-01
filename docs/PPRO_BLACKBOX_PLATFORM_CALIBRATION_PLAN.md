@@ -274,6 +274,13 @@ holdout merely to obtain promotion.
 
 ### Stage 1: public prior and observation schema
 
+Status: **implemented on the calibration branch**. The implementation includes
+strict Python validators, matching versioned JSON schemas, an official-source
+LX2 public prior, synthetic mock observations, and corruption/redaction tests.
+The prior intentionally leaves effective topology, payload capacity, TDM,
+timing, and transport cost as `not_identifiable`; no public connector count is
+promoted into a BoardDB edge.
+
 Deliver:
 
 - versioned public-platform prior schema;
@@ -358,4 +365,3 @@ The black-box platform effort is complete only when:
    global timing; and
 5. the documentation states exactly which claims are public-spec,
    PPro-behavior-equivalent, assumed, or unavailable.
-

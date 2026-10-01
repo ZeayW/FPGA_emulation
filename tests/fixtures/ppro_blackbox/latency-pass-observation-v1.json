@@ -1,0 +1,69 @@
+{
+  "schema": "emuflow.ppro-blackbox-observation/v1",
+  "identity": {
+    "id": "mock-latency-pass-0001",
+    "campaign_id": "mock-stage1",
+    "case_id": "latency-single-hop-w64",
+    "role": "fit",
+    "public_prior_id": "lx2-public-prior-v1",
+    "configuration_id": "lx2-m1"
+  },
+  "tool": {
+    "name": "PPro mock",
+    "release": "mock-1",
+    "runner_revision": "5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "workload": {
+    "generator_id": "ppro-blackbox-latency",
+    "generator_revision": "1111111111111111111111111111111111111111111111111111111111111111",
+    "rtl_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "parameters_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "experiment": {
+    "kind": "latency",
+    "control_mode": "fixed_communication",
+    "documented_actions": ["net_route_constraint", "partition_constraint", "random_seed"],
+    "constraints_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+  },
+  "execution": {
+    "seed": 1,
+    "outcome": "pass",
+    "failure_code": null,
+    "runtime_seconds": 3.25
+  },
+  "reports": {
+    "partition_summary": true,
+    "resource_summary": true,
+    "route_summary": true,
+    "system_timing": true
+  },
+  "metrics": {
+    "design": {"clock_domains": 1, "instances": 1200, "nets": 1800},
+    "resource_demand": {"bram": 0, "dsp": 0, "ff": 950, "lut": 740},
+    "fpga_utilization": [
+      {"fpga": "F0", "resources": {"ff": 0.00008, "lut": 0.00007}},
+      {"fpga": "F1", "resources": {"ff": 0.00007, "lut": 0.00006}}
+    ],
+    "assignments": [
+      {"partition": "P0", "fpga": "F0"},
+      {"partition": "P1", "fpga": "F1"}
+    ],
+    "routes": [
+      {"id": "route-0", "source": "F0", "sinks": ["F1"], "effective_hops": 1}
+    ],
+    "communication": {
+      "cross_fpga_path_count": 64,
+      "maximum_tdm_ratio": 1,
+      "path_count": 64
+    },
+    "timing": {"sr0_worst_cross_fpga_delay_ns": 12.5}
+  },
+  "provenance": {
+    "class": "black_box_observation",
+    "note": "Synthetic fixture shaped like an ordinary compact report observation."
+  },
+  "derived": {
+    "fit_eligible": true,
+    "reason": "controlled-evaluated-observation"
+  }
+}

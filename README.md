@@ -155,6 +155,30 @@ is a provenance-labelled behavior-equivalent academic BoardDB,
 BoardLinkTimingDB, and TransportCostDB validated first on microbenchmarks and
 then blindly on naturally connected AES, CPU, Koios, and NVDLA workloads.
 
+Stage 1 of that increment is implemented as a strict publication boundary:
+
+- [`lx2-public-prior-v1.json`](calibration/ppro_blackbox/priors/lx2-public-prior-v1.json)
+  records only facts supported by the public
+  [S2C LX2 configuration table](https://www.s2ceda.com/product-prototyping-lx),
+  [S2C LX2 interconnect description](https://www.s2ceda.com/ch/info-pr-335),
+  and [AMD VU19P product data](https://www.amd.com/en/products/adaptive-socs-and-fpgas/fpga/virtex-ultrascale-plus-vu19p.html).
+- `emuflow.ppro-public-platform-prior/v1` distinguishes published physical
+  upper bounds from the effective topology, payload capacity, TDM policy,
+  aggregate timing, and transport cost that still require experiments.
+- `emuflow.ppro-blackbox-observation/v1` stores only compact, vendor-neutral
+  metrics from allowlisted ordinary reports. FPGA and partition identities are
+  normalized to `F<n>` and `P<n>`; raw reports, commands, paths, credentials,
+  license endpoints, internal BoardDB/STF data, pin maps, and timing tables have
+  no schema slot and are rejected by the redaction validator.
+- License, tool, infrastructure, and missing-report failures are terminal
+  diagnostics, never hardware observations. Only controlled, evaluated fitting
+  experiments may set `fit_eligible=true`; the validator recomputes that value.
+
+The current prior is therefore **not** a usable calibrated BoardDB and makes no
+claim that public connector totals reveal the platform's wiring. Stage 2 adds
+the dry-run/mock-first runner and parser needed to produce lawful observations;
+later stages fit the missing behavior and validate it on unseen applications.
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both

@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/ppro-blackbox-observation-v1.schema.json",
+  "title": "EmuFlow normalized PPro black-box observation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "identity",
+    "tool",
+    "workload",
+    "experiment",
+    "execution",
+    "reports",
+    "metrics",
+    "provenance",
+    "derived"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.ppro-blackbox-observation/v1"},
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "campaign_id", "case_id", "role", "public_prior_id", "configuration_id"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "campaign_id": {"$ref": "#/$defs/id"},
+        "case_id": {"$ref": "#/$defs/id"},
+        "role": {"enum": ["fit", "holdout"]},
+        "public_prior_id": {"$ref": "#/$defs/id"},
+        "configuration_id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "release", "runner_revision"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "release": {"type": "string", "minLength": 1},
+        "runner_revision": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generator_id", "generator_revision", "rtl_sha256", "parameters_sha256"],
+      "properties": {
+        "generator_id": {"$ref": "#/$defs/id"},
+        "generator_revision": {"$ref": "#/$defs/sha256"},
+        "rtl_sha256": {"$ref": "#/$defs/sha256"},
+        "parameters_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "control_mode", "documented_actions", "constraints_sha256"],
+      "properties": {
+        "kind": {
+          "enum": ["reproducibility", "resource_capacity", "topology_reachability", "payload_capacity", "latency", "transport_cost", "application_holdout"]
+        },
+        "control_mode": {"enum": ["fixed_assignment", "fixed_communication", "free_optimization", "none"]},
+        "documented_actions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["partition_constraint", "net_route_constraint", "tdm_ratio_constraint", "random_seed"]}
+        },
+        "constraints_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seed", "outcome", "failure_code", "runtime_seconds"],
+      "properties": {
+        "seed": {"type": "integer", "minimum": 0},
+        "outcome": {
+          "enum": [
+            "pass",
+            "capacity_infeasible",
+            "link_capacity_infeasible",
+            "tool_failure",
+            "infrastructure_failure",
+            "license_failure",
+            "missing_report"
+          ]
+        },
+        "failure_code": {"type": ["string", "null"]},
+        "runtime_seconds": {"type": ["number", "null"], "minimum": 0}
+      }
+    },
+    "reports": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource_summary", "partition_summary", "route_summary", "system_timing"],
+      "properties": {
+        "resource_summary": {"type": "boolean"},
+        "partition_summary": {"type": "boolean"},
+        "route_summary": {"type": "boolean"},
+        "system_timing": {"type": "boolean"}
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["design", "resource_demand", "fpga_utilization", "assignments", "routes", "communication", "timing"],
+      "properties": {
+        "design": {"$ref": "#/$defs/metricMap"},
+        "resource_demand": {"$ref": "#/$defs/metricMap"},
+        "fpga_utilization": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["fpga", "resources"],
+            "properties": {
+              "fpga": {"type": "string", "pattern": "^F[0-9]+$"},
+              "resources": {"$ref": "#/$defs/utilizationMap"}
+            }
+          }
+        },
+        "assignments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["partition", "fpga"],
+            "properties": {
+              "partition": {"type": "string", "pattern": "^P[0-9]+$"},
+              "fpga": {"type": "string", "pattern": "^F[0-9]+$"}
+            }
+          }
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "source", "sinks", "effective_hops"],
+            "properties": {
+              "id": {"$ref": "#/$defs/id"},
+              "source": {"type": "string", "pattern": "^F[0-9]+$"},
+              "sinks": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^F[0-9]+$"}},
+              "effective_hops": {"type": "integer", "minimum": 1}
+            }
+          }
+        },
+        "communication": {"$ref": "#/$defs/metricMap"},
+        "timing": {"$ref": "#/$defs/metricMap"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class"],
+      "properties": {
+        "class": {"const": "black_box_observation"},
+        "note": {"type": "string", "minLength": 1}
+      }
+    },
+    "derived": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fit_eligible", "reason"],
+      "properties": {
+        "fit_eligible": {"type": "boolean"},
+        "reason": {
+          "enum": [
+            "controlled-evaluated-observation",
+            "holdout-not-fit",
+            "uncontrolled-not-fit",
+            "non-hardware-failure"
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "metricMap": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z0-9][a-z0-9._-]*$"},
+      "additionalProperties": {"type": "number", "minimum": 0}
+    },
+    "utilizationMap": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z0-9][a-z0-9._-]*$"},
+      "additionalProperties": {"type": "number", "minimum": 0, "maximum": 1}
+    }
+  }
+}
