@@ -12,7 +12,7 @@ from .ppro_blackbox_calibration import validate_blackbox_observation
 from .ppro_blackbox_route_evidence import maximum_payload_hops
 
 
-PAYLOAD_FIT_SCHEMA = "emuflow.ppro-payload-fit/v1"
+PAYLOAD_FIT_SCHEMA = "emuflow.ppro-payload-fit/v2"
 LATENCY_FIT_SCHEMA = "emuflow.ppro-latency-fit/v1"
 TRANSPORT_FIT_SCHEMA = "emuflow.ppro-transport-cost-fit/v1"
 _GENERATOR_ID = "ppro-blackbox-communication-probe-v3"
@@ -118,17 +118,23 @@ def fit_payload_intervals(
         failing = sorted(
             width for width, outcome in stable_fit.items() if outcome == "link_capacity_infeasible"
         )
-        if not passing or not failing:
-            raise ValidationError("payload signature requires pass and link-infeasible points")
-        lower = passing[-1]
-        upper_candidates = [width for width in failing if width > lower]
-        if not upper_candidates:
+        if not passing:
+            raise ValidationError("payload signature requires successful fit points")
+        first_failure = failing[0] if failing else None
+        if first_failure is not None and any(width >= first_failure for width in passing):
             raise ValidationError("payload observations are non-monotonic")
-        upper = upper_candidates[0]
-        if any(outcome == "link_capacity_infeasible" for width, outcome in stable_fit.items() if width <= lower):
-            raise ValidationError("payload observations are non-monotonic")
-        if any(outcome == "pass" for width, outcome in stable_fit.items() if width >= upper):
-            raise ValidationError("payload observations are non-monotonic")
+        ratios = [tdm_levels[width] for width in passing]
+        if any(left > right for left, right in zip(ratios, ratios[1:])):
+            raise ValidationError("payload TDM ratio decreases as width increases")
+        ratio_one = [width for width in passing if tdm_levels[width] == 1]
+        tdm = [width for width in passing if tdm_levels[width] > 1]
+        if not ratio_one or not tdm:
+            raise ValidationError("payload signature requires repeated ratio-one and TDM points")
+        ratio_one_lower = ratio_one[-1]
+        ratio_one_upper_candidates = [width for width in tdm if width > ratio_one_lower]
+        if not ratio_one_upper_candidates:
+            raise ValidationError("payload ratio-one/TDM boundary is non-monotonic")
+        ratio_one_upper = ratio_one_upper_candidates[0]
         source, sink, bidirectional, flow_count, fanout, forced_ratio = signature
         links.append(
             {
@@ -138,8 +144,10 @@ def fit_payload_intervals(
                 "flow_count": flow_count,
                 "fanout": fanout,
                 "forced_tdm_ratio": forced_ratio,
-                "lower_successful_width_bits": lower,
-                "upper_infeasible_width_bits": upper,
+                "ratio_one_lower_width_bits": ratio_one_lower,
+                "ratio_one_upper_width_bits": ratio_one_upper,
+                "maximum_successful_width_bits": passing[-1],
+                "minimum_infeasible_width_bits": first_failure,
                 "observed_tdm_levels": [
                     {"width_bits": width, "maximum_tdm_ratio": tdm_levels[width]}
                     for width in sorted(tdm_levels)
@@ -150,22 +158,38 @@ def fit_payload_intervals(
         for (group_signature, width, role), items in sorted(groups.items()):
             if group_signature != signature or role != "holdout":
                 continue
-            expected = (
-                "pass"
-                if width <= lower
-                else "link_capacity_infeasible"
-                if width >= upper
-                else "unresolved_interval"
-            )
             observed = items[0]["execution"]["outcome"]
+            if observed == "pass":
+                observed_ratios = {
+                    _integer(
+                        item["metrics"]["communication"],
+                        "maximum_tdm_ratio",
+                        "payload holdout",
+                    )
+                    for item in items
+                }
+                if len(observed_ratios) != 1:
+                    raise ValidationError(f"payload holdout width {width} has unstable TDM ratio")
+                observed_class = (
+                    "pass_ratio_one" if next(iter(observed_ratios)) == 1 else "pass_tdm"
+                )
+            else:
+                observed_class = observed
+            expected = "unresolved_interval"
+            if first_failure is not None and width >= first_failure:
+                expected = "link_capacity_infeasible"
+            elif width <= ratio_one_lower:
+                expected = "pass_ratio_one"
+            elif width >= ratio_one_upper:
+                expected = "pass_tdm"
             holdout_checks.append(
                 {
                     "source": f"F{source}",
                     "sink": f"F{sink}",
                     "width_bits": width,
                     "expected": expected,
-                    "observed": observed,
-                    "matches": expected == "unresolved_interval" or expected == observed,
+                    "observed": observed_class,
+                    "matches": expected == "unresolved_interval" or expected == observed_class,
                 }
             )
         if not any(

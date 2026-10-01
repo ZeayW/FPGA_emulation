@@ -43,7 +43,7 @@ def fit_artifacts():
         ],
     }
     payload = {
-        "schema": "emuflow.ppro-payload-fit/v1",
+        "schema": "emuflow.ppro-payload-fit/v2",
         "link_signatures": [
             {
                 "source": source,
@@ -52,6 +52,8 @@ def fit_artifacts():
                 "flow_count": 1,
                 "fanout": 1,
                 "forced_tdm_ratio": 0,
+                "ratio_one_lower_width_bits": 64,
+                "ratio_one_upper_width_bits": 128,
                 "observed_tdm_levels": [
                     {"width_bits": 64, "maximum_tdm_ratio": 1},
                     {"width_bits": 128, "maximum_tdm_ratio": 2},

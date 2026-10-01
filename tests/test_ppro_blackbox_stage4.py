@@ -129,8 +129,10 @@ class PProBlackboxStage4Test(unittest.TestCase):
                 )
         result = fit_payload_intervals(values)
         link = result["link_signatures"][0]
-        self.assertEqual(link["lower_successful_width_bits"], 128)
-        self.assertEqual(link["upper_infeasible_width_bits"], 256)
+        self.assertEqual(link["ratio_one_lower_width_bits"], 64)
+        self.assertEqual(link["ratio_one_upper_width_bits"], 128)
+        self.assertEqual(link["maximum_successful_width_bits"], 128)
+        self.assertEqual(link["minimum_infeasible_width_bits"], 256)
         self.assertEqual(link["observed_tdm_levels"][-1]["maximum_tdm_ratio"], 2)
         self.assertTrue(result["all_resolved_holdouts_match"])
 

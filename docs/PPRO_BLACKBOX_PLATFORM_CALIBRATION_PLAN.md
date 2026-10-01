@@ -436,8 +436,9 @@ observations are rejected rather than mixed into a current fit.
 Status: **controlled probe and fitting framework implemented; real observations
 pending**. One compact communication generator sweeps width, parallel flows,
 direction, fanout, and requested TDM level while keeping logical endpoints
-explicit. Payload fitting reports only repeated pass/link-infeasible intervals
-and observed TDM transitions. Aggregate latency fitting searches candidate
+explicit. Payload fitting reports the repeated ratio-one/TDM transition and
+observed TDM levels; a final link-infeasible upper bound is retained when
+observed but is not confused with per-cycle payload width. Aggregate latency fitting searches candidate
 payload widths and fits non-negative endpoint, hop, serialization, TDM,
 contention, and multicast terms with deterministic bootstrap bounds. Transport
 cost uses same-RTL local/cross placement pairs so DUT logic cancels before

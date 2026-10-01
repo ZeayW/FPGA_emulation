@@ -170,13 +170,10 @@ def _payload_widths(payload_fit: Mapping[str, Any]) -> Dict[tuple[int, int], int
             continue
         source = int(str(record["source"]).removeprefix("F"))
         sink = int(str(record["sink"]).removeprefix("F"))
-        ratio_one = [
-            item["width_bits"]
-            for item in record.get("observed_tdm_levels", [])
-            if item.get("maximum_tdm_ratio") == 1
-        ]
-        if ratio_one:
-            result[(source, sink)] = max(int(value) for value in ratio_one)
+        ratio_one = record.get("ratio_one_lower_width_bits")
+        if isinstance(ratio_one, bool) or not isinstance(ratio_one, int) or ratio_one <= 0:
+            raise ValidationError("calibrated payload fit lacks a ratio-one lower bound")
+        result[(source, sink)] = ratio_one
     return result
 
 

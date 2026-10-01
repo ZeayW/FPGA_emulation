@@ -279,7 +279,7 @@ holdouts, and end-to-end promotion remain pending; these partial fits are not
 yet a released calibrated platform.
 
 Stage 4 now has the corresponding controlled communication probe and
-dependency-free fitters for payload/TDM intervals, aggregate latency, and
+dependency-free fitters for the ratio-one/TDM payload boundary, aggregate latency, and
 paired transport resource cost. Nominal/aggressive/conservative timing and
 cost terms come from deterministic bootstrap bounds. These are framework
 capabilities only until real PPro observations and withheld points satisfy the
