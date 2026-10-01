@@ -197,6 +197,8 @@ one-to-one alias map removes physical FPGA names before serialization. Its
 parser format has been checked against an existing successful normal PPro
 result, but Stage 2 remains pending until a fresh smoke is executed through the
 current runner. A mock result is never accepted as real PPro evidence.
+The runner applies the same default 75% limit to LUT, FF, BRAM, URAM, and DSP;
+the explicit `--utilization-limit-percent` changes all five together.
 
 The Stage 3 experiment framework is also present, but contains no fitted
 vendor result yet. It generates compact connected capacity probes for seven

@@ -35,7 +35,7 @@ class PProRuntimeConfig:
     logical_targets: Mapping[str, str]
     authorized_writable_root: Path = Path("/research/d4/gds/ziyiwang21")
     max_processes: int = 4
-    lut_area_percent: int = 75
+    utilization_limit_percent: int = 75
     timeout_seconds: float = 21600.0
     environment: Mapping[str, str] = field(default_factory=dict)
     keep_raw_project: bool = False
@@ -85,12 +85,12 @@ def _validate_config(config: PProRuntimeConfig) -> None:
         raise ValidationError("PPro max_processes must be an integer")
     if config.max_processes <= 0 or config.max_processes > 64:
         raise ValidationError("PPro max_processes must be in [1, 64]")
-    if isinstance(config.lut_area_percent, bool) or not isinstance(
-        config.lut_area_percent, int
+    if isinstance(config.utilization_limit_percent, bool) or not isinstance(
+        config.utilization_limit_percent, int
     ):
-        raise ValidationError("PPro LUT area must be an integer percentage")
-    if config.lut_area_percent <= 0 or config.lut_area_percent > 100:
-        raise ValidationError("PPro LUT area must be in [1, 100]")
+        raise ValidationError("PPro utilization limit must be an integer percentage")
+    if config.utilization_limit_percent <= 0 or config.utilization_limit_percent > 100:
+        raise ValidationError("PPro utilization limit must be in [1, 100]")
     if config.timeout_seconds <= 0:
         raise ValidationError("PPro timeout must be positive")
     case_dir = config.case_dir.resolve()
@@ -185,7 +185,11 @@ def render_ppro_runtime_binding(
             + _tcl_word(str(config.platform_reference.resolve()), "PPro platform reference")
             + " -config "
             + _tcl_word(str(ppro_constraints), "PPro prepartition constraints")
-            + f" -lut_area {config.lut_area_percent}",
+            + " "
+            + " ".join(
+                f"-{resource}_area {config.utilization_limit_percent}"
+                for resource in ("lut", "ff", "bram", "uram", "dsp")
+            ),
             f"run_partition -costmode 1 -max_process_num {config.max_processes}",
             "run_system_route",
             "exit",
@@ -201,10 +205,7 @@ def render_ppro_runtime_binding(
             "#!/usr/bin/env bash",
             "set -eo pipefail",
             "source " + shlex.quote(str(settings)),
-            "exec "
-            + shlex.quote(str(executable))
-            + " -script_file "
-            + shlex.quote(str(tcl_path)),
+            "exec " + shlex.quote(str(executable)) + " < " + shlex.quote(str(tcl_path)),
             "",
         )
     )

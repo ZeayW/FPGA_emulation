@@ -65,10 +65,11 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             )
             self.assertIn("run_compile -top {ppro_blackbox_latency}", script)
             self.assertIn("run_pre_partition -stf", script)
-            self.assertIn("-lut_area 75", script)
+            for resource in ("lut", "ff", "bram", "uram", "dsp"):
+                self.assertIn(f"-{resource}_area 75", script)
             self.assertIn("run_partition -costmode 1 -max_process_num 4", script)
             self.assertIn("run_system_route", script)
-            self.assertIn("rtlpart_linux", launcher)
+            self.assertIn("rtlpart_linux < ", launcher)
             ppro_constraints = (config.case_dir / ".prepartition.cfg").read_text(
                 encoding="utf-8"
             )

@@ -141,7 +141,7 @@ def _parser() -> argparse.ArgumentParser:
     run_case.add_argument("--fpga-alias", action="append", default=[], required=True)
     run_case.add_argument("--logical-target", action="append", default=[], required=True)
     run_case.add_argument("--max-processes", type=int, default=4)
-    run_case.add_argument("--lut-area-percent", type=int, default=75)
+    run_case.add_argument("--utilization-limit-percent", type=int, default=75)
     run_case.add_argument("--timeout-seconds", type=float, default=21600.0)
     run_case.add_argument("--keep-raw-project", action="store_true")
 
@@ -264,7 +264,7 @@ def _dispatch(args: argparse.Namespace) -> Any:
                 fpga_aliases=parse_fpga_aliases(args.fpga_alias),
                 logical_targets=parse_logical_targets(args.logical_target),
                 max_processes=args.max_processes,
-                lut_area_percent=args.lut_area_percent,
+                utilization_limit_percent=args.utilization_limit_percent,
                 timeout_seconds=args.timeout_seconds,
                 keep_raw_project=args.keep_raw_project,
             ),

@@ -323,6 +323,9 @@ a disposable fake-provider test. The production renderer also rejects case direc
 mandatory `/research/d4/gds/ziyiwang21` boundary and pins all standard temporary
 environment variables below the case. This does not replace the fresh
 authorized PPro smoke.
+The default pre-partition headroom is uniform across LUT, FF, BRAM, URAM, and
+DSP at 75%; one explicit runtime option changes all five together so a capacity
+comparison cannot silently use inconsistent resource limits.
 
 Deliver:
 
