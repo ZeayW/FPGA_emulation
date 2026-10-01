@@ -294,6 +294,15 @@ raw vendor path or private configuration is serialized.
 
 ### Stage 2: black-box runner and normal-report adapter
 
+Status: **mock/dry-run boundary implemented; real smoke pending**. The current
+runner keeps commands, installation/license state, concrete target names, and
+report paths in a non-serializable runtime binding. It executes isolated cases
+through an explicitly bounded queue, distinguishes license/tool/infrastructure,
+missing-report, and parse failures, and deletes raw reports after producing a
+compact validated observation. A deterministic connected C0 workload generator
+emits only provider-neutral RTL, hashes, and public experiment metadata. The
+mock report profile is intentionally not accepted as real PPro evidence.
+
 Deliver:
 
 - generator for documented PPro projects and constraints;

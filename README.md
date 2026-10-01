@@ -175,9 +175,14 @@ Stage 1 of that increment is implemented as a strict publication boundary:
   experiments may set `fit_eligible=true`; the validator recomputes that value.
 
 The current prior is therefore **not** a usable calibrated BoardDB and makes no
-claim that public connector totals reveal the platform's wiring. Stage 2 adds
-the dry-run/mock-first runner and parser needed to produce lawful observations;
-later stages fit the missing behavior and validate it on unseen applications.
+claim that public connector totals reveal the platform's wiring. The Stage 2
+mock/dry-run boundary now provides a deterministic connected smoke workload,
+strict redacted run specification, non-serializable runtime binding, bounded
+queue, allowlisted mock report parser, and terminal failure classification. A
+mock result is never accepted as real PPro evidence. Stage 2 is complete only
+after a normal real PPro smoke exposes an explicitly supported ordinary-report
+profile; later stages fit the missing behavior and validate it on unseen
+applications.
 
 ## Flow roadmap
 

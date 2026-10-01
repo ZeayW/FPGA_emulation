@@ -57,6 +57,7 @@ OUTCOMES = {
     "infrastructure_failure",
     "license_failure",
     "missing_report",
+    "report_parse_failure",
 }
 EVALUATED_OUTCOMES = {
     "pass",

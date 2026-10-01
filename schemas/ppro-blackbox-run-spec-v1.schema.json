@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/ppro-blackbox-run-spec-v1.schema.json",
+  "title": "EmuFlow PPro black-box run specification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "identity", "tool", "workload", "experiment", "execution", "adapter"],
+  "properties": {
+    "schema": {"const": "emuflow.ppro-blackbox-run-spec/v1"},
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "campaign_id", "case_id", "role", "public_prior_id", "configuration_id"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "campaign_id": {"$ref": "#/$defs/identifier"},
+        "case_id": {"$ref": "#/$defs/identifier"},
+        "role": {"enum": ["fit", "holdout"]},
+        "public_prior_id": {"$ref": "#/$defs/identifier"},
+        "configuration_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "release", "runner_revision"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "release": {"type": "string", "minLength": 1},
+        "runner_revision": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generator_id", "generator_revision", "rtl_sha256", "parameters_sha256", "design_metrics"],
+      "properties": {
+        "generator_id": {"$ref": "#/$defs/identifier"},
+        "generator_revision": {"$ref": "#/$defs/sha256"},
+        "rtl_sha256": {"$ref": "#/$defs/sha256"},
+        "parameters_sha256": {"$ref": "#/$defs/sha256"},
+        "design_metrics": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"pattern": "^[a-z0-9][a-z0-9._-]*$"},
+          "additionalProperties": {"type": "number", "minimum": 0}
+        }
+      }
+    },
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "control_mode", "documented_actions", "constraints_sha256"],
+      "properties": {
+        "kind": {"enum": ["reproducibility", "resource_capacity", "topology_reachability", "payload_capacity", "latency", "transport_cost", "application_holdout"]},
+        "control_mode": {"enum": ["fixed_assignment", "fixed_communication", "free_optimization", "none"]},
+        "documented_actions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["partition_constraint", "net_route_constraint", "tdm_ratio_constraint", "random_seed"]}
+        },
+        "constraints_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seed"],
+      "properties": {
+        "seed": {"type": "integer", "minimum": 0}
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "expected_reports"],
+      "properties": {
+        "profile": {"const": "mock-ordinary-reports-v1"},
+        "expected_reports": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"enum": ["resource_summary", "partition_summary", "route_summary", "system_timing"]}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -83,7 +83,8 @@
             "tool_failure",
             "infrastructure_failure",
             "license_failure",
-            "missing_report"
+            "missing_report",
+            "report_parse_failure"
           ]
         },
         "failure_code": {"type": ["string", "null"]},
