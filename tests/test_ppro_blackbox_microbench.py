@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -69,6 +70,26 @@ class PProBlackboxMicrobenchTest(unittest.TestCase):
             self.assertIn('ram_style = "block"', bram)
             self.assertIn('ram_style = "ultra"', uram)
             self.assertIn('use_dsp = "yes"', dsp)
+
+    def test_large_lut_probe_is_hierarchically_tiled_below_elaboration_limit(self):
+        with tempfile.TemporaryDirectory() as raw:
+            bundle = generate_capacity_probe_bundle(
+                Path(raw),
+                axis="lut",
+                units=150000,
+                repeat=0,
+                role="fit",
+                **self.kwargs(),
+            )
+            rtl = bundle.rtl_path.read_text(encoding="utf-8")
+            self.assertIn("calibration_capacity_lut_tile", rtl)
+            self.assertIn("g_lut_tile_36", rtl)
+            self.assertNotIn("gi < 150000", rtl)
+            self.assertIn("gi < COUNT", rtl)
+            tile_limits = [int(value) for value in re.findall(r"\.COUNT\(([0-9]+)\)", rtl)]
+            self.assertEqual(len(tile_limits), 37)
+            self.assertTrue(all(value <= 4096 for value in tile_limits))
+            self.assertLess(len(rtl), 32768)
 
     def test_matrix_separates_fit_and_holdout_points(self):
         with tempfile.TemporaryDirectory() as raw:

@@ -373,11 +373,13 @@ and reserves explicit holdout pairs. Capacity fitting emits only a measured
 pass/infeasible interval; topology fitting emits only observed directed
 reachability and stable effective hop counts. Single-flow data explicitly
 leaves shared-capacity groups `not_identifiable` instead of guessing them. The
-v2 capacity RTL places its swept payload below a real `P0` hierarchy before the
+v3 capacity RTL places its swept payload below a real `P0` hierarchy before the
 documented `assign_inst` constraint is emitted. Topology fixes only producer
 and consumer instances and observes the tool-selected route; it does not claim
 an unavailable route constraint or applied tool seed.
-The producer/fitter contract is version-locked at v2. Capacity infeasibility is
+The capacity producer/fitter contract is version-locked at v3; large LUT
+sweeps use hierarchy with at most 4,096 generated units per elaboration loop.
+The topology producer/fitter remains version-locked at v2. Capacity infeasibility is
 eligible evidence only when a bounded ordinary PPro console diagnostic names a
 specific exhausted resource in the canonical “cannot be placed on any FPGA”
 failure; generic partition failures, missing reports, license failures, and

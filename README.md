@@ -217,11 +217,14 @@ vendor result yet. It generates compact connected capacity probes for seven
 resource axes and a bidirectional ordered-pair topology matrix with repeated
 fit points and withheld points. The conservative fitters reject unstable or
 non-monotonic measurements, report pass/fail capacity intervals, and refuse to
-invent shared-link groups from single-flow reachability data. Capacity v2 puts
+invent shared-link groups from single-flow reachability data. Capacity v3 puts
 the swept payload under a real `P0` hierarchy before applying `assign_inst`;
+large LUT sweeps are tiled into at most 4,096-unit elaboration blocks so they
+do not exceed PPro's per-loop elaboration limit;
 topology probes fix endpoint instances only and observe the route PPro chooses.
 They do not falsely claim a route constraint or an applied random seed.
-The v2 fitters accept only the corresponding v2 generator identities. A failed
+The capacity fitter accepts only the current v3 generator identity, while the
+topology fitter accepts only its current v2 identity. A failed
 run becomes capacity evidence only when the bounded ordinary console output
 contains PPro's explicit resource-specific “cannot be placed on any FPGA”
 diagnostic; generic partition/tool failures remain excluded. The controlled
