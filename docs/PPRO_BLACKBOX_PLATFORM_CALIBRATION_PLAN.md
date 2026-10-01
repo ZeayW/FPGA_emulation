@@ -349,7 +349,10 @@ Stage 4 matrices explicitly separate fit and holdout widths and repeat every
 point. Transport-cost matrices generate matched local/cross placements with
 the same RTL parameters and seed so the paired fitter can cancel DUT logic.
 
-Gate: mock/dry-run first, followed by one real smoke experiment.  Report PPro
+Gate: mock/dry-run first, followed by one real smoke experiment. The real C0
+smoke fixes a generated `P0` producer and `P1` consumer to different logical
+FPGAs using the documented `assign_inst` form so all ordinary report classes
+are materialized; its holdout role still excludes it from fitting. Report PPro
 runtime scale and artifact availability; never infer missing values.
 
 ### Stage 3: capacity and topology calibration

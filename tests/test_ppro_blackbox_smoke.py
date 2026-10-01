@@ -66,9 +66,23 @@ class PProBlackboxSmokeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             bundle = self.generate(Path(raw))
             spec = json.loads(bundle.run_spec_path.read_text(encoding="utf-8"))
+            constraints = json.loads(
+                bundle.constraints_path.read_text(encoding="utf-8")
+            )
             self.assertEqual(spec["identity"]["role"], "holdout")
-            self.assertEqual(spec["experiment"]["control_mode"], "none")
-            self.assertEqual(spec["experiment"]["documented_actions"], [])
+            self.assertEqual(
+                spec["experiment"]["control_mode"], "fixed_assignment"
+            )
+            self.assertEqual(
+                spec["experiment"]["documented_actions"], ["partition_constraint"]
+            )
+            self.assertEqual(
+                constraints["assignments"],
+                [
+                    {"partition": "P0", "target": "F0"},
+                    {"partition": "P1", "target": "F1"},
+                ],
+            )
             self.assertEqual(spec["execution"]["seed"], 1)
 
     def test_invalid_dimensions_fail_closed(self):

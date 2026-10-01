@@ -187,7 +187,10 @@ ordinary project/compile/pre-partition/partition/system-route command sequence
 from the generated run specification. The installed platform reference is an
 opaque path argument: EmuFlow checks that it exists but never reads, copies,
 hashes, or serializes it. Provider-neutral documented constraints are
-translated only to the public user-example `assign_inst` syntax. Physical PPro
+translated only to the public user-example `assign_inst` syntax. The smoke
+uses that syntax to place its `P0` producer and `P1` consumer on different
+logical FPGAs, ensuring that partition, route, and timing reports are exercised
+without making the holdout case fitting evidence. Physical PPro
 targets remain runtime-only; route, forced-TDM, and random-seed syntax is never
 guessed. Generated Tcl, launcher, absolute runtime filelist, translated user
 constraints, active project, and raw reports are deleted after the compact
