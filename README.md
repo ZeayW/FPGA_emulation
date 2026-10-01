@@ -292,6 +292,22 @@ emuflow-ppro-calibration generate-communication-probe \
   --width 64 --role fit
 ```
 
+Generated cases can be consumed as one ephemeral campaign. Discovery is
+bounded by `--maximum-cases`; license concurrency defaults to one and rises
+only through an explicit `--max-workers`. Every case still owns an isolated
+directory and retains only `observation.json` after raw-project cleanup:
+
+```sh
+emuflow-ppro-calibration run-ppro-campaign \
+  --bundle-root <active-campaign>/capacity \
+  --result-root <authorized-root>/c1-results \
+  --install-root <authorized-installation> \
+  --platform-reference <user-selected-platform-reference> \
+  --fpga-alias <report-id>=F0 --fpga-alias <report-id>=F1 \
+  --logical-target F0=<user-target> --logical-target F1=<user-target> \
+  --maximum-cases 100 --max-workers 1
+```
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both

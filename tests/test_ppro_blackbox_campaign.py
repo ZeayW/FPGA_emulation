@@ -1,0 +1,104 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from emuflow.errors import ValidationError
+from emuflow.ppro_blackbox_campaign import (
+    PProCampaignRuntime,
+    discover_generated_bundles,
+    execute_generated_campaign,
+)
+from emuflow.ppro_blackbox_smoke import generate_connected_smoke_bundle
+from test_ppro_blackbox_ppro_adapter import PARTITION_REPORT, ROUTE_REPORT, TIMING_REPORT
+
+
+class PProBlackboxCampaignTest(unittest.TestCase):
+    def _runtime(self, root: Path) -> PProCampaignRuntime:
+        install = root / "install"
+        (install / "bin").mkdir(parents=True)
+        (install / "setting_rtl.sh").write_text("true\n", encoding="utf-8")
+        executable = install / "bin" / "rtlpart_linux"
+        executable.write_text(
+            "#!/usr/bin/env python3\n"
+            "from pathlib import Path\n"
+            "out = Path.cwd() / 'project' / 'rtlpart' / 'report'\n"
+            "out.mkdir(parents=True, exist_ok=True)\n"
+            f"(out / 'pa0.rpt').write_text({PARTITION_REPORT!r})\n"
+            f"(out / 'sr0.rpt').write_text({ROUTE_REPORT!r})\n"
+            f"(out / 'sr0_time.rpt').write_text({TIMING_REPORT!r})\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o700)
+        platform = root / "example-platform.ref"
+        platform.write_text("opaque", encoding="utf-8")
+        return PProCampaignRuntime(
+            result_root=root / "results",
+            install_root=install,
+            platform_reference=platform,
+            fpga_aliases={"F11": "F0", "F33": "F1"},
+            logical_targets={"F0": "MB1.F1", "F1": "MB1.F3"},
+            authorized_writable_root=root,
+            timeout_seconds=30,
+        )
+
+    def _bundles(self, root: Path):
+        common = {
+            "campaign_id": "campaign-test",
+            "public_prior_id": "lx2-public-prior-v1",
+            "configuration_id": "lx2-m1",
+            "tool_release": "2026.1",
+            "runner_revision": "c" * 64,
+            "adapter_profile": "ppro-2026-ordinary-reports-v1",
+        }
+        generate_connected_smoke_bundle(
+            root / "case-a", case_id="smoke-a", seed=1, **common
+        )
+        generate_connected_smoke_bundle(
+            root / "case-b", case_id="smoke-b", seed=1, **common
+        )
+
+    def test_discovery_is_bounded_and_campaign_outputs_are_compact(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle_root = root / "bundles"
+            self._bundles(bundle_root)
+            bundles = discover_generated_bundles(bundle_root, maximum_cases=2)
+            self.assertEqual(len(bundles), 2)
+            with self.assertRaisesRegex(ValidationError, "maximum case count"):
+                discover_generated_bundles(bundle_root, maximum_cases=1)
+
+            runtime = self._runtime(root)
+            results = execute_generated_campaign(
+                bundles, runtime=runtime, max_workers=2
+            )
+            self.assertEqual(len(results), 2)
+            self.assertTrue(
+                all(result["execution"]["outcome"] == "pass" for result in results)
+            )
+            identities = [result["identity"]["id"] for result in results]
+            self.assertEqual(identities, sorted(identities))
+            for identity in identities:
+                case = runtime.result_root / identity
+                observation = case / "observation.json"
+                self.assertTrue(observation.is_file())
+                self.assertLess(observation.stat().st_size, 16384)
+                self.assertFalse((case / "project").exists())
+                self.assertFalse((case / ".run-ppro.tcl").exists())
+
+    def test_campaign_rejects_duplicate_case_identity(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle_root = root / "bundles"
+            self._bundles(bundle_root)
+            bundles = discover_generated_bundles(bundle_root, maximum_cases=2)
+            with self.assertRaisesRegex(ValidationError, "duplicate case identities"):
+                execute_generated_campaign(
+                    [bundles[0], bundles[0]], runtime=self._runtime(root)
+                )
+            self.assertFalse(any((root / "results").rglob(".run-ppro.tcl")))
+
+
+if __name__ == "__main__":
+    unittest.main()

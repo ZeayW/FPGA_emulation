@@ -511,6 +511,23 @@ def _failure_observation(
     }
 
 
+def cleanup_runtime_artifacts(binding: RuntimeBinding) -> None:
+    """Remove allowlisted raw reports and explicitly registered runtime scratch."""
+
+    if binding.cleanup_raw_reports:
+        for path in binding.report_paths.values():
+            path.unlink(missing_ok=True)
+    for path in sorted(
+        {item.resolve() for item in binding.cleanup_paths},
+        key=lambda item: len(item.parts),
+        reverse=True,
+    ):
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+
+
 def execute_blackbox_case(
     raw_spec: Mapping[str, Any], binding: RuntimeBinding
 ) -> Dict[str, Any]:
@@ -611,18 +628,7 @@ def execute_blackbox_case(
     write_json(binding.output_path, normalized, compact=True)
     stdout_path.unlink(missing_ok=True)
     stderr_path.unlink(missing_ok=True)
-    if binding.cleanup_raw_reports:
-        for path in binding.report_paths.values():
-            path.unlink(missing_ok=True)
-    for path in sorted(
-        {item.resolve() for item in binding.cleanup_paths},
-        key=lambda item: len(item.parts),
-        reverse=True,
-    ):
-        if path.is_dir() and not path.is_symlink():
-            shutil.rmtree(path)
-        else:
-            path.unlink(missing_ok=True)
+    cleanup_runtime_artifacts(binding)
     return normalized
 
 

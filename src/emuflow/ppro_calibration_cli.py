@@ -9,6 +9,11 @@ from typing import Any, Sequence
 
 from .io import read_json, write_json
 from .ppro_blackbox_calibration import validate_redacted_artifact
+from .ppro_blackbox_campaign import (
+    PProCampaignRuntime,
+    discover_generated_bundles,
+    execute_generated_campaign,
+)
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
 from .ppro_blackbox_constraints import parse_logical_targets
 from .ppro_blackbox_communication import generate_communication_probe_bundle
@@ -145,6 +150,19 @@ def _parser() -> argparse.ArgumentParser:
     run_case.add_argument("--timeout-seconds", type=float, default=21600.0)
     run_case.add_argument("--keep-raw-project", action="store_true")
 
+    run_campaign = commands.add_parser("run-ppro-campaign")
+    run_campaign.add_argument("--bundle-root", type=Path, required=True)
+    run_campaign.add_argument("--result-root", type=Path, required=True)
+    run_campaign.add_argument("--install-root", type=Path, required=True)
+    run_campaign.add_argument("--platform-reference", type=Path, required=True)
+    run_campaign.add_argument("--fpga-alias", action="append", default=[], required=True)
+    run_campaign.add_argument("--logical-target", action="append", default=[], required=True)
+    run_campaign.add_argument("--max-workers", type=int, default=1)
+    run_campaign.add_argument("--max-processes-per-case", type=int, default=4)
+    run_campaign.add_argument("--maximum-cases", type=int, default=1000)
+    run_campaign.add_argument("--utilization-limit-percent", type=int, default=75)
+    run_campaign.add_argument("--timeout-seconds", type=float, default=21600.0)
+
     for name in ("fit-capacity", "fit-topology", "fit-payload", "fit-transport"):
         command = commands.add_parser(name)
         command.add_argument("--observations", nargs="+", type=Path, required=True)
@@ -276,6 +294,33 @@ def _dispatch(args: argparse.Namespace) -> Any:
             "outcome": result["execution"]["outcome"],
             "observation": binding.output_path.name,
         }
+    if args.command == "run-ppro-campaign":
+        bundles = discover_generated_bundles(
+            args.bundle_root, maximum_cases=args.maximum_cases
+        )
+        results = execute_generated_campaign(
+            bundles,
+            runtime=PProCampaignRuntime(
+                result_root=args.result_root,
+                install_root=args.install_root,
+                platform_reference=args.platform_reference,
+                fpga_aliases=parse_fpga_aliases(args.fpga_alias),
+                logical_targets=parse_logical_targets(args.logical_target),
+                max_processes_per_case=args.max_processes_per_case,
+                utilization_limit_percent=args.utilization_limit_percent,
+                timeout_seconds=args.timeout_seconds,
+            ),
+            max_workers=args.max_workers,
+        )
+        outcomes: dict[str, int] = {}
+        for result in results:
+            outcome = str(result["execution"]["outcome"])
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+        return {
+            "status": "pass" if outcomes == {"pass": len(results)} else "failed",
+            "case_count": len(results),
+            "outcomes": outcomes,
+        }
     if args.command == "fit-capacity":
         result = fit_capacity_intervals(_read_many(args.observations))
         _write_result(args.out, result)
@@ -333,7 +378,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     result = _dispatch(args)
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
-    return 0
+    return 1 if result.get("status") in {"failed", "error"} else 0
 
 
 if __name__ == "__main__":
