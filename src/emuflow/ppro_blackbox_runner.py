@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import os
 import re
+import signal
 import shutil
 import subprocess
 import time
@@ -528,6 +529,27 @@ def cleanup_runtime_artifacts(binding: RuntimeBinding) -> None:
             path.unlink(missing_ok=True)
 
 
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Terminate the isolated provider process group and wait for collection."""
+
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=5.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    process.wait(timeout=5.0)
+
+
 def execute_blackbox_case(
     raw_spec: Mapping[str, Any], binding: RuntimeBinding
 ) -> Dict[str, Any]:
@@ -537,30 +559,39 @@ def execute_blackbox_case(
     stdout_path = binding.case_dir / ".runner-stdout.log"
     stderr_path = binding.case_dir / ".runner-stderr.log"
     started = time.monotonic()
+    timed_out = False
+    return_code: int | None = None
     try:
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 list(binding.command),
                 cwd=binding.case_dir,
                 env={**os.environ, **binding.environment},
                 stdout=stdout,
                 stderr=stderr,
-                timeout=binding.timeout_seconds,
-                check=False,
+                start_new_session=True,
             )
+            try:
+                return_code = process.wait(timeout=binding.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _terminate_process_group(process)
         runtime_seconds = time.monotonic() - started
-    except subprocess.TimeoutExpired:
-        observation = _failure_observation(
-            spec, "infrastructure_failure", "execution-timeout", time.monotonic() - started
-        )
     except OSError:
+        runtime_seconds = time.monotonic() - started
         observation = _failure_observation(
-            spec, "infrastructure_failure", "execution-environment", time.monotonic() - started
+            spec, "infrastructure_failure", "execution-environment", runtime_seconds
         )
     else:
-        if completed.returncode != 0:
+        if timed_out:
+            observation = _failure_observation(
+                spec, "infrastructure_failure", "execution-timeout", runtime_seconds
+            )
+        elif return_code is None:
+            raise AssertionError("PPro provider process ended without a return code")
+        elif return_code != 0:
             diagnostic_tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-16384:]
-            outcome, failure_code = classify_process_failure(completed.returncode, diagnostic_tail)
+            outcome, failure_code = classify_process_failure(return_code, diagnostic_tail)
             observation = _failure_observation(spec, outcome, failure_code, runtime_seconds)
         elif any(not path.is_file() for path in binding.report_paths.values()):
             observation = _failure_observation(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -218,6 +219,31 @@ class PProBlackboxRunnerTest(unittest.TestCase):
             )
             self.assertFalse(result["derived"]["fit_eligible"])
             self.assertEqual(result["metrics"]["resource_demand"], {})
+
+    def test_timeout_terminates_the_provider_process_group(self):
+        with tempfile.TemporaryDirectory() as raw:
+            case = Path(raw) / "case"
+            pid_path = case / "child.pid"
+            value = binding(case)
+            value = RuntimeBinding(
+                case_dir=value.case_dir,
+                command=(
+                    sys.executable,
+                    "-c",
+                    "import subprocess,time,pathlib; "
+                    "child=subprocess.Popen(['sleep','30']); "
+                    "pathlib.Path('child.pid').write_text(str(child.pid)); "
+                    "time.sleep(30)",
+                ),
+                report_paths=value.report_paths,
+                output_path=value.output_path,
+                timeout_seconds=0.2,
+            )
+            result = execute_blackbox_case(run_spec(), value)
+            self.assertEqual(result["execution"]["failure_code"], "execution-timeout")
+            child_pid = int(pid_path.read_text(encoding="utf-8"))
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
 
     def test_runtime_report_paths_cannot_escape_case_directory(self):
         with tempfile.TemporaryDirectory() as raw:

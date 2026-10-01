@@ -311,7 +311,9 @@ bounded by `--maximum-cases`; license concurrency defaults to one and rises
 only through an explicit `--max-workers`. Every case still owns an isolated
 directory and retains only `observation.json` after raw-project cleanup. The
 strictly allowlisted generated RTL/run-spec bundle is also removed after every
-case has a terminal observation; unknown files prevent cleanup and fail closed:
+case has a terminal observation; unknown files prevent cleanup and fail closed.
+A provider timeout terminates and reaps the entire isolated process group, not
+only the launcher process:
 
 ```sh
 emuflow-ppro-calibration run-ppro-campaign \
