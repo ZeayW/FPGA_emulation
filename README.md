@@ -235,6 +235,14 @@ and partition reports; topology/payload adds system-route evidence; latency,
 reproducibility, and application holdouts additionally require system timing.
 Optional reports are parsed when present, but a single-FPGA capacity run is no
 longer rejected merely because PPro correctly emits no cross-FPGA timing file.
+The first authorized v3 LUT pilot at source commit
+`1b232cf4826cb66b510baeb784e9615ebc734d39` passed in 191.05 seconds:
+150,000 requested control units mapped to 55,886 reported LUTs on one logical
+FPGA at 2% reported utilization. Only resource and partition reports were
+produced, as expected for a local capacity probe. This is one real pass point,
+not yet a fitted capacity interval. Runtime HOME, PPro's root-level
+`runtime_Flag.tcl`, generated scripts, reports, and project data are scrubbed;
+the compact observation is the retained evidence.
 
 Stage 4 now has the corresponding controlled communication probe and
 dependency-free fitters for payload/TDM intervals, aggregate latency, and

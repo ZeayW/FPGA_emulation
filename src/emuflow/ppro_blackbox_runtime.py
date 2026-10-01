@@ -169,6 +169,8 @@ def render_ppro_runtime_binding(
         ppro_constraints,
     )
     temporary_dir.mkdir()
+    runtime_home = temporary_dir / "home"
+    runtime_home.mkdir()
 
     top = spec["workload"]["top_module"]
     tcl = "\n".join(
@@ -220,6 +222,7 @@ def render_ppro_runtime_binding(
         ppro_constraints,
         tcl_path,
         launcher_path,
+        case_dir / "runtime_Flag.tcl",
         temporary_dir,
     )
     if not config.keep_raw_project:
@@ -236,6 +239,7 @@ def render_ppro_runtime_binding(
         output_path=output_path,
         environment={
             **dict(config.environment),
+            "HOME": str(runtime_home),
             "TMPDIR": str(temporary_dir),
             "TMP": str(temporary_dir),
             "TEMP": str(temporary_dir),

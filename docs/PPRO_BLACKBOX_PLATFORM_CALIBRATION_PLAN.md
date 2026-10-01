@@ -364,8 +364,8 @@ runtime scale and artifact availability; never infer missing values.
 
 ### Stage 3: capacity and topology calibration
 
-Status: **experiment/fitting framework implemented; real observations
-pending**. Capacity probes cover LUT-, FF-, BRAM-, URAM-, DSP-, and two mixed
+Status: **experiment/fitting framework implemented; first real pass point
+qualified, repeated boundary fitting pending**. Capacity probes cover LUT-, FF-, BRAM-, URAM-, DSP-, and two mixed
 resource axes using compact parameterized RTL and public inference attributes.
 Requested units are controls, never treated as mapped resource counts. The
 ordered-pair topology matrix covers both directions, requires repeated trials,
@@ -392,6 +392,10 @@ topology and payload, plus timing for latency and application-level gates.
 This prevents a valid single-FPGA capacity observation from becoming a false
 `missing_report` while preserving fail-closed requirements for each metric a
 fitter actually consumes.
+An authorized current-runner LUT pilot requested 150,000 v3 control units and
+PPro reported 55,886 mapped LUTs at 2% utilization in 191.05 seconds. This
+qualifies generation, execution, compact report parsing, and cleanup, but does
+not satisfy the repeated pass/infeasible interval gate by itself.
 
 Deliver resource-boundary and ordered-pair experiment matrices, fitted
 effective capacities, effective reachability, and shared-resource hypotheses.

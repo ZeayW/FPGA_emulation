@@ -87,6 +87,14 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             self.assertEqual(binding.output_path.name, "observation.json")
             self.assertIn((config.case_dir / "project").resolve(), binding.cleanup_paths)
             self.assertEqual(binding.environment["TMPDIR"], str((config.case_dir / ".tmp").resolve()))
+            self.assertEqual(
+                binding.environment["HOME"],
+                str((config.case_dir / ".tmp" / "home").resolve()),
+            )
+            self.assertIn(
+                (config.case_dir / "runtime_Flag.tcl").resolve(),
+                binding.cleanup_paths,
+            )
             self.assertNotIn(str(config.install_root), repr(spec))
             self.assertNotIn(str(config.platform_reference), repr(spec))
             self.assertNotIn("MB1.F1", repr(spec))
@@ -152,6 +160,8 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
 set -e
 out="$PWD/project/rtlpart/report"
 mkdir -p "$out"
+printf 'provider runtime state\n' > "$PWD/runtime_Flag.tcl"
+printf 'provider home state\n' > "$HOME/provider-state"
 cat > "$out/pa0.rpt" <<'EOF'
 | Resource Type | PIO | INT | LUT | FF | BRAM | LUTRAM | DSP | URAM | MSGPORT | STATICPROBE | BOUNDARY |
 | F11 | 0 | 0 | 60 | 90 | 1 | 0 | 1 | 0 | 0 | 0 | 0 |
@@ -195,6 +205,8 @@ EOF
             self.assertFalse((config.case_dir / "project").exists())
             self.assertFalse((config.case_dir / ".run-ppro.tcl").exists())
             self.assertFalse((config.case_dir / ".run-ppro.sh").exists())
+            self.assertFalse((config.case_dir / "runtime_Flag.tcl").exists())
+            self.assertFalse((config.case_dir / ".tmp").exists())
             serialized = binding.output_path.read_text(encoding="utf-8")
             self.assertNotIn(str(config.install_root), serialized)
             self.assertNotIn(str(config.platform_reference), serialized)
