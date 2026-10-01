@@ -10,7 +10,12 @@ from typing import Any, Sequence
 from .io import read_json, write_json
 from .ppro_blackbox_calibration import validate_redacted_artifact
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
-from .ppro_blackbox_runner import validate_run_spec
+from .ppro_blackbox_runner import execute_blackbox_case, validate_run_spec
+from .ppro_blackbox_runtime import (
+    PProRuntimeConfig,
+    parse_fpga_aliases,
+    render_ppro_runtime_binding,
+)
 from .ppro_blackbox_smoke import generate_connected_smoke_bundle
 from .ppro_blackbox_stage3 import fit_capacity_intervals, fit_effective_topology
 from .ppro_blackbox_stage4 import (
@@ -64,6 +69,19 @@ def _parser() -> argparse.ArgumentParser:
         default="mock-ordinary-reports-v1",
     )
 
+    run_case = commands.add_parser("run-ppro-case")
+    run_case.add_argument("--run-spec", type=Path, required=True)
+    run_case.add_argument("--filelist", type=Path, required=True)
+    run_case.add_argument("--case-dir", type=Path, required=True)
+    run_case.add_argument("--install-root", type=Path, required=True)
+    run_case.add_argument("--platform-reference", type=Path, required=True)
+    run_case.add_argument("--prepartition-constraints", type=Path, required=True)
+    run_case.add_argument("--fpga-alias", action="append", default=[], required=True)
+    run_case.add_argument("--max-processes", type=int, default=4)
+    run_case.add_argument("--lut-area-percent", type=int, default=75)
+    run_case.add_argument("--timeout-seconds", type=float, default=21600.0)
+    run_case.add_argument("--keep-raw-project", action="store_true")
+
     for name in ("fit-capacity", "fit-topology", "fit-payload", "fit-transport"):
         command = commands.add_parser(name)
         command.add_argument("--observations", nargs="+", type=Path, required=True)
@@ -114,6 +132,30 @@ def _dispatch(args: argparse.Namespace) -> Any:
             adapter_profile=args.adapter_profile,
         )
         return {"status": "pass", "run_spec": bundle.run_spec}
+    if args.command == "run-ppro-case":
+        spec = read_json(args.run_spec.resolve())
+        binding = render_ppro_runtime_binding(
+            spec,
+            source_filelist=args.filelist.resolve(),
+            config=PProRuntimeConfig(
+                case_dir=args.case_dir,
+                install_root=args.install_root,
+                platform_reference=args.platform_reference,
+                prepartition_constraints=args.prepartition_constraints,
+                fpga_aliases=parse_fpga_aliases(args.fpga_alias),
+                max_processes=args.max_processes,
+                lut_area_percent=args.lut_area_percent,
+                timeout_seconds=args.timeout_seconds,
+                keep_raw_project=args.keep_raw_project,
+            ),
+        )
+        result = execute_blackbox_case(spec, binding)
+        return {
+            "status": "pass" if result["execution"]["outcome"] == "pass" else "failed",
+            "case_id": result["identity"]["id"],
+            "outcome": result["execution"]["outcome"],
+            "observation": binding.output_path.name,
+        }
     if args.command == "fit-capacity":
         result = fit_capacity_intervals(_read_many(args.observations))
         _write_result(args.out, result)

@@ -309,11 +309,22 @@ format of an existing successful normal PPro result. It reads only `pa0.rpt`,
 runtime-only alias map, and stores directed route load as a compact aggregate
 with `signal_count`. It does not read project XML, STF, BoardDB, pin maps, or
 timing tables. This format check is not a substitute for the required fresh
-runner smoke.
+runner smoke. A runtime-only renderer now emits the documented ordinary PPro
+project/compile/pre-partition/partition/system-route sequence. It treats the
+installed platform reference and documented pre-partition constraints as
+opaque path arguments: only existence is checked, and their contents are not
+read, copied, hashed, or serialized. Generated Tcl, launcher, absolute
+filelist, active project, and raw reports are scrubbed after the compact
+observation is validated. Its command is covered by a disposable fake-provider
+test. The production renderer also rejects case directories outside the
+mandatory `/research/d4/gds/ziyiwang21` boundary and pins all standard temporary
+environment variables below the case. This does not replace the fresh
+authorized PPro smoke.
 
 Deliver:
 
-- generator for documented PPro projects and constraints;
+- runtime renderer for documented PPro projects and explicitly supplied user
+  constraints;
 - queued runner with explicit concurrency and failure classification;
 - allowlisted normal-report parser; and
 - compact terminal observation output.

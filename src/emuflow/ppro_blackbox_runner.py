@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import os
 import re
+import shutil
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -74,6 +75,7 @@ class RuntimeBinding:
     fpga_aliases: Mapping[str, str] = field(default_factory=dict)
     timeout_seconds: float = 3600.0
     cleanup_raw_reports: bool = True
+    cleanup_paths: tuple[Path, ...] = ()
 
 
 def _mapping(value: Any, context: str) -> Mapping[str, Any]:
@@ -285,6 +287,13 @@ def validate_runtime_binding(binding: RuntimeBinding, *, profile: str = MOCK_REP
             raise ValidationError(f"runtime report {name} must stay inside the isolated case directory")
     if binding.output_path.resolve().parent != case_dir:
         raise ValidationError("runtime observation must be directly inside the isolated case directory")
+    output_path = binding.output_path.resolve()
+    for raw_path in binding.cleanup_paths:
+        path = raw_path.resolve()
+        if path == case_dir or not path.is_relative_to(case_dir):
+            raise ValidationError("runtime cleanup paths must stay below the isolated case directory")
+        if path == output_path:
+            raise ValidationError("runtime cleanup paths cannot remove the compact observation")
     if profile == PPRO_2026_REPORT_PROFILE:
         if not binding.fpga_aliases:
             raise ValidationError("real PPro runtime binding requires FPGA aliases")
@@ -604,6 +613,15 @@ def execute_blackbox_case(
     stderr_path.unlink(missing_ok=True)
     if binding.cleanup_raw_reports:
         for path in binding.report_paths.values():
+            path.unlink(missing_ok=True)
+    for path in sorted(
+        {item.resolve() for item in binding.cleanup_paths},
+        key=lambda item: len(item.parts),
+        reverse=True,
+    ):
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
             path.unlink(missing_ok=True)
     return normalized
 

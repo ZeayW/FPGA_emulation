@@ -144,7 +144,19 @@ class PProBlackboxRunnerTest(unittest.TestCase):
     def test_mock_pass_emits_compact_observation_and_removes_raw_reports(self):
         with tempfile.TemporaryDirectory() as raw:
             case = Path(raw) / "case"
-            result = execute_blackbox_case(run_spec(), binding(case))
+            scratch = case / "active-project"
+            scratch.mkdir(parents=True)
+            (scratch / "large-intermediate.bin").write_bytes(b"intermediate")
+            base = binding(case)
+            value = RuntimeBinding(
+                case_dir=base.case_dir,
+                command=base.command,
+                report_paths=base.report_paths,
+                output_path=base.output_path,
+                timeout_seconds=base.timeout_seconds,
+                cleanup_paths=(scratch,),
+            )
+            result = execute_blackbox_case(run_spec(), value)
             self.assertEqual(result["execution"]["outcome"], "pass")
             self.assertEqual(result["execution"]["seed"], 7)
             self.assertTrue(result["derived"]["fit_eligible"])
@@ -158,6 +170,7 @@ class PProBlackboxRunnerTest(unittest.TestCase):
                 self.assertFalse(path.exists())
             self.assertFalse((case / ".runner-stdout.log").exists())
             self.assertFalse((case / ".runner-stderr.log").exists())
+            self.assertFalse(scratch.exists())
 
     def test_missing_report_is_not_an_evaluated_observation(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -220,6 +233,29 @@ class PProBlackboxRunnerTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValidationError, "isolated case"):
                 validate_runtime_binding(invalid)
+
+    def test_runtime_cleanup_paths_are_confined_and_preserve_observation(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            value = binding(root / "case")
+            outside = RuntimeBinding(
+                case_dir=value.case_dir,
+                command=value.command,
+                report_paths=value.report_paths,
+                output_path=value.output_path,
+                cleanup_paths=(root / "outside",),
+            )
+            with self.assertRaisesRegex(ValidationError, "cleanup paths"):
+                validate_runtime_binding(outside)
+            observation = RuntimeBinding(
+                case_dir=value.case_dir,
+                command=value.command,
+                report_paths=value.report_paths,
+                output_path=value.output_path,
+                cleanup_paths=(value.output_path,),
+            )
+            with self.assertRaisesRegex(ValidationError, "compact observation"):
+                validate_runtime_binding(observation)
 
     def test_queue_is_explicitly_bounded_and_result_order_is_stable(self):
         with tempfile.TemporaryDirectory() as raw:

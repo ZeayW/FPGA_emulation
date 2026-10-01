@@ -182,12 +182,18 @@ claim that public connector totals reveal the platform's wiring. The Stage 2
 boundary now provides a deterministic connected smoke workload, strict
 redacted run specification, non-serializable runtime binding, bounded queue,
 terminal failure classification, the synthetic mock adapter, and a separate
-`ppro-2026-ordinary-reports-v1` adapter. The real adapter reads only normal
-partition, system-route, and system-timing reports; a runtime-only one-to-one
-alias map removes physical FPGA names before serialization. Its parser format
-has been checked against an existing successful normal PPro result, but Stage 2
-remains pending until a fresh smoke is executed through the current runner. A
-mock result is never accepted as real PPro evidence.
+`ppro-2026-ordinary-reports-v1` adapter. A runtime-only renderer creates the
+ordinary project/compile/pre-partition/partition/system-route command sequence
+from the generated run specification. The installed platform reference and
+documented user constraints are opaque path arguments: EmuFlow checks that
+they exist but never reads, copies, hashes, or serializes them. Generated Tcl,
+launcher, absolute runtime filelist, active project, and raw reports are
+deleted after the compact observation is validated. The real adapter reads
+only normal partition, system-route, and system-timing reports; a runtime-only
+one-to-one alias map removes physical FPGA names before serialization. Its
+parser format has been checked against an existing successful normal PPro
+result, but Stage 2 remains pending until a fresh smoke is executed through the
+current runner. A mock result is never accepted as real PPro evidence.
 
 The Stage 3 experiment framework is also present, but contains no fitted
 vendor result yet. It generates compact connected capacity probes for seven
@@ -222,6 +228,25 @@ emuflow-ppro-calibration generate-smoke \
   --configuration-id lx2-m1 --tool-release 2026.1 \
   --runner-revision <64-hex-runner-source-sha256> \
   --adapter-profile ppro-2026-ordinary-reports-v1
+```
+
+An authorized host can execute that generated case with `run-ppro-case`.
+Installation, platform-reference, constraint, alias, and case-directory
+arguments are runtime-only and are deliberately absent from the run spec and
+observation. The writable case directory must follow the deployment storage
+policy: the production runtime rejects paths outside
+`/research/d4/gds/ziyiwang21` and binds `TMPDIR`, `TMP`, and `TEMP` below the
+case. `--keep-raw-project` is intended only for a short, explicit diagnosis:
+
+```sh
+emuflow-ppro-calibration run-ppro-case \
+  --run-spec <generated>/run-spec.json \
+  --filelist <generated>/files.f \
+  --case-dir <authorized-isolated-case-directory> \
+  --install-root <authorized-installation> \
+  --platform-reference <user-selected-platform-reference> \
+  --prepartition-constraints <documented-user-constraints> \
+  --fpga-alias <physical-id>=F0 --fpga-alias <physical-id>=F1
 ```
 
 The same command provides explicit `fit-capacity`, `fit-topology`,
