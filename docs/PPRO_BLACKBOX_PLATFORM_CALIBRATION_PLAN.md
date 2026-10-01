@@ -364,8 +364,8 @@ runtime scale and artifact availability; never infer missing values.
 
 ### Stage 3: capacity and topology calibration
 
-Status: **experiment/fitting framework implemented; first real pass point
-qualified, repeated boundary fitting pending**. Capacity probes cover LUT-, FF-, BRAM-, URAM-, DSP-, and two mixed
+Status: **experiment/fitting framework implemented; BRAM/URAM/DSP boundaries
+fitted, remaining axes and topology pending**. Capacity probes cover LUT-, FF-, BRAM-, URAM-, DSP-, and two mixed
 resource axes using compact parameterized RTL and public inference attributes.
 Requested units are controls, never treated as mapped resource counts. The
 ordered-pair topology matrix covers both directions, requires repeated trials,
@@ -408,6 +408,13 @@ column as a 36-Kib-class block count.  The observation schema records it as
 `1 bram36k = 2 bram18k` conversion required by BoardDB.  This pilot validates
 the measurement unit only; repeated pass/infeasible points remain mandatory
 for the capacity interval.
+Two authorized repeated v4 campaigns at source commit
+`075a2b759f349e892d32830bb92c86d429d2a56f` produced 36 evaluated
+hard-resource observations.  The fitted pass/infeasible intervals are
+1580/1640 `bram36k`, 2850/2950 `dsp48`, and 238/245 `uram288`; no observation
+was excluded and all six repeated withheld points passed as predicted.  This
+qualifies those three axes only.  It does not substitute for the pending LUT,
+FF, topology, communication, application-holdout, or full-flow gates.
 
 Deliver resource-boundary and ordered-pair experiment matrices, fitted
 effective capacities, effective reachability, and shared-resource hypotheses.

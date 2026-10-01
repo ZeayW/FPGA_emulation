@@ -212,8 +212,8 @@ result is never accepted as real PPro evidence.
 The runner applies the same default 75% limit to LUT, FF, BRAM, URAM, and DSP;
 the explicit `--utilization-limit-percent` changes all five together.
 
-The Stage 3 experiment framework is also present, but contains no fitted
-vendor result yet. It generates compact connected capacity probes for seven
+The Stage 3 experiment framework is also present and its first three real
+resource axes are fitted. It generates compact connected capacity probes for seven
 resource axes and a bidirectional ordered-pair topology matrix with repeated
 fit points and withheld points. The conservative fitters reject unstable or
 non-monotonic measurements, report pass/fail capacity intervals, and refuse to
@@ -259,6 +259,14 @@ ordinary-report unit as one 36-Kib-class block rather than one 18-Kib block.
 Observations therefore use the explicit `bram36k` metric; only Stage 5 converts
 one observed BRAM unit to two BoardDB `bram18k` units.  The pilot qualifies the
 unit contract but is not a capacity boundary by itself.
+At source commit `075a2b759f349e892d32830bb92c86d429d2a56f`, two repeated
+boundary campaigns produced 36 evaluated hard-resource observations with no
+excluded run.  The conservative pass/infeasible intervals are 1580/1640
+36-Kib-class BRAM blocks, 2850/2950 DSP48s, and 238/245 URAM288s.  All six
+withheld repeated points were predicted as pass and did pass.  LUT and FF
+boundaries, effective topology, communication parameters, application
+holdouts, and end-to-end promotion remain pending; these partial fits are not
+yet a released calibrated platform.
 
 Stage 4 now has the corresponding controlled communication probe and
 dependency-free fitters for payload/TDM intervals, aggregate latency, and
