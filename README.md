@@ -198,6 +198,14 @@ cost terms come from deterministic bootstrap bounds. These are framework
 capabilities only until real PPro observations and withheld points satisfy the
 documented gates.
 
+Stage 5 can now deterministically materialize and independently validate the
+three final profile databases plus a provenance/hash manifest. It cannot turn
+the synthetic tests into a released platform: generation requires real fitted
+capacity, one-hop topology, ratio-one payload, latency, and paired transport
+evidence. The resulting timing qualification is characterization only, and
+fabric clock remains a published research assumption until separately
+identifiable.
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both

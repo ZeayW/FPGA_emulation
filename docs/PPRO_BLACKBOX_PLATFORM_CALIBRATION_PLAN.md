@@ -351,6 +351,19 @@ bounds.
 
 ### Stage 5: platform generator and EmuFlow integration
 
+Status: **artifact generator and independent validators implemented; real
+calibrated instance pending**. The generator converts only already-fitted,
+immutable inputs into aggressive/nominal/conservative BoardDB,
+BoardLinkTimingDB, and TransportCostDB profiles. Public VU19P totals remain the
+hard capacity ceiling; BoardDB v1's single utilization limit is the minimum of
+the fitted per-resource effective/public ratios. Only observed one-hop edges
+become BoardDB links, and every observed multi-hop pair must be reproduced by
+the resulting shortest paths. Ratio-one payload evidence is mandatory for
+each direct edge. Timing is marked `characterized-upper-bound`, never measured
+signoff; fabric clock remains an explicit sensitivity assumption. The writer
+stores only final artifacts and a canonical hash manifest, then re-reads and
+validates all three contracts independently.
+
 Deliver generated BoardDB, BoardLinkTimingDB, TransportCostDB, a parameter
 provenance manifest, and independent validators.  Generated profiles are
 immutable inputs to a run; model fitting is never performed in the production

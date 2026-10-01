@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/ppro-calibrated-platform-manifest-v1.schema.json",
+  "title": "EmuFlow PPro-calibrated academic platform manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "configuration_id", "claim_scope", "not_claimed", "fabric_clock_provenance", "fabric_clock_mhz", "capacity_projection", "source_hashes", "profiles"],
+  "properties": {
+    "schema": {"const": "emuflow.ppro-calibrated-platform-manifest/v1"},
+    "configuration_id": {"type": "string", "minLength": 1},
+    "claim_scope": {"const": "PPro-behavior-equivalent-academic-model"},
+    "not_claimed": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "fabric_clock_provenance": {"const": "research_assumption"},
+    "fabric_clock_mhz": {"$ref": "#/$defs/profiles"},
+    "capacity_projection": {"type": "object"},
+    "source_hashes": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["aggressive", "nominal", "conservative"],
+      "properties": {
+        "aggressive": {"$ref": "#/$defs/artifactHashes"},
+        "nominal": {"$ref": "#/$defs/artifactHashes"},
+        "conservative": {"$ref": "#/$defs/artifactHashes"}
+      }
+    }
+  },
+  "$defs": {
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["aggressive", "nominal", "conservative"],
+      "properties": {
+        "aggressive": {"type": "number", "exclusiveMinimum": 0},
+        "nominal": {"type": "number", "exclusiveMinimum": 0},
+        "conservative": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "artifactHashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["boarddb", "board_link_timing", "transport_cost"],
+      "properties": {
+        "boarddb": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "board_link_timing": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "transport_cost": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

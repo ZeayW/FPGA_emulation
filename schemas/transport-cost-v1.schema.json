@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/transport-cost-v1.schema.json",
+  "title": "EmuFlow calibrated transport cost database v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "platform", "profile", "resources", "provenance"],
+  "properties": {
+    "schema": {"const": "emuflow.transport-cost/v1"},
+    "platform": {"type": "string", "minLength": 1},
+    "profile": {"enum": ["aggressive", "nominal", "conservative"]},
+    "resources": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["per_endpoint", "per_transport_bit", "per_tdm_level", "per_multicast_sink"],
+        "properties": {
+          "per_endpoint": {"type": "number", "minimum": 0},
+          "per_transport_bit": {"type": "number", "minimum": 0},
+          "per_tdm_level": {"type": "number", "minimum": 0},
+          "per_multicast_sink": {"type": "number", "minimum": 0}
+        }
+      }
+    },
+    "provenance": {"const": "black_box_fitted"}
+  }
+}
