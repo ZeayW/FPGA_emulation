@@ -84,6 +84,19 @@ def binding(root: Path, mode: str = "pass") -> RuntimeBinding:
     )
 
 
+def capacity_spec(identifier: str = "capacity-run"):
+    spec = copy.deepcopy(run_spec(identifier))
+    spec["workload"]["generator_id"] = "ppro-blackbox-capacity-lut-v2"
+    spec["workload"]["design_metrics"] = {"requested_units": 160000}
+    spec["experiment"] = {
+        "kind": "resource_capacity",
+        "control_mode": "fixed_assignment",
+        "documented_actions": ["partition_constraint", "random_seed"],
+        "constraints_sha256": "4" * 64,
+    }
+    return spec
+
+
 class PProBlackboxRunnerTest(unittest.TestCase):
     def test_run_spec_matches_versioned_json_schema(self):
         try:
@@ -194,6 +207,16 @@ class PProBlackboxRunnerTest(unittest.TestCase):
             self.assertEqual(license_result["execution"]["outcome"], "license_failure")
             self.assertEqual(tool_result["execution"]["outcome"], "tool_failure")
             self.assertEqual(tool_result["execution"]["failure_code"], "tool-exit-17")
+
+    def test_capacity_boundary_is_evaluated_and_preserves_control_coordinate(self):
+        with tempfile.TemporaryDirectory() as raw:
+            result = execute_blackbox_case(
+                capacity_spec(), binding(Path(raw) / "capacity", "capacity")
+            )
+            self.assertEqual(result["execution"]["outcome"], "capacity_infeasible")
+            self.assertEqual(result["execution"]["failure_code"], "capacity-boundary")
+            self.assertEqual(result["metrics"]["design"]["requested_units"], 160000)
+            self.assertTrue(result["derived"]["fit_eligible"])
 
     def test_explicit_diagnostic_mode_retains_only_bounded_failure_tails(self):
         with tempfile.TemporaryDirectory() as raw:

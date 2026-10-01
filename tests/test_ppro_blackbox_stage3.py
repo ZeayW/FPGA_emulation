@@ -88,7 +88,7 @@ class PProBlackboxStage3Test(unittest.TestCase):
                     observation(
                         identifier=f"cap-{units}-{repeat}",
                         kind="resource_capacity",
-                        generator="ppro-blackbox-capacity-lut-v1",
+                        generator="ppro-blackbox-capacity-lut-v2",
                         role=role,
                         outcome=outcome,
                         design={"requested_units": units},
@@ -105,7 +105,7 @@ class PProBlackboxStage3Test(unittest.TestCase):
         one_pass = observation(
             identifier="cap-pass",
             kind="resource_capacity",
-            generator="ppro-blackbox-capacity-lut-v1",
+            generator="ppro-blackbox-capacity-lut-v2",
             role="fit",
             outcome="pass",
             design={"requested_units": 100},
@@ -113,7 +113,7 @@ class PProBlackboxStage3Test(unittest.TestCase):
         one_fail = observation(
             identifier="cap-fail",
             kind="resource_capacity",
-            generator="ppro-blackbox-capacity-lut-v1",
+            generator="ppro-blackbox-capacity-lut-v2",
             role="fit",
             outcome="capacity_infeasible",
             design={"requested_units": 80},
@@ -134,7 +134,7 @@ class PProBlackboxStage3Test(unittest.TestCase):
                     observation(
                         identifier=f"topo-{source}-{sink}-{repeat}",
                         kind="topology_reachability",
-                        generator="ppro-blackbox-topology-reachability-v1",
+                        generator="ppro-blackbox-topology-reachability-v2",
                         role="fit",
                         outcome=outcome,
                         design={

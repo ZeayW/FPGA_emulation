@@ -13,7 +13,7 @@ from .ppro_blackbox_calibration import validate_blackbox_observation
 
 CAPACITY_FIT_SCHEMA = "emuflow.ppro-capacity-fit/v1"
 TOPOLOGY_FIT_SCHEMA = "emuflow.ppro-effective-topology-fit/v1"
-_CAPACITY_GENERATOR = re.compile(r"^ppro-blackbox-capacity-(.+)-v1$")
+_CAPACITY_GENERATOR = re.compile(r"^ppro-blackbox-capacity-(.+)-v2$")
 
 
 def _validated(observations: Sequence[Mapping[str, Any]]) -> list[Dict[str, Any]]:
@@ -152,7 +152,7 @@ def fit_effective_topology(
     for item in normalized:
         if item["experiment"]["kind"] != "topology_reachability":
             raise ValidationError("topology fitting received a non-topology observation")
-        if item["workload"]["generator_id"] != "ppro-blackbox-topology-reachability-v1":
+        if item["workload"]["generator_id"] != "ppro-blackbox-topology-reachability-v2":
             raise ValidationError("topology observation has an unknown generator id")
         design = item["metrics"]["design"]
         if not {"source_fpga_index", "sink_fpga_index", "probe_width_bits"} <= set(design):

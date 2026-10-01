@@ -221,6 +221,12 @@ invent shared-link groups from single-flow reachability data. Capacity v2 puts
 the swept payload under a real `P0` hierarchy before applying `assign_inst`;
 topology probes fix endpoint instances only and observe the route PPro chooses.
 They do not falsely claim a route constraint or an applied random seed.
+The v2 fitters accept only the corresponding v2 generator identities. A failed
+run becomes capacity evidence only when the bounded ordinary console output
+contains PPro's explicit resource-specific “cannot be placed on any FPGA”
+diagnostic; generic partition/tool failures remain excluded. The controlled
+requested-unit coordinate is retained for that boundary observation, while no
+missing success-report metric is fabricated.
 
 Stage 4 now has the corresponding controlled communication probe and
 dependency-free fitters for payload/TDM intervals, aggregate latency, and

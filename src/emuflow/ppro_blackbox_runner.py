@@ -50,6 +50,16 @@ _INFRASTRUCTURE_PATTERNS = (
     re.compile(r"connection (?:timed out|refused|reset)", re.I),
     re.compile(r"host (?:is )?unreachable", re.I),
 )
+_CAPACITY_BOUNDARY_PATTERNS = (
+    # PPro's ordinary console diagnostic for a resource-constrained partition
+    # boundary.  Keep this deliberately narrow: generic "partition failed"
+    # text is not evidence that the modeled hardware capacity was exceeded.
+    re.compile(
+        r"cannot\s+be\s+placed\s+on\s+any\s+FPGA\s+because\s+of\s+"
+        r"\[(?:LUT|FF|BRAM|DSP|URAM)\]",
+        re.I,
+    ),
+)
 _TIMING_PATTERNS = {
     "sr0_worst_cross_fpga_delay_ns": re.compile(
         r"^Worst Cross FPGA Delay \(ns\):\s*([0-9]+(?:\.[0-9]+)?)\s*$",
@@ -457,6 +467,8 @@ def classify_process_failure(return_code: int, diagnostic_tail: str) -> tuple[st
         return "license_failure", "license-unavailable"
     if any(pattern.search(diagnostic_tail) for pattern in _INFRASTRUCTURE_PATTERNS):
         return "infrastructure_failure", "execution-environment"
+    if any(pattern.search(diagnostic_tail) for pattern in _CAPACITY_BOUNDARY_PATTERNS):
+        return "capacity_infeasible", "capacity-boundary"
     return "tool_failure", f"tool-exit-{abs(return_code)}"
 
 
@@ -488,8 +500,16 @@ def _failure_observation(
         "fixed_assignment",
         "fixed_communication",
     }
+    evaluated = outcome in {
+        "capacity_infeasible",
+        "link_capacity_infeasible",
+        "routing_infeasible",
+    }
+    fit_eligible = role == "fit" and controlled and evaluated
     reason = (
-        "holdout-not-fit"
+        "controlled-evaluated-observation"
+        if fit_eligible
+        else "holdout-not-fit"
         if role == "holdout"
         else "uncontrolled-not-fit"
         if not controlled
@@ -517,9 +537,14 @@ def _failure_observation(
             "runtime_seconds": runtime_seconds,
         },
         "reports": {name: False for name in sorted(_REPORTS)},
-        "metrics": _empty_metrics(),
+        "metrics": {
+            **_empty_metrics(),
+            # Boundary observations have no ordinary success reports, but the
+            # controlled input coordinates remain valid fitting evidence.
+            "design": dict(spec["workload"]["design_metrics"]) if evaluated else {},
+        },
         "provenance": {"class": "black_box_observation"},
-        "derived": {"fit_eligible": False, "reason": reason},
+        "derived": {"fit_eligible": fit_eligible, "reason": reason},
     }
 
 
@@ -601,13 +626,19 @@ def execute_blackbox_case(
         elif return_code is None:
             raise AssertionError("PPro provider process ended without a return code")
         elif return_code != 0:
-            diagnostic_tail = _read_text_tail(stderr_path)
+            diagnostic_tail = (
+                _read_text_tail(stdout_path) + "\n" + _read_text_tail(stderr_path)
+            )
             outcome, failure_code = classify_process_failure(return_code, diagnostic_tail)
             observation = _failure_observation(spec, outcome, failure_code, runtime_seconds)
         elif any(not path.is_file() for path in binding.report_paths.values()):
-            observation = _failure_observation(
-                spec, "missing_report", "ordinary-report-missing", runtime_seconds
+            diagnostic_tail = (
+                _read_text_tail(stdout_path) + "\n" + _read_text_tail(stderr_path)
             )
+            outcome, failure_code = classify_process_failure(0, diagnostic_tail)
+            if outcome == "tool_failure":
+                outcome, failure_code = "missing_report", "ordinary-report-missing"
+            observation = _failure_observation(spec, outcome, failure_code, runtime_seconds)
         else:
             try:
                 if spec["adapter"]["profile"] == MOCK_REPORT_PROFILE:

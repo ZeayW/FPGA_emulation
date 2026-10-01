@@ -19,7 +19,7 @@ def _csv(path: Path, fields, rows) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--mode", choices=("pass", "missing", "license", "tool"), default="pass"
+        "--mode", choices=("pass", "missing", "license", "tool", "capacity"), default="pass"
     )
     args = parser.parse_args()
     if args.mode == "license":
@@ -28,6 +28,12 @@ def main() -> int:
     if args.mode == "tool":
         print("synthetic provider internal error", file=sys.stderr)
         return 17
+    if args.mode == "capacity":
+        print(
+            "ERROR node cannot be placed on any FPGA because of [LUT].",
+            file=sys.stdout,
+        )
+        return 1
 
     root = Path.cwd()
     _csv(
