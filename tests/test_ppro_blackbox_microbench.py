@@ -70,6 +70,9 @@ class PProBlackboxMicrobenchTest(unittest.TestCase):
             self.assertIn('ram_style = "block"', bram)
             self.assertIn('ram_style = "ultra"', uram)
             self.assertIn('use_dsp = "yes"', dsp)
+            self.assertIn("calibration_capacity_bram_cell", bram)
+            self.assertIn("calibration_capacity_uram_cell", uram)
+            self.assertIn('keep_hierarchy = "yes"', bram)
 
     def test_large_lut_probe_is_hierarchically_tiled_below_elaboration_limit(self):
         with tempfile.TemporaryDirectory() as raw:

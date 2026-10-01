@@ -13,7 +13,7 @@ from .ppro_blackbox_calibration import validate_blackbox_observation
 
 CAPACITY_FIT_SCHEMA = "emuflow.ppro-capacity-fit/v1"
 TOPOLOGY_FIT_SCHEMA = "emuflow.ppro-effective-topology-fit/v1"
-_CAPACITY_GENERATOR = re.compile(r"^ppro-blackbox-capacity-(.+)-v3$")
+_CAPACITY_GENERATOR = re.compile(r"^ppro-blackbox-capacity-(.+)-v4$")
 
 
 def _validated(observations: Sequence[Mapping[str, Any]]) -> list[Dict[str, Any]]:

@@ -217,13 +217,15 @@ vendor result yet. It generates compact connected capacity probes for seven
 resource axes and a bidirectional ordered-pair topology matrix with repeated
 fit points and withheld points. The conservative fitters reject unstable or
 non-monotonic measurements, report pass/fail capacity intervals, and refuse to
-invent shared-link groups from single-flow reachability data. Capacity v3 puts
+invent shared-link groups from single-flow reachability data. Capacity v4 puts
 the swept payload under a real `P0` hierarchy before applying `assign_inst`;
 large LUT sweeps are tiled into at most 4,096-unit elaboration blocks so they
-do not exceed PPro's per-loop elaboration limit;
+do not exceed PPro's per-loop elaboration limit, while BRAM/URAM/mixed-hard
+units use preserved cell hierarchy so synthesis cannot collapse the entire
+sweep into one parity-equivalent memory;
 topology probes fix endpoint instances only and observe the route PPro chooses.
 They do not falsely claim a route constraint or an applied random seed.
-The capacity fitter accepts only the current v3 generator identity, while the
+The capacity fitter accepts only the current v4 generator identity, while the
 topology fitter accepts only its current v2 identity. A failed
 run becomes capacity evidence only when the bounded ordinary console output
 contains PPro's explicit resource-specific “cannot be placed on any FPGA”
@@ -243,6 +245,10 @@ produced, as expected for a local capacity probe. This is one real pass point,
 not yet a fitted capacity interval. Runtime HOME, PPro's root-level
 `runtime_Flag.tcl`, generated scripts, reports, and project data are scrubbed;
 the compact observation is the retained evidence.
+That v3 pilot is retained as runner qualification only; v4 is the current
+capacity-fitting contract because the first v3 BRAM/URAM matrix proved that its
+flat memories were optimized to constant 2-BRAM/1-URAM footprints and therefore
+had no capacity identifiability. Those invalid sweeps are excluded from fits.
 Campaign completion treats explicit capacity/link/routing infeasibility as a
 successful measured terminal outcome; only provider, license, infrastructure,
 missing-report, and parse failures fail the campaign command.

@@ -86,7 +86,7 @@ def binding(root: Path, mode: str = "pass") -> RuntimeBinding:
 
 def capacity_spec(identifier: str = "capacity-run"):
     spec = copy.deepcopy(run_spec(identifier))
-    spec["workload"]["generator_id"] = "ppro-blackbox-capacity-lut-v3"
+    spec["workload"]["generator_id"] = "ppro-blackbox-capacity-lut-v4"
     spec["workload"]["design_metrics"] = {"requested_units": 160000}
     spec["experiment"] = {
         "kind": "resource_capacity",
