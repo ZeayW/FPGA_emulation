@@ -51,7 +51,7 @@ class PProBlackboxTopologyTest(unittest.TestCase):
                 bundle.run_spec["experiment"]["control_mode"], "fixed_assignment"
             )
 
-    def test_matrix_covers_every_direction_and_withholds_named_pairs(self):
+    def test_matrix_fits_every_direction_and_repeats_named_holdouts(self):
         with tempfile.TemporaryDirectory() as raw:
             bundles = generate_ordered_pair_matrix(
                 Path(raw),
@@ -59,10 +59,13 @@ class PProBlackboxTopologyTest(unittest.TestCase):
                 repeats=2,
                 **self.kwargs(),
             )
-            self.assertEqual(len(bundles), 24)
+            self.assertEqual(len(bundles), 28)
+            fits = [bundle for bundle in bundles if bundle.run_spec["identity"]["role"] == "fit"]
+            self.assertEqual(len(fits), 24)
             holdouts = [bundle for bundle in bundles if bundle.run_spec["identity"]["role"] == "holdout"]
             self.assertEqual(len(holdouts), 4)
             self.assertTrue(all("f0-f3" in bundle.root.as_posix() or "f3-f0" in bundle.root.as_posix() for bundle in holdouts))
+            self.assertTrue(all("/holdout/" in bundle.root.as_posix() for bundle in holdouts))
 
     def test_same_endpoint_and_missing_holdout_fail_closed(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -76,7 +79,7 @@ class PProBlackboxTopologyTest(unittest.TestCase):
                     seed=1,
                     **self.kwargs(),
                 )
-            with self.assertRaisesRegex(ValidationError, "withheld"):
+            with self.assertRaisesRegex(ValidationError, "holdout"):
                 generate_ordered_pair_matrix(
                     Path(raw) / "matrix",
                     holdout_pairs=[],

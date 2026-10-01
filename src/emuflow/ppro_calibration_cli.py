@@ -126,7 +126,7 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         type=_ordered_pair,
         required=True,
-        help="withheld directed pair SOURCE:SINK; repeat for multiple pairs",
+        help="directed pair SOURCE:SINK receiving independent holdout repeats",
     )
     topology_matrix.add_argument("--repeats", type=int, default=2)
     topology_matrix.add_argument("--width", type=int, default=32)

@@ -368,13 +368,17 @@ Status: **experiment/fitting framework implemented; BRAM/URAM/DSP boundaries
 fitted, remaining axes and topology pending**. Capacity probes cover LUT-, FF-, BRAM-, URAM-, DSP-, and two mixed
 resource axes using compact parameterized RTL and public inference attributes.
 Requested units are controls, never treated as mapped resource counts. The
-ordered-pair topology matrix covers both directions, requires repeated trials,
-and reserves explicit holdout pairs. Capacity fitting emits only a measured
+ordered-pair topology matrix covers both directions, requires repeated fit
+trials for every pair, and adds independent holdout repeats for selected pairs.
+Capacity fitting emits only a measured
 pass/infeasible interval; topology fitting emits only observed directed
 reachability and stable effective hop counts. Single-flow data explicitly
 leaves shared-capacity groups `not_identifiable` instead of guessing them. The
 topology matrix must use one consistent positive probe width, which is retained
-in the fitted artifact; mixed-width matrices are rejected. The
+in the fitted artifact; mixed-width matrices are rejected. Since ordinary route
+reports expose per-hop aggregates, effective hop count is reconstructed on the
+directed route graph using only edges whose signal count covers the complete
+probe width; narrower clock/control traffic is not topology evidence. The
 v4 capacity RTL places its swept payload below a real `P0` hierarchy before the
 documented `assign_inst` constraint is emitted. Topology fixes only producer
 and consumer instances and observes the tool-selected route; it does not claim

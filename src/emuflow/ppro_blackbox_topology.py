@@ -236,21 +236,20 @@ def generate_ordered_pair_matrix(
     if not holdouts <= legal_pairs:
         raise ValidationError("topology holdout pair is outside the configured FPGA set")
     if not holdouts:
-        raise ValidationError("topology matrix requires at least one withheld ordered pair")
+        raise ValidationError("topology matrix requires at least one holdout ordered pair")
     bundles = []
     for source, sink in sorted(legal_pairs):
-        role = "holdout" if (source, sink) in holdouts else "fit"
         for repeat in range(repeats):
             bundles.append(
                 generate_topology_probe_bundle(
-                    output_dir / f"f{source}-f{sink}" / f"r{repeat}",
+                    output_dir / f"f{source}-f{sink}" / "fit" / f"r{repeat}",
                     fpga_count=fpga_count,
                     source_index=source,
                     sink_index=sink,
                     width=width,
                     pipeline_stages=pipeline_stages,
                     repeat=repeat,
-                    role=role,
+                    role="fit",
                     campaign_id=campaign_id,
                     public_prior_id=public_prior_id,
                     configuration_id=configuration_id,
@@ -260,4 +259,25 @@ def generate_ordered_pair_matrix(
                     adapter_profile=adapter_profile,
                 )
             )
+        if (source, sink) in holdouts:
+            for repeat in range(repeats):
+                bundles.append(
+                    generate_topology_probe_bundle(
+                        output_dir / f"f{source}-f{sink}" / "holdout" / f"r{repeat}",
+                        fpga_count=fpga_count,
+                        source_index=source,
+                        sink_index=sink,
+                        width=width,
+                        pipeline_stages=pipeline_stages,
+                        repeat=repeats + repeat,
+                        role="holdout",
+                        campaign_id=campaign_id,
+                        public_prior_id=public_prior_id,
+                        configuration_id=configuration_id,
+                        tool_release=tool_release,
+                        runner_revision=runner_revision,
+                        seed=seed_base + repeats + repeat,
+                        adapter_profile=adapter_profile,
+                    )
+                )
     return bundles

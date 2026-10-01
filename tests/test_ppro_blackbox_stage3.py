@@ -126,7 +126,11 @@ class PProBlackboxStage3Test(unittest.TestCase):
         for source, sink, outcome in ((0, 1, "pass"), (1, 0, "routing_infeasible")):
             for repeat in range(2):
                 routes = (
-                    [{"id": "route0", "source": f"F{source}", "sinks": [f"F{sink}"], "effective_hops": 2, "signal_count": 1}]
+                    [
+                        {"id": "route0", "source": f"F{source}", "sinks": ["F2"], "effective_hops": 1, "signal_count": 32},
+                        {"id": "route1", "source": "F2", "sinks": [f"F{sink}"], "effective_hops": 1, "signal_count": 32},
+                        {"id": "control", "source": f"F{source}", "sinks": [f"F{sink}"], "effective_hops": 1, "signal_count": 2},
+                    ]
                     if outcome == "pass"
                     else []
                 )
@@ -145,11 +149,32 @@ class PProBlackboxStage3Test(unittest.TestCase):
                         routes=routes,
                     )
                 )
+        for repeat in range(2):
+            values.append(
+                observation(
+                    identifier=f"topo-holdout-{repeat}",
+                    kind="topology_reachability",
+                    generator="ppro-blackbox-topology-reachability-v2",
+                    role="holdout",
+                    outcome="pass",
+                    design={
+                        "source_fpga_index": 0,
+                        "sink_fpga_index": 1,
+                        "probe_width_bits": 32,
+                    },
+                    routes=[
+                        {"id": "route0", "source": "F0", "sinks": ["F2"], "effective_hops": 1, "signal_count": 32},
+                        {"id": "route1", "source": "F2", "sinks": ["F1"], "effective_hops": 1, "signal_count": 32},
+                    ],
+                )
+            )
         result = fit_effective_topology(values)
         self.assertEqual(result["directed_edges"][0]["state"], "reachable")
         self.assertEqual(result["directed_edges"][0]["effective_hops"], 2)
         self.assertEqual(result["probe_width_bits"], 32)
         self.assertEqual(result["directed_edges"][1]["state"], "unreachable")
+        self.assertTrue(result["all_holdouts_match"])
+        self.assertTrue(result["holdout_checks"][0]["matches"])
         self.assertEqual(result["shared_capacity_groups"]["status"], "not_identifiable")
 
 

@@ -149,7 +149,7 @@ class PProCalibrationCliTest(unittest.TestCase):
                         "1",
                     ]
                 )
-            self.assertEqual(json.loads(output.getvalue())["case_count"], 6)
+            self.assertEqual(json.loads(output.getvalue())["case_count"], 7)
 
             output = StringIO()
             with redirect_stdout(output):

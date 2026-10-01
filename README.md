@@ -225,9 +225,16 @@ units use preserved cell hierarchy so synthesis cannot collapse the entire
 sweep into one parity-equivalent memory;
 topology probes fix endpoint instances only and observe the route PPro chooses.
 They do not falsely claim a route constraint or an applied random seed.
-Topology fitting accepts the generator's documented positive probe width,
+Topology identification fits every directed FPGA pair. Named holdout pairs add
+independent repeats of those same pairs; because topology is not a scalar model,
+an entirely unobserved pair cannot be predicted from other pairs. The fitter
+requires the holdout reachability and hop count to match the fitted pair before
+promotion. Topology fitting accepts the generator's documented positive probe width,
 requires one identical width across the complete matrix, and records that width
-in the fit; mixed-width observations fail closed.
+in the fit; mixed-width observations fail closed.  Ordinary PPro route reports
+are per-hop aggregates, so the fitter reconstructs the shortest end-to-end path
+using only directed edges carrying at least the full probe width. Narrow
+clock/control side traffic is excluded from payload reachability.
 The capacity fitter accepts only the current v4 generator identity, while the
 topology fitter accepts only its current v2 identity. A failed
 run becomes capacity evidence only when the bounded ordinary console output

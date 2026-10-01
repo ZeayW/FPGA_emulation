@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import re
 from collections import defaultdict
 from statistics import median
@@ -27,6 +28,47 @@ def _integer_metric(metrics: Mapping[str, Any], name: str, context: str) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
         raise ValidationError(f"{context}: missing integer design metric {name}")
     return int(value)
+
+
+def _payload_route_hops(
+    routes: Sequence[Mapping[str, Any]], *, source: str, sink: str, width: int
+) -> int | None:
+    """Recover an end-to-end probe path from ordinary per-hop route records."""
+
+    graph: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    for route in routes:
+        signal_count = route.get("signal_count")
+        hops = route.get("effective_hops")
+        route_source = route.get("source")
+        sinks = route.get("sinks")
+        if (
+            isinstance(signal_count, bool)
+            or not isinstance(signal_count, int)
+            or signal_count < width
+            or isinstance(hops, bool)
+            or not isinstance(hops, int)
+            or hops < 1
+            or not isinstance(route_source, str)
+            or not isinstance(sinks, list)
+        ):
+            continue
+        for route_sink in sinks:
+            if isinstance(route_sink, str):
+                graph[route_source].append((route_sink, hops))
+    queue = [(0, source)]
+    best = {source: 0}
+    while queue:
+        distance, node = heapq.heappop(queue)
+        if node == sink:
+            return distance
+        if distance != best[node]:
+            continue
+        for neighbor, cost in graph.get(node, []):
+            candidate = distance + cost
+            if candidate < best.get(neighbor, candidate + 1):
+                best[neighbor] = candidate
+                heapq.heappush(queue, (candidate, neighbor))
+    return None
 
 
 def fit_capacity_intervals(
@@ -195,14 +237,15 @@ def fit_effective_topology(
             hops = []
             if state == "reachable":
                 for item in items:
-                    matching = [
-                        route
-                        for route in item["metrics"]["routes"]
-                        if route["source"] == f"F{source}" and f"F{sink}" in route["sinks"]
-                    ]
-                    if len(matching) != 1:
-                        raise ValidationError("topology pass lacks its logical ordered-pair route")
-                    hops.append(matching[0]["effective_hops"])
+                    observed_hops = _payload_route_hops(
+                        item["metrics"]["routes"],
+                        source=f"F{source}",
+                        sink=f"F{sink}",
+                        width=width,
+                    )
+                    if observed_hops is None:
+                        raise ValidationError("topology pass lacks a full-width logical route")
+                    hops.append(observed_hops)
                 if len(set(hops)) != 1:
                     raise ValidationError(f"topology F{source}->F{sink} hop count is unstable")
             record = {
@@ -215,15 +258,32 @@ def fit_effective_topology(
                 fitted_state = record
                 edges.append(record)
             else:
-                holdout_checks.append({**record, "fit_prediction_available": fitted_state is not None})
+                if fitted_state is None:
+                    raise ValidationError(
+                        f"topology F{source}->F{sink} holdout has no fitted pair prediction"
+                    )
+                holdout_checks.append(
+                    {
+                        "source": record["source"],
+                        "sink": record["sink"],
+                        "expected_state": fitted_state["state"],
+                        "observed_state": record["state"],
+                        "expected_effective_hops": fitted_state["effective_hops"],
+                        "observed_effective_hops": record["effective_hops"],
+                        "matches": record == fitted_state,
+                    }
+                )
 
     if not edges:
         raise ValidationError("topology fitting produced no fit edges")
+    if not holdout_checks:
+        raise ValidationError("topology fitting requires at least one independent holdout repeat")
     return {
         "schema": TOPOLOGY_FIT_SCHEMA,
         "probe_width_bits": next(iter(probe_widths)),
         "directed_edges": edges,
         "holdout_checks": holdout_checks,
+        "all_holdouts_match": all(item["matches"] for item in holdout_checks),
         "excluded_observations": excluded,
         "shared_capacity_groups": {
             "status": "not_identifiable",
