@@ -365,7 +365,7 @@ runtime scale and artifact availability; never infer missing values.
 ### Stage 3: capacity and topology calibration
 
 Status: **experiment/fitting framework implemented; BRAM/URAM/DSP boundaries
-fitted, remaining axes and topology pending**. Capacity probes cover LUT-, FF-, BRAM-, URAM-, DSP-, and two mixed
+and the four-FPGA effective topology fitted, remaining capacity axes pending**. Capacity probes cover LUT-, FF-, BRAM-, URAM-, DSP-, and two mixed
 resource axes using compact parameterized RTL and public inference attributes.
 Requested units are controls, never treated as mapped resource counts. The
 ordered-pair topology matrix covers both directions, requires repeated fit
@@ -420,7 +420,17 @@ hard-resource observations.  The fitted pass/infeasible intervals are
 1580/1640 `bram36k`, 2850/2950 `dsp48`, and 238/245 `uram288`; no observation
 was excluded and all six repeated withheld points passed as predicted.  This
 qualifies those three axes only.  It does not substitute for the pending LUT,
-FF, topology, communication, application-holdout, or full-flow gates.
+FF, communication, application-holdout, or full-flow gates.
+
+The authorized four-FPGA topology matrix at source commit
+`ff55af4cef1024f1a1285660e35bcd643dd21953` completed all 28 generated cases:
+two fit repeats for every ordered pair plus two holdout repeats for each of two
+named pairs.  All cases passed, no observation was excluded, and both holdout
+pairs reproduced the fitted state and hop count.  The effective graph is a
+bidirectional `K2,2`: `F0/F1` each connect directly to `F2/F3`, while the two
+same-side pairs are stable two-hop routes.  This result is deliberately stated
+only as effective black-box reachability; connector identity and shared
+capacity remain unidentified.
 
 Deliver resource-boundary and ordered-pair experiment matrices, fitted
 effective capacities, effective reachability, and shared-resource hypotheses.

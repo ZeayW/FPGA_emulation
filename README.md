@@ -274,9 +274,19 @@ boundary campaigns produced 36 evaluated hard-resource observations with no
 excluded run.  The conservative pass/infeasible intervals are 1580/1640
 36-Kib-class BRAM blocks, 2850/2950 DSP48s, and 238/245 URAM288s.  All six
 withheld repeated points were predicted as pass and did pass.  LUT and FF
-boundaries, effective topology, communication parameters, application
+boundaries, communication parameters, application
 holdouts, and end-to-end promotion remain pending; these partial fits are not
 yet a released calibrated platform.
+
+The authorized four-FPGA topology campaign at source commit
+`ff55af4cef1024f1a1285660e35bcd643dd21953` completed 28/28 evaluated
+observations with no excluded run.  Every ordered FPGA pair was repeated, and
+two named ordered pairs received separate holdout repeats.  The fitted
+effective graph is a bidirectional `K2,2`: `F0` and `F1` each have one-hop
+connections to `F2` and `F3`; `F0` to/from `F1` and `F2` to/from `F3` are
+stable two-hop paths.  Both holdout pairs reproduced their fitted reachability
+and hop count.  This identifies effective routing topology only; it does not
+claim connector, cable, package-pin, or shared-capacity identity.
 
 Stage 4 now has the corresponding controlled communication probe and
 dependency-free fitters for the ratio-one/TDM payload boundary, aggregate latency, and
