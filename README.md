@@ -145,6 +145,16 @@ An optional Vivado provider implements the same timing and physical-result
 contracts for a concrete Xilinx part. Vivado is proprietary, is not bundled,
 and is never required by the default open path.
 
+The next platform-modeling increment is specified in the
+[PPro black-box platform calibration plan](docs/PPRO_BLACKBOX_PLATFORM_CALIBRATION_PLAN.md).
+It combines public S2C/AMD specifications with controlled observations from
+ordinary authorized PPro runs. PPro is treated only as an executable black
+box: internal BoardDB, STF/board databases, pin maps, timing tables, and
+undocumented configuration are neither read nor required. The planned output
+is a provenance-labelled behavior-equivalent academic BoardDB,
+BoardLinkTimingDB, and TransportCostDB validated first on microbenchmarks and
+then blindly on naturally connected AES, CPU, Koios, and NVDLA workloads.
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both
