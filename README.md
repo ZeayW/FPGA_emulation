@@ -253,7 +253,7 @@ stderr; normal runs and successful diagnostic runs retain neither log.
 ```sh
 emuflow-ppro-calibration run-ppro-case \
   --run-spec <generated>/run-spec.json \
-  --filelist <generated>/files.f \
+  --filelist <generated>/sources.f \
   --case-dir <authorized-isolated-case-directory> \
   --install-root <authorized-installation> \
   --platform-reference <user-selected-platform-reference> \

@@ -174,7 +174,9 @@ def render_ppro_runtime_binding(
     tcl = "\n".join(
         (
             "# Generated runtime-only PPro black-box calibration script.",
-            "create_project " + _tcl_word(str(project_dir), "PPro project directory"),
+            "create_project -project_name {project} -project_path "
+            + _tcl_word(str(case_dir), "PPro project parent directory")
+            + " -force",
             "set_partition_mode -r -d",
             "create_rtlpart",
             "run_compile -top "

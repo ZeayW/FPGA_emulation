@@ -64,6 +64,10 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             runtime_files = (config.case_dir / ".runtime-files.f").read_text(
                 encoding="utf-8"
             )
+            self.assertIn(
+                "create_project -project_name {project} -project_path ", script
+            )
+            self.assertIn(" -force", script)
             self.assertIn("run_compile -top {ppro_blackbox_latency}", script)
             self.assertIn("run_pre_partition -stf", script)
             for resource in ("lut", "ff", "bram", "uram", "dsp"):
