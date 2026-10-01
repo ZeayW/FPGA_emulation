@@ -90,6 +90,7 @@ def fit_payload_intervals(
     links = []
     holdout_checks = []
     for signature in sorted({key[0] for key in groups}):
+        holdout_start = len(holdout_checks)
         stable_fit = {}
         tdm_levels = {}
         for (group_signature, width, role), items in sorted(groups.items()):
@@ -197,6 +198,11 @@ def fit_payload_intervals(
             for group_signature, _, role in groups
         ):
             raise ValidationError("payload signature requires independent holdout trials")
+        signature_holdouts = holdout_checks[holdout_start:]
+        if not any(
+            item["expected"] != "unresolved_interval" for item in signature_holdouts
+        ):
+            raise ValidationError("payload signature requires a resolved independent holdout")
     if not links:
         raise ValidationError("payload fitting produced no identifiable link signature")
     return {
@@ -536,7 +542,8 @@ def fit_transport_cost_model(
             result["resources"][resource] = {
                 "actual": actual,
                 "predicted": predicted,
-                "relative_error": abs(predicted - actual) / actual if actual else 0.0,
+                "absolute_error": abs(predicted - actual),
+                "relative_error": abs(predicted - actual) / actual if actual else None,
             }
         holdout_checks.append(result)
     return {

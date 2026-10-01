@@ -456,7 +456,9 @@ Deliver parameter sweeps, constrained fits, confidence intervals, and an
 identifiability report.
 
 Gate: withheld widths, ratios, and contention levels meet the declared error
-bounds.
+bounds. Platform materialization requires zero excluded observations, resolved
+capacity/payload holdouts, exact topology holdout agreement, full-rank latency
+and transport fits, and at most 15% nonzero holdout relative error.
 
 ### Stage 5: platform generator and EmuFlow integration
 

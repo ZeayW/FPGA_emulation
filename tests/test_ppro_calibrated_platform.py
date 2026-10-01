@@ -22,6 +22,9 @@ ROOT = Path(__file__).resolve().parents[1]
 def fit_artifacts():
     capacity = {
         "schema": "emuflow.ppro-capacity-fit/v1",
+        "excluded_observations": 0,
+        "holdout_checks": [{"matches": True}],
+        "all_resolved_holdouts_match": True,
         "axes": {
             axis: {
                 "resource_demand_at_lower": {resource: amount},
@@ -37,6 +40,9 @@ def fit_artifacts():
     }
     topology = {
         "schema": "emuflow.ppro-effective-topology-fit/v1",
+        "excluded_observations": 0,
+        "holdout_checks": [{"matches": True}],
+        "all_holdouts_match": True,
         "directed_edges": [
             {"source": "F0", "sink": "F1", "state": "reachable", "effective_hops": 1},
             {"source": "F1", "sink": "F0", "state": "reachable", "effective_hops": 1},
@@ -44,6 +50,9 @@ def fit_artifacts():
     }
     payload = {
         "schema": "emuflow.ppro-payload-fit/v2",
+        "excluded_observations": 0,
+        "holdout_checks": [{"matches": True}],
+        "all_resolved_holdouts_match": True,
         "link_signatures": [
             {
                 "source": source,
@@ -63,7 +72,12 @@ def fit_artifacts():
         ],
     }
     parameters = {
-        name: {"aggressive": value * 0.9, "nominal": value, "conservative": value * 1.1}
+        name: {
+            "aggressive": value * 0.9,
+            "nominal": value,
+            "conservative": value * 1.1,
+            "identifiable": True,
+        }
         for name, value in (
             ("endpoint_ns", 4.0),
             ("per_hop_ns", 2.0),
@@ -77,13 +91,21 @@ def fit_artifacts():
         "schema": "emuflow.ppro-latency-fit/v1",
         "payload_bits_per_cycle": 64,
         "parameters": parameters,
+        "excluded_observations": 0,
+        "holdout_checks": [{"relative_error": 0.05}],
+        "holdout_max_relative_error": 0.05,
     }
     transport = {
         "schema": "emuflow.ppro-transport-cost-fit/v1",
         "resources": {
             "lut": {
                 "parameters": {
-                    name: {"aggressive": value * 0.8, "nominal": value, "conservative": value * 1.2}
+                    name: {
+                        "aggressive": value * 0.8,
+                        "nominal": value,
+                        "conservative": value * 1.2,
+                        "identifiable": True,
+                    }
                     for name, value in (
                         ("per_endpoint", 2.0),
                         ("per_transport_bit", 0.25),
@@ -93,6 +115,19 @@ def fit_artifacts():
                 }
             }
         },
+        "excluded_observations": 0,
+        "holdout_checks": [
+            {
+                "resources": {
+                    "lut": {
+                        "actual": 10.0,
+                        "predicted": 10.5,
+                        "absolute_error": 0.5,
+                        "relative_error": 0.05,
+                    }
+                }
+            }
+        ],
     }
     return capacity, topology, payload, latency, transport
 
@@ -162,6 +197,26 @@ class PProCalibratedPlatformTest(unittest.TestCase):
             {"source": "F0", "sink": "F1", "state": "reachable", "effective_hops": 2}
         )
         with self.assertRaisesRegex(ValidationError, "cannot explain"):
+            generate_calibrated_platform_profiles(
+                prior=prior,
+                configuration_id="lx2-m1",
+                capacity_fit=capacity,
+                topology_fit=topology,
+                payload_fit=payload,
+                latency_fit=latency,
+                transport_fit=transport,
+                fabric_clock_mhz={"aggressive": 300.0, "nominal": 250.0, "conservative": 200.0},
+            )
+
+    def test_generation_rejects_failed_calibration_holdout(self):
+        prior = json.loads(
+            (ROOT / "calibration/ppro_blackbox/priors/lx2-public-prior-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        capacity, topology, payload, latency, transport = fit_artifacts()
+        latency["holdout_max_relative_error"] = 0.16
+        with self.assertRaisesRegex(ValidationError, "latency holdout gate"):
             generate_calibrated_platform_profiles(
                 prior=prior,
                 configuration_id="lx2-m1",

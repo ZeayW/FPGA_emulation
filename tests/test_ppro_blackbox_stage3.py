@@ -82,7 +82,7 @@ def observation(
 class PProBlackboxStage3Test(unittest.TestCase):
     def test_capacity_interval_uses_repeats_and_holdout(self):
         values = []
-        for units, outcome, role in ((80, "pass", "fit"), (100, "capacity_infeasible", "fit"), (90, "pass", "holdout")):
+        for units, outcome, role in ((80, "pass", "fit"), (100, "capacity_infeasible", "fit"), (70, "pass", "holdout")):
             for repeat in range(2):
                 values.append(
                     observation(
@@ -99,7 +99,7 @@ class PProBlackboxStage3Test(unittest.TestCase):
         self.assertEqual(result["axes"]["lut"]["lower_successful_units"], 80)
         self.assertEqual(result["axes"]["lut"]["upper_infeasible_units"], 100)
         self.assertTrue(result["all_resolved_holdouts_match"])
-        self.assertEqual(result["holdout_checks"][0]["expected"], "unresolved_interval")
+        self.assertEqual(result["holdout_checks"][0]["expected"], "pass")
 
     def test_capacity_rejects_non_monotonic_and_single_repeats(self):
         one_pass = observation(

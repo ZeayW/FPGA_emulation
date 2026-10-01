@@ -21,6 +21,8 @@ from .ppro_blackbox_stage4 import LATENCY_FIT_SCHEMA, PAYLOAD_FIT_SCHEMA, TRANSP
 TRANSPORT_COST_SCHEMA = "emuflow.transport-cost/v1"
 CALIBRATED_MANIFEST_SCHEMA = "emuflow.ppro-calibrated-platform-manifest/v1"
 _PROFILES = ("aggressive", "nominal", "conservative")
+_MAX_HOLDOUT_RELATIVE_ERROR = 0.15
+_ZERO_ACTUAL_ABSOLUTE_TOLERANCE = 1.0
 _AXIS_MAP = {
     # public-prior key, BoardDB resource, observation resource, BoardDB units
     # per observation unit.  PPro's ordinary BRAM report is normalized as a
@@ -97,6 +99,72 @@ def _configuration_count(prior: Mapping[str, Any], configuration_id: str) -> int
     if len(matches) != 1:
         raise ValidationError("calibrated platform configuration id is not in the public prior")
     return int(matches[0]["fpga_count"])
+
+
+def _require_calibration_gates(
+    *,
+    capacity_fit: Mapping[str, Any],
+    topology_fit: Mapping[str, Any],
+    payload_fit: Mapping[str, Any],
+    latency_fit: Mapping[str, Any],
+    transport_fit: Mapping[str, Any],
+) -> None:
+    for name, fit, flag in (
+        ("capacity", capacity_fit, "all_resolved_holdouts_match"),
+        ("topology", topology_fit, "all_holdouts_match"),
+        ("payload", payload_fit, "all_resolved_holdouts_match"),
+    ):
+        if fit.get("excluded_observations") != 0:
+            raise ValidationError(f"calibrated platform {name} fit has excluded observations")
+        checks = fit.get("holdout_checks")
+        if not isinstance(checks, list) or not checks or fit.get(flag) is not True:
+            raise ValidationError(f"calibrated platform {name} holdout gate failed")
+
+    if latency_fit.get("excluded_observations") != 0:
+        raise ValidationError("calibrated platform latency fit has excluded observations")
+    latency_checks = latency_fit.get("holdout_checks")
+    latency_error = latency_fit.get("holdout_max_relative_error")
+    if (
+        not isinstance(latency_checks, list)
+        or not latency_checks
+        or isinstance(latency_error, bool)
+        or not isinstance(latency_error, (int, float))
+        or latency_error > _MAX_HOLDOUT_RELATIVE_ERROR
+    ):
+        raise ValidationError("calibrated platform latency holdout gate failed")
+    for record in latency_fit.get("parameters", {}).values():
+        if not isinstance(record, dict) or record.get("identifiable") is not True:
+            raise ValidationError("calibrated platform latency fit is not identifiable")
+
+    if transport_fit.get("excluded_observations") != 0:
+        raise ValidationError("calibrated platform transport fit has excluded observations")
+    transport_checks = transport_fit.get("holdout_checks")
+    if not isinstance(transport_checks, list) or not transport_checks:
+        raise ValidationError("calibrated platform transport holdout gate failed")
+    for fit in transport_fit.get("resources", {}).values():
+        for record in fit.get("parameters", {}).values():
+            if not isinstance(record, dict) or record.get("identifiable") is not True:
+                raise ValidationError("calibrated platform transport fit is not identifiable")
+    for check in transport_checks:
+        for result in check.get("resources", {}).values():
+            actual = result.get("actual")
+            relative = result.get("relative_error")
+            absolute = result.get("absolute_error")
+            if isinstance(actual, bool) or not isinstance(actual, (int, float)):
+                raise ValidationError("calibrated platform transport holdout is invalid")
+            if actual == 0:
+                if (
+                    isinstance(absolute, bool)
+                    or not isinstance(absolute, (int, float))
+                    or absolute > _ZERO_ACTUAL_ABSOLUTE_TOLERANCE
+                ):
+                    raise ValidationError("calibrated platform transport zero-cost holdout failed")
+            elif (
+                isinstance(relative, bool)
+                or not isinstance(relative, (int, float))
+                or relative > _MAX_HOLDOUT_RELATIVE_ERROR
+            ):
+                raise ValidationError("calibrated platform transport holdout gate failed")
 
 
 def _fit_edges(topology_fit: Mapping[str, Any], fpga_count: int) -> Dict[tuple[int, int], int]:
@@ -257,6 +325,13 @@ def generate_calibrated_platform_profiles(
     for profile, value in fabric_clock_mhz.items():
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
             raise ValidationError(f"calibrated platform fabric clock {profile} is invalid")
+    _require_calibration_gates(
+        capacity_fit=capacity_fit,
+        topology_fit=topology_fit,
+        payload_fit=payload_fit,
+        latency_fit=latency_fit,
+        transport_fit=transport_fit,
+    )
     fpga_count = _configuration_count(normalized_prior, configuration_id)
     public_capacity = _public_capacities(normalized_prior)
     utilization_limit, capacity_projection = _utilization_limit(capacity_fit, public_capacity)

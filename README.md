@@ -298,7 +298,10 @@ Stage 5 can now deterministically materialize and independently validate the
 three final profile databases plus a provenance/hash manifest. It cannot turn
 the synthetic tests into a released platform: generation requires real fitted
 capacity, one-hop topology, ratio-one payload, latency, and paired transport
-evidence. The resulting timing qualification is characterization only, and
+evidence. Generation fails closed if any fit excluded an observation, lacks a
+resolved independent holdout, has an unidentifiable coefficient, exceeds 15%
+latency/transport holdout error, or mismatches reachability/TDM holdouts. The
+resulting timing qualification is characterization only, and
 fabric clock remains a published research assumption until separately
 identifiable.
 

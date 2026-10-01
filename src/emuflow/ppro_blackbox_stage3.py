@@ -60,6 +60,7 @@ def fit_capacity_intervals(
     axes: Dict[str, Any] = {}
     holdout_checks = []
     for axis in sorted({key[0] for key in groups}):
+        holdout_start = len(holdout_checks)
         stable_fit: dict[int, str] = {}
         resource_at_pass: dict[int, Dict[str, float]] = {}
         for (group_axis, units, role), items in sorted(groups.items()):
@@ -129,6 +130,11 @@ def fit_capacity_intervals(
                     "matches": expected == "unresolved_interval" or expected == outcome,
                 }
             )
+        axis_holdouts = holdout_checks[holdout_start:]
+        if not axis_holdouts or not any(
+            item["expected"] != "unresolved_interval" for item in axis_holdouts
+        ):
+            raise ValidationError(f"capacity {axis} requires a resolved independent holdout")
 
     if not axes:
         raise ValidationError("capacity fitting produced no identifiable axis")
