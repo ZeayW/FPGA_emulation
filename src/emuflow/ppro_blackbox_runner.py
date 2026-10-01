@@ -77,6 +77,7 @@ class RuntimeBinding:
     timeout_seconds: float = 3600.0
     cleanup_raw_reports: bool = True
     cleanup_paths: tuple[Path, ...] = ()
+    retain_failure_diagnostics: bool = False
 
 
 def _mapping(value: Any, context: str) -> Mapping[str, Any]:
@@ -281,6 +282,8 @@ def validate_runtime_binding(binding: RuntimeBinding, *, profile: str = MOCK_REP
         raise ValidationError("runtime binding must name each allowlisted report exactly once")
     if binding.timeout_seconds <= 0:
         raise ValidationError("runtime binding timeout must be positive")
+    if type(binding.retain_failure_diagnostics) is not bool:
+        raise ValidationError("runtime diagnostic-retention flag must be boolean")
     case_dir = binding.case_dir.resolve()
     for name, raw_path in binding.report_paths.items():
         path = raw_path.resolve()
@@ -457,6 +460,14 @@ def classify_process_failure(return_code: int, diagnostic_tail: str) -> tuple[st
     return "tool_failure", f"tool-exit-{abs(return_code)}"
 
 
+def _read_text_tail(path: Path, maximum_bytes: int = 16384) -> str:
+    with path.open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(max(0, size - maximum_bytes), os.SEEK_SET)
+        return stream.read(maximum_bytes).decode("utf-8", errors="replace")
+
+
 def _empty_metrics() -> Dict[str, Any]:
     return {
         "design": {},
@@ -590,7 +601,7 @@ def execute_blackbox_case(
         elif return_code is None:
             raise AssertionError("PPro provider process ended without a return code")
         elif return_code != 0:
-            diagnostic_tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-16384:]
+            diagnostic_tail = _read_text_tail(stderr_path)
             outcome, failure_code = classify_process_failure(return_code, diagnostic_tail)
             observation = _failure_observation(spec, outcome, failure_code, runtime_seconds)
         elif any(not path.is_file() for path in binding.report_paths.values()):
@@ -657,8 +668,12 @@ def execute_blackbox_case(
                 }
     normalized = validate_blackbox_observation(observation)
     write_json(binding.output_path, normalized, compact=True)
-    stdout_path.unlink(missing_ok=True)
-    stderr_path.unlink(missing_ok=True)
+    if binding.retain_failure_diagnostics and normalized["execution"]["outcome"] != "pass":
+        for path in (stdout_path, stderr_path):
+            path.write_text(_read_text_tail(path), encoding="utf-8")
+    else:
+        stdout_path.unlink(missing_ok=True)
+        stderr_path.unlink(missing_ok=True)
     cleanup_runtime_artifacts(binding)
     return normalized
 

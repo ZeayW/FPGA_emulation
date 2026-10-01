@@ -58,6 +58,7 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             binding = render_ppro_runtime_binding(
                 spec, source_filelist=filelist, config=config
             )
+            self.assertFalse(binding.retain_failure_diagnostics)
             script = (config.case_dir / ".run-ppro.tcl").read_text(encoding="utf-8")
             launcher = (config.case_dir / ".run-ppro.sh").read_text(encoding="utf-8")
             runtime_files = (config.case_dir / ".runtime-files.f").read_text(
@@ -192,6 +193,17 @@ EOF
             serialized = binding.output_path.read_text(encoding="utf-8")
             self.assertNotIn(str(config.install_root), serialized)
             self.assertNotIn(str(config.platform_reference), serialized)
+
+    def test_keep_raw_project_enables_bounded_failure_diagnostics(self):
+        with tempfile.TemporaryDirectory() as raw:
+            spec, filelist, config = self._fixture(Path(raw))
+            config = PProRuntimeConfig(
+                **{**config.__dict__, "keep_raw_project": True}
+            )
+            binding = render_ppro_runtime_binding(
+                spec, source_filelist=filelist, config=config
+            )
+            self.assertTrue(binding.retain_failure_diagnostics)
 
 
 if __name__ == "__main__":

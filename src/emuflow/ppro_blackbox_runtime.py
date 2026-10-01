@@ -242,6 +242,7 @@ def render_ppro_runtime_binding(
         timeout_seconds=config.timeout_seconds,
         cleanup_raw_reports=True,
         cleanup_paths=cleanup_paths,
+        retain_failure_diagnostics=config.keep_raw_project,
     )
 
 

@@ -195,6 +195,28 @@ class PProBlackboxRunnerTest(unittest.TestCase):
             self.assertEqual(tool_result["execution"]["outcome"], "tool_failure")
             self.assertEqual(tool_result["execution"]["failure_code"], "tool-exit-17")
 
+    def test_explicit_diagnostic_mode_retains_only_bounded_failure_tails(self):
+        with tempfile.TemporaryDirectory() as raw:
+            case = Path(raw) / "case"
+            value = binding(case)
+            value = RuntimeBinding(
+                case_dir=value.case_dir,
+                command=(
+                    sys.executable,
+                    "-c",
+                    "import sys; print('x'*20000); print('y'*20000,file=sys.stderr); sys.exit(9)",
+                ),
+                report_paths=value.report_paths,
+                output_path=value.output_path,
+                retain_failure_diagnostics=True,
+            )
+            result = execute_blackbox_case(run_spec(), value)
+            self.assertEqual(result["execution"]["failure_code"], "tool-exit-9")
+            for name in (".runner-stdout.log", ".runner-stderr.log"):
+                path = case / name
+                self.assertTrue(path.is_file())
+                self.assertLessEqual(path.stat().st_size, 16384)
+
     def test_malformed_report_is_a_terminal_non_hardware_failure(self):
         with tempfile.TemporaryDirectory() as raw:
             case = Path(raw) / "case"

@@ -247,6 +247,8 @@ observation. The writable case directory must follow the deployment storage
 policy: the production runtime rejects paths outside
 `/research/d4/gds/ziyiwang21` and binds `TMPDIR`, `TMP`, and `TEMP` below the
 case. `--keep-raw-project` is intended only for a short, explicit diagnosis:
+on failure it keeps the project plus at most the final 16 KiB of stdout and
+stderr; normal runs and successful diagnostic runs retain neither log.
 
 ```sh
 emuflow-ppro-calibration run-ppro-case \
