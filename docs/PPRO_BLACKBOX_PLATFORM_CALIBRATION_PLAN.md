@@ -430,7 +430,7 @@ Gate: repeated measurements and at least one withheld pair/resource boundary.
 ### Stage 4: bandwidth, TDM, latency, and transport calibration
 
 The communication producer and payload/latency/transport fitters share the
-version-locked `ppro-blackbox-communication-probe-v2` contract. Older v1
+version-locked `ppro-blackbox-communication-probe-v3` contract. Older v1/v2
 observations are rejected rather than mixed into a current fit.
 
 Status: **controlled probe and fitting framework implemented; real observations
@@ -442,7 +442,12 @@ payload widths and fits non-negative endpoint, hop, serialization, TDM,
 contention, and multicast terms with deterministic bootstrap bounds. Transport
 cost uses same-RTL local/cross placement pairs so DUT logic cancels before
 fitting incremental resource cost; negative paired deltas fail closed as
-evidence that unrelated mapping changed. The real adapter currently observes
+evidence that unrelated mapping changed. An opaque pairing token binds each
+local/cross pair without exposing a vendor artifact, and local baselines retain
+the cross case's fanout. Latency reconstructs full-width end-to-end paths from
+ordinary per-hop route records. Both regression fitters require full column
+rank plus independent holdouts; they do not silently publish unidentifiable
+zero coefficients. The real adapter currently observes
 natural TDM transitions under width/flow pressure. Nonzero forced-TDM probes
 fail closed until their user-facing PPro constraint syntax is documented.
 

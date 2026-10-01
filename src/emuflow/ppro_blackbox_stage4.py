@@ -9,12 +9,13 @@ from typing import Any, Dict, Mapping, Sequence
 
 from .errors import ValidationError
 from .ppro_blackbox_calibration import validate_blackbox_observation
+from .ppro_blackbox_route_evidence import maximum_payload_hops
 
 
 PAYLOAD_FIT_SCHEMA = "emuflow.ppro-payload-fit/v1"
 LATENCY_FIT_SCHEMA = "emuflow.ppro-latency-fit/v1"
 TRANSPORT_FIT_SCHEMA = "emuflow.ppro-transport-cost-fit/v1"
-_GENERATOR_ID = "ppro-blackbox-communication-probe-v2"
+_GENERATOR_ID = "ppro-blackbox-communication-probe-v3"
 _FEATURES = (
     "endpoint_ns",
     "per_hop_ns",
@@ -50,6 +51,7 @@ def _communication_dimensions(item: Mapping[str, Any]) -> Dict[str, int]:
             "fanout",
             "flow_count",
             "forced_tdm_ratio",
+            "pairing_token",
             "probe_width_bits",
             "sink_fpga_index",
             "source_fpga_index",
@@ -166,6 +168,11 @@ def fit_payload_intervals(
                     "matches": expected == "unresolved_interval" or expected == observed,
                 }
             )
+        if not any(
+            group_signature == signature and role == "holdout"
+            for group_signature, _, role in groups
+        ):
+            raise ValidationError("payload signature requires independent holdout trials")
     if not links:
         raise ValidationError("payload fitting produced no identifiable link signature")
     return {
@@ -208,6 +215,35 @@ def _nnls(features: Sequence[Sequence[float]], targets: Sequence[float]) -> list
     return coefficients
 
 
+def _matrix_rank(rows: Sequence[Sequence[float]], *, tolerance: float = 1e-10) -> int:
+    if not rows:
+        return 0
+    matrix = [list(map(float, row)) for row in rows]
+    columns = len(matrix[0])
+    rank = 0
+    for column in range(columns):
+        pivot = max(range(rank, len(matrix)), key=lambda index: abs(matrix[index][column]))
+        if abs(matrix[pivot][column]) <= tolerance:
+            continue
+        matrix[rank], matrix[pivot] = matrix[pivot], matrix[rank]
+        scale = matrix[rank][column]
+        matrix[rank] = [value / scale for value in matrix[rank]]
+        for row_index in range(len(matrix)):
+            if row_index == rank:
+                continue
+            factor = matrix[row_index][column]
+            if abs(factor) <= tolerance:
+                continue
+            matrix[row_index] = [
+                value - factor * pivot_value
+                for value, pivot_value in zip(matrix[row_index], matrix[rank])
+            ]
+        rank += 1
+        if rank == len(matrix) or rank == columns:
+            break
+    return rank
+
+
 def _latency_row(item: Mapping[str, Any], payload_bits: int) -> tuple[list[float], float]:
     dims = _communication_dimensions(item)
     if item["execution"]["outcome"] != "pass":
@@ -215,12 +251,18 @@ def _latency_row(item: Mapping[str, Any], payload_bits: int) -> tuple[list[float
     routes = item["metrics"]["routes"]
     if not routes:
         raise ValidationError("latency observation lacks route evidence")
-    hops = max(route["effective_hops"] for route in routes)
+    serialized_bits = dims["probe_width_bits"] * dims["flow_count"]
+    hops = maximum_payload_hops(
+        routes,
+        source=f"F{dims['source_fpga_index']}",
+        minimum_signal_count=serialized_bits,
+    )
+    if hops is None:
+        raise ValidationError("latency observation lacks a full-width payload path")
     ratio = _integer(item["metrics"]["communication"], "maximum_tdm_ratio", "latency observation")
     delay = item["metrics"]["timing"].get("sr0_worst_cross_fpga_delay_ns")
     if not isinstance(delay, (int, float)) or delay < 0:
         raise ValidationError("latency observation lacks a non-negative sr0 delay")
-    serialized_bits = dims["probe_width_bits"] * dims["flow_count"]
     return (
         [
             1.0,
@@ -269,12 +311,16 @@ def fit_latency_model(
         (fit_items if item["identity"]["role"] == "fit" else holdout_items).append(item)
     if len(fit_items) < len(_FEATURES) + 1:
         raise ValidationError("latency fitting requires more fit samples than coefficients")
+    if not holdout_items:
+        raise ValidationError("latency fitting requires independent holdout samples")
 
     best = None
     for payload_bits in candidates:
         pairs = [_latency_row(item, payload_bits) for item in fit_items]
         features = [pair[0] for pair in pairs]
         targets = [pair[1] for pair in pairs]
+        if _matrix_rank(features) != len(_FEATURES):
+            raise ValidationError("latency fit matrix does not identify every model coefficient")
         coefficients = _nnls(features, targets)
         residuals = [
             target - sum(value * coefficient for value, coefficient in zip(row, coefficients))
@@ -298,12 +344,11 @@ def fit_latency_model(
             boot[column].append(value)
     parameters = {}
     for index, name in enumerate(_FEATURES):
-        column_values = [row[index] for row in features]
         parameters[name] = {
             "nominal": coefficients[index],
             "aggressive": _percentile(boot[index], 0.05),
             "conservative": _percentile(boot[index], 0.95),
-            "identifiable": len(set(column_values)) > 1 or name == "endpoint_ns",
+            "identifiable": True,
         }
 
     holdout_checks = []
@@ -339,7 +384,7 @@ def fit_transport_cost_model(
 ) -> Dict[str, Any]:
     """Fit incremental transport cost from same-RTL local/cross pairs."""
     normalized = _validated(observations)
-    groups: dict[tuple[str, int, str], list[Dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[str, str], list[Dict[str, Any]]] = defaultdict(list)
     excluded = 0
     for item in normalized:
         if item["experiment"]["kind"] != "transport_cost":
@@ -348,8 +393,8 @@ def fit_transport_cost_model(
             excluded += 1
             continue
         _communication_dimensions(item)
-        repeat = _integer(item["metrics"]["design"], "repeat_index", "transport observation")
-        groups[(item["workload"]["rtl_sha256"], repeat, item["identity"]["role"])].append(item)
+        token = _integer(item["metrics"]["design"], "pairing_token", "transport observation")
+        groups[(str(token), item["identity"]["role"])].append(item)
 
     fit_rows = []
     holdout_rows = []
@@ -370,6 +415,8 @@ def fit_transport_cost_model(
                 "transport cost requires exactly one local and one cross run per RTL/repeat"
             )
         local_item, cross_item = local[0], cross[0]
+        if local_item["workload"]["rtl_sha256"] != cross_item["workload"]["rtl_sha256"]:
+            raise ValidationError("transport local/cross pair does not use identical RTL")
         dims = _communication_dimensions(cross_item)
         ratio = _integer(
             cross_item["metrics"]["communication"],
@@ -401,7 +448,7 @@ def fit_transport_cost_model(
             deltas[name] = max(0.0, delta)
         resources.update(deltas)
         row = {"id": cross_item["identity"]["id"], "features": features, "deltas": deltas}
-        (fit_rows if key[2] == "fit" else holdout_rows).append(row)
+        (fit_rows if key[1] == "fit" else holdout_rows).append(row)
 
     feature_names = (
         "per_endpoint",
@@ -413,11 +460,15 @@ def fit_transport_cost_model(
         raise ValidationError(
             "transport fitting requires more paired fit samples than coefficients"
         )
+    if not holdout_rows:
+        raise ValidationError("transport fitting requires independent paired holdout samples")
     if bootstrap_samples < 16:
         raise ValidationError("transport bootstrap_samples must be >= 16")
     fitted_resources = {}
     generator = random.Random(0)
     features = [row["features"] for row in fit_rows]
+    if _matrix_rank(features) != len(feature_names):
+        raise ValidationError("transport fit matrix does not identify every model coefficient")
     for resource in sorted(resources):
         targets = [row["deltas"].get(resource, 0.0) for row in fit_rows]
         coefficients = _nnls(features, targets)
@@ -442,7 +493,7 @@ def fit_transport_cost_model(
                     "nominal": coefficients[index],
                     "aggressive": _percentile(boot[index], 0.05),
                     "conservative": _percentile(boot[index], 0.95),
-                    "identifiable": len({row[index] for row in features}) > 1,
+                    "identifiable": True,
                 }
                 for index, name in enumerate(feature_names)
             },

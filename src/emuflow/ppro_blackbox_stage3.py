@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import heapq
 import re
 from collections import defaultdict
 from statistics import median
@@ -10,6 +9,7 @@ from typing import Any, Dict, Mapping, Sequence
 
 from .errors import ValidationError
 from .ppro_blackbox_calibration import validate_blackbox_observation
+from .ppro_blackbox_route_evidence import shortest_payload_hops
 
 
 CAPACITY_FIT_SCHEMA = "emuflow.ppro-capacity-fit/v1"
@@ -28,47 +28,6 @@ def _integer_metric(metrics: Mapping[str, Any], name: str, context: str) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
         raise ValidationError(f"{context}: missing integer design metric {name}")
     return int(value)
-
-
-def _payload_route_hops(
-    routes: Sequence[Mapping[str, Any]], *, source: str, sink: str, width: int
-) -> int | None:
-    """Recover an end-to-end probe path from ordinary per-hop route records."""
-
-    graph: dict[str, list[tuple[str, int]]] = defaultdict(list)
-    for route in routes:
-        signal_count = route.get("signal_count")
-        hops = route.get("effective_hops")
-        route_source = route.get("source")
-        sinks = route.get("sinks")
-        if (
-            isinstance(signal_count, bool)
-            or not isinstance(signal_count, int)
-            or signal_count < width
-            or isinstance(hops, bool)
-            or not isinstance(hops, int)
-            or hops < 1
-            or not isinstance(route_source, str)
-            or not isinstance(sinks, list)
-        ):
-            continue
-        for route_sink in sinks:
-            if isinstance(route_sink, str):
-                graph[route_source].append((route_sink, hops))
-    queue = [(0, source)]
-    best = {source: 0}
-    while queue:
-        distance, node = heapq.heappop(queue)
-        if node == sink:
-            return distance
-        if distance != best[node]:
-            continue
-        for neighbor, cost in graph.get(node, []):
-            candidate = distance + cost
-            if candidate < best.get(neighbor, candidate + 1):
-                best[neighbor] = candidate
-                heapq.heappush(queue, (candidate, neighbor))
-    return None
 
 
 def fit_capacity_intervals(
@@ -237,11 +196,11 @@ def fit_effective_topology(
             hops = []
             if state == "reachable":
                 for item in items:
-                    observed_hops = _payload_route_hops(
+                    observed_hops = shortest_payload_hops(
                         item["metrics"]["routes"],
                         source=f"F{source}",
                         sink=f"F{sink}",
-                        width=width,
+                        minimum_signal_count=width,
                     )
                     if observed_hops is None:
                         raise ValidationError("topology pass lacks a full-width logical route")

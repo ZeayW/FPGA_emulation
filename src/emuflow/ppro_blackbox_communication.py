@@ -19,7 +19,7 @@ from .ppro_blackbox_runner import (
 
 
 COMMUNICATION_KINDS = {"payload_capacity", "latency", "transport_cost"}
-_GENERATOR_ID = "ppro-blackbox-communication-probe-v2"
+_GENERATOR_ID = "ppro-blackbox-communication-probe-v3"
 _GENERATOR_REVISION = hashlib.sha256(_GENERATOR_ID.encode("utf-8")).hexdigest()
 _EXPECTED_REPORTS = [
     "partition_summary",
@@ -149,6 +149,7 @@ def generate_communication_probe_bundle(
     runner_revision: str,
     seed: int,
     adapter_profile: str = MOCK_REPORT_PROFILE,
+    pairing_token: int | None = None,
 ) -> CommunicationProbeBundle:
     if kind not in COMMUNICATION_KINDS:
         raise ValidationError(f"communication kind must be one of {sorted(COMMUNICATION_KINDS)}")
@@ -171,8 +172,10 @@ def generate_communication_probe_bundle(
     if type(bidirectional) is not bool or type(local_baseline) is not bool:
         raise ValidationError("communication direction and baseline flags must be boolean")
     sinks = tuple(sink_indices)
-    if not sinks or len(sinks) != len(set(sinks)):
-        raise ValidationError("communication sink indices must be unique and non-empty")
+    if not sinks:
+        raise ValidationError("communication sink indices must be non-empty")
+    if not local_baseline and len(sinks) != len(set(sinks)):
+        raise ValidationError("cross-FPGA communication sink indices must be unique")
     if not 0 <= source_index < fpga_count or any(sink < 0 or sink >= fpga_count for sink in sinks):
         raise ValidationError("communication endpoints must select distinct configured FPGAs")
     if local_baseline:
@@ -180,6 +183,27 @@ def generate_communication_probe_bundle(
             raise ValidationError("local baseline requires transport_cost endpoints on one FPGA")
     elif any(sink == source_index for sink in sinks):
         raise ValidationError("communication endpoints must select distinct configured FPGAs")
+    if pairing_token is None:
+        pairing_token = int(
+            _sha256(
+                _canonical(
+                    {
+                        "bidirectional": bidirectional,
+                        "campaign_id": campaign_id,
+                        "flow_count": flow_count,
+                        "kind": kind,
+                        "repeat": repeat,
+                        "role": role,
+                        "sink_indices": list(sinks),
+                        "source_index": source_index,
+                        "width": width,
+                    }
+                )
+            )[:13],
+            16,
+        )
+    if isinstance(pairing_token, bool) or not isinstance(pairing_token, int) or pairing_token < 0:
+        raise ValidationError("communication pairing_token must be a nonnegative integer")
 
     root = output_dir.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -251,6 +275,7 @@ def generate_communication_probe_bundle(
                 "flow_count": flow_count,
                 "forced_tdm_ratio": forced_tdm_ratio,
                 "local_baseline": int(local_baseline),
+                "pairing_token": pairing_token,
                 "probe_width_bits": width,
                 "repeat_index": repeat,
                 "sink_fpga_index": sinks[0],
@@ -320,14 +345,29 @@ def generate_communication_matrix(
     if isinstance(seed_base, bool) or not isinstance(seed_base, int) or seed_base < 0:
         raise ValidationError("communication matrix seed_base must be a nonnegative integer")
     sinks = tuple(sink_indices)
-    if kind == "transport_cost" and len(sinks) != 1:
-        raise ValidationError("transport-cost matrix requires exactly one cross-FPGA sink")
-
     bundles: list[CommunicationProbeBundle] = []
     for role, widths in (("fit", fit), ("holdout", holdout)):
         for width in widths:
             for flow_count in flows:
                 for repeat in range(repeats):
+                    pairing_token = int(
+                        _sha256(
+                            _canonical(
+                                {
+                                    "bidirectional": bidirectional,
+                                    "campaign_id": campaign_id,
+                                    "flow_count": flow_count,
+                                    "kind": kind,
+                                    "repeat": repeat,
+                                    "role": role,
+                                    "sink_indices": list(sinks),
+                                    "source_index": source_index,
+                                    "width": width,
+                                }
+                            )
+                        )[:13],
+                        16,
+                    )
                     common = {
                         "kind": kind,
                         "fpga_count": fpga_count,
@@ -345,13 +385,14 @@ def generate_communication_matrix(
                         "runner_revision": runner_revision,
                         "seed": seed_base + repeat,
                         "adapter_profile": adapter_profile,
+                        "pairing_token": pairing_token,
                     }
                     point = f"{role}/w{width}/n{flow_count}/r{repeat}"
                     if kind == "transport_cost":
                         bundles.append(
                             generate_communication_probe_bundle(
                                 output_dir / point / "local",
-                                sink_indices=[source_index],
+                                sink_indices=[source_index] * len(sinks),
                                 local_baseline=True,
                                 **common,
                             )

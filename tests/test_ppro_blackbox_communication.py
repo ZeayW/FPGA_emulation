@@ -54,6 +54,42 @@ class PProBlackboxCommunicationTest(unittest.TestCase):
                     bundle.run_spec["execution"]["seed"],
                     read_json(cross)["execution"]["seed"],
                 )
+                self.assertEqual(
+                    bundle.run_spec["workload"]["design_metrics"]["pairing_token"],
+                    read_json(cross)["workload"]["design_metrics"]["pairing_token"],
+                )
+
+    def test_transport_matrix_preserves_multicast_fanout_in_local_pair(self):
+        with tempfile.TemporaryDirectory() as raw:
+            bundles = generate_communication_matrix(
+                Path(raw),
+                kind="transport_cost",
+                fpga_count=4,
+                source_index=0,
+                sink_indices=[1, 2],
+                fit_widths=[32],
+                holdout_widths=[48],
+                flow_counts=[1],
+                bidirectional=False,
+                repeats=2,
+                campaign_id="transport-fanout",
+                public_prior_id="prior-v1",
+                configuration_id="platform-v1",
+                tool_release="2026.1",
+                runner_revision="a" * 64,
+                seed_base=11,
+            )
+            local = next(
+                bundle
+                for bundle in bundles
+                if bundle.run_spec["workload"]["design_metrics"]["local_baseline"] == 1
+            )
+            self.assertEqual(local.run_spec["workload"]["design_metrics"]["fanout"], 2)
+            constraints = read_json(local.constraints_path)
+            self.assertEqual(
+                [item["target"] for item in constraints["assignments"]],
+                ["F0", "F0", "F0"],
+            )
 
     def test_communication_matrix_rejects_overlapping_fit_and_holdout(self):
         with tempfile.TemporaryDirectory() as raw:

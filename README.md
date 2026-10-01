@@ -286,8 +286,13 @@ capabilities only until real PPro observations and withheld points satisfy the
 documented gates. Real probes currently derive TDM transitions from width and
 traffic pressure; a nonzero forced-TDM request fails closed until a documented
 PPro user constraint is available.  The producer and all Stage 4 fitters are
-version-locked to `ppro-blackbox-communication-probe-v2`; observations from
-the superseded v1 fixture cannot silently enter a current fit.
+version-locked to `ppro-blackbox-communication-probe-v3`; observations from
+the superseded v1/v2 fixtures cannot silently enter a current fit. The v3
+contract gives every same-RTL local/cross transport pair an explicit opaque
+pairing token, preserves multicast fanout in the local baseline, reconstructs
+multi-hop latency from full-width per-hop route evidence, and rejects
+rank-deficient latency or transport matrices instead of emitting unidentifiable
+coefficients.
 
 Stage 5 can now deterministically materialize and independently validate the
 three final profile databases plus a provenance/hash manifest. It cannot turn

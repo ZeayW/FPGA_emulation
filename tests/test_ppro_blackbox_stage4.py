@@ -24,11 +24,29 @@ def communication_observation(
     delay: float = 10.0,
 ):
     failure = None if outcome == "pass" else "link-capacity-boundary"
-    routes = (
-        [{"id": "forward", "source": "F0", "sinks": ["F1"], "effective_hops": hops, "signal_count": 1}]
-        if outcome == "pass"
-        else []
-    )
+    if outcome == "pass":
+        nodes = ["F0", *[f"F{index}" for index in range(2, hops + 1)], "F1"]
+        routes = [
+            {
+                "id": f"payload-{index}",
+                "source": nodes[index],
+                "sinks": [nodes[index + 1]],
+                "effective_hops": 1,
+                "signal_count": width * flows,
+            }
+            for index in range(len(nodes) - 1)
+        ]
+        routes.append(
+            {
+                "id": "narrow-control",
+                "source": "F0",
+                "sinks": ["F1"],
+                "effective_hops": 1,
+                "signal_count": 2,
+            }
+        )
+    else:
+        routes = []
     return {
         "schema": "emuflow.ppro-blackbox-observation/v1",
         "identity": {
@@ -41,7 +59,7 @@ def communication_observation(
         },
         "tool": {"name": "PPro mock", "release": "mock", "runner_revision": "1" * 64},
         "workload": {
-            "generator_id": "ppro-blackbox-communication-probe-v2",
+            "generator_id": "ppro-blackbox-communication-probe-v3",
             "generator_revision": "2" * 64,
             "rtl_sha256": "3" * 64,
             "parameters_sha256": "4" * 64,
@@ -68,6 +86,7 @@ def communication_observation(
                 "flow_count": flows,
                 "forced_tdm_ratio": 0,
                 "local_baseline": 0,
+                "pairing_token": 1,
                 "probe_width_bits": width,
                 "repeat_index": 0,
                 "sink_fpga_index": 1,
@@ -188,6 +207,7 @@ class PProBlackboxStage4Test(unittest.TestCase):
             cross["workload"]["rtl_sha256"] = shared_hash
             for item, local in ((base, 1), (cross, 0)):
                 item["metrics"]["design"]["local_baseline"] = local
+                item["metrics"]["design"]["pairing_token"] = index + 1
                 item["metrics"]["design"]["repeat_index"] = 0
             base["experiment"]["control_mode"] = "fixed_assignment"
             base["experiment"]["documented_actions"] = [
