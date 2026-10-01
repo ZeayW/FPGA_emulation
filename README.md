@@ -230,6 +230,11 @@ contains PPro's explicit resource-specific “cannot be placed on any FPGA”
 diagnostic; generic partition/tool failures remain excluded. The controlled
 requested-unit coordinate is retained for that boundary observation, while no
 missing success-report metric is fabricated.
+Report evidence is experiment-specific: capacity requires ordinary resource
+and partition reports; topology/payload adds system-route evidence; latency,
+reproducibility, and application holdouts additionally require system timing.
+Optional reports are parsed when present, but a single-FPGA capacity run is no
+longer rejected merely because PPro correctly emits no cross-FPGA timing file.
 
 Stage 4 now has the corresponding controlled communication probe and
 dependency-free fitters for payload/TDM intervals, aggregate latency, and

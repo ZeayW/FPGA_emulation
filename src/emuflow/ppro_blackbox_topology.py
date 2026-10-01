@@ -24,7 +24,6 @@ _EXPECTED_REPORTS = [
     "partition_summary",
     "resource_summary",
     "route_summary",
-    "system_timing",
 ]
 
 

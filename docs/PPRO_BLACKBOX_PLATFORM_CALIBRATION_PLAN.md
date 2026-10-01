@@ -386,6 +386,12 @@ failure; generic partition failures, missing reports, license failures, and
 infrastructure failures are not reclassified as capacity. Boundary records
 preserve only their controlled design coordinate and never synthesize report
 metrics that were not produced.
+The run-spec evidence set is keyed to experiment semantics rather than forcing
+all four reports on every case: resource/partition for capacity, plus route for
+topology and payload, plus timing for latency and application-level gates.
+This prevents a valid single-FPGA capacity observation from becoming a false
+`missing_report` while preserving fail-closed requirements for each metric a
+fitter actually consumes.
 
 Deliver resource-boundary and ordered-pair experiment matrices, fitted
 effective capacities, effective reachability, and shared-resource hypotheses.

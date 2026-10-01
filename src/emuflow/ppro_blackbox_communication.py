@@ -266,7 +266,13 @@ def generate_communication_probe_bundle(
         "execution": {"seed": seed},
         "adapter": {
             "profile": adapter_profile,
-            "expected_reports": _EXPECTED_REPORTS,
+            "expected_reports": (
+                _EXPECTED_REPORTS
+                if kind == "latency"
+                else ["partition_summary", "resource_summary", "route_summary"]
+                if kind == "payload_capacity"
+                else ["partition_summary", "resource_summary"]
+            ),
         },
     }
     normalized = validate_run_spec(spec)

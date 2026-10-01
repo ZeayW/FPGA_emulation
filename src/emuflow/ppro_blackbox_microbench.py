@@ -38,8 +38,6 @@ _LUT_TILE_UNITS = 4096
 _EXPECTED_REPORTS = [
     "partition_summary",
     "resource_summary",
-    "route_summary",
-    "system_timing",
 ]
 
 

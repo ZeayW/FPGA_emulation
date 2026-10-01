@@ -286,12 +286,18 @@ def parse_ppro_2026_ordinary_reports(
             raise ValidationError(
                 "PPro 2026 adapter requires the same pa0 report for resource and partition summaries"
             )
-    route_text = _read_text(report_paths["route_summary"])
-    timing_text = _read_text(report_paths["system_timing"])
     resource_demand, utilization, assignments = _parse_partition_report(
         partition_text, aliases
     )
-    routes, communication = _parse_route_report(route_text, aliases)
+    routes = []
+    communication: Dict[str, float] = {}
+    if report_paths["route_summary"].is_file():
+        route_text = _read_text(report_paths["route_summary"])
+        routes, communication = _parse_route_report(route_text, aliases)
+    timing: Dict[str, float] = {}
+    if report_paths["system_timing"].is_file():
+        timing_text = _read_text(report_paths["system_timing"])
+        timing = _parse_timing_report(timing_text, has_routes=bool(routes))
     return {
         "design": dict(design_metrics),
         "resource_demand": resource_demand,
@@ -299,5 +305,5 @@ def parse_ppro_2026_ordinary_reports(
         "assignments": assignments,
         "routes": routes,
         "communication": communication,
-        "timing": _parse_timing_report(timing_text, has_routes=bool(routes)),
+        "timing": timing,
     }

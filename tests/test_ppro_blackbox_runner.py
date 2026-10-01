@@ -94,6 +94,10 @@ def capacity_spec(identifier: str = "capacity-run"):
         "documented_actions": ["partition_constraint", "random_seed"],
         "constraints_sha256": "4" * 64,
     }
+    spec["adapter"]["expected_reports"] = [
+        "partition_summary",
+        "resource_summary",
+    ]
     return spec
 
 
@@ -217,6 +221,17 @@ class PProBlackboxRunnerTest(unittest.TestCase):
             self.assertEqual(result["execution"]["failure_code"], "capacity-boundary")
             self.assertEqual(result["metrics"]["design"]["requested_units"], 160000)
             self.assertTrue(result["derived"]["fit_eligible"])
+
+    def test_capacity_pass_does_not_require_cross_fpga_timing_report(self):
+        with tempfile.TemporaryDirectory() as raw:
+            result = execute_blackbox_case(
+                capacity_spec("capacity-pass"), binding(Path(raw) / "capacity", "missing")
+            )
+            self.assertEqual(result["execution"]["outcome"], "pass")
+            self.assertTrue(result["reports"]["resource_summary"])
+            self.assertTrue(result["reports"]["partition_summary"])
+            self.assertFalse(result["reports"]["system_timing"])
+            self.assertEqual(result["metrics"]["timing"], {})
 
     def test_explicit_diagnostic_mode_retains_only_bounded_failure_tails(self):
         with tempfile.TemporaryDirectory() as raw:

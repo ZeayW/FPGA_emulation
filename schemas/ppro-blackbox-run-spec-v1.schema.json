@@ -79,7 +79,7 @@
         "profile": {"enum": ["mock-ordinary-reports-v1", "ppro-2026-ordinary-reports-v1"]},
         "expected_reports": {
           "type": "array",
-          "minItems": 4,
+          "minItems": 2,
           "maxItems": 4,
           "uniqueItems": true,
           "items": {"enum": ["resource_summary", "partition_summary", "route_summary", "system_timing"]}

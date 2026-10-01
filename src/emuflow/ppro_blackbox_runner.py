@@ -37,6 +37,15 @@ _REPORTS = {
     "route_summary",
     "system_timing",
 }
+
+
+def _required_reports(kind: str) -> set[str]:
+    required = {"resource_summary", "partition_summary"}
+    if kind in {"topology_reachability", "payload_capacity", "latency"}:
+        required.add("route_summary")
+    if kind in {"reproducibility", "latency", "application_holdout"}:
+        required.update({"route_summary", "system_timing"})
+    return required
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _HDL_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -267,8 +276,11 @@ def validate_run_spec(value: Mapping[str, Any]) -> Dict[str, Any]:
     if not isinstance(expected_reports, list):
         raise ValidationError("run spec.adapter.expected_reports: expected an array")
     expected = sorted(_string(item, "run spec.adapter.expected_reports") for item in expected_reports)
-    if set(expected) != _REPORTS or len(expected) != len(set(expected)):
-        raise ValidationError("run spec.adapter.expected_reports: expected each allowlisted report once")
+    required_reports = _required_reports(normalized_experiment["kind"])
+    if set(expected) != required_reports or len(expected) != len(set(expected)):
+        raise ValidationError(
+            "run spec.adapter.expected_reports: report set does not match experiment kind"
+        )
 
     normalized = {
         "schema": RUN_SPEC_SCHEMA,
@@ -355,10 +367,6 @@ def parse_mock_ordinary_reports(
     """Parse only the four explicitly named synthetic ordinary reports."""
     if set(report_paths) != _REPORTS:
         raise ValidationError("report adapter received an incomplete allowlist")
-    for name, path in report_paths.items():
-        if not path.is_file():
-            raise ValidationError(f"missing ordinary report: {name}")
-
     resource_rows = _read_csv(report_paths["resource_summary"], {"resource", "demand"})
     resource_demand: Dict[str, float] = {}
     for row in resource_rows:
@@ -396,10 +404,19 @@ def parse_mock_ordinary_reports(
             raise ValidationError("partition summary disagrees on FPGA utilization")
         fpga_resources[fpga] = resources
 
-    route_rows = _read_csv(
-        report_paths["route_summary"],
-        {"route", "source", "sinks", "effective_hops", "path_count", "maximum_tdm_ratio"},
-    )
+    route_rows = []
+    if report_paths["route_summary"].is_file():
+        route_rows = _read_csv(
+            report_paths["route_summary"],
+            {
+                "route",
+                "source",
+                "sinks",
+                "effective_hops",
+                "path_count",
+                "maximum_tdm_ratio",
+            },
+        )
     routes = []
     total_paths = 0
     maximum_tdm_ratio = 0
@@ -426,19 +443,24 @@ def parse_mock_ordinary_reports(
             ),
         )
 
-    if report_paths["system_timing"].stat().st_size > 16 * 1024 * 1024:
-        raise ValidationError("ordinary report system_timing: exceeds the 16 MiB parser bound")
-    timing_text = report_paths["system_timing"].read_text(encoding="utf-8")
     timing_values: Dict[str, float] = {}
-    for name, pattern in _TIMING_PATTERNS.items():
-        matches = pattern.findall(timing_text)
-        if len(matches) != 1:
-            raise ValidationError(f"system timing report: expected exactly one {name}")
-        timing_values[name] = _parse_nonnegative(matches[0], f"system timing {name}")
-    if int(timing_values["cross_fpga_path_count"]) != total_paths:
-        raise ValidationError("route and system timing reports disagree on cross-FPGA path count")
-    if int(timing_values["maximum_tdm_ratio"]) != maximum_tdm_ratio:
-        raise ValidationError("route and system timing reports disagree on maximum TDM ratio")
+    if report_paths["system_timing"].is_file():
+        if report_paths["system_timing"].stat().st_size > 16 * 1024 * 1024:
+            raise ValidationError("ordinary report system_timing: exceeds the 16 MiB parser bound")
+        timing_text = report_paths["system_timing"].read_text(encoding="utf-8")
+        for name, pattern in _TIMING_PATTERNS.items():
+            matches = pattern.findall(timing_text)
+            if len(matches) != 1:
+                raise ValidationError(f"system timing report: expected exactly one {name}")
+            timing_values[name] = _parse_nonnegative(matches[0], f"system timing {name}")
+        if int(timing_values["cross_fpga_path_count"]) != total_paths:
+            raise ValidationError(
+                "route and system timing reports disagree on cross-FPGA path count"
+            )
+        if int(timing_values["maximum_tdm_ratio"]) != maximum_tdm_ratio:
+            raise ValidationError(
+                "route and system timing reports disagree on maximum TDM ratio"
+            )
 
     return {
         "design": dict(design_metrics),
@@ -454,11 +476,11 @@ def parse_mock_ordinary_reports(
             "maximum_tdm_ratio": float(maximum_tdm_ratio),
             "route_count": float(len(routes)),
         },
-        "timing": {
-            "sr0_worst_cross_fpga_delay_ns": timing_values[
-                "sr0_worst_cross_fpga_delay_ns"
-            ]
-        },
+        "timing": (
+            {"sr0_worst_cross_fpga_delay_ns": timing_values["sr0_worst_cross_fpga_delay_ns"]}
+            if timing_values
+            else {}
+        ),
     }
 
 
@@ -631,7 +653,10 @@ def execute_blackbox_case(
             )
             outcome, failure_code = classify_process_failure(return_code, diagnostic_tail)
             observation = _failure_observation(spec, outcome, failure_code, runtime_seconds)
-        elif any(not path.is_file() for path in binding.report_paths.values()):
+        elif any(
+            not binding.report_paths[name].is_file()
+            for name in spec["adapter"]["expected_reports"]
+        ):
             diagnostic_tail = (
                 _read_text_tail(stdout_path) + "\n" + _read_text_tail(stderr_path)
             )
@@ -659,6 +684,9 @@ def execute_blackbox_case(
                     runtime_seconds,
                 )
             else:
+                report_presence = {
+                    name: path.is_file() for name, path in binding.report_paths.items()
+                }
                 controlled = spec["experiment"]["control_mode"] in {
                     "fixed_assignment",
                     "fixed_communication",
@@ -692,7 +720,7 @@ def execute_blackbox_case(
                         "failure_code": None,
                         "runtime_seconds": runtime_seconds,
                     },
-                    "reports": {name: True for name in sorted(_REPORTS)},
+                    "reports": report_presence,
                     "metrics": metrics,
                     "provenance": {"class": "black_box_observation"},
                     "derived": {"fit_eligible": fit_eligible, "reason": reason},
