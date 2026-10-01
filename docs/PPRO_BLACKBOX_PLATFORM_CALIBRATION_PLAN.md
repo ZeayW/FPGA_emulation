@@ -332,6 +332,17 @@ Gate: repeated measurements and at least one withheld pair/resource boundary.
 
 ### Stage 4: bandwidth, TDM, latency, and transport calibration
 
+Status: **controlled probe and fitting framework implemented; real observations
+pending**. One compact communication generator sweeps width, parallel flows,
+direction, fanout, and requested TDM level while keeping logical endpoints
+explicit. Payload fitting reports only repeated pass/link-infeasible intervals
+and observed TDM transitions. Aggregate latency fitting searches candidate
+payload widths and fits non-negative endpoint, hop, serialization, TDM,
+contention, and multicast terms with deterministic bootstrap bounds. Transport
+cost uses same-RTL local/cross placement pairs so DUT logic cancels before
+fitting incremental resource cost; negative paired deltas fail closed as
+evidence that unrelated mapping changed.
+
 Deliver parameter sweeps, constrained fits, confidence intervals, and an
 identifiability report.
 

@@ -191,6 +191,13 @@ fit points and withheld points. The conservative fitters reject unstable or
 non-monotonic measurements, report pass/fail capacity intervals, and refuse to
 invent shared-link groups from single-flow reachability data.
 
+Stage 4 now has the corresponding controlled communication probe and
+dependency-free fitters for payload/TDM intervals, aggregate latency, and
+paired transport resource cost. Nominal/aggressive/conservative timing and
+cost terms come from deterministic bootstrap bounds. These are framework
+capabilities only until real PPro observations and withheld points satisfy the
+documented gates.
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both
