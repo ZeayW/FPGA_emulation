@@ -294,8 +294,14 @@ raw vendor path or private configuration is serialized.
 
 ### Stage 2: black-box runner and normal-report adapter
 
-Status: **runner plus real ordinary-report adapter implemented; fresh smoke
-pending**. The current
+Status: **runner plus real ordinary-report adapter implemented; fresh C0 v2
+smoke passed**. At source commit
+`5b3c31294de797a9db727385674d6353f376f555`, an authorized ordinary run
+completed in 35.68 seconds and produced all four allowlisted report classes.
+The normalized observation recorded 68 cross-FPGA signals, four directed
+one-hop route aggregates, maximum TDM ratio 1, and worst normalized
+cross-FPGA delay 14.1 ns. These values qualify the runner/report boundary only;
+they are not fitted platform parameters. The current
 runner keeps commands, installation/license state, concrete target names, and
 report paths in a non-serializable runtime binding. It executes isolated cases
 through an explicitly bounded queue, distinguishes license/tool/infrastructure,
@@ -322,7 +328,8 @@ scrubbed after the compact observation is validated. Its command is covered by
 a disposable fake-provider test. The production renderer also rejects case directories outside the
 mandatory `/research/d4/gds/ziyiwang21` boundary and pins all standard temporary
 environment variables below the case. This does not replace the fresh
-authorized PPro smoke.
+authorized PPro smoke for any future incompatible runner or report-profile
+revision.
 The default pre-partition headroom is uniform across LUT, FF, BRAM, URAM, and
 DSP at 75%; one explicit runtime option changes all five together so a capacity
 comparison cannot silently use inconsistent resource limits.

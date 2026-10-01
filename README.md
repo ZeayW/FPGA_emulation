@@ -202,8 +202,13 @@ required for multi-hop routes. Explicit `--keep-raw-project` diagnostics retain
 the four allowlisted reports after a parse failure; normal runs still delete
 them after producing the compact observation. Its
 parser format has been checked against an existing successful normal PPro
-result, but Stage 2 remains pending until a fresh smoke is executed through the
-current runner. A mock result is never accepted as real PPro evidence.
+result. Stage 2 passed a fresh authorized C0 v2 smoke through the current runner
+at source commit `5b3c31294de797a9db727385674d6353f376f555`: PPro completed in
+35.68 seconds, all four ordinary report classes were present, the compact
+observation contained 68 cross-FPGA signals over four directed one-hop route
+records, maximum TDM ratio 1, and worst normalized cross-FPGA delay 14.1 ns.
+This is runner/report evidence, not a calibrated-platform QoR result. A mock
+result is never accepted as real PPro evidence.
 The runner applies the same default 75% limit to LUT, FF, BRAM, URAM, and DSP;
 the explicit `--utilization-limit-percent` changes all five together.
 
