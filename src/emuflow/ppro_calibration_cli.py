@@ -16,7 +16,10 @@ from .ppro_blackbox_campaign import (
 )
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
 from .ppro_blackbox_constraints import parse_logical_targets
-from .ppro_blackbox_communication import generate_communication_probe_bundle
+from .ppro_blackbox_communication import (
+    generate_communication_matrix,
+    generate_communication_probe_bundle,
+)
 from .ppro_blackbox_microbench import CAPACITY_AXES, generate_capacity_matrix
 from .ppro_blackbox_runner import execute_blackbox_case, validate_run_spec
 from .ppro_blackbox_runtime import (
@@ -135,6 +138,20 @@ def _parser() -> argparse.ArgumentParser:
     communication.add_argument("--forced-tdm-ratio", type=int, default=0)
     communication.add_argument("--repeat", type=int, default=0)
     communication.add_argument("--role", choices=["fit", "holdout"], required=True)
+
+    communication_matrix = commands.add_parser("generate-communication-matrix")
+    add_generation_identity(communication_matrix)
+    communication_matrix.add_argument(
+        "--kind", choices=["payload_capacity", "latency", "transport_cost"], required=True
+    )
+    communication_matrix.add_argument("--fpga-count", type=int, required=True)
+    communication_matrix.add_argument("--source-index", type=int, required=True)
+    communication_matrix.add_argument("--sink-indices", nargs="+", type=int, required=True)
+    communication_matrix.add_argument("--fit-widths", nargs="+", type=int, required=True)
+    communication_matrix.add_argument("--holdout-widths", nargs="+", type=int, required=True)
+    communication_matrix.add_argument("--flow-counts", nargs="+", type=int, required=True)
+    communication_matrix.add_argument("--bidirectional", action="store_true")
+    communication_matrix.add_argument("--repeats", type=int, default=2)
 
     run_case = commands.add_parser("run-ppro-case")
     run_case.add_argument("--run-spec", type=Path, required=True)
@@ -269,6 +286,27 @@ def _dispatch(args: argparse.Namespace) -> Any:
             adapter_profile=args.adapter_profile,
         )
         return {"status": "pass", "case_id": bundle.run_spec["identity"]["id"]}
+    if args.command == "generate-communication-matrix":
+        bundles = generate_communication_matrix(
+            args.out,
+            kind=args.kind,
+            fpga_count=args.fpga_count,
+            source_index=args.source_index,
+            sink_indices=args.sink_indices,
+            fit_widths=args.fit_widths,
+            holdout_widths=args.holdout_widths,
+            flow_counts=args.flow_counts,
+            bidirectional=args.bidirectional,
+            repeats=args.repeats,
+            campaign_id=args.campaign_id,
+            public_prior_id=args.public_prior_id,
+            configuration_id=args.configuration_id,
+            tool_release=args.tool_release,
+            runner_revision=args.runner_revision,
+            seed_base=args.seed_base,
+            adapter_profile=args.adapter_profile,
+        )
+        return {"status": "pass", "case_count": len(bundles)}
     if args.command == "run-ppro-case":
         spec = read_json(args.run_spec.resolve())
         binding = render_ppro_runtime_binding(

@@ -342,6 +342,9 @@ is an active-run operation rather than a persistent checkpoint/campaign cache.
 A one-shot campaign runner discovers only a bounded number of generated cases,
 uses isolated result directories, defaults licensed concurrency to one, and
 retains one compact observation per case after raw-project cleanup.
+Stage 4 matrices explicitly separate fit and holdout widths and repeat every
+point. Transport-cost matrices generate matched local/cross placements with
+the same RTL parameters and seed so the paired fitter can cancel DUT logic.
 
 Gate: mock/dry-run first, followed by one real smoke experiment.  Report PPro
 runtime scale and artifact availability; never infer missing values.

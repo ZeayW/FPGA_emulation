@@ -40,6 +40,17 @@ class CommunicationProbeBundle:
     run_spec: Dict[str, Any]
 
 
+def _positive_unique(values: Sequence[int], name: str) -> tuple[int, ...]:
+    normalized = tuple(values)
+    if (
+        not normalized
+        or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in normalized)
+        or len(normalized) != len(set(normalized))
+    ):
+        raise ValidationError(f"communication matrix {name} must be unique positive integers")
+    return normalized
+
+
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -269,3 +280,82 @@ def generate_communication_probe_bundle(
         run_spec_path=run_spec_path,
         run_spec=normalized,
     )
+
+
+def generate_communication_matrix(
+    output_dir: Path,
+    *,
+    kind: str,
+    fpga_count: int,
+    source_index: int,
+    sink_indices: Sequence[int],
+    fit_widths: Sequence[int],
+    holdout_widths: Sequence[int],
+    flow_counts: Sequence[int],
+    bidirectional: bool,
+    repeats: int,
+    campaign_id: str,
+    public_prior_id: str,
+    configuration_id: str,
+    tool_release: str,
+    runner_revision: str,
+    seed_base: int,
+    adapter_profile: str = MOCK_REPORT_PROFILE,
+) -> list[CommunicationProbeBundle]:
+    """Generate a bounded fit/holdout matrix with paired transport baselines."""
+
+    fit = _positive_unique(fit_widths, "fit_widths")
+    holdout = _positive_unique(holdout_widths, "holdout_widths")
+    flows = _positive_unique(flow_counts, "flow_counts")
+    if set(fit) & set(holdout):
+        raise ValidationError("communication fit and holdout widths must be disjoint")
+    if isinstance(repeats, bool) or not isinstance(repeats, int) or repeats < 2:
+        raise ValidationError("communication matrix repeats must be an integer >= 2")
+    if isinstance(seed_base, bool) or not isinstance(seed_base, int) or seed_base < 0:
+        raise ValidationError("communication matrix seed_base must be a nonnegative integer")
+    sinks = tuple(sink_indices)
+    if kind == "transport_cost" and len(sinks) != 1:
+        raise ValidationError("transport-cost matrix requires exactly one cross-FPGA sink")
+
+    bundles: list[CommunicationProbeBundle] = []
+    for role, widths in (("fit", fit), ("holdout", holdout)):
+        for width in widths:
+            for flow_count in flows:
+                for repeat in range(repeats):
+                    common = {
+                        "kind": kind,
+                        "fpga_count": fpga_count,
+                        "source_index": source_index,
+                        "width": width,
+                        "flow_count": flow_count,
+                        "bidirectional": bidirectional,
+                        "forced_tdm_ratio": 0,
+                        "repeat": repeat,
+                        "role": role,
+                        "campaign_id": campaign_id,
+                        "public_prior_id": public_prior_id,
+                        "configuration_id": configuration_id,
+                        "tool_release": tool_release,
+                        "runner_revision": runner_revision,
+                        "seed": seed_base + repeat,
+                        "adapter_profile": adapter_profile,
+                    }
+                    point = f"{role}/w{width}/n{flow_count}/r{repeat}"
+                    if kind == "transport_cost":
+                        bundles.append(
+                            generate_communication_probe_bundle(
+                                output_dir / point / "local",
+                                sink_indices=[source_index],
+                                local_baseline=True,
+                                **common,
+                            )
+                        )
+                    bundles.append(
+                        generate_communication_probe_bundle(
+                            output_dir / point / "cross",
+                            sink_indices=sinks,
+                            local_baseline=False,
+                            **common,
+                        )
+                    )
+    return bundles

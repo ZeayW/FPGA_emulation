@@ -292,6 +292,20 @@ emuflow-ppro-calibration generate-communication-probe \
   --width 64 --role fit
 ```
 
+For an actual Stage 4 campaign, generate a disjoint fit/holdout matrix rather
+than assembling individual cases by hand. `transport_cost` automatically emits
+matched local and cross-FPGA cases with identical RTL parameters and seed:
+
+```sh
+emuflow-ppro-calibration generate-communication-matrix \
+  --out <active-campaign>/transport --campaign-id c5-transport \
+  --configuration-id lx2-m2 --tool-release 2026.1 \
+  --runner-revision <64-hex-runner-source-sha256> \
+  --kind transport_cost --fpga-count 4 --source-index 0 --sink-indices 1 \
+  --fit-widths 32 64 128 --holdout-widths 48 96 \
+  --flow-counts 1 2 4 --repeats 2
+```
+
 Generated cases can be consumed as one ephemeral campaign. Discovery is
 bounded by `--maximum-cases`; license concurrency defaults to one and rises
 only through an explicit `--max-workers`. Every case still owns an isolated

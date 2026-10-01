@@ -5,13 +5,78 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_blackbox_communication import generate_communication_probe_bundle
+from emuflow.io import read_json
+from emuflow.ppro_blackbox_communication import (
+    generate_communication_matrix,
+    generate_communication_probe_bundle,
+)
 
 
 REVISION = "6" * 64
 
 
 class PProBlackboxCommunicationTest(unittest.TestCase):
+    def test_transport_matrix_pairs_local_and_cross_with_disjoint_holdout(self):
+        with tempfile.TemporaryDirectory() as raw:
+            bundles = generate_communication_matrix(
+                Path(raw),
+                kind="transport_cost",
+                fpga_count=4,
+                source_index=0,
+                sink_indices=[1],
+                fit_widths=[32, 64],
+                holdout_widths=[48],
+                flow_counts=[1, 2],
+                bidirectional=False,
+                repeats=2,
+                campaign_id="transport-matrix",
+                public_prior_id="prior-v1",
+                configuration_id="platform-v1",
+                tool_release="2026.1",
+                runner_revision="a" * 64,
+                seed_base=11,
+            )
+            self.assertEqual(len(bundles), 24)
+            roles = [bundle.run_spec["identity"]["role"] for bundle in bundles]
+            self.assertEqual(roles.count("fit"), 16)
+            self.assertEqual(roles.count("holdout"), 8)
+            local = [
+                bundle
+                for bundle in bundles
+                if bundle.run_spec["workload"]["design_metrics"]["local_baseline"] == 1
+            ]
+            self.assertEqual(len(local), 12)
+            for bundle in local:
+                point = bundle.root.parent
+                cross = point / "cross" / "run-spec.json"
+                self.assertTrue(cross.is_file())
+                self.assertEqual(
+                    bundle.run_spec["execution"]["seed"],
+                    read_json(cross)["execution"]["seed"],
+                )
+
+    def test_communication_matrix_rejects_overlapping_fit_and_holdout(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaisesRegex(ValidationError, "must be disjoint"):
+                generate_communication_matrix(
+                    Path(raw),
+                    kind="latency",
+                    fpga_count=2,
+                    source_index=0,
+                    sink_indices=[1],
+                    fit_widths=[32],
+                    holdout_widths=[32],
+                    flow_counts=[1],
+                    bidirectional=False,
+                    repeats=2,
+                    campaign_id="bad",
+                    public_prior_id="prior-v1",
+                    configuration_id="platform-v1",
+                    tool_release="2026.1",
+                    runner_revision="a" * 64,
+                    seed_base=1,
+                )
+
     def kwargs(self):
         return {
             "kind": "latency",
