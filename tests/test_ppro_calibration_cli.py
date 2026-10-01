@@ -7,13 +7,23 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from emuflow.ppro_calibration_cli import main
+from emuflow.ppro_calibration_cli import _campaign_status, main
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class PProCalibrationCliTest(unittest.TestCase):
+    def test_campaign_accepts_measured_boundaries_but_not_provider_failures(self):
+        self.assertEqual(
+            _campaign_status({"pass": 2, "capacity_infeasible": 2}, 4),
+            "pass",
+        )
+        self.assertEqual(
+            _campaign_status({"pass": 2, "tool_failure": 1}, 3),
+            "failed",
+        )
+
     def test_validate_public_prior(self):
         output = StringIO()
         with redirect_stdout(output):

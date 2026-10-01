@@ -243,6 +243,9 @@ produced, as expected for a local capacity probe. This is one real pass point,
 not yet a fitted capacity interval. Runtime HOME, PPro's root-level
 `runtime_Flag.tcl`, generated scripts, reports, and project data are scrubbed;
 the compact observation is the retained evidence.
+Campaign completion treats explicit capacity/link/routing infeasibility as a
+successful measured terminal outcome; only provider, license, infrastructure,
+missing-report, and parse failures fail the campaign command.
 
 Stage 4 now has the corresponding controlled communication probe and
 dependency-free fitters for payload/TDM intervals, aggregate latency, and

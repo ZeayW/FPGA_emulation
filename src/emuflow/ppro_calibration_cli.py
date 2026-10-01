@@ -9,7 +9,7 @@ from typing import Any, Sequence
 
 from .io import read_json, write_json
 from .ppro_blackbox_application import generate_application_holdout_bundle
-from .ppro_blackbox_calibration import validate_redacted_artifact
+from .ppro_blackbox_calibration import EVALUATED_OUTCOMES, validate_redacted_artifact
 from .ppro_blackbox_campaign import (
     PProCampaignRuntime,
     discover_generated_bundles,
@@ -51,6 +51,13 @@ def _read_many(paths: Sequence[Path]) -> list[Any]:
 
 def _write_result(path: Path, value: Any) -> None:
     write_json(path.resolve(), value, compact=True)
+
+
+def _campaign_status(outcomes: dict[str, int], case_count: int) -> str:
+    evaluated_count = sum(
+        count for outcome, count in outcomes.items() if outcome in EVALUATED_OUTCOMES
+    )
+    return "pass" if case_count > 0 and evaluated_count == case_count else "failed"
 
 
 def _ordered_pair(value: str) -> tuple[int, int]:
@@ -376,7 +383,7 @@ def _dispatch(args: argparse.Namespace) -> Any:
             outcome = str(result["execution"]["outcome"])
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
         return {
-            "status": "pass" if outcomes == {"pass": len(results)} else "failed",
+            "status": _campaign_status(outcomes, len(results)),
             "case_count": len(results),
             "outcomes": outcomes,
         }
