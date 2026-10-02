@@ -16,6 +16,8 @@ PAYLOAD_FIT_SCHEMA = "emuflow.ppro-payload-fit/v2"
 LATENCY_FIT_SCHEMA = "emuflow.ppro-latency-fit/v2"
 TRANSPORT_FIT_SCHEMA = "emuflow.ppro-transport-cost-fit/v1"
 _GENERATOR_ID = "ppro-blackbox-communication-probe-v3"
+_TRANSPORT_MAX_HOLDOUT_RELATIVE_ERROR = 0.15
+_TRANSPORT_ZERO_ABSOLUTE_TOLERANCE = 1.0
 _LATENCY_BASE_FEATURES = (
     "endpoint_ns",
     "per_hop_ns",
@@ -558,11 +560,11 @@ def fit_transport_cost_model(
         rmse = math.sqrt(sum(value * value for value in residuals) / len(residuals))
         boot = [[] for _ in coefficients]
         for _ in range(bootstrap_samples):
-            indices = [generator.randrange(len(features)) for _ in features]
-            sampled = _nnls(
-                [features[index] for index in indices],
-                [targets[index] for index in indices],
-            )
+            sampled_targets = [
+                prediction + residuals[generator.randrange(len(residuals))]
+                for prediction in predictions
+            ]
+            sampled = _nnls(features, sampled_targets)
             for column, value in enumerate(sampled):
                 boot[column].append(value)
         fitted_resources[resource] = {
@@ -594,11 +596,39 @@ def fit_transport_cost_model(
                 "relative_error": abs(predicted - actual) / actual if actual else None,
             }
         holdout_checks.append(result)
+    all_identifiable = True
+    for resource, fit in fitted_resources.items():
+        observed_nonzero = any(
+            row["deltas"].get(resource, 0.0) > 0.0 for row in fit_rows + holdout_rows
+        )
+        relative_errors = []
+        zero_absolute_errors = []
+        for check in holdout_checks:
+            result = check["resources"][resource]
+            if result["actual"] == 0:
+                zero_absolute_errors.append(result["absolute_error"])
+            else:
+                relative_errors.append(result["relative_error"])
+        maximum_relative_error = max(relative_errors, default=None)
+        maximum_zero_absolute_error = max(zero_absolute_errors, default=0.0)
+        identifiable = (
+            observed_nonzero
+            and maximum_relative_error is not None
+            and maximum_relative_error <= _TRANSPORT_MAX_HOLDOUT_RELATIVE_ERROR
+            and maximum_zero_absolute_error <= _TRANSPORT_ZERO_ABSOLUTE_TOLERANCE
+        )
+        fit["observed_nonzero_delta"] = observed_nonzero
+        fit["holdout_max_relative_error"] = maximum_relative_error
+        fit["holdout_max_zero_absolute_error"] = maximum_zero_absolute_error
+        for record in fit["parameters"].values():
+            record["identifiable"] = identifiable
+        all_identifiable = all_identifiable and identifiable
     return {
         "schema": TRANSPORT_FIT_SCHEMA,
         "resources": fitted_resources,
         "paired_fit_samples": len(fit_rows),
         "holdout_checks": holdout_checks,
+        "all_resources_identifiable": all_identifiable,
         "excluded_observations": excluded,
         "provenance": "black_box_fitted",
     }

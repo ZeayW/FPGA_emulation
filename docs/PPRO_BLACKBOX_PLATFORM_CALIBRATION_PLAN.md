@@ -446,8 +446,8 @@ version-locked `ppro-blackbox-communication-probe-v3` contract. Older v1/v2
 observations are rejected rather than mixed into a current fit.
 
 Status: **controlled probe and fitting framework implemented; effective
-payload/TDM classes and aggregate latency fitted, transport observations
-pending**. One compact communication generator sweeps width, parallel flows,
+payload/TDM classes and aggregate latency fitted; PPro transport observations
+completed but proved non-identifiable from ordinary reports**. One compact communication generator sweeps width, parallel flows,
 direction, fanout, and requested TDM level while keeping logical endpoints
 explicit. Payload fitting reports the repeated ratio-one/TDM transition and
 observed TDM levels; a final link-infeasible upper bound is retained when
@@ -496,6 +496,18 @@ additional multicast sink, no observable concurrent-flow increment after TDM
 state is included, and categorical increments of 43 ns and 48 ns for ratios 8
 and 16.  These are aggregate behavior terms, not reverse-engineered internal
 implementation details.
+
+The paired transport campaign completed 64/64 PPro runs, giving 16 fit pairs
+and 16 holdout pairs.  Ordinary `pa0.rpt` exposed zero delta for FF, BRAM, DSP,
+and URAM in every pair.  LUT deltas were limited to 0/1/2 cells and failed the
+holdout gate at 75% maximum relative error.  The report therefore does not
+identify the cost of PPro's inserted transport shell.  The fitter records this
+as negative evidence: all-zero response or holdout error above 15% sets every
+affected coefficient to `identifiable=false`, so Stage 5 cannot promote the
+result.  EmuFlow's TransportCostDB will instead be characterized from its own
+open transport RTL and labelled with separate source-backed provenance; the
+PPro black-box observations remain a guard against falsely claiming that the
+ordinary report measured proprietary transport internals.
 
 Deliver parameter sweeps, constrained fits, confidence intervals, and an
 identifiability report.

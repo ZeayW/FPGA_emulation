@@ -248,8 +248,21 @@ class PProBlackboxStage4Test(unittest.TestCase):
         lut = result["resources"]["lut"]["parameters"]
         self.assertAlmostEqual(lut["per_endpoint"]["nominal"], 2.0, places=3)
         self.assertAlmostEqual(lut["per_transport_bit"]["nominal"], 0.25, places=3)
+        self.assertTrue(result["all_resources_identifiable"])
+        self.assertTrue(result["resources"]["lut"]["observed_nonzero_delta"])
         self.assertEqual(result["paired_fit_samples"], 5)
         self.assertEqual(len(result["holdout_checks"]), 1)
+
+        for item in values:
+            item["metrics"]["resource_demand"] = {"lut": 100}
+        zero_result = fit_transport_cost_model(values, bootstrap_samples=32)
+        self.assertFalse(zero_result["all_resources_identifiable"])
+        self.assertFalse(zero_result["resources"]["lut"]["observed_nonzero_delta"])
+        self.assertFalse(
+            zero_result["resources"]["lut"]["parameters"]["per_endpoint"][
+                "identifiable"
+            ]
+        )
 
 
 if __name__ == "__main__":

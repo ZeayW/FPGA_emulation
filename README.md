@@ -330,7 +330,22 @@ flow increment, `0.1 ns` per extra multicast sink, `43 ns` for ratio 8, and
 timing states; they are not claims about internal serializer implementation.
 Normal campaign cleanup removed every generated bundle and raw project; the
 two added holdouts retain only 4.6 KiB of observation JSON.  Transport-cost
-observations remain pending.
+black-box observations have also completed, but do not identify the cost.
+
+The transport campaign completed 64/64 PPro runs, forming 16 paired fit and
+16 paired holdout points with identical RTL in each local/cross pair.  Every
+FF, BRAM, DSP, and URAM delta reported by ordinary `pa0.rpt` was zero.  LUT
+deltas were only 0, 1, or 2 cells (26 pairs at 1, four at 2, two at 0), did not
+scale consistently with width/TDM/fanout, and produced 75% maximum holdout
+relative error.  This is evidence that the ordinary pre-partition resource
+report does not expose the proprietary inserted transport shell, not evidence
+that transport is free.  The fitter now marks a resource identifiable only
+when paired observations contain a nonzero response and independent holdouts
+meet the 15% error gate; these PPro observations therefore fail closed.  All
+raw projects and generated bundles were removed, leaving about 135 KiB of
+compact negative evidence.  TransportCostDB must consequently be
+source-characterized from EmuFlow's open transport RTL, with distinct
+provenance, rather than fabricated from these black-box zeros.
 
 Stage 5 can now deterministically materialize and independently validate the
 three final profile databases plus a provenance/hash manifest. It cannot turn
