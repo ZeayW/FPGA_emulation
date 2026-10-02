@@ -187,8 +187,10 @@ ordinary project/compile/pre-partition/partition/system-route command sequence
 from the generated run specification. The installed platform reference is an
 opaque path argument: EmuFlow checks that it exists but never reads, copies,
 hashes, or serializes it. Provider-neutral documented constraints are
-translated only to the public user-example `assign_inst` syntax. The smoke
-uses that syntax to place its `P0` producer and `P1` consumer on different
+canonically re-hashed and checked against the run specification before they
+are translated only to the public user-example `assign_inst` syntax. Their
+control mode, action set, and seed must also match the sealed experiment. The
+smoke uses that syntax to place its `P0` producer and `P1` consumer on different
 logical FPGAs, ensuring that partition, route, and timing reports are exercised
 without making the holdout case fitting evidence. C0 v3 additionally compiles
 through a sealed header include and `NAME=VALUE` define. Its runtime renderer
@@ -546,6 +548,10 @@ emuflow-ppro-calibration generate-application-holdout \
   --benchmark-run benchmarks/runs/secworks_aes_l3.json \
   --source-root third_party/rtl/secworks_aes
 ```
+
+Because this mode emits no placement assignment, its runtime does not require
+logical-to-physical placement targets. Controlled capacity, topology, and
+communication probes still require the complete runtime-only target mapping.
 
 Application contracts may additionally declare relative Verilog
 `synthesis.include_dirs` and `synthesis.defines`.  EmuFlow resolves them only

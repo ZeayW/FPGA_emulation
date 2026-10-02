@@ -75,6 +75,7 @@ class PProBlackboxConstraintsTest(unittest.TestCase):
                 )
 
     def test_logical_target_cli_parser_is_strict(self):
+        self.assertEqual(parse_logical_targets([]), {})
         self.assertEqual(
             parse_logical_targets(["F0=MB1.F1", "F1=MB1.F3"]),
             {"F0": "MB1.F1", "F1": "MB1.F3"},
@@ -83,6 +84,27 @@ class PProBlackboxConstraintsTest(unittest.TestCase):
             parse_logical_targets(["F0=MB1.F1", "F1=MB1.F1"])
         with self.assertRaises(ValidationError):
             parse_logical_targets(["bad"])
+
+    def test_uncontrolled_run_needs_no_physical_target_names(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "constraints.json"
+            output = root / "prepartition.cfg"
+            source.write_text(
+                json.dumps(
+                    {
+                        "control_mode": "none",
+                        "documented_actions": [],
+                        "seed": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            render_ppro_prepartition_constraints(source, {}, output)
+            self.assertEqual(
+                output.read_text(encoding="utf-8"),
+                "# Generated from provider-neutral documented user constraints.\n",
+            )
 
     def test_real_probe_constraints_all_render_without_private_database_input(self):
         with tempfile.TemporaryDirectory() as raw:

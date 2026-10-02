@@ -64,6 +64,8 @@ def validate_logical_targets(value: Mapping[str, str]) -> Dict[str, str]:
 def parse_logical_targets(values: list[str]) -> Dict[str, str]:
     """Parse repeatable F<n>=PHYSICAL_TARGET runtime-only CLI arguments."""
 
+    if not values:
+        return {}
     result: Dict[str, str] = {}
     for value in values:
         logical, separator, physical = value.partition("=")
@@ -119,12 +121,16 @@ def render_ppro_prepartition_constraints(
         raise ValidationError(
             "PPro constraint renderer does not guess route, TDM, or random-seed syntax"
         )
-    targets = validate_logical_targets(logical_targets)
     raw_assignments = constraints.get("assignments", [])
     if not isinstance(raw_assignments, list):
         raise ValidationError("documented constraints assignments must be an array")
     if bool(raw_assignments) != ("partition_constraint" in actions):
         raise ValidationError("partition action and assignment records disagree")
+    targets = (
+        validate_logical_targets(logical_targets)
+        if logical_targets or raw_assignments
+        else {}
+    )
 
     lines = ["# Generated from provider-neutral documented user constraints."]
     seen_instances: set[str] = set()

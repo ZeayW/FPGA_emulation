@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -29,19 +30,25 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
         platform = root / "opaque-platform.ref"
         constraints = root / "documented-user-constraints.cfg"
         platform.write_text("opaque", encoding="utf-8")
-        constraints.write_text(
-            json.dumps(
-                {
-                    "assignments": [{"partition": "P0", "target": "F0"}],
-                    "control_mode": "fixed_assignment",
-                    "documented_actions": ["partition_constraint"],
-                    "seed": 7,
-                }
-            ),
-            encoding="utf-8",
-        )
+        constraint_value = {
+            "assignments": [{"partition": "P0", "target": "F0"}],
+            "control_mode": "fixed_assignment",
+            "documented_actions": ["partition_constraint"],
+            "seed": 7,
+        }
+        constraints.write_text(json.dumps(constraint_value), encoding="utf-8")
         spec = run_spec()
         spec["adapter"]["profile"] = "ppro-2026-ordinary-reports-v1"
+        spec["experiment"] = {
+            "kind": "latency",
+            "control_mode": "fixed_assignment",
+            "documented_actions": ["partition_constraint"],
+            "constraints_sha256": hashlib.sha256(
+                json.dumps(
+                    constraint_value, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest(),
+        }
         config = PProRuntimeConfig(
             case_dir=root / "case",
             install_root=install,
@@ -114,6 +121,21 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
                     spec, source_filelist=filelist, config=config
                 )
 
+    def test_renderer_rejects_constraints_that_disagree_with_run_spec(self):
+        with tempfile.TemporaryDirectory() as raw:
+            spec, filelist, config = self._fixture(Path(raw))
+            value = json.loads(
+                config.documented_constraints.read_text(encoding="utf-8")
+            )
+            value["seed"] = 8
+            config.documented_constraints.write_text(
+                json.dumps(value), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValidationError, "disagree with the run spec"):
+                render_ppro_runtime_binding(
+                    spec, source_filelist=filelist, config=config
+                )
+
     def test_connected_smoke_v3_cannot_skip_compilation_context(self):
         with tempfile.TemporaryDirectory() as raw:
             spec, filelist, config = self._fixture(Path(raw))
@@ -157,6 +179,27 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             spec["experiment"]["kind"] = "application_holdout"
             spec["experiment"]["control_mode"] = "none"
             spec["experiment"]["documented_actions"] = []
+            application_constraints = root / "application-constraints.json"
+            application_value = {
+                "control_mode": "none",
+                "documented_actions": [],
+                "seed": 7,
+            }
+            application_constraints.write_text(
+                json.dumps(application_value), encoding="utf-8"
+            )
+            spec["experiment"]["constraints_sha256"] = hashlib.sha256(
+                json.dumps(
+                    application_value, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            config = PProRuntimeConfig(
+                **{
+                    **config.__dict__,
+                    "documented_constraints": application_constraints,
+                    "logical_targets": {},
+                }
+            )
             context = root / "compilation-context.json"
             context.write_text(
                 json.dumps(

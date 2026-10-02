@@ -65,6 +65,44 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _validate_constraint_binding(
+    path: Path, spec: Mapping[str, Any]
+) -> None:
+    try:
+        constraints = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValidationError(
+            "documented provider-neutral constraints are not valid JSON"
+        ) from error
+    if not isinstance(constraints, dict):
+        raise ValidationError(
+            "documented provider-neutral constraints must be an object"
+        )
+    digest = hashlib.sha256(_canonical(constraints)).hexdigest()
+    experiment = spec["experiment"]
+    if digest != experiment["constraints_sha256"]:
+        raise ValidationError(
+            "documented provider-neutral constraints disagree with the run spec"
+        )
+    if constraints.get("control_mode") != experiment["control_mode"]:
+        raise ValidationError(
+            "documented constraint control mode disagrees with the run spec"
+        )
+    actions = constraints.get("documented_actions")
+    if (
+        not isinstance(actions, list)
+        or not all(isinstance(action, str) for action in actions)
+        or sorted(actions) != experiment["documented_actions"]
+    ):
+        raise ValidationError(
+            "documented constraint actions disagree with the run spec"
+        )
+    if constraints.get("seed") != spec["execution"]["seed"]:
+        raise ValidationError(
+            "documented constraint seed disagrees with the run spec"
+        )
+
+
 def _read_compilation_context(path: Path) -> Dict[str, Any]:
     if not path.is_file():
         raise ValidationError("PPro compilation context does not exist")
@@ -243,7 +281,11 @@ def _validate_config(config: PProRuntimeConfig) -> None:
         raise ValidationError("PPro FPGA aliases must be one-to-one")
     if any(not re.fullmatch(r"F[0-9]+", value) for value in physical + logical):
         raise ValidationError("PPro physical and logical FPGA aliases must use F<n>")
-    targets = validate_logical_targets(config.logical_targets)
+    targets = (
+        validate_logical_targets(config.logical_targets)
+        if config.logical_targets
+        else {}
+    )
     if not set(targets).issubset(set(logical)):
         raise ValidationError(
             "PPro logical placement targets must be covered by report aliases"
@@ -293,6 +335,9 @@ def render_ppro_runtime_binding(
             "and reproducibility probes"
         )
     _validate_config(config)
+    _validate_constraint_binding(
+        config.documented_constraints.resolve(), spec
+    )
 
     case_dir = config.case_dir.resolve()
     case_dir.mkdir(parents=True, exist_ok=True)

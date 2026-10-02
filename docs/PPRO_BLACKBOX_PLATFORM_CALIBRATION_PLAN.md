@@ -330,7 +330,10 @@ runner keeps commands, installation/license state, concrete target names, and
 report paths in a non-serializable runtime binding. It executes isolated cases
 through an explicitly bounded queue, distinguishes license/tool/infrastructure,
 missing-report, and parse failures, and deletes raw reports after producing a
-compact validated observation. A deterministic connected C0 workload generator
+compact validated observation. The renderer canonically re-hashes the tiny
+provider-neutral constraint contract and requires its control mode, actions,
+and seed to agree with the sealed run specification before emitting user
+syntax. A deterministic connected C0 workload generator
 emits only provider-neutral RTL, hashes, and public experiment metadata. Its v3
 contract adds one generated header and one `NAME=VALUE` define, seals their
 bytes plus the ordered include/define context in the RTL identity, and relies
@@ -641,8 +644,10 @@ Status: **independent result assembler, promotion contract, and evaluator
 implemented; real blind runs pending**. A scratch-only application bundle generator now binds an existing
 checked benchmark contract and natural RTL source tree to a free-partition
 PPro `application_holdout`; source paths and the EmuFlow platform choice never
-enter the compact observation.  The benchmark contract now also carries one
-shared compilation context: relative include directories and validated
+enter the compact observation. Because it emits no placement assignment, this
+mode does not require logical-to-physical placement targets; controlled probes
+still require the complete runtime-only mapping. The benchmark contract now
+also carries one shared compilation context: relative include directories and validated
 `NAME`/`NAME=VALUE` defines.  Every regular file in the include search space,
 the ordered include paths, and defines are part of the RTL identity.  Before
 PPro runs, the runtime-only renderer re-hashes that identity and emits standard
