@@ -35,6 +35,7 @@ CAPACITY_AXES = {
 _GENERATOR_VERSION = "ppro-blackbox-capacity-probe-v4"
 _GENERATOR_REVISION = hashlib.sha256(_GENERATOR_VERSION.encode("utf-8")).hexdigest()
 _LUT_TILE_UNITS = 4096
+_MAX_SOFT_NORMALIZATION_UNITS = 250_000
 _EXPECTED_REPORTS = [
     "partition_summary",
     "resource_summary",
@@ -266,6 +267,12 @@ def generate_capacity_probe_bundle(
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValidationError(f"capacity {name} must be an integer >= {minimum}")
+    if axis in {"lut", "ff", "mixed_lut_ff"} and units > _MAX_SOFT_NORMALIZATION_UNITS:
+        raise ValidationError(
+            "soft-resource normalization probes are bounded at "
+            f"{_MAX_SOFT_NORMALIZATION_UNITS} control units; public device totals "
+            "must not be reverse engineered with multi-million-cell sweeps"
+        )
 
     root = output_dir.resolve()
     root.mkdir(parents=True, exist_ok=True)

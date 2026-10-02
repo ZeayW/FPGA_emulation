@@ -94,6 +94,20 @@ class PProBlackboxMicrobenchTest(unittest.TestCase):
             self.assertTrue(all(value <= 4096 for value in tile_limits))
             self.assertLess(len(rtl), 32768)
 
+    def test_soft_capacity_probe_rejects_multi_million_boundary_search(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaisesRegex(
+                ValidationError, "must not be reverse engineered"
+            ):
+                generate_capacity_probe_bundle(
+                    Path(raw) / "too-large",
+                    axis="lut",
+                    units=3_000_000,
+                    repeat=0,
+                    role="fit",
+                    **self.kwargs(),
+                )
+
     def test_matrix_separates_fit_and_holdout_points(self):
         with tempfile.TemporaryDirectory() as raw:
             kwargs = self.kwargs()
