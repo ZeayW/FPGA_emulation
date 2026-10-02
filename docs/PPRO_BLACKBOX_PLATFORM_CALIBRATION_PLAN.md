@@ -579,7 +579,11 @@ for every emitted parameter class. The current `per_direction`
 capacity-sharing policy is explicitly a research assumption because ordinary
 reports have not identified simultaneous reverse-direction sharing; it is not
 attributed to the PPro fit. Missing or inconsistent parameter provenance fails
-bundle validation.
+bundle validation. Topology materialization additionally requires exactly one
+observation for every ordered pair in the selected configuration, and payload
+evidence must match its observed one-hop edges exactly. This prevents a fit
+from one platform size from silently generating a larger, partly uncalibrated
+BoardDB.
 
 Deliver generated BoardDB, BoardLinkTimingDB, TransportCostDB, a parameter
 provenance manifest, and independent validators.  Generated profiles are

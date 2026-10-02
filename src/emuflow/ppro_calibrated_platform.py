@@ -221,6 +221,7 @@ def _fit_edges(topology_fit: Mapping[str, Any], fpga_count: int) -> Dict[tuple[i
     if topology_fit.get("schema") != TOPOLOGY_FIT_SCHEMA:
         raise ValidationError("calibrated platform topology fit schema is invalid")
     result = {}
+    seen = set()
     for record in topology_fit.get("directed_edges", []):
         source = record.get("source")
         sink = record.get("sink")
@@ -233,13 +234,27 @@ def _fit_edges(topology_fit: Mapping[str, Any], fpga_count: int) -> Dict[tuple[i
             raise ValidationError("calibrated topology FPGA alias is invalid") from error
         if not (0 <= source_index < fpga_count and 0 <= sink_index < fpga_count):
             raise ValidationError("calibrated topology edge exceeds the selected configuration")
+        pair = (source_index, sink_index)
+        if source_index == sink_index or pair in seen:
+            raise ValidationError("calibrated topology directed-pair coverage is invalid")
+        seen.add(pair)
         if record.get("state") == "reachable":
             hops = record.get("effective_hops")
             if isinstance(hops, bool) or not isinstance(hops, int) or hops < 1:
                 raise ValidationError("calibrated topology reachable edge lacks hop evidence")
-            result[(source_index, sink_index)] = hops
+            result[pair] = hops
         elif record.get("state") != "unreachable":
             raise ValidationError("calibrated topology edge state is invalid")
+    expected = {
+        (source, sink)
+        for source in range(fpga_count)
+        for sink in range(fpga_count)
+        if source != sink
+    }
+    if seen != expected:
+        raise ValidationError(
+            "calibrated topology does not cover every ordered pair in the selected configuration"
+        )
     return result
 
 
@@ -274,7 +289,9 @@ def _direct_topology(topology_fit: Mapping[str, Any], fpga_count: int) -> set[tu
     return direct
 
 
-def _payload_widths(payload_fit: Mapping[str, Any]) -> Dict[tuple[int, int], int]:
+def _payload_widths(
+    payload_fit: Mapping[str, Any], fpga_count: int
+) -> Dict[tuple[int, int], int]:
     if payload_fit.get("schema") != PAYLOAD_FIT_SCHEMA:
         raise ValidationError("calibrated platform payload fit schema is invalid")
     result = {}
@@ -288,10 +305,18 @@ def _payload_widths(payload_fit: Mapping[str, Any]) -> Dict[tuple[int, int], int
             continue
         source = int(str(record["source"]).removeprefix("F"))
         sink = int(str(record["sink"]).removeprefix("F"))
+        pair = (source, sink)
+        if (
+            not 0 <= source < fpga_count
+            or not 0 <= sink < fpga_count
+            or source == sink
+            or pair in result
+        ):
+            raise ValidationError("calibrated payload directed-pair coverage is invalid")
         ratio_one = record.get("ratio_one_lower_width_bits")
         if isinstance(ratio_one, bool) or not isinstance(ratio_one, int) or ratio_one <= 0:
             raise ValidationError("calibrated payload fit lacks a ratio-one lower bound")
-        result[(source, sink)] = ratio_one
+        result[pair] = ratio_one
     return result
 
 
@@ -388,9 +413,11 @@ def generate_calibrated_platform_profiles(
     public_capacity = _public_capacities(normalized_prior)
     utilization_limit, capacity_projection = _utilization_limit(capacity_fit, public_capacity)
     direct_edges = _direct_topology(topology_fit, fpga_count)
-    payload_widths = _payload_widths(payload_fit)
-    if any(edge not in payload_widths for edge in direct_edges):
-        raise ValidationError("calibrated platform lacks ratio-one payload evidence for a direct edge")
+    payload_widths = _payload_widths(payload_fit, fpga_count)
+    if set(payload_widths) != direct_edges:
+        raise ValidationError(
+            "calibrated platform payload evidence does not exactly match the observed one-hop edges"
+        )
 
     generated = {}
     source_hashes = {

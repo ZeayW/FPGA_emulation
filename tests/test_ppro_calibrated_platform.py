@@ -245,10 +245,53 @@ class PProCalibratedPlatformTest(unittest.TestCase):
             )
         )
         capacity, topology, payload, latency, transport = fit_artifacts()
-        topology["directed_edges"].append(
-            {"source": "F0", "sink": "F1", "state": "reachable", "effective_hops": 2}
-        )
+        topology["directed_edges"][0]["effective_hops"] = 2
         with self.assertRaisesRegex(ValidationError, "cannot explain"):
+            generate_calibrated_platform_profiles(
+                prior=prior,
+                configuration_id="lx2-m1",
+                capacity_fit=capacity,
+                topology_fit=topology,
+                payload_fit=payload,
+                latency_fit=latency,
+                transport_fit=transport,
+                fabric_clock_mhz={"aggressive": 300.0, "nominal": 250.0, "conservative": 200.0},
+            )
+
+    def test_selected_configuration_requires_complete_ordered_pair_coverage(self):
+        prior = json.loads(
+            (ROOT / "calibration/ppro_blackbox/priors/lx2-public-prior-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        capacity, topology, payload, latency, transport = fit_artifacts()
+        with self.assertRaisesRegex(ValidationError, "every ordered pair"):
+            generate_calibrated_platform_profiles(
+                prior=prior,
+                configuration_id="lx2-m2",
+                capacity_fit=capacity,
+                topology_fit=topology,
+                payload_fit=payload,
+                latency_fit=latency,
+                transport_fit=transport,
+                fabric_clock_mhz={"aggressive": 300.0, "nominal": 250.0, "conservative": 200.0},
+            )
+
+    def test_payload_evidence_must_exactly_match_direct_edges(self):
+        prior = json.loads(
+            (ROOT / "calibration/ppro_blackbox/priors/lx2-public-prior-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        capacity, topology, payload, latency, transport = fit_artifacts()
+        payload["link_signatures"].append(
+            {
+                **payload["link_signatures"][0],
+                "source": "F0",
+                "sink": "F0",
+            }
+        )
+        with self.assertRaisesRegex(ValidationError, "payload directed-pair coverage"):
             generate_calibrated_platform_profiles(
                 prior=prior,
                 configuration_id="lx2-m1",

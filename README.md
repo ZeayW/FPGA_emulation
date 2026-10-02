@@ -453,6 +453,10 @@ production transport RTL. Fabric clock and simultaneous reverse-direction
 capacity sharing remain explicit research assumptions. In particular,
 `capacity_sharing=per_direction` is not presented as a PPro-discovered board
 property, and bundle validation fails when this provenance record is missing.
+Platform generation also requires topology evidence for every ordered FPGA
+pair in the selected public configuration and requires payload evidence to
+match the observed one-hop edge set exactly. A four-FPGA fit therefore cannot
+silently produce a six- or eight-FPGA BoardDB with uncalibrated isolated nodes.
 
 The real ordinary-report profile is the default for all generated calibration
 cases; synthetic mock generation requires an explicit
