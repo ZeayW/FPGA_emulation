@@ -540,6 +540,14 @@ emuflow-ppro-calibration generate-application-holdout \
   --source-root third_party/rtl/secworks_aes
 ```
 
+The joined blind-result contract is `emuflow.ppro-holdout-result/v2`. It
+requires the EmuFlow summary to carry the same RTL SHA-256 as the PPro
+observation and assigns every result to one explicit benchmark class:
+secworks AES, an open CPU, Koios compute, Koios DLA, or NVDLA. The promotion
+gate requires all five classes, rejects duplicate result identities and
+duplicate workload/algorithm entries, and still requires complete Phase 1--7
+OpenSTA WNS/TNS evidence with physical seed 1.
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both

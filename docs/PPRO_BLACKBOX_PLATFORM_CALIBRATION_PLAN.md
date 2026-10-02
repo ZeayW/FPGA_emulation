@@ -601,7 +601,11 @@ checked benchmark contract and natural RTL source tree to a free-partition
 PPro `application_holdout`; source paths and the EmuFlow platform choice never
 enter the compact observation. Each case joins one passing PPro observation
 to a complete EmuFlow Phase 1--7 summary produced with physical seed 1 and
-authoritative OpenSTA global timing. Promotion requires the same complete
+authoritative OpenSTA global timing. The v2 joined-result contract requires an
+exact RTL SHA-256 match across the two flows and labels the workload as
+secworks AES, open CPU, Koios compute, Koios DLA, or NVDLA; all five classes
+are mandatory. Duplicate result identities and duplicate workload/algorithm
+entries fail closed. Promotion additionally requires the same complete
 configuration, comparable resource utilization within 10 percentage points,
 TDM ratio within one level, cross-FPGA delay within 15%, major busiest-pair
 ordering agreement, macro-cycle/schedule legality, zero unrouted nets and DRC,

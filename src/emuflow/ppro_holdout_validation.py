@@ -10,9 +10,16 @@ from .errors import ValidationError
 from .ppro_blackbox_calibration import validate_blackbox_observation
 
 
-HOLDOUT_RESULT_SCHEMA = "emuflow.ppro-holdout-result/v1"
+HOLDOUT_RESULT_SCHEMA = "emuflow.ppro-holdout-result/v2"
 PROMOTION_REPORT_SCHEMA = "emuflow.ppro-platform-promotion/v1"
 _TIERS = {"medium", "diversity", "large", "large_primary", "very_large_final"}
+_BENCHMARK_CLASS_TIERS = {
+    "secworks_aes": "medium",
+    "open_cpu": "diversity",
+    "koios_compute": "large",
+    "koios_dla": "large_primary",
+    "nvdla": "very_large_final",
+}
 
 
 def _number(value: Any, context: str) -> float:
@@ -41,7 +48,16 @@ def _nonnegative_integer(value: Any, context: str) -> int:
 
 
 def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
-    required = {"schema", "id", "workload_id", "tier", "algorithm_id", "ppro", "emuflow"}
+    required = {
+        "schema",
+        "id",
+        "workload_id",
+        "benchmark_class",
+        "tier",
+        "algorithm_id",
+        "ppro",
+        "emuflow",
+    }
     if not isinstance(value, Mapping) or set(value) != required:
         raise ValidationError("holdout result fields are invalid")
     if value.get("schema") != HOLDOUT_RESULT_SCHEMA:
@@ -51,6 +67,12 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
             raise ValidationError(f"holdout result {name} is invalid")
     if value["tier"] not in _TIERS:
         raise ValidationError("holdout result tier is invalid")
+    benchmark_class = value["benchmark_class"]
+    if (
+        benchmark_class not in _BENCHMARK_CLASS_TIERS
+        or value["tier"] != _BENCHMARK_CLASS_TIERS[benchmark_class]
+    ):
+        raise ValidationError("holdout result benchmark class and tier disagree")
     ppro = validate_blackbox_observation(value["ppro"])
     if (
         ppro["identity"]["role"] != "holdout"
@@ -70,6 +92,7 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
     emuflow_required = {
         "status",
         "configuration_id",
+        "rtl_sha256",
         "physical_seed",
         "resource_utilization",
         "maximum_tdm_ratio",
@@ -91,6 +114,14 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
         configuration_match = False
     else:
         configuration_match = True
+    rtl_sha256 = emuflow["rtl_sha256"]
+    if (
+        not isinstance(rtl_sha256, str)
+        or len(rtl_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in rtl_sha256)
+        or rtl_sha256 != ppro["workload"]["rtl_sha256"]
+    ):
+        raise ValidationError("holdout PPro and EmuFlow RTL identities disagree")
     if emuflow["physical_seed"] != 1:
         raise ValidationError("holdout validation requires the single default physical seed 1")
     if emuflow["global_timing_engine"] != "opensta":
@@ -144,6 +175,7 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
         "schema": HOLDOUT_RESULT_SCHEMA,
         "id": value["id"],
         "workload_id": value["workload_id"],
+        "benchmark_class": benchmark_class,
         "tier": value["tier"],
         "algorithm_id": value["algorithm_id"],
         "ppro": ppro,
@@ -182,6 +214,14 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
     normalized = [validate_holdout_result(item) for item in results]
     if not normalized:
         raise ValidationError("holdout promotion requires results")
+    identities = [item["id"] for item in normalized]
+    if len(identities) != len(set(identities)):
+        raise ValidationError("holdout promotion contains duplicate result identities")
+    workload_algorithms = [
+        (item["workload_id"], item["algorithm_id"]) for item in normalized
+    ]
+    if len(workload_algorithms) != len(set(workload_algorithms)):
+        raise ValidationError("holdout promotion contains a duplicate workload algorithm")
     cases = []
     for item in normalized:
         ppro = item["ppro"]
@@ -221,6 +261,7 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
         case = {
             "id": item["id"],
             "workload_id": item["workload_id"],
+            "benchmark_class": item["benchmark_class"],
             "tier": item["tier"],
             "algorithm_id": item["algorithm_id"],
             "configuration_match": emuflow["configuration_match"],
@@ -265,9 +306,13 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
             {"workload_id": workload, "ppro_order": ppro_order, "emuflow_order": emuflow_order, "matches": ppro_order == emuflow_order}
         )
     tiers = {case["tier"] for case in cases if case["passes"]}
+    benchmark_classes = {
+        case["benchmark_class"] for case in cases if case["passes"]
+    }
     promotion = (
         all(case["passes"] for case in cases)
         and _TIERS <= tiers
+        and set(_BENCHMARK_CLASS_TIERS) <= benchmark_classes
         and bool(ranking_checks)
         and all(item["matches"] for item in ranking_checks)
     )
@@ -279,4 +324,6 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
         "ranking_checks": ranking_checks,
         "covered_passing_tiers": sorted(tiers),
         "required_tiers": sorted(_TIERS),
+        "covered_passing_benchmark_classes": sorted(benchmark_classes),
+        "required_benchmark_classes": sorted(_BENCHMARK_CLASS_TIERS),
     }

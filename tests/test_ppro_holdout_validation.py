@@ -60,16 +60,25 @@ def ppro_observation(identifier: str, delay: float):
 
 
 def result(identifier: str, workload: str, tier: str, algorithm: str, delay: float):
+    benchmark_class = {
+        "medium": "secworks_aes",
+        "diversity": "open_cpu",
+        "large": "koios_compute",
+        "large_primary": "koios_dla",
+        "very_large_final": "nvdla",
+    }[tier]
     return {
-        "schema": "emuflow.ppro-holdout-result/v1",
+        "schema": "emuflow.ppro-holdout-result/v2",
         "id": identifier,
         "workload_id": workload,
+        "benchmark_class": benchmark_class,
         "tier": tier,
         "algorithm_id": algorithm,
         "ppro": ppro_observation(identifier, delay),
         "emuflow": {
             "status": "pass",
             "configuration_id": "lx2-m2",
+            "rtl_sha256": "3" * 64,
             "physical_seed": 1,
             "resource_utilization": {"lut": 0.55},
             "maximum_tdm_ratio": 2,
@@ -126,6 +135,27 @@ class PProHoldoutValidationTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             evaluate_holdout_promotion([value])
 
+    def test_rtl_identity_and_benchmark_class_fail_closed(self):
+        value = result("aes-a", "aes", "medium", "a", 10.0)
+        value["emuflow"]["rtl_sha256"] = "6" * 64
+        with self.assertRaisesRegex(ValidationError, "RTL identities"):
+            evaluate_holdout_promotion([value])
+
+        value = result("aes-a", "aes", "medium", "a", 10.0)
+        value["benchmark_class"] = "open_cpu"
+        with self.assertRaisesRegex(ValidationError, "class and tier"):
+            evaluate_holdout_promotion([value])
+
+    def test_duplicate_identity_or_algorithm_fails_closed(self):
+        value = result("aes-a", "aes", "medium", "a", 10.0)
+        with self.assertRaisesRegex(ValidationError, "duplicate result"):
+            evaluate_holdout_promotion([value, value])
+
+        left = result("aes-a", "aes", "medium", "a", 10.0)
+        right = result("aes-b", "aes", "medium", "a", 10.0)
+        with self.assertRaisesRegex(ValidationError, "duplicate workload algorithm"):
+            evaluate_holdout_promotion([left, right])
+
     def test_zero_reference_delay_does_not_hide_nonzero_error(self):
         values = [
             result("aes-a", "aes", "medium", "a", 0.0),
@@ -149,7 +179,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
         if jsonschema is not None:
             root = Path(__file__).resolve().parents[1]
             schema = json.loads(
-                (root / "schemas/ppro-holdout-result-v1.schema.json").read_text(
+                (root / "schemas/ppro-holdout-result-v2.schema.json").read_text(
                     encoding="utf-8"
                 )
             )
