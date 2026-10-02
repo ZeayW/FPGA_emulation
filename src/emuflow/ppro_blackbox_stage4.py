@@ -394,9 +394,21 @@ def fit_latency_model(
         raise ValidationError("latency bootstrap_samples must be >= 16")
     generator = random.Random(0)
     boot = [[] for _ in coefficients]
+    predictions = [
+        sum(value * coefficient for value, coefficient in zip(row, coefficients))
+        for row in features
+    ]
     for _ in range(bootstrap_samples):
-        indices = [generator.randrange(len(features)) for _ in features]
-        sampled = _nnls([features[index] for index in indices], [targets[index] for index in indices])
+        # Preserve the complete controlled design matrix in every replicate.
+        # Row-pair resampling can omit a rare categorical TDM state entirely
+        # and manufacture a zero lower bound even though that state is
+        # independently identifiable.  Residual bootstrap varies the measured
+        # response while retaining every calibrated state.
+        sampled_targets = [
+            prediction + residuals[generator.randrange(len(residuals))]
+            for prediction in predictions
+        ]
+        sampled = _nnls(features, sampled_targets)
         for column, value in enumerate(sampled):
             boot[column].append(value)
     parameters = {}

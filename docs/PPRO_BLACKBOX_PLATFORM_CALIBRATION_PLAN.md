@@ -455,7 +455,9 @@ fits non-negative endpoint, hop, contention, and multicast terms plus a
 categorical delay for every observed TDM ratio.  This matches the discrete
 black-box timing states without pretending that line rate or a per-bit
 serialization slope was identified.  Every fitted ratio, including ratio one,
-requires an independent holdout. Transport
+requires an independent holdout.  Deterministic residual bootstrap preserves
+the complete controlled design matrix in every confidence replicate, so a rare
+but identified TDM state cannot disappear from its own interval. Transport
 cost uses same-RTL local/cross placement pairs so DUT logic cancels before
 fitting incremental resource cost; negative paired deltas fail closed as
 evidence that unrelated mapping changed. An opaque pairing token binds each
