@@ -217,6 +217,20 @@ This is runner/report evidence, not a calibrated-platform QoR result. The C0
 v3 compile-context extension has passed local render/tamper/cleanup tests; its
 fresh authorized PPro run remains pending while the licensed node is occupied.
 A mock result is never accepted as real PPro evidence.
+
+`runner_revision` is the canonical SHA-256 of the complete black-box runtime
+source boundary, not merely `ppro_blackbox_runner.py`. Generate it once from
+the exact pushed checkout and pass the returned value to every case generator:
+
+```sh
+emuflow-ppro-calibration runner-revision
+```
+
+The path-redacted manifest covers queue/execution, disposable runtime
+rendering, constraint translation, ordinary-report parsing, observation
+validation, campaign orchestration, and compact JSON writing. A change to any
+of those modules changes the revision sealed into the run spec.
+
 The runner applies the same default 75% limit to LUT, FF, BRAM, URAM, and DSP;
 the explicit `--utilization-limit-percent` changes all five together.
 

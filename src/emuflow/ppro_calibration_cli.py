@@ -24,6 +24,7 @@ from .ppro_blackbox_campaign import (
     prune_empty_bundle_tree,
 )
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
+from .ppro_blackbox_provenance import runner_source_bundle
 from .ppro_blackbox_constraints import parse_logical_targets
 from .ppro_blackbox_communication import (
     generate_communication_matrix,
@@ -93,6 +94,8 @@ def _parser() -> argparse.ArgumentParser:
 
     validate_spec = commands.add_parser("validate-run-spec")
     validate_spec.add_argument("run_spec", type=Path)
+
+    commands.add_parser("runner-revision")
 
     smoke = commands.add_parser("generate-smoke")
     smoke.add_argument("--out", type=Path, required=True)
@@ -190,7 +193,7 @@ def _parser() -> argparse.ArgumentParser:
     run_case.add_argument("--platform-reference", type=Path, required=True)
     run_case.add_argument("--documented-constraints", type=Path, required=True)
     run_case.add_argument("--fpga-alias", action="append", default=[], required=True)
-    run_case.add_argument("--logical-target", action="append", default=[], required=True)
+    run_case.add_argument("--logical-target", action="append", default=[])
     run_case.add_argument("--max-processes", type=int, default=4)
     run_case.add_argument("--utilization-limit-percent", type=int, default=75)
     run_case.add_argument("--timeout-seconds", type=float, default=21600.0)
@@ -202,7 +205,7 @@ def _parser() -> argparse.ArgumentParser:
     run_campaign.add_argument("--install-root", type=Path, required=True)
     run_campaign.add_argument("--platform-reference", type=Path, required=True)
     run_campaign.add_argument("--fpga-alias", action="append", default=[], required=True)
-    run_campaign.add_argument("--logical-target", action="append", default=[], required=True)
+    run_campaign.add_argument("--logical-target", action="append", default=[])
     run_campaign.add_argument("--max-workers", type=int, default=1)
     run_campaign.add_argument("--max-processes-per-case", type=int, default=4)
     run_campaign.add_argument("--maximum-cases", type=int, default=1000)
@@ -277,6 +280,8 @@ def _dispatch(args: argparse.Namespace) -> Any:
         return validate_redacted_artifact(read_json(args.artifact.resolve()))
     if args.command == "validate-run-spec":
         return validate_run_spec(read_json(args.run_spec.resolve()))
+    if args.command == "runner-revision":
+        return {"status": "pass", **runner_source_bundle()}
     if args.command == "generate-smoke":
         bundle = generate_connected_smoke_bundle(
             args.out,

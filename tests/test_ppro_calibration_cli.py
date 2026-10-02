@@ -7,13 +7,48 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from emuflow.ppro_calibration_cli import _campaign_status, main
+from emuflow.ppro_calibration_cli import _campaign_status, _parser, main
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class PProCalibrationCliTest(unittest.TestCase):
+    def test_free_partition_runtime_can_omit_logical_targets(self):
+        args = _parser().parse_args(
+            [
+                "run-ppro-case",
+                "--run-spec",
+                "run-spec.json",
+                "--filelist",
+                "sources.f",
+                "--case-dir",
+                "case",
+                "--install-root",
+                "install",
+                "--platform-reference",
+                "platform.ref",
+                "--documented-constraints",
+                "constraints.json",
+                "--fpga-alias",
+                "F0=F0",
+            ]
+        )
+        self.assertEqual(args.logical_target, [])
+
+    def test_runner_revision_covers_complete_runtime_source_bundle(self):
+        output = StringIO()
+        with redirect_stdout(output):
+            code = main(["runner-revision"])
+        self.assertEqual(code, 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(
+            result["schema"], "emuflow.ppro-runner-source-bundle/v1"
+        )
+        self.assertGreaterEqual(len(result["members"]), 8)
+        self.assertEqual(len(result["runner_revision"]), 64)
+
     def test_campaign_accepts_measured_boundaries_but_not_provider_failures(self):
         self.assertEqual(
             _campaign_status({"pass": 2, "capacity_infeasible": 2}, 4),

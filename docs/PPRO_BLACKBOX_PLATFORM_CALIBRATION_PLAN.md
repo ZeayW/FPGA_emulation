@@ -362,6 +362,13 @@ mandatory `/research/d4/gds/ziyiwang21` boundary and pins all standard temporary
 environment variables below the case. This does not replace the fresh
 authorized PPro smoke for any future incompatible runner or report-profile
 revision.
+
+Runner provenance uses one deterministic, path-redacted source bundle rather
+than the digest of a single module. The bundle covers execution, disposable
+runtime rendering, constraint translation, ordinary-report parsing,
+observation validation, campaign orchestration, and compact output writing.
+Its canonical SHA-256 is the `runner_revision` for newly generated campaigns.
+
 The default pre-partition headroom is uniform across LUT, FF, BRAM, URAM, and
 DSP at 75%; one explicit runtime option changes all five together so a capacity
 comparison cannot silently use inconsistent resource limits.
