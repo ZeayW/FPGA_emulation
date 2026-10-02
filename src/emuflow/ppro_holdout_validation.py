@@ -94,14 +94,77 @@ def _validate_holdout_preparation(
 ) -> None:
     if benchmark_class != "nvdla":
         return
+    required = {
+        "schema",
+        "generator_id",
+        "upstream_revision",
+        "upstream_archive_sha256",
+        "memory_policy",
+        "partition_directive_replacements",
+        "ram_wrapper_count",
+        "ram_modeled_count",
+        "generated_files",
+        "source_list_sha256",
+    }
+    if not isinstance(preparation, Mapping) or set(preparation) != required:
+        raise ValidationError(
+            "NVDLA final holdout requires a complete shared-frontend preparation certificate"
+        )
     if (
-        not isinstance(preparation, Mapping)
+        preparation.get("schema") != "emuflow.nvdla-preparation/v1"
+        or preparation.get("generator_id") != "nvdla-shared-frontend-v2"
         or preparation.get("memory_policy") != _PHYSICAL_MEMORY_POLICY
     ):
         raise ValidationError(
             "NVDLA final holdout requires a shared physically implementable "
             "memory model; black-box scale abstractions are not closure evidence"
         )
+    revision = preparation["upstream_revision"]
+    if (
+        not isinstance(revision, str)
+        or len(revision) != 40
+        or any(character not in "0123456789abcdef" for character in revision)
+    ):
+        raise ValidationError("NVDLA preparation has an invalid upstream revision")
+    _digest(preparation["upstream_archive_sha256"], "NVDLA upstream archive")
+    _digest(preparation["source_list_sha256"], "NVDLA source list")
+    replacements = _nonnegative_integer(
+        preparation["partition_directive_replacements"],
+        "NVDLA partition directive replacements",
+    )
+    wrapper_count = _nonnegative_integer(
+        preparation["ram_wrapper_count"], "NVDLA RAM wrapper count"
+    )
+    modeled_count = _nonnegative_integer(
+        preparation["ram_modeled_count"], "NVDLA modeled RAM count"
+    )
+    if replacements == 0 or wrapper_count == 0 or modeled_count != wrapper_count:
+        raise ValidationError("NVDLA preparation has incomplete physical-memory coverage")
+    generated = preparation["generated_files"]
+    if not isinstance(generated, list) or len(generated) != 3:
+        raise ValidationError("NVDLA preparation must seal exactly three generated files")
+    generated_paths = set()
+    for index, record in enumerate(generated):
+        if not isinstance(record, Mapping) or set(record) != {"path", "sha256"}:
+            raise ValidationError(f"NVDLA generated file {index} is invalid")
+        path = record["path"]
+        if (
+            not isinstance(path, str)
+            or not path
+            or Path(path).is_absolute()
+            or ".." in Path(path).parts
+            or path in generated_paths
+        ):
+            raise ValidationError(f"NVDLA generated file {index} path is unsafe")
+        generated_paths.add(path)
+        _digest(record["sha256"], f"NVDLA generated file {index}")
+    required_names = {
+        "NV_NVDLA_partition_o.v",
+        "nvdla_ram_wrappers.v",
+        "nvdla_compat.v",
+    }
+    if {Path(path).name for path in generated_paths} != required_names:
+        raise ValidationError("NVDLA preparation generated-file set is incomplete")
 
 
 def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:

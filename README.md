@@ -589,6 +589,10 @@ write-through, and bypass behavior. It fails closed if any wrapper name, port,
 width, or family is unsupported, and seals both the wrapper and modeled-memory
 counts in the preparation manifest. Scale and physical preparations receive
 different benchmark identities, so their results cannot collide.
+The NVDLA promotion gate validates the complete preparation certificate, not
+only the policy label: generator revision, pinned upstream revision/archive,
+full modeled-wrapper coverage, source-list digest, and all three generated-file
+digests must be present and well formed.
 
 Local interface and full-wrapper-coverage tests pass for the pinned NVDLA
 archive. This model becomes final physical-memory evidence only after the same

@@ -116,6 +116,34 @@ def result(identifier: str, workload: str, tier: str, algorithm: str, delay: flo
 
 class PProHoldoutValidationTest(unittest.TestCase):
     @staticmethod
+    def physical_nvdla_preparation():
+        return {
+            "schema": "emuflow.nvdla-preparation/v1",
+            "generator_id": "nvdla-shared-frontend-v2",
+            "upstream_revision": "1" * 40,
+            "upstream_archive_sha256": "2" * 64,
+            "memory_policy": "physically-implementable-shared-memory-model-v1",
+            "partition_directive_replacements": 1,
+            "ram_wrapper_count": 28,
+            "ram_modeled_count": 28,
+            "generated_files": [
+                {
+                    "path": ".prepared/NV_NVDLA_partition_o.v",
+                    "sha256": "3" * 64,
+                },
+                {
+                    "path": ".prepared/nvdla_ram_wrappers.v",
+                    "sha256": "4" * 64,
+                },
+                {
+                    "path": ".prepared/nvdla_compat.v",
+                    "sha256": "5" * 64,
+                },
+            ],
+            "source_list_sha256": "6" * 64,
+        }
+
+    @staticmethod
     def complete_results():
         return [
             result("aes-a", "aes", "medium", "a", 10.0),
@@ -135,15 +163,30 @@ class PProHoldoutValidationTest(unittest.TestCase):
 
     def test_nvdla_final_holdout_rejects_black_box_memory(self):
         with self.assertRaisesRegex(ValidationError, "physically implementable"):
+            preparation = self.physical_nvdla_preparation()
+            preparation["memory_policy"] = (
+                "interface-accurate-black-box-scale-abstraction"
+            )
             _validate_holdout_preparation(
                 "nvdla",
-                {"memory_policy": "interface-accurate-black-box-scale-abstraction"},
+                preparation,
             )
         _validate_holdout_preparation(
             "nvdla",
-            {"memory_policy": "physically-implementable-shared-memory-model-v1"},
+            self.physical_nvdla_preparation(),
         )
         _validate_holdout_preparation("koios_dla", None)
+
+    def test_nvdla_final_holdout_rejects_forged_or_partial_memory_certificate(self):
+        with self.assertRaisesRegex(ValidationError, "complete shared-frontend"):
+            _validate_holdout_preparation(
+                "nvdla",
+                {"memory_policy": "physically-implementable-shared-memory-model-v1"},
+            )
+        preparation = self.physical_nvdla_preparation()
+        preparation["ram_modeled_count"] = 27
+        with self.assertRaisesRegex(ValidationError, "incomplete physical-memory"):
+            _validate_holdout_preparation("nvdla", preparation)
 
     def test_incomplete_physical_or_bad_delay_fails_promotion(self):
         values = self.complete_results()

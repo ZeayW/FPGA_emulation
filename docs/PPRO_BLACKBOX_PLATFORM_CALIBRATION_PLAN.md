@@ -678,6 +678,10 @@ SRAM wrapper in the pinned archive across the `rws`, `rwsp`, `rwst`, and
 output-enable, write-through, and bypass semantics, and fails closed on any
 unknown family, port, or width. The preparation manifest seals wrapper/model
 coverage and the scale and physical variants use distinct benchmark IDs.
+The promotion gate checks the complete certificate rather than trusting the
+policy string alone: it requires the v2 generator, pinned upstream identities,
+complete nonzero wrapper coverage, source-list digest, and the exact three-file
+generated overlay set with valid digests.
 Local interface, coverage, and tamper tests pass. The physical model is still a
 candidate rather than final evidence until that exact source completes remote
 synthesis and the full NVDLA Phase 1--7 promotion gate.
