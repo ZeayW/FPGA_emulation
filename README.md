@@ -446,6 +446,14 @@ endpoint, internal platform file, or raw report directory as serialized input.
 `evaluate-holdouts` applies the final blind promotion gate and rejects any case
 that stops before complete Phase 7 or omits authoritative global WNS/TNS.
 
+Every generated platform manifest records parameter-level provenance. Device
+capacity is public-spec evidence; effective utilization, topology, payload,
+and delay are black-box fitted; transport cost is characterized from the open
+production transport RTL. Fabric clock and simultaneous reverse-direction
+capacity sharing remain explicit research assumptions. In particular,
+`capacity_sharing=per_direction` is not presented as a PPro-discovered board
+property, and bundle validation fails when this provenance record is missing.
+
 The real ordinary-report profile is the default for all generated calibration
 cases; synthetic mock generation requires an explicit
 `--adapter-profile mock-ordinary-reports-v1`. Stage 3/4 inputs are generated

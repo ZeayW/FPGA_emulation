@@ -30,6 +30,16 @@ CALIBRATED_MANIFEST_SCHEMA = "emuflow.ppro-calibrated-platform-manifest/v1"
 _PROFILES = ("aggressive", "nominal", "conservative")
 _MAX_HOLDOUT_RELATIVE_ERROR = 0.15
 _ZERO_ACTUAL_ABSOLUTE_TOLERANCE = 1.0
+_PARAMETER_PROVENANCE = {
+    "device.capacity": "public_spec",
+    "device.effective_utilization_limit": "black_box_fitted",
+    "topology.directed_reachability": "black_box_fitted",
+    "link.payload_capacity": "black_box_fitted",
+    "link.delay_bound": "black_box_fitted",
+    "link.fabric_clock_mhz": "research_assumption",
+    "link.capacity_sharing": "research_assumption",
+    "transport.resource_cost": OPEN_TRANSPORT_PROVENANCE,
+}
 _AXIS_MAP = {
     # public-prior key, BoardDB resource, observation resource, BoardDB units
     # per observation unit.  PPro's ordinary BRAM report is normalized as a
@@ -513,6 +523,43 @@ def generate_calibrated_platform_profiles(
         ],
         "fabric_clock_provenance": "research_assumption",
         "fabric_clock_mhz": {name: float(fabric_clock_mhz[name]) for name in _PROFILES},
+        "parameter_provenance": {
+            "device.capacity": {
+                "class": "public_spec",
+                "source_sha256": source_hashes["prior"],
+            },
+            "device.effective_utilization_limit": {
+                "class": "black_box_fitted",
+                "source_sha256": source_hashes["capacity_fit"],
+            },
+            "topology.directed_reachability": {
+                "class": "black_box_fitted",
+                "source_sha256": source_hashes["topology_fit"],
+            },
+            "link.payload_capacity": {
+                "class": "black_box_fitted",
+                "source_sha256": source_hashes["payload_fit"],
+            },
+            "link.delay_bound": {
+                "class": "black_box_fitted",
+                "source_sha256": source_hashes["latency_fit"],
+            },
+            "link.fabric_clock_mhz": {
+                "class": "research_assumption",
+                "profiles": {
+                    name: float(fabric_clock_mhz[name]) for name in _PROFILES
+                },
+            },
+            "link.capacity_sharing": {
+                "class": "research_assumption",
+                "value": "per_direction",
+                "reason": "ordinary black-box reports do not identify simultaneous reverse-direction sharing",
+            },
+            "transport.resource_cost": {
+                "class": OPEN_TRANSPORT_PROVENANCE,
+                "source_sha256": source_hashes["transport_fit"],
+            },
+        },
         "capacity_projection": capacity_projection,
         "source_hashes": source_hashes,
         "profiles": {
@@ -556,6 +603,45 @@ def validate_calibrated_platform_bundle(root: Path) -> Dict[str, Any]:
         raise ValidationError("calibrated platform claim scope is invalid")
     if manifest.get("fabric_clock_provenance") != "research_assumption":
         raise ValidationError("calibrated platform fabric-clock provenance is invalid")
+    parameter_provenance = manifest.get("parameter_provenance")
+    if not isinstance(parameter_provenance, dict) or set(parameter_provenance) != set(
+        _PARAMETER_PROVENANCE
+    ):
+        raise ValidationError("calibrated platform parameter provenance coverage is invalid")
+    for parameter, expected_class in _PARAMETER_PROVENANCE.items():
+        record = parameter_provenance.get(parameter)
+        if not isinstance(record, dict) or record.get("class") != expected_class:
+            raise ValidationError(
+                f"calibrated platform {parameter} provenance is invalid"
+            )
+    sharing = parameter_provenance["link.capacity_sharing"]
+    if sharing.get("value") != "per_direction" or not isinstance(
+        sharing.get("reason"), str
+    ):
+        raise ValidationError("calibrated platform link sharing assumption is invalid")
+    clocks = parameter_provenance["link.fabric_clock_mhz"].get("profiles")
+    if not isinstance(clocks, dict) or set(clocks) != set(_PROFILES):
+        raise ValidationError("calibrated platform fabric-clock profile provenance is invalid")
+    source_hashes = manifest.get("source_hashes")
+    if not isinstance(source_hashes, dict):
+        raise ValidationError("calibrated platform source hashes are invalid")
+    for parameter, source in (
+        ("device.capacity", "prior"),
+        ("device.effective_utilization_limit", "capacity_fit"),
+        ("topology.directed_reachability", "topology_fit"),
+        ("link.payload_capacity", "payload_fit"),
+        ("link.delay_bound", "latency_fit"),
+        ("transport.resource_cost", "transport_fit"),
+    ):
+        digest = parameter_provenance[parameter].get("source_sha256")
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or digest != source_hashes.get(source)
+        ):
+            raise ValidationError(
+                f"calibrated platform {parameter} source provenance is invalid"
+            )
     records = manifest.get("profiles")
     if not isinstance(records, dict) or set(records) != set(_PROFILES):
         raise ValidationError("calibrated platform manifest profile coverage is invalid")

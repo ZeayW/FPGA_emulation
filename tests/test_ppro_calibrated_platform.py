@@ -190,6 +190,23 @@ class PProCalibratedPlatformTest(unittest.TestCase):
                 artifacts["transport_cost"], expected_platform=platform.name
             )
         self.assertEqual(result["manifest"]["fabric_clock_provenance"], "research_assumption")
+        provenance = result["manifest"]["parameter_provenance"]
+        self.assertEqual(provenance["device.capacity"]["class"], "public_spec")
+        self.assertEqual(
+            provenance["link.payload_capacity"]["class"], "black_box_fitted"
+        )
+        self.assertEqual(
+            provenance["link.capacity_sharing"],
+            {
+                "class": "research_assumption",
+                "value": "per_direction",
+                "reason": "ordinary black-box reports do not identify simultaneous reverse-direction sharing",
+            },
+        )
+        self.assertEqual(
+            provenance["transport.resource_cost"]["class"],
+            OPEN_TRANSPORT_PROVENANCE,
+        )
         bram_conversion = result["manifest"]["capacity_projection"][
             "demand_unit_conversions"
         ]["bram"]
@@ -208,6 +225,17 @@ class PProCalibratedPlatformTest(unittest.TestCase):
             boarddb["links"][0]["latency_cycles"] += 1
             boarddb_path.write_text(json.dumps(boarddb), encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "hash mismatch"):
+                validate_calibrated_platform_bundle(root)
+
+    def test_written_bundle_rejects_missing_parameter_provenance(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "platform"
+            write_calibrated_platform_profiles(root, self.generate())
+            manifest_path = root / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            del manifest["parameter_provenance"]["link.capacity_sharing"]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "provenance coverage"):
                 validate_calibrated_platform_bundle(root)
 
     def test_multihop_claim_must_be_explained_by_direct_edges(self):

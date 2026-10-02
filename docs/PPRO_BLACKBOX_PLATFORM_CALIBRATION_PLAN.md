@@ -46,6 +46,7 @@ Every emitted parameter must have exactly one provenance class:
 | `black_box_fitted` | Estimated from multiple controlled observations | Publish estimate, confidence interval, fit set, and holdout error |
 | `research_assumption` | Required by EmuFlow but not identifiable | Publish the assumption and sensitivity range |
 | `not_identifiable` | Cannot be separated from available observations | Do not invent a value or silently substitute a guess |
+| `open_source_rtl_characterization` | Measured from the exact open EmuFlow transport RTL and audited mapping profile | Publish the model, mapping provenance, fit set, and holdout error |
 
 The open model must be rebuildable from public specifications plus normalized
 observations.  Raw PPro projects, reports, licenses, installations, credentials,
@@ -573,7 +574,12 @@ the resulting shortest paths. Ratio-one payload evidence is mandatory for
 each direct edge. Timing is marked `characterized-upper-bound`, never measured
 signoff; fabric clock remains an explicit sensitivity assumption. The writer
 stores only final artifacts and a canonical hash manifest, then re-reads and
-validates all three contracts independently.
+validates all three contracts independently. The manifest records provenance
+for every emitted parameter class. The current `per_direction`
+capacity-sharing policy is explicitly a research assumption because ordinary
+reports have not identified simultaneous reverse-direction sharing; it is not
+attributed to the PPro fit. Missing or inconsistent parameter provenance fails
+bundle validation.
 
 Deliver generated BoardDB, BoardLinkTimingDB, TransportCostDB, a parameter
 provenance manifest, and independent validators.  Generated profiles are
