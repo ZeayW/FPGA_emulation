@@ -8,7 +8,10 @@ from emuflow.ppro_blackbox_application import benchmark_rtl_identity
 from scripts.benchmarks.nvdla_release_inventory import (
     collect_nvdla_source_files,
 )
-from scripts.benchmarks.nvdla_ram_stubs import generate
+from scripts.benchmarks.nvdla_ram_stubs import (
+    PHYSICAL_MEMORY_POLICY,
+    generate,
+)
 from scripts.benchmarks.prepare_nvdla_holdout import prepare_nvdla_holdout
 
 
@@ -65,13 +68,18 @@ class NvdlaRamStubTest(unittest.TestCase):
         )
         (vlibs / "cell.v").write_text("module cell; endmodule\n", encoding="utf-8")
         (include / "config.vh").write_text("`define CONFIG 1\n", encoding="utf-8")
-        (rams / "nv_ram_demo.v").write_text(
+        (rams / "nv_ram_rws_32x64.v").write_text(
             """
-module nv_ram_demo (clk, addr, dout);
+module nv_ram_rws_32x64 (clk, ra, re, dout, wa, we, di, pwrbus_ram_pd);
 parameter FORCE_CONTENTION_ASSERTION_RESET_ACTIVE=1'b0;
 input clk;
-input [7:0] addr;
-output [31:0] dout;
+input [4:0] ra;
+input re;
+output [63:0] dout;
+input [4:0] wa;
+input we;
+input [63:0] di;
+input [31:0] pwrbus_ram_pd;
 endmodule
 """,
             encoding="utf-8",
@@ -149,11 +157,11 @@ endmodule
             with self.assertRaisesRegex(ValueError, "no NVDLA SRAM wrappers"):
                 generate(root, root / "stubs.v")
 
-    def test_selected_rws_wrapper_gets_register_model(self) -> None:
+    def test_physical_policy_models_all_supported_wrapper_families(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / "nv_ram_rws_32x64.v").write_text(
-                """
+            wrappers = {
+                "nv_ram_rws_32x64": """
 module nv_ram_rws_32x64 (clk, ra, re, dout, wa, we, di, pwrbus_ram_pd);
 parameter FORCE_CONTENTION_ASSERTION_RESET_ACTIVE=1'b0;
 input clk;
@@ -166,19 +174,80 @@ input [63:0] di;
 input [31:0] pwrbus_ram_pd;
 endmodule
 """,
-                encoding="utf-8",
-            )
+                "nv_ram_rwsp_32x64": """
+module nv_ram_rwsp_32x64 (clk, ra, re, ore, dout, wa, we, di, pwrbus_ram_pd);
+parameter FORCE_CONTENTION_ASSERTION_RESET_ACTIVE=1'b0;
+input clk;
+input [4:0] ra;
+input re;
+input ore;
+output [63:0] dout;
+input [4:0] wa;
+input we;
+input [63:0] di;
+input [31:0] pwrbus_ram_pd;
+endmodule
+""",
+                "nv_ram_rwst_32x64": """
+module nv_ram_rwst_32x64 (clk, ra, re, dout, wa, we, di, pwrbus_ram_pd);
+parameter FORCE_CONTENTION_ASSERTION_RESET_ACTIVE=1'b0;
+input clk;
+input [4:0] ra;
+input re;
+output [63:0] dout;
+input [4:0] wa;
+input we;
+input [63:0] di;
+input [31:0] pwrbus_ram_pd;
+endmodule
+""",
+                "nv_ram_rwsthp_32x64": """
+module nv_ram_rwsthp_32x64 (clk, ra, re, ore, dout, wa, we, di, byp_sel, dbyp, pwrbus_ram_pd);
+parameter FORCE_CONTENTION_ASSERTION_RESET_ACTIVE=1'b0;
+input clk;
+input [4:0] ra;
+input re;
+input ore;
+output [63:0] dout;
+input [4:0] wa;
+input we;
+input [63:0] di;
+input byp_sel;
+input [63:0] dbyp;
+input [31:0] pwrbus_ram_pd;
+endmodule
+""",
+            }
+            for name, body in wrappers.items():
+                (root / f"{name}.v").write_text(body, encoding="utf-8")
             output = root / "models.v"
             self.assertEqual(
-                generate(root, output, r"nv_ram_rws_32x64"),
-                (1, 1),
+                generate(root, output, PHYSICAL_MEMORY_POLICY),
+                (4, 4),
             )
             text = output.read_text(encoding="utf-8")
             self.assertNotIn('black_box = "yes"', text)
-            self.assertIn('ram_style = "registers"', text)
+            self.assertEqual(text.count('ram_style = "block"'), 4)
             self.assertIn("reg [63:0] mem [0:31];", text)
             self.assertIn("always @(posedge clk)", text)
-            self.assertIn("dout_reg <= mem[ra];", text)
+            self.assertIn("read_data <= mem[ra];", text)
+            self.assertIn("read_data <= (we && (wa == ra)) ? di : mem[ra];", text)
+            self.assertIn("output_data <= read_data;", text)
+            self.assertIn("output_data <= byp_sel ? dbyp : read_data;", text)
+
+    def test_physical_policy_rejects_unknown_memory_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "nv_ram_unknown_32x64.v").write_text(
+                "module nv_ram_unknown_32x64 (clk);\n"
+                "parameter FORCE_CONTENTION_ASSERTION_RESET_ACTIVE=1'b0;\n"
+                "input clk;\nendmodule\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValueError, "unsupported NVDLA SRAM wrapper name"
+            ):
+                generate(root, root / "models.v", PHYSICAL_MEMORY_POLICY)
 
     def test_shared_holdout_preparation_seals_one_frontend(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -221,6 +290,30 @@ endmodule
                 identity["defines"], report["benchmark"]["synthesis"]["defines"]
             )
             self.assertGreater(len(identity["include_file_records"]), 0)
+
+    def test_shared_holdout_can_require_complete_physical_memory_models(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, catalog, compat = self._prepared_fixture(root)
+            report = prepare_nvdla_holdout(
+                source_root=source,
+                generated_dir=source / ".prepared",
+                benchmark_path=root / "nvdla.json",
+                platform="platforms/calibrated/nominal/boarddb.json",
+                memory_policy=PHYSICAL_MEMORY_POLICY,
+                catalog_path=catalog,
+                compat_path=compat,
+            )
+            self.assertEqual(report["memory_policy"], PHYSICAL_MEMORY_POLICY)
+            self.assertTrue(report["benchmark"]["id"].endswith("_physical"))
+            prepared = json.loads(
+                (source / ".prepared" / "preparation-manifest.json").read_text()
+            )
+            self.assertEqual(prepared["ram_wrapper_count"], 1)
+            self.assertEqual(prepared["ram_modeled_count"], 1)
+            wrappers = (source / ".prepared" / "nvdla_ram_wrappers.v").read_text()
+            self.assertNotIn('black_box = "yes"', wrappers)
+            self.assertIn('ram_style = "block"', wrappers)
 
     def test_shared_holdout_rejects_unpinned_source(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

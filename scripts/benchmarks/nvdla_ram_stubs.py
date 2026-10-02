@@ -5,7 +5,7 @@
 import argparse
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 
 MODULE = re.compile(
@@ -52,8 +52,11 @@ def _parse_wrapper(path: Path) -> Tuple[str, str, List[Tuple[str, str, str]]]:
     return name, parameter, [declarations[port_name] for port_name in header_ports]
 
 
-RWS_NAME = re.compile(r"^nv_ram_rws_(\d+)x(\d+)$")
-RWS_PORTS = {
+BLACKBOX_MEMORY_POLICY = "interface-accurate-black-box-scale-abstraction"
+PHYSICAL_MEMORY_POLICY = "physically-implementable-shared-memory-model-v1"
+MEMORY_POLICIES = {BLACKBOX_MEMORY_POLICY, PHYSICAL_MEMORY_POLICY}
+MEMORY_NAME = re.compile(r"^nv_ram_(rws|rwsp|rwst|rwsthp)_(\d+)x(\d+)$")
+COMMON_PORTS = {
     "clk": ("input", ""),
     "ra": ("input", None),
     "re": ("input", ""),
@@ -65,31 +68,44 @@ RWS_PORTS = {
 }
 
 
-def _emit_register_model(
-    blocks: List[str],
-    name: str,
-    parameter: str,
-    ports: List[Tuple[str, str, str]],
-) -> None:
-    match = RWS_NAME.fullmatch(name)
-    if match is None:
-        raise ValueError(f"{name}: register model requires nv_ram_rws_DEPTHxWIDTH")
-    depth = int(match.group(1))
-    data_width = int(match.group(2))
-    address_width = max(1, (depth - 1).bit_length())
-    actual_ports = {
-        port_name: (direction, width)
-        for direction, width, port_name in ports
-    }
-    if set(actual_ports) != set(RWS_PORTS):
-        raise ValueError(f"{name}: unsupported register-model port set")
-    expected_widths = {
-        **RWS_PORTS,
+def _expected_ports(
+    kind: str, address_width: int, data_width: int
+) -> Dict[str, Tuple[str, str]]:
+    result = {
+        **COMMON_PORTS,
         "ra": ("input", f"[{address_width - 1}:0]"),
         "wa": ("input", f"[{address_width - 1}:0]"),
         "dout": ("output", f"[{data_width - 1}:0]"),
         "di": ("input", f"[{data_width - 1}:0]"),
     }
+    if kind in {"rwsp", "rwsthp"}:
+        result["ore"] = ("input", "")
+    if kind == "rwsthp":
+        result["byp_sel"] = ("input", "")
+        result["dbyp"] = ("input", f"[{data_width - 1}:0]")
+    return result
+
+
+def _emit_synthesizable_model(
+    blocks: List[str],
+    name: str,
+    parameter: str,
+    ports: List[Tuple[str, str, str]],
+) -> None:
+    match = MEMORY_NAME.fullmatch(name)
+    if match is None:
+        raise ValueError(f"{name}: unsupported NVDLA SRAM wrapper name")
+    kind = match.group(1)
+    depth = int(match.group(2))
+    data_width = int(match.group(3))
+    address_width = max(1, (depth - 1).bit_length())
+    actual_ports = {
+        port_name: (direction, width)
+        for direction, width, port_name in ports
+    }
+    expected_widths = _expected_ports(kind, address_width, data_width)
+    if set(actual_ports) != set(expected_widths):
+        raise ValueError(f"{name}: unsupported synthesizable-model port set")
     for port_name, expected in expected_widths.items():
         if actual_ports[port_name] != expected:
             raise ValueError(
@@ -105,16 +121,46 @@ def _emit_register_model(
     blocks.extend(
         [
             " );",
-            '  (* ram_style = "registers" *)',
+            '  (* ram_style = "block", syn_ramstyle = "block_ram" *)',
             f"  reg [{data_width - 1}:0] mem [0:{depth - 1}];",
-            f"  reg [{data_width - 1}:0] dout_reg;",
+            f"  reg [{data_width - 1}:0] read_data;",
+        ]
+    )
+    if kind in {"rwsp", "rwsthp"}:
+        blocks.append(f"  reg [{data_width - 1}:0] output_data;")
+    blocks.extend(
+        [
             "  always @(posedge clk) begin",
             "    if (we)",
             "      mem[wa] <= di;",
-            "    if (re)",
-            "      dout_reg <= mem[ra];",
-            "  end",
-            "  assign dout = dout_reg;",
+        ]
+    )
+    if kind in {"rwst", "rwsthp"}:
+        blocks.extend(
+            [
+                "    if (re)",
+                "      read_data <= (we && (wa == ra)) ? di : mem[ra];",
+            ]
+        )
+    else:
+        blocks.extend(["    if (re)", "      read_data <= mem[ra];"])
+    if kind == "rwsp":
+        blocks.extend(["    if (ore)", "      output_data <= read_data;"])
+    elif kind == "rwsthp":
+        blocks.extend(
+            [
+                "    if (ore)",
+                "      output_data <= byp_sel ? dbyp : read_data;",
+            ]
+        )
+    blocks.append("  end")
+    blocks.append(
+        "  assign dout = output_data;"
+        if kind in {"rwsp", "rwsthp"}
+        else "  assign dout = read_data;"
+    )
+    blocks.extend(
+        [
             "  wire _unused_pwrbus = ^pwrbus_ram_pd;",
             "endmodule",
             "",
@@ -125,8 +171,10 @@ def _emit_register_model(
 def generate(
     source_dir: Path,
     output: Path,
-    register_model_pattern: Optional[str] = None,
+    memory_policy: str = BLACKBOX_MEMORY_POLICY,
 ) -> Tuple[int, int]:
+    if memory_policy not in MEMORY_POLICIES:
+        raise ValueError(f"unsupported NVDLA memory policy {memory_policy!r}")
     wrappers = sorted(
         path
         for path in source_dir.glob("nv_ram_*.v")
@@ -136,15 +184,10 @@ def generate(
         raise ValueError(f"{source_dir}: no NVDLA SRAM wrappers found")
     blocks = [
         "// Generated from pinned NVDLA SRAM wrapper interfaces.",
-        "// Selected rws macros use synchronous-read FPGA register models.",
-        "// All other ASIC SRAM wrappers remain black boxes.",
+        f"// Memory policy: {memory_policy}.",
+        "// Physical models use inferred synchronous block RAMs.",
         "",
     ]
-    model_pattern = (
-        re.compile(register_model_pattern)
-        if register_model_pattern is not None
-        else None
-    )
     modeled = 0
     names = set()
     for path in wrappers:
@@ -152,8 +195,8 @@ def generate(
         if name in names:
             raise ValueError(f"{path}: duplicate wrapper module {name}")
         names.add(name)
-        if model_pattern is not None and model_pattern.fullmatch(name):
-            _emit_register_model(blocks, name, parameter, ports)
+        if memory_policy == PHYSICAL_MEMORY_POLICY:
+            _emit_synthesizable_model(blocks, name, parameter, ports)
             modeled += 1
         else:
             blocks.append('(* black_box = "yes" *)')
@@ -170,26 +213,24 @@ def generate(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate black-box Verilog for NVDLA ASIC SRAM wrappers."
+        description="Generate explicit NVDLA ASIC-SRAM abstraction models."
     )
     parser.add_argument("source_dir", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument(
-        "--register-model-pattern",
-        help=(
-            "full-match regular expression selecting nv_ram_rws_DEPTHxWIDTH "
-            "wrappers for synchronous-read register-array modeling"
-        ),
+        "--memory-policy",
+        choices=sorted(MEMORY_POLICIES),
+        default=BLACKBOX_MEMORY_POLICY,
     )
     arguments = parser.parse_args()
     count, modeled = generate(
         arguments.source_dir.resolve(),
         arguments.output.resolve(),
-        arguments.register_model_pattern,
+        arguments.memory_policy,
     )
     print(
         f"generated_nvdla_ram_wrappers={count} "
-        f"register_models={modeled} output={arguments.output.resolve()}"
+        f"modeled_memories={modeled} output={arguments.output.resolve()}"
     )
 
 

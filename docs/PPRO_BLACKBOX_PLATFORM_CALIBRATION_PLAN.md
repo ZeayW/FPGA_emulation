@@ -647,12 +647,19 @@ seed unless a variance study is explicitly requested.
 NVDLA has a deterministic shared-frontend preparation contract. The preparer
 validates the pinned source stamp, references upstream RTL in place, and
 generates only the normalized `partition_o`, the checked `NV_DW_lsd`
-compatibility module, and RAM wrapper declarations. It emits the single
+compatibility module, and one explicit RAM abstraction. It emits the single
 ordered source/include/define contract that both PPro and EmuFlow must consume.
-The current RAM wrappers are an explicitly labeled black-box scale
-abstraction; they may validate platform capacity and communication trends, but
-cannot pass the final physical-memory/timing promotion gate until replaced by
-a common, physically implementable memory model.
+The default black-box scale abstraction may validate capacity and communication
+trends but cannot pass the final physical-memory/timing gate. The implemented
+`physically-implementable-shared-memory-model-v1` alternative recognizes every
+SRAM wrapper in the pinned archive across the `rws`, `rwsp`, `rwst`, and
+`rwsthp` families. It emits inferred synchronous block RAM with the relevant
+output-enable, write-through, and bypass semantics, and fails closed on any
+unknown family, port, or width. The preparation manifest seals wrapper/model
+coverage and the scale and physical variants use distinct benchmark IDs.
+Local interface, coverage, and tamper tests pass. The physical model is still a
+candidate rather than final evidence until that exact source completes remote
+synthesis and the full NVDLA Phase 1--7 promotion gate.
 
 Gate: the promotion criteria above, including a complete Phase 1--7 run and
 global WNS/TNS.  A Phase 3/4/5 or PPro-only comparison is not completion.

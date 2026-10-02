@@ -19,14 +19,19 @@ from typing import Any, Dict, List
 
 from emuflow.benchmark import BenchmarkRun
 from emuflow.io import write_json
-from scripts.benchmarks.nvdla_ram_stubs import generate as generate_ram_wrappers
+from scripts.benchmarks.nvdla_ram_stubs import (
+    BLACKBOX_MEMORY_POLICY,
+    MEMORY_POLICIES,
+    PHYSICAL_MEMORY_POLICY,
+    generate as generate_ram_wrappers,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG_PATH = ROOT / "benchmarks" / "rtl_catalog.json"
 COMPAT_PATH = ROOT / "scripts" / "yosys" / "nvdla_compat.v"
 PREPARATION_SCHEMA = "emuflow.nvdla-preparation/v1"
-GENERATOR_ID = "nvdla-shared-frontend-v1"
+GENERATOR_ID = "nvdla-shared-frontend-v2"
 DEFINES = [
     "SYNTHESIS",
     "DESIGNWARE_NOEXIST",
@@ -96,10 +101,14 @@ def prepare_nvdla_holdout(
     generated_dir: Path,
     benchmark_path: Path,
     platform: str,
+    memory_policy: str = BLACKBOX_MEMORY_POLICY,
     catalog_path: Path = CATALOG_PATH,
     compat_path: Path = COMPAT_PATH,
 ) -> Dict[str, Any]:
     """Write generated overlays and the shared NVDLA benchmark contract."""
+
+    if memory_policy not in MEMORY_POLICIES:
+        raise ValueError(f"unsupported NVDLA memory policy {memory_policy!r}")
 
     root = source_root.resolve()
     generated = generated_dir.resolve()
@@ -139,9 +148,12 @@ def prepare_nvdla_holdout(
     compat_copy.write_text(
         compat_path.read_text(encoding="utf-8"), encoding="utf-8"
     )
-    wrapper_count, modeled_count = generate_ram_wrappers(ram_root, ram_wrappers)
-    if modeled_count != 0:
-        raise ValueError("canonical NVDLA scale abstraction must use black-box RAMs")
+    wrapper_count, modeled_count = generate_ram_wrappers(
+        ram_root, ram_wrappers, memory_policy
+    )
+    expected_modeled = wrapper_count if memory_policy == PHYSICAL_MEMORY_POLICY else 0
+    if modeled_count != expected_modeled:
+        raise ValueError("NVDLA RAM modeling coverage is incomplete")
 
     ordered_sources: List[Path] = [ram_wrappers]
     ordered_sources.extend(
@@ -163,15 +175,19 @@ def prepare_nvdla_holdout(
         "generator_id": GENERATOR_ID,
         "upstream_revision": stamp["revision"],
         "upstream_archive_sha256": stamp["archive_sha256"],
-        "memory_policy": "interface-accurate-black-box-scale-abstraction",
+        "memory_policy": memory_policy,
         "partition_directive_replacements": replacement_count,
         "ram_wrapper_count": wrapper_count,
+        "ram_modeled_count": modeled_count,
         "generated_files": generated_records,
         "source_list_sha256": _canonical_sha256(relative_sources),
     }
+    memory_variant = (
+        "physical" if memory_policy == PHYSICAL_MEMORY_POLICY else "scale"
+    )
     benchmark = {
         "schema": "emuflow.benchmark-run/v1",
-        "id": "nvdla_nvdlav1_l7_shared_frontend",
+        "id": f"nvdla_nvdlav1_l7_shared_frontend_{memory_variant}",
         "design_id": "nvdla",
         "top": "NV_nvdla",
         "sources": relative_sources,
@@ -207,6 +223,11 @@ def main() -> int:
     parser.add_argument("--generated-dir", type=Path, required=True)
     parser.add_argument("--benchmark", type=Path, required=True)
     parser.add_argument("--platform", required=True)
+    parser.add_argument(
+        "--memory-policy",
+        choices=sorted(MEMORY_POLICIES),
+        default=BLACKBOX_MEMORY_POLICY,
+    )
     parser.add_argument("--catalog", type=Path, default=CATALOG_PATH)
     parser.add_argument("--compat", type=Path, default=COMPAT_PATH)
     args = parser.parse_args()
@@ -215,6 +236,7 @@ def main() -> int:
         generated_dir=args.generated_dir,
         benchmark_path=args.benchmark,
         platform=args.platform,
+        memory_policy=args.memory_policy,
         catalog_path=args.catalog,
         compat_path=args.compat,
     )

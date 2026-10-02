@@ -574,14 +574,26 @@ python3 scripts/benchmarks/prepare_nvdla_holdout.py \
   --source-root third_party/rtl/nvdla \
   --generated-dir third_party/rtl/nvdla/.emuflow-prepared \
   --benchmark build/nvdla-shared-frontend.json \
+  --memory-policy physically-implementable-shared-memory-model-v1 \
   --platform platforms/calibrated/nominal/boarddb.json
 ```
 
-The current RAM policy is explicitly
-`interface-accurate-black-box-scale-abstraction`. It is suitable for the
-black-box platform capacity/communication holdout, but it is not memory timing
-or final physical-memory evidence. Such a result must retain that label and
-cannot be promoted as complete NVDLA physical closure.
+The preparer exposes exactly two explicit RAM policies. The default
+`interface-accurate-black-box-scale-abstraction` preserves the upstream SRAM
+interfaces and is suitable only for black-box platform scale and communication
+experiments. It is not memory-timing or physical-closure evidence. The
+`physically-implementable-shared-memory-model-v1` policy instead recognizes all
+four pinned upstream SRAM wrapper families (`rws`, `rwsp`, `rwst`, and
+`rwsthp`) and emits inferred synchronous block RAM, including output-enable,
+write-through, and bypass behavior. It fails closed if any wrapper name, port,
+width, or family is unsupported, and seals both the wrapper and modeled-memory
+counts in the preparation manifest. Scale and physical preparations receive
+different benchmark identities, so their results cannot collide.
+
+Local interface and full-wrapper-coverage tests pass for the pinned NVDLA
+archive. This model becomes final physical-memory evidence only after the same
+prepared source completes synthesis, Phase 1--7 physical implementation, and
+the holdout promotion checks; the black-box policy can never satisfy that gate.
 
 The joined blind-result contract is `emuflow.ppro-holdout-result/v3`. Results
 are not written from a hand-entered summary.  The official assembler first
