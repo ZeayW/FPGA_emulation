@@ -526,6 +526,17 @@ open transport RTL and labelled with separate source-backed provenance; the
 PPro black-box observations remain a guard against falsely claiming that the
 ordinary report measured proprietary transport internals.
 
+The production-RTL structural v2 characterization is now complete at source
+commit `4caa3fba2137deda8b5261b0fdaf736dc3e7047e`. All 25 cases completed (19
+fit plus six withheld), and per-case mapped JSON, logs, and temporary
+workspaces were deleted. The LUT regression has 0.4344-cell fit RMSE and a
+2.91% maximum independent-holdout relative error; the FF holdouts match to
+numerical precision. Primitive audits are identically zero for BRAM18K,
+DSP48, and URAM288, which is recorded as a structural-zero result. Thus every
+resource passes the declared 15% gate, and this source-characterized fit—not
+the unobservable PPro paired experiment—is the admissible TransportCostDB v2
+input.
+
 Deliver parameter sweeps, constrained fits, confidence intervals, and an
 identifiability report.
 

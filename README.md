@@ -359,6 +359,17 @@ arrival-slot decode groups, and deep TX mux lanes—so TDM reuse and multicast
 replication are charged for the logic they actually create rather than for a
 raw logical-signal count.
 
+The first complete v2 characterization at source commit
+`4caa3fba2137deda8b5261b0fdaf736dc3e7047e` completed all 25 cases (19 fit,
+six withheld) and left the mapping workspace empty. The mapped LUT model has
+0.4344-cell fit RMSE and at most 2.91% relative error on the six independent
+holdouts; the FF model reproduces all holdouts to numerical precision. The
+primitive audit observed no BRAM18K, DSP48, or URAM288 in any case, so those
+three resources are recorded as structural zero rather than inferred from a
+failed regression. Every holdout resource check passed the 15% promotion
+gate. The retained evidence is the 25 compact observations, matrix, summary,
+and fit; mapped netlists and tool logs are deliberately not retained.
+
 ```sh
 emuflow-ppro-calibration generate-open-transport-matrix \
   --out /research/d4/gds/ziyiwang21/emuflow/runs/open-transport/matrix.json
