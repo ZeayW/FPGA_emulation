@@ -72,6 +72,7 @@ def benchmark_rtl_identity(
     parameters = {
         "benchmark_id": benchmark.value["id"],
         "clocks": benchmark.value["clocks"],
+        "clock_periods_ns": benchmark.value.get("clock_periods_ns"),
         "source_records": relative_records,
         "top": benchmark.value["top"],
     }
@@ -86,6 +87,7 @@ def benchmark_rtl_identity(
         "parameters_sha256": hashlib.sha256(_canonical(parameters)).hexdigest(),
         "top_module": benchmark.value["top"],
         "clocks": benchmark.value["clocks"],
+        "clock_periods_ns": benchmark.value.get("clock_periods_ns"),
     }
 
 

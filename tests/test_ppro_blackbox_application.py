@@ -95,6 +95,49 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                 second.run_spec["workload"]["rtl_sha256"],
             )
 
+    def test_clock_period_changes_compilation_identity_not_rtl_identity(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "source"
+            source_root.mkdir()
+            (source_root / "top.v").write_text(
+                "module top(input clk); endmodule\n", encoding="utf-8"
+            )
+            benchmark = root / "benchmark.json"
+            value = {
+                "schema": "emuflow.benchmark-run/v1",
+                "id": "clock_identity",
+                "design_id": "clock_identity",
+                "top": "top",
+                "sources": ["top.v"],
+                "clocks": ["clk"],
+                "clock_periods_ns": {"clk": 10.0},
+                "platform": "unused.json",
+                "synthesis": {"family": "xcup", "policy": "logic-only"},
+            }
+            benchmark.write_text(json.dumps(value), encoding="utf-8")
+            kwargs = dict(
+                benchmark_run_path=benchmark,
+                source_root=source_root,
+                campaign_id="blind",
+                public_prior_id="prior-v1",
+                configuration_id="platform-v1",
+                tool_release="2026.1",
+                runner_revision="d" * 64,
+            )
+            first = generate_application_holdout_bundle(root / "one", **kwargs)
+            value["clock_periods_ns"]["clk"] = 8.0
+            benchmark.write_text(json.dumps(value), encoding="utf-8")
+            second = generate_application_holdout_bundle(root / "two", **kwargs)
+            self.assertEqual(
+                first.run_spec["workload"]["rtl_sha256"],
+                second.run_spec["workload"]["rtl_sha256"],
+            )
+            self.assertNotEqual(
+                first.run_spec["workload"]["parameters_sha256"],
+                second.run_spec["workload"]["parameters_sha256"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
