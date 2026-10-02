@@ -14,6 +14,12 @@ from emuflow.ppro_calibrated_platform import (
     validate_transport_cost_database,
     write_calibrated_platform_profiles,
 )
+from emuflow.open_transport_characterization import (
+    BASE_FEATURE_NAMES,
+    FRAME_SLOTS,
+    OPEN_TRANSPORT_MODEL,
+    OPEN_TRANSPORT_PROVENANCE,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,8 +107,13 @@ def fit_artifacts():
         "holdout_checks": [{"relative_error": 0.05}],
         "holdout_max_relative_error": 0.05,
     }
+    feature_names = list(BASE_FEATURE_NAMES) + [
+        f"frame_slots_{slots}" for slots in FRAME_SLOTS[1:]
+    ]
     transport = {
-        "schema": "emuflow.ppro-transport-cost-fit/v1",
+        "schema": "emuflow.open-transport-cost-fit/v1",
+        "model": OPEN_TRANSPORT_MODEL,
+        "feature_names": feature_names,
         "resources": {
             "lut": {
                 "parameters": {
@@ -112,16 +123,15 @@ def fit_artifacts():
                         "conservative": value * 1.2,
                         "identifiable": True,
                     }
-                    for name, value in (
-                        ("per_endpoint", 2.0),
-                        ("per_transport_bit", 0.25),
-                        ("per_tdm_level", 3.0),
-                        ("per_multicast_sink", 5.0),
+                    for name, value in zip(
+                        feature_names,
+                        (10.0, 1.0, 1.5, 2.0, 0.0, 1.0, 2.0, 3.0, 4.0),
                     )
                 }
             }
         },
         "excluded_observations": 0,
+        "all_resources_identifiable": True,
         "holdout_checks": [
             {
                 "resources": {
@@ -134,6 +144,13 @@ def fit_artifacts():
                 }
             }
         ],
+        "provenance": {
+            "class": OPEN_TRANSPORT_PROVENANCE,
+            "mapping_profile": "xilinx-ultrascaleplus-open-v1",
+            "yosys_version": "Yosys test",
+            "primitive_library_sha256": "1" * 64,
+            "observation_sha256s": ["2" * 64],
+        },
     }
     return capacity, topology, payload, latency, transport
 

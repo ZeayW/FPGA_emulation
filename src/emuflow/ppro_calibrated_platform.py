@@ -12,13 +12,20 @@ from typing import Any, Dict, Mapping, Sequence
 from .board_link_timing import validate_board_link_timing
 from .errors import ValidationError
 from .io import read_json, write_json
+from .open_transport_characterization import (
+    BASE_FEATURE_NAMES,
+    FRAME_SLOTS,
+    OPEN_TRANSPORT_FIT_SCHEMA,
+    OPEN_TRANSPORT_MODEL,
+    OPEN_TRANSPORT_PROVENANCE,
+)
 from .platform import Platform
 from .ppro_blackbox_calibration import validate_public_platform_prior
 from .ppro_blackbox_stage3 import CAPACITY_FIT_SCHEMA, TOPOLOGY_FIT_SCHEMA
-from .ppro_blackbox_stage4 import LATENCY_FIT_SCHEMA, PAYLOAD_FIT_SCHEMA, TRANSPORT_FIT_SCHEMA
+from .ppro_blackbox_stage4 import LATENCY_FIT_SCHEMA, PAYLOAD_FIT_SCHEMA
 
 
-TRANSPORT_COST_SCHEMA = "emuflow.transport-cost/v1"
+TRANSPORT_COST_SCHEMA = "emuflow.transport-cost/v2"
 CALIBRATED_MANIFEST_SCHEMA = "emuflow.ppro-calibrated-platform-manifest/v1"
 _PROFILES = ("aggressive", "nominal", "conservative")
 _MAX_HOLDOUT_RELATIVE_ERROR = 0.15
@@ -147,7 +154,28 @@ def _require_calibration_gates(
     transport_checks = transport_fit.get("holdout_checks")
     if not isinstance(transport_checks, list) or not transport_checks:
         raise ValidationError("calibrated platform transport holdout gate failed")
-    for fit in transport_fit.get("resources", {}).values():
+    if (
+        transport_fit.get("schema") != OPEN_TRANSPORT_FIT_SCHEMA
+        or transport_fit.get("model") != OPEN_TRANSPORT_MODEL
+        or transport_fit.get("all_resources_identifiable") is not True
+    ):
+        raise ValidationError("calibrated platform transport fit is not source-characterized")
+    provenance = transport_fit.get("provenance")
+    if (
+        not isinstance(provenance, dict)
+        or provenance.get("class") != OPEN_TRANSPORT_PROVENANCE
+    ):
+        raise ValidationError("calibrated platform transport provenance is invalid")
+    expected_features = set(BASE_FEATURE_NAMES) | {
+        f"frame_slots_{slots}" for slots in FRAME_SLOTS[1:]
+    }
+    feature_names = transport_fit.get("feature_names")
+    if not isinstance(feature_names, list) or set(feature_names) != expected_features:
+        raise ValidationError("calibrated platform transport feature contract is invalid")
+    resources = transport_fit.get("resources")
+    if not isinstance(resources, dict) or not resources:
+        raise ValidationError("calibrated platform transport resources are invalid")
+    for fit in resources.values():
         for record in fit.get("parameters", {}).values():
             if not isinstance(record, dict) or record.get("identifiable") is not True:
                 raise ValidationError("calibrated platform transport fit is not identifiable")
@@ -275,27 +303,40 @@ def validate_transport_cost_database(
     platform = value.get("platform")
     profile = value.get("profile")
     resources = value.get("resources")
+    feature_names = value.get("feature_names")
     if not isinstance(platform, str) or not platform:
         raise ValidationError("transport cost platform is invalid")
     if expected_platform is not None and platform != expected_platform:
         raise ValidationError("transport cost platform disagrees")
-    if profile not in _PROFILES or not isinstance(resources, dict) or not resources:
+    if (
+        profile not in _PROFILES
+        or value.get("model") != OPEN_TRANSPORT_MODEL
+        or not isinstance(feature_names, list)
+        or not feature_names
+        or any(not isinstance(name, str) or not name for name in feature_names)
+        or len(set(feature_names)) != len(feature_names)
+        or not isinstance(resources, dict)
+        or not resources
+    ):
         raise ValidationError("transport cost profile or resources are invalid")
     count = 0
     for resource, parameters in resources.items():
         if not isinstance(resource, str) or not resource or not isinstance(parameters, dict):
             raise ValidationError("transport cost resource entry is invalid")
-        for name in (
-            "per_endpoint",
-            "per_transport_bit",
-            "per_tdm_level",
-            "per_multicast_sink",
-        ):
+        if set(parameters) != set(feature_names):
+            raise ValidationError("transport cost resource features disagree")
+        for name in feature_names:
             amount = parameters.get(name)
             if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(float(amount)) or amount < 0:
                 raise ValidationError("transport cost parameter is invalid")
             count += 1
-    if value.get("provenance") != "black_box_fitted":
+    provenance = value.get("provenance")
+    if (
+        not isinstance(provenance, dict)
+        or provenance.get("class") != OPEN_TRANSPORT_PROVENANCE
+        or not isinstance(provenance.get("fit_sha256"), str)
+        or len(provenance["fit_sha256"]) != 64
+    ):
         raise ValidationError("transport cost provenance is invalid")
     return {"status": "pass", "platform": platform, "profile": profile, "parameters": count}
 
@@ -313,7 +354,7 @@ def generate_calibrated_platform_profiles(
 ) -> Dict[str, Any]:
     """Generate three immutable, validated profiles; perform no fitting here."""
     normalized_prior = validate_public_platform_prior(prior)
-    if transport_fit.get("schema") != TRANSPORT_FIT_SCHEMA:
+    if transport_fit.get("schema") != OPEN_TRANSPORT_FIT_SCHEMA:
         raise ValidationError("calibrated platform transport fit schema is invalid")
     if set(fabric_clock_mhz) != set(_PROFILES):
         raise ValidationError("calibrated platform requires all fabric-clock sensitivity profiles")
@@ -426,23 +467,26 @@ def generate_calibrated_platform_profiles(
         validate_board_link_timing(timing, platform)
 
         transport_resources = {}
+        transport_features = transport_fit.get("feature_names")
+        if not isinstance(transport_features, list) or not transport_features:
+            raise ValidationError("calibrated platform transport fit lacks feature names")
         for resource, fit in sorted(transport_fit.get("resources", {}).items()):
             parameters = fit.get("parameters", {})
             transport_resources[resource] = {
                 name: float(parameters[name][profile])
-                for name in (
-                    "per_endpoint",
-                    "per_transport_bit",
-                    "per_tdm_level",
-                    "per_multicast_sink",
-                )
+                for name in transport_features
             }
         transport = {
             "schema": TRANSPORT_COST_SCHEMA,
             "platform": platform_name,
             "profile": profile,
+            "model": OPEN_TRANSPORT_MODEL,
+            "feature_names": transport_features,
             "resources": transport_resources,
-            "provenance": "black_box_fitted",
+            "provenance": {
+                "class": OPEN_TRANSPORT_PROVENANCE,
+                "fit_sha256": source_hashes["transport_fit"],
+            },
         }
         validate_transport_cost_database(transport, expected_platform=platform_name)
         generated[profile] = {

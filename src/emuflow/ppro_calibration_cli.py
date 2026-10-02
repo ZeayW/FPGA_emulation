@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .io import read_json, write_json
+from .open_transport_characterization import (
+    fit_open_transport_cost_model,
+    generate_open_transport_matrix,
+    read_open_transport_observations,
+    run_open_transport_matrix,
+    validate_open_transport_matrix,
+)
 from .ppro_blackbox_application import generate_application_holdout_bundle
 from .ppro_blackbox_calibration import EVALUATED_OUTCOMES, validate_redacted_artifact
 from .ppro_blackbox_campaign import (
@@ -201,6 +208,17 @@ def _parser() -> argparse.ArgumentParser:
     latency = commands.add_parser("fit-latency")
     latency.add_argument("--observations", nargs="+", type=Path, required=True)
     latency.add_argument("--out", type=Path, required=True)
+
+    open_matrix = commands.add_parser("generate-open-transport-matrix")
+    open_matrix.add_argument("--out", type=Path, required=True)
+    run_open_matrix = commands.add_parser("run-open-transport-matrix")
+    run_open_matrix.add_argument("--matrix", type=Path, required=True)
+    run_open_matrix.add_argument("--out", type=Path, required=True)
+    run_open_matrix.add_argument("--work-root", type=Path, required=True)
+    run_open_matrix.add_argument("--yosys", required=True)
+    fit_open_transport = commands.add_parser("fit-open-transport")
+    fit_open_transport.add_argument("--observations", nargs="+", type=Path, required=True)
+    fit_open_transport.add_argument("--out", type=Path, required=True)
 
     generate = commands.add_parser("generate-platform")
     generate.add_argument("--prior", type=Path, required=True)
@@ -400,6 +418,30 @@ def _dispatch(args: argparse.Namespace) -> Any:
         return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
     if args.command == "fit-latency":
         result = fit_latency_model(_read_many(args.observations))
+        _write_result(args.out, result)
+        return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
+    if args.command == "generate-open-transport-matrix":
+        result = generate_open_transport_matrix()
+        _write_result(args.out, result)
+        return {
+            "status": "pass",
+            "output": args.out.name,
+            "case_count": len(result["cases"]),
+            "schema": result["schema"],
+        }
+    if args.command == "run-open-transport-matrix":
+        matrix = read_json(args.matrix.resolve())
+        validate_open_transport_matrix(matrix)
+        return run_open_transport_matrix(
+            matrix,
+            output_root=args.out.resolve(),
+            work_root=args.work_root.resolve(),
+            yosys_executable=args.yosys,
+        )
+    if args.command == "fit-open-transport":
+        result = fit_open_transport_cost_model(
+            read_open_transport_observations(args.observations)
+        )
         _write_result(args.out, result)
         return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
     if args.command == "fit-transport":

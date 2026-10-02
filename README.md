@@ -347,6 +347,31 @@ compact negative evidence.  TransportCostDB must consequently be
 source-characterized from EmuFlow's open transport RTL, with distinct
 provenance, rather than fabricated from these black-box zeros.
 
+The source-characterization path maps the exact production
+`transport_to_systemverilog` output plus the production virtual-runtime
+controller through the audited Xilinx UltraScale+ open mapping profile.  It
+uses a fixed fit/holdout matrix, deletes mapped JSON/log workspaces after each
+case, and emits only compact resource observations.  TransportCostDB v2
+includes a `fixed_shell` term so the runtime controller is not incorrectly
+amortized into every transported bit.
+
+```sh
+emuflow-ppro-calibration generate-open-transport-matrix \
+  --out /research/d4/gds/ziyiwang21/emuflow/runs/open-transport/matrix.json
+emuflow-ppro-calibration run-open-transport-matrix \
+  --matrix /research/d4/gds/ziyiwang21/emuflow/runs/open-transport/matrix.json \
+  --out /research/d4/gds/ziyiwang21/emuflow/runs/open-transport/observations \
+  --work-root /research/d4/gds/ziyiwang21/emuflow/runs/open-transport/work \
+  --yosys /path/to/oss-cad-suite/bin/yosys
+emuflow-ppro-calibration fit-open-transport \
+  --observations /research/d4/gds/ziyiwang21/emuflow/runs/open-transport/observations/*.json \
+  --out /research/d4/gds/ziyiwang21/emuflow/runs/open-transport/fit.json
+```
+
+Platform promotion accepts only this source-characterized transport fit with
+passing independent holdouts.  The legacy PPro paired-difference fit remains
+negative diagnostic evidence and cannot be silently promoted.
+
 Stage 5 can now deterministically materialize and independently validate the
 three final profile databases plus a provenance/hash manifest. It cannot turn
 the synthetic tests into a released platform: generation requires real fitted

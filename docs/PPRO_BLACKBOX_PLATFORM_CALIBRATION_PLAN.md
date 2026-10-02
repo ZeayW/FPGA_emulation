@@ -93,6 +93,20 @@ Each database is published in `nominal`, `conservative`, and `aggressive`
 profiles.  The nominal profile is the fitted median or constrained optimum;
 the other profiles are derived from confidence bounds, not hand-picked QoR.
 
+PPro's ordinary pre-partition resource report was experimentally shown not to
+observe the inserted proprietary transport shell.  Transport cost therefore
+uses a deliberately separate, source-backed evidence path: generate the exact
+production EmuFlow transport and runtime-controller RTL, map it with the
+audited open Xilinx UltraScale+ Route-A profile, and fit only the resulting
+primitive resource totals.  The model includes fixed-shell, TX-bit,
+RX-shadow-bit, active-slot, peer-direction, multicast-replica, and categorical
+frame-slot terms.  Fit and holdout cases are disjoint.  BRAM/DSP/URAM may be
+declared structural zero only when every mapped primitive audit independently
+contains no such hard block; absence from a PPro report is never sufficient.
+This hybrid provenance is intentional: PPro black-box observations calibrate
+capacity/topology/payload/TDM/latency, while the open shell that EmuFlow itself
+implements calibrates its own resource cost.
+
 ## Calibration architecture
 
 ```text
