@@ -21,8 +21,8 @@ class OpenTransportCharacterizationTest(unittest.TestCase):
     def observation(self, case):
         _, _, features = _build_case(case)
         vector = list(features.values())
-        lut_coefficients = (10.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0)
-        ff_coefficients = (2.0, 0.0, 1.0, 0.5, 0.0, 0.0, 1.0, 2.0, 3.0)
+        lut_coefficients = (10.0, 1.0, 2.0, 3.0, 4.0, 6.0, 7.0, 8.0)
+        ff_coefficients = (2.0, 0.0, 1.0, 0.0, 0.0, 1.0, 2.0, 3.0)
         return {
             "schema": OPEN_TRANSPORT_OBSERVATION_SCHEMA,
             "identity": {"id": case["id"], "role": case["role"]},

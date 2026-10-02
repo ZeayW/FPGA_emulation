@@ -443,7 +443,11 @@ def _dispatch(args: argparse.Namespace) -> Any:
             read_open_transport_observations(args.observations)
         )
         _write_result(args.out, result)
-        return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
+        return {
+            "status": "pass" if result["all_resources_identifiable"] else "failed",
+            "output": args.out.name,
+            "schema": result["schema"],
+        }
     if args.command == "fit-transport":
         result = fit_transport_cost_model(_read_many(args.observations))
         _write_result(args.out, result)

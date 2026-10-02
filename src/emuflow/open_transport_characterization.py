@@ -28,20 +28,19 @@ from .runtime import virtual_runtime_controller_to_systemverilog
 from .synthesis import run_xilinx_ultrascaleplus_yosys
 
 
-OPEN_TRANSPORT_MATRIX_SCHEMA = "emuflow.open-transport-matrix/v1"
-OPEN_TRANSPORT_OBSERVATION_SCHEMA = "emuflow.open-transport-observation/v1"
-OPEN_TRANSPORT_FIT_SCHEMA = "emuflow.open-transport-cost-fit/v1"
-OPEN_TRANSPORT_MODEL = "production-transport-rtl-additive-v1"
+OPEN_TRANSPORT_MATRIX_SCHEMA = "emuflow.open-transport-matrix/v2"
+OPEN_TRANSPORT_OBSERVATION_SCHEMA = "emuflow.open-transport-observation/v2"
+OPEN_TRANSPORT_FIT_SCHEMA = "emuflow.open-transport-cost-fit/v2"
+OPEN_TRANSPORT_MODEL = "production-transport-rtl-structural-v2"
 OPEN_TRANSPORT_PROVENANCE = "open_source_rtl_characterization"
 
 RESOURCE_NAMES = ("lut", "ff", "bram18k", "dsp48", "uram288")
 BASE_FEATURE_NAMES = (
     "fixed_shell",
-    "tx_unique_bits",
+    "tx_output_lanes",
     "rx_shadow_bits",
-    "active_slot_groups",
-    "additional_peer_directions",
-    "multicast_replicas",
+    "rx_arrival_slot_groups",
+    "tx_deep_mux_lanes",
 )
 FRAME_SLOTS = (2, 4, 8, 16)
 MAX_HOLDOUT_RELATIVE_ERROR = 0.15
@@ -341,21 +340,32 @@ def _build_case(case: Mapping[str, Any]) -> tuple[Platform, Dict[str, Any], Dict
         "shadow_signals": shadow_signals,
         "endpoints": endpoints,
     }
-    groups = {
-        (endpoint["kind"], endpoint["link"], endpoint["peer"])
+    tx_lane_assignments: dict[tuple[str, str, int], int] = {}
+    for endpoint in endpoints:
+        if endpoint["kind"] != "tx":
+            continue
+        key = (endpoint["link"], endpoint["peer"], endpoint["lane"])
+        tx_lane_assignments[key] = tx_lane_assignments.get(key, 0) + 1
+    rx_arrival_groups = {
+        (endpoint["link"], endpoint["peer"], endpoint["arrival_slot"])
         for endpoint in endpoints
-    }
-    active_slots = {
-        (endpoint["kind"], endpoint.get("arrival_slot", endpoint["slot"]))
-        for endpoint in endpoints
+        if endpoint["kind"] == "rx"
     }
     features = {
         "fixed_shell": 1.0,
-        "tx_unique_bits": float(tx_bits),
+        # TX logic is synthesized per physical output lane, not per logical
+        # signal.  Different slots can reuse one lane and one LUT.
+        "tx_output_lanes": float(len(tx_lane_assignments)),
         "rx_shadow_bits": float(rx_bits),
-        "active_slot_groups": float(len(active_slots)),
-        "additional_peer_directions": float(max(0, len(groups) - 1)),
-        "multicast_replicas": float(replicas),
+        # RX case decoding is shared by all shadow bits arriving from the same
+        # peer in one slot.
+        "rx_arrival_slot_groups": float(len(rx_arrival_groups)),
+        # A 3-bit-or-wider slot mux plus four data choices exceeds one LUT6.
+        # This threshold feature represents the extra mapped mux level while
+        # remaining independent of a particular characterization case size.
+        "tx_deep_mux_lanes": float(
+            sum(count >= 4 for count in tx_lane_assignments.values())
+        ),
     }
     for slots in FRAME_SLOTS[1:]:
         features[f"frame_slots_{slots}"] = 1.0 if frame_slots == slots else 0.0
@@ -515,7 +525,13 @@ def run_open_transport_matrix(
         "case_count": len(observations),
         "observations": observations,
     }
-    write_json(output_root / "summary.json", summary, compact=True)
+    # Keep the observation directory homogeneous so a shell glob cannot feed
+    # campaign metadata into the observation fitter.
+    write_json(
+        output_root.with_name(f"{output_root.name}-summary.json"),
+        summary,
+        compact=True,
+    )
     return summary
 
 

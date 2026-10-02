@@ -353,7 +353,11 @@ controller through the audited Xilinx UltraScale+ open mapping profile.  It
 uses a fixed fit/holdout matrix, deletes mapped JSON/log workspaces after each
 case, and emits only compact resource observations.  TransportCostDB v2
 includes a `fixed_shell` term so the runtime controller is not incorrectly
-amortized into every transported bit.
+amortized into every transported bit.  Its remaining features follow the
+generated hardware structure—physical TX output lanes, RX shadow bits, RX
+arrival-slot decode groups, and deep TX mux lanes—so TDM reuse and multicast
+replication are charged for the logic they actually create rather than for a
+raw logical-signal count.
 
 ```sh
 emuflow-ppro-calibration generate-open-transport-matrix \

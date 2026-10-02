@@ -111,7 +111,7 @@ def fit_artifacts():
         f"frame_slots_{slots}" for slots in FRAME_SLOTS[1:]
     ]
     transport = {
-        "schema": "emuflow.open-transport-cost-fit/v1",
+        "schema": "emuflow.open-transport-cost-fit/v2",
         "model": OPEN_TRANSPORT_MODEL,
         "feature_names": feature_names,
         "resources": {
@@ -125,7 +125,7 @@ def fit_artifacts():
                     }
                     for name, value in zip(
                         feature_names,
-                        (10.0, 1.0, 1.5, 2.0, 0.0, 1.0, 2.0, 3.0, 4.0),
+                        (10.0, 1.0, 1.5, 2.0, 0.5, 2.0, 3.0, 4.0),
                     )
                 }
             }
