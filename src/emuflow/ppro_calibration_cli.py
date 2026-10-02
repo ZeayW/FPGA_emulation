@@ -37,7 +37,11 @@ from .ppro_blackbox_runtime import (
     render_ppro_runtime_binding,
 )
 from .ppro_blackbox_smoke import generate_connected_smoke_bundle
-from .ppro_blackbox_stage3 import fit_capacity_intervals, fit_effective_topology
+from .ppro_blackbox_stage3 import (
+    finalize_calibrated_capacity,
+    fit_capacity_intervals,
+    fit_effective_topology,
+)
 from .ppro_blackbox_stage4 import (
     fit_latency_model,
     fit_payload_intervals,
@@ -205,6 +209,14 @@ def _parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name)
         command.add_argument("--observations", nargs="+", type=Path, required=True)
         command.add_argument("--out", type=Path, required=True)
+    finalize_capacity = commands.add_parser("finalize-capacity")
+    finalize_capacity.add_argument("--prior", type=Path, required=True)
+    finalize_capacity.add_argument("--boundary-fits", nargs="+", type=Path, required=True)
+    finalize_capacity.add_argument(
+        "--normalization-observations", nargs="+", type=Path, required=True
+    )
+    finalize_capacity.add_argument("--utilization-limit-percent", type=int, required=True)
+    finalize_capacity.add_argument("--out", type=Path, required=True)
     latency = commands.add_parser("fit-latency")
     latency.add_argument("--observations", nargs="+", type=Path, required=True)
     latency.add_argument("--out", type=Path, required=True)
@@ -406,6 +418,15 @@ def _dispatch(args: argparse.Namespace) -> Any:
         }
     if args.command == "fit-capacity":
         result = fit_capacity_intervals(_read_many(args.observations))
+        _write_result(args.out, result)
+        return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
+    if args.command == "finalize-capacity":
+        result = finalize_calibrated_capacity(
+            prior=read_json(args.prior.resolve()),
+            boundary_fits=_read_many(args.boundary_fits),
+            normalization_observations=_read_many(args.normalization_observations),
+            utilization_limit_percent=args.utilization_limit_percent,
+        )
         _write_result(args.out, result)
         return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
     if args.command == "fit-topology":

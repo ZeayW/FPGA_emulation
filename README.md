@@ -274,9 +274,15 @@ boundary campaigns produced 36 evaluated hard-resource observations with no
 excluded run.  The conservative pass/infeasible intervals are 1580/1640
 36-Kib-class BRAM blocks, 2850/2950 DSP48s, and 238/245 URAM288s.  All six
 withheld repeated points were predicted as pass and did pass.  LUT and FF
-boundaries, communication parameters, application
-holdouts, and end-to-end promotion remain pending; these partial fits are not
-yet a released calibrated platform.
+ordinary-report normalization, application holdouts, and end-to-end promotion
+remain pending; these partial fits are not yet a released calibrated platform.
+The final capacity artifact does not attempt to rediscover public XCVU19P
+totals by elaborating millions of LUTs or FFs. It computes effective capacity
+from the validated public device total and the documented 75% user constraint,
+then requires repeated fit and withheld ordinary-report probes to agree with
+that resource-unit normalization within one displayed percentage point. The
+hard-resource pass/fail intervals independently must bracket the same
+public-total × limit prediction. Any missing axis or disagreement fails closed.
 
 The authorized four-FPGA topology campaign at source commit
 `ff55af4cef1024f1a1285660e35bcd643dd21953` completed 28/28 evaluated
@@ -433,7 +439,7 @@ emuflow-ppro-calibration run-ppro-case \
   --logical-target F0=<user-target> --logical-target F1=<user-target>
 ```
 
-The same command provides explicit `fit-capacity`, `fit-topology`,
+The same command provides explicit `fit-capacity`, `finalize-capacity`, `fit-topology`,
 `fit-payload`, `fit-latency`, `fit-transport`, `generate-platform`, and
 `validate-platform` operations. It never accepts an installation path, license
 endpoint, internal platform file, or raw report directory as serialized input.
@@ -452,6 +458,11 @@ emuflow-ppro-calibration generate-capacity-matrix \
   --runner-revision <64-hex-runner-source-sha256> \
   --axes lut ff bram uram dsp mixed_lut_ff mixed_bram_dsp \
   --fit-units 8 16 32 --holdout-units 24 --repeats 2
+emuflow-ppro-calibration finalize-capacity \
+  --prior calibration/ppro_blackbox/priors/lx2-public-prior-v1.json \
+  --boundary-fits <fit-bram.json> <fit-dsp.json> <fit-uram.json> \
+  --normalization-observations <lut-and-ff-observation-json...> \
+  --utilization-limit-percent 75 --out <capacity-v2.json>
 emuflow-ppro-calibration generate-topology-matrix \
   --out <active-campaign>/topology --campaign-id c2-topology \
   --configuration-id lx2-m2 --tool-release 2026.1 \

@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import json
+import math
 import unittest
+from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_blackbox_stage3 import fit_capacity_intervals, fit_effective_topology
+from emuflow.ppro_blackbox_stage3 import (
+    finalize_calibrated_capacity,
+    fit_capacity_intervals,
+    fit_effective_topology,
+)
 
 
 def observation(
@@ -120,6 +127,91 @@ class PProBlackboxStage3Test(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValidationError, "fewer than"):
             fit_capacity_intervals([one_pass, one_fail])
+
+    def test_finalize_capacity_uses_public_limit_and_black_box_checks(self):
+        root = Path(__file__).resolve().parents[1]
+        prior = json.loads(
+            (root / "calibration/ppro_blackbox/priors/lx2-public-prior-v1.json").read_text()
+        )
+        hard_axes = {}
+        hard_holdouts = []
+        for axis, resource, lower, upper in (
+            ("bram", "bram36k", 1580, 1640),
+            ("dsp", "dsp48", 2850, 2950),
+            ("uram", "uram288", 238, 245),
+        ):
+            hard_axes[axis] = {
+                "lower_successful_units": lower,
+                "upper_infeasible_units": upper,
+                "resource_demand_at_lower": {resource: lower},
+            }
+            hard_holdouts.append({"axis": axis, "matches": True})
+        boundary = {
+            "schema": "emuflow.ppro-capacity-fit/v1",
+            "axes": hard_axes,
+            "holdout_checks": hard_holdouts,
+            "excluded_observations": 0,
+            "all_resolved_holdouts_match": True,
+        }
+
+        observations = []
+        for axis, resource, public, demands in (
+            ("lut", "lut", 4_086_000, ((100_000, "fit"), (120_000, "fit"), (140_000, "holdout"), (140_000, "holdout"))),
+            ("ff", "ff", 8_172_000, ((200_000, "fit"), (240_000, "fit"), (280_000, "holdout"), (280_000, "holdout"))),
+        ):
+            for index, (demand, role) in enumerate(demands):
+                value = observation(
+                    identifier=f"norm-{axis}-{index}",
+                    kind="resource_capacity",
+                    generator=f"ppro-blackbox-capacity-{axis}-v4",
+                    role=role,
+                    outcome="pass",
+                    design={"requested_units": demand},
+                    resource_demand={resource: demand},
+                )
+                value["metrics"]["fpga_utilization"] = [
+                    {
+                        "fpga": "F0",
+                        "resources": {resource: math.ceil(demand / public * 100.0) / 100.0},
+                    }
+                ]
+                observations.append(value)
+
+        result = finalize_calibrated_capacity(
+            prior=prior,
+            boundary_fits=[boundary],
+            normalization_observations=observations,
+            utilization_limit_percent=75,
+        )
+        self.assertEqual(result["schema"], "emuflow.ppro-calibrated-capacity/v2")
+        self.assertEqual(result["axes"]["lut"]["effective_resource_capacity"], 3_064_500)
+        self.assertEqual(result["axes"]["ff"]["effective_resource_capacity"], 6_129_000)
+        self.assertTrue(result["all_resolved_holdouts_match"])
+
+    def test_finalize_capacity_rejects_wrong_report_normalization(self):
+        root = Path(__file__).resolve().parents[1]
+        prior = json.loads(
+            (root / "calibration/ppro_blackbox/priors/lx2-public-prior-v1.json").read_text()
+        )
+        item = observation(
+            identifier="bad-normalization",
+            kind="resource_capacity",
+            generator="ppro-blackbox-capacity-lut-v4",
+            role="fit",
+            outcome="pass",
+            design={"requested_units": 100_000},
+            resource_demand={"lut": 100_000},
+        )
+        item["metrics"]["fpga_utilization"] = [
+            {"fpga": "F0", "resources": {"lut": 0.50}}
+        ]
+        with self.assertRaisesRegex(ValidationError, "requires repeated fit"):
+            finalize_calibrated_capacity(
+                prior=prior,
+                boundary_fits=[],
+                normalization_observations=[item],
+                utilization_limit_percent=75,
+            )
 
     def test_topology_fit_keeps_direction_and_does_not_invent_shared_groups(self):
         values = []

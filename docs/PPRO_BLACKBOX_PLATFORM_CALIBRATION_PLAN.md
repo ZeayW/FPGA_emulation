@@ -441,6 +441,19 @@ was excluded and all six repeated withheld points passed as predicted.  This
 qualifies those three axes only.  It does not substitute for the pending LUT,
 FF, communication, application-holdout, or full-flow gates.
 
+The capacity promotion gate now separates known inputs from measurements.
+Official XCVU19P resource totals and the explicitly applied 75% user limit are
+not reverse engineered by constructing multi-million-cell failure cases.
+Instead, repeated moderate LUT/FF fit probes plus independent holdouts must
+show that ordinary-report demand and utilization agree with the public device
+units within one displayed percentage point. The existing BRAM/DSP/URAM
+pass/fail intervals must independently bracket `public total × 75%`. The
+`finalize-capacity` operation combines these two evidence classes into
+`emuflow.ppro-calibrated-capacity/v2`; a missing axis, excluded observation,
+failed holdout, or interval that does not bracket the configured limit is a
+hard failure. This avoids spending hours and gigabytes proving a public device
+constant while retaining black-box validation of PPro's observable behavior.
+
 The authorized four-FPGA topology matrix at source commit
 `ff55af4cef1024f1a1285660e35bcd643dd21953` completed all 28 generated cases:
 two fit repeats for every ordered pair plus two holdout repeats for each of two

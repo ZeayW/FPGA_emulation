@@ -27,13 +27,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def fit_artifacts():
     capacity = {
-        "schema": "emuflow.ppro-capacity-fit/v1",
+        "schema": "emuflow.ppro-calibrated-capacity/v2",
         "excluded_observations": 0,
         "holdout_checks": [{"matches": True}],
         "all_resolved_holdouts_match": True,
         "axes": {
             axis: {
-                "resource_demand_at_lower": {resource: amount},
+                "effective_resource_capacity": amount,
+                "observation_resource": resource,
             }
             for axis, resource, amount in (
                 ("lut", "lut", 3_000_000),

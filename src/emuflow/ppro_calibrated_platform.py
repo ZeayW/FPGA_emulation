@@ -21,7 +21,7 @@ from .open_transport_characterization import (
 )
 from .platform import Platform
 from .ppro_blackbox_calibration import validate_public_platform_prior
-from .ppro_blackbox_stage3 import CAPACITY_FIT_SCHEMA, TOPOLOGY_FIT_SCHEMA
+from .ppro_blackbox_stage3 import CALIBRATED_CAPACITY_SCHEMA, TOPOLOGY_FIT_SCHEMA
 from .ppro_blackbox_stage4 import LATENCY_FIT_SCHEMA, PAYLOAD_FIT_SCHEMA
 
 
@@ -66,7 +66,7 @@ def _public_capacities(prior: Mapping[str, Any]) -> Dict[str, int]:
 def _utilization_limit(
     capacity_fit: Mapping[str, Any], public_capacity: Mapping[str, int]
 ) -> tuple[float, Dict[str, Any]]:
-    if capacity_fit.get("schema") != CAPACITY_FIT_SCHEMA:
+    if capacity_fit.get("schema") != CALIBRATED_CAPACITY_SCHEMA:
         raise ValidationError("calibrated platform capacity fit schema is invalid")
     axes = capacity_fit.get("axes")
     if not isinstance(axes, dict):
@@ -77,9 +77,15 @@ def _utilization_limit(
         record = axes.get(axis)
         if not isinstance(record, dict):
             raise ValidationError(f"calibrated platform lacks the {axis} capacity axis")
-        demand = record.get("resource_demand_at_lower", {}).get(demand_resource)
-        if isinstance(demand, bool) or not isinstance(demand, (int, float)) or demand <= 0:
-            raise ValidationError(f"calibrated platform {axis} fit lacks mapped demand")
+        demand = record.get("effective_resource_capacity")
+        observed_resource = record.get("observation_resource")
+        if (
+            isinstance(demand, bool)
+            or not isinstance(demand, (int, float))
+            or demand <= 0
+            or observed_resource != demand_resource
+        ):
+            raise ValidationError(f"calibrated platform {axis} fit lacks effective capacity")
         mapped_demand = float(demand) * demand_to_board_scale
         ratio = mapped_demand / public_capacity[board_resource]
         if not 0.0 < ratio <= 1.0:
