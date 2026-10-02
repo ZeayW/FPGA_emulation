@@ -20,6 +20,7 @@ RUNNER_SOURCE_MEMBERS = (
     "ppro_blackbox_provenance.py",
     "ppro_blackbox_runner.py",
     "ppro_blackbox_runtime.py",
+    "ppro_calibration_cli.py",
 )
 
 
