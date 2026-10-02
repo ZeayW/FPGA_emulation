@@ -319,7 +319,7 @@ raw vendor path or private configuration is serialized.
 
 Status: **runner plus real ordinary-report adapter implemented; fresh C0 v2
 smoke passed; C0 v3 compile-context probe locally validated and awaiting an
-idle licensed node**. At source commit
+authorized real run**. At source commit
 `5b3c31294de797a9db727385674d6353f376f555`, an authorized ordinary run
 completed in 35.68 seconds and produced all four allowlisted report classes.
 The normalized observation recorded 68 cross-FPGA signals, four directed

@@ -215,7 +215,7 @@ observation contained 68 cross-FPGA signals over four directed one-hop route
 records, maximum TDM ratio 1, and worst normalized cross-FPGA delay 14.1 ns.
 This is runner/report evidence, not a calibrated-platform QoR result. The C0
 v3 compile-context extension has passed local render/tamper/cleanup tests; its
-fresh authorized PPro run remains pending while the licensed node is occupied.
+fresh authorized PPro run remains pending.
 A mock result is never accepted as real PPro evidence.
 
 `runner_revision` is the canonical SHA-256 of the complete black-box runtime
