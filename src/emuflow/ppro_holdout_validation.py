@@ -20,7 +20,7 @@ from .ppro_calibrated_platform import validate_calibrated_platform_bundle
 
 
 HOLDOUT_RESULT_SCHEMA = "emuflow.ppro-holdout-result/v4"
-PROMOTION_REPORT_SCHEMA = "emuflow.ppro-platform-promotion/v1"
+PROMOTION_REPORT_SCHEMA = "emuflow.ppro-platform-promotion/v2"
 _TIERS = {"medium", "diversity", "large", "large_primary", "very_large_final"}
 _BENCHMARK_CLASS_TIERS = {
     "secworks_aes": "medium",
@@ -726,24 +726,14 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
         )
         cases.append(case)
 
-    ranking_checks = []
-    by_workload: Dict[str, list[Dict[str, Any]]] = defaultdict(list)
-    for case, item in zip(cases, normalized):
-        by_workload[case["workload_id"]].append(
-            {
-                "algorithm_id": case["algorithm_id"],
-                "ppro": item["ppro"]["metrics"]["timing"]["sr0_worst_cross_fpga_delay_ns"],
-                "emuflow": item["emuflow"]["worst_cross_fpga_delay_ns"],
-            }
-        )
-    for workload, items in sorted(by_workload.items()):
-        if len(items) < 2:
-            continue
-        ppro_order = [item["algorithm_id"] for item in sorted(items, key=lambda entry: (entry["ppro"], entry["algorithm_id"]))]
-        emuflow_order = [item["algorithm_id"] for item in sorted(items, key=lambda entry: (entry["emuflow"], entry["algorithm_id"]))]
-        ranking_checks.append(
-            {"workload_id": workload, "ppro_order": ppro_order, "emuflow_order": emuflow_order, "matches": ppro_order == emuflow_order}
-        )
+    algorithms_by_workload: Dict[str, set[str]] = defaultdict(set)
+    for case in cases:
+        algorithms_by_workload[case["workload_id"]].add(case["algorithm_id"])
+    evaluated_variants = {
+        workload: sorted(algorithms)
+        for workload, algorithms in sorted(algorithms_by_workload.items())
+        if len(algorithms) > 1
+    }
     tiers = {case["tier"] for case in cases if case["passes"]}
     benchmark_classes = {
         case["benchmark_class"] for case in cases if case["passes"]
@@ -752,15 +742,20 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
         all(case["passes"] for case in cases)
         and _TIERS <= tiers
         and set(_BENCHMARK_CLASS_TIERS) <= benchmark_classes
-        and bool(ranking_checks)
-        and all(item["matches"] for item in ranking_checks)
     )
     return {
         "schema": PROMOTION_REPORT_SCHEMA,
         "status": "pass" if promotion else "fail",
         "promoted": promotion,
         "cases": cases,
-        "ranking_checks": ranking_checks,
+        "algorithm_ranking": {
+            "status": "not-claimed",
+            "reason": (
+                "PPro free-optimization holdouts do not execute EmuFlow "
+                "algorithm variants"
+            ),
+            "evaluated_variants": evaluated_variants,
+        },
         "covered_passing_tiers": sorted(tiers),
         "required_tiers": sorted(_TIERS),
         "covered_passing_benchmark_classes": sorted(benchmark_classes),

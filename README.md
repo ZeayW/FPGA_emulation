@@ -649,7 +649,11 @@ whole-design OpenSTA plus physical seed 1.  The promotion gate requires all
 five benchmark classes (secworks AES, an open CPU, Koios compute, Koios DLA,
 and NVDLA), rejects duplicate result identities and duplicate
 workload/algorithm entries, and never accepts a Phase 3--6-only claim as a
-complete validation.
+complete validation. PPro application holdouts use PPro's free optimizer; they
+therefore validate platform behavior per workload but cannot directly rank
+EmuFlow's internal algorithms. Optional EmuFlow variants are reported with an
+explicit `not-claimed` PPro-ranking boundary instead of manufacturing a ranking
+from duplicated PPro results.
 
 ## Flow roadmap
 

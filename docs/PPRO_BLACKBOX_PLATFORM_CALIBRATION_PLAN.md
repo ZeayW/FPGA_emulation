@@ -19,8 +19,8 @@ legal FPGA identifiers, user constraints, commands, and ordinary reports that
 an authorized user receives when running the tool.
 
 The deliverable is an **EmuFlow calibrated academic platform**, not an S2C
-hardware clone.  It should reproduce the capacity, routing, TDM, timing, and
-algorithm-ranking behavior that PPro exposes closely enough for open CAD
+hardware clone. It should reproduce the capacity, routing, TDM, timing, and
+workload/configuration scaling behavior that PPro exposes closely enough for open CAD
 research.  It does not claim schematic equivalence, physical pin equivalence,
 hardware BER, or measured board timing.
 
@@ -261,12 +261,14 @@ For every holdout, compare PPro and calibrated EmuFlow on:
 - maximum TDM ratio and TDM transition points;
 - worst cross-FPGA delay and its scaling trend;
 - success versus capacity/link infeasibility; and
-- algorithm/configuration ordering, followed by complete EmuFlow Phase 1--7
-  global WNS/TNS on the calibrated platform.
+- configuration-scaling trends, followed by complete EmuFlow Phase 1--7 global
+  WNS/TNS on the calibrated platform.
 
 PPro and EmuFlow need not choose identical partitions for a free-optimization
 holdout.  The primary research requirement is that feasibility boundaries,
-pressure locations, scaling trends, and algorithm ranking agree.  Constrained
+pressure locations, and scaling trends agree. PPro's free optimizer does not
+execute EmuFlow's internal algorithm variants, so it cannot directly certify
+their relative ranking. Constrained
 experiments, not free optimization, are used to fit hardware parameters.
 
 ## Promotion gates
@@ -281,7 +283,6 @@ an unseen application set meets all mandatory gates:
 - maximum TDM ratio exact or differing by at most one discrete ratio level;
 - worst cross-FPGA delay error at most 15%;
 - busiest-pair and major congestion ordering agreement;
-- consistent relative ranking for at least two partition/routing/TDM choices;
 - successful complete Phase 1--7 execution with zero unrouted nets, zero DRC
   violations, full original-path coverage, and independently validated global
   WNS/TNS; and
@@ -673,9 +674,10 @@ configuration, comparable resource utilization within 10 percentage points,
 TDM ratio within one level, cross-FPGA delay within 15%, major busiest-pair
 ordering agreement, macro-cycle/schedule legality, zero unrouted nets and DRC,
 and complete original-path coverage. It additionally requires all AES/CPU,
-large, DLA, and NVDLA tiers plus matching ranking for at least two algorithm
-variants on one workload. Global WNS/TNS are mandatory evidence, not replaced
-by an intermediate Phase 3--6 metric.
+large, DLA, and NVDLA tiers. EmuFlow algorithm variants may be reported, but
+the promotion report explicitly marks their PPro ranking as `not-claimed`:
+the free PPro holdout did not execute those algorithms. Global WNS/TNS are
+mandatory evidence, not replaced by an intermediate Phase 3--6 metric.
 
 Run secworks AES and one CPU holdout, then Koios GEMM/attention, Koios DLA
 medium/large, and finally NVDLA if the smaller gates pass.  Keep one physical

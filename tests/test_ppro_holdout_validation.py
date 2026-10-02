@@ -149,19 +149,29 @@ class PProHoldoutValidationTest(unittest.TestCase):
     def complete_results():
         return [
             result("aes-a", "aes", "medium", "a", 10.0),
-            result("aes-b", "aes", "medium", "b", 12.0),
             result("cpu-a", "cpu", "diversity", "a", 11.0),
             result("gemm-a", "gemm", "large", "a", 13.0),
             result("dla-a", "dla", "large_primary", "a", 14.0),
             result("nvdla-a", "nvdla", "very_large_final", "a", 15.0),
         ]
 
-    def test_complete_tiers_and_ranking_promote(self):
+    def test_complete_benchmark_classes_promote_without_false_ranking_claim(self):
         values = self.complete_results()
         report = evaluate_holdout_promotion(values)
         self.assertTrue(report["promoted"])
         self.assertEqual(report["status"], "pass")
-        self.assertTrue(report["ranking_checks"][0]["matches"])
+        self.assertEqual(report["algorithm_ranking"]["status"], "not-claimed")
+        self.assertEqual(report["algorithm_ranking"]["evaluated_variants"], {})
+
+    def test_optional_algorithm_variants_are_reported_but_not_ranked_by_ppro(self):
+        values = self.complete_results()
+        values.append(result("aes-b", "aes", "medium", "b", 12.0))
+        report = evaluate_holdout_promotion(values)
+        self.assertTrue(report["promoted"])
+        self.assertEqual(
+            report["algorithm_ranking"]["evaluated_variants"],
+            {"aes": ["a", "b"]},
+        )
 
     def test_nvdla_final_holdout_rejects_black_box_memory(self):
         with self.assertRaisesRegex(ValidationError, "physically implementable"):
