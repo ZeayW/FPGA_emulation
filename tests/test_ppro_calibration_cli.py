@@ -7,10 +7,13 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
+from emuflow.errors import ValidationError
 from emuflow.ppro_calibration_cli import _campaign_status, _parser, main
+from emuflow.ppro_blackbox_provenance import runner_source_bundle
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNNER_REVISION = runner_source_bundle()["runner_revision"]
 
 
 class PProCalibrationCliTest(unittest.TestCase):
@@ -48,6 +51,28 @@ class PProCalibrationCliTest(unittest.TestCase):
         )
         self.assertGreaterEqual(len(result["members"]), 8)
         self.assertEqual(len(result["runner_revision"]), 64)
+
+    def test_generation_rejects_stale_runner_revision(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaisesRegex(
+                ValidationError,
+                "runner revision does not match the current runtime source bundle",
+            ):
+                main(
+                    [
+                        "generate-smoke",
+                        "--out",
+                        str(Path(raw) / "smoke"),
+                        "--campaign-id",
+                        "stale-runner-revision",
+                        "--configuration-id",
+                        "lx2-m1",
+                        "--tool-release",
+                        "2026.1",
+                        "--runner-revision",
+                        "0" * 64,
+                    ]
+                )
 
     def test_campaign_accepts_measured_boundaries_but_not_provider_failures(self):
         self.assertEqual(
@@ -89,7 +114,7 @@ class PProCalibrationCliTest(unittest.TestCase):
                         "--tool-release",
                         "2026.1",
                         "--runner-revision",
-                        "a" * 64,
+                        RUNNER_REVISION,
                     ]
                 )
             self.assertEqual(code, 0)
@@ -122,7 +147,7 @@ class PProCalibrationCliTest(unittest.TestCase):
                         "--tool-release",
                         "2026.1",
                         "--runner-revision",
-                        "a" * 64,
+                        RUNNER_REVISION,
                         "--adapter-profile",
                         "mock-ordinary-reports-v1",
                     ]
@@ -144,7 +169,7 @@ class PProCalibrationCliTest(unittest.TestCase):
                 "--tool-release",
                 "2026.1",
                 "--runner-revision",
-                "b" * 64,
+                RUNNER_REVISION,
             ]
             output = StringIO()
             with redirect_stdout(output):

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
+from .errors import ValidationError
 from .io import read_json, write_json
 from .open_transport_characterization import (
     fit_open_transport_cost_model,
@@ -276,6 +277,19 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _dispatch(args: argparse.Namespace) -> Any:
+    if args.command in {
+        "generate-smoke",
+        "generate-capacity-matrix",
+        "generate-topology-matrix",
+        "generate-communication-probe",
+        "generate-communication-matrix",
+        "generate-application-holdout",
+    }:
+        expected_revision = runner_source_bundle()["runner_revision"]
+        if args.runner_revision != expected_revision:
+            raise ValidationError(
+                "runner revision does not match the current runtime source bundle"
+            )
     if args.command == "validate-artifact":
         return validate_redacted_artifact(read_json(args.artifact.resolve()))
     if args.command == "validate-run-spec":
