@@ -2,6 +2,7 @@
   "schema": "emuflow.benchmark-run/v1",
   "id": "picorv32_l2_logic_only",
   "design_id": "picorv32",
+  "calibration_holdout_class": "open_cpu",
   "top": "picorv32",
   "sources": ["picorv32.v"],
   "clocks": ["clk"],

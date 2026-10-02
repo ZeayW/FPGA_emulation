@@ -189,6 +189,7 @@ def prepare_nvdla_holdout(
         "schema": "emuflow.benchmark-run/v1",
         "id": f"nvdla_nvdlav1_l7_shared_frontend_{memory_variant}",
         "design_id": "nvdla",
+        "calibration_holdout_class": "nvdla",
         "top": "NV_nvdla",
         "sources": relative_sources,
         "clocks": ["dla_core_clk", "dla_csb_clk"],

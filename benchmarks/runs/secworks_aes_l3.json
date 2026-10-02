@@ -2,6 +2,7 @@
   "schema": "emuflow.benchmark-run/v1",
   "id": "secworks_aes_l3_logic_only",
   "design_id": "secworks_aes",
+  "calibration_holdout_class": "secworks_aes",
   "top": "aes",
   "sources": ["src/rtl/*.v"],
   "clocks": ["clk"],

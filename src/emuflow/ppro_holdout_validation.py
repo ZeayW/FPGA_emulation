@@ -395,7 +395,6 @@ def assemble_holdout_result(
     *,
     result_id: str,
     workload_id: str,
-    benchmark_class: str,
     algorithm_id: str,
     ppro_observation_path: Path,
     flow_root: Path,
@@ -406,8 +405,6 @@ def assemble_holdout_result(
 ) -> Dict[str, Any]:
     """Assemble a blind result exclusively from independently checked artifacts."""
 
-    if benchmark_class not in _BENCHMARK_CLASS_TIERS:
-        raise ValidationError("holdout benchmark class is invalid")
     if profile not in _PROFILES:
         raise ValidationError("holdout calibrated-platform profile is invalid")
     for name, value in (
@@ -421,6 +418,11 @@ def assemble_holdout_result(
     ppro_path = ppro_observation_path.resolve()
     ppro = validate_blackbox_observation(read_json(ppro_path))
     identity = benchmark_rtl_identity(benchmark_run_path, source_root)
+    benchmark_class = identity["calibration_holdout_class"]
+    if benchmark_class not in _BENCHMARK_CLASS_TIERS:
+        raise ValidationError(
+            "benchmark contract lacks a valid calibration_holdout_class"
+        )
     _validate_holdout_preparation(benchmark_class, identity["preparation"])
     if (
         ppro["workload"]["rtl_sha256"] != identity["rtl_sha256"]

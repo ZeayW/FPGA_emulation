@@ -24,6 +24,13 @@ VALID_PHYSICAL_MAPPING_PROFILES = {
     "vtr-hard-blocks",
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
 }
+VALID_CALIBRATION_HOLDOUT_CLASSES = {
+    "secworks_aes",
+    "open_cpu",
+    "koios_compute",
+    "koios_dla",
+    "nvdla",
+}
 
 
 def _required_string(value: Mapping[str, Any], key: str, context: str) -> str:
@@ -107,6 +114,14 @@ class BenchmarkRun:
                 "benchmark.physical_mapping_profile: unsupported value"
             )
         _required_string(value, "platform", "benchmark")
+        holdout_class = value.get("calibration_holdout_class")
+        if (
+            holdout_class is not None
+            and holdout_class not in VALID_CALIBRATION_HOLDOUT_CLASSES
+        ):
+            raise ValidationError(
+                "benchmark.calibration_holdout_class: unsupported value"
+            )
         synthesis = value.get("synthesis")
         if not isinstance(synthesis, dict):
             raise ValidationError("benchmark.synthesis: expected an object")

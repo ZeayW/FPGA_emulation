@@ -557,6 +557,13 @@ sources and headers before generating standard `+incdir+`/`+define+` filelist
 entries.  Absolute source paths remain scratch and never enter the normalized
 observation.  The holdout assembler also rejects a complete flow whose
 frontend include directories or defines differ from the benchmark contract.
+Promotion workload classes are also owned by the checked contract through
+`calibration_holdout_class`, included in the shared compilation identity, and
+cannot be supplied or relabelled by the result assembler.  The qualifying
+contracts are PicoRV32 (`open_cpu`), secworks AES (`secworks_aes`), native
+Koios GEMM/attention (`koios_compute`), native Koios DLA-large (`koios_dla`),
+and the generated NVDLA contract (`nvdla`).  Older logic-only Koios contracts
+remain integration fixtures and cannot satisfy a promotion tier.
 The local renderer and tamper tests pass; acceptance of these standard
 filelist options by the authorized PPro installation remains a required real
 black-box probe before NVDLA is launched.
@@ -609,7 +616,7 @@ WNS/TNS directly from canonical artifacts:
 ```sh
 emuflow-ppro-calibration assemble-holdout-result \
   --id aes-default --workload-id aes \
-  --benchmark-class secworks_aes --algorithm-id default \
+  --algorithm-id default \
   --ppro-observation <ppro-observation.json> \
   --flow-root <complete-phase1-7-root> \
   --benchmark-run benchmarks/runs/secworks_aes_l3.json \

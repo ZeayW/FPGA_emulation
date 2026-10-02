@@ -293,6 +293,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
                         "schema": "emuflow.benchmark-run/v1",
                         "id": "blind-aes",
                         "design_id": "blind-aes",
+                        "calibration_holdout_class": "secworks_aes",
                         "top": "top",
                         "sources": ["design.v"],
                         "clocks": ["clk"],
@@ -420,7 +421,6 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 value = assemble_holdout_result(
                     result_id="blind-aes-a",
                     workload_id="blind-aes",
-                    benchmark_class="secworks_aes",
                     algorithm_id="default",
                     ppro_observation_path=observation_path,
                     flow_root=flow,
@@ -452,7 +452,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValidationError, "physical seed 1"):
                     assemble_holdout_result(
                         result_id="blind-aes-a", workload_id="blind-aes",
-                        benchmark_class="secworks_aes", algorithm_id="default",
+                        algorithm_id="default",
                         ppro_observation_path=observation_path, flow_root=flow,
                         benchmark_run_path=benchmark, source_root=source_root,
                         platform_bundle_root=bundle, profile="nominal",

@@ -17,6 +17,15 @@ KOIOS_DLA_MEDIUM_SPEC = (
 KOIOS_DLA_SMALL_SPEC = (
     ROOT / "benchmarks" / "runs" / "koios_dla_small_l5.json"
 )
+KOIOS_GEMM_NATIVE_SPEC = (
+    ROOT / "benchmarks" / "runs" / "koios_gemm_l5_native.json"
+)
+KOIOS_ATTENTION_NATIVE_SPEC = (
+    ROOT / "benchmarks" / "runs" / "koios_attention_l5_native.json"
+)
+KOIOS_DLA_LARGE_NATIVE_SPEC = (
+    ROOT / "benchmarks" / "runs" / "koios_dla_large_l6_native.json"
+)
 
 
 class BenchmarkRunTest(unittest.TestCase):
@@ -107,6 +116,61 @@ class BenchmarkRunTest(unittest.TestCase):
                 [path.name for path in sources],
                 ["dla_like.small.v"],
             )
+
+    def test_native_koios_holdout_specs_and_sources(self) -> None:
+        source_root = (
+            ROOT
+            / "third_party"
+            / "rtl"
+            / "koios"
+            / "vtr_flow"
+            / "benchmarks"
+            / "verilog"
+            / "koios"
+        )
+        expected = [
+            (
+                KOIOS_GEMM_NATIVE_SPEC,
+                "gemm_layer",
+                "gemm_layer.v",
+                "koios_compute",
+            ),
+            (
+                KOIOS_ATTENTION_NATIVE_SPEC,
+                "attention_layer",
+                "attention_layer.v",
+                "koios_compute",
+            ),
+            (
+                KOIOS_DLA_LARGE_NATIVE_SPEC,
+                "DLA",
+                "dla_like.large.v",
+                "koios_dla",
+            ),
+        ]
+        for path, top, filename, holdout_class in expected:
+            with self.subTest(path=path.name):
+                spec = BenchmarkRun.load(path)
+                self.assertEqual(spec.value["top"], top)
+                self.assertEqual(spec.value["synthesis"]["policy"], "native")
+                self.assertEqual(
+                    spec.value["physical_mapping_profile"],
+                    "xilinx-ultrascaleplus-open-v1",
+                )
+                self.assertEqual(
+                    spec.value["calibration_holdout_class"], holdout_class
+                )
+                if source_root.is_dir():
+                    self.assertEqual(
+                        [item.name for item in spec.resolve_sources(source_root)],
+                        [filename],
+                    )
+
+    def test_unknown_calibration_holdout_class_is_rejected(self) -> None:
+        value = json.loads(SECWORKS_AES_SPEC.read_text(encoding="utf-8"))
+        value["calibration_holdout_class"] = "user-label"
+        with self.assertRaisesRegex(ValidationError, "calibration_holdout_class"):
+            BenchmarkRun(value)
 
     def test_missing_source_pattern_is_rejected(self) -> None:
         spec = BenchmarkRun.load(SERV_SPEC)

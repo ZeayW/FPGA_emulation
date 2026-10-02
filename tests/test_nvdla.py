@@ -265,6 +265,9 @@ endmodule
             )
             self.assertEqual(report["status"], "pass")
             spec = BenchmarkRun.load(benchmark_path)
+            self.assertEqual(
+                spec.value["calibration_holdout_class"], "nvdla"
+            )
             sources = spec.resolve_sources(source)
             self.assertNotIn(
                 (source / "vmod" / "vlibs" / "NV_DW_lsd.v").resolve(), sources
@@ -306,6 +309,9 @@ endmodule
             )
             self.assertEqual(report["memory_policy"], PHYSICAL_MEMORY_POLICY)
             self.assertTrue(report["benchmark"]["id"].endswith("_physical"))
+            self.assertEqual(
+                report["benchmark"]["calibration_holdout_class"], "nvdla"
+            )
             prepared = json.loads(
                 (source / ".prepared" / "preparation-manifest.json").read_text()
             )

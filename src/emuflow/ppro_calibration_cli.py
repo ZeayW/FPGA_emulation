@@ -254,11 +254,6 @@ def _parser() -> argparse.ArgumentParser:
     assemble = commands.add_parser("assemble-holdout-result")
     assemble.add_argument("--id", required=True)
     assemble.add_argument("--workload-id", required=True)
-    assemble.add_argument(
-        "--benchmark-class",
-        choices=["secworks_aes", "open_cpu", "koios_compute", "koios_dla", "nvdla"],
-        required=True,
-    )
     assemble.add_argument("--algorithm-id", required=True)
     assemble.add_argument("--ppro-observation", type=Path, required=True)
     assemble.add_argument("--flow-root", type=Path, required=True)
@@ -525,7 +520,6 @@ def _dispatch(args: argparse.Namespace) -> Any:
         result = assemble_holdout_result(
             result_id=args.id,
             workload_id=args.workload_id,
-            benchmark_class=args.benchmark_class,
             algorithm_id=args.algorithm_id,
             ppro_observation_path=args.ppro_observation,
             flow_root=args.flow_root,

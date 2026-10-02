@@ -1,0 +1,16 @@
+{
+  "schema": "emuflow.benchmark-run/v1",
+  "id": "koios_attention_l5_native",
+  "design_id": "koios",
+  "calibration_holdout_class": "koios_compute",
+  "top": "attention_layer",
+  "sources": ["attention_layer.v"],
+  "clocks": ["clk"],
+  "clock_periods_ns": {"clk": 10.0},
+  "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
+  "platform": "platforms/virtual/xcvu3p_4fpga_mesh.json",
+  "synthesis": {
+    "family": "xcup",
+    "policy": "native"
+  }
+}

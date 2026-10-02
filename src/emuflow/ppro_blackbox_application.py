@@ -103,6 +103,9 @@ def benchmark_rtl_identity(
     }
     parameters = {
         "benchmark_id": benchmark.value["id"],
+        "calibration_holdout_class": benchmark.value.get(
+            "calibration_holdout_class"
+        ),
         "clocks": benchmark.value["clocks"],
         "clock_periods_ns": benchmark.value.get("clock_periods_ns"),
         "rtl_inputs": rtl_inputs,
@@ -124,6 +127,9 @@ def benchmark_rtl_identity(
         "top_module": benchmark.value["top"],
         "clocks": benchmark.value["clocks"],
         "clock_periods_ns": benchmark.value.get("clock_periods_ns"),
+        "calibration_holdout_class": benchmark.value.get(
+            "calibration_holdout_class"
+        ),
         "preparation": benchmark.value.get("preparation"),
     }
 
