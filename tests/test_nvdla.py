@@ -1,14 +1,85 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from emuflow.benchmark import BenchmarkRun
+from emuflow.ppro_blackbox_application import benchmark_rtl_identity
 from scripts.benchmarks.nvdla_release_inventory import (
     collect_nvdla_source_files,
 )
 from scripts.benchmarks.nvdla_ram_stubs import generate
+from scripts.benchmarks.prepare_nvdla_holdout import prepare_nvdla_holdout
 
 
 class NvdlaRamStubTest(unittest.TestCase):
+    def _prepared_fixture(self, root: Path) -> tuple[Path, Path, Path]:
+        source = root / "nvdla"
+        rtl = source / "vmod" / "nvdla" / "top"
+        vlibs = source / "vmod" / "vlibs"
+        include = source / "vmod" / "include"
+        rams = source / "vmod" / "rams" / "synth"
+        for path in (rtl, vlibs, include, rams):
+            path.mkdir(parents=True, exist_ok=True)
+        catalog = root / "catalog.json"
+        catalog.write_text(
+            json.dumps(
+                {
+                    "schema": "emuflow.rtl-catalog/v1",
+                    "designs": [
+                        {
+                            "id": "nvdla",
+                            "revision": "revision-1",
+                            "archive_sha256": "a" * 64,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (source / ".emuflow-source.json").write_text(
+            json.dumps(
+                {
+                    "schema": "emuflow.source-archive/v1",
+                    "design_id": "nvdla",
+                    "revision": "revision-1",
+                    "archive_sha256": "a" * 64,
+                }
+            ),
+            encoding="utf-8",
+        )
+        for index in range(249):
+            (rtl / f"rtl_{index}.v").write_text(
+                f"module rtl_{index}; endmodule\n", encoding="utf-8"
+            )
+        (rtl / "NV_nvdla.v").write_text(
+            "module NV_nvdla(input dla_core_clk, input dla_csb_clk); endmodule\n",
+            encoding="utf-8",
+        )
+        (rtl / "NV_NVDLA_partition_o.v").write_text(
+            "#ifdef NVDLA_CDP_ENABLE\nmodule partition_o; endmodule\n#endif\n",
+            encoding="utf-8",
+        )
+        (vlibs / "NV_DW_lsd.v").write_text(
+            "module NV_DW_lsd; endmodule\n", encoding="utf-8"
+        )
+        (vlibs / "cell.v").write_text("module cell; endmodule\n", encoding="utf-8")
+        (include / "config.vh").write_text("`define CONFIG 1\n", encoding="utf-8")
+        (rams / "nv_ram_demo.v").write_text(
+            """
+module nv_ram_demo (clk, addr, dout);
+parameter FORCE_CONTENTION_ASSERTION_RESET_ACTIVE=1'b0;
+input clk;
+input [7:0] addr;
+output [31:0] dout;
+endmodule
+""",
+            encoding="utf-8",
+        )
+        compat = root / "compat.v"
+        compat.write_text("module NV_DW_lsd; endmodule\n", encoding="utf-8")
+        return source, catalog, compat
+
     def test_release_inventory_covers_frontend_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
@@ -108,6 +179,69 @@ endmodule
             self.assertIn("reg [63:0] mem [0:31];", text)
             self.assertIn("always @(posedge clk)", text)
             self.assertIn("dout_reg <= mem[ra];", text)
+
+    def test_shared_holdout_preparation_seals_one_frontend(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, catalog, compat = self._prepared_fixture(root)
+            generated = source / ".prepared"
+            benchmark_path = root / "nvdla.json"
+            report = prepare_nvdla_holdout(
+                source_root=source,
+                generated_dir=generated,
+                benchmark_path=benchmark_path,
+                platform="platforms/calibrated/nominal/boarddb.json",
+                catalog_path=catalog,
+                compat_path=compat,
+            )
+            self.assertEqual(report["status"], "pass")
+            spec = BenchmarkRun.load(benchmark_path)
+            sources = spec.resolve_sources(source)
+            self.assertNotIn(
+                (source / "vmod" / "vlibs" / "NV_DW_lsd.v").resolve(), sources
+            )
+            self.assertNotIn(
+                (
+                    source
+                    / "vmod"
+                    / "nvdla"
+                    / "top"
+                    / "NV_NVDLA_partition_o.v"
+                ).resolve(),
+                sources,
+            )
+            self.assertIn((generated / "nvdla_compat.v").resolve(), sources)
+            normalized = (generated / "NV_NVDLA_partition_o.v").read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn("#ifdef", normalized)
+            self.assertIn("`ifdef", normalized)
+            identity = benchmark_rtl_identity(benchmark_path, source)
+            self.assertEqual(
+                identity["defines"], report["benchmark"]["synthesis"]["defines"]
+            )
+            self.assertGreater(len(identity["include_file_records"]), 0)
+
+    def test_shared_holdout_rejects_unpinned_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, catalog, compat = self._prepared_fixture(root)
+            stamp = json.loads(
+                (source / ".emuflow-source.json").read_text(encoding="utf-8")
+            )
+            stamp["revision"] = "wrong"
+            (source / ".emuflow-source.json").write_text(
+                json.dumps(stamp), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "pinned RTL catalog"):
+                prepare_nvdla_holdout(
+                    source_root=source,
+                    generated_dir=source / ".prepared",
+                    benchmark_path=root / "nvdla.json",
+                    platform="platform.json",
+                    catalog_path=catalog,
+                    compat_path=compat,
+                )
 
 
 if __name__ == "__main__":

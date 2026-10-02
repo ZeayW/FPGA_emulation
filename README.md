@@ -554,6 +554,28 @@ The local renderer and tamper tests pass; acceptance of these standard
 filelist options by the authorized PPro installation remains a required real
 black-box probe before NVDLA is launched.
 
+NVDLA additionally has a shared frontend preparation step. It validates the
+pinned upstream archive stamp and writes only three small generated overlays:
+the corrected `partition_o` preprocessing directives, the existing
+Yosys-compatible `NV_DW_lsd` replacement, and interface-accurate RAM wrapper
+declarations. All remaining upstream files are referenced in place. The
+resulting benchmark contract is the only permitted source list for both PPro
+and EmuFlow:
+
+```bash
+python3 scripts/benchmarks/prepare_nvdla_holdout.py \
+  --source-root third_party/rtl/nvdla \
+  --generated-dir third_party/rtl/nvdla/.emuflow-prepared \
+  --benchmark build/nvdla-shared-frontend.json \
+  --platform platforms/calibrated/nominal/boarddb.json
+```
+
+The current RAM policy is explicitly
+`interface-accurate-black-box-scale-abstraction`. It is suitable for the
+black-box platform capacity/communication holdout, but it is not memory timing
+or final physical-memory evidence. Such a result must retain that label and
+cannot be promoted as complete NVDLA physical closure.
+
 The joined blind-result contract is `emuflow.ppro-holdout-result/v3`. Results
 are not written from a hand-entered summary.  The official assembler first
 replays the sealed Phase 1--7 bundle validator, re-hashes the benchmark RTL,

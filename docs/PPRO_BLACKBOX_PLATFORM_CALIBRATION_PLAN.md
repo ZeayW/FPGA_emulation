@@ -634,6 +634,16 @@ Run secworks AES and one CPU holdout, then Koios GEMM/attention, Koios DLA
 medium/large, and finally NVDLA if the smaller gates pass.  Keep one physical
 seed unless a variance study is explicitly requested.
 
+NVDLA has a deterministic shared-frontend preparation contract. The preparer
+validates the pinned source stamp, references upstream RTL in place, and
+generates only the normalized `partition_o`, the checked `NV_DW_lsd`
+compatibility module, and RAM wrapper declarations. It emits the single
+ordered source/include/define contract that both PPro and EmuFlow must consume.
+The current RAM wrappers are an explicitly labeled black-box scale
+abstraction; they may validate platform capacity and communication trends, but
+cannot pass the final physical-memory/timing promotion gate until replaced by
+a common, physically implementable memory model.
+
 Gate: the promotion criteria above, including a complete Phase 1--7 run and
 global WNS/TNS.  A Phase 3/4/5 or PPro-only comparison is not completion.
 
