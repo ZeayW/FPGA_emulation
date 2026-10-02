@@ -443,8 +443,8 @@ The communication producer and payload/latency/transport fitters share the
 version-locked `ppro-blackbox-communication-probe-v3` contract. Older v1/v2
 observations are rejected rather than mixed into a current fit.
 
-Status: **controlled probe and fitting framework implemented; real observations
-pending**. One compact communication generator sweeps width, parallel flows,
+Status: **controlled probe and fitting framework implemented; effective
+payload/TDM classes fitted, latency and transport observations pending**. One compact communication generator sweeps width, parallel flows,
 direction, fanout, and requested TDM level while keeping logical endpoints
 explicit. Payload fitting reports the repeated ratio-one/TDM transition and
 observed TDM levels; a final link-infeasible upper bound is retained when
@@ -461,6 +461,17 @@ rank plus independent holdouts; they do not silently publish unidentifiable
 zero coefficients. The real adapter currently observes
 natural TDM transitions under width/flow pressure. Nonzero forced-TDM probes
 fail closed until their user-facing PPro constraint syntax is documented.
+
+At source commit `e0b1f74a6042d52c6b65e45a93d763e67ff459b0`, the authorized
+four-FPGA payload campaign completed 96 real runs without a failed case.  The
+initial sweep found that four directions were still ratio one at 128 bits.
+Those 256-bit discovery holdouts were excluded from the final fit and replaced
+by 256-bit fit trials plus new 512-bit holdouts, preventing adaptive holdout
+leakage.  The final selected set contains 88 observations, eight directed-link
+signatures, zero excluded observations, and 16/16 matching holdout checks.
+Four directions have a conservative ratio-one lower bound of 64 bits and four
+have 128 bits; every observed transition enters ratio 8.  The asymmetric
+classes are retained rather than collapsed into one convenient link width.
 
 Deliver parameter sweeps, constrained fits, confidence intervals, and an
 identifiability report.

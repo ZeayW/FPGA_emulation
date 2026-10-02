@@ -304,6 +304,19 @@ multi-hop latency from full-width per-hop route evidence, and rejects
 rank-deficient latency or transport matrices instead of emitting unidentifiable
 coefficients.
 
+The first authorized four-FPGA payload campaign at source commit
+`e0b1f74a6042d52c6b65e45a93d763e67ff459b0` completed 96 evaluated runs
+without a failed PPro case.  The initial matrix exposed two directed link
+classes, so the four higher-capacity directions received a new wider fit point
+and a fresh independent holdout; the discovery holdouts were not reused as
+validation evidence.  The final fit consumes 88 observations, has eight link
+signatures, zero excluded observations, and 16/16 matching holdout checks.
+`F0->F2`, `F0->F3`, `F1->F3`, and `F2->F1` have a conservative observed
+ratio-one width of 64 bits; `F1->F2`, `F2->F0`, `F3->F0`, and `F3->F1` have
+128 bits.  The next observed TDM level is ratio 8 for every direction.  These
+are effective black-box payload classes, not claims about physical lane count
+or line rate.  Latency and transport-cost observations remain pending.
+
 Stage 5 can now deterministically materialize and independently validate the
 three final profile databases plus a provenance/hash manifest. It cannot turn
 the synthetic tests into a released platform: generation requires real fitted
