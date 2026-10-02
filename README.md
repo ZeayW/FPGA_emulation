@@ -493,9 +493,13 @@ emuflow-ppro-calibration generate-communication-matrix \
 Generated cases can be consumed as one ephemeral campaign. Discovery is
 bounded by `--maximum-cases`; license concurrency defaults to one and rises
 only through an explicit `--max-workers`. Every case still owns an isolated
-directory and retains only `observation.json` after raw-project cleanup. The
-strictly allowlisted generated RTL/run-spec bundle is also removed after every
-case has a terminal observation; unknown files prevent cleanup and fail closed.
+directory and retains only `observation.json` after raw-project cleanup. A
+strictly allowlisted generated RTL/run-spec bundle is consumed only after an
+evaluated terminal outcome (`pass` or an explicit capacity/link/routing
+infeasibility). Provider, license, infrastructure, missing-report, parse, and
+generic tool failures preserve the exact sealed bundle for a retry; they do
+not silently regenerate or change the experiment. Unknown files prevent
+cleanup and fail closed.
 A provider timeout terminates and reaps the entire isolated process group, not
 only the launcher process:
 

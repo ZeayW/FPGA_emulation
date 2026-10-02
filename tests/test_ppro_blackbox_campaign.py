@@ -112,6 +112,30 @@ class PProBlackboxCampaignTest(unittest.TestCase):
                 execute_generated_campaign(bundles, runtime=self._runtime(root))
             self.assertTrue((bundles[0] / "unexpected.txt").is_file())
 
+    def test_license_failure_preserves_sealed_bundles_for_retry(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle_root = root / "bundles"
+            self._bundles(bundle_root)
+            bundles = discover_generated_bundles(bundle_root, maximum_cases=2)
+            runtime = self._runtime(root)
+            executable = runtime.install_root / "bin" / "rtlpart_linux"
+            executable.write_text(
+                "#!/bin/sh\necho 'license checkout failed' >&2\nexit 1\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o700)
+
+            results = execute_generated_campaign(
+                bundles, runtime=runtime, max_workers=2
+            )
+            self.assertEqual(
+                {item["execution"]["outcome"] for item in results},
+                {"license_failure"},
+            )
+            self.assertEqual(len(list(bundle_root.rglob("run-spec.json"))), 2)
+            self.assertFalse(any(bundle_root.rglob(".run-ppro.tcl")))
+
 
 if __name__ == "__main__":
     unittest.main()

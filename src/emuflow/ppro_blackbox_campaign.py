@@ -8,6 +8,7 @@ from typing import Dict, Mapping, Sequence
 
 from .errors import ValidationError
 from .io import read_json
+from .ppro_blackbox_calibration import EVALUATED_OUTCOMES
 from .ppro_blackbox_runner import cleanup_runtime_artifacts, execute_blackbox_queue
 from .ppro_blackbox_runtime import PProRuntimeConfig, render_ppro_runtime_binding
 
@@ -126,6 +127,7 @@ def execute_generated_campaign(
         raise ValidationError("PPro campaign input bundle violates the authorized storage boundary")
 
     cases = []
+    bundle_by_identity: dict[str, Path] = {}
     identities: set[str] = set()
     try:
         for bundle_root in normalized_bundle_roots:
@@ -137,6 +139,7 @@ def execute_generated_campaign(
             if identity in identities:
                 raise ValidationError("PPro campaign contains duplicate case identities")
             identities.add(identity)
+            bundle_by_identity[identity] = bundle_root
             binding = render_ppro_runtime_binding(
                 spec,
                 source_filelist=filelist_path,
@@ -164,6 +167,11 @@ def execute_generated_campaign(
                 pass
         raise
     results = execute_blackbox_queue(cases, max_workers=max_workers)
-    for bundle_root in normalized_bundle_roots:
-        _cleanup_generated_bundle(bundle_root)
+    for result in results:
+        # A generated bundle is consumed only by a hardware-evaluated terminal
+        # result.  Provider, license, infrastructure, missing-report, parse,
+        # and generic tool failures preserve the exact sealed input so a retry
+        # does not regenerate or silently change the case.
+        if result["execution"]["outcome"] in EVALUATED_OUTCOMES:
+            _cleanup_generated_bundle(bundle_by_identity[result["identity"]["id"]])
     return results
