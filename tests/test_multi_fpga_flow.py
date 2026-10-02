@@ -17,6 +17,12 @@ from emuflow.multi_fpga_flow import (
     validate_multi_fpga_flow_bundle,
     validate_multi_fpga_flow_report,
 )
+from emuflow.open_transport_characterization import (
+    BASE_FEATURE_NAMES,
+    FRAME_SLOTS,
+    OPEN_TRANSPORT_MODEL,
+    OPEN_TRANSPORT_PROVENANCE,
+)
 from emuflow.platform import Platform
 from emuflow.tdm import (
     TDM_BASELINE_PROVIDER,
@@ -720,9 +726,32 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             root = Path(temporary_directory)
             output = root / "multi"
             link_timing_path = root / "board-link-timing.json"
+            transport_cost_path = root / "transport-cost.json"
+            platform = Platform.load(PLATFORM)
             write_json(
                 link_timing_path,
-                build_board_link_timing_model(Platform.load(PLATFORM)),
+                build_board_link_timing_model(platform),
+            )
+            feature_names = list(BASE_FEATURE_NAMES) + [
+                f"frame_slots_{slots}" for slots in FRAME_SLOTS[1:]
+            ]
+            write_json(
+                transport_cost_path,
+                {
+                    "schema": "emuflow.transport-cost/v2",
+                    "platform": platform.name,
+                    "profile": "nominal",
+                    "model": OPEN_TRANSPORT_MODEL,
+                    "feature_names": feature_names,
+                    "resources": {
+                        "lut": {name: 1.0 for name in feature_names},
+                        "ff": {name: 2.0 for name in feature_names},
+                    },
+                    "provenance": {
+                        "class": OPEN_TRANSPORT_PROVENANCE,
+                        "fit_sha256": "1" * 64,
+                    },
+                },
             )
             report = run_multi_fpga_flow(
                 platform_path=PLATFORM,
@@ -734,10 +763,11 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 cut_mode="sequential-only",
                 timing_driven=False,
                 board_link_timing_db=link_timing_path,
+                transport_cost_db=transport_cost_path,
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
-                frame_slots=32,
+                frame_slots=16,
                 equivalence_cycles=8,
             )
             self.assertEqual(report["summary"]["used_fpgas"], 2)
@@ -773,7 +803,17 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     "phase7c-system-timing-when-physical",
                 ],
             )
-            self.assertEqual(report["summary"]["frame_slots"], 32)
+            self.assertEqual(report["summary"]["frame_slots"], 16)
+            prediction = report["stages"]["split"]["validation"][
+                "transport_cost_prediction"
+            ]
+            self.assertEqual(prediction["status"], "pass")
+            self.assertEqual(len(prediction["fpgas"]), 2)
+            self.assertIn("transport_cost", report["artifacts"])
+            self.assertEqual(
+                read_json(output / "split/transport-cost.json"),
+                read_json(transport_cost_path),
+            )
             self.assertEqual(
                 report["stages"]["frontend"]["synthesis"]["mode"],
                 "provided-yosys-json",

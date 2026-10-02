@@ -75,17 +75,19 @@ def result(identifier: str, workload: str, tier: str, algorithm: str, delay: flo
         "very_large_final": "nvdla",
     }[tier]
     return {
-        "schema": "emuflow.ppro-holdout-result/v3",
+        "schema": "emuflow.ppro-holdout-result/v4",
         "id": identifier,
         "workload_id": workload,
         "benchmark_class": benchmark_class,
         "tier": tier,
         "algorithm_id": algorithm,
         "evidence": {
-            "producer": "independent-flow-bundle-assembler-v1",
+            "producer": "independent-flow-bundle-assembler-v2",
             "benchmark_run_sha256": "6" * 64,
             "platform_manifest_sha256": "7" * 64,
             "platform_boarddb_sha256": "8" * 64,
+            "platform_board_link_timing_sha256": "d" * 64,
+            "platform_transport_cost_sha256": "e" * 64,
             "flow_report_sha256": "9" * 64,
             "schedule_sha256": "a" * 64,
             "physical_flow_report_sha256": "b" * 64,
@@ -251,7 +253,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
         if jsonschema is not None:
             root = Path(__file__).resolve().parents[1]
             schema = json.loads(
-                (root / "schemas/ppro-holdout-result-v3.schema.json").read_text(
+                (root / "schemas/ppro-holdout-result-v4.schema.json").read_text(
                     encoding="utf-8"
                 )
             )
@@ -334,12 +336,35 @@ class PProHoldoutValidationTest(unittest.TestCase):
             (bundle / "nominal" / "boarddb.json").write_text(
                 json.dumps(boarddb), encoding="utf-8"
             )
+            link_timing = {
+                "schema": "emuflow.board-link-timing/v1",
+                "platform": "calibrated",
+                "links": [],
+            }
+            transport_cost = {
+                "schema": "emuflow.transport-cost/v2",
+                "platform": "calibrated",
+                "profile": "nominal",
+            }
+            (bundle / "nominal" / "board-link-timing.json").write_text(
+                json.dumps(link_timing), encoding="utf-8"
+            )
+            (bundle / "nominal" / "transport-cost.json").write_text(
+                json.dumps(transport_cost), encoding="utf-8"
+            )
             boarddb_digest = __import__("hashlib").sha256(
                 json.dumps(boarddb, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()
+            canonical_digest = lambda value: __import__("hashlib").sha256(
+                json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
             manifest = {
                 "configuration_id": "lx2-m2",
-                "profiles": {"nominal": {"boarddb": boarddb_digest}},
+                "profiles": {"nominal": {
+                    "boarddb": boarddb_digest,
+                    "board_link_timing": canonical_digest(link_timing),
+                    "transport_cost": canonical_digest(transport_cost),
+                }},
             }
             (bundle / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
@@ -384,10 +409,20 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 "schedule": flow / "tdm/schedule.json",
                 "physical_flow_report": flow / "physical/multi-fpga-physical-flow-report.json",
                 "qor_report": flow / "runtime/qor_report.json",
+                "board_link_timing": flow / "timing/board-link-timing.json",
+                "transport_cost": flow / "split/transport-cost.json",
             }
+            paths["board_link_timing"].parent.mkdir(parents=True, exist_ok=True)
+            paths["transport_cost"].parent.mkdir(parents=True, exist_ok=True)
             paths["schedule"].write_text(json.dumps(schedule), encoding="utf-8")
             paths["physical_flow_report"].write_text(json.dumps(physical), encoding="utf-8")
             paths["qor_report"].write_text(json.dumps(qor), encoding="utf-8")
+            paths["board_link_timing"].write_text(
+                json.dumps(link_timing), encoding="utf-8"
+            )
+            paths["transport_cost"].write_text(
+                json.dumps(transport_cost), encoding="utf-8"
+            )
             sha = lambda path: __import__("hashlib").sha256(path.read_bytes()).hexdigest()
             flow_report = {
                 "status": "pass",
@@ -435,6 +470,49 @@ class PProHoldoutValidationTest(unittest.TestCase):
             self.assertEqual(value["emuflow"]["worst_cross_fpga_delay_ns"], 10.5)
             self.assertEqual(value["emuflow"]["busiest_pairs"], ["F0->F1"])
             self.assertEqual(value["evidence"]["schedule_sha256"], sha(paths["schedule"]))
+            self.assertEqual(
+                value["evidence"]["platform_board_link_timing_sha256"],
+                manifest["profiles"]["nominal"]["board_link_timing"],
+            )
+            self.assertEqual(
+                value["evidence"]["platform_transport_cost_sha256"],
+                manifest["profiles"]["nominal"]["transport_cost"],
+            )
+
+            tampered_transport_cost = dict(transport_cost)
+            tampered_transport_cost["profile"] = "conservative"
+            paths["transport_cost"].write_text(
+                json.dumps(tampered_transport_cost), encoding="utf-8"
+            )
+            flow_report["artifacts"]["transport_cost"]["sha256"] = sha(
+                paths["transport_cost"]
+            )
+            (flow / "multi-fpga-flow-report.json").write_text(
+                json.dumps(flow_report), encoding="utf-8"
+            )
+            with patch(
+                "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                return_value={"status": "pass", "configuration_id": "lx2-m2"},
+            ), patch(
+                "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                return_value={"status": "pass"},
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, "TransportCostDB is not the selected"
+                ):
+                    assemble_holdout_result(
+                        result_id="blind-aes-a", workload_id="blind-aes",
+                        algorithm_id="default",
+                        ppro_observation_path=observation_path, flow_root=flow,
+                        benchmark_run_path=benchmark, source_root=source_root,
+                        platform_bundle_root=bundle, profile="nominal",
+                    )
+            paths["transport_cost"].write_text(
+                json.dumps(transport_cost), encoding="utf-8"
+            )
+            flow_report["artifacts"]["transport_cost"]["sha256"] = sha(
+                paths["transport_cost"]
+            )
 
             physical["execution"]["seed"] = 2
             paths["physical_flow_report"].write_text(json.dumps(physical), encoding="utf-8")

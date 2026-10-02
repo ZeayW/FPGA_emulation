@@ -10,6 +10,7 @@ from emuflow.errors import ValidationError
 from emuflow.platform import Platform
 from emuflow.ppro_calibrated_platform import (
     generate_calibrated_platform_profiles,
+    predict_transport_resources,
     validate_calibrated_platform_bundle,
     validate_transport_cost_database,
     write_calibrated_platform_profiles,
@@ -213,6 +214,42 @@ class PProCalibratedPlatformTest(unittest.TestCase):
         self.assertEqual(bram_conversion["observation_resource"], "bram36k")
         self.assertEqual(bram_conversion["boarddb_resource"], "bram18k")
         self.assertEqual(bram_conversion["boarddb_units_per_observation_unit"], 2.0)
+
+    def test_transport_prediction_uses_production_structural_features(self):
+        database = self.generate()["profiles"]["nominal"]["transport_cost"]
+        transport = {
+            "fpga": "F0",
+            "frame_slots": 4,
+            "source_signals": [{"index": 0, "signal": "net:tx:0"}],
+            "shadow_signals": [{"index": 0, "signal": "net:rx:0"}],
+            "endpoints": [
+                {
+                    "kind": "tx",
+                    "link": "link-f0-f1",
+                    "peer": "F1",
+                    "lane": 0,
+                    "slot": 0,
+                },
+                {
+                    "kind": "rx",
+                    "link": "link-f0-f1",
+                    "peer": "F1",
+                    "lane": 0,
+                    "slot": 1,
+                    "arrival_slot": 1,
+                },
+            ],
+        }
+        result = predict_transport_resources(database, {"F0": transport})
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["platform"], database["platform"])
+        features = result["fpgas"][0]["features"]
+        self.assertEqual(features["fixed_shell"], 1.0)
+        self.assertEqual(features["tx_output_lanes"], 1.0)
+        self.assertEqual(features["rx_shadow_bits"], 1.0)
+        self.assertEqual(features["rx_arrival_slot_groups"], 1.0)
+        self.assertEqual(features["frame_slots_4"], 1.0)
+        self.assertGreater(result["total_resources"]["lut"], 0.0)
 
     def test_written_bundle_round_trips_and_detects_corruption(self):
         with tempfile.TemporaryDirectory() as raw:

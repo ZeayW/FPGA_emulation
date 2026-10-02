@@ -616,6 +616,16 @@ evidence must match its observed one-hop edges exactly. This prevents a fit
 from one platform size from silently generating a larger, partly uncalibrated
 BoardDB.
 
+Production integration binds the three artifacts as one profile, not as
+independent optional hints. BoardDB is the Phase 1--7 capacity/topology
+contract, BoardLinkTimingDB drives board routing/TDM evaluation and final
+system timing, and TransportCostDB is copied into Phase 6, evaluated from the
+actual generated transports with the same feature extractor used for fitting,
+and independently replayed by the full-flow validator. The v4 blind-result
+assembler requires exact semantic equality with the selected profile for all
+three artifacts. The current transport fit identifies frame lengths 2, 4, 8,
+and 16 only; uncharacterized frame lengths fail closed instead of extrapolating.
+
 Deliver generated BoardDB, BoardLinkTimingDB, TransportCostDB, a parameter
 provenance manifest, and independent validators.  Generated profiles are
 immutable inputs to a run; model fitting is never performed in the production

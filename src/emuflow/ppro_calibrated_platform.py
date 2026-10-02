@@ -18,6 +18,7 @@ from .open_transport_characterization import (
     OPEN_TRANSPORT_FIT_SCHEMA,
     OPEN_TRANSPORT_MODEL,
     OPEN_TRANSPORT_PROVENANCE,
+    extract_transport_features,
 )
 from .platform import Platform
 from .ppro_blackbox_calibration import validate_public_platform_prior
@@ -380,6 +381,45 @@ def validate_transport_cost_database(
     ):
         raise ValidationError("transport cost provenance is invalid")
     return {"status": "pass", "platform": platform, "profile": profile, "parameters": count}
+
+
+def predict_transport_resources(
+    database: Mapping[str, Any], transports: Mapping[str, Mapping[str, Any]]
+) -> Dict[str, Any]:
+    """Apply one validated TransportCostDB to production Phase 6 artifacts."""
+
+    validation = validate_transport_cost_database(database)
+    feature_names = list(database["feature_names"])
+    records = []
+    totals = {resource: 0.0 for resource in database["resources"]}
+    for fpga_id, transport in sorted(transports.items()):
+        if transport.get("fpga") != fpga_id:
+            raise ValidationError("transport cost prediction FPGA identity disagrees")
+        features = extract_transport_features(transport)
+        if set(features) != set(feature_names):
+            raise ValidationError(
+                "transport cost database disagrees with production feature contract"
+            )
+        resources = {}
+        for resource, coefficients in sorted(database["resources"].items()):
+            amount = sum(
+                float(features[name]) * float(coefficients[name])
+                for name in feature_names
+            )
+            resources[resource] = amount
+            totals[resource] += amount
+        records.append(
+            {"fpga": fpga_id, "features": features, "resources": resources}
+        )
+    return {
+        "schema": "emuflow.transport-cost-prediction/v1",
+        "status": "pass",
+        "platform": validation["platform"],
+        "profile": validation["profile"],
+        "model": database["model"],
+        "fpgas": records,
+        "total_resources": totals,
+    }
 
 
 def generate_calibrated_platform_profiles(

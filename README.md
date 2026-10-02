@@ -606,10 +606,11 @@ archive. This model becomes final physical-memory evidence only after the same
 prepared source completes synthesis, Phase 1--7 physical implementation, and
 the holdout promotion checks; the black-box policy can never satisfy that gate.
 
-The joined blind-result contract is `emuflow.ppro-holdout-result/v3`. Results
+The joined blind-result contract is `emuflow.ppro-holdout-result/v4`. Results
 are not written from a hand-entered summary.  The official assembler first
 replays the sealed Phase 1--7 bundle validator, re-hashes the benchmark RTL,
-checks the exact calibrated BoardDB profile, then derives utilization, TDM,
+checks the exact calibrated BoardDB, BoardLinkTimingDB, and TransportCostDB
+profile, then derives utilization, TDM,
 pair load, physical closure, equivalence, legality, and authoritative OpenSTA
 WNS/TNS directly from canonical artifacts:
 
@@ -624,6 +625,23 @@ emuflow-ppro-calibration assemble-holdout-result \
   --platform-bundle <calibrated-platform-bundle> \
   --profile nominal --out <aes-default.json>
 ```
+
+A calibrated full-flow run must bind all three profile artifacts together:
+
+```sh
+emuflow multi-fpga compile \
+  --platform <bundle>/<profile>/boarddb.json \
+  --board-link-timing-db <bundle>/<profile>/board-link-timing.json \
+  --transport-cost-db <bundle>/<profile>/transport-cost.json \
+  <other checked benchmark and physical options>
+```
+
+Phase 6 extracts the same structural features used during open transport
+characterization, seals a per-FPGA resource prediction, and the bundle
+validator recomputes it independently. The physical mapper remains the
+authority for realized LUT/FF/BRAM usage. The current calibrated feature
+contract covers frame lengths 2, 4, 8, and 16; any other frame length fails
+closed until it has been characterized and the model is refitted.
 
 The result seals every source/header artifact digest and compilation context,
 and requires standalone,

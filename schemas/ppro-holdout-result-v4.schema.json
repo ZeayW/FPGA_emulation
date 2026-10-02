@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://emuflow.dev/schema/ppro-holdout-result-v3.schema.json",
-  "title": "EmuFlow independently assembled PPro/Phase-1--7 holdout result v3",
+  "$id": "https://emuflow.dev/schema/ppro-holdout-result-v4.schema.json",
+  "title": "EmuFlow independently assembled PPro/Phase-1--7 holdout result v4",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "id", "workload_id", "benchmark_class", "tier", "algorithm_id", "evidence", "ppro", "emuflow"],
   "properties": {
-    "schema": {"const": "emuflow.ppro-holdout-result/v3"},
+    "schema": {"const": "emuflow.ppro-holdout-result/v4"},
     "id": {"type": "string", "minLength": 1},
     "workload_id": {"type": "string", "minLength": 1},
     "benchmark_class": {"enum": ["secworks_aes", "open_cpu", "koios_compute", "koios_dla", "nvdla"]},
@@ -15,12 +15,14 @@
     "evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["producer", "benchmark_run_sha256", "platform_manifest_sha256", "platform_boarddb_sha256", "flow_report_sha256", "schedule_sha256", "physical_flow_report_sha256", "qor_report_sha256"],
+      "required": ["producer", "benchmark_run_sha256", "platform_manifest_sha256", "platform_boarddb_sha256", "platform_board_link_timing_sha256", "platform_transport_cost_sha256", "flow_report_sha256", "schedule_sha256", "physical_flow_report_sha256", "qor_report_sha256"],
       "properties": {
-        "producer": {"const": "independent-flow-bundle-assembler-v1"},
+        "producer": {"const": "independent-flow-bundle-assembler-v2"},
         "benchmark_run_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "platform_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "platform_boarddb_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "platform_board_link_timing_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "platform_transport_cost_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "flow_report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "schedule_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "physical_flow_report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

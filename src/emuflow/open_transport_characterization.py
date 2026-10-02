@@ -340,23 +340,50 @@ def _build_case(case: Mapping[str, Any]) -> tuple[Platform, Dict[str, Any], Dict
         "shadow_signals": shadow_signals,
         "endpoints": endpoints,
     }
+    features = extract_transport_features(transport)
+    return platform, transport, features
+
+
+def extract_transport_features(transport: Mapping[str, Any]) -> Dict[str, float]:
+    """Extract the exact structural features used by the calibrated model.
+
+    Production Phase 6 calls this same function, so characterization and
+    application prediction cannot silently drift to different feature
+    definitions.
+    """
+
+    frame_slots = _positive_int(transport.get("frame_slots"), "frame_slots")
+    if frame_slots not in FRAME_SLOTS:
+        raise ValidationError(
+            "open transport production frame_slots is outside the "
+            "characterized set"
+        )
+    endpoints = transport.get("endpoints")
+    shadow_signals = transport.get("shadow_signals")
+    if not isinstance(endpoints, list) or not isinstance(shadow_signals, list):
+        raise ValidationError("open transport production artifact is invalid")
     tx_lane_assignments: dict[tuple[str, str, int], int] = {}
     for endpoint in endpoints:
+        if not isinstance(endpoint, Mapping):
+            raise ValidationError("open transport endpoint is invalid")
         if endpoint["kind"] != "tx":
             continue
         key = (endpoint["link"], endpoint["peer"], endpoint["lane"])
         tx_lane_assignments[key] = tx_lane_assignments.get(key, 0) + 1
-    rx_arrival_groups = {
-        (endpoint["link"], endpoint["peer"], endpoint["arrival_slot"])
-        for endpoint in endpoints
-        if endpoint["kind"] == "rx"
-    }
+    rx_arrival_groups = set()
+    for endpoint in endpoints:
+        if endpoint["kind"] == "rx":
+            rx_arrival_groups.add(
+                (endpoint["link"], endpoint["peer"], endpoint["arrival_slot"])
+            )
+        elif endpoint["kind"] != "tx":
+            raise ValidationError("open transport endpoint kind is invalid")
     features = {
         "fixed_shell": 1.0,
         # TX logic is synthesized per physical output lane, not per logical
         # signal.  Different slots can reuse one lane and one LUT.
         "tx_output_lanes": float(len(tx_lane_assignments)),
-        "rx_shadow_bits": float(rx_bits),
+        "rx_shadow_bits": float(len(shadow_signals)),
         # RX case decoding is shared by all shadow bits arriving from the same
         # peer in one slot.
         "rx_arrival_slot_groups": float(len(rx_arrival_groups)),
@@ -369,7 +396,7 @@ def _build_case(case: Mapping[str, Any]) -> tuple[Platform, Dict[str, Any], Dict
     }
     for slots in FRAME_SLOTS[1:]:
         features[f"frame_slots_{slots}"] = 1.0 if frame_slots == slots else 0.0
-    return platform, transport, features
+    return features
 
 
 def _tool_version(executable: str) -> str:

@@ -22,6 +22,10 @@ from .netlist import (
 )
 from .platform import Platform
 from .pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
+from .ppro_calibrated_platform import (
+    predict_transport_resources,
+    validate_transport_cost_database,
+)
 from .runtime import virtual_runtime_controller_to_systemverilog
 
 
@@ -167,6 +171,7 @@ def run_phase6(
     pin_plan_path: Optional[Path] = None,
     position_hints_path: Optional[Path] = None,
     electrical_binding_path: Optional[Path] = None,
+    transport_cost_path: Optional[Path] = None,
     managed_storage: bool = False,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
@@ -229,6 +234,16 @@ def run_phase6(
         pin_plan,
         reconstruct=False,
     )
+    transport_cost = None
+    if transport_cost_path is not None:
+        transport_cost = read_json(transport_cost_path.resolve())
+        validate_transport_cost_database(
+            transport_cost, expected_platform=platform.name
+        )
+        validation["transport_cost_prediction"] = predict_transport_resources(
+            transport_cost, artifacts["transports"]
+        )
+        artifacts["manifest"]["transport_cost"] = "transport-cost.json"
     from .tdm import is_sampled_virtual_wire_schedule
 
     if is_sampled_virtual_wire_schedule(schedule):
@@ -276,6 +291,8 @@ def run_phase6(
                 output_dir / "electrical_binding.json",
                 electrical_binding,
             )
+    if transport_cost is not None:
+        write_json(output_dir / "transport-cost.json", transport_cost, compact=True)
     (output_dir / "virtual_runtime_controller.sv").write_text(
         virtual_runtime_controller_to_systemverilog(),
         encoding="utf-8",
@@ -361,6 +378,11 @@ def run_phase6(
                 if electrical_validation is not None
                 else {}
             ),
+            **(
+                {"transport_cost": "transport-cost.json"}
+                if transport_cost is not None
+                else {}
+            ),
         },
     }
     write_json(output_dir / "phase6_report.json", report)
@@ -437,6 +459,7 @@ def validate_phase6(
             "electrical_binding_path"
         )
     artifacts["manifest"].pop("electrical_binding", None)
+    artifacts["manifest"].pop("transport_cost", None)
     validation = validate_split_artifacts(
         ir,
         assignment,
@@ -446,6 +469,17 @@ def validate_phase6(
         pin_plan,
         reconstruct=reconstruct_artifacts,
     )
+    transport_cost_relative = manifest.get("transport_cost")
+    if transport_cost_relative is not None:
+        if transport_cost_relative != "transport-cost.json":
+            raise ValidationError("Phase 6 transport cost path is invalid")
+        transport_cost = read_json(manifest_path.parent / transport_cost_relative)
+        validate_transport_cost_database(
+            transport_cost, expected_platform=platform.name
+        )
+        validation["transport_cost_prediction"] = predict_transport_resources(
+            transport_cost, artifacts["transports"]
+        )
     from .tdm import is_sampled_virtual_wire_schedule
 
     if replay_equivalence and is_sampled_virtual_wire_schedule(schedule):

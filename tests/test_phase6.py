@@ -33,6 +33,12 @@ from emuflow.pin_planning import (
     build_pin_plan,
 )
 from emuflow.platform import Platform
+from emuflow.open_transport_characterization import (
+    BASE_FEATURE_NAMES,
+    FRAME_SLOTS,
+    OPEN_TRANSPORT_MODEL,
+    OPEN_TRANSPORT_PROVENANCE,
+)
 from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import build_tdm_schedule
 from emuflow.timing_routing import route_system_native
@@ -313,6 +319,63 @@ class Phase6Test(unittest.TestCase):
                 "fpga1/virtual_anchors.xdc.template",
             ):
                 self.assertTrue((output / filename).is_file(), filename)
+
+    def test_phase6_binds_and_replays_transport_cost_prediction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "ir.json"
+            assignment_path = root / "assignment.json"
+            schedule_path = root / "schedule.json"
+            cost_path = root / "transport-cost.json"
+            ir_path.write_text(json.dumps(self.ir.to_dict()), encoding="utf-8")
+            assignment_path.write_text(
+                json.dumps(self.assignment), encoding="utf-8"
+            )
+            schedule = copy.deepcopy(self.schedule)
+            schedule["metrics"]["frame_slots"] = 8
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            feature_names = list(BASE_FEATURE_NAMES) + [
+                f"frame_slots_{slots}" for slots in FRAME_SLOTS[1:]
+            ]
+            cost_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.transport-cost/v2",
+                        "platform": self.platform.name,
+                        "profile": "nominal",
+                        "model": OPEN_TRANSPORT_MODEL,
+                        "feature_names": feature_names,
+                        "resources": {
+                            "lut": {name: 1.0 for name in feature_names}
+                        },
+                        "provenance": {
+                            "class": OPEN_TRANSPORT_PROVENANCE,
+                            "fit_sha256": "1" * 64,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = root / "phase6"
+            report = run_phase6(
+                ir_path,
+                assignment_path,
+                schedule_path,
+                PLATFORM_PATH,
+                output,
+                transport_cost_path=cost_path,
+            )
+            prediction = report["validation"]["transport_cost_prediction"]
+            self.assertEqual(prediction["status"], "pass")
+            self.assertTrue((output / "transport-cost.json").is_file())
+            replay = validate_phase6(
+                ir_path,
+                assignment_path,
+                schedule_path,
+                PLATFORM_PATH,
+                output / "manifest.json",
+            )
+            self.assertEqual(replay["transport_cost_prediction"], prediction)
 
     def test_phase6_materializes_validated_placement_aware_pin_plan(
         self,

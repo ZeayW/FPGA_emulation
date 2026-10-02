@@ -1210,6 +1210,7 @@ def run_multi_fpga_flow(
     timing_criticality_exponent: float = 2.0,
     route_constraints: Optional[Path] = None,
     board_link_timing_db: Optional[Path] = None,
+    transport_cost_db: Optional[Path] = None,
     timing_paths: Optional[Path] = None,
     router: Optional[str] = None,
     route_provider: Optional[str] = None,
@@ -2022,6 +2023,7 @@ def run_multi_fpga_flow(
             baseline_split,
             equivalence_cycles=equivalence_cycles,
             equivalence_seed=equivalence_seed,
+            transport_cost_path=transport_cost_db,
         )
         baseline_phase6_seconds = time.monotonic() - baseline_phase6_started
         baseline_physical_started = time.monotonic()
@@ -2127,6 +2129,7 @@ def run_multi_fpga_flow(
             pin_plan_path=adapter_root / "pin_plan.json",
             position_hints_path=adapter_root / "position_hints.json",
             electrical_binding_path=adapter_root / "electrical_binding.json",
+            transport_cost_path=transport_cost_db,
         )
         chimew_phase6_seconds = time.monotonic() - chimew_phase6_started
         phase6_comparison = {
@@ -2171,6 +2174,7 @@ def run_multi_fpga_flow(
             phase6_root,
             equivalence_cycles=equivalence_cycles,
             equivalence_seed=equivalence_seed,
+            transport_cost_path=transport_cost_db,
         )
 
     physical_report = None
@@ -2404,6 +2408,18 @@ def run_multi_fpga_flow(
                 "path": "split/manifest.json",
                 "sha256": _sha256(phase6_root / "manifest.json"),
             },
+            **(
+                {
+                    "transport_cost": {
+                        "path": "split/transport-cost.json",
+                        "sha256": _sha256(
+                            phase6_root / "transport-cost.json"
+                        ),
+                    }
+                }
+                if transport_cost_db is not None
+                else {}
+            ),
             "runtime_contract": {
                 "path": "runtime/runtime_contract.json",
                 "sha256": _sha256(runtime_root / "runtime_contract.json"),

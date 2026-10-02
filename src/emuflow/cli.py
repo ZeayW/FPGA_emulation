@@ -2075,6 +2075,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     multi_fpga_compile.add_argument(
+        "--transport-cost-db",
+        type=Path,
+        help=(
+            "bind a calibrated open transport resource model to Phase 6 "
+            "and seal its per-FPGA prediction"
+        ),
+    )
+    multi_fpga_compile.add_argument(
         "--timing-paths",
         type=Path,
         help=(
@@ -3914,6 +3922,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6.add_argument("--pin-plan", type=Path)
     phase6.add_argument("--position-hints", type=Path)
     phase6.add_argument("--electrical-binding", type=Path)
+    phase6.add_argument("--transport-cost-db", type=Path)
     phase6.add_argument("--equivalence-cycles", type=int, default=1)
     phase6.add_argument("--equivalence-seed", type=int, default=20260727)
 
@@ -5707,6 +5716,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             route_constraints=args.route_constraints,
             board_link_timing_db=args.board_link_timing_db,
+            transport_cost_db=args.transport_cost_db,
             timing_paths=args.timing_paths,
             router=args.router,
             route_provider=args.route_provider,
@@ -6322,6 +6332,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             pin_plan_path=args.pin_plan,
             position_hints_path=args.position_hints,
             electrical_binding_path=args.electrical_binding,
+            transport_cost_path=args.transport_cost_db,
             equivalence_cycles=args.equivalence_cycles,
             equivalence_seed=args.equivalence_seed,
         )

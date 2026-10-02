@@ -19,7 +19,7 @@ from .ppro_blackbox_calibration import validate_blackbox_observation
 from .ppro_calibrated_platform import validate_calibrated_platform_bundle
 
 
-HOLDOUT_RESULT_SCHEMA = "emuflow.ppro-holdout-result/v3"
+HOLDOUT_RESULT_SCHEMA = "emuflow.ppro-holdout-result/v4"
 PROMOTION_REPORT_SCHEMA = "emuflow.ppro-platform-promotion/v1"
 _TIERS = {"medium", "diversity", "large", "large_primary", "very_large_final"}
 _BENCHMARK_CLASS_TIERS = {
@@ -200,6 +200,8 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
         "benchmark_run_sha256",
         "platform_manifest_sha256",
         "platform_boarddb_sha256",
+        "platform_board_link_timing_sha256",
+        "platform_transport_cost_sha256",
         "flow_report_sha256",
         "schedule_sha256",
         "physical_flow_report_sha256",
@@ -208,7 +210,7 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
     if (
         not isinstance(evidence, Mapping)
         or set(evidence) != evidence_required
-        or evidence.get("producer") != "independent-flow-bundle-assembler-v1"
+        or evidence.get("producer") != "independent-flow-bundle-assembler-v2"
     ):
         raise ValidationError("holdout result evidence is invalid")
     normalized_evidence = {
@@ -446,18 +448,47 @@ def assemble_holdout_result(
     if profile_record.get("boarddb") != _sha256(boarddb):
         raise ValidationError("selected calibrated BoardDB disagrees with manifest")
     platform = Platform.from_dict(boarddb)
+    bundle_link_timing = read_json(
+        bundle_root / profile / "board-link-timing.json"
+    )
+    bundle_transport_cost = read_json(
+        bundle_root / profile / "transport-cost.json"
+    )
+    if (
+        profile_record.get("board_link_timing") != _sha256(bundle_link_timing)
+        or profile_record.get("transport_cost") != _sha256(bundle_transport_cost)
+    ):
+        raise ValidationError(
+            "selected calibrated timing or transport database disagrees with manifest"
+        )
 
     root = flow_root.resolve()
     validate_multi_fpga_flow_bundle(root, require_physical=True)
     flow_report_path = root / "multi-fpga-flow-report.json"
     flow_report = read_json(flow_report_path)
     artifacts = flow_report["artifacts"]
-    for label in ("schedule", "physical_flow_report", "qor_report"):
+    for label in (
+        "schedule",
+        "physical_flow_report",
+        "qor_report",
+        "board_link_timing",
+        "transport_cost",
+    ):
         if label not in artifacts:
             raise ValidationError(f"sealed flow lacks {label} evidence")
     normalized_platform = read_json(root / artifacts["platform"]["path"])
     if Platform.from_dict(normalized_platform).to_dict() != platform.to_dict():
         raise ValidationError("flow BoardDB is not the selected calibrated profile")
+    flow_link_timing = read_json(root / artifacts["board_link_timing"]["path"])
+    flow_transport_cost = read_json(root / artifacts["transport_cost"]["path"])
+    if flow_link_timing != bundle_link_timing:
+        raise ValidationError(
+            "flow BoardLinkTimingDB is not the selected calibrated profile"
+        )
+    if flow_transport_cost != bundle_transport_cost:
+        raise ValidationError(
+            "flow TransportCostDB is not the selected calibrated profile"
+        )
 
     synthesis = flow_report["stages"]["frontend"].get("synthesis")
     raw_sources = synthesis.get("sources") if isinstance(synthesis, Mapping) else None
@@ -542,10 +573,14 @@ def assemble_holdout_result(
         "tier": _BENCHMARK_CLASS_TIERS[benchmark_class],
         "algorithm_id": algorithm_id,
         "evidence": {
-            "producer": "independent-flow-bundle-assembler-v1",
+            "producer": "independent-flow-bundle-assembler-v2",
             "benchmark_run_sha256": identity["benchmark_run_sha256"],
             "platform_manifest_sha256": _sha256_file(manifest_path),
             "platform_boarddb_sha256": profile_record["boarddb"],
+            "platform_board_link_timing_sha256": profile_record[
+                "board_link_timing"
+            ],
+            "platform_transport_cost_sha256": profile_record["transport_cost"],
             "flow_report_sha256": _sha256_file(flow_report_path),
             "schedule_sha256": artifacts["schedule"]["sha256"],
             "physical_flow_report_sha256": artifacts["physical_flow_report"]["sha256"],
