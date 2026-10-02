@@ -33,6 +33,8 @@ class PProBlackboxSmokeTest(unittest.TestCase):
                 for path in (
                     first.rtl_path,
                     first.filelist_path,
+                    first.include_path,
+                    first.compilation_context_path,
                     first.parameters_path,
                     first.constraints_path,
                     first.run_spec_path,
@@ -44,12 +46,19 @@ class PProBlackboxSmokeTest(unittest.TestCase):
                 for path in (
                     second.rtl_path,
                     second.filelist_path,
+                    second.include_path,
+                    second.compilation_context_path,
                     second.parameters_path,
                     second.constraints_path,
                     second.run_spec_path,
                 )
             }
             self.assertEqual(first_bytes, second_bytes)
+            context = json.loads(
+                first.compilation_context_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(context["include_dirs"], ["context"])
+            self.assertEqual(context["defines"], ["PPRO_SMOKE_WIDTH=32"])
             serialized = first.run_spec_path.read_text(encoding="utf-8").lower()
             for forbidden in (
                 "/data/",

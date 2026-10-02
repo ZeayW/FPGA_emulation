@@ -152,6 +152,8 @@ for hidden alternatives.
 - Define the normalized observation schema and a redaction gate.
 - Distinguish tool/infrastructure/license failures from evaluated experiments.
 - Validate the harness with mock reports before any calibration campaign.
+- Exercise the same sealed include-directory and preprocessor-define contract
+  required by application RTL before launching a large holdout.
 
 ### C1: effective resource capacity
 
@@ -315,7 +317,8 @@ raw vendor path or private configuration is serialized.
 ### Stage 2: black-box runner and normal-report adapter
 
 Status: **runner plus real ordinary-report adapter implemented; fresh C0 v2
-smoke passed**. At source commit
+smoke passed; C0 v3 compile-context probe locally validated and awaiting an
+idle licensed node**. At source commit
 `5b3c31294de797a9db727385674d6353f376f555`, an authorized ordinary run
 completed in 35.68 seconds and produced all four allowlisted report classes.
 The normalized observation recorded 68 cross-FPGA signals, four directed
@@ -327,7 +330,12 @@ report paths in a non-serializable runtime binding. It executes isolated cases
 through an explicitly bounded queue, distinguishes license/tool/infrastructure,
 missing-report, and parse failures, and deletes raw reports after producing a
 compact validated observation. A deterministic connected C0 workload generator
-emits only provider-neutral RTL, hashes, and public experiment metadata. The
+emits only provider-neutral RTL, hashes, and public experiment metadata. Its v3
+contract adds one generated header and one `NAME=VALUE` define, seals their
+bytes plus the ordered include/define context in the RTL identity, and relies
+on the runtime renderer to re-hash them before emitting standard filelist
+options. Unknown nested bundle files fail closed and successful one-shot runs
+remove the generated context with the rest of the bundle. The
 mock report profile is intentionally not accepted as real PPro evidence. The
 separate `ppro-2026-ordinary-reports-v1` adapter has been checked against the
 format of an existing successful normal PPro result. It reads only `pa0.rpt`,
@@ -382,7 +390,9 @@ Gate: mock/dry-run first, followed by one real smoke experiment. The real C0
 smoke fixes a generated `P0` producer and `P1` consumer to different logical
 FPGAs using the documented `assign_inst` form so all ordinary report classes
 are materialized; its holdout role still excludes it from fitting. Report PPro
-runtime scale and artifact availability; never infer missing values.
+runtime scale and artifact availability; never infer missing values. The v3
+smoke must also prove that the ordinary PPro compiler accepts the same sealed
+include/define form used by application holdouts.
 
 ### Stage 3: capacity and topology calibration
 

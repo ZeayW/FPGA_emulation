@@ -89,6 +89,7 @@ class PProBlackboxCampaignTest(unittest.TestCase):
                 self.assertFalse((case / "project").exists())
                 self.assertFalse((case / ".run-ppro.tcl").exists())
             self.assertFalse(any(bundle_root.rglob("run-spec.json")))
+            self.assertFalse(any(bundle_root.rglob("connected_smoke_context.vh")))
 
     def test_campaign_rejects_duplicate_case_identity(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -113,6 +114,18 @@ class PProBlackboxCampaignTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "unknown or unsafe"):
                 execute_generated_campaign(bundles, runtime=self._runtime(root))
             self.assertTrue((bundles[0] / "unexpected.txt").is_file())
+
+    def test_campaign_rejects_unknown_nested_context_entry(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle_root = root / "bundles"
+            self._bundles(bundle_root)
+            bundles = discover_generated_bundles(bundle_root, maximum_cases=2)
+            unexpected = bundles[0] / "context" / "unexpected.vh"
+            unexpected.write_text("do not delete", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "unknown context"):
+                execute_generated_campaign(bundles, runtime=self._runtime(root))
+            self.assertTrue(unexpected.is_file())
 
     def test_license_failure_preserves_sealed_bundles_for_retry(self):
         with tempfile.TemporaryDirectory() as raw:

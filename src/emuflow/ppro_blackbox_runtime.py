@@ -136,9 +136,10 @@ def _runtime_filelist(
     Calibration generators intentionally publish relative source names.  The
     ordinary PPro process runs in an isolated directory, so the runtime copy
     resolves those names without modifying or duplicating RTL contents.
-    Generated probe filelists remain source-only. Application holdouts may
-    supply the separate strict compilation-context contract; this renderer,
-    rather than the caller's filelist, emits the bounded include/define options.
+    Filelists remain source-only. Application holdouts and compilation-context
+    smoke probes may supply the separate strict compilation-context contract;
+    this renderer, rather than the caller's filelist, emits the bounded
+    include/define options.
     """
 
     if not source.is_file():
@@ -273,10 +274,23 @@ def render_ppro_runtime_binding(
     spec = validate_run_spec(raw_spec)
     if spec["adapter"]["profile"] != PPRO_2026_REPORT_PROFILE:
         raise ValidationError("PPro runtime renderer requires the real ordinary-report profile")
-    is_application = spec["experiment"]["kind"] == "application_holdout"
-    if is_application != (compilation_context is not None):
+    experiment_kind = spec["experiment"]["kind"]
+    requires_context = (
+        experiment_kind == "application_holdout"
+        or spec["workload"]["generator_id"] == "ppro-blackbox-connected-smoke-v3"
+    )
+    if requires_context and compilation_context is None:
         raise ValidationError(
-            "PPro application holdouts require exactly one compilation context"
+            "PPro application holdouts and connected smoke v3 runs require a "
+            "compilation context"
+        )
+    if compilation_context is not None and experiment_kind not in {
+        "application_holdout",
+        "reproducibility",
+    }:
+        raise ValidationError(
+            "PPro compilation context is only valid for application holdouts "
+            "and reproducibility probes"
         )
     _validate_config(config)
 

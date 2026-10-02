@@ -114,6 +114,15 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
                     spec, source_filelist=filelist, config=config
                 )
 
+    def test_connected_smoke_v3_cannot_skip_compilation_context(self):
+        with tempfile.TemporaryDirectory() as raw:
+            spec, filelist, config = self._fixture(Path(raw))
+            spec["workload"]["generator_id"] = "ppro-blackbox-connected-smoke-v3"
+            with self.assertRaisesRegex(ValidationError, "require a compilation context"):
+                render_ppro_runtime_binding(
+                    spec, source_filelist=filelist, config=config
+                )
+
     def test_application_context_is_sealed_and_rendered_as_standard_filelist_options(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -160,7 +169,7 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(ValidationError, "require exactly one"):
+            with self.assertRaisesRegex(ValidationError, "require a compilation context"):
                 render_ppro_runtime_binding(
                     spec,
                     source_filelist=filelist,

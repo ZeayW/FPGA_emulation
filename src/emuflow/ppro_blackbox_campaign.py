@@ -25,6 +25,29 @@ _BUNDLE_FILES = {
     "sources.f",
     "topology_probe.v",
 }
+_BUNDLE_DIRECTORIES = {
+    "context": {"connected_smoke_context.vh"},
+}
+
+
+def _validate_bundle_entries(root: Path) -> None:
+    entries = list(root.iterdir()) if root.is_dir() else []
+    for entry in entries:
+        if entry.is_symlink():
+            raise ValidationError("generated PPro bundle contains an unsafe symlink")
+        if entry.is_file() and entry.name in _BUNDLE_FILES:
+            continue
+        allowed = _BUNDLE_DIRECTORIES.get(entry.name)
+        if not entry.is_dir() or allowed is None:
+            raise ValidationError("generated PPro bundle contains an unknown or unsafe entry")
+        children = list(entry.iterdir())
+        if not children or any(
+            child.is_symlink()
+            or not child.is_file()
+            or child.name not in allowed
+            for child in children
+        ):
+            raise ValidationError("generated PPro bundle contains an unknown context entry")
 
 
 @dataclass(frozen=True)
@@ -58,12 +81,7 @@ def discover_generated_bundles(root: Path, *, maximum_cases: int) -> list[Path]:
 
 
 def _bundle_inputs(root: Path) -> tuple[Path, Path, Path, Path | None]:
-    entries = list(root.iterdir()) if root.is_dir() else []
-    if any(
-        entry.is_symlink() or not entry.is_file() or entry.name not in _BUNDLE_FILES
-        for entry in entries
-    ):
-        raise ValidationError("generated PPro bundle contains an unknown or unsafe entry")
+    _validate_bundle_entries(root)
     spec = root / "run-spec.json"
     constraints = root / "documented_constraints.json"
     filelists = [path for path in (root / "sources.f", root / "files.f") if path.is_file()]
@@ -77,11 +95,14 @@ def _bundle_inputs(root: Path) -> tuple[Path, Path, Path, Path | None]:
 
 
 def _cleanup_generated_bundle(root: Path) -> None:
+    _validate_bundle_entries(root)
     for entry in root.iterdir():
-        if entry.is_symlink() or not entry.is_file() or entry.name not in _BUNDLE_FILES:
-            raise ValidationError("generated PPro bundle changed before cleanup")
-    for entry in root.iterdir():
-        entry.unlink()
+        if entry.is_dir():
+            for child in entry.iterdir():
+                child.unlink()
+            entry.rmdir()
+        else:
+            entry.unlink()
     root.rmdir()
 
 

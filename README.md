@@ -190,7 +190,11 @@ hashes, or serializes it. Provider-neutral documented constraints are
 translated only to the public user-example `assign_inst` syntax. The smoke
 uses that syntax to place its `P0` producer and `P1` consumer on different
 logical FPGAs, ensuring that partition, route, and timing reports are exercised
-without making the holdout case fitting evidence. Physical PPro
+without making the holdout case fitting evidence. C0 v3 additionally compiles
+through a sealed header include and `NAME=VALUE` define. Its runtime renderer
+independently re-hashes the source, header, ordered include path, and define
+before emitting `+incdir+`/`+define+`; this is the bounded compile-context gate
+that must pass before any application holdout is launched. Physical PPro
 targets remain runtime-only; route, forced-TDM, and random-seed syntax is never
 guessed. Generated Tcl, launcher, absolute runtime filelist, translated user
 constraints, active project, and raw reports are deleted after the compact
@@ -202,13 +206,15 @@ required for multi-hop routes. Explicit `--keep-raw-project` diagnostics retain
 the four allowlisted reports after a parse failure; normal runs still delete
 them after producing the compact observation. Its
 parser format has been checked against an existing successful normal PPro
-result. Stage 2 passed a fresh authorized C0 v2 smoke through the current runner
+result. Stage 2 passed a fresh authorized C0 v2 smoke through the runner
 at source commit `5b3c31294de797a9db727385674d6353f376f555`: PPro completed in
 35.68 seconds, all four ordinary report classes were present, the compact
 observation contained 68 cross-FPGA signals over four directed one-hop route
 records, maximum TDM ratio 1, and worst normalized cross-FPGA delay 14.1 ns.
-This is runner/report evidence, not a calibrated-platform QoR result. A mock
-result is never accepted as real PPro evidence.
+This is runner/report evidence, not a calibrated-platform QoR result. The C0
+v3 compile-context extension has passed local render/tamper/cleanup tests; its
+fresh authorized PPro run remains pending while the licensed node is occupied.
+A mock result is never accepted as real PPro evidence.
 The runner applies the same default 75% limit to LUT, FF, BRAM, URAM, and DSP;
 the explicit `--utilization-limit-percent` changes all five together.
 
@@ -431,6 +437,7 @@ stderr; normal runs and successful diagnostic runs retain neither log.
 emuflow-ppro-calibration run-ppro-case \
   --run-spec <generated>/run-spec.json \
   --filelist <generated>/sources.f \
+  --compilation-context <generated>/compilation-context.json \
   --case-dir <authorized-isolated-case-directory> \
   --install-root <authorized-installation> \
   --platform-reference <user-selected-platform-reference> \
