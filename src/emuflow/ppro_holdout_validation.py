@@ -383,9 +383,21 @@ def assemble_holdout_result(
         not isinstance(path, str) for path in raw_sources
     ):
         raise ValidationError("flow frontend source identity is missing")
-    flow_sources = sorted(Path(path).resolve() for path in raw_sources)
-    if flow_sources != sorted(identity["sources"]):
+    flow_sources = [Path(path).resolve() for path in raw_sources]
+    if flow_sources != identity["sources"]:
         raise ValidationError("flow frontend sources disagree with benchmark contract")
+    raw_include_dirs = synthesis.get("include_dirs", [])
+    raw_defines = synthesis.get("defines", [])
+    if (
+        not isinstance(raw_include_dirs, list)
+        or any(not isinstance(path, str) for path in raw_include_dirs)
+        or [Path(path).resolve() for path in raw_include_dirs]
+        != identity["include_dirs"]
+        or raw_defines != identity["defines"]
+    ):
+        raise ValidationError(
+            "flow frontend compilation context disagrees with benchmark contract"
+        )
     ir = EmuIR.load(root / artifacts["emuir"]["path"])
     if ir.value["design"]["top"] != identity["top_module"] or sorted(
         clock["id"] for clock in ir.value["clocks"]

@@ -151,6 +151,8 @@ def build_generic_yosys_script(
     sources: Iterable[Path],
     top: str,
     output: Path,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
 ) -> str:
     """Build an architecture-neutral LUT6/FF synthesis script for EmuIR."""
 
@@ -158,9 +160,13 @@ def build_generic_yosys_script(
     if not source_list:
         raise EmuFlowError("synthesis requires at least one RTL source")
     top_identifier = _yosys_identifier(top)
+    read_options = [
+        *(f"-I{_yosys_quote(str(path))}" for path in include_dirs),
+        *(f"-D{_yosys_define(value)}" for value in defines),
+    ]
     read_sources = " ".join(_yosys_quote(str(path)) for path in source_list)
     commands = [
-        f"read_verilog -sv {read_sources}",
+        " ".join(["read_verilog", "-sv", *read_options, read_sources]),
         f"hierarchy -check -top {top_identifier}",
         "proc",
         "flatten",
@@ -189,6 +195,8 @@ def run_generic_yosys(
     output: Path,
     executable: Optional[str] = None,
     log_path: Optional[Path] = None,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
 ) -> None:
     """Synthesize RTL to provider-neutral LUT6/FF Yosys JSON."""
 
@@ -196,9 +204,22 @@ def run_generic_yosys(
     for source in source_list:
         if not source.is_file():
             raise EmuFlowError(f"RTL source does not exist: {source}")
+    include_list = list(include_dirs)
+    for include_dir in include_list:
+        if not include_dir.is_dir():
+            raise EmuFlowError(
+                f"Verilog include directory does not exist: {include_dir}"
+            )
+    define_list = list(defines)
     command = resolve_native_executable("yosys", executable)
     output.parent.mkdir(parents=True, exist_ok=True)
-    script = build_generic_yosys_script(source_list, top, output)
+    script = build_generic_yosys_script(
+        source_list,
+        top,
+        output,
+        include_dirs=include_list,
+        defines=define_list,
+    )
     completed = subprocess.run(
         [command, "-p", script],
         stdout=subprocess.PIPE,

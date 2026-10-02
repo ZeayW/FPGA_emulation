@@ -11,6 +11,7 @@ from .phase1 import run_phase1
 from .synthesis import (
     VALID_SYNTHESIS_POLICIES,
     VALID_XILINX_FAMILIES,
+    YOSYS_DEFINE,
     run_yosys,
 )
 from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
@@ -40,6 +41,25 @@ def _string_list(value: Any, context: str) -> List[str]:
     ):
         raise ValidationError(f"{context}: expected a non-empty string array")
     return list(value)
+
+
+def _optional_string_list(value: Any, context: str) -> List[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item for item in value
+    ):
+        raise ValidationError(f"{context}: expected a string array")
+    if len(value) != len(set(value)):
+        raise ValidationError(f"{context}: duplicate values are not allowed")
+    return list(value)
+
+
+def _relative_path(value: str, context: str) -> str:
+    path = Path(value)
+    if path.is_absolute() or value in {"", "."} or ".." in path.parts:
+        raise ValidationError(f"{context}: expected a contained relative path")
+    return path.as_posix()
 
 
 class BenchmarkRun:
@@ -100,6 +120,22 @@ class BenchmarkRun:
             raise ValidationError(
                 f"benchmark.synthesis.policy: unsupported value {policy!r}"
             )
+        include_dirs = _optional_string_list(
+            synthesis.get("include_dirs"), "benchmark.synthesis.include_dirs"
+        )
+        for index, include_dir in enumerate(include_dirs):
+            _relative_path(
+                include_dir, f"benchmark.synthesis.include_dirs[{index}]"
+            )
+        defines = _optional_string_list(
+            synthesis.get("defines"), "benchmark.synthesis.defines"
+        )
+        for index, define in enumerate(defines):
+            if YOSYS_DEFINE.fullmatch(define) is None:
+                raise ValidationError(
+                    "benchmark.synthesis.defines["
+                    f"{index}]: expected NAME or NAME=VALUE"
+                )
 
     def resolve_sources(self, source_root: Path) -> List[Path]:
         root = source_root.resolve()
@@ -121,6 +157,32 @@ class BenchmarkRun:
                     resolved.append(candidate)
         return resolved
 
+    def resolve_include_dirs(self, source_root: Path) -> List[Path]:
+        root = source_root.resolve()
+        resolved: List[Path] = []
+        for raw_path in self.value["synthesis"].get("include_dirs", []):
+            candidate = (root / raw_path).resolve()
+            if (
+                candidate != root
+                and root not in candidate.parents
+            ) or not candidate.is_dir():
+                raise EmuFlowError(
+                    "benchmark include directory escapes its source root or "
+                    f"does not exist: {candidate}"
+                )
+            resolved.append(candidate)
+        return resolved
+
+    def compilation_context(self, source_root: Path) -> Dict[str, Any]:
+        root = source_root.resolve()
+        return {
+            "include_dirs": [
+                path.relative_to(root).as_posix()
+                for path in self.resolve_include_dirs(root)
+            ],
+            "defines": list(self.value["synthesis"].get("defines", [])),
+        }
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -138,6 +200,8 @@ def run_benchmark(
 ) -> Dict[str, Any]:
     spec = BenchmarkRun.load(spec_path)
     sources = spec.resolve_sources(source_root)
+    include_dirs = spec.resolve_include_dirs(source_root)
+    defines = spec.value["synthesis"].get("defines", [])
     synthesis = spec.value["synthesis"]
     mapped_json = output_dir / "synthesis" / "mapped.json"
     mapped_verilog = output_dir / "synthesis" / "mapped.v"
@@ -155,6 +219,8 @@ def run_benchmark(
         verilog_output=mapped_verilog,
         executable=yosys,
         log_path=yosys_log,
+        include_dirs=include_dirs,
+        defines=defines,
     )
     phase1 = run_phase1(
         yosys_json=mapped_json,
@@ -182,6 +248,11 @@ def run_benchmark(
         "synthesis": {
             "family": synthesis["family"],
             "policy": synthesis["policy"],
+            "include_dirs": [
+                path.relative_to(source_root.resolve()).as_posix()
+                for path in include_dirs
+            ],
+            "defines": list(defines),
             "mapped_json": "synthesis/mapped.json",
             "mapped_verilog": "synthesis/mapped.v",
             "log": "synthesis/yosys.log",

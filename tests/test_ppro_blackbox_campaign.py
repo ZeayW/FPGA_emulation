@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import json
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from emuflow.ppro_blackbox_campaign import (
     execute_generated_campaign,
 )
 from emuflow.ppro_blackbox_smoke import generate_connected_smoke_bundle
+from emuflow.ppro_blackbox_application import generate_application_holdout_bundle
 from test_ppro_blackbox_ppro_adapter import PARTITION_REPORT, ROUTE_REPORT, TIMING_REPORT
 
 
@@ -135,6 +137,54 @@ class PProBlackboxCampaignTest(unittest.TestCase):
             )
             self.assertEqual(len(list(bundle_root.rglob("run-spec.json"))), 2)
             self.assertFalse(any(bundle_root.rglob(".run-ppro.tcl")))
+
+    def test_application_campaign_consumes_strict_compilation_context(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "source"
+            include = source / "include"
+            include.mkdir(parents=True)
+            (include / "config.vh").write_text("`define WIDTH 8\n", encoding="utf-8")
+            (source / "top.v").write_text(
+                '`include "config.vh"\nmodule top(input clk); endmodule\n',
+                encoding="utf-8",
+            )
+            benchmark = root / "benchmark.json"
+            benchmark.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.benchmark-run/v1",
+                        "id": "application-context",
+                        "design_id": "application-context",
+                        "top": "top",
+                        "sources": ["top.v"],
+                        "clocks": ["clk"],
+                        "platform": "unused.json",
+                        "synthesis": {
+                            "family": "xcup",
+                            "policy": "logic-only",
+                            "include_dirs": ["include"],
+                            "defines": ["SYNTHESIS"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bundle = generate_application_holdout_bundle(
+                root / "bundle",
+                benchmark_run_path=benchmark,
+                source_root=source,
+                campaign_id="application-campaign",
+                public_prior_id="lx2-public-prior-v1",
+                configuration_id="lx2-m1",
+                tool_release="2026.1",
+                runner_revision="c" * 64,
+            )
+            results = execute_generated_campaign(
+                [bundle.root], runtime=self._runtime(root), max_workers=1
+            )
+            self.assertEqual(results[0]["execution"]["outcome"], "pass")
+            self.assertFalse(bundle.root.exists())
 
 
 if __name__ == "__main__":

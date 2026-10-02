@@ -1888,6 +1888,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--yosys")
     multi_fpga_compile.add_argument(
+        "--include-dir",
+        action="append",
+        default=[],
+        type=Path,
+        help="Verilog include directory passed to the selected Yosys frontend",
+    )
+    multi_fpga_compile.add_argument(
+        "--define",
+        action="append",
+        default=[],
+        help="Verilog preprocessor NAME or NAME=VALUE (repeatable)",
+    )
+    multi_fpga_compile.add_argument(
         "--mapping-profile",
         choices=(
             "vtr-hard-blocks",
@@ -5633,6 +5646,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             platform_path=args.platform,
             output_dir=args.out,
             sources=args.sources,
+            include_dirs=args.include_dir,
+            defines=args.define,
             top=args.top,
             clocks=args.clock,
             yosys_json=args.yosys_json,

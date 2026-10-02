@@ -540,6 +540,20 @@ emuflow-ppro-calibration generate-application-holdout \
   --source-root third_party/rtl/secworks_aes
 ```
 
+Application contracts may additionally declare relative Verilog
+`synthesis.include_dirs` and `synthesis.defines`.  EmuFlow resolves them only
+below the checked source root, hashes every file in the include search space,
+and binds the ordered include/define context into the same RTL identity used by
+PPro and the complete Phase 1--7 frontend.  The active PPro bundle contains a
+strict runtime-only `compilation-context.json`; the renderer re-hashes the
+sources and headers before generating standard `+incdir+`/`+define+` filelist
+entries.  Absolute source paths remain scratch and never enter the normalized
+observation.  The holdout assembler also rejects a complete flow whose
+frontend include directories or defines differ from the benchmark contract.
+The local renderer and tamper tests pass; acceptance of these standard
+filelist options by the authorized PPro installation remains a required real
+black-box probe before NVDLA is launched.
+
 The joined blind-result contract is `emuflow.ppro-holdout-result/v3`. Results
 are not written from a hand-entered summary.  The official assembler first
 replays the sealed Phase 1--7 bundle validator, re-hashes the benchmark RTL,
@@ -559,7 +573,8 @@ emuflow-ppro-calibration assemble-holdout-result \
   --profile nominal --out <aes-default.json>
 ```
 
-The result seals every source artifact digest and requires standalone,
+The result seals every source/header artifact digest and compilation context,
+and requires standalone,
 whole-design OpenSTA plus physical seed 1.  The promotion gate requires all
 five benchmark classes (secworks AES, an open CPU, Koios compute, Koios DLA,
 and NVDLA), rejects duplicate result identities and duplicate

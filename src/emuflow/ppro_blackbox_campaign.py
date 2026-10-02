@@ -17,6 +17,7 @@ _BUNDLE_FILES = {
     "capacity_probe.v",
     "communication_probe.v",
     "connected_smoke.v",
+    "compilation-context.json",
     "documented_constraints.json",
     "files.f",
     "parameters.json",
@@ -56,7 +57,7 @@ def discover_generated_bundles(root: Path, *, maximum_cases: int) -> list[Path]:
     return bundles
 
 
-def _bundle_inputs(root: Path) -> tuple[Path, Path, Path]:
+def _bundle_inputs(root: Path) -> tuple[Path, Path, Path, Path | None]:
     entries = list(root.iterdir()) if root.is_dir() else []
     if any(
         entry.is_symlink() or not entry.is_file() or entry.name not in _BUNDLE_FILES
@@ -71,7 +72,8 @@ def _bundle_inputs(root: Path) -> tuple[Path, Path, Path]:
             "generated PPro bundle requires run-spec.json, documented_constraints.json, "
             "and exactly one sources.f/files.f"
         )
-    return spec, constraints, filelists[0]
+    context = root / "compilation-context.json"
+    return spec, constraints, filelists[0], context if context.is_file() else None
 
 
 def _cleanup_generated_bundle(root: Path) -> None:
@@ -131,7 +133,9 @@ def execute_generated_campaign(
     identities: set[str] = set()
     try:
         for bundle_root in normalized_bundle_roots:
-            spec_path, constraints_path, filelist_path = _bundle_inputs(bundle_root)
+            spec_path, constraints_path, filelist_path, context_path = _bundle_inputs(
+                bundle_root
+            )
             spec = read_json(spec_path)
             identity = spec.get("identity", {}).get("id") if isinstance(spec, dict) else None
             if not isinstance(identity, str) or not identity:
@@ -143,6 +147,7 @@ def execute_generated_campaign(
             binding = render_ppro_runtime_binding(
                 spec,
                 source_filelist=filelist_path,
+                compilation_context=context_path,
                 config=PProRuntimeConfig(
                     case_dir=result_root / identity,
                     install_root=runtime.install_root,

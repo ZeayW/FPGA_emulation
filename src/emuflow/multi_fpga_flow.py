@@ -1167,6 +1167,8 @@ def run_multi_fpga_flow(
     output_dir: Path,
     *,
     sources: Iterable[Path] = (),
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
     top: Optional[str] = None,
     clocks: Iterable[str] = (),
     yosys_json: Optional[Path] = None,
@@ -1421,6 +1423,8 @@ def run_multi_fpga_flow(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     source_list = [path.resolve() for path in sources]
+    include_dir_list = [path.resolve() for path in include_dirs]
+    define_list = list(defines)
     frontend_root = output_dir / "frontend"
     frontend_root.mkdir(parents=True, exist_ok=True)
     synthesized_json = frontend_root / "synthesized.json"
@@ -1429,6 +1433,11 @@ def run_multi_fpga_flow(
         if source_list:
             raise EmuFlowError(
                 "provide RTL sources or --yosys-json, not both"
+            )
+        if include_dir_list or define_list:
+            raise EmuFlowError(
+                "Verilog include directories and defines apply only when "
+                "compiling RTL sources"
             )
         source_json = yosys_json.resolve()
         if not source_json.is_file():
@@ -1462,6 +1471,8 @@ def run_multi_fpga_flow(
                 log_path=frontend_root / "yosys.log",
                 hard_blocks=True,
                 json_output=raw_json,
+                include_dirs=include_dir_list,
+                defines=define_list,
             )
             normalization_report = normalize_vtr_hard_block_json(
                 raw_json,
@@ -1476,6 +1487,8 @@ def run_multi_fpga_flow(
                 synthesized_json,
                 executable=yosys,
                 log_path=frontend_root / "yosys.log",
+                include_dirs=include_dir_list,
+                defines=define_list,
             )
             normalization_report = None
             synthesis_mode = "generic-lut6-ff"
@@ -1486,6 +1499,8 @@ def run_multi_fpga_flow(
                 synthesized_json,
                 executable=yosys,
                 log_path=frontend_root / "yosys.log",
+                include_dirs=include_dir_list,
+                defines=define_list,
             )
             normalization_report = None
             synthesis_mode = "xilinx-ultrascaleplus-open"
@@ -1519,6 +1534,8 @@ def run_multi_fpga_flow(
                 )
             ),
             "sources": [str(path) for path in source_list],
+            "include_dirs": [str(path) for path in include_dir_list],
+            "defines": define_list,
             "yosys_json_sha256": _sha256(synthesized_json),
             **(
                 {"tool_report": synthesis_report}

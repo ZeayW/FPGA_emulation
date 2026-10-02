@@ -19,6 +19,18 @@ class SynthesisTest(unittest.TestCase):
         ])
         self.assertEqual(args.mapping_profile, XILINX_ULTRASCALEPLUS_OPEN_PROFILE)
 
+    def test_multi_fpga_cli_exposes_shared_compilation_context(self) -> None:
+        args = _build_parser().parse_args([
+            "multi-fpga", "compile", "rtl/top.v",
+            "--top", "top",
+            "--platform", "platform.json",
+            "--out", "build/flow",
+            "--include-dir", "rtl/include",
+            "--define", "SYNTHESIS",
+        ])
+        self.assertEqual(args.include_dir, [Path("rtl/include")])
+        self.assertEqual(args.define, ["SYNTHESIS"])
+
     def test_cli_mapping_profile_runs_normalizing_wrapper(self) -> None:
         with patch("emuflow.cli.run_xilinx_ultrascaleplus_yosys") as run:
             run.return_value = {
@@ -120,12 +132,16 @@ class SynthesisTest(unittest.TestCase):
             [Path("rtl/counter.sv")],
             top="counter",
             output=Path("build/counter-generic.json"),
+            include_dirs=[Path("rtl/include")],
+            defines=["SYNTHESIS"],
         )
         self.assertIn("abc -lut 6", script)
         self.assertIn("memory_map", script)
         self.assertIn('write_json "build/counter-generic.json"', script)
         self.assertNotIn("synth_xilinx", script)
         self.assertNotIn("xcup", script)
+        self.assertIn('-I"rtl/include"', script)
+        self.assertIn("-DSYNTHESIS", script)
 
     def test_optional_mapped_verilog_preserves_names(self) -> None:
         script = build_yosys_script(

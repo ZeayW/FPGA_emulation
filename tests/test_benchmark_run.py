@@ -132,6 +132,35 @@ class BenchmarkRunTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "physical_mapping_profile"):
             BenchmarkRun(value)
 
+    def test_compilation_context_is_relative_validated_and_resolved(self) -> None:
+        value = json.loads(SECWORKS_AES_SPEC.read_text(encoding="utf-8"))
+        value["synthesis"]["include_dirs"] = ["include"]
+        value["synthesis"]["defines"] = ["SYNTHESIS", "WIDTH=32"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "include").mkdir()
+            spec = BenchmarkRun(value)
+            self.assertEqual(
+                spec.resolve_include_dirs(root), [(root / "include").resolve()]
+            )
+            self.assertEqual(
+                spec.compilation_context(root),
+                {
+                    "include_dirs": ["include"],
+                    "defines": ["SYNTHESIS", "WIDTH=32"],
+                },
+            )
+
+    def test_compilation_context_rejects_escape_and_unsafe_define(self) -> None:
+        value = json.loads(SECWORKS_AES_SPEC.read_text(encoding="utf-8"))
+        value["synthesis"]["include_dirs"] = ["../outside"]
+        with self.assertRaisesRegex(ValidationError, "contained relative path"):
+            BenchmarkRun(value)
+        value["synthesis"]["include_dirs"] = []
+        value["synthesis"]["defines"] = ["SAFE; delete"]
+        with self.assertRaisesRegex(ValidationError, "NAME or NAME=VALUE"):
+            BenchmarkRun(value)
+
 
 if __name__ == "__main__":
     unittest.main()

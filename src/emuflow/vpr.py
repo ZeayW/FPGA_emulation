@@ -16,7 +16,7 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .route_artifact import validate_vpr_route_artifacts
-from .synthesis import _yosys_identifier, _yosys_quote
+from .synthesis import _yosys_define, _yosys_identifier, _yosys_quote
 
 
 VPR_REPORT_SCHEMA = "emuflow.vpr-report/v1"
@@ -48,6 +48,8 @@ def build_vtr_yosys_script(
     *,
     hard_blocks: bool = False,
     json_output: Optional[Path] = None,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
 ) -> str:
     """Build a VTR-compatible LUT6/DFF and optional hard-block eBLIF script.
 
@@ -60,9 +62,13 @@ def build_vtr_yosys_script(
     if not source_list:
         raise EmuFlowError("VTR synthesis requires at least one RTL source")
     top_identifier = _yosys_identifier(top)
+    read_options = [
+        *(f"-I{_yosys_quote(str(path))}" for path in include_dirs),
+        *(f"-D{_yosys_define(value)}" for value in defines),
+    ]
     read_sources = " ".join(_yosys_quote(str(path)) for path in source_list)
     commands = [
-        f"read_verilog -sv {read_sources}",
+        " ".join(["read_verilog", "-sv", *read_options, read_sources]),
         f"hierarchy -check -top {top_identifier}",
     ]
     if hard_blocks:
@@ -131,11 +137,20 @@ def run_vtr_yosys(
     log_path: Optional[Path] = None,
     hard_blocks: bool = False,
     json_output: Optional[Path] = None,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
 ) -> Dict[str, Any]:
     source_list = [path.resolve() for path in sources]
     for source in source_list:
         if not source.is_file():
             raise EmuFlowError(f"RTL source does not exist: {source}")
+    include_list = [path.resolve() for path in include_dirs]
+    for include_dir in include_list:
+        if not include_dir.is_dir():
+            raise EmuFlowError(
+                f"Verilog include directory does not exist: {include_dir}"
+            )
+    define_list = list(defines)
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     if json_output is not None:
@@ -148,6 +163,8 @@ def run_vtr_yosys(
         output,
         hard_blocks=hard_blocks,
         json_output=json_output,
+        include_dirs=include_list,
+        defines=define_list,
     )
     completed = subprocess.run(
         [command, "-p", script],

@@ -334,7 +334,11 @@ class PProHoldoutValidationTest(unittest.TestCase):
             sha = lambda path: __import__("hashlib").sha256(path.read_bytes()).hexdigest()
             flow_report = {
                 "status": "pass",
-                "stages": {"frontend": {"synthesis": {"sources": [str(rtl.resolve())]} }},
+                "stages": {"frontend": {"synthesis": {
+                    "sources": [str(rtl.resolve())],
+                    "include_dirs": [],
+                    "defines": [],
+                }}},
                 "runtime": {
                     "functional_equivalence": {"status": "pass"},
                     "schedule_legality": {"status": "pass", "collisions": 0},

@@ -8,6 +8,8 @@ to one case directory and are deleted after the compact observation is made.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -21,6 +23,10 @@ from .ppro_blackbox_constraints import (
     validate_logical_targets,
 )
 from .ppro_blackbox_runner import RuntimeBinding, validate_run_spec
+from .synthesis import YOSYS_DEFINE
+
+
+PPRO_COMPILATION_CONTEXT_SCHEMA = "emuflow.ppro-compilation-context/v1"
 
 
 @dataclass(frozen=True)
@@ -47,24 +53,104 @@ def _tcl_word(value: str, context: str) -> str:
     return "{" + value + "}"
 
 
-def _runtime_filelist(source: Path, destination: Path) -> None:
+def _canonical(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_compilation_context(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        raise ValidationError("PPro compilation context does not exist")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValidationError("PPro compilation context is not valid JSON") from error
+    if not isinstance(value, dict) or set(value) != {
+        "schema", "source_root", "include_dirs", "defines"
+    }:
+        raise ValidationError("PPro compilation context has invalid fields")
+    if value["schema"] != PPRO_COMPILATION_CONTEXT_SCHEMA:
+        raise ValidationError("PPro compilation context schema is invalid")
+    if not isinstance(value["source_root"], str):
+        raise ValidationError("PPro compilation source root is invalid")
+    source_root = Path(value["source_root"])
+    if not source_root.is_absolute() or not source_root.resolve().is_dir():
+        raise ValidationError("PPro compilation source root is invalid")
+    include_dirs = value["include_dirs"]
+    defines = value["defines"]
+    if (
+        not isinstance(include_dirs, list)
+        or not all(isinstance(item, str) and item for item in include_dirs)
+        or len(include_dirs) != len(set(include_dirs))
+    ):
+        raise ValidationError("PPro compilation include_dirs are invalid")
+    if (
+        not isinstance(defines, list)
+        or not all(
+            isinstance(item, str) and YOSYS_DEFINE.fullmatch(item) is not None
+            for item in defines
+        )
+        or len(defines) != len(set(defines))
+    ):
+        raise ValidationError("PPro compilation defines are invalid")
+    resolved_include_dirs = []
+    root = source_root.resolve()
+    for raw_path in include_dirs:
+        relative = Path(raw_path)
+        if relative.is_absolute() or raw_path in {"", "."} or ".." in relative.parts:
+            raise ValidationError("PPro compilation include path is not contained")
+        include_dir = (root / relative).resolve()
+        if root not in include_dir.parents or not include_dir.is_dir():
+            raise ValidationError("PPro compilation include directory is invalid")
+        if any(character.isspace() for character in str(include_dir)) or "+" in str(
+            include_dir
+        ):
+            raise ValidationError(
+                "PPro compilation include directory is not filelist-safe"
+            )
+        resolved_include_dirs.append(include_dir)
+    return {
+        "source_root": root,
+        "include_dirs": resolved_include_dirs,
+        "relative_include_dirs": include_dirs,
+        "defines": defines,
+    }
+
+
+def _runtime_filelist(
+    source: Path,
+    destination: Path,
+    *,
+    compilation_context: Path | None = None,
+    expected_rtl_sha256: str | None = None,
+) -> None:
     """Materialize a runtime-only absolute filelist for generated probes.
 
     Calibration generators intentionally publish relative source names.  The
     ordinary PPro process runs in an isolated directory, so the runtime copy
     resolves those names without modifying or duplicating RTL contents.
-    Compiler-option filelists are rejected here; application holdouts must
-    supply a documented wrapper filelist rather than silently changing flags.
+    Generated probe filelists remain source-only. Application holdouts may
+    supply the separate strict compilation-context contract; this renderer,
+    rather than the caller's filelist, emits the bounded include/define options.
     """
 
     if not source.is_file():
         raise ValidationError("PPro runtime filelist does not exist")
-    lines = []
+    source_paths = []
     for number, raw in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
         value = raw.strip()
         if not value or value.startswith("#") or value.startswith("//"):
             continue
-        if value.startswith(("-", "+")) or any(character.isspace() for character in value):
+        if value.startswith(("-", "+")) or any(
+            character.isspace() for character in value
+        ):
             raise ValidationError(
                 f"PPro runtime filelist line {number}: options and whitespace are not supported"
             )
@@ -73,10 +159,59 @@ def _runtime_filelist(source: Path, destination: Path) -> None:
             path = source.parent / path
         path = path.resolve()
         if not path.is_file():
-            raise ValidationError(f"PPro runtime filelist line {number}: source does not exist")
-        lines.append(str(path))
-    if not lines:
+            raise ValidationError(
+                f"PPro runtime filelist line {number}: source does not exist"
+            )
+        source_paths.append(path)
+    if not source_paths:
         raise ValidationError("PPro runtime filelist is empty")
+    lines: list[str] = []
+    if compilation_context is not None:
+        context = _read_compilation_context(compilation_context.resolve())
+        root = context["source_root"]
+        source_records = []
+        for path in source_paths:
+            if root not in path.parents:
+                raise ValidationError("PPro application source escapes its source root")
+            source_records.append(
+                {
+                    "path": path.relative_to(root).as_posix(),
+                    "sha256": _sha256_file(path),
+                    "size": path.stat().st_size,
+                }
+            )
+        include_records: Dict[str, Dict[str, Any]] = {}
+        for include_dir in context["include_dirs"]:
+            for path in sorted(include_dir.rglob("*")):
+                if path.is_symlink():
+                    resolved = path.resolve()
+                    if root not in resolved.parents or not resolved.is_file():
+                        raise ValidationError(
+                            "PPro application include file escapes its source root"
+                        )
+                if path.is_file():
+                    relative = path.relative_to(root).as_posix()
+                    include_records[relative] = {
+                        "path": relative,
+                        "sha256": _sha256_file(path),
+                        "size": path.stat().st_size,
+                    }
+        rtl_inputs = {
+            "source_records": source_records,
+            "include_file_records": [
+                include_records[name] for name in sorted(include_records)
+            ],
+            "include_dirs": context["relative_include_dirs"],
+            "defines": context["defines"],
+        }
+        observed_rtl_sha256 = hashlib.sha256(_canonical(rtl_inputs)).hexdigest()
+        if expected_rtl_sha256 != observed_rtl_sha256:
+            raise ValidationError(
+                "PPro application sources disagree with the sealed RTL identity"
+            )
+        lines.extend(f"+incdir+{path}" for path in context["include_dirs"])
+        lines.extend(f"+define+{value}" for value in context["defines"])
+    lines.extend(str(path) for path in source_paths)
     destination.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -130,6 +265,7 @@ def render_ppro_runtime_binding(
     raw_spec: Mapping[str, Any],
     *,
     source_filelist: Path,
+    compilation_context: Path | None = None,
     config: PProRuntimeConfig,
 ) -> RuntimeBinding:
     """Render a disposable PPro project and return its runtime binding."""
@@ -137,6 +273,11 @@ def render_ppro_runtime_binding(
     spec = validate_run_spec(raw_spec)
     if spec["adapter"]["profile"] != PPRO_2026_REPORT_PROFILE:
         raise ValidationError("PPro runtime renderer requires the real ordinary-report profile")
+    is_application = spec["experiment"]["kind"] == "application_holdout"
+    if is_application != (compilation_context is not None):
+        raise ValidationError(
+            "PPro application holdouts require exactly one compilation context"
+        )
     _validate_config(config)
 
     case_dir = config.case_dir.resolve()
@@ -162,7 +303,16 @@ def render_ppro_runtime_binding(
         raise ValidationError("PPro case directory contains an active or stale runtime")
     if output_path.exists():
         raise ValidationError("PPro case already has an observation; use a new case directory")
-    _runtime_filelist(source_filelist.resolve(), runtime_filelist)
+    _runtime_filelist(
+        source_filelist.resolve(),
+        runtime_filelist,
+        compilation_context=compilation_context,
+        expected_rtl_sha256=(
+            spec["workload"]["rtl_sha256"]
+            if compilation_context is not None
+            else None
+        ),
+    )
     render_ppro_prepartition_constraints(
         config.documented_constraints.resolve(),
         config.logical_targets,

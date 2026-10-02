@@ -184,6 +184,7 @@ def _parser() -> argparse.ArgumentParser:
     run_case = commands.add_parser("run-ppro-case")
     run_case.add_argument("--run-spec", type=Path, required=True)
     run_case.add_argument("--filelist", type=Path, required=True)
+    run_case.add_argument("--compilation-context", type=Path)
     run_case.add_argument("--case-dir", type=Path, required=True)
     run_case.add_argument("--install-root", type=Path, required=True)
     run_case.add_argument("--platform-reference", type=Path, required=True)
@@ -391,6 +392,11 @@ def _dispatch(args: argparse.Namespace) -> Any:
         binding = render_ppro_runtime_binding(
             spec,
             source_filelist=args.filelist.resolve(),
+            compilation_context=(
+                args.compilation_context.resolve()
+                if args.compilation_context is not None
+                else None
+            ),
             config=PProRuntimeConfig(
                 case_dir=args.case_dir,
                 install_root=args.install_root,

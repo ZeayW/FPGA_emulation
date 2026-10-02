@@ -599,7 +599,18 @@ Status: **independent result assembler, promotion contract, and evaluator
 implemented; real blind runs pending**. A scratch-only application bundle generator now binds an existing
 checked benchmark contract and natural RTL source tree to a free-partition
 PPro `application_holdout`; source paths and the EmuFlow platform choice never
-enter the compact observation. Each case joins one passing PPro observation
+enter the compact observation.  The benchmark contract now also carries one
+shared compilation context: relative include directories and validated
+`NAME`/`NAME=VALUE` defines.  Every regular file in the include search space,
+the ordered include paths, and defines are part of the RTL identity.  Before
+PPro runs, the runtime-only renderer re-hashes that identity and emits standard
+`+incdir+`/`+define+` filelist options; the complete EmuFlow frontend consumes
+the same include/define context, and the result assembler checks it explicitly.
+This closes the previous NVDLA identity gap without serializing source paths in
+the observation or reading a provider database.  Local render, tamper, schema,
+and cross-flow checks pass; a real authorized PPro compile-context probe is
+still pending and is mandatory before the NVDLA holdout. Each case joins one
+passing PPro observation
 to a complete EmuFlow Phase 1--7 result produced with physical seed 1 and
 authoritative OpenSTA global timing. The v3 result cannot be assembled from
 caller-supplied completion booleans: it independently validates and replays the

@@ -29,6 +29,7 @@ _EXPECTED_REPORTS = [
 class ApplicationHoldoutBundle:
     root: Path
     filelist_path: Path
+    compilation_context_path: Path
     constraints_path: Path
     run_spec_path: Path
     run_spec: Dict[str, Any]
@@ -46,21 +47,45 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _include_file_records(root: Path, include_dirs: list[Path]) -> list[Dict[str, Any]]:
+    records: Dict[str, Dict[str, Any]] = {}
+    for include_dir in include_dirs:
+        for path in sorted(include_dir.rglob("*")):
+            if path.is_symlink():
+                resolved = path.resolve()
+                if root not in resolved.parents or not resolved.is_file():
+                    raise ValidationError(
+                        "benchmark include file escapes its source root"
+                    )
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root).as_posix()
+            records[relative] = {
+                "path": relative,
+                "sha256": _sha256_file(path),
+                "size": path.stat().st_size,
+            }
+    return [records[name] for name in sorted(records)]
+
+
 def benchmark_rtl_identity(
     benchmark_run_path: Path, source_root: Path
 ) -> Dict[str, Any]:
     """Return the canonical RTL identity shared by PPro and EmuFlow.
 
     The identity is deliberately derived from the checked benchmark contract,
-    relative source names, source bytes, and top module.  A blind-result
-    assembler can therefore prove that both tools consumed the same natural
-    RTL without trusting a caller-supplied digest.
+    ordered relative source names and bytes, every file in the ordered include
+    search path, preprocessor defines, and top module.  A blind-result assembler
+    can therefore prove that both tools consumed the same natural RTL without
+    trusting a caller-supplied digest.
     """
 
     benchmark_path = benchmark_run_path.resolve()
     root = source_root.resolve()
     benchmark = BenchmarkRun.load(benchmark_path)
     sources = benchmark.resolve_sources(root)
+    include_dirs = benchmark.resolve_include_dirs(root)
+    compilation_context = benchmark.compilation_context(root)
     relative_records = [
         {
             "path": path.relative_to(root).as_posix(),
@@ -69,11 +94,18 @@ def benchmark_rtl_identity(
         }
         for path in sources
     ]
+    include_file_records = _include_file_records(root, include_dirs)
+    rtl_inputs = {
+        "source_records": relative_records,
+        "include_file_records": include_file_records,
+        "include_dirs": compilation_context["include_dirs"],
+        "defines": compilation_context["defines"],
+    }
     parameters = {
         "benchmark_id": benchmark.value["id"],
         "clocks": benchmark.value["clocks"],
         "clock_periods_ns": benchmark.value.get("clock_periods_ns"),
-        "source_records": relative_records,
+        "rtl_inputs": rtl_inputs,
         "top": benchmark.value["top"],
     }
     return {
@@ -83,7 +115,11 @@ def benchmark_rtl_identity(
         "source_root": root,
         "sources": sources,
         "source_records": relative_records,
-        "rtl_sha256": hashlib.sha256(_canonical(relative_records)).hexdigest(),
+        "include_dirs": include_dirs,
+        "include_file_records": include_file_records,
+        "defines": compilation_context["defines"],
+        "compilation_context": compilation_context,
+        "rtl_sha256": hashlib.sha256(_canonical(rtl_inputs)).hexdigest(),
         "parameters_sha256": hashlib.sha256(_canonical(parameters)).hexdigest(),
         "top_module": benchmark.value["top"],
         "clocks": benchmark.value["clocks"],
@@ -122,11 +158,22 @@ def generate_application_holdout_bundle(
     root.mkdir(parents=True, exist_ok=True)
     filelist_path = root / "sources.f"
     constraints_path = root / "documented_constraints.json"
+    compilation_context_path = root / "compilation-context.json"
     run_spec_path = root / "run-spec.json"
     # This filelist is active-run scratch. Its paths are consumed by the runtime
     # renderer and never enter the normalized observation.
     filelist_path.write_text(
         "".join(str(path.resolve()) + "\n" for path in sources), encoding="utf-8"
+    )
+    write_json(
+        compilation_context_path,
+        {
+            "schema": "emuflow.ppro-compilation-context/v1",
+            "source_root": str(identity["source_root"]),
+            "include_dirs": identity["compilation_context"]["include_dirs"],
+            "defines": identity["defines"],
+        },
+        compact=True,
     )
     write_json(constraints_path, constraints, compact=True)
     case_id = f"application-{benchmark.value['id']}-s{seed}"
@@ -155,6 +202,10 @@ def generate_application_holdout_bundle(
                 "clock_count": len(benchmark.value["clocks"]),
                 "source_bytes": sum(record["size"] for record in relative_records),
                 "source_file_count": len(relative_records),
+                "include_file_bytes": sum(
+                    record["size"] for record in identity["include_file_records"]
+                ),
+                "include_file_count": len(identity["include_file_records"]),
             },
         },
         "experiment": {
@@ -174,6 +225,7 @@ def generate_application_holdout_bundle(
     return ApplicationHoldoutBundle(
         root=root,
         filelist_path=filelist_path,
+        compilation_context_path=compilation_context_path,
         constraints_path=constraints_path,
         run_spec_path=run_spec_path,
         run_spec=normalized,

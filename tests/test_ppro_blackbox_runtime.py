@@ -11,6 +11,7 @@ from emuflow.ppro_blackbox_runtime import (
     parse_fpga_aliases,
     render_ppro_runtime_binding,
 )
+from emuflow.ppro_blackbox_application import benchmark_rtl_identity
 from emuflow.ppro_blackbox_runner import execute_blackbox_case
 from tests.test_ppro_blackbox_runner import run_spec
 
@@ -111,6 +112,83 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "options"):
                 render_ppro_runtime_binding(
                     spec, source_filelist=filelist, config=config
+                )
+
+    def test_application_context_is_sealed_and_rendered_as_standard_filelist_options(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            spec, filelist, config = self._fixture(root)
+            source_root = filelist.parent
+            include = source_root / "include"
+            include.mkdir()
+            (include / "config.vh").write_text("`define WIDTH 8\n", encoding="utf-8")
+            benchmark = root / "benchmark.json"
+            benchmark.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.benchmark-run/v1",
+                        "id": "runtime-context",
+                        "design_id": "runtime-context",
+                        "top": "ppro_blackbox_latency",
+                        "sources": ["probe.v"],
+                        "clocks": ["clk"],
+                        "platform": "unused.json",
+                        "synthesis": {
+                            "family": "xcup",
+                            "policy": "logic-only",
+                            "include_dirs": ["include"],
+                            "defines": ["SYNTHESIS", "WIDTH=8"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            identity = benchmark_rtl_identity(benchmark, source_root)
+            spec["workload"]["rtl_sha256"] = identity["rtl_sha256"]
+            spec["experiment"]["kind"] = "application_holdout"
+            spec["experiment"]["control_mode"] = "none"
+            spec["experiment"]["documented_actions"] = []
+            context = root / "compilation-context.json"
+            context.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.ppro-compilation-context/v1",
+                        "source_root": str(source_root.resolve()),
+                        "include_dirs": ["include"],
+                        "defines": ["SYNTHESIS", "WIDTH=8"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "require exactly one"):
+                render_ppro_runtime_binding(
+                    spec,
+                    source_filelist=filelist,
+                    config=config,
+                )
+            render_ppro_runtime_binding(
+                spec,
+                source_filelist=filelist,
+                compilation_context=context,
+                config=config,
+            )
+            lines = (config.case_dir / ".runtime-files.f").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            self.assertEqual(lines[0], f"+incdir+{include.resolve()}")
+            self.assertEqual(lines[1:3], ["+define+SYNTHESIS", "+define+WIDTH=8"])
+            self.assertEqual(lines[3], str((source_root / "probe.v").resolve()))
+
+            (include / "config.vh").write_text("`define WIDTH 9\n", encoding="utf-8")
+            second_config = PProRuntimeConfig(
+                **{**config.__dict__, "case_dir": root / "tampered-case"}
+            )
+            with self.assertRaisesRegex(ValidationError, "sealed RTL identity"):
+                render_ppro_runtime_binding(
+                    spec,
+                    source_filelist=filelist,
+                    compilation_context=context,
+                    config=second_config,
                 )
 
     def test_alias_parser_is_strict(self):
