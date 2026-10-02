@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -270,6 +271,10 @@ def _validate_config(config: PProRuntimeConfig) -> None:
         raise ValidationError("PPro timeout must be positive")
     case_dir = config.case_dir.resolve()
     writable_root = config.authorized_writable_root.resolve()
+    if not writable_root.is_dir():
+        raise ValidationError("PPro authorized writable root does not exist")
+    if not os.access(writable_root, os.W_OK | os.X_OK):
+        raise ValidationError("PPro authorized writable root is not writable")
     if case_dir == writable_root or not case_dir.is_relative_to(writable_root):
         raise ValidationError(
             "PPro case directory must stay below the authorized writable root"

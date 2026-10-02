@@ -294,6 +294,28 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
                     spec, source_filelist=filelist, config=invalid
                 )
 
+    def test_renderer_rejects_nonwritable_authorized_root_before_case_creation(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            spec, filelist, config = self._fixture(root)
+            missing_root = root / "missing-research-root"
+            invalid = PProRuntimeConfig(
+                case_dir=missing_root / "case",
+                install_root=config.install_root,
+                platform_reference=config.platform_reference,
+                documented_constraints=config.documented_constraints,
+                fpga_aliases=config.fpga_aliases,
+                logical_targets=config.logical_targets,
+                authorized_writable_root=missing_root,
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "authorized writable root does not exist"
+            ):
+                render_ppro_runtime_binding(
+                    spec, source_filelist=filelist, config=invalid
+                )
+            self.assertFalse(missing_root.exists())
+
     def test_disposable_runtime_is_scrubbed_after_compact_observation(self):
         with tempfile.TemporaryDirectory() as raw:
             spec, filelist, config = self._fixture(Path(raw))

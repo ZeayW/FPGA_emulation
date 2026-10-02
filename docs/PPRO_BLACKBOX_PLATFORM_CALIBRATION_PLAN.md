@@ -375,6 +375,9 @@ used from the same pushed checkout that will render and run the campaign.
 Rendering and execution independently require the same active revision before
 creating a runtime project or launching the provider; moving a sealed bundle
 to a different checkout fails closed rather than silently changing its runner.
+The renderer also requires the configured authorized writable root to exist
+and be writable before it creates a case directory, so a missing shared mount
+cannot fall through to tool launch or an alternate filesystem.
 
 The default pre-partition headroom is uniform across LUT, FF, BRAM, URAM, and
 DSP at 75%; one explicit runtime option changes all five together so a capacity

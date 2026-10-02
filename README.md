@@ -240,6 +240,9 @@ of those modules changes the revision sealed into the run spec.
 
 The runner applies the same default 75% limit to LUT, FF, BRAM, URAM, and DSP;
 the explicit `--utilization-limit-percent` changes all five together.
+Before rendering any disposable project, it also requires the fixed authorized
+writable root to exist and be writable; a missing validation-server mount
+fails closed before PPro is launched.
 
 The Stage 3 experiment framework is also present and its first three real
 resource axes are fitted. It generates compact connected capacity probes for seven
