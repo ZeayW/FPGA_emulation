@@ -200,7 +200,6 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--out", type=Path, required=True)
     latency = commands.add_parser("fit-latency")
     latency.add_argument("--observations", nargs="+", type=Path, required=True)
-    latency.add_argument("--payload-bits-candidates", nargs="+", type=int, required=True)
     latency.add_argument("--out", type=Path, required=True)
 
     generate = commands.add_parser("generate-platform")
@@ -400,10 +399,7 @@ def _dispatch(args: argparse.Namespace) -> Any:
         _write_result(args.out, result)
         return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
     if args.command == "fit-latency":
-        result = fit_latency_model(
-            _read_many(args.observations),
-            payload_bits_candidates=args.payload_bits_candidates,
-        )
+        result = fit_latency_model(_read_many(args.observations))
         _write_result(args.out, result)
         return {"status": "pass", "output": args.out.name, "schema": result["schema"]}
     if args.command == "fit-transport":

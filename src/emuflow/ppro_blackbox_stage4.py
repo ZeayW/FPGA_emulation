@@ -13,14 +13,12 @@ from .ppro_blackbox_route_evidence import maximum_capacity_payload_hops
 
 
 PAYLOAD_FIT_SCHEMA = "emuflow.ppro-payload-fit/v2"
-LATENCY_FIT_SCHEMA = "emuflow.ppro-latency-fit/v1"
+LATENCY_FIT_SCHEMA = "emuflow.ppro-latency-fit/v2"
 TRANSPORT_FIT_SCHEMA = "emuflow.ppro-transport-cost-fit/v1"
 _GENERATOR_ID = "ppro-blackbox-communication-probe-v3"
-_FEATURES = (
+_LATENCY_BASE_FEATURES = (
     "endpoint_ns",
     "per_hop_ns",
-    "serialization_unit_ns",
-    "tdm_level_ns",
     "contention_flow_ns",
     "multicast_sink_ns",
 )
@@ -274,7 +272,7 @@ def _matrix_rank(rows: Sequence[Sequence[float]], *, tolerance: float = 1e-10) -
     return rank
 
 
-def _latency_row(item: Mapping[str, Any], payload_bits: int) -> tuple[list[float], float]:
+def _latency_row(item: Mapping[str, Any]) -> tuple[list[float], int, float]:
     dims = _communication_dimensions(item)
     if item["execution"]["outcome"] != "pass":
         raise ValidationError("latency model accepts only successful timing observations")
@@ -318,11 +316,10 @@ def _latency_row(item: Mapping[str, Any], payload_bits: int) -> tuple[list[float
         [
             1.0,
             float(hops),
-            float(math.ceil(serialized_bits / payload_bits)),
-            float(max(0, ratio - 1)),
             float(max(0, dims["flow_count"] - 1)),
             float(max(0, dims["fanout"] - 1)),
         ],
+        ratio,
         float(delay),
     )
 
@@ -343,13 +340,9 @@ def _percentile(values: Sequence[float], fraction: float) -> float:
 def fit_latency_model(
     observations: Sequence[Mapping[str, Any]],
     *,
-    payload_bits_candidates: Sequence[int],
     bootstrap_samples: int = 128,
 ) -> Dict[str, Any]:
     normalized = _validated(observations)
-    candidates = sorted(set(payload_bits_candidates))
-    if not candidates or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in candidates):
-        raise ValidationError("latency payload candidates must be positive integers")
     fit_items = []
     holdout_items = []
     excluded = 0
@@ -360,29 +353,42 @@ def fit_latency_model(
             excluded += 1
             continue
         (fit_items if item["identity"]["role"] == "fit" else holdout_items).append(item)
-    if len(fit_items) < len(_FEATURES) + 1:
-        raise ValidationError("latency fitting requires more fit samples than coefficients")
     if not holdout_items:
         raise ValidationError("latency fitting requires independent holdout samples")
 
-    best = None
-    for payload_bits in candidates:
-        pairs = [_latency_row(item, payload_bits) for item in fit_items]
-        features = [pair[0] for pair in pairs]
-        targets = [pair[1] for pair in pairs]
-        if _matrix_rank(features) != len(_FEATURES):
-            raise ValidationError("latency fit matrix does not identify every model coefficient")
-        coefficients = _nnls(features, targets)
-        residuals = [
-            target - sum(value * coefficient for value, coefficient in zip(row, coefficients))
-            for row, target in zip(features, targets)
-        ]
-        rmse = math.sqrt(sum(value * value for value in residuals) / len(residuals))
-        candidate = (rmse, payload_bits, coefficients, features, targets)
-        if best is None or candidate[:2] < best[:2]:
-            best = candidate
-    assert best is not None
-    rmse, payload_bits, coefficients, features, targets = best
+    fit_rows = [_latency_row(item) for item in fit_items]
+    holdout_rows = [_latency_row(item) for item in holdout_items]
+    tdm_ratios = sorted({ratio for _, ratio, _ in fit_rows if ratio > 1})
+    fit_ratio_set = {ratio for _, ratio, _ in fit_rows}
+    holdout_ratio_set = {ratio for _, ratio, _ in holdout_rows}
+    missing_holdouts = sorted(fit_ratio_set - holdout_ratio_set)
+    if missing_holdouts:
+        raise ValidationError(
+            "latency fitting lacks independent holdout coverage for TDM ratios "
+            + ", ".join(map(str, missing_holdouts))
+        )
+    if any(ratio not in fit_ratio_set for ratio in holdout_ratio_set):
+        raise ValidationError("latency holdout contains an unfitted TDM ratio")
+
+    feature_names = list(_LATENCY_BASE_FEATURES) + [
+        f"tdm_ratio_{ratio}_ns" for ratio in tdm_ratios
+    ]
+
+    def expand(row: list[float], ratio: int) -> list[float]:
+        return row + [1.0 if ratio == candidate else 0.0 for candidate in tdm_ratios]
+
+    features = [expand(row, ratio) for row, ratio, _ in fit_rows]
+    targets = [target for _, _, target in fit_rows]
+    if len(fit_items) < len(feature_names) + 1:
+        raise ValidationError("latency fitting requires more fit samples than coefficients")
+    if _matrix_rank(features) != len(feature_names):
+        raise ValidationError("latency fit matrix does not identify every model coefficient")
+    coefficients = _nnls(features, targets)
+    residuals = [
+        target - sum(value * coefficient for value, coefficient in zip(row, coefficients))
+        for row, target in zip(features, targets)
+    ]
+    rmse = math.sqrt(sum(value * value for value in residuals) / len(residuals))
 
     if bootstrap_samples < 16:
         raise ValidationError("latency bootstrap_samples must be >= 16")
@@ -394,17 +400,25 @@ def fit_latency_model(
         for column, value in enumerate(sampled):
             boot[column].append(value)
     parameters = {}
-    for index, name in enumerate(_FEATURES):
+    for index, name in enumerate(_LATENCY_BASE_FEATURES):
         parameters[name] = {
             "nominal": coefficients[index],
             "aggressive": _percentile(boot[index], 0.05),
             "conservative": _percentile(boot[index], 0.95),
             "identifiable": True,
         }
+    tdm_ratio_delay_ns = {}
+    for offset, ratio in enumerate(tdm_ratios, start=len(_LATENCY_BASE_FEATURES)):
+        tdm_ratio_delay_ns[str(ratio)] = {
+            "nominal": coefficients[offset],
+            "aggressive": _percentile(boot[offset], 0.05),
+            "conservative": _percentile(boot[offset], 0.95),
+            "identifiable": True,
+        }
 
     holdout_checks = []
-    for item in holdout_items:
-        row, actual = _latency_row(item, payload_bits)
+    for item, (base_row, ratio, actual) in zip(holdout_items, holdout_rows):
+        row = expand(base_row, ratio)
         predicted = sum(value * coefficient for value, coefficient in zip(row, coefficients))
         holdout_checks.append(
             {
@@ -417,8 +431,9 @@ def fit_latency_model(
         )
     return {
         "schema": LATENCY_FIT_SCHEMA,
-        "payload_bits_per_cycle": payload_bits,
         "parameters": parameters,
+        "tdm_ratio_delay_ns": tdm_ratio_delay_ns,
+        "observed_tdm_ratios": sorted(fit_ratio_set),
         "fit_rmse_ns": rmse,
         "fit_samples": len(fit_items),
         "holdout_checks": holdout_checks,

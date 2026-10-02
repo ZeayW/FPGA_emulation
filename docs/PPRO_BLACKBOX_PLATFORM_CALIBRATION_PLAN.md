@@ -182,7 +182,9 @@ payload capacity rather than multiplying advertised lane count by line rate.
 Use paired experiments so each sweep changes one variable:
 
 - narrow single-hop traffic estimates the aggregate fixed intercept;
-- width sweeps estimate serialization slope;
+- width sweeps identify payload/TDM transition points; a separate continuous
+  serialization slope is retained only if the ordinary reports make it
+  independently identifiable;
 - pair/hop sweeps estimate per-hop increments;
 - TDM-ratio sweeps estimate slot-related increments;
 - concurrent-flow sweeps estimate contention growth; and
@@ -448,9 +450,12 @@ payload/TDM classes fitted, latency and transport observations pending**. One co
 direction, fanout, and requested TDM level while keeping logical endpoints
 explicit. Payload fitting reports the repeated ratio-one/TDM transition and
 observed TDM levels; a final link-infeasible upper bound is retained when
-observed but is not confused with per-cycle payload width. Aggregate latency fitting searches candidate
-payload widths and fits non-negative endpoint, hop, serialization, TDM,
-contention, and multicast terms with deterministic bootstrap bounds. Transport
+observed but is not confused with per-cycle payload width. Aggregate latency
+fits non-negative endpoint, hop, contention, and multicast terms plus a
+categorical delay for every observed TDM ratio.  This matches the discrete
+black-box timing states without pretending that line rate or a per-bit
+serialization slope was identified.  Every fitted ratio, including ratio one,
+requires an independent holdout. Transport
 cost uses same-RTL local/cross placement pairs so DUT logic cancels before
 fitting incremental resource cost; negative paired deltas fail closed as
 evidence that unrelated mapping changed. An opaque pairing token binds each

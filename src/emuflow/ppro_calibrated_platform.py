@@ -135,6 +135,12 @@ def _require_calibration_gates(
     for record in latency_fit.get("parameters", {}).values():
         if not isinstance(record, dict) or record.get("identifiable") is not True:
             raise ValidationError("calibrated platform latency fit is not identifiable")
+    ratio_delays = latency_fit.get("tdm_ratio_delay_ns")
+    if not isinstance(ratio_delays, dict):
+        raise ValidationError("calibrated platform latency TDM fit is invalid")
+    for record in ratio_delays.values():
+        if not isinstance(record, dict) or record.get("identifiable") is not True:
+            raise ValidationError("calibrated platform latency TDM fit is not identifiable")
 
     if transport_fit.get("excluded_observations") != 0:
         raise ValidationError("calibrated platform transport fit has excluded observations")
@@ -245,7 +251,7 @@ def _payload_widths(payload_fit: Mapping[str, Any]) -> Dict[tuple[int, int], int
     return result
 
 
-def _latency_bound(latency_fit: Mapping[str, Any], profile: str, payload_bits: int) -> float:
+def _latency_bound(latency_fit: Mapping[str, Any], profile: str) -> float:
     if latency_fit.get("schema") != LATENCY_FIT_SCHEMA:
         raise ValidationError("calibrated platform latency fit schema is invalid")
     parameters = latency_fit.get("parameters", {})
@@ -253,23 +259,12 @@ def _latency_bound(latency_fit: Mapping[str, Any], profile: str, payload_bits: i
     for name in (
         "endpoint_ns",
         "per_hop_ns",
-        "serialization_unit_ns",
-        "tdm_level_ns",
-        "contention_flow_ns",
-        "multicast_sink_ns",
     ):
         record = parameters.get(name)
         if not isinstance(record, dict) or profile not in record:
             raise ValidationError(f"calibrated platform latency fit lacks {name}.{profile}")
         values[name] = float(record[profile])
-    fitted_payload = latency_fit.get("payload_bits_per_cycle")
-    if isinstance(fitted_payload, bool) or not isinstance(fitted_payload, int) or fitted_payload <= 0:
-        raise ValidationError("calibrated platform latency payload width is invalid")
-    return (
-        values["endpoint_ns"]
-        + values["per_hop_ns"]
-        + math.ceil(payload_bits / fitted_payload) * values["serialization_unit_ns"]
-    )
+    return values["endpoint_ns"] + values["per_hop_ns"]
 
 
 def validate_transport_cost_database(
@@ -362,7 +357,7 @@ def generate_calibrated_platform_profiles(
             symmetric = reverse in direct_edges and payload_widths[reverse] == payload_widths[(source, sink)]
             link_id = f"link-f{source}-f{sink}"
             width = payload_widths[(source, sink)]
-            delay = _latency_bound(latency_fit, profile, width)
+            delay = _latency_bound(latency_fit, profile)
             cycles = int(math.ceil(delay * frequency / 1000.0))
             links.append(
                 {
@@ -379,7 +374,7 @@ def generate_calibrated_platform_profiles(
             timing_bounds[(link_id, f"F{source}", f"F{sink}")] = delay
             consumed.add((source, sink))
             if symmetric:
-                reverse_delay = _latency_bound(latency_fit, profile, payload_widths[reverse])
+                reverse_delay = _latency_bound(latency_fit, profile)
                 timing_bounds[(link_id, f"F{sink}", f"F{source}")] = reverse_delay
                 consumed.add(reverse)
 

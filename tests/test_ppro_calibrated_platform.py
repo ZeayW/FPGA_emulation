@@ -81,16 +81,22 @@ def fit_artifacts():
         for name, value in (
             ("endpoint_ns", 4.0),
             ("per_hop_ns", 2.0),
-            ("serialization_unit_ns", 1.0),
-            ("tdm_level_ns", 3.0),
             ("contention_flow_ns", 4.0),
             ("multicast_sink_ns", 0.5),
         )
     }
     latency = {
-        "schema": "emuflow.ppro-latency-fit/v1",
-        "payload_bits_per_cycle": 64,
+        "schema": "emuflow.ppro-latency-fit/v2",
         "parameters": parameters,
+        "tdm_ratio_delay_ns": {
+            "2": {
+                "aggressive": 2.7,
+                "nominal": 3.0,
+                "conservative": 3.3,
+                "identifiable": True,
+            }
+        },
+        "observed_tdm_ratios": [1, 2],
         "excluded_observations": 0,
         "holdout_checks": [{"relative_error": 0.05}],
         "holdout_max_relative_error": 0.05,

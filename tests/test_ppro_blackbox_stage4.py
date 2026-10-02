@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import unittest
 
 from emuflow.ppro_blackbox_stage4 import (
@@ -148,24 +147,33 @@ class PProBlackboxStage4Test(unittest.TestCase):
     def test_latency_fit_recovers_aggregate_model_and_holdout(self):
         values = []
         points = [
-            (16, 1, 1, 1),
-            (32, 2, 1, 1),
-            (64, 1, 2, 1),
-            (96, 2, 3, 1),
-            (128, 3, 2, 2),
-            (160, 1, 4, 2),
-            (192, 2, 3, 3),
-            (224, 3, 4, 3),
-            (80, 2, 2, 2),
+            ("fit", 16, 1, 1, 1, 1),
+            ("fit", 32, 2, 1, 1, 1),
+            ("fit", 48, 1, 1, 2, 1),
+            ("fit", 64, 1, 1, 1, 2),
+            ("fit", 80, 1, 2, 1, 1),
+            ("fit", 96, 1, 3, 1, 1),
+            ("fit", 112, 1, 4, 1, 1),
+            ("fit", 128, 2, 2, 2, 2),
+            ("holdout", 80, 2, 1, 2, 2),
+            ("holdout", 48, 1, 2, 1, 1),
+            ("holdout", 144, 2, 3, 2, 3),
+            ("holdout", 176, 1, 4, 3, 2),
         ]
-        for index, (width, hops, ratio, flows) in enumerate(points):
-            fanout = 1 + (index % 3)
-            delay = 5 + 2 * hops + math.ceil(width * flows / 32) + 3 * (ratio - 1) + 4 * (flows - 1) + 0.5 * (fanout - 1)
+        tdm_delay = {1: 0.0, 2: 3.0, 3: 8.0, 4: 11.0}
+        for index, (role, width, hops, ratio, flows, fanout) in enumerate(points):
+            delay = (
+                5
+                + 2 * hops
+                + tdm_delay[ratio]
+                + 4 * (flows - 1)
+                + 0.5 * (fanout - 1)
+            )
             values.append(
                 communication_observation(
                     identifier=f"latency-{index}",
                     kind="latency",
-                    role="holdout" if index == len(points) - 1 else "fit",
+                    role=role,
                     outcome="pass",
                     width=width,
                     flows=flows,
@@ -175,11 +183,12 @@ class PProBlackboxStage4Test(unittest.TestCase):
                     delay=delay,
                 )
             )
-        result = fit_latency_model(values, payload_bits_candidates=[16, 32, 64], bootstrap_samples=32)
-        self.assertEqual(result["payload_bits_per_cycle"], 32)
+        result = fit_latency_model(values, bootstrap_samples=32)
+        self.assertEqual(result["observed_tdm_ratios"], [1, 2, 3, 4])
         self.assertLess(result["fit_rmse_ns"], 1e-5)
         self.assertLess(result["holdout_max_relative_error"], 1e-5)
         self.assertAlmostEqual(result["parameters"]["per_hop_ns"]["nominal"], 2.0, places=4)
+        self.assertAlmostEqual(result["tdm_ratio_delay_ns"]["4"]["nominal"], 11.0, places=4)
 
     def test_transport_cost_uses_same_rtl_local_cross_pairs(self):
         values = []
