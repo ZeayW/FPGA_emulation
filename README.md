@@ -559,7 +559,9 @@ observation.  The holdout assembler also rejects a complete flow whose
 frontend include directories or defines differ from the benchmark contract.
 Promotion workload classes are also owned by the checked contract through
 `calibration_holdout_class`, included in the shared compilation identity, and
-cannot be supplied or relabelled by the result assembler.  The qualifying
+cannot be supplied or relabelled by the result assembler. Bundle generation
+fails before a provider run if that class is absent, rather than deferring the
+error until an expensive blind-result assembly. The qualifying
 contracts are PicoRV32 (`open_cpu`), secworks AES (`secworks_aes`), native
 Koios GEMM/attention (`koios_compute`), native Koios DLA-large (`koios_dla`),
 and the generated NVDLA contract (`nvdla`).  Older logic-only Koios contracts

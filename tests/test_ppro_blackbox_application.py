@@ -5,10 +5,49 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from emuflow.errors import ValidationError
 from emuflow.ppro_blackbox_application import generate_application_holdout_bundle
 
 
 class PProBlackboxApplicationTest(unittest.TestCase):
+    def test_holdout_class_is_required_before_bundle_generation(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "source"
+            source_root.mkdir()
+            (source_root / "top.v").write_text(
+                "module top(input wire clk); endmodule\n", encoding="utf-8"
+            )
+            benchmark = root / "benchmark.json"
+            benchmark.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.benchmark-run/v1",
+                        "id": "unclassified_holdout",
+                        "design_id": "unclassified",
+                        "top": "top",
+                        "sources": ["top.v"],
+                        "clocks": ["clk"],
+                        "platform": "unused.json",
+                        "synthesis": {"family": "xcup", "policy": "logic-only"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "lacks calibration_holdout_class"
+            ):
+                generate_application_holdout_bundle(
+                    root / "bundle",
+                    benchmark_run_path=benchmark,
+                    source_root=source_root,
+                    campaign_id="blind",
+                    public_prior_id="prior-v1",
+                    configuration_id="platform-v1",
+                    tool_release="2026.1",
+                    runner_revision="d" * 64,
+                )
+
     def test_catalog_holdout_is_free_partition_and_path_redacted(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -119,6 +158,7 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                 "schema": "emuflow.benchmark-run/v1",
                 "id": "clock_identity",
                 "design_id": "clock_identity",
+                "calibration_holdout_class": "open_cpu",
                 "top": "top",
                 "sources": ["top.v"],
                 "clocks": ["clk"],
@@ -166,6 +206,7 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                 "schema": "emuflow.benchmark-run/v1",
                 "id": "context_identity",
                 "design_id": "context_identity",
+                "calibration_holdout_class": "open_cpu",
                 "top": "top",
                 "sources": ["top.v"],
                 "clocks": ["clk"],

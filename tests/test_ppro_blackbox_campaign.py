@@ -169,6 +169,7 @@ class PProBlackboxCampaignTest(unittest.TestCase):
                         "schema": "emuflow.benchmark-run/v1",
                         "id": "application-context",
                         "design_id": "application-context",
+                        "calibration_holdout_class": "open_cpu",
                         "top": "top",
                         "sources": ["top.v"],
                         "clocks": ["clk"],

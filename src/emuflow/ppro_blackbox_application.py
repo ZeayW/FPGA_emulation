@@ -151,6 +151,11 @@ def generate_application_holdout_bundle(
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValidationError("application holdout seed must be a nonnegative integer")
     identity = benchmark_rtl_identity(benchmark_run_path, source_root)
+    if identity["calibration_holdout_class"] is None:
+        raise ValidationError(
+            "application holdout benchmark contract lacks "
+            "calibration_holdout_class"
+        )
     benchmark = BenchmarkRun.load(identity["benchmark_run"])
     sources = identity["sources"]
     relative_records = identity["source_records"]
