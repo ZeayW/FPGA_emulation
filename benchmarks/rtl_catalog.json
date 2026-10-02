@@ -190,7 +190,7 @@
         "very-large"
       ],
       "flow_readiness": "final-stress-only",
-      "notes": "Final frontend, hierarchy, memory, partition-capacity, and runtime stress test. NV_nvdla is the genuine connected top over the five upstream synthesis partitions. ASIC SRAM wrappers are represented as interface-accurate black boxes for the FPGA scale screen; their proprietary DFT implementation is not expanded into LUTs. The nvdlav1 branch is deliberately pinned and its custom license must be preserved."
+      "notes": "Final frontend, hierarchy, memory, partition-capacity, and runtime stress test. NV_nvdla is the genuine connected top over the five upstream synthesis partitions. The shared frontend offers an explicitly labeled black-box SRAM scale screen and a separate fail-closed inferred-block-RAM model covering every pinned rws/rwsp/rwst/rwsthp wrapper for physical holdout validation; proprietary ASIC DFT logic is never expanded into LUTs. The nvdlav1 branch is deliberately pinned and its custom license must be preserved."
     }
   ]
 }
