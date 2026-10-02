@@ -13,6 +13,7 @@ from emuflow.platform import Platform
 from emuflow.ppro_blackbox_application import benchmark_rtl_identity
 from emuflow.ppro_calibration_cli import main
 from emuflow.ppro_holdout_validation import (
+    _validate_holdout_preparation,
     assemble_holdout_result,
     evaluate_holdout_promotion,
 )
@@ -131,6 +132,18 @@ class PProHoldoutValidationTest(unittest.TestCase):
         self.assertTrue(report["promoted"])
         self.assertEqual(report["status"], "pass")
         self.assertTrue(report["ranking_checks"][0]["matches"])
+
+    def test_nvdla_final_holdout_rejects_black_box_memory(self):
+        with self.assertRaisesRegex(ValidationError, "physically implementable"):
+            _validate_holdout_preparation(
+                "nvdla",
+                {"memory_policy": "interface-accurate-black-box-scale-abstraction"},
+            )
+        _validate_holdout_preparation(
+            "nvdla",
+            {"memory_policy": "physically-implementable-shared-memory-model-v1"},
+        )
+        _validate_holdout_preparation("koios_dla", None)
 
     def test_incomplete_physical_or_bad_delay_fails_promotion(self):
         values = self.complete_results()

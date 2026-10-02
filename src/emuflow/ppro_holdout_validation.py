@@ -30,6 +30,7 @@ _BENCHMARK_CLASS_TIERS = {
     "nvdla": "very_large_final",
 }
 _PROFILES = {"aggressive", "nominal", "conservative"}
+_PHYSICAL_MEMORY_POLICY = "physically-implementable-shared-memory-model-v1"
 _RESOURCE_NAMES = {
     "lut": "lut",
     "ff": "ff",
@@ -86,6 +87,21 @@ def _nonnegative_integer(value: Any, context: str) -> int:
     if not math.isfinite(numeric) or numeric < 0 or not numeric.is_integer():
         raise ValidationError(f"{context}: expected a non-negative integer")
     return int(numeric)
+
+
+def _validate_holdout_preparation(
+    benchmark_class: str, preparation: Any
+) -> None:
+    if benchmark_class != "nvdla":
+        return
+    if (
+        not isinstance(preparation, Mapping)
+        or preparation.get("memory_policy") != _PHYSICAL_MEMORY_POLICY
+    ):
+        raise ValidationError(
+            "NVDLA final holdout requires a shared physically implementable "
+            "memory model; black-box scale abstractions are not closure evidence"
+        )
 
 
 def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
@@ -342,6 +358,7 @@ def assemble_holdout_result(
     ppro_path = ppro_observation_path.resolve()
     ppro = validate_blackbox_observation(read_json(ppro_path))
     identity = benchmark_rtl_identity(benchmark_run_path, source_root)
+    _validate_holdout_preparation(benchmark_class, identity["preparation"])
     if (
         ppro["workload"]["rtl_sha256"] != identity["rtl_sha256"]
         or ppro["workload"]["parameters_sha256"]

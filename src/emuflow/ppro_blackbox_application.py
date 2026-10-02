@@ -124,6 +124,7 @@ def benchmark_rtl_identity(
         "top_module": benchmark.value["top"],
         "clocks": benchmark.value["clocks"],
         "clock_periods_ns": benchmark.value.get("clock_periods_ns"),
+        "preparation": benchmark.value.get("preparation"),
     }
 
 
