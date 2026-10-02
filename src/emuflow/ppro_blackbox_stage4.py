@@ -282,14 +282,20 @@ def _latency_row(item: Mapping[str, Any], payload_bits: int) -> tuple[list[float
     if not routes:
         raise ValidationError("latency observation lacks route evidence")
     serialized_bits = dims["probe_width_bits"] * dims["flow_count"]
+    ratio = _integer(item["metrics"]["communication"], "maximum_tdm_ratio", "latency observation")
+    # Ordinary system-route reports describe the physical channels after TDM
+    # compaction, not one route record per logical transported bit.  Requiring
+    # the full logical width therefore discards the very observations used to
+    # identify TDM latency.  A ratio-r channel must expose at least ceil(W/r)
+    # payload signals; narrower clock/control side traffic remains excluded.
+    routed_payload_signals = math.ceil(serialized_bits / max(1, ratio))
     hops = maximum_payload_hops(
         routes,
         source=f"F{dims['source_fpga_index']}",
-        minimum_signal_count=serialized_bits,
+        minimum_signal_count=routed_payload_signals,
     )
     if hops is None:
         raise ValidationError("latency observation lacks a full-width payload path")
-    ratio = _integer(item["metrics"]["communication"], "maximum_tdm_ratio", "latency observation")
     delay = item["metrics"]["timing"].get("sr0_worst_cross_fpga_delay_ns")
     if not isinstance(delay, (int, float)) or delay < 0:
         raise ValidationError("latency observation lacks a non-negative sr0 delay")

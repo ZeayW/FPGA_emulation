@@ -32,7 +32,9 @@ def communication_observation(
                 "source": nodes[index],
                 "sinks": [nodes[index + 1]],
                 "effective_hops": 1,
-                "signal_count": width * flows,
+                # PPro's ordinary route report counts physical signals after
+                # TDM compaction rather than repeating the logical width.
+                "signal_count": math.ceil(width * flows / max(1, ratio)),
             }
             for index in range(len(nodes) - 1)
         ]

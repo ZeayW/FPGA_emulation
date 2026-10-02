@@ -300,7 +300,8 @@ version-locked to `ppro-blackbox-communication-probe-v3`; observations from
 the superseded v1/v2 fixtures cannot silently enter a current fit. The v3
 contract gives every same-RTL local/cross transport pair an explicit opaque
 pairing token, preserves multicast fanout in the local baseline, reconstructs
-multi-hop latency from full-width per-hop route evidence, and rejects
+multi-hop latency from per-hop route evidence after accounting for the
+observed TDM compaction ratio, and rejects
 rank-deficient latency or transport matrices instead of emitting unidentifiable
 coefficients.
 

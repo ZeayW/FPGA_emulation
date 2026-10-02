@@ -456,7 +456,8 @@ fitting incremental resource cost; negative paired deltas fail closed as
 evidence that unrelated mapping changed. An opaque pairing token binds each
 local/cross pair without exposing a vendor artifact, and local baselines retain
 the cross case's fanout. Latency reconstructs full-width end-to-end paths from
-ordinary per-hop route records. Both regression fitters require full column
+ordinary per-hop route records, using the observed TDM ratio to translate
+logical transported width into the minimum physical route-signal count. Both regression fitters require full column
 rank plus independent holdouts; they do not silently publish unidentifiable
 zero coefficients. The real adapter currently observes
 natural TDM transitions under width/flow pressure. Nonzero forced-TDM probes
