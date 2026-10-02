@@ -316,7 +316,21 @@ signatures, zero excluded observations, and 16/16 matching holdout checks.
 ratio-one width of 64 bits; `F1->F2`, `F2->F0`, `F3->F0`, and `F3->F1` have
 128 bits.  The next observed TDM level is ratio 8 for every direction.  These
 are effective black-box payload classes, not claims about physical lane count
-or line rate.  Latency and transport-cost observations remain pending.
+or line rate.
+
+The authorized latency campaign now contains 56/56 passing compact
+observations: 34 fit points and 22 independent holdouts spanning direct,
+multicast, and two-hop traffic.  A separate width/flow shape was added only as
+a ratio-16 holdout; it reproduced ratio 16 and 55.2 ns in both repeats.  The
+final v2 fit has zero excluded observations, about `3.17e-10 ns` fit RMSE, and
+about `7.85e-11` maximum holdout relative error.  Its nominal black-box terms
+are `0.2 ns` endpoint intercept, `7 ns` per hop, `0 ns` observable concurrent-
+flow increment, `0.1 ns` per extra multicast sink, `43 ns` for ratio 8, and
+`48 ns` for ratio 16.  These categorical TDM terms describe observed PPro
+timing states; they are not claims about internal serializer implementation.
+Normal campaign cleanup removed every generated bundle and raw project; the
+two added holdouts retain only 4.6 KiB of observation JSON.  Transport-cost
+observations remain pending.
 
 Stage 5 can now deterministically materialize and independently validate the
 three final profile databases plus a provenance/hash manifest. It cannot turn

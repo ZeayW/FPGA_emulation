@@ -446,7 +446,8 @@ version-locked `ppro-blackbox-communication-probe-v3` contract. Older v1/v2
 observations are rejected rather than mixed into a current fit.
 
 Status: **controlled probe and fitting framework implemented; effective
-payload/TDM classes fitted, latency and transport observations pending**. One compact communication generator sweeps width, parallel flows,
+payload/TDM classes and aggregate latency fitted, transport observations
+pending**. One compact communication generator sweeps width, parallel flows,
 direction, fanout, and requested TDM level while keeping logical endpoints
 explicit. Payload fitting reports the repeated ratio-one/TDM transition and
 observed TDM levels; a final link-infeasible upper bound is retained when
@@ -483,6 +484,18 @@ signatures, zero excluded observations, and 16/16 matching holdout checks.
 Four directions have a conservative ratio-one lower bound of 64 bits and four
 have 128 bits; every observed transition enters ratio 8.  The asymmetric
 classes are retained rather than collapsed into one convenient link width.
+
+The latency campaign completed 56/56 real PPro runs: 34 fit observations and
+22 independent holdouts over direct, multicast, and two-hop shapes.  The
+original matrix lacked a ratio-16 holdout, so a distinct 96-bit/four-flow
+holdout shape was run twice; both repeats reproduced ratio 16 and 55.2 ns.
+The final v2 model has zero excluded observations, approximately `3.17e-10 ns`
+fit RMSE, and approximately `7.85e-11` maximum holdout relative error.  It
+identifies a 0.2 ns endpoint intercept, 7 ns per-hop increment, 0.1 ns per
+additional multicast sink, no observable concurrent-flow increment after TDM
+state is included, and categorical increments of 43 ns and 48 ns for ratios 8
+and 16.  These are aggregate behavior terms, not reverse-engineered internal
+implementation details.
 
 Deliver parameter sweeps, constrained fits, confidence intervals, and an
 identifiability report.
