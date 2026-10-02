@@ -1493,6 +1493,7 @@ def run_multi_fpga_physical_flow(
         },
         "architecture": architecture_source,
         "execution": {
+            "seed": seed,
             "requested_workers": workers,
             "effective_workers": effective_workers,
             "ordering": "boarddb-fpga-order",

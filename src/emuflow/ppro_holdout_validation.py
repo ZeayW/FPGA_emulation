@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from .errors import ValidationError
+from .io import read_json
+from .multi_fpga_flow import validate_multi_fpga_flow_bundle
+from .platform import Platform
+from .ppro_blackbox_application import benchmark_rtl_identity
 from .ppro_blackbox_calibration import validate_blackbox_observation
+from .ppro_calibrated_platform import validate_calibrated_platform_bundle
 
 
-HOLDOUT_RESULT_SCHEMA = "emuflow.ppro-holdout-result/v2"
+HOLDOUT_RESULT_SCHEMA = "emuflow.ppro-holdout-result/v3"
 PROMOTION_REPORT_SCHEMA = "emuflow.ppro-platform-promotion/v1"
 _TIERS = {"medium", "diversity", "large", "large_primary", "very_large_final"}
 _BENCHMARK_CLASS_TIERS = {
@@ -20,6 +28,38 @@ _BENCHMARK_CLASS_TIERS = {
     "koios_dla": "large_primary",
     "nvdla": "very_large_final",
 }
+_PROFILES = {"aggressive", "nominal", "conservative"}
+_RESOURCE_NAMES = {
+    "lut": "lut",
+    "ff": "ff",
+    "bram18k": "bram36k",
+    "dsp48": "dsp48",
+    "uram288": "uram288",
+}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _digest(value: Any, context: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValidationError(f"{context}: expected a lowercase SHA-256 digest")
+    return value
 
 
 def _number(value: Any, context: str) -> float:
@@ -55,6 +95,7 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
         "benchmark_class",
         "tier",
         "algorithm_id",
+        "evidence",
         "ppro",
         "emuflow",
     }
@@ -73,6 +114,30 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
         or value["tier"] != _BENCHMARK_CLASS_TIERS[benchmark_class]
     ):
         raise ValidationError("holdout result benchmark class and tier disagree")
+    evidence = value["evidence"]
+    evidence_required = {
+        "producer",
+        "benchmark_run_sha256",
+        "platform_manifest_sha256",
+        "platform_boarddb_sha256",
+        "flow_report_sha256",
+        "schedule_sha256",
+        "physical_flow_report_sha256",
+        "qor_report_sha256",
+    }
+    if (
+        not isinstance(evidence, Mapping)
+        or set(evidence) != evidence_required
+        or evidence.get("producer") != "independent-flow-bundle-assembler-v1"
+    ):
+        raise ValidationError("holdout result evidence is invalid")
+    normalized_evidence = {
+        "producer": evidence["producer"],
+        **{
+            name: _digest(evidence[name], f"holdout evidence {name}")
+            for name in sorted(evidence_required - {"producer"})
+        },
+    }
     ppro = validate_blackbox_observation(value["ppro"])
     if (
         ppro["identity"]["role"] != "holdout"
@@ -178,9 +243,246 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
         "benchmark_class": benchmark_class,
         "tier": value["tier"],
         "algorithm_id": value["algorithm_id"],
+        "evidence": normalized_evidence,
         "ppro": ppro,
         "emuflow": normalized_emuflow,
     }
+
+
+def _resource_utilization(
+    resources_by_fpga: Mapping[str, Any], platform: Platform
+) -> Dict[str, float]:
+    if not isinstance(resources_by_fpga, Mapping) or not resources_by_fpga:
+        raise ValidationError("flow partition report lacks per-FPGA resources")
+    by_id = {fpga.id: fpga for fpga in platform.fpgas}
+    if set(resources_by_fpga) != set(by_id):
+        raise ValidationError("flow partition resource coverage disagrees with BoardDB")
+    result: Dict[str, float] = {}
+    for resource, observation_name in _RESOURCE_NAMES.items():
+        ratios = []
+        for fpga_id, usage in resources_by_fpga.items():
+            if not isinstance(usage, Mapping):
+                raise ValidationError("flow partition FPGA resources are invalid")
+            capacity = by_id[fpga_id].capacity.get(resource, 0)
+            if capacity <= 0:
+                continue
+            amount = _nonnegative(
+                usage.get(resource, 0), f"flow {fpga_id} {resource} usage"
+            )
+            if amount > capacity:
+                raise ValidationError("flow partition usage exceeds physical capacity")
+            ratios.append(amount / capacity)
+        if ratios:
+            result[observation_name] = max(ratios)
+    if not result:
+        raise ValidationError("flow partition has no comparable calibrated resources")
+    return dict(sorted(result.items()))
+
+
+def _busiest_pairs(schedule: Mapping[str, Any]) -> list[str]:
+    entries = schedule.get("entries")
+    if not isinstance(entries, list):
+        raise ValidationError("flow schedule entries are invalid")
+    loads: Dict[str, int] = defaultdict(int)
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, Mapping):
+            raise ValidationError(f"flow schedule entry {index} is invalid")
+        source = entry.get("from")
+        sink = entry.get("to")
+        if not isinstance(source, str) or not isinstance(sink, str):
+            raise ValidationError(f"flow schedule entry {index} lacks endpoints")
+        loads[f"{source}->{sink}"] += 1
+    return [name for name, _ in sorted(loads.items(), key=lambda item: (-item[1], item[0]))]
+
+
+def _maximum_tdm_ratio(schedule: Mapping[str, Any]) -> int:
+    entries = schedule.get("entries")
+    if not isinstance(entries, list):
+        raise ValidationError("flow schedule entries are invalid")
+    ratios = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, Mapping):
+            raise ValidationError(f"flow schedule entry {index} is invalid")
+        ratios.append(
+            _nonnegative_integer(
+                entry.get("tdm_ratio", 1), f"flow schedule entry {index} TDM ratio"
+            )
+        )
+    return max(ratios, default=1)
+
+
+def assemble_holdout_result(
+    *,
+    result_id: str,
+    workload_id: str,
+    benchmark_class: str,
+    algorithm_id: str,
+    ppro_observation_path: Path,
+    flow_root: Path,
+    benchmark_run_path: Path,
+    source_root: Path,
+    platform_bundle_root: Path,
+    profile: str,
+) -> Dict[str, Any]:
+    """Assemble a blind result exclusively from independently checked artifacts."""
+
+    if benchmark_class not in _BENCHMARK_CLASS_TIERS:
+        raise ValidationError("holdout benchmark class is invalid")
+    if profile not in _PROFILES:
+        raise ValidationError("holdout calibrated-platform profile is invalid")
+    for name, value in (
+        ("result id", result_id),
+        ("workload id", workload_id),
+        ("algorithm id", algorithm_id),
+    ):
+        if not isinstance(value, str) or not value:
+            raise ValidationError(f"holdout {name} is invalid")
+
+    ppro_path = ppro_observation_path.resolve()
+    ppro = validate_blackbox_observation(read_json(ppro_path))
+    identity = benchmark_rtl_identity(benchmark_run_path, source_root)
+    if (
+        ppro["workload"]["rtl_sha256"] != identity["rtl_sha256"]
+        or ppro["workload"]["top_module"] != identity["top_module"]
+    ):
+        raise ValidationError("PPro observation disagrees with benchmark RTL identity")
+
+    bundle_root = platform_bundle_root.resolve()
+    bundle_validation = validate_calibrated_platform_bundle(bundle_root)
+    if ppro["identity"]["configuration_id"] != bundle_validation["configuration_id"]:
+        raise ValidationError("PPro observation disagrees with calibrated platform")
+    manifest_path = bundle_root / "manifest.json"
+    manifest = read_json(manifest_path)
+    profile_record = manifest["profiles"].get(profile)
+    if not isinstance(profile_record, Mapping):
+        raise ValidationError("calibrated platform manifest lacks selected profile")
+    boarddb_path = bundle_root / profile / "boarddb.json"
+    boarddb = read_json(boarddb_path)
+    if profile_record.get("boarddb") != _sha256(boarddb):
+        raise ValidationError("selected calibrated BoardDB disagrees with manifest")
+    platform = Platform.from_dict(boarddb)
+
+    root = flow_root.resolve()
+    validate_multi_fpga_flow_bundle(root, require_physical=True)
+    flow_report_path = root / "multi-fpga-flow-report.json"
+    flow_report = read_json(flow_report_path)
+    artifacts = flow_report["artifacts"]
+    for label in ("schedule", "physical_flow_report", "qor_report"):
+        if label not in artifacts:
+            raise ValidationError(f"sealed flow lacks {label} evidence")
+    normalized_platform = read_json(root / artifacts["platform"]["path"])
+    if Platform.from_dict(normalized_platform).to_dict() != platform.to_dict():
+        raise ValidationError("flow BoardDB is not the selected calibrated profile")
+
+    synthesis = flow_report["stages"]["frontend"].get("synthesis")
+    raw_sources = synthesis.get("sources") if isinstance(synthesis, Mapping) else None
+    if not isinstance(raw_sources, list) or any(
+        not isinstance(path, str) for path in raw_sources
+    ):
+        raise ValidationError("flow frontend source identity is missing")
+    flow_sources = sorted(Path(path).resolve() for path in raw_sources)
+    if flow_sources != sorted(identity["sources"]):
+        raise ValidationError("flow frontend sources disagree with benchmark contract")
+
+    phase3 = read_json(root / "partition/phase3_report.json")
+    schedule = read_json(root / artifacts["schedule"]["path"])
+    physical = read_json(root / artifacts["physical_flow_report"]["path"])
+    qor = read_json(root / artifacts["qor_report"]["path"])
+    execution = physical.get("execution")
+    if not isinstance(execution, Mapping) or execution.get("seed") != 1:
+        raise ValidationError("holdout flow requires recorded physical seed 1")
+
+    timing = qor.get("timing")
+    if not isinstance(timing, Mapping):
+        raise ValidationError("holdout flow lacks global timing")
+    opensta = timing.get("global_opensta")
+    if (
+        timing.get("timing_scope") != "whole-original-design"
+        or not isinstance(opensta, Mapping)
+        or opensta.get("authority") != "opensta"
+        or opensta.get("execution") != "standalone"
+    ):
+        raise ValidationError("holdout flow lacks standalone authoritative whole-design OpenSTA")
+    summary = timing.get("summary")
+    target = timing.get("target_clock")
+    paths = timing.get("paths")
+    if not isinstance(summary, Mapping) or not isinstance(target, Mapping) or not isinstance(paths, list):
+        raise ValidationError("holdout flow timing population is incomplete")
+    cross_delays = [
+        _nonnegative(path.get("system_delay_bound_ns"), "cross-FPGA path delay")
+        for path in paths
+        if isinstance(path, Mapping) and path.get("path_scope") == "cross-fpga"
+    ]
+    if not cross_delays:
+        raise ValidationError("holdout flow has no cross-FPGA timing paths")
+
+    runtime = flow_report.get("runtime")
+    if not isinstance(runtime, Mapping):
+        raise ValidationError("holdout flow runtime report is missing")
+    equivalence = runtime.get("functional_equivalence")
+    schedule_legality = runtime.get("schedule_legality")
+    physical_records = physical.get("fpgas")
+    if not isinstance(physical_records, list) or not physical_records:
+        raise ValidationError("holdout flow physical FPGA evidence is missing")
+    closures = [
+        record.get("physical_result", {}).get("closure", {})
+        for record in physical_records
+        if isinstance(record, Mapping)
+    ]
+    if len(closures) != len(physical_records):
+        raise ValidationError("holdout flow physical closure evidence is incomplete")
+
+    result = {
+        "schema": HOLDOUT_RESULT_SCHEMA,
+        "id": result_id,
+        "workload_id": workload_id,
+        "benchmark_class": benchmark_class,
+        "tier": _BENCHMARK_CLASS_TIERS[benchmark_class],
+        "algorithm_id": algorithm_id,
+        "evidence": {
+            "producer": "independent-flow-bundle-assembler-v1",
+            "benchmark_run_sha256": identity["benchmark_run_sha256"],
+            "platform_manifest_sha256": _sha256_file(manifest_path),
+            "platform_boarddb_sha256": profile_record["boarddb"],
+            "flow_report_sha256": _sha256_file(flow_report_path),
+            "schedule_sha256": artifacts["schedule"]["sha256"],
+            "physical_flow_report_sha256": artifacts["physical_flow_report"]["sha256"],
+            "qor_report_sha256": artifacts["qor_report"]["sha256"],
+        },
+        "ppro": ppro,
+        "emuflow": {
+            "status": "pass",
+            "configuration_id": bundle_validation["configuration_id"],
+            "rtl_sha256": identity["rtl_sha256"],
+            "physical_seed": execution["seed"],
+            "resource_utilization": _resource_utilization(
+                phase3["validation"]["resources_by_fpga"], platform
+            ),
+            "maximum_tdm_ratio": _maximum_tdm_ratio(schedule),
+            "worst_cross_fpga_delay_ns": max(cross_delays),
+            "busiest_pairs": _busiest_pairs(schedule),
+            "global_wns_ns": target["worst_slack_bound_ns"],
+            "global_tns_ns": target["total_negative_slack_bound_ns"],
+            "global_timing_engine": "opensta",
+            "phase1_7_complete": flow_report.get("status") == "pass",
+            "macro_cycle_equivalence": (
+                isinstance(equivalence, Mapping) and equivalence.get("status") == "pass"
+            ),
+            "schedule_legality": (
+                isinstance(schedule_legality, Mapping)
+                and schedule_legality.get("status") == "pass"
+                and schedule_legality.get("collisions") == 0
+            ),
+            "zero_unrouted_nets": all(
+                closure.get("unrouted_nets") == 0 for closure in closures
+            ),
+            "zero_drc_violations": all(
+                closure.get("drc_violations") == 0 for closure in closures
+            ),
+            "original_path_coverage": summary["original_path_coverage"],
+        },
+    }
+    return validate_holdout_result(result)
 
 
 def _ppro_resource_utilization(observation: Mapping[str, Any]) -> Dict[str, float]:

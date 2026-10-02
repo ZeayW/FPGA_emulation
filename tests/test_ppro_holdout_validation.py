@@ -6,10 +6,16 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.errors import ValidationError
+from emuflow.platform import Platform
+from emuflow.ppro_blackbox_application import benchmark_rtl_identity
 from emuflow.ppro_calibration_cli import main
-from emuflow.ppro_holdout_validation import evaluate_holdout_promotion
+from emuflow.ppro_holdout_validation import (
+    assemble_holdout_result,
+    evaluate_holdout_promotion,
+)
 
 
 def ppro_observation(identifier: str, delay: float):
@@ -68,12 +74,22 @@ def result(identifier: str, workload: str, tier: str, algorithm: str, delay: flo
         "very_large_final": "nvdla",
     }[tier]
     return {
-        "schema": "emuflow.ppro-holdout-result/v2",
+        "schema": "emuflow.ppro-holdout-result/v3",
         "id": identifier,
         "workload_id": workload,
         "benchmark_class": benchmark_class,
         "tier": tier,
         "algorithm_id": algorithm,
+        "evidence": {
+            "producer": "independent-flow-bundle-assembler-v1",
+            "benchmark_run_sha256": "6" * 64,
+            "platform_manifest_sha256": "7" * 64,
+            "platform_boarddb_sha256": "8" * 64,
+            "flow_report_sha256": "9" * 64,
+            "schedule_sha256": "a" * 64,
+            "physical_flow_report_sha256": "b" * 64,
+            "qor_report_sha256": "c" * 64,
+        },
         "ppro": ppro_observation(identifier, delay),
         "emuflow": {
             "status": "pass",
@@ -179,7 +195,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
         if jsonschema is not None:
             root = Path(__file__).resolve().parents[1]
             schema = json.loads(
-                (root / "schemas/ppro-holdout-result-v2.schema.json").read_text(
+                (root / "schemas/ppro-holdout-result-v3.schema.json").read_text(
                     encoding="utf-8"
                 )
             )
@@ -206,6 +222,167 @@ class PProHoldoutValidationTest(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue(json.loads(report_path.read_text())["promoted"])
             self.assertTrue(json.loads(output.getvalue())["promoted"])
+
+    def test_assembler_derives_claims_from_sealed_artifacts(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "sources"
+            source_root.mkdir()
+            rtl = source_root / "design.v"
+            rtl.write_text("module top(input clk); endmodule\n", encoding="utf-8")
+            benchmark = root / "benchmark.json"
+            benchmark.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.benchmark-run/v1",
+                        "id": "blind-aes",
+                        "design_id": "blind-aes",
+                        "top": "top",
+                        "sources": ["design.v"],
+                        "clocks": ["clk"],
+                        "platform": "unused.json",
+                        "synthesis": {"family": "xcup", "policy": "logic-only"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            identity = benchmark_rtl_identity(benchmark, source_root)
+            observation = ppro_observation("blind-aes", 10.0)
+            observation["workload"]["rtl_sha256"] = identity["rtl_sha256"]
+            observation["workload"]["top_module"] = "top"
+            observation_path = root / "observation.json"
+            observation_path.write_text(json.dumps(observation), encoding="utf-8")
+
+            boarddb = {
+                "schema": "emuflow.boarddb/v1",
+                "platform": {"name": "calibrated", "kind": "virtual", "description": "test"},
+                "fpgas": [
+                    {"id": fpga, "part": "academic", "utilization_limit": 0.75,
+                     "capacity": {"lut": 100, "ff": 200}}
+                    for fpga in ("F0", "F1")
+                ],
+                "links": [
+                    {"id": "l0", "endpoints": ["F0", "F1"], "direction": "full_duplex",
+                     "mode": "abstract", "data_lanes_per_direction": 8,
+                     "fabric_clock_mhz": 100.0, "latency_cycles": 1,
+                     "capacity_sharing": "per_direction"}
+                ],
+            }
+            normalized_boarddb = Platform.from_dict(boarddb).to_dict()
+            bundle = root / "platform"
+            (bundle / "nominal").mkdir(parents=True)
+            (bundle / "nominal" / "boarddb.json").write_text(
+                json.dumps(boarddb), encoding="utf-8"
+            )
+            boarddb_digest = __import__("hashlib").sha256(
+                json.dumps(boarddb, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            manifest = {
+                "configuration_id": "lx2-m2",
+                "profiles": {"nominal": {"boarddb": boarddb_digest}},
+            }
+            (bundle / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            flow = root / "flow"
+            for directory in ("frontend/phase1", "partition", "tdm", "physical", "runtime"):
+                (flow / directory).mkdir(parents=True, exist_ok=True)
+            platform_path = flow / "frontend/phase1/platform.normalized.json"
+            platform_path.write_text(json.dumps(normalized_boarddb), encoding="utf-8")
+            phase3 = {"validation": {"resources_by_fpga": {
+                "F0": {"lut": 50, "ff": 20}, "F1": {"lut": 40, "ff": 30}
+            }}}
+            (flow / "partition/phase3_report.json").write_text(json.dumps(phase3), encoding="utf-8")
+            schedule = {"entries": [
+                {"from": "F0", "to": "F1", "tdm_ratio": 2},
+                {"from": "F0", "to": "F1", "tdm_ratio": 1},
+            ]}
+            physical = {
+                "execution": {"seed": 1},
+                "fpgas": [
+                    {"physical_result": {"closure": {"unrouted_nets": 0, "drc_violations": 0}}},
+                    {"physical_result": {"closure": {"unrouted_nets": 0, "drc_violations": 0}}},
+                ],
+            }
+            qor = {"timing": {
+                "timing_scope": "whole-original-design",
+                "global_opensta": {"authority": "opensta", "execution": "standalone"},
+                "summary": {"original_path_coverage": 1.0},
+                "target_clock": {"worst_slack_bound_ns": -1.0, "total_negative_slack_bound_ns": -2.0},
+                "paths": [{"path_scope": "cross-fpga", "system_delay_bound_ns": 10.5}],
+            }}
+            paths = {
+                "schedule": flow / "tdm/schedule.json",
+                "physical_flow_report": flow / "physical/multi-fpga-physical-flow-report.json",
+                "qor_report": flow / "runtime/qor_report.json",
+            }
+            paths["schedule"].write_text(json.dumps(schedule), encoding="utf-8")
+            paths["physical_flow_report"].write_text(json.dumps(physical), encoding="utf-8")
+            paths["qor_report"].write_text(json.dumps(qor), encoding="utf-8")
+            sha = lambda path: __import__("hashlib").sha256(path.read_bytes()).hexdigest()
+            flow_report = {
+                "status": "pass",
+                "stages": {"frontend": {"synthesis": {"sources": [str(rtl.resolve())]} }},
+                "runtime": {
+                    "functional_equivalence": {"status": "pass"},
+                    "schedule_legality": {"status": "pass", "collisions": 0},
+                },
+                "artifacts": {
+                    "platform": {"path": "frontend/phase1/platform.normalized.json", "sha256": sha(platform_path)},
+                    **{
+                        name: {"path": path.relative_to(flow).as_posix(), "sha256": sha(path)}
+                        for name, path in paths.items()
+                    },
+                },
+            }
+            (flow / "multi-fpga-flow-report.json").write_text(json.dumps(flow_report), encoding="utf-8")
+
+            with patch(
+                "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                return_value={"status": "pass", "configuration_id": "lx2-m2"},
+            ), patch(
+                "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                return_value={"status": "pass"},
+            ) as flow_validator:
+                value = assemble_holdout_result(
+                    result_id="blind-aes-a",
+                    workload_id="blind-aes",
+                    benchmark_class="secworks_aes",
+                    algorithm_id="default",
+                    ppro_observation_path=observation_path,
+                    flow_root=flow,
+                    benchmark_run_path=benchmark,
+                    source_root=source_root,
+                    platform_bundle_root=bundle,
+                    profile="nominal",
+                )
+            flow_validator.assert_called_once_with(flow.resolve(), require_physical=True)
+            self.assertEqual(value["emuflow"]["resource_utilization"]["lut"], 0.5)
+            self.assertEqual(value["emuflow"]["maximum_tdm_ratio"], 2)
+            self.assertEqual(value["emuflow"]["worst_cross_fpga_delay_ns"], 10.5)
+            self.assertEqual(value["emuflow"]["busiest_pairs"], ["F0->F1"])
+            self.assertEqual(value["evidence"]["schedule_sha256"], sha(paths["schedule"]))
+
+            physical["execution"]["seed"] = 2
+            paths["physical_flow_report"].write_text(json.dumps(physical), encoding="utf-8")
+            flow_report["artifacts"]["physical_flow_report"]["sha256"] = sha(
+                paths["physical_flow_report"]
+            )
+            (flow / "multi-fpga-flow-report.json").write_text(json.dumps(flow_report), encoding="utf-8")
+            with patch(
+                "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                return_value={"status": "pass", "configuration_id": "lx2-m2"},
+            ), patch(
+                "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                return_value={"status": "pass"},
+            ):
+                with self.assertRaisesRegex(ValidationError, "physical seed 1"):
+                    assemble_holdout_result(
+                        result_id="blind-aes-a", workload_id="blind-aes",
+                        benchmark_class="secworks_aes", algorithm_id="default",
+                        ppro_observation_path=observation_path, flow_root=flow,
+                        benchmark_run_path=benchmark, source_root=source_root,
+                        platform_bundle_root=bundle, profile="nominal",
+                    )
 
 
 if __name__ == "__main__":

@@ -595,13 +595,18 @@ acceptance.
 
 ### Stage 6: blind large-design validation
 
-Status: **promotion contract and evaluator implemented; real blind runs
-pending**. A scratch-only application bundle generator now binds an existing
+Status: **independent result assembler, promotion contract, and evaluator
+implemented; real blind runs pending**. A scratch-only application bundle generator now binds an existing
 checked benchmark contract and natural RTL source tree to a free-partition
 PPro `application_holdout`; source paths and the EmuFlow platform choice never
 enter the compact observation. Each case joins one passing PPro observation
-to a complete EmuFlow Phase 1--7 summary produced with physical seed 1 and
-authoritative OpenSTA global timing. The v2 joined-result contract requires an
+to a complete EmuFlow Phase 1--7 result produced with physical seed 1 and
+authoritative OpenSTA global timing. The v3 result cannot be assembled from
+caller-supplied completion booleans: it independently validates and replays the
+sealed flow bundle, binds the exact calibrated BoardDB, re-derives the natural
+RTL identity, and extracts every metric and gate from canonical Phase 3, 5,
+physical, and QoR artifacts. It seals those input digests in the result. The
+joined-result contract requires an
 exact RTL SHA-256 match across the two flows and labels the workload as
 secworks AES, open CPU, Koios compute, Koios DLA, or NVDLA; all five classes
 are mandatory. Duplicate result identities and duplicate workload/algorithm

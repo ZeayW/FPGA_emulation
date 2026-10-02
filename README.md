@@ -540,13 +540,31 @@ emuflow-ppro-calibration generate-application-holdout \
   --source-root third_party/rtl/secworks_aes
 ```
 
-The joined blind-result contract is `emuflow.ppro-holdout-result/v2`. It
-requires the EmuFlow summary to carry the same RTL SHA-256 as the PPro
-observation and assigns every result to one explicit benchmark class:
-secworks AES, an open CPU, Koios compute, Koios DLA, or NVDLA. The promotion
-gate requires all five classes, rejects duplicate result identities and
-duplicate workload/algorithm entries, and still requires complete Phase 1--7
-OpenSTA WNS/TNS evidence with physical seed 1.
+The joined blind-result contract is `emuflow.ppro-holdout-result/v3`. Results
+are not written from a hand-entered summary.  The official assembler first
+replays the sealed Phase 1--7 bundle validator, re-hashes the benchmark RTL,
+checks the exact calibrated BoardDB profile, then derives utilization, TDM,
+pair load, physical closure, equivalence, legality, and authoritative OpenSTA
+WNS/TNS directly from canonical artifacts:
+
+```sh
+emuflow-ppro-calibration assemble-holdout-result \
+  --id aes-default --workload-id aes \
+  --benchmark-class secworks_aes --algorithm-id default \
+  --ppro-observation <ppro-observation.json> \
+  --flow-root <complete-phase1-7-root> \
+  --benchmark-run benchmarks/runs/secworks_aes_l3.json \
+  --source-root third_party/rtl/secworks_aes \
+  --platform-bundle <calibrated-platform-bundle> \
+  --profile nominal --out <aes-default.json>
+```
+
+The result seals every source artifact digest and requires standalone,
+whole-design OpenSTA plus physical seed 1.  The promotion gate requires all
+five benchmark classes (secworks AES, an open CPU, Koios compute, Koios DLA,
+and NVDLA), rejects duplicate result identities and duplicate
+workload/algorithm entries, and never accepts a Phase 3--6-only claim as a
+complete validation.
 
 ## Flow roadmap
 

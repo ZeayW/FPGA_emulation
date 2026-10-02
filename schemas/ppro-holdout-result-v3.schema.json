@@ -1,17 +1,32 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://emuflow.dev/schema/ppro-holdout-result-v2.schema.json",
-  "title": "EmuFlow blind PPro/Phase-1--7 holdout result v2",
+  "$id": "https://emuflow.dev/schema/ppro-holdout-result-v3.schema.json",
+  "title": "EmuFlow independently assembled PPro/Phase-1--7 holdout result v3",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "id", "workload_id", "benchmark_class", "tier", "algorithm_id", "ppro", "emuflow"],
+  "required": ["schema", "id", "workload_id", "benchmark_class", "tier", "algorithm_id", "evidence", "ppro", "emuflow"],
   "properties": {
-    "schema": {"const": "emuflow.ppro-holdout-result/v2"},
+    "schema": {"const": "emuflow.ppro-holdout-result/v3"},
     "id": {"type": "string", "minLength": 1},
     "workload_id": {"type": "string", "minLength": 1},
     "benchmark_class": {"enum": ["secworks_aes", "open_cpu", "koios_compute", "koios_dla", "nvdla"]},
     "tier": {"enum": ["medium", "diversity", "large", "large_primary", "very_large_final"]},
     "algorithm_id": {"type": "string", "minLength": 1},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer", "benchmark_run_sha256", "platform_manifest_sha256", "platform_boarddb_sha256", "flow_report_sha256", "schedule_sha256", "physical_flow_report_sha256", "qor_report_sha256"],
+      "properties": {
+        "producer": {"const": "independent-flow-bundle-assembler-v1"},
+        "benchmark_run_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "platform_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "platform_boarddb_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "flow_report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "schedule_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "physical_flow_report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "qor_report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
     "ppro": {"type": "object"},
     "emuflow": {
       "type": "object",

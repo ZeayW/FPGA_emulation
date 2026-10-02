@@ -46,6 +46,42 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def benchmark_rtl_identity(
+    benchmark_run_path: Path, source_root: Path
+) -> Dict[str, Any]:
+    """Return the canonical RTL identity shared by PPro and EmuFlow.
+
+    The identity is deliberately derived from the checked benchmark contract,
+    relative source names, source bytes, and top module.  A blind-result
+    assembler can therefore prove that both tools consumed the same natural
+    RTL without trusting a caller-supplied digest.
+    """
+
+    benchmark_path = benchmark_run_path.resolve()
+    root = source_root.resolve()
+    benchmark = BenchmarkRun.load(benchmark_path)
+    sources = benchmark.resolve_sources(root)
+    relative_records = [
+        {
+            "path": path.relative_to(root).as_posix(),
+            "sha256": _sha256_file(path),
+            "size": path.stat().st_size,
+        }
+        for path in sources
+    ]
+    return {
+        "benchmark_id": benchmark.value["id"],
+        "benchmark_run": benchmark_path,
+        "benchmark_run_sha256": _sha256_file(benchmark_path),
+        "source_root": root,
+        "sources": sources,
+        "source_records": relative_records,
+        "rtl_sha256": hashlib.sha256(_canonical(relative_records)).hexdigest(),
+        "top_module": benchmark.value["top"],
+        "clocks": benchmark.value["clocks"],
+    }
+
+
 def generate_application_holdout_bundle(
     output_dir: Path,
     *,
@@ -62,17 +98,11 @@ def generate_application_holdout_bundle(
 
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValidationError("application holdout seed must be a nonnegative integer")
-    benchmark = BenchmarkRun.load(benchmark_run_path.resolve())
-    sources = benchmark.resolve_sources(source_root.resolve())
-    relative_records = [
-        {
-            "path": path.relative_to(source_root.resolve()).as_posix(),
-            "sha256": _sha256_file(path),
-            "size": path.stat().st_size,
-        }
-        for path in sources
-    ]
-    rtl_sha256 = hashlib.sha256(_canonical(relative_records)).hexdigest()
+    identity = benchmark_rtl_identity(benchmark_run_path, source_root)
+    benchmark = BenchmarkRun.load(identity["benchmark_run"])
+    sources = identity["sources"]
+    relative_records = identity["source_records"]
+    rtl_sha256 = identity["rtl_sha256"]
     parameters = {
         "benchmark_id": benchmark.value["id"],
         "clocks": benchmark.value["clocks"],

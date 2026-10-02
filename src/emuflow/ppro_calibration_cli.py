@@ -53,7 +53,10 @@ from .ppro_calibrated_platform import (
     validate_calibrated_platform_bundle,
     write_calibrated_platform_profiles,
 )
-from .ppro_holdout_validation import evaluate_holdout_promotion
+from .ppro_holdout_validation import (
+    assemble_holdout_result,
+    evaluate_holdout_promotion,
+)
 
 
 def _read_many(paths: Sequence[Path]) -> list[Any]:
@@ -247,6 +250,26 @@ def _parser() -> argparse.ArgumentParser:
 
     validate_bundle = commands.add_parser("validate-platform")
     validate_bundle.add_argument("bundle", type=Path)
+    assemble = commands.add_parser("assemble-holdout-result")
+    assemble.add_argument("--id", required=True)
+    assemble.add_argument("--workload-id", required=True)
+    assemble.add_argument(
+        "--benchmark-class",
+        choices=["secworks_aes", "open_cpu", "koios_compute", "koios_dla", "nvdla"],
+        required=True,
+    )
+    assemble.add_argument("--algorithm-id", required=True)
+    assemble.add_argument("--ppro-observation", type=Path, required=True)
+    assemble.add_argument("--flow-root", type=Path, required=True)
+    assemble.add_argument("--benchmark-run", type=Path, required=True)
+    assemble.add_argument("--source-root", type=Path, required=True)
+    assemble.add_argument("--platform-bundle", type=Path, required=True)
+    assemble.add_argument(
+        "--profile",
+        choices=["aggressive", "nominal", "conservative"],
+        required=True,
+    )
+    assemble.add_argument("--out", type=Path, required=True)
     holdouts = commands.add_parser("evaluate-holdouts")
     holdouts.add_argument("--results", nargs="+", type=Path, required=True)
     holdouts.add_argument("--out", type=Path, required=True)
@@ -492,6 +515,25 @@ def _dispatch(args: argparse.Namespace) -> Any:
         return validate_calibrated_platform_bundle(args.out)
     if args.command == "validate-platform":
         return validate_calibrated_platform_bundle(args.bundle.resolve())
+    if args.command == "assemble-holdout-result":
+        result = assemble_holdout_result(
+            result_id=args.id,
+            workload_id=args.workload_id,
+            benchmark_class=args.benchmark_class,
+            algorithm_id=args.algorithm_id,
+            ppro_observation_path=args.ppro_observation,
+            flow_root=args.flow_root,
+            benchmark_run_path=args.benchmark_run,
+            source_root=args.source_root,
+            platform_bundle_root=args.platform_bundle,
+            profile=args.profile,
+        )
+        _write_result(args.out, result)
+        return {
+            "status": "pass",
+            "output": args.out.name,
+            "schema": result["schema"],
+        }
     if args.command == "evaluate-holdouts":
         result = evaluate_holdout_promotion(_read_many(args.results))
         _write_result(args.out, result)
