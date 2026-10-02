@@ -228,7 +228,10 @@ emuflow-ppro-calibration runner-revision
 
 Campaign-generation commands fail closed unless `--runner-revision` exactly
 matches this checkout's current source bundle. An old revision or a manually
-invented 64-hex value therefore cannot seal a new experiment.
+invented 64-hex value therefore cannot seal a new experiment. The runtime
+renderer and provider execution entry point repeat the same check before
+creating a disposable project or launching PPro, so a sealed campaign cannot
+be executed by a later, mismatched checkout.
 
 The path-redacted manifest covers queue/execution, disposable runtime
 rendering, constraint translation, ordinary-report parsing, observation

@@ -26,6 +26,7 @@ from .ppro_blackbox_ppro_adapter import (
     PPRO_2026_REPORT_PROFILE,
     parse_ppro_2026_ordinary_reports,
 )
+from .ppro_blackbox_provenance import require_current_runner_revision
 
 
 RUN_SPEC_SCHEMA = "emuflow.ppro-blackbox-run-spec/v1"
@@ -612,6 +613,7 @@ def execute_blackbox_case(
     raw_spec: Mapping[str, Any], binding: RuntimeBinding
 ) -> Dict[str, Any]:
     spec = validate_run_spec(raw_spec)
+    require_current_runner_revision(spec["tool"]["runner_revision"])
     validate_runtime_binding(binding, profile=spec["adapter"]["profile"])
     binding.case_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = binding.case_dir / ".runner-stdout.log"

@@ -60,6 +60,19 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
         )
         return spec, inputs / "files.f", config
 
+    def test_renderer_rejects_stale_runner_revision_before_materialization(self):
+        with tempfile.TemporaryDirectory() as raw:
+            spec, filelist, config = self._fixture(Path(raw))
+            spec["tool"]["runner_revision"] = "0" * 64
+            with self.assertRaisesRegex(
+                ValidationError,
+                "runner revision does not match the active runtime source bundle",
+            ):
+                render_ppro_runtime_binding(
+                    spec, source_filelist=filelist, config=config
+                )
+            self.assertFalse(config.case_dir.exists())
+
     def test_renderer_keeps_private_inputs_runtime_only(self):
         with tempfile.TemporaryDirectory() as raw:
             spec, filelist, config = self._fixture(Path(raw))

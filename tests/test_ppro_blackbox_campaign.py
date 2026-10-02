@@ -13,7 +13,11 @@ from emuflow.ppro_blackbox_campaign import (
 )
 from emuflow.ppro_blackbox_smoke import generate_connected_smoke_bundle
 from emuflow.ppro_blackbox_application import generate_application_holdout_bundle
+from emuflow.ppro_blackbox_provenance import runner_source_bundle
 from test_ppro_blackbox_ppro_adapter import PARTITION_REPORT, ROUTE_REPORT, TIMING_REPORT
+
+
+RUNNER_REVISION = runner_source_bundle()["runner_revision"]
 
 
 class PProBlackboxCampaignTest(unittest.TestCase):
@@ -51,7 +55,7 @@ class PProBlackboxCampaignTest(unittest.TestCase):
             "public_prior_id": "lx2-public-prior-v1",
             "configuration_id": "lx2-m1",
             "tool_release": "2026.1",
-            "runner_revision": "c" * 64,
+            "runner_revision": RUNNER_REVISION,
             "adapter_profile": "ppro-2026-ordinary-reports-v1",
         }
         generate_connected_smoke_bundle(
@@ -192,7 +196,7 @@ class PProBlackboxCampaignTest(unittest.TestCase):
                 public_prior_id="lx2-public-prior-v1",
                 configuration_id="lx2-m1",
                 tool_release="2026.1",
-                runner_revision="c" * 64,
+                runner_revision=RUNNER_REVISION,
             )
             results = execute_generated_campaign(
                 [bundle.root], runtime=self._runtime(root), max_workers=1

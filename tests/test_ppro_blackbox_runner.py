@@ -16,10 +16,12 @@ from emuflow.ppro_blackbox_runner import (
     validate_run_spec,
     validate_runtime_binding,
 )
+from emuflow.ppro_blackbox_provenance import runner_source_bundle
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MOCK_PROVIDER = ROOT / "tests/fixtures/ppro_blackbox/mock_ordinary_provider.py"
+RUNNER_REVISION = runner_source_bundle()["runner_revision"]
 
 
 def run_spec(identifier: str = "mock-run-1"):
@@ -36,7 +38,7 @@ def run_spec(identifier: str = "mock-run-1"):
         "tool": {
             "name": "PPro mock",
             "release": "mock-1",
-            "runner_revision": "5555555555555555555555555555555555555555555555555555555555555555",
+            "runner_revision": RUNNER_REVISION,
         },
         "workload": {
             "generator_id": "ppro-blackbox-latency",
@@ -102,6 +104,18 @@ def capacity_spec(identifier: str = "capacity-run"):
 
 
 class PProBlackboxRunnerTest(unittest.TestCase):
+    def test_execution_rejects_stale_runner_revision_before_launch(self):
+        with tempfile.TemporaryDirectory() as raw:
+            spec = run_spec("stale-runtime")
+            spec["tool"]["runner_revision"] = "0" * 64
+            case = Path(raw) / "case"
+            with self.assertRaisesRegex(
+                ValidationError,
+                "runner revision does not match the active runtime source bundle",
+            ):
+                execute_blackbox_case(spec, binding(case))
+            self.assertFalse(case.exists())
+
     def test_run_spec_matches_versioned_json_schema(self):
         try:
             import jsonschema

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict
 
@@ -61,3 +62,19 @@ def runner_source_bundle(package_root: Path | None = None) -> Dict[str, Any]:
         **identity,
         "runner_revision": hashlib.sha256(_canonical(identity)).hexdigest(),
     }
+
+
+@lru_cache(maxsize=1)
+def current_runner_revision() -> str:
+    """Return the source revision loaded by this runner process."""
+
+    return runner_source_bundle()["runner_revision"]
+
+
+def require_current_runner_revision(revision: str) -> None:
+    """Reject a run spec produced for a different runtime source bundle."""
+
+    if revision != current_runner_revision():
+        raise ValidationError(
+            "run spec runner revision does not match the active runtime source bundle"
+        )

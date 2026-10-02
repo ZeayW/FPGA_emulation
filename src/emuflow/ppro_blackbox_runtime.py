@@ -22,6 +22,7 @@ from .ppro_blackbox_constraints import (
     render_ppro_prepartition_constraints,
     validate_logical_targets,
 )
+from .ppro_blackbox_provenance import require_current_runner_revision
 from .ppro_blackbox_runner import RuntimeBinding, validate_run_spec
 from .synthesis import YOSYS_DEFINE
 
@@ -314,6 +315,7 @@ def render_ppro_runtime_binding(
     """Render a disposable PPro project and return its runtime binding."""
 
     spec = validate_run_spec(raw_spec)
+    require_current_runner_revision(spec["tool"]["runner_revision"])
     if spec["adapter"]["profile"] != PPRO_2026_REPORT_PROFILE:
         raise ValidationError("PPro runtime renderer requires the real ordinary-report profile")
     experiment_kind = spec["experiment"]["kind"]

@@ -372,6 +372,9 @@ Every campaign-generation CLI entry point recomputes that revision from the
 active checkout and rejects a stale or manually supplied mismatch before any
 case is written. The exact value printed by `runner-revision` must therefore be
 used from the same pushed checkout that will render and run the campaign.
+Rendering and execution independently require the same active revision before
+creating a runtime project or launching the provider; moving a sealed bundle
+to a different checkout fails closed rather than silently changing its runner.
 
 The default pre-partition headroom is uniform across LUT, FF, BRAM, URAM, and
 DSP at 75%; one explicit runtime option changes all five together so a capacity
