@@ -72,3 +72,132 @@ def maximum_payload_hops(
     )
     reached = [distance for node, distance in distances.items() if node != source]
     return max(reached) if reached else None
+
+
+def _capacity_edges(
+    routes: Sequence[Mapping[str, object]],
+) -> tuple[set[str], list[tuple[str, str, int, int]]]:
+    nodes: set[str] = set()
+    edges: list[tuple[str, str, int, int]] = []
+    for route in routes:
+        capacity = route.get("signal_count")
+        hops = route.get("effective_hops")
+        source = route.get("source")
+        sinks = route.get("sinks")
+        if (
+            isinstance(capacity, bool)
+            or not isinstance(capacity, int)
+            or capacity <= 0
+            or isinstance(hops, bool)
+            or not isinstance(hops, int)
+            or hops < 1
+            or not isinstance(source, str)
+            or not isinstance(sinks, list)
+        ):
+            continue
+        nodes.add(source)
+        for sink in sinks:
+            if isinstance(sink, str):
+                nodes.add(sink)
+                edges.append((source, sink, hops, capacity))
+    return nodes, edges
+
+
+def _layered_flow(
+    nodes: set[str],
+    edges: Sequence[tuple[str, str, int, int]],
+    *,
+    source: str,
+    sink: str,
+    hop_limit: int,
+    demand: int,
+) -> int:
+    """Bounded-hop integral max flow for the tiny observed FPGA graph."""
+
+    graph: dict[tuple[str, int] | tuple[str, str], dict[tuple[str, int] | tuple[str, str], int]] = defaultdict(dict)
+    start: tuple[str, int] | tuple[str, str] = (source, 0)
+    terminal: tuple[str, int] | tuple[str, str] = ("__sink__", sink)
+
+    def add_edge(left, right, capacity: int) -> None:
+        graph[left][right] = graph[left].get(right, 0) + capacity
+        graph[right].setdefault(left, 0)
+
+    for left, right, hops, capacity in edges:
+        for level in range(hop_limit - hops + 1):
+            add_edge((left, level), (right, level + hops), capacity)
+    for level in range(hop_limit + 1):
+        add_edge((sink, level), terminal, demand)
+
+    total = 0
+    while total < demand:
+        parent = {start: None}
+        queue = [start]
+        for node in queue:
+            for neighbor, capacity in graph[node].items():
+                if capacity > 0 and neighbor not in parent:
+                    parent[neighbor] = node
+                    queue.append(neighbor)
+                    if neighbor == terminal:
+                        break
+            if terminal in parent:
+                break
+        if terminal not in parent:
+            break
+        amount = demand - total
+        node = terminal
+        while parent[node] is not None:
+            amount = min(amount, graph[parent[node]][node])
+            node = parent[node]
+        node = terminal
+        while parent[node] is not None:
+            previous = parent[node]
+            graph[previous][node] -= amount
+            graph[node][previous] = graph[node].get(previous, 0) + amount
+            node = previous
+        total += amount
+    return total
+
+
+def maximum_capacity_payload_hops(
+    routes: Sequence[Mapping[str, object]],
+    *,
+    source: str,
+    sinks: Sequence[str],
+    minimum_signal_count: int,
+) -> int | None:
+    """Return the hop bound needed to carry a possibly striped payload.
+
+    Each multicast consumer is checked independently because a shared prefix
+    carries one copy of the payload.  The layered network prevents a narrow
+    direct control edge from masquerading as the payload merely because it
+    provides a shorter topological path.
+    """
+
+    if minimum_signal_count <= 0 or not sinks:
+        return None
+    nodes, edges = _capacity_edges(routes)
+    if source not in nodes or any(sink not in nodes for sink in sinks):
+        return None
+    maximum_edge_hops = max((edge[2] for edge in edges), default=0)
+    maximum_limit = max(1, len(nodes) - 1) * maximum_edge_hops
+    required_limits = []
+    for sink in sinks:
+        found = None
+        for limit in range(1, maximum_limit + 1):
+            if (
+                _layered_flow(
+                    nodes,
+                    edges,
+                    source=source,
+                    sink=sink,
+                    hop_limit=limit,
+                    demand=minimum_signal_count,
+                )
+                >= minimum_signal_count
+            ):
+                found = limit
+                break
+        if found is None:
+            return None
+        required_limits.append(found)
+    return max(required_limits)

@@ -9,7 +9,7 @@ from typing import Any, Dict, Mapping, Sequence
 
 from .errors import ValidationError
 from .ppro_blackbox_calibration import validate_blackbox_observation
-from .ppro_blackbox_route_evidence import maximum_payload_hops
+from .ppro_blackbox_route_evidence import maximum_capacity_payload_hops
 
 
 PAYLOAD_FIT_SCHEMA = "emuflow.ppro-payload-fit/v2"
@@ -283,15 +283,30 @@ def _latency_row(item: Mapping[str, Any], payload_bits: int) -> tuple[list[float
         raise ValidationError("latency observation lacks route evidence")
     serialized_bits = dims["probe_width_bits"] * dims["flow_count"]
     ratio = _integer(item["metrics"]["communication"], "maximum_tdm_ratio", "latency observation")
-    # Ordinary system-route reports describe the physical channels after TDM
-    # compaction, not one route record per logical transported bit.  Requiring
-    # the full logical width therefore discards the very observations used to
-    # identify TDM latency.  A ratio-r channel must expose at least ceil(W/r)
-    # payload signals; narrower clock/control side traffic remains excluded.
-    routed_payload_signals = math.ceil(serialized_bits / max(1, ratio))
-    hops = maximum_payload_hops(
+    # A route row counts logical transported paths.  A wide payload may be
+    # striped over several route rows, so no individual row must carry the
+    # entire payload, but their capacity must cover the full logical width.
+    # TDM changes the schedule and delay; it does not reduce this path count.
+    routed_payload_signals = serialized_bits
+    assignment_by_partition = {
+        assignment["partition"]: assignment["fpga"]
+        for assignment in item["metrics"]["assignments"]
+        if isinstance(assignment.get("partition"), str)
+        and isinstance(assignment.get("fpga"), str)
+    }
+    sinks = [
+        assignment_by_partition[f"P{index}"]
+        for index in range(1, dims["fanout"] + 1)
+        if f"P{index}" in assignment_by_partition
+    ]
+    if len(sinks) != dims["fanout"]:
+        if dims["fanout"] != 1:
+            raise ValidationError("latency observation lacks consumer assignment evidence")
+        sinks = [f"F{dims['sink_fpga_index']}"]
+    hops = maximum_capacity_payload_hops(
         routes,
         source=f"F{dims['source_fpga_index']}",
+        sinks=sinks,
         minimum_signal_count=routed_payload_signals,
     )
     if hops is None:

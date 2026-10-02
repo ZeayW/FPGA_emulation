@@ -32,9 +32,9 @@ def communication_observation(
                 "source": nodes[index],
                 "sinks": [nodes[index + 1]],
                 "effective_hops": 1,
-                # PPro's ordinary route report counts physical signals after
-                # TDM compaction rather than repeating the logical width.
-                "signal_count": math.ceil(width * flows / max(1, ratio)),
+                # PPro's ordinary route report counts logical transported
+                # paths; TDM changes the schedule, not this route count.
+                "signal_count": width * flows,
             }
             for index in range(len(nodes) - 1)
         ]
@@ -96,7 +96,14 @@ def communication_observation(
             },
             "resource_demand": {"lut": 10} if outcome == "pass" else {},
             "fpga_utilization": [{"fpga": "F0", "resources": {"lut": 0.1}}] if outcome == "pass" else [],
-            "assignments": [{"partition": "P0", "fpga": "F0"}] if outcome == "pass" else [],
+            "assignments": (
+                [
+                    {"partition": f"P{index}", "fpga": "F0" if index == 0 else "F1"}
+                    for index in range(fanout + 1)
+                ]
+                if outcome == "pass"
+                else []
+            ),
             "routes": routes,
             "communication": {"maximum_tdm_ratio": ratio} if outcome == "pass" else {},
             "timing": {"sr0_worst_cross_fpga_delay_ns": delay} if outcome == "pass" else {},
