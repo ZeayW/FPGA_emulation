@@ -249,6 +249,9 @@ class PProHoldoutValidationTest(unittest.TestCase):
             identity = benchmark_rtl_identity(benchmark, source_root)
             observation = ppro_observation("blind-aes", 10.0)
             observation["workload"]["rtl_sha256"] = identity["rtl_sha256"]
+            observation["workload"]["parameters_sha256"] = identity[
+                "parameters_sha256"
+            ]
             observation["workload"]["top_module"] = "top"
             observation_path = root / "observation.json"
             observation_path.write_text(json.dumps(observation), encoding="utf-8")
@@ -288,6 +291,16 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 (flow / directory).mkdir(parents=True, exist_ok=True)
             platform_path = flow / "frontend/phase1/platform.normalized.json"
             platform_path.write_text(json.dumps(normalized_boarddb), encoding="utf-8")
+            emuir = {
+                "schema": "emuflow.emuir/v1",
+                "design": {"name": "top", "top": "top", "source_format": "yosys-json"},
+                "ports": [],
+                "instances": [],
+                "nets": [],
+                "clocks": [{"id": "clk"}],
+            }
+            emuir_path = flow / "frontend/phase1/design.emuir.json"
+            emuir_path.write_text(json.dumps(emuir), encoding="utf-8")
             phase3 = {"validation": {"resources_by_fpga": {
                 "F0": {"lut": 50, "ff": 20}, "F1": {"lut": 40, "ff": 30}
             }}}
@@ -328,6 +341,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 },
                 "artifacts": {
                     "platform": {"path": "frontend/phase1/platform.normalized.json", "sha256": sha(platform_path)},
+                    "emuir": {"path": "frontend/phase1/design.emuir.json", "sha256": sha(emuir_path)},
                     **{
                         name: {"path": path.relative_to(flow).as_posix(), "sha256": sha(path)}
                         for name, path in paths.items()

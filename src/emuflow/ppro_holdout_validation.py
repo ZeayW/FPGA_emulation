@@ -11,6 +11,7 @@ from typing import Any, Dict, Mapping, Sequence
 
 from .errors import ValidationError
 from .io import read_json
+from .ir import EmuIR
 from .multi_fpga_flow import validate_multi_fpga_flow_bundle
 from .platform import Platform
 from .ppro_blackbox_application import benchmark_rtl_identity
@@ -343,6 +344,8 @@ def assemble_holdout_result(
     identity = benchmark_rtl_identity(benchmark_run_path, source_root)
     if (
         ppro["workload"]["rtl_sha256"] != identity["rtl_sha256"]
+        or ppro["workload"]["parameters_sha256"]
+        != identity["parameters_sha256"]
         or ppro["workload"]["top_module"] != identity["top_module"]
     ):
         raise ValidationError("PPro observation disagrees with benchmark RTL identity")
@@ -383,6 +386,11 @@ def assemble_holdout_result(
     flow_sources = sorted(Path(path).resolve() for path in raw_sources)
     if flow_sources != sorted(identity["sources"]):
         raise ValidationError("flow frontend sources disagree with benchmark contract")
+    ir = EmuIR.load(root / artifacts["emuir"]["path"])
+    if ir.value["design"]["top"] != identity["top_module"] or sorted(
+        clock["id"] for clock in ir.value["clocks"]
+    ) != sorted(identity["clocks"]):
+        raise ValidationError("flow EmuIR top or clocks disagree with benchmark contract")
 
     phase3 = read_json(root / "partition/phase3_report.json")
     schedule = read_json(root / artifacts["schedule"]["path"])

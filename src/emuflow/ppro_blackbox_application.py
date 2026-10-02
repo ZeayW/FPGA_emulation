@@ -69,6 +69,12 @@ def benchmark_rtl_identity(
         }
         for path in sources
     ]
+    parameters = {
+        "benchmark_id": benchmark.value["id"],
+        "clocks": benchmark.value["clocks"],
+        "source_records": relative_records,
+        "top": benchmark.value["top"],
+    }
     return {
         "benchmark_id": benchmark.value["id"],
         "benchmark_run": benchmark_path,
@@ -77,6 +83,7 @@ def benchmark_rtl_identity(
         "sources": sources,
         "source_records": relative_records,
         "rtl_sha256": hashlib.sha256(_canonical(relative_records)).hexdigest(),
+        "parameters_sha256": hashlib.sha256(_canonical(parameters)).hexdigest(),
         "top_module": benchmark.value["top"],
         "clocks": benchmark.value["clocks"],
     }
@@ -103,12 +110,6 @@ def generate_application_holdout_bundle(
     sources = identity["sources"]
     relative_records = identity["source_records"]
     rtl_sha256 = identity["rtl_sha256"]
-    parameters = {
-        "benchmark_id": benchmark.value["id"],
-        "clocks": benchmark.value["clocks"],
-        "source_records": relative_records,
-        "top": benchmark.value["top"],
-    }
     constraints = {
         "control_mode": "none",
         "documented_actions": [],
@@ -146,7 +147,7 @@ def generate_application_holdout_bundle(
             "generator_id": _GENERATOR_ID,
             "generator_revision": _GENERATOR_REVISION,
             "rtl_sha256": rtl_sha256,
-            "parameters_sha256": hashlib.sha256(_canonical(parameters)).hexdigest(),
+            "parameters_sha256": identity["parameters_sha256"],
             "top_module": benchmark.value["top"],
             "design_metrics": {
                 "clock_count": len(benchmark.value["clocks"]),
