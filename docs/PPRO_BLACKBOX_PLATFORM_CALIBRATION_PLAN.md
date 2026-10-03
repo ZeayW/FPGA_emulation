@@ -317,15 +317,19 @@ raw vendor path or private configuration is serialized.
 
 ### Stage 2: black-box runner and normal-report adapter
 
-Status: **runner plus real ordinary-report adapter implemented; fresh C0 v2
-smoke passed; C0 v3 compile-context probe locally validated and awaiting an
-authorized real run**. At source commit
-`5b3c31294de797a9db727385674d6353f376f555`, an authorized ordinary run
-completed in 35.68 seconds and produced all four allowlisted report classes.
-The normalized observation recorded 68 cross-FPGA signals, four directed
-one-hop route aggregates, maximum TDM ratio 1, and worst normalized
-cross-FPGA delay 14.1 ns. These values qualify the runner/report boundary only;
-they are not fitted platform parameters. The current
+Status: **runner plus real ordinary-report adapter implemented; fresh C0 v2 and
+C0 v3 compile-context probes passed**. At source commit
+`5b3c31294de797a9db727385674d6353f376f555`, the v2 ordinary run completed in
+35.68 seconds. At source commit
+`f98b8227f2002d987973c0d410679810abfb3b9f`, runner revision
+`645f463c2f1eb02a28c9cf62a14b24f9c16f6c0c28e99bd99f1071cd819003d8`
+completed the v3 sealed include/define compile-context gate in 25.50 seconds.
+Both produced all four allowlisted report classes. The v3 normalized
+observation recorded 68 cross-FPGA signals, four directed one-hop route
+aggregates, maximum TDM ratio 1, and worst normalized cross-FPGA delay 14.1 ns.
+Only its 2.2 KiB compact observation was retained after the raw project, logs,
+runtime commands, and generated input bundle were removed. These values qualify
+the runner/report boundary only; they are not fitted platform parameters. The current
 runner keeps commands, installation/license state, concrete target names, and
 report paths in a non-serializable runtime binding. It executes isolated cases
 through an explicitly bounded queue, distinguishes license/tool/infrastructure,

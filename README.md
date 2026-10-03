@@ -208,14 +208,18 @@ required for multi-hop routes. Explicit `--keep-raw-project` diagnostics retain
 the four allowlisted reports after a parse failure; normal runs still delete
 them after producing the compact observation. Its
 parser format has been checked against an existing successful normal PPro
-result. Stage 2 passed a fresh authorized C0 v2 smoke through the runner
-at source commit `5b3c31294de797a9db727385674d6353f376f555`: PPro completed in
-35.68 seconds, all four ordinary report classes were present, the compact
-observation contained 68 cross-FPGA signals over four directed one-hop route
-records, maximum TDM ratio 1, and worst normalized cross-FPGA delay 14.1 ns.
-This is runner/report evidence, not a calibrated-platform QoR result. The C0
-v3 compile-context extension has passed local render/tamper/cleanup tests; its
-fresh authorized PPro run remains pending.
+result. Stage 2 passed both fresh authorized runner probes. The original C0 v2
+run at source commit `5b3c31294de797a9db727385674d6353f376f555`
+completed in 35.68 seconds. The C0 v3 compile-context gate then passed at source
+commit `f98b8227f2002d987973c0d410679810abfb3b9f` with runner revision
+`645f463c2f1eb02a28c9cf62a14b24f9c16f6c0c28e99bd99f1071cd819003d8`
+in 25.50 seconds. Its sealed header include and `NAME=VALUE` define compiled,
+all four ordinary report classes were present, and the compact observation
+contained 68 cross-FPGA signals over four directed one-hop route records,
+maximum TDM ratio 1, and worst normalized cross-FPGA delay 14.1 ns. Raw project,
+logs, generated command files, and input bundle were removed; only the 2.2 KiB
+validated observation remains outside the repository. This is runner/report
+evidence, not a calibrated-platform QoR result.
 A mock result is never accepted as real PPro evidence.
 
 `runner_revision` is the canonical SHA-256 of the complete black-box runtime
