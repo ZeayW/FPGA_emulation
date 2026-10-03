@@ -199,6 +199,26 @@ def _candidate_fallback_patches(schedule_side_effect):
 
 
 class Phase5Test(unittest.TestCase):
+    def test_zero_demand_schedule_has_no_timing_paths(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "zero_demand",
+                ["a", "b"],
+                [_link("ab", "a", "b")],
+            )
+        )
+        self.assertEqual(
+            reconstruct_tdm_schedule_timing_paths(
+                {
+                    "schema": "emuflow.system-routes/v1",
+                    "routes": [],
+                },
+                platform,
+                {"entries": []},
+            ),
+            [],
+        )
+
     def test_exact_capture_certificate_indexes_100k_segments_once(self) -> None:
         class CountingSegments(dict):
             def __init__(self, value):

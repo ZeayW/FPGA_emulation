@@ -1842,6 +1842,18 @@ def reconstruct_tdm_schedule_timing_paths(
     from .tdm_ratio import _normalized_slack, _prepare_model
 
     if model is None:
+        # A canonical packed single-FPGA run has neither inter-FPGA routes nor
+        # transport schedule entries, so there is no TDM timing model to
+        # reconstruct.  Do not force such a run through the timing-aware ratio
+        # model: that model intentionally requires routes.timing.paths and is
+        # defined only for actual inter-FPGA demands.
+        if (
+            routes.get("schema") == SYSTEM_ROUTES_SCHEMA
+            and routes.get("routes") == []
+            and routes.get("timing") is None
+            and schedule.get("entries") == []
+        ):
+            return []
         model = _prepare_model(routes, platform)
     if entries is None:
         entries = {}
