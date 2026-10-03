@@ -1741,8 +1741,29 @@ def run_multi_fpga_flow(
         ),
     )
     assignment_path = phase3_root / "assignment.json"
+    phase3_validation = phase3_report.get("validation")
+    inter_fpga_cut_count = (
+        phase3_validation.get("cut_nets")
+        if isinstance(phase3_validation, dict)
+        else None
+    )
+    if (
+        isinstance(inter_fpga_cut_count, bool)
+        or not isinstance(inter_fpga_cut_count, int)
+        or inter_fpga_cut_count < 0
+    ):
+        raise ValidationError(
+            "Phase 3 report has an invalid inter-FPGA cut-net count"
+        )
+    has_inter_fpga_cuts = inter_fpga_cut_count > 0
+    effective_cross_stage_iterations = (
+        cross_stage_iterations if has_inter_fpga_cuts else 0
+    )
+    effective_optimize_frame_slots = (
+        optimize_frame_slots if has_inter_fpga_cuts else False
+    )
     patron_initial_assignment_path = None
-    if partition_provider == "patron" and cross_stage_iterations:
+    if partition_provider == "patron" and effective_cross_stage_iterations:
         initial_artifact = phase3_report.get("artifacts", {}).get(
             "patron_initial_assignment"
         )
@@ -1753,7 +1774,7 @@ def run_multi_fpga_flow(
         patron_initial_assignment_path = phase3_root / initial_artifact
 
     projected_timing_paths = timing_paths
-    if internal_timing_database and not cross_stage_iterations:
+    if internal_timing_database and not effective_cross_stage_iterations:
         cut_segment_qualification_path = (
             timing_root / "cut-segment-qualification.json"
         )
@@ -1766,16 +1787,34 @@ def run_multi_fpga_flow(
         )
         write_json(cut_segment_qualification_path, cut_qualification)
         timing_report["cut_segment_qualification"] = cut_qualification
-        projected_timing_paths = timing_root / "cut-timing-paths.json"
-        # Phase 4/5 must optimize the same complete original TimingPathDB
-        # population that Phase 7C later reports.  The post-partition
-        # structural cut-segment qualification is intentionally separate from
-        # this original-path population.
-        projection_report = project_sta_path_database(
-            path_database_path,
-            assignment_path,
-            projected_timing_paths,
-        )
+        if has_inter_fpga_cuts:
+            projected_timing_paths = timing_root / "cut-timing-paths.json"
+            # Phase 4/5 must optimize the same complete original TimingPathDB
+            # population that Phase 7C later reports.  The post-partition
+            # structural cut-segment qualification is intentionally separate
+            # from this original-path population.
+            projection_report = project_sta_path_database(
+                path_database_path,
+                assignment_path,
+                projected_timing_paths,
+            )
+        else:
+            # A legal single-FPGA partition has no interconnect timing problem.
+            # Do not fabricate an empty STA path record: the Phase 4/5 timing
+            # schema intentionally represents only paths that cross at least
+            # one partition cut.  The original TimingPathDB remains the input
+            # to the physical backend and authoritative global OpenSTA signoff.
+            projected_timing_paths = None
+            projection_report = {
+                "status": "pass",
+                "design": phase3_report.get("design"),
+                "mode": "not-required-no-inter-fpga-cuts",
+                "projected_paths": 0,
+                "compressed_paths": 0,
+                "cut_nets": 0,
+                "covered_cut_nets": 0,
+                "uncovered_cut_nets": 0,
+            }
         timing_report["cut_path_projection"] = projection_report
 
     effective_route_provider = route_provider
@@ -1807,12 +1846,18 @@ def run_multi_fpga_flow(
             )
         effective_route_provider = NATIVE_TIMING_EVALUATED_PROVIDER
         effective_tdm_provider = TDM_BASELINE_PROVIDER
+    if not has_inter_fpga_cuts:
+        # Timing-aware interconnect optimization is vacuous for a packed
+        # single-FPGA solution.  Keep Phase 4/5 artifacts explicit and
+        # independently replayable with the ordinary zero-demand providers.
+        effective_route_provider = NATIVE_ROUTER_PROVIDER
+        effective_tdm_provider = TDM_BASELINE_PROVIDER
 
     phase4_root = output_dir / "system-route"
     phase5_root = output_dir / "tdm"
     frame_search_report = None
     cross_stage_report = None
-    if cross_stage_iterations:
+    if effective_cross_stage_iterations:
         cross_stage_root = output_dir / "cross-stage"
         cross_stage_report = run_cross_stage_optimization(
             ir_path=ir_path,
@@ -1840,7 +1885,7 @@ def run_multi_fpga_flow(
             static_exact_candidate_policy=(
                 static_exact_candidate_policy
             ),
-            max_outer_iterations=cross_stage_iterations,
+            max_outer_iterations=effective_cross_stage_iterations,
             seed=seed,
             min_used_fpgas=min_used_fpgas,
             balance_tolerance=balance_tolerance,
@@ -1923,7 +1968,7 @@ def run_multi_fpga_flow(
             frame_search_report = read_json(
                 output_dir / "frame-search/frame-search-report.json"
             )
-    elif optimize_frame_slots:
+    elif effective_optimize_frame_slots:
         if frame_slots is None:
             raise EmuFlowError(
                 "--optimize-frame-slots requires --frame-slots as its "
@@ -1967,7 +2012,9 @@ def run_multi_fpga_flow(
             timing_paths_path=projected_timing_paths,
             router=router,
             provider=effective_route_provider,
-            candidate_workers=route_candidate_workers,
+            candidate_workers=(
+                route_candidate_workers if has_inter_fpga_cuts else 1
+            ),
         )
         phase5_report = run_phase5(
             phase4_root / "routes.json",
@@ -1976,9 +2023,11 @@ def run_multi_fpga_flow(
             assignment_path=assignment_path,
             simulation_frames=simulation_frames,
             provider=effective_tdm_provider,
-            ratio_optimizer=ratio_optimizer,
-            timing_dag_optimizer=timing_dag_optimizer,
-            slot_optimizer=slot_optimizer,
+            ratio_optimizer=(ratio_optimizer if has_inter_fpga_cuts else None),
+            timing_dag_optimizer=(
+                timing_dag_optimizer if has_inter_fpga_cuts else None
+            ),
+            slot_optimizer=(slot_optimizer if has_inter_fpga_cuts else None),
             ratio_max_iterations=ratio_max_iterations,
             max_ratio=max_ratio,
             ratio_quantum=ratio_quantum,
@@ -2529,10 +2578,16 @@ def run_multi_fpga_flow(
                         if net_weights_path.is_file()
                         else {}
                     ),
-                    "cut_timing_paths": {
-                        "path": "timing/cut-timing-paths.json",
-                        "sha256": _sha256(projected_timing_paths),
-                    },
+                    **(
+                        {
+                            "cut_timing_paths": {
+                                "path": "timing/cut-timing-paths.json",
+                                "sha256": _sha256(projected_timing_paths),
+                            }
+                        }
+                        if projected_timing_paths is not None
+                        else {}
+                    ),
                 }
                 if internal_timing_database
                 else {}

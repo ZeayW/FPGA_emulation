@@ -30,6 +30,7 @@ from emuflow.tdm import (
 )
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
+    NATIVE_ROUTER_PROVIDER,
     NATIVE_TIMING_EVALUATED_PROVIDER,
 )
 from tests.native_build import (
@@ -52,6 +53,65 @@ FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
+    def test_zero_cut_flow_skips_vacuous_interconnect_optimizers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            constraints = root / "constraints.json"
+            write_json(
+                constraints,
+                {
+                    "schema": "emuflow.partition-constraints/v1",
+                    "fixed": [{"patterns": ["*"], "fpga": "fpga0"}],
+                    "min_used_fpgas": 1,
+                    "balance_tolerance": 3.0,
+                },
+            )
+            output = root / "flow"
+            report = run_multi_fpga_flow(
+                platform_path=PLATFORM,
+                output_dir=output,
+                yosys_json=ROOT / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+                partition_constraints=constraints,
+                partition_provider="greedy",
+                cut_mode="sequential-only",
+                timing_driven=True,
+                clock_periods={"clk": 10.0},
+                opensta=str(FAKE_OPENSTA),
+                router=str(tlr_router()),
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                slot_optimizer=str(tdm_slot_optimizer()),
+                optimize_frame_slots=True,
+                frame_slots=32,
+                cross_stage_iterations=1,
+                equivalence_cycles=2,
+            )
+
+            routes = read_json(output / "system-route/routes.json")
+            schedule = read_json(output / "tdm/schedule.json")
+            replay = validate_multi_fpga_flow_bundle(output)
+            self.assertEqual(
+                report["stages"]["partition"]["validation"]["cut_nets"],
+                0,
+            )
+            self.assertEqual(routes["provider"], NATIVE_ROUTER_PROVIDER)
+            self.assertEqual(routes["routes"], [])
+            self.assertEqual(routes["metrics"]["estimated_max_tdm_ratio"], 0)
+            self.assertEqual(schedule["provider"], TDM_BASELINE_PROVIDER)
+            self.assertEqual(schedule["entries"], [])
+            self.assertEqual(
+                report["timing"]["cut_path_projection"]["mode"],
+                "not-required-no-inter-fpga-cuts",
+            )
+            self.assertFalse(
+                (output / "timing/cut-timing-paths.json").exists()
+            )
+            self.assertNotIn("frame_search", report)
+            self.assertNotIn("cross_stage", report)
+            self.assertEqual(replay["status"], "pass")
+
     def test_static_exact_acceptance_fixture_is_not_vacuous(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(

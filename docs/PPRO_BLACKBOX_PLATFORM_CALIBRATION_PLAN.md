@@ -255,6 +255,12 @@ without ordinary system-route and system-timing reports. A medium/diversity
 case that naturally uses multiple FPGAs is held to the same strict
 interconnect-evidence rule.
 
+The single-FPGA EmuFlow path is not a shortened flow: Phase 4 and Phase 5 emit
+checked zero-route and zero-schedule artifacts, Phase 6 still performs splitting
+and equivalence checks, and Phase 7 still performs physical implementation and
+global OpenSTA. Only interconnect-specific projection and optimization are
+omitted because the Phase 3 assignment has no cut nets.
+
 Koios and NVDLA must not participate in fitting the microbenchmark
 coefficients.  They test whether those coefficients generalize.  The existing
 canonical Koios DLA medium case remains a useful EmuFlow Phase 1--7 regression,

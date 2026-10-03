@@ -98,6 +98,35 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_native_router_materializes_valid_zero_demand_artifact(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "zero-demand",
+                ["a", "b"],
+                [_link("ab", "a", "b", direction="half_duplex")],
+            )
+        )
+        assignment = _assignment(platform, [])
+        constraints = normalize_route_constraints(None, platform)
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            executable="must-not-be-executed",
+        )
+
+        checked = validate_native_system_routes(assignment, platform, routes)
+        self.assertEqual(routes["routes"], [])
+        self.assertEqual(routes["demands"], [])
+        self.assertEqual(routes["metrics"]["estimated_max_tdm_ratio"], 0)
+        self.assertEqual(
+            routes["direction_locks"],
+            [{"group": 0, "link": "ab", "from": "a", "to": "b"}],
+        )
+        self.assertEqual(checked["status"], "pass")
+        self.assertEqual(checked["demands"], 0)
+        self.assertEqual(checked["total_link_bit_hops"], 0)
+
     def test_path_compression_keeps_distinct_required_times(self) -> None:
         normalized = normalize_sta_paths(
             {

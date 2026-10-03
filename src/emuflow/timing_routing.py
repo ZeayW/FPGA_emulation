@@ -859,6 +859,73 @@ def route_system_native(
     nodes, model = _prepare_native_model(
         assignment, platform, constraints, timing_paths
     )
+    if not model["demands"]:
+        if provider != NATIVE_ROUTER_PROVIDER or timing_paths is not None:
+            raise ValueError(
+                "zero-demand routing requires the native timing-free provider"
+            )
+        _, _, capacities = build_directed_graph(platform, constraints)
+        utilization = [
+            {
+                **capacities[key],
+                "used_bits": 0,
+                "utilization": 0.0,
+            }
+            for key in sorted(capacities)
+        ]
+        direction_locks = [
+            {
+                "group": group,
+                "link": link.id,
+                "from": link.endpoints[0],
+                "to": link.endpoints[1],
+            }
+            for group, link in enumerate(
+                sorted(
+                    (
+                        link
+                        for link in platform.links
+                        if link.direction == "half_duplex"
+                    ),
+                    key=lambda item: item.id,
+                )
+            )
+        ]
+        metrics = {
+            "demands": 0,
+            "routed_sinks": 0,
+            "tree_edges": 0,
+            "iterations": 0,
+            "accepted_reroutes": 0,
+            "rolled_back_reroutes": 0,
+            "max_link_utilization": 0.0,
+            "total_link_bit_hops": 0,
+            "estimated_max_tdm_ratio": 0,
+            **(
+                {"max_route_hops_observed": 0}
+                if constraints.get("max_route_hops") is not None
+                else {}
+            ),
+        }
+        result = {
+            "schema": "emuflow.system-routes/v1",
+            "design": assignment.get("design"),
+            "platform": platform.name,
+            "provider": provider,
+            "constraints": dict(constraints),
+            "demands": [],
+            "routes": [],
+            "link_utilization": utilization,
+            "direction_locks": direction_locks,
+            "metrics": metrics,
+        }
+        exact_contract = assignment.get("semantic_contract")
+        if exact_contract is not None:
+            result["semantic_contract_schema"] = exact_contract["schema"]
+            result["semantic_contract_sha256"] = assignment[
+                "semantic_contract_sha256"
+            ]
+        return result
     feedback_prices = None
     if tdm_feedback is not None:
         if provider != GLOBAL_CANDIDATE_PROVIDER:

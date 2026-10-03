@@ -288,6 +288,12 @@ reproducibility additionally require system timing. Application holdouts always
 require resource/partition evidence. If PPro uses more than one FPGA, route and
 system-timing reports become mandatory; a naturally single-FPGA AES/CPU holdout
 must instead have no fabricated cross-FPGA route, TDM, or delay on either side.
+For that zero-cut case, the complete flow still emits independently validated
+Phase 4 and Phase 5 artifacts, but they contain zero routes and zero schedule
+entries.  Interconnect-only timing projection, route/TDM optimization,
+cross-stage search, and frame-length search are skipped as vacuous; the original
+TimingPathDB still feeds the physical backend and authoritative global OpenSTA
+signoff.
 The large, large-primary, and very-large tiers always require real multi-FPGA
 route/timing evidence. Optional reports are parsed when present.
 The first authorized v3 LUT pilot at source commit
