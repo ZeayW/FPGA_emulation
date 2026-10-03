@@ -11,6 +11,7 @@ from .routing import (
     SYSTEM_ROUTES_SCHEMA,
     build_directed_graph,
     normalize_route_constraints,
+    system_route_timing_paths,
 )
 
 
@@ -1848,10 +1849,9 @@ def reconstruct_tdm_schedule_timing_paths(
         # model: that model intentionally requires routes.timing.paths and is
         # defined only for actual inter-FPGA demands.
         if (
-            routes.get("schema") == SYSTEM_ROUTES_SCHEMA
-            and routes.get("routes") == []
-            and routes.get("timing") is None
+            routes.get("routes") == []
             and schedule.get("entries") == []
+            and system_route_timing_paths(routes) == []
         ):
             return []
         model = _prepare_model(routes, platform)

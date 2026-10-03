@@ -21,6 +21,32 @@ SYSTEM_ROUTE_CONSTRAINTS_SCHEMA = "emuflow.system-route-constraints/v1"
 ArcKey = Tuple[str, str, str]
 
 
+def system_route_timing_paths(
+    routes: Mapping[str, Any],
+    *,
+    context: str = "system routes",
+) -> List[Mapping[str, Any]]:
+    """Return timing-path records, including the canonical zero-demand case."""
+
+    if routes.get("schema") != SYSTEM_ROUTES_SCHEMA:
+        raise ValidationError(
+            f"{context} schema: expected {SYSTEM_ROUTES_SCHEMA!r}"
+        )
+    raw_routes = routes.get("routes")
+    if not isinstance(raw_routes, list):
+        raise ValidationError(f"{context} demands are invalid")
+    timing = routes.get("timing")
+    if timing is None:
+        if raw_routes == []:
+            return []
+        raise ValidationError(f"{context} with demands require timing records")
+    if not isinstance(timing, Mapping) or not isinstance(
+        timing.get("paths"), list
+    ):
+        raise ValidationError(f"{context} timing records are invalid")
+    return timing["paths"]
+
+
 def static_exact_contract_from_assignment(
     assignment: Mapping[str, Any],
 ) -> Optional[Mapping[str, Any]]:

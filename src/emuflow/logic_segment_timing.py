@@ -18,6 +18,7 @@ from .ir import EmuIR
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .placement import _vivado_mapped_name
 from .platform import Platform
+from .routing import system_route_timing_paths
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
     sta_object_index,
@@ -526,18 +527,10 @@ def _route_timing_paths(
 ) -> List[Mapping[str, Any]]:
     """Return Phase 4 timing records, allowing a canonical zero-route run."""
 
-    timing = routes.get("timing")
-    if timing is None:
-        if routes.get("routes") == []:
-            return []
-        raise ValidationError(
-            "logic segment routes with demands require timing records"
-        )
-    if not isinstance(timing, Mapping) or not isinstance(
-        timing.get("paths"), list
-    ):
-        raise ValidationError("logic segment route timing records are invalid")
-    return timing["paths"]
+    return system_route_timing_paths(
+        routes,
+        context="logic segment routes",
+    )
 
 
 def _exact_capture_identity(capture: Mapping[str, Any]) -> tuple[Any, ...]:

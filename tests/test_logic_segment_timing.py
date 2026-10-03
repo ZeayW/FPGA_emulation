@@ -23,15 +23,29 @@ from emuflow.local_path_timing import (
     validate_local_path_identity,
     validate_local_path_timing,
 )
+from emuflow.routing import SYSTEM_ROUTES_SCHEMA, system_route_timing_paths
 
 
 class LogicSegmentTimingTest(unittest.TestCase):
     def test_zero_route_flow_has_no_logic_segment_route_timing(self):
-        self.assertEqual(_route_timing_paths({"routes": []}), [])
+        empty_routes = {"schema": SYSTEM_ROUTES_SCHEMA, "routes": []}
+        self.assertEqual(_route_timing_paths(empty_routes), [])
+        self.assertEqual(
+            system_route_timing_paths(
+                empty_routes,
+                context="local path system routes",
+            ),
+            [],
+        )
         with self.assertRaisesRegex(
             ValidationError, "with demands require timing records"
         ):
-            _route_timing_paths({"routes": [{"id": "d0"}]})
+            _route_timing_paths(
+                {
+                    "schema": SYSTEM_ROUTES_SCHEMA,
+                    "routes": [{"id": "d0"}],
+                }
+            )
 
     def test_exact_capture_index_distinguishes_memory_port_bits(self):
         segment_by_key, captures = _index_exact_logic_segments(

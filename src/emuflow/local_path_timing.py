@@ -19,6 +19,7 @@ from .logic_segment_timing import (
     _xilinx_object,
 )
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
+from .routing import system_route_timing_paths
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
     sta_object_index,
@@ -310,9 +311,10 @@ def prepare_vpr_local_path_query_inputs(
         raise ValidationError("local path assignment schema is invalid")
     if assignment.get("design") != database.get("design"):
         raise ValidationError("local path assignment design disagrees")
-    raw_route_timing = routes.get("timing", {}).get("paths")
-    if not isinstance(raw_route_timing, list):
-        raise ValidationError("local path system route timing is invalid")
+    raw_route_timing = system_route_timing_paths(
+        routes,
+        context="local path system routes",
+    )
     cross_path_ids = set()
     for item in raw_route_timing:
         if not isinstance(item, dict) or not isinstance(item.get("path"), str):
