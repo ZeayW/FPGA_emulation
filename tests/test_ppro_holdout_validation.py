@@ -193,6 +193,16 @@ class PProHoldoutValidationTest(unittest.TestCase):
         normalized = validate_holdout_result(value)
         self.assertEqual(normalized["emuflow"]["maximum_tdm_ratio"], 0)
         self.assertEqual(normalized["emuflow"]["busiest_pairs"], [])
+        self.assertEqual(validate_holdout_result(normalized), normalized)
+
+    def test_derived_configuration_match_must_revalidate(self):
+        value = result("aes-repeat", "aes", "medium", "a", 10.0)
+        normalized = validate_holdout_result(value)
+        normalized["emuflow"]["configuration_match"] = False
+        with self.assertRaisesRegex(
+            ValidationError, "configuration-match certificate"
+        ):
+            validate_holdout_result(normalized)
 
     def test_large_holdout_cannot_skip_interconnect_reports(self):
         value = result("gemm-single", "gemm", "large", "a", 0.0)

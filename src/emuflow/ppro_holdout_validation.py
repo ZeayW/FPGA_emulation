@@ -266,12 +266,27 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
         "zero_drc_violations",
         "original_path_coverage",
     }
-    if set(emuflow) != emuflow_required or emuflow.get("status") != "pass":
+    emuflow_fields = set(emuflow)
+    if (
+        emuflow_fields
+        not in {
+            frozenset(emuflow_required),
+            frozenset(emuflow_required | {"configuration_match"}),
+        }
+        or emuflow.get("status") != "pass"
+    ):
         raise ValidationError("holdout EmuFlow summary fields or status are invalid")
     if emuflow["configuration_id"] != ppro["identity"]["configuration_id"]:
         configuration_match = False
     else:
         configuration_match = True
+    if "configuration_match" in emuflow and (
+        type(emuflow["configuration_match"]) is not bool
+        or emuflow["configuration_match"] is not configuration_match
+    ):
+        raise ValidationError(
+            "holdout EmuFlow configuration-match certificate is invalid"
+        )
     rtl_sha256 = emuflow["rtl_sha256"]
     if (
         not isinstance(rtl_sha256, str)
