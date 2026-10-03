@@ -524,6 +524,11 @@ capacity is public-spec evidence; effective utilization, topology, payload,
 and delay are black-box fitted; transport cost is characterized from the open
 production transport RTL. Fabric clock and simultaneous reverse-direction
 capacity sharing remain explicit research assumptions. In particular,
+each BoardDB exports both the native Xilinx inventory (`bram18k`, `dsp48`) and
+the conservative VTR planning aliases (`bram=floor(bram18k/2)`,
+`dsp=dsp48`). This keeps Phase 1 capacity checks and Phase 7 physical resource
+accounting on one public inventory instead of treating a mapped BRAM design as
+having an unknown resource class.
 `capacity_sharing=per_direction` is not presented as a PPro-discovered board
 property, and bundle validation fails when this provenance record is missing.
 Platform generation also requires topology evidence for every ordered FPGA

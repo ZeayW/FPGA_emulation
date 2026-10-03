@@ -61,12 +61,20 @@ def _sha256(value: Any) -> str:
 
 def _public_capacities(prior: Mapping[str, Any]) -> Dict[str, int]:
     resources = {item["name"]: float(item["value"]) for item in prior["device"]["resources"]}
+    bram18k = int(math.floor(resources["bram_kib"] / 18.0))
+    dsp48 = int(math.floor(resources["dsp"]))
     result = {
         "lut": int(math.floor(resources["clb_lut"])),
         "ff": int(math.floor(resources["clb_ff"])),
-        "bram18k": int(math.floor(resources["bram_kib"] / 18.0)),
+        "bram18k": bram18k,
+        # The default open VTR frontend reports 36-Kib-class BRAM and generic
+        # DSP demand.  Keep conservative planning aliases beside the native
+        # Xilinx resource names so Phase 1 and the routed physical backend use
+        # the same public capacity inventory.
+        "bram": bram18k // 2,
         "uram288": int(math.floor(resources["uram_kib"] / 288.0)),
-        "dsp48": int(math.floor(resources["dsp"])),
+        "dsp48": dsp48,
+        "dsp": dsp48,
         "io": int(math.floor(resources["user_io"])),
     }
     if any(value <= 0 for value in result.values()):
