@@ -16,6 +16,7 @@ from emuflow.ppro_holdout_validation import (
     _validate_holdout_preparation,
     assemble_holdout_result,
     evaluate_holdout_promotion,
+    validate_holdout_result,
 )
 
 
@@ -53,7 +54,10 @@ def ppro_observation(identifier: str, delay: float):
                 {"fpga": "F0", "resources": {"lut": 0.50}},
                 {"fpga": "F1", "resources": {"lut": 0.40}},
             ],
-            "assignments": [{"partition": "P0", "fpga": "F0"}],
+            "assignments": [
+                {"partition": "P0", "fpga": "F0"},
+                {"partition": "P1", "fpga": "F1"},
+            ],
             "routes": [
                 {"id": "r0", "source": "F0", "sinks": ["F1"], "effective_hops": 1, "signal_count": 1},
                 {"id": "r1", "source": "F0", "sinks": ["F1"], "effective_hops": 1, "signal_count": 1},
@@ -172,6 +176,62 @@ class PProHoldoutValidationTest(unittest.TestCase):
             report["algorithm_ranking"]["evaluated_variants"],
             {"aes": ["a", "b"]},
         )
+
+    def test_single_fpga_medium_holdout_needs_no_interconnect_reports(self):
+        value = result("aes-single", "aes", "medium", "a", 0.0)
+        value["ppro"]["reports"]["route_summary"] = False
+        value["ppro"]["reports"]["system_timing"] = False
+        value["ppro"]["metrics"]["assignments"] = [
+            {"partition": "P0", "fpga": "F0"}
+        ]
+        value["ppro"]["metrics"]["routes"] = []
+        value["ppro"]["metrics"]["communication"] = {}
+        value["ppro"]["metrics"]["timing"] = {}
+        value["emuflow"]["maximum_tdm_ratio"] = 0
+        value["emuflow"]["worst_cross_fpga_delay_ns"] = 0.0
+        value["emuflow"]["busiest_pairs"] = []
+        normalized = validate_holdout_result(value)
+        self.assertEqual(normalized["emuflow"]["maximum_tdm_ratio"], 0)
+        self.assertEqual(normalized["emuflow"]["busiest_pairs"], [])
+
+    def test_large_holdout_cannot_skip_interconnect_reports(self):
+        value = result("gemm-single", "gemm", "large", "a", 0.0)
+        value["ppro"]["reports"]["route_summary"] = False
+        value["ppro"]["reports"]["system_timing"] = False
+        value["ppro"]["metrics"]["assignments"] = [
+            {"partition": "P0", "fpga": "F0"}
+        ]
+        value["ppro"]["metrics"]["routes"] = []
+        value["ppro"]["metrics"]["communication"] = {}
+        value["ppro"]["metrics"]["timing"] = {}
+        value["emuflow"]["maximum_tdm_ratio"] = 0
+        value["emuflow"]["worst_cross_fpga_delay_ns"] = 0.0
+        value["emuflow"]["busiest_pairs"] = []
+        with self.assertRaisesRegex(ValidationError, "route or system-timing"):
+            validate_holdout_result(value)
+
+    def test_multi_fpga_medium_holdout_cannot_skip_interconnect_reports(self):
+        value = result("aes-multi", "aes", "medium", "a", 0.0)
+        value["ppro"]["reports"]["route_summary"] = False
+        value["ppro"]["reports"]["system_timing"] = False
+        value["ppro"]["metrics"]["routes"] = []
+        value["ppro"]["metrics"]["communication"] = {}
+        value["ppro"]["metrics"]["timing"] = {}
+        with self.assertRaisesRegex(ValidationError, "route or system-timing"):
+            validate_holdout_result(value)
+
+    def test_single_fpga_ppro_rejects_emuflow_cross_fpga_result(self):
+        value = result("aes-mismatch", "aes", "medium", "a", 0.0)
+        value["ppro"]["reports"]["route_summary"] = False
+        value["ppro"]["reports"]["system_timing"] = False
+        value["ppro"]["metrics"]["assignments"] = [
+            {"partition": "P0", "fpga": "F0"}
+        ]
+        value["ppro"]["metrics"]["routes"] = []
+        value["ppro"]["metrics"]["communication"] = {}
+        value["ppro"]["metrics"]["timing"] = {}
+        with self.assertRaisesRegex(ValidationError, "disagrees with cross-FPGA"):
+            validate_holdout_result(value)
 
     def test_nvdla_final_holdout_rejects_black_box_memory(self):
         with self.assertRaisesRegex(ValidationError, "physically implementable"):

@@ -22,6 +22,7 @@ from .ppro_calibrated_platform import validate_calibrated_platform_bundle
 HOLDOUT_RESULT_SCHEMA = "emuflow.ppro-holdout-result/v4"
 PROMOTION_REPORT_SCHEMA = "emuflow.ppro-platform-promotion/v2"
 _TIERS = {"medium", "diversity", "large", "large_primary", "very_large_final"}
+_INTERCONNECT_TIERS = {"large", "large_primary", "very_large_final"}
 _BENCHMARK_CLASS_TIERS = {
     "secworks_aes": "medium",
     "open_cpu": "diversity",
@@ -227,10 +228,20 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
         or ppro["execution"]["outcome"] != "pass"
     ):
         raise ValidationError("holdout result requires a passing PPro application holdout")
-    if (
+    assignments = ppro["metrics"]["assignments"]
+    if not assignments:
+        raise ValidationError("PPro holdout lacks partition assignment evidence")
+    ppro_cross_fpga = len({item["fpga"] for item in assignments}) > 1
+    interconnect_required = value["tier"] in _INTERCONNECT_TIERS or ppro_cross_fpga
+    ppro_routes = ppro["metrics"]["routes"]
+    ppro_communication = ppro["metrics"]["communication"]
+    ppro_timing = ppro["metrics"]["timing"]
+    if interconnect_required and (
         not ppro["reports"]["route_summary"]
         or not ppro["reports"]["system_timing"]
-        or not ppro["metrics"]["routes"]
+        or not ppro_routes
+        or "maximum_tdm_ratio" not in ppro_communication
+        or "sr0_worst_cross_fpga_delay_ns" not in ppro_timing
     ):
         raise ValidationError("PPro holdout lacks route or system-timing evidence")
     emuflow = value["emuflow"]
@@ -318,6 +329,26 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
         "global_tns_ns": global_tns,
         "original_path_coverage": coverage,
     }
+    emuflow_cross_fpga = bool(busiest_pairs)
+    if interconnect_required and (
+        not emuflow_cross_fpga
+        or normalized_emuflow["maximum_tdm_ratio"] < 1
+        or normalized_emuflow["worst_cross_fpga_delay_ns"] <= 0.0
+    ):
+        raise ValidationError("EmuFlow holdout lacks required cross-FPGA evidence")
+    if not ppro_cross_fpga and (
+        ppro_routes
+        or ppro_communication
+        or ppro_timing
+        or ppro["reports"]["route_summary"]
+        or ppro["reports"]["system_timing"]
+        or emuflow_cross_fpga
+        or normalized_emuflow["maximum_tdm_ratio"] != 0
+        or normalized_emuflow["worst_cross_fpga_delay_ns"] != 0.0
+    ):
+        raise ValidationError(
+            "single-FPGA PPro holdout disagrees with cross-FPGA evidence"
+        )
     return {
         "schema": HOLDOUT_RESULT_SCHEMA,
         "id": value["id"],
@@ -390,7 +421,7 @@ def _maximum_tdm_ratio(schedule: Mapping[str, Any]) -> int:
                 entry.get("tdm_ratio", 1), f"flow schedule entry {index} TDM ratio"
             )
         )
-    return max(ratios, default=1)
+    return max(ratios, default=0)
 
 
 def assemble_holdout_result(
@@ -546,8 +577,19 @@ def assemble_holdout_result(
         for path in paths
         if isinstance(path, Mapping) and path.get("path_scope") == "cross-fpga"
     ]
-    if not cross_delays:
+    ppro_cross_fpga = len(
+        {item["fpga"] for item in ppro["metrics"]["assignments"]}
+    ) > 1
+    interconnect_required = (
+        _BENCHMARK_CLASS_TIERS[benchmark_class] in _INTERCONNECT_TIERS
+        or ppro_cross_fpga
+    )
+    if interconnect_required and not cross_delays:
         raise ValidationError("holdout flow has no cross-FPGA timing paths")
+    if not ppro_cross_fpga and cross_delays:
+        raise ValidationError(
+            "single-FPGA PPro holdout disagrees with EmuFlow cross-FPGA timing"
+        )
 
     runtime = flow_report.get("runtime")
     if not isinstance(runtime, Mapping):
@@ -596,7 +638,7 @@ def assemble_holdout_result(
                 phase3["validation"]["resources_by_fpga"], platform
             ),
             "maximum_tdm_ratio": _maximum_tdm_ratio(schedule),
-            "worst_cross_fpga_delay_ns": max(cross_delays),
+            "worst_cross_fpga_delay_ns": max(cross_delays, default=0.0),
             "busiest_pairs": _busiest_pairs(schedule),
             "global_wns_ns": target["worst_slack_bound_ns"],
             "global_tns_ns": target["total_negative_slack_bound_ns"],
@@ -671,14 +713,19 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
             name: abs(ppro_utilization[name] - emuflow["resource_utilization"][name])
             for name in common_resources
         }
-        if "maximum_tdm_ratio" not in ppro["metrics"]["communication"]:
-            raise ValidationError("PPro holdout lacks maximum TDM ratio")
+        ppro_cross_fpga = len(
+            {entry["fpga"] for entry in ppro["metrics"]["assignments"]}
+        ) > 1
         ppro_tdm = _nonnegative_integer(
-            ppro["metrics"]["communication"]["maximum_tdm_ratio"],
+            ppro["metrics"]["communication"].get(
+                "maximum_tdm_ratio", 0 if not ppro_cross_fpga else -1
+            ),
             "PPro holdout maximum TDM ratio",
         )
         ppro_delay = float(
-            ppro["metrics"]["timing"].get("sr0_worst_cross_fpga_delay_ns", -1.0)
+            ppro["metrics"]["timing"].get(
+                "sr0_worst_cross_fpga_delay_ns", 0.0 if not ppro_cross_fpga else -1.0
+            )
         )
         if ppro_delay < 0:
             raise ValidationError("PPro holdout lacks worst cross-FPGA delay")

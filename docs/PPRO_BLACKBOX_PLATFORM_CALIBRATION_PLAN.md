@@ -246,6 +246,15 @@ progression:
 | large primary | Koios DLA medium, then DLA large or TPU-like large | Multi-FPGA capacity, routing, TDM, and timing validation |
 | very large final | NVDLA `NV_nvdla` | Million-cell hierarchy, capacity, and runtime stress |
 
+The medium and diversity tiers are not artificially spread across FPGAs. If
+PPro naturally selects one FPGA, their resource/partition reports and a matching
+single-FPGA EmuFlow Phase 1--7 result are valid holdout evidence; neither side
+may claim cross-FPGA routes, TDM, or delay. The large, large-primary, and
+very-large tiers are explicitly interconnect-bearing gates and fail closed
+without ordinary system-route and system-timing reports. A medium/diversity
+case that naturally uses multiple FPGAs is held to the same strict
+interconnect-evidence rule.
+
 Koios and NVDLA must not participate in fitting the microbenchmark
 coefficients.  They test whether those coefficients generalize.  The existing
 canonical Koios DLA medium case remains a useful EmuFlow Phase 1--7 regression,

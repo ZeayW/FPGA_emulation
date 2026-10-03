@@ -44,7 +44,7 @@ def _required_reports(kind: str) -> set[str]:
     required = {"resource_summary", "partition_summary"}
     if kind in {"topology_reachability", "payload_capacity", "latency"}:
         required.add("route_summary")
-    if kind in {"reproducibility", "latency", "application_holdout"}:
+    if kind in {"reproducibility", "latency"}:
         required.update({"route_summary", "system_timing"})
     return required
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")

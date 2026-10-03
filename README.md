@@ -283,10 +283,13 @@ diagnostic; generic partition/tool failures remain excluded. The controlled
 requested-unit coordinate is retained for that boundary observation, while no
 missing success-report metric is fabricated.
 Report evidence is experiment-specific: capacity requires ordinary resource
-and partition reports; topology/payload adds system-route evidence; latency,
-reproducibility, and application holdouts additionally require system timing.
-Optional reports are parsed when present, but a single-FPGA capacity run is no
-longer rejected merely because PPro correctly emits no cross-FPGA timing file.
+and partition reports; topology/payload adds system-route evidence; latency and
+reproducibility additionally require system timing. Application holdouts always
+require resource/partition evidence. If PPro uses more than one FPGA, route and
+system-timing reports become mandatory; a naturally single-FPGA AES/CPU holdout
+must instead have no fabricated cross-FPGA route, TDM, or delay on either side.
+The large, large-primary, and very-large tiers always require real multi-FPGA
+route/timing evidence. Optional reports are parsed when present.
 The first authorized v3 LUT pilot at source commit
 `1b232cf4826cb66b510baeb784e9615ebc734d39` passed in 191.05 seconds:
 150,000 requested control units mapped to 55,886 reported LUTs on one logical
@@ -732,7 +735,11 @@ whole-design OpenSTA plus physical seed 1.  The promotion gate requires all
 five benchmark classes (secworks AES, an open CPU, Koios compute, Koios DLA,
 and NVDLA), rejects duplicate result identities and duplicate
 workload/algorithm entries, and never accepts a Phase 3--6-only claim as a
-complete validation. PPro application holdouts use PPro's free optimizer; they
+complete validation. AES and CPU are natural single-device functional,
+resource, physical, and timing holdouts when they fit one FPGA; they are not
+forced across devices merely to manufacture communication evidence. Koios
+compute, Koios DLA, and NVDLA carry the mandatory interconnect/TDM/system-timing
+gate. PPro application holdouts use PPro's free optimizer; they
 therefore validate platform behavior per workload but cannot directly rank
 EmuFlow's internal algorithms. Optional EmuFlow variants are reported with an
 explicit `not-claimed` PPro-ranking boundary instead of manufacturing a ranking

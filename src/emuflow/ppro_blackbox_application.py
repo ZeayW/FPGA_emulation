@@ -20,8 +20,6 @@ _GENERATOR_REVISION = hashlib.sha256(_GENERATOR_ID.encode("utf-8")).hexdigest()
 _EXPECTED_REPORTS = [
     "partition_summary",
     "resource_summary",
-    "route_summary",
-    "system_timing",
 ]
 
 

@@ -90,6 +90,10 @@ class PProBlackboxApplicationTest(unittest.TestCase):
             self.assertEqual(spec["experiment"]["kind"], "application_holdout")
             self.assertEqual(spec["experiment"]["control_mode"], "none")
             self.assertEqual(spec["experiment"]["documented_actions"], [])
+            self.assertEqual(
+                spec["adapter"]["expected_reports"],
+                ["partition_summary", "resource_summary"],
+            )
             self.assertEqual(spec["workload"]["design_metrics"]["source_file_count"], 1.0)
             self.assertEqual(spec["workload"]["design_metrics"]["include_file_count"], 0.0)
             self.assertNotIn(str(root), json.dumps(spec))

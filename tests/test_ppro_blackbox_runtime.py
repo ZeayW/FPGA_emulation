@@ -192,6 +192,10 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             spec["experiment"]["kind"] = "application_holdout"
             spec["experiment"]["control_mode"] = "none"
             spec["experiment"]["documented_actions"] = []
+            spec["adapter"]["expected_reports"] = [
+                "partition_summary",
+                "resource_summary",
+            ]
             application_constraints = root / "application-constraints.json"
             application_value = {
                 "control_mode": "none",

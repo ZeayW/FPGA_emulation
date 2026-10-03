@@ -757,6 +757,23 @@ def validate_blackbox_observation(value: Mapping[str, Any]) -> Dict[str, Any]:
         if kind == "latency":
             if not normalized_reports["system_timing"] or "sr0_worst_cross_fpga_delay_ns" not in timing:
                 raise ValidationError("observation: latency experiment lacks sr0 timing evidence")
+        if kind == "application_holdout":
+            if not assignments:
+                raise ValidationError(
+                    "observation: application holdout lacks partition assignments"
+                )
+            uses_multiple_fpgas = len({item["fpga"] for item in assignments}) > 1
+            if uses_multiple_fpgas and (
+                not normalized_reports["route_summary"]
+                or not normalized_reports["system_timing"]
+                or not routes
+                or "maximum_tdm_ratio" not in communication
+                or "sr0_worst_cross_fpga_delay_ns" not in timing
+            ):
+                raise ValidationError(
+                    "observation: multi-FPGA application holdout lacks route or "
+                    "system-timing evidence"
+                )
     else:
         expected_boundary_code = {
             "capacity_infeasible": "capacity-boundary",
