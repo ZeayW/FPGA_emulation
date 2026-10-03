@@ -17,6 +17,63 @@ RUNNER_REVISION = runner_source_bundle()["runner_revision"]
 
 
 class PProCalibrationCliTest(unittest.TestCase):
+    def test_runtime_writable_root_default_and_explicit_override(self):
+        common = [
+            "--run-spec",
+            "run-spec.json",
+            "--filelist",
+            "sources.f",
+            "--case-dir",
+            "case",
+            "--install-root",
+            "install",
+            "--platform-reference",
+            "platform.ref",
+            "--documented-constraints",
+            "constraints.json",
+            "--fpga-alias",
+            "F0=F0",
+        ]
+        default_args = _parser().parse_args(["run-ppro-case", *common])
+        self.assertEqual(
+            default_args.authorized_writable_root,
+            Path("/research/d4/gds/ziyiwang21"),
+        )
+        explicit_args = _parser().parse_args(
+            [
+                "run-ppro-case",
+                *common,
+                "--authorized-writable-root",
+                "/data/zywang/emuflow",
+            ]
+        )
+        self.assertEqual(
+            explicit_args.authorized_writable_root,
+            Path("/data/zywang/emuflow"),
+        )
+
+        campaign_args = _parser().parse_args(
+            [
+                "run-ppro-campaign",
+                "--bundle-root",
+                "bundles",
+                "--result-root",
+                "results",
+                "--install-root",
+                "install",
+                "--platform-reference",
+                "platform.ref",
+                "--fpga-alias",
+                "F0=F0",
+                "--authorized-writable-root",
+                "/data/zywang/emuflow",
+            ]
+        )
+        self.assertEqual(
+            campaign_args.authorized_writable_root,
+            Path("/data/zywang/emuflow"),
+        )
+
     def test_free_partition_runtime_can_omit_logical_targets(self):
         args = _parser().parse_args(
             [

@@ -193,6 +193,11 @@ def _parser() -> argparse.ArgumentParser:
     run_case.add_argument("--install-root", type=Path, required=True)
     run_case.add_argument("--platform-reference", type=Path, required=True)
     run_case.add_argument("--documented-constraints", type=Path, required=True)
+    run_case.add_argument(
+        "--authorized-writable-root",
+        type=Path,
+        default=Path("/research/d4/gds/ziyiwang21"),
+    )
     run_case.add_argument("--fpga-alias", action="append", default=[], required=True)
     run_case.add_argument("--logical-target", action="append", default=[])
     run_case.add_argument("--max-processes", type=int, default=4)
@@ -205,6 +210,11 @@ def _parser() -> argparse.ArgumentParser:
     run_campaign.add_argument("--result-root", type=Path, required=True)
     run_campaign.add_argument("--install-root", type=Path, required=True)
     run_campaign.add_argument("--platform-reference", type=Path, required=True)
+    run_campaign.add_argument(
+        "--authorized-writable-root",
+        type=Path,
+        default=Path("/research/d4/gds/ziyiwang21"),
+    )
     run_campaign.add_argument("--fpga-alias", action="append", default=[], required=True)
     run_campaign.add_argument("--logical-target", action="append", default=[])
     run_campaign.add_argument("--max-workers", type=int, default=1)
@@ -418,6 +428,7 @@ def _dispatch(args: argparse.Namespace) -> Any:
                 documented_constraints=args.documented_constraints,
                 fpga_aliases=parse_fpga_aliases(args.fpga_alias),
                 logical_targets=parse_logical_targets(args.logical_target),
+                authorized_writable_root=args.authorized_writable_root,
                 max_processes=args.max_processes,
                 utilization_limit_percent=args.utilization_limit_percent,
                 timeout_seconds=args.timeout_seconds,
@@ -443,6 +454,7 @@ def _dispatch(args: argparse.Namespace) -> Any:
                 platform_reference=args.platform_reference,
                 fpga_aliases=parse_fpga_aliases(args.fpga_alias),
                 logical_targets=parse_logical_targets(args.logical_target),
+                authorized_writable_root=args.authorized_writable_root,
                 max_processes_per_case=args.max_processes_per_case,
                 utilization_limit_percent=args.utilization_limit_percent,
                 timeout_seconds=args.timeout_seconds,

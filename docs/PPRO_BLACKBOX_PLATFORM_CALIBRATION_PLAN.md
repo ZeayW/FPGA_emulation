@@ -377,7 +377,11 @@ creating a runtime project or launching the provider; moving a sealed bundle
 to a different checkout fails closed rather than silently changing its runner.
 The renderer also requires the configured authorized writable root to exist
 and be writable before it creates a case directory, so a missing shared mount
-cannot fall through to tool launch or an alternate filesystem.
+cannot fall through to tool launch or an alternate filesystem. The production
+default remains `/research/d4/gds/ziyiwang21`; an alternative root is permitted
+only through the explicit runtime-only `--authorized-writable-root` option
+after user authorization. There is no implicit `/data`, home-directory, or
+node-temporary fallback.
 
 The default pre-partition headroom is uniform across LUT, FF, BRAM, URAM, and
 DSP at 75%; one explicit runtime option changes all five together so a capacity

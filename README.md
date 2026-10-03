@@ -243,6 +243,10 @@ the explicit `--utilization-limit-percent` changes all five together.
 Before rendering any disposable project, it also requires the fixed authorized
 writable root to exist and be writable; a missing validation-server mount
 fails closed before PPro is launched.
+The normal default remains `/research/d4/gds/ziyiwang21`. A different root is
+accepted only through the explicit runtime-only `--authorized-writable-root`
+argument after the user has authorized that location; there is no automatic
+fallback to local or node-temporary storage.
 
 The Stage 3 experiment framework is also present and its first three real
 resource axes are fitted. It generates compact connected capacity probes for seven
@@ -453,8 +457,10 @@ An authorized host can execute that generated case with `run-ppro-case`.
 Installation, platform-reference, constraint, alias, and case-directory
 arguments are runtime-only and are deliberately absent from the run spec and
 observation. The writable case directory must follow the deployment storage
-policy: the production runtime rejects paths outside
-`/research/d4/gds/ziyiwang21` and binds `TMPDIR`, `TMP`, and `TEMP` below the
+policy: by default the production runtime rejects paths outside
+`/research/d4/gds/ziyiwang21`. An explicitly user-authorized alternative may
+be supplied with `--authorized-writable-root`; the runtime then rejects paths
+outside that exact boundary. It binds `TMPDIR`, `TMP`, and `TEMP` below the
 case. `--keep-raw-project` is intended only for a short, explicit diagnosis:
 on failure it keeps the project plus at most the final 16 KiB of stdout and
 stderr; normal runs and successful diagnostic runs retain neither log.
@@ -465,6 +471,7 @@ emuflow-ppro-calibration run-ppro-case \
   --filelist <generated>/sources.f \
   --compilation-context <generated>/compilation-context.json \
   --case-dir <authorized-isolated-case-directory> \
+  --authorized-writable-root <explicitly-authorized-root> \
   --install-root <authorized-installation> \
   --platform-reference <user-selected-platform-reference> \
   --documented-constraints <generated>/documented_constraints.json \
@@ -552,6 +559,7 @@ only the launcher process:
 emuflow-ppro-calibration run-ppro-campaign \
   --bundle-root <active-campaign>/capacity \
   --result-root <authorized-root>/c1-results \
+  --authorized-writable-root <explicitly-authorized-root> \
   --install-root <authorized-installation> \
   --platform-reference <user-selected-platform-reference> \
   --fpga-alias <report-id>=F0 --fpga-alias <report-id>=F1 \
