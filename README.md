@@ -2377,7 +2377,10 @@ multi-resource ejection chain.  Every committed result still passes the
 ordinary independent multi-resource balance validator.
 For a design that naturally collapses into one zero-cut partition, pass
 `--partition-repair-min-used-fpgas`; every repair move remains explicit in the
-partition artifact and is checked independently.
+partition artifact and is checked independently.  The repair supports more
+than one initially empty partition without reusing a move-cost value as the
+incremental cut-cost evaluator, and its regression suite exercises a one-to-
+four-partition expansion.
 
 When route constraints define `max_route_hops`, Phase 3 loads the BoardDB
 topology instead of waiting for Phase 4 to discover an infeasible cut. The

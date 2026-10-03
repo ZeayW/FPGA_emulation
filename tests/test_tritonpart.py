@@ -30,6 +30,9 @@ from emuflow.yosys import import_yosys_json
 
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORM_PATH = ROOT / "platforms" / "virtual" / "xcvu3p_2fpga_p2p.json"
+FOUR_FPGA_PLATFORM_PATH = (
+    ROOT / "platforms" / "virtual" / "xcvu3p_4fpga_mesh.json"
+)
 
 
 class TritonPartTest(unittest.TestCase):
@@ -537,6 +540,38 @@ class TritonPartTest(unittest.TestCase):
             self.assertEqual(moves[0]["source"], "fpga0")
             self.assertEqual(moves[0]["target"], "fpga1")
             self.assertEqual(moves[0]["instances"], 1)
+
+    def test_min_used_repair_populates_multiple_empty_partitions(self) -> None:
+        platform = Platform.load(FOUR_FPGA_PLATFORM_PATH)
+        constraints = normalize_partition_constraints(None, self.ir, platform)
+        clusters = build_clusters(self.ir, constraints)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = export_tritonpart_inputs(
+                self.ir,
+                platform,
+                clusters,
+                constraints,
+                Path(temporary_directory),
+            )
+            raw = {
+                cluster["id"]: "fpga0"
+                for cluster in clusters["clusters"]
+            }
+            repaired, moves = _repair_min_used_fpgas(
+                raw,
+                clusters,
+                platform,
+                constraints,
+                artifact["hyperedges"],
+            )
+            self.assertEqual(
+                set(repaired.values()),
+                {"fpga0", "fpga1", "fpga2", "fpga3"},
+            )
+            self.assertEqual(len(moves), 3)
+            self.assertTrue(
+                all(isinstance(move["estimated_cut_delta"], float) for move in moves)
+            )
 
     def test_balance_repair_legalizes_best_effort_solution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

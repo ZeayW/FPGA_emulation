@@ -598,7 +598,9 @@ def _repair_min_used_fpgas(
                 "TritonPart min-used-FPGA repair found no legal movable "
                 f"cluster for empty partition {target!r}"
             )
-        instance_count, _, cut_delta, cluster_id, source = min(candidates)
+        instance_count, _, estimated_cut_delta, cluster_id, source = min(
+            candidates
+        )
         resources = clusters[cluster_id]["resources"]
         apply_edge_move(cluster_id, source, target)
         assignment[cluster_id] = target
@@ -615,7 +617,7 @@ def _repair_min_used_fpgas(
                 "target": target,
                 "instances": instance_count,
                 "resources": dict(resources),
-                "estimated_cut_delta": cut_delta,
+                "estimated_cut_delta": estimated_cut_delta,
             }
         )
     return assignment, moves
