@@ -10,6 +10,7 @@ from emuflow.logic_segment_timing import (
     _boundary_tx_port,
     _index_exact_logic_segments,
     _incoming_transported_cut_nets,
+    _route_timing_paths,
     _vivado_object,
     _vpr_atom_pin,
     import_vivado_logic_segment_timing,
@@ -25,6 +26,13 @@ from emuflow.local_path_timing import (
 
 
 class LogicSegmentTimingTest(unittest.TestCase):
+    def test_zero_route_flow_has_no_logic_segment_route_timing(self):
+        self.assertEqual(_route_timing_paths({"routes": []}), [])
+        with self.assertRaisesRegex(
+            ValidationError, "with demands require timing records"
+        ):
+            _route_timing_paths({"routes": [{"id": "d0"}]})
+
     def test_exact_capture_index_distinguishes_memory_port_bits(self):
         segment_by_key, captures = _index_exact_logic_segments(
             {

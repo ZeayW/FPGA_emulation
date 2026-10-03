@@ -521,6 +521,25 @@ class LogicSegmentQueryInputs:
     exact_captures: Mapping[str, Mapping[str, Any]]
 
 
+def _route_timing_paths(
+    routes: Mapping[str, Any],
+) -> List[Mapping[str, Any]]:
+    """Return Phase 4 timing records, allowing a canonical zero-route run."""
+
+    timing = routes.get("timing")
+    if timing is None:
+        if routes.get("routes") == []:
+            return []
+        raise ValidationError(
+            "logic segment routes with demands require timing records"
+        )
+    if not isinstance(timing, Mapping) or not isinstance(
+        timing.get("paths"), list
+    ):
+        raise ValidationError("logic segment route timing records are invalid")
+    return timing["paths"]
+
+
 def _exact_capture_identity(capture: Mapping[str, Any]) -> tuple[Any, ...]:
     """Return the pin-exact identity used to bind a capture segment.
 
@@ -635,6 +654,7 @@ def prepare_logic_segment_query_inputs(
             instance = endpoint["instance"]
             if instance is not None:
                 incoming_nets_by_instance[instance].append(net["id"])
+    route_timing_paths = _route_timing_paths(routes)
     return LogicSegmentQueryInputs(
         original_ir=original_ir,
         assignment=assignment,
@@ -643,7 +663,7 @@ def prepare_logic_segment_query_inputs(
         schedule=schedule,
         object_index=sta_object_index(original_ir),
         database_paths={item["id"]: item for item in path_database["paths"]},
-        route_timing={item["path"]: item for item in routes["timing"]["paths"]},
+        route_timing={item["path"]: item for item in route_timing_paths},
         route_by_net={item["net"]: item for item in routes["routes"]},
         timing_records=reconstruct_tdm_schedule_timing_paths(
             routes, platform, schedule
