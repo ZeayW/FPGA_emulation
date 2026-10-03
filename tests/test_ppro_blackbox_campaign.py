@@ -4,6 +4,7 @@ import tempfile
 import json
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.ppro_blackbox_campaign import (
@@ -130,6 +131,23 @@ class PProBlackboxCampaignTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "unknown context"):
                 execute_generated_campaign(bundles, runtime=self._runtime(root))
             self.assertTrue(unexpected.is_file())
+
+    def test_queue_exception_cleans_every_prerendered_runtime(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle_root = root / "bundles"
+            self._bundles(bundle_root)
+            bundles = discover_generated_bundles(bundle_root, maximum_cases=2)
+            runtime = self._runtime(root)
+            with mock.patch(
+                "emuflow.ppro_blackbox_campaign.execute_blackbox_queue",
+                side_effect=OSError("simulated queue failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "simulated queue failure"):
+                    execute_generated_campaign(bundles, runtime=runtime, max_workers=1)
+            self.assertEqual(len(list(bundle_root.rglob("run-spec.json"))), 2)
+            self.assertFalse(any(runtime.result_root.rglob(".run-ppro.tcl")))
+            self.assertFalse(any(runtime.result_root.rglob("project")))
 
     def test_license_failure_preserves_sealed_bundles_for_retry(self):
         with tempfile.TemporaryDirectory() as raw:

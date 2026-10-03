@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.ppro_blackbox_runner import (
@@ -356,6 +357,41 @@ class PProBlackboxRunnerTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValidationError, "compact observation"):
                 validate_runtime_binding(observation)
+
+    def test_observation_write_retries_after_runtime_cleanup(self):
+        with tempfile.TemporaryDirectory() as raw:
+            case = Path(raw) / "case"
+            scratch = case / "large-provider-project"
+            scratch.mkdir(parents=True)
+            (scratch / "payload.bin").write_bytes(b"provider scratch")
+            base = binding(case)
+            value = RuntimeBinding(
+                case_dir=base.case_dir,
+                command=base.command,
+                report_paths=base.report_paths,
+                output_path=base.output_path,
+                timeout_seconds=base.timeout_seconds,
+                cleanup_paths=(scratch,),
+            )
+            from emuflow.io import write_json as real_write_json
+
+            calls = 0
+
+            def fail_once(path, payload, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise OSError("simulated ENOSPC")
+                real_write_json(path, payload, **kwargs)
+
+            with mock.patch(
+                "emuflow.ppro_blackbox_runner.write_json", side_effect=fail_once
+            ):
+                result = execute_blackbox_case(run_spec(), value)
+            self.assertEqual(result["execution"]["outcome"], "pass")
+            self.assertEqual(calls, 2)
+            self.assertTrue(value.output_path.is_file())
+            self.assertFalse(scratch.exists())
 
     def test_queue_is_explicitly_bounded_and_result_order_is_stable(self):
         with tempfile.TemporaryDirectory() as raw:

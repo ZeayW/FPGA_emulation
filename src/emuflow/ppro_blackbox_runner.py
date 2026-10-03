@@ -728,14 +728,27 @@ def execute_blackbox_case(
                     "derived": {"fit_eligible": fit_eligible, "reason": reason},
                 }
     normalized = validate_blackbox_observation(observation)
-    write_json(binding.output_path, normalized, compact=True)
-    if binding.retain_failure_diagnostics and normalized["execution"]["outcome"] != "pass":
-        for path in (stdout_path, stderr_path):
-            path.write_text(_read_text_tail(path), encoding="utf-8")
-    else:
-        stdout_path.unlink(missing_ok=True)
-        stderr_path.unlink(missing_ok=True)
-    cleanup_runtime_artifacts(binding)
+    try:
+        try:
+            write_json(binding.output_path, normalized, compact=True)
+        except OSError:
+            # A provider project can consume the last available bytes before
+            # the compact terminal observation is written. Remove only the
+            # registered runtime scratch, then retry the same already-validated
+            # observation once after that space has been reclaimed.
+            cleanup_runtime_artifacts(binding)
+            write_json(binding.output_path, normalized, compact=True)
+        if (
+            binding.retain_failure_diagnostics
+            and normalized["execution"]["outcome"] != "pass"
+        ):
+            for path in (stdout_path, stderr_path):
+                path.write_text(_read_text_tail(path), encoding="utf-8")
+        else:
+            stdout_path.unlink(missing_ok=True)
+            stderr_path.unlink(missing_ok=True)
+    finally:
+        cleanup_runtime_artifacts(binding)
     return normalized
 
 

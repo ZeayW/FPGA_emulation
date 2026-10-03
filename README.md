@@ -316,6 +316,15 @@ excluded run.  The conservative pass/infeasible intervals are 1580/1640
 withheld repeated points were predicted as pass and did pass.  LUT and FF
 ordinary-report normalization, application holdouts, and end-to-end promotion
 remain pending; these partial fits are not yet a released calibrated platform.
+The eight-case LUT/FF normalization campaign at source commit
+`c89a9fe915a917e76a87fbd169d682604b283099` has six validated observations:
+both 100,000-control LUT repeats, both 100,000-control FF repeats, and both
+150,000-control FF holdouts passed with bit-identical demand within each repeat
+pair. The two 150,000-control LUT holdouts were not evaluated because the
+temporary provider project exhausted the nearly full host `/data` filesystem.
+That infrastructure event is not a model failure; their sealed inputs are being
+retried on the authorized `/research` volume with the six completed observations
+preserved rather than rerun.
 The final capacity artifact does not attempt to rediscover public XCVU19P
 totals by elaborating millions of LUTs or FFs. It computes effective capacity
 from the validated public device total and the documented 75% user constraint,
@@ -556,6 +565,11 @@ infeasibility). Provider, license, infrastructure, missing-report, parse, and
 generic tool failures preserve the exact sealed bundle for a retry; they do
 not silently regenerate or change the experiment. Unknown files prevent
 cleanup and fail closed.
+A compact observation write that initially encounters ENOSPC first deletes only
+the registered raw project/runtime scratch and retries the same validated
+in-memory observation once. Any queue-level exception likewise cleans every
+pre-rendered runtime while preserving sealed bundles and already completed
+compact observations; it cannot leave an unexecuted case looking active.
 A provider timeout terminates and reaps the entire isolated process group, not
 only the launcher process:
 

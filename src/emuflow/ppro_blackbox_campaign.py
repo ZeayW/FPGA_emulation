@@ -152,6 +152,15 @@ def execute_generated_campaign(
     cases = []
     bundle_by_identity: dict[str, Path] = {}
     identities: set[str] = set()
+
+    def cleanup_rendered_cases() -> None:
+        for _, binding in cases:
+            cleanup_runtime_artifacts(binding)
+            try:
+                binding.case_dir.rmdir()
+            except OSError:
+                pass
+
     try:
         for bundle_root in normalized_bundle_roots:
             spec_path, constraints_path, filelist_path, context_path = _bundle_inputs(
@@ -185,14 +194,16 @@ def execute_generated_campaign(
             )
             cases.append((spec, binding))
     except Exception:
-        for _, binding in cases:
-            cleanup_runtime_artifacts(binding)
-            try:
-                binding.case_dir.rmdir()
-            except OSError:
-                pass
+        cleanup_rendered_cases()
         raise
-    results = execute_blackbox_queue(cases, max_workers=max_workers)
+    try:
+        results = execute_blackbox_queue(cases, max_workers=max_workers)
+    except Exception:
+        # Queue-level failures must not leave pre-rendered commands or projects
+        # for cases that never ran. Sealed bundles and compact observations
+        # already completed remain untouched for diagnosis or exact retry.
+        cleanup_rendered_cases()
+        raise
     for result in results:
         # A generated bundle is consumed only by a hardware-evaluated terminal
         # result.  Provider, license, infrastructure, missing-report, parse,
