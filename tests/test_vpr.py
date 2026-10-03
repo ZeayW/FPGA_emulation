@@ -276,6 +276,8 @@ int main() {
             defines=["SYNTHESIS"],
         )
         self.assertIn("synth -top cpu -noabc", script)
+        self.assertIn("async2sync", script)
+        self.assertLess(script.index("async2sync"), script.index("dffunmap"))
         self.assertEqual(script.count("dffunmap"), 2)
         self.assertIn("abc -lut 6", script)
         self.assertIn('write_blif -attr -cname "build/cpu.eblif"', script)
@@ -297,6 +299,8 @@ int main() {
         self.assertIn("vtr_memory_map.v", script)
         self.assertIn("chtype -set multiply", script)
         self.assertIn("chtype -set single_port_ram", script)
+        self.assertIn("async2sync", script)
+        self.assertLess(script.index("async2sync"), script.index("dffunmap"))
         self.assertEqual(script.count("dffunmap"), 2)
 
     def test_script_can_emit_json_and_eblif_from_same_mapping(self) -> None:

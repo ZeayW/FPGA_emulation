@@ -53,9 +53,11 @@ def build_vtr_yosys_script(
 ) -> str:
     """Build a VTR-compatible LUT6/DFF and optional hard-block eBLIF script.
 
-    ``dffunmap`` is deliberately applied before and after ABC. It lowers
-    enable/reset FF variants into muxes plus the generic DFF form emitted by
-    ``write_blif`` as ``.latch`` rather than architecture-specific subckts.
+    ``async2sync`` first removes asynchronous set/reset cell variants that the
+    public VTR architecture cannot represent. ``dffunmap`` is then applied
+    before and after ABC to lower enable/synchronous-reset variants into muxes
+    plus the generic DFF form emitted by ``write_blif`` as ``.latch`` rather
+    than architecture-specific subckts.
     """
 
     source_list = list(sources)
@@ -102,6 +104,7 @@ def build_vtr_yosys_script(
         commands.append(f"synth -top {top_identifier} -noabc")
     commands.extend(
         (
+            "async2sync",
             "dffunmap",
             "abc -lut 6",
             "dffunmap",

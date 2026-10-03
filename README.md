@@ -1208,6 +1208,11 @@ otherwise partitionable design into one combinational atomic component.
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
 gate. Its default public VTR mapping preserves multiplier and synchronous
 single/dual-port RAM hard blocks while mapping remaining logic to LUT6/FF. It
+uses Yosys `async2sync` before `dffunmap`, so synthesizable asynchronous
+set/reset RTL is lowered to the synchronous state elements supported by the
+public VTR architecture instead of leaking unsupported internal `$DFF`
+subcircuits into eBLIF. This physical lowering does not make asynchronous
+controls eligible Static Exact transport boundaries.
 then binds EmuIR import, partitioning, system routing, TDM scheduling,
 per-FPGA splitting, transport generation, independent checks, and
 cycle-equivalence in one report.
