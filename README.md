@@ -313,18 +313,28 @@ At source commit `075a2b759f349e892d32830bb92c86d429d2a56f`, two repeated
 boundary campaigns produced 36 evaluated hard-resource observations with no
 excluded run.  The conservative pass/infeasible intervals are 1580/1640
 36-Kib-class BRAM blocks, 2850/2950 DSP48s, and 238/245 URAM288s.  All six
-withheld repeated points were predicted as pass and did pass.  LUT and FF
-ordinary-report normalization, application holdouts, and end-to-end promotion
-remain pending; these partial fits are not yet a released calibrated platform.
-The eight-case LUT/FF normalization campaign at source commit
-`c89a9fe915a917e76a87fbd169d682604b283099` has six validated observations:
-both 100,000-control LUT repeats, both 100,000-control FF repeats, and both
-150,000-control FF holdouts passed with bit-identical demand within each repeat
-pair. The two 150,000-control LUT holdouts were not evaluated because the
-temporary provider project exhausted the nearly full host `/data` filesystem.
-That infrastructure event is not a model failure; their sealed inputs are being
-retried on the authorized `/research` volume with the six completed observations
-preserved rather than rerun.
+withheld repeated points were predicted as pass and did pass.
+The eight-case LUT/FF normalization campaign is now complete.  Both
+100,000-control fit points and both independent 150,000-control holdouts ran
+twice for each resource, and mapped demand was bit-identical within every
+repeat pair.  The mapped demand was 37,284 LUTs for the 100,000-control LUT
+fit, 55,886 LUTs for its 150,000-control holdout, 100,000 FFs plus 45,970 LUTs
+for the 100,000-control FF fit, and 150,000 FFs plus 79,088 LUTs for its
+150,000-control holdout.  The corresponding case runtimes were approximately
+79--81 seconds, 106--107 seconds, 114 seconds, and 156--170 seconds,
+respectively.  Two provider-container attempts that could not acquire a
+license remain separately classified as infrastructure failures and were not
+included in the fit.
+
+The resulting `emuflow.ppro-calibrated-capacity/v2` artifact passes every
+resolved holdout with zero excluded observations.  At the declared 75% limit
+it records effective per-FPGA capacities of 3,064,500 public XCVU19P LUTs,
+6,129,000 FFs, 1,618 36-Kib-class BRAM blocks, 2,880 DSP48s, and 240 URAM288s.
+The LUT/FF values are public-total projections checked by ordinary-report
+normalization; the BRAM/DSP/URAM values are the conservative points selected
+from their measured pass/infeasible brackets.  Application holdouts and
+end-to-end promotion remain pending, so these results qualify the capacity
+contract but do not yet constitute a released full-flow platform result.
 The final capacity artifact does not attempt to rediscover public XCVU19P
 totals by elaborating millions of LUTs or FFs. It computes effective capacity
 from the validated public device total and the documented 75% user constraint,
@@ -442,16 +452,26 @@ Platform promotion accepts only this source-characterized transport fit with
 passing independent holdouts.  The legacy PPro paired-difference fit remains
 negative diagnostic evidence and cannot be silently promoted.
 
-Stage 5 can now deterministically materialize and independently validate the
-three final profile databases plus a provenance/hash manifest. It cannot turn
-the synthetic tests into a released platform: generation requires real fitted
-capacity, one-hop topology, ratio-one payload, latency, and paired transport
-evidence. Generation fails closed if any fit excluded an observation, lacks a
-resolved independent holdout, has an unidentifiable coefficient, exceeds 15%
-latency/transport holdout error, or mismatches reachability/TDM holdouts. The
-resulting timing qualification is characterization only, and
-fabric clock remains a published research assumption until separately
-identifiable.
+Stage 5 now deterministically materializes and independently validates the
+three final profile databases plus a provenance/hash manifest.  The first real
+four-FPGA calibrated family has passed this gate: each aggressive, nominal,
+and conservative profile contains one BoardDB, one BoardLinkTimingDB, and one
+TransportCostDB; each profile has four logical FPGAs, eight directed effective
+links, eight directed timing entries, and 40 characterized transport-cost
+parameters.  The sensitivity clocks are explicitly declared research
+assumptions of 300, 250, and 200 MHz rather than inferred PPro facts.  The
+generator consumed the completed capacity, topology, payload/TDM, latency,
+and open-transport fits; it rejected no observation and re-read all generated
+contracts through the independent platform validator.
+
+This is a behavior-equivalent academic platform model, not a released hardware
+signoff platform. Generation fails closed if any fit excluded an observation,
+lacks a resolved independent holdout, has an unidentifiable coefficient,
+exceeds 15% latency/transport holdout error, or mismatches
+reachability/TDM holdouts.  Timing remains a characterized upper-bound model,
+and fabric clock remains a declared sensitivity assumption until separately
+identifiable.  Blind application validation and complete Phase 1--7 OpenSTA
+global WNS/TNS are still mandatory before promotion.
 
 The redacted artifact path is exposed separately from the main flow so a
 runtime binding can never be mistaken for a publishable experiment file:
