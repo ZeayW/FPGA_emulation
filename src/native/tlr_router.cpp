@@ -438,23 +438,70 @@ class Router {
       throw std::runtime_error("routing infeasible after capacity iterations");
     }
 
+    struct NamedCandidate {
+      const char* generator;
+      const Candidate* candidate;
+    };
+    const std::vector<NamedCandidate> all_candidates = {
+        {"shortest-path-tree", &baseline},
+        {"delay-demand-balanced", &balanced},
+        {"nearest-terminal-steiner", &steiner},
+        {"directed-metric-closure", &metric_closure},
+        {"shallow-light-tree", &shallow_light},
+        {"adaptive-hop-tree", &adaptive_hop},
+    };
+    // Preserve the historical baseline/balanced choice when it is legal so
+    // existing deterministic results and switch accounting stay unchanged.
     const Candidate* selected = nullptr;
+    const char* selected_generator = nullptr;
     if (model_.topology_mode == 2 && !baseline.feasible &&
         !balanced.feasible && steiner.feasible) {
       selected = &steiner;
+      selected_generator = "nearest-terminal-steiner";
     } else if (!baseline.feasible) {
       selected = &balanced;
+      selected_generator = "delay-demand-balanced";
     } else if (!balanced.feasible) {
       selected = &baseline;
+      selected_generator = "shortest-path-tree";
     } else {
       selected = better(balanced.objective, baseline.objective)
           ? &balanced
           : &baseline;
+      selected_generator = selected == &balanced
+          ? "delay-demand-balanced"
+          : "shortest-path-tree";
     }
+    // Topology mode 2 generates three additional complete columns.  If the
+    // historical pair did not produce a legal seed, select the best feasible
+    // column across the complete pool before entering the large master.
+    if (selected == nullptr || !selected->feasible) {
+      selected = nullptr;
+      selected_generator = nullptr;
+      for (const NamedCandidate& named : all_candidates) {
+        if (!named.candidate->feasible) {
+          continue;
+        }
+        if (selected == nullptr ||
+            better(named.candidate->objective, selected->objective)) {
+          selected = named.candidate;
+          selected_generator = named.generator;
+        }
+      }
+    }
+    // The exact restricted master can recover a legal per-demand mixture
+    // even when no complete generator column is feasible.  Preserve that
+    // small-instance path by seeding it with the first generated column.  A
+    // large master, however, must never discard a feasible advanced column
+    // merely because the two historical generators were infeasible.
     if (selected == nullptr && model_.topology_mode == 2) {
-      selected = baseline.generated
-          ? &baseline
-          : balanced.generated ? &balanced : &steiner;
+      for (const NamedCandidate& named : all_candidates) {
+        if (named.candidate->generated) {
+          selected = named.candidate;
+          selected_generator = named.generator;
+          break;
+        }
+      }
     }
     if (selected == nullptr || !selected->generated) {
       throw std::runtime_error("routing candidates could not span all sinks");
@@ -465,12 +512,7 @@ class Router {
     completed_iterations_ = selected->iterations;
     selected_balanced_ = selected == &balanced;
     master_selection_.assign(
-        model_.demands.size(),
-        selected == &steiner
-            ? "nearest-terminal-steiner"
-            : selected_balanced_
-                ? "delay-demand-balanced"
-                : "shortest-path-tree");
+        model_.demands.size(), selected_generator);
     if (model_.topology_mode == 2) {
       run_candidate_master(order);
     }

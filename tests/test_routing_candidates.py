@@ -557,6 +557,99 @@ class RouteCandidatePoolTest(unittest.TestCase):
                     assignment, platform, tampered, timing
                 )
 
+    def test_large_master_can_start_from_feasible_advanced_column(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "advanced_initial_column",
+                ["a", "b", "c", "d", "e", "f"],
+                [
+                    _link("ab", "a", "b", lanes=1),
+                    _link("af", "a", "f", lanes=1),
+                    _link("bc", "b", "c", lanes=1),
+                    _link("be", "b", "e", lanes=1),
+                    _link("cd", "c", "d", lanes=1),
+                    _link("de", "d", "e", lanes=1),
+                    _link("df", "d", "f", lanes=1),
+                    _link("ef", "e", "f", lanes=1),
+                ],
+            )
+        )
+        assignment = _assignment(
+            platform,
+            [
+                ("n0", "e", ["c", "f"]),
+                ("n1", "f", ["a", "b", "d"]),
+                ("n2", "c", ["d"]),
+                ("n3", "f", ["d"]),
+                ("n4", "c", ["d", "f", "b"]),
+                ("n5", "b", ["c", "a"]),
+                ("n6", "e", ["d", "c"]),
+                ("n7", "e", ["b"]),
+                ("n8", "a", ["d", "e", "f"]),
+            ],
+        )
+        timing = compress_sta_paths(
+            normalize_sta_paths(
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "route_test",
+                    "paths": [
+                        {
+                            "id": f"p{index}",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 20.0,
+                            "slack_ns": float(index % 4),
+                            "fixed_delay_ns": float(index % 3 + 1),
+                            "cut_nets": [f"n{index}"],
+                        }
+                        for index in range(9)
+                    ],
+                },
+                demands_from_assignment(assignment, platform),
+            )
+        )
+        constraints = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 2,
+                "reroute_rounds": 0,
+                "link_delay_ns": {
+                    "ab": 1.0,
+                    "af": 2.5,
+                    "bc": 3.0,
+                    "be": 2.5,
+                    "cd": 1.0,
+                    "de": 1.5,
+                    "df": 2.0,
+                    "ef": 0.8,
+                },
+            },
+            platform,
+        )
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            timing,
+            executable=str(tlr_router()),
+            provider=GLOBAL_CANDIDATE_PROVIDER,
+        )
+        selection = routes["joint_optimization"]["candidate_generation"][
+            "master_selection"
+        ]
+        self.assertFalse(routes["metrics"]["master_exact"])
+        self.assertEqual(routes["metrics"]["master_switches"], 0)
+        self.assertEqual(
+            {record["generator"] for record in selection},
+            {"shallow-light-tree"},
+        )
+        self.assertEqual(
+            validate_native_system_routes(
+                assignment, platform, routes, timing
+            )["status"],
+            "pass",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
