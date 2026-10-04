@@ -628,7 +628,7 @@ class Phase4Test(unittest.TestCase):
             [("n0", "a", ["b"]), ("n1", "a", ["b"])],
         )
         with self.assertRaisesRegex(
-            EmuFlowError, "routing infeasible after capacity iterations"
+            EmuFlowError, "routing infeasible by single-node cut certificate"
         ):
             route_system_native(
                 overfull_assignment,
@@ -1269,6 +1269,40 @@ class Phase4Test(unittest.TestCase):
                 platform,
                 constraints,
                 executable=str(tlr_router()),
+            )
+
+    def test_single_node_cut_infeasibility_fails_before_router(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "single-node-cut",
+                ["a", "b", "c"],
+                [
+                    _link("ab", "a", "b", lanes=1),
+                    _link("ac", "a", "c", lanes=1),
+                ],
+            )
+        )
+        assignment = _assignment(
+            platform,
+            [(f"n{index}", "a", ["b"]) for index in range(3)],
+        )
+        constraints = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 1,
+            },
+            platform,
+        )
+        with self.assertRaisesRegex(
+            EmuFlowError,
+            r"single-node cut certificate: a outbound demand 3 "
+            r"> cut capacity 2",
+        ):
+            route_system_native(
+                assignment,
+                platform,
+                constraints,
+                executable="must-not-be-executed",
             )
 
     def test_half_duplex_capacity_is_shared(self) -> None:

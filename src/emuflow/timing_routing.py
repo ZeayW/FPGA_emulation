@@ -572,6 +572,67 @@ def _prepare_native_model(
     }
 
 
+def _validate_single_node_cut_capacity(
+    nodes: Sequence[str], model: Mapping[str, Any]
+) -> None:
+    """Reject provably impossible routing inputs before native search.
+
+    Every bit sourced at a node must cross one of that node's outgoing
+    capacity domains, and every bit consumed at a node must cross one of its
+    incoming domains.  These two single-node cuts are only necessary (not
+    sufficient) conditions for a multicommodity route, but they cheaply catch
+    grossly undersized platform selections and provide a useful certificate
+    instead of allowing a candidate heuristic to fail after a long search.
+    """
+
+    capacities: Dict[int, int] = {}
+    outgoing_domains: Dict[int, set[int]] = defaultdict(set)
+    incoming_domains: Dict[int, set[int]] = defaultdict(set)
+    for arc in model["arcs"]:
+        domain = int(arc["capacity_domain"])
+        capacity = int(arc["capacity"])
+        previous = capacities.setdefault(domain, capacity)
+        if previous != capacity:
+            raise EmuFlowError(
+                "routing capacity domain has inconsistent capacity"
+            )
+        outgoing_domains[int(arc["from"])].add(domain)
+        incoming_domains[int(arc["to"])].add(domain)
+
+    sourced = [0] * len(nodes)
+    consumed = [0] * len(nodes)
+    for demand in model["native_demands"]:
+        source = int(demand["source"])
+        width = int(demand["width"])
+        sourced[source] += width
+        for sink in set(int(item) for item in demand["sinks"]):
+            consumed[sink] += width
+
+    violations = []
+    for index, node in enumerate(nodes):
+        outgoing = sum(
+            capacities[domain] for domain in outgoing_domains[index]
+        )
+        incoming = sum(
+            capacities[domain] for domain in incoming_domains[index]
+        )
+        if sourced[index] > outgoing:
+            violations.append(
+                f"{node} outbound demand {sourced[index]} > cut capacity "
+                f"{outgoing}"
+            )
+        if consumed[index] > incoming:
+            violations.append(
+                f"{node} inbound demand {consumed[index]} > cut capacity "
+                f"{incoming}"
+            )
+    if violations:
+        raise EmuFlowError(
+            "routing infeasible by single-node cut certificate: "
+            + "; ".join(violations)
+        )
+
+
 def _write_native_input(
     path: Path,
     node_count: int,
@@ -859,6 +920,7 @@ def route_system_native(
     nodes, model = _prepare_native_model(
         assignment, platform, constraints, timing_paths
     )
+    _validate_single_node_cut_capacity(nodes, model)
     if not model["demands"]:
         if provider != NATIVE_ROUTER_PROVIDER or timing_paths is not None:
             raise ValueError(
