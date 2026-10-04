@@ -2380,9 +2380,12 @@ same contract once for its own terminal assignment.
 The default `--mapping-profile vtr-hard-blocks` retains public VTR RAM/DSP
 resources. `--mapping-profile generic-soft` is available for architecture-
 neutral LUT6/FF experiments, but may expand memory-heavy designs substantially.
-TritonPart assignments are legalized against the independently checked
-cells/LUT/FF/BRAM/DSP balance bounds by default; pass
-`--no-partition-repair-balance` only for an explicit raw-partitioner study.
+TritonPart assignments must satisfy the independently checked
+cells/LUT/FF/BRAM/DSP balance bounds directly.  An illegal best-effort result
+fails fast by default; `--partition-repair-balance` enables the deterministic
+post-provider legalizer only for an explicit fallback study.  It is not part
+of the production default because it changes the provider result and can be
+substantially more expensive than detecting an unsuitable partition/platform.
 The deterministic legalizer commits the target selected by its cut/relief
 ranking.  It uses resource-weight indexes and cached deficit queries for
 two-move exchanges instead of scanning the Cartesian product of all source

@@ -1966,10 +1966,10 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--partition-repair-balance",
         action=_BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
-            "legalize a best-effort assignment against independently "
-            "checked multi-resource balance bounds (enabled by default)"
+            "explicit fallback that legalizes a best-effort assignment "
+            "against independently checked multi-resource balance bounds"
         ),
     )
     multi_fpga_compile.add_argument(
@@ -3131,11 +3131,11 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--tritonpart-repair-balance",
         action=_BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
-            "legalize a best-effort TritonPart solution against EmuFlow's "
-            "independently checked multi-resource upper bounds "
-            "(enabled by default)"
+            "explicit fallback that legalizes a best-effort TritonPart "
+            "solution against EmuFlow's independently checked "
+            "multi-resource upper bounds"
         ),
     )
     phase3.add_argument(

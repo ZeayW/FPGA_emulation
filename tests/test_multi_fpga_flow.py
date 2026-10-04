@@ -360,8 +360,8 @@ class MultiFpgaFlowTest(unittest.TestCase):
         )
         self.assertEqual(phase3.provider, "patron")
         self.assertEqual(phase3.cut_mode, "sequential-only")
-        self.assertTrue(phase3.tritonpart_repair_balance)
-        phase3_without_repair = _build_parser().parse_args(
+        self.assertFalse(phase3.tritonpart_repair_balance)
+        phase3_with_repair = _build_parser().parse_args(
             [
                 "phase3",
                 "--ir",
@@ -370,10 +370,10 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 "platform.json",
                 "--out",
                 "phase3",
-                "--no-tritonpart-repair-balance",
+                "--tritonpart-repair-balance",
             ]
         )
-        self.assertFalse(phase3_without_repair.tritonpart_repair_balance)
+        self.assertTrue(phase3_with_repair.tritonpart_repair_balance)
         checkpoint = _build_parser().parse_args(
             [
                 "experiment-stage",
