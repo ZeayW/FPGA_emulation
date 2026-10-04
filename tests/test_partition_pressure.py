@@ -1161,6 +1161,46 @@ class PartitionPressureTest(unittest.TestCase):
             bundle["qualification"], "move-for-move-exhaustive"
         )
 
+    def test_native_patron_timeout_is_enforced(self) -> None:
+        with patch(
+            "emuflow.partition_pressure.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(
+                cmd=["emuflow_patron_refiner"], timeout=7
+            ),
+        ) as run:
+            with self.assertRaisesRegex(
+                ValidationError,
+                "native PATRON exceeded timeout of 7 seconds",
+            ):
+                run_partition_pressure_native(
+                    self.ir,
+                    self.platform,
+                    self.clusters,
+                    self.constraints,
+                    self.route_constraints,
+                    self.model,
+                    self.initial,
+                    executable="/bin/true",
+                    timeout_seconds=7,
+                )
+        self.assertEqual(run.call_args.kwargs["timeout"], 7)
+
+    def test_native_patron_timeout_must_be_positive(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError, "native PATRON timeout is invalid"
+        ):
+            run_partition_pressure_native(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                self.route_constraints,
+                self.model,
+                self.initial,
+                executable="/bin/true",
+                timeout_seconds=0,
+            )
+
     def test_native_legacy_fallback_matches_exhaustive(self) -> None:
         timing = copy.deepcopy(self.timing)
         for path in timing["paths"]:

@@ -1937,6 +1937,7 @@ def run_partition_pressure_native(
     physical_feedback_scale: float = 0.0,
     output_validation: str = "full",
     retain_trace_seals: bool = True,
+    timeout_seconds: int = 3600,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     limit = len(model["clusters"]) if max_moves is None else max_moves
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
@@ -1947,6 +1948,12 @@ def run_partition_pressure_native(
         raise ValidationError("native PATRON output validation mode is invalid")
     if not isinstance(retain_trace_seals, bool):
         raise ValidationError("native PATRON trace-seal flag is invalid")
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, int)
+        or timeout_seconds <= 0
+    ):
+        raise ValidationError("native PATRON timeout is invalid")
     if algorithm_version is None:
         algorithm_version = (
             11
@@ -2016,13 +2023,19 @@ def run_partition_pressure_native(
         if not retain_trace_seals:
             command.append("--summary-output")
         command.extend((str(native_input), str(native_output)))
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=environment,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environment,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ValidationError(
+                f"native PATRON exceeded timeout of {timeout_seconds} seconds"
+            ) from error
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()
             raise ValidationError(
