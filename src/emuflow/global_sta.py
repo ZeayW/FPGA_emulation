@@ -137,7 +137,7 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
     set p "NULL"
     foreach vertex [$pin vertices] {{
       if {{$vertex != "NULL"}} {{
-        set candidate [vertex_worst_slack_path $vertex max]
+        set candidate [sta::vertex_worst_slack_path $vertex max]
         if {{$candidate != "NULL"}} {{ set p $candidate; break }}
       }}
     }}

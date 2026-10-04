@@ -31,7 +31,7 @@ def test_exports_raw_arc_chain_and_absolute_events(tmp_path):
     script = (tmp_path / "analyze.tcl").read_text()
     assert "find_timing" in script
     assert "$::emuflow_top find_pin o$i" in script
-    assert "vertex_worst_slack_path $vertex max" in script
+    assert "sta::vertex_worst_slack_path $vertex max" in script
     assert "find_timing_paths" not in script
     assert "[$p arrival]" in script
     assert "[$p required]" in script
