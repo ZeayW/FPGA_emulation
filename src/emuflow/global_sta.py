@@ -147,8 +147,9 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
     set arrival [expr {{[$p arrival] * 1.0e9}}]
     # Path.required/slack are vertex-tag values and omit the output-delay
     # PathEnd constraint. endpoint_slack includes that constraint and returns
-    # user time units; each generated endpoint has exactly one path/clock.
-    set slack [sta::endpoint_slack $pin "" max]
+    # user time units.  All generated checks belong to the epoch path group;
+    # an empty group name matches no PathEnd in OpenSTA 3.1.
+    set slack [sta::endpoint_slack $pin "epoch" max]
     set required [expr {{$arrival + $slack}}]
     puts $out "o$i\\t$arrival\\t$required\\t$slack"
   }}

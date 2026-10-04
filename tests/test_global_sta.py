@@ -34,7 +34,7 @@ def test_exports_raw_arc_chain_and_absolute_events(tmp_path):
     assert "sta::vertex_worst_slack_path $vertex max" in script
     assert "find_timing_paths" not in script
     assert "[$p arrival]" in script
-    assert 'sta::endpoint_slack $pin "" max' in script
+    assert 'sta::endpoint_slack $pin "epoch" max' in script
     assert "[$p required]" not in script
     assert "get_property $p points" not in (tmp_path / "analyze.tcl").read_text()
 
