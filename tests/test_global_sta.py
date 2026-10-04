@@ -28,10 +28,12 @@ def test_exports_raw_arc_chain_and_absolute_events(tmp_path):
     assert "find_port" in (tmp_path / "analyze.tcl").read_text()
     assert "gets $constraints line" in (tmp_path / "analyze.tcl").read_text()
     assert "31.5" not in (tmp_path / "global_timing.lib").read_text()
-    assert "find_timing_paths" in (tmp_path / "analyze.tcl").read_text()
-    assert "-group_path_count 5" in (tmp_path / "analyze.tcl").read_text()
-    assert "-endpoint_path_count 1" in (tmp_path / "analyze.tcl").read_text()
-    assert "data_arrival_time" in (tmp_path / "analyze.tcl").read_text()
+    script = (tmp_path / "analyze.tcl").read_text()
+    assert "find_timing" in script
+    assert "vertex_worst_slack_path $vertex max" in script
+    assert "find_timing_paths" not in script
+    assert "[$p arrival]" in script
+    assert "[$p required]" in script
     assert "get_property $p points" not in (tmp_path / "analyze.tcl").read_text()
 
 

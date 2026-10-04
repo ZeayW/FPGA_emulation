@@ -126,17 +126,27 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
   close $constraints
   set out [open measurements.tsv w]
   puts $out "endpoint\\tarrival_ns\\trequired_ns\\tslack_ns"
-  puts "global STA: query checks"
-  set paths [find_timing_paths -path_delay max -group_path_count {len(rows)} -endpoint_path_count 1]
+  puts "global STA: propagate timing"
+  find_timing
+  puts "global STA: query endpoint scalars"
   puts "global STA: serialize checks"
-  foreach p $paths {{
-    # PathEnd scalar APIs use seconds. Do not expand/copy every PathRef point
-    # merely to obtain the endpoint arrival; the scalar API is sufficient.
-    set arrival [expr {{[$p data_arrival_time] * 1.0e9}}]
-    set required [expr {{[$p data_required_time] * 1.0e9}}]
+  for {{set i 0}} {{$i < {len(rows)}}} {{incr i}} {{
+    set pin [$::emuflow_cell find_port o$i]
+    if {{$pin == "NULL"}} {{ error "missing global STA endpoint o$i" }}
+    set p "NULL"
+    foreach vertex [$pin vertices] {{
+      if {{$vertex != "NULL"}} {{
+        set candidate [vertex_worst_slack_path $vertex max]
+        if {{$candidate != "NULL"}} {{ set p $candidate; break }}
+      }}
+    }}
+    if {{$p == "NULL"}} {{ error "unconstrained global STA endpoint o$i" }}
+    # Path scalar APIs use seconds. Querying the known endpoint directly is
+    # linear and avoids materializing/sorting every PathEnd in one giant list.
+    set arrival [expr {{[$p arrival] * 1.0e9}}]
+    set required [expr {{[$p required] * 1.0e9}}]
     set slack [expr {{[$p slack] * 1.0e9}}]
-    set endpoint [get_property [get_property $p endpoint] full_name]
-    puts $out "$endpoint\\t$arrival\\t$required\\t$slack"
+    puts $out "o$i\\t$arrival\\t$required\\t$slack"
   }}
   close $out
 }}
