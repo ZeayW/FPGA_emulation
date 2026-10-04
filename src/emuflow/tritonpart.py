@@ -15,6 +15,7 @@ from .io import read_json, write_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .partition import (
+    active_partition_fpgas,
     build_partition_assignment,
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
@@ -62,30 +63,30 @@ def load_partition_net_weights(path: Optional[Path]) -> Dict[str, float]:
 
 def _active_resource_fields(
     clusters: Sequence[Mapping[str, Any]],
-    platform: Platform,
+    fpgas: Sequence[Any],
 ) -> List[str]:
     fields = []
     for field in RESOURCE_FIELDS:
         if not any(cluster["resources"].get(field, 0) for cluster in clusters):
             continue
-        if not all(fpga.effective_capacity.get(field, 0) > 0 for fpga in platform.fpgas):
+        if not all(fpga.effective_capacity.get(field, 0) > 0 for fpga in fpgas):
             continue
         fields.append(field)
     return fields
 
 
 def _capacity_base_balance(
-    platform: Platform,
+    fpgas: Sequence[Any],
     resource_fields: Sequence[str],
 ) -> List[float]:
-    num_parts = len(platform.fpgas)
+    num_parts = len(fpgas)
     if not resource_fields:
         return [1.0 / num_parts] * num_parts
 
     reference: Optional[List[float]] = None
     for field in resource_fields:
         capacities = [
-            float(fpga.effective_capacity[field]) for fpga in platform.fpgas
+            float(fpga.effective_capacity[field]) for fpga in fpgas
         ]
         total = sum(capacities)
         shares = [capacity / total for capacity in capacities]
@@ -268,16 +269,17 @@ def export_tritonpart_inputs(
             "num_initial_solutions]"
         )
     clusters = sorted(clusters_artifact["clusters"], key=lambda item: item["id"])
-    if len(clusters) < len(platform.fpgas):
+    partition_fpgas = active_partition_fpgas(platform, constraints)
+    if len(clusters) < len(partition_fpgas):
         raise ValidationError(
             "TritonPart needs at least one atomic cluster per FPGA"
         )
 
-    resource_fields = _active_resource_fields(clusters, platform)
+    resource_fields = _active_resource_fields(clusters, partition_fpgas)
     dimensions = ["cells", *resource_fields]
     weights = [_vertex_weights(cluster, resource_fields) for cluster in clusters]
-    base_balance = _capacity_base_balance(platform, resource_fields)
-    fpga_ids = [fpga.id for fpga in platform.fpgas]
+    base_balance = _capacity_base_balance(partition_fpgas, resource_fields)
+    fpga_ids = [fpga.id for fpga in partition_fpgas]
     requested_balance, effective_balance = _effective_balance_percent(
         weights,
         clusters,
@@ -293,7 +295,7 @@ def export_tritonpart_inputs(
     for dimension_index, field in enumerate(resource_fields, start=1):
         total = sum(item[dimension_index] for item in weights)
         capacity = sum(
-            fpga.effective_capacity[field] for fpga in platform.fpgas
+            fpga.effective_capacity[field] for fpga in partition_fpgas
         )
         if total > capacity:
             raise ValidationError(
@@ -307,7 +309,7 @@ def export_tritonpart_inputs(
                 <= fpga.effective_capacity[field]
                 for index, field in enumerate(resource_fields, start=1)
             )
-            for fpga in platform.fpgas
+            for fpga in partition_fpgas
         ):
             raise ValidationError(
                 f"atomic cluster {cluster['id']!r} cannot fit any FPGA"
@@ -510,9 +512,10 @@ def _repair_min_used_fpgas(
     clusters = {
         cluster["id"]: cluster for cluster in clusters_artifact["clusters"]
     }
-    fpga_ids = [fpga.id for fpga in platform.fpgas]
+    partition_fpgas = active_partition_fpgas(platform, constraints)
+    fpga_ids = [fpga.id for fpga in partition_fpgas]
     capacity = {
-        fpga.id: fpga.effective_capacity for fpga in platform.fpgas
+        fpga.id: fpga.effective_capacity for fpga in partition_fpgas
     }
     loads = {
         fpga_id: {field: 0 for field in RESOURCE_FIELDS}
@@ -665,9 +668,10 @@ def _repair_multi_resource_balance(
         if dimension == "cells":
             base_balance.append([1.0 / num_parts] * num_parts)
             continue
+        fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
         capacities = [
-            float(fpga.effective_capacity[dimension])
-            for fpga in platform.fpgas
+            float(fpga_by_id[fpga_id].effective_capacity[dimension])
+            for fpga_id in fpga_order
         ]
         capacity_total = sum(capacities)
         base_balance.append(
@@ -1633,6 +1637,7 @@ def _repair_multi_resource_balance(
         assignment,
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
+        constraints.get("active_fpgas"),
     )
     return assignment, {
         "moves": move_total,
@@ -1732,6 +1737,7 @@ def run_tritonpart(
         num_best_initial_solutions=num_best_initial_solutions,
         write_manifest=False,
     )
+    num_parts = len(tritonpart_input["fpga_order"])
     tritonpart_input["seed"] = seed
     if persist_input_manifest:
         # Standalone qualification retains one human-inspectable manifest.
@@ -1794,7 +1800,7 @@ def run_tritonpart(
             solution_path
             if spec["mode"] == "timing_weighted"
             else Path(
-                f"{spec['hypergraph']}.part.{len(platform.fpgas)}"
+                f"{spec['hypergraph']}.part.{num_parts}"
             )
         )
         tcl_text = tcl_template.replace(
@@ -1872,7 +1878,7 @@ def run_tritonpart(
                 )
             )
             attempt_solution = output_dir / (
-                f"{solution_stem}.part.{len(platform.fpgas)}"
+                f"{solution_stem}.part.{num_parts}"
             )
             shutil.copyfile(provider_solution_path, attempt_solution)
         raw_used_fpgas = len(set(candidate.values()))
@@ -1919,12 +1925,12 @@ def run_tritonpart(
             repaired_solution_path = output_dir / (
                 (
                     f"partition.hgr.{repaired_tag}.repaired.part."
-                    f"{len(platform.fpgas)}"
+                    f"{num_parts}"
                 )
                 if len(attempt_specs) > 1
                 else (
                     "partition.hgr.repaired.part."
-                    f"{len(platform.fpgas)}"
+                    f"{num_parts}"
                 )
             )
             fpga_index = {
@@ -1986,6 +1992,7 @@ def run_tritonpart(
                     candidate,
                     constraints["balance_tolerance"],
                     constraints.get("balance_tolerance_by_dimension", {}),
+                    constraints.get("active_fpgas"),
                 )
             )
         except ValidationError as error:

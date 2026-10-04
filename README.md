@@ -482,6 +482,29 @@ and fabric clock remains a declared sensitivity assumption until separately
 identifiable.  Blind application validation and complete Phase 1--7 OpenSTA
 global WNS/TNS are still mandatory before promotion.
 
+BoardDB FPGA count describes the installed calibrated configuration; it does
+not imply that every workload must receive logic on every FPGA. Phase 3
+constraints may set `fpga_selection_policy` to `minimum-capacity`. EmuFlow
+then chooses the smallest deterministic FPGA subset whose aggregate fitted
+effective capacities cover every mapped resource dimension, honors fixed
+placement, and seals the selected `active_fpgas` in the normalized contract.
+Only those FPGAs are partition targets and participate in balance bounds; all
+installed BoardDB nodes and links remain visible to Phase 4 as possible relay
+hardware. This prevents a design that fits one XCVU19P-equivalent device from
+being artificially split four ways merely because validation uses the
+four-device `lx2-m2` configuration. An explicit `active_fpgas` list is also
+supported for controlled studies. `greedy`, `tritonpart`, and `patron` support
+this contract; the optional MFSPart and RePart research providers currently
+fail closed on a strict subset instead of silently using inactive devices.
+
+```json
+{
+  "schema": "emuflow.partition-constraints/v1",
+  "fpga_selection_policy": "minimum-capacity",
+  "balance_tolerance": 0.10
+}
+```
+
 The redacted artifact path is exposed separately from the main flow so a
 runtime binding can never be mistaken for a publishable experiment file:
 
@@ -727,6 +750,7 @@ emuflow multi-fpga compile \
   --platform <bundle>/<profile>/boarddb.json \
   --board-link-timing-db <bundle>/<profile>/board-link-timing.json \
   --transport-cost-db <bundle>/<profile>/transport-cost.json \
+  --partition-constraints calibration/ppro_blackbox/holdout-partition-constraints-v1.json \
   <other checked benchmark and physical options>
 ```
 

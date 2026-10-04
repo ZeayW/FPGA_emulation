@@ -4,13 +4,14 @@ import fnmatch
 import hashlib
 import math
 from collections import defaultdict, deque
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .errors import ValidationError
 from .io import read_json
 from .ir import EmuIR
-from .platform import Platform
+from .platform import FpgaNode, Platform
 from .resources import RESOURCE_FIELDS, ResourceVector
 from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
@@ -38,6 +39,7 @@ HARD_MACRO_RESOURCES = {
     "dsp48",
     "carry8",
 }
+FPGA_SELECTION_POLICIES = {"all", "explicit", "minimum-capacity"}
 
 
 class _UnionFind:
@@ -233,18 +235,167 @@ def normalize_partition_constraints(
             fixed_by_instance[instance_id] = fpga_id
             fixed.append({"instance": instance_id, "fpga": fpga_id})
 
-    raw_min_used = raw.get("min_used_fpgas", len(platform.fpgas))
-    if min_used_fpgas is not None:
-        raw_min_used = min_used_fpgas
+    requested_min_used = (
+        min_used_fpgas
+        if min_used_fpgas is not None
+        else raw.get("min_used_fpgas")
+    )
+    minimum_selection_count = (
+        requested_min_used
+        if (
+            not isinstance(requested_min_used, bool)
+            and isinstance(requested_min_used, int)
+            and requested_min_used > 0
+        )
+        else 1
+    )
+    selection_policy = raw.get("fpga_selection_policy", "all")
+    if selection_policy not in FPGA_SELECTION_POLICIES:
+        raise ValidationError(
+            "constraints.fpga_selection_policy: expected one of "
+            f"{sorted(FPGA_SELECTION_POLICIES)}"
+        )
+
+    def select_minimum_capacity_fpgas() -> List[str]:
+        total_resources = ResourceVector.sum(
+            ResourceVector.from_mapping(instance["resources"])
+            for instance in ir.value["instances"]
+        ).to_dict()
+        required_fixed = set(fixed_by_instance.values())
+        capacity_vectors = [
+            tuple(
+                fpga.effective_capacity.get(field, 0)
+                for field in RESOURCE_FIELDS
+            )
+            for fpga in platform.fpgas
+        ]
+        if len(set(capacity_vectors)) == 1:
+            per_fpga = dict(zip(RESOURCE_FIELDS, capacity_vectors[0]))
+            required_count = max(
+                (
+                    math.ceil(total_resources.get(field, 0) / capacity)
+                    if capacity > 0
+                    else (
+                        0
+                        if total_resources.get(field, 0) == 0
+                        else math.inf
+                    )
+                )
+                for field, capacity in per_fpga.items()
+            )
+            count = max(
+                minimum_selection_count,
+                len(required_fixed),
+                int(required_count) if math.isfinite(required_count) else 0,
+            )
+            if not math.isfinite(required_count) or count > len(platform.fpgas):
+                raise ValidationError(
+                    "constraints.fpga_selection_policy: design demand exceeds "
+                    "the effective capacity of every supported active subset"
+                )
+            selected = [
+                fpga.id for fpga in platform.fpgas if fpga.id in required_fixed
+            ]
+            selected.extend(
+                fpga.id
+                for fpga in platform.fpgas
+                if fpga.id not in required_fixed
+            )
+            selected_set = set(selected[:count])
+            return [
+                fpga.id for fpga in platform.fpgas if fpga.id in selected_set
+            ]
+        for count in range(
+            max(minimum_selection_count, len(required_fixed)),
+            len(platform.fpgas) + 1,
+        ):
+            for candidate in combinations(platform.fpgas, count):
+                candidate_ids = {fpga.id for fpga in candidate}
+                if not required_fixed <= candidate_ids:
+                    continue
+                if all(
+                    total_resources.get(field, 0)
+                    <= sum(
+                        fpga.effective_capacity.get(field, 0)
+                        for fpga in candidate
+                    )
+                    for field in RESOURCE_FIELDS
+                ):
+                    return [fpga.id for fpga in candidate]
+        raise ValidationError(
+            "constraints.fpga_selection_policy: design demand exceeds the "
+            "effective capacity of every supported active subset"
+        )
+
+    raw_active = raw.get("active_fpgas")
+    if raw_active is not None:
+        if (
+            not isinstance(raw_active, list)
+            or not raw_active
+            or not all(isinstance(item, str) and item for item in raw_active)
+            or len(set(raw_active)) != len(raw_active)
+        ):
+            raise ValidationError(
+                "constraints.active_fpgas: expected unique FPGA ids"
+            )
+        unknown_active = sorted(set(raw_active) - fpga_ids)
+        if unknown_active:
+            raise ValidationError(
+                "constraints.active_fpgas: unknown FPGAs "
+                f"{unknown_active}"
+            )
+        active_set = set(raw_active)
+        active_fpgas = [
+            fpga.id for fpga in platform.fpgas if fpga.id in active_set
+        ]
+        if selection_policy == "all" and active_set != fpga_ids:
+            selection_policy = "explicit"
+        elif selection_policy not in {
+            "all",
+            "explicit",
+            "minimum-capacity",
+        }:
+            raise ValidationError(
+                "constraints.active_fpgas has an invalid selection policy"
+            )
+        if (
+            selection_policy == "minimum-capacity"
+            and active_fpgas != select_minimum_capacity_fpgas()
+        ):
+            raise ValidationError(
+                "constraints.active_fpgas disagrees with the sealed "
+                "minimum-capacity selection"
+            )
+    elif selection_policy == "explicit":
+        raise ValidationError(
+            "constraints.fpga_selection_policy='explicit' requires active_fpgas"
+        )
+    elif selection_policy == "minimum-capacity":
+        active_fpgas = select_minimum_capacity_fpgas()
+    else:
+        active_fpgas = [fpga.id for fpga in platform.fpgas]
+
+    inactive_fixed = sorted(set(fixed_by_instance.values()) - set(active_fpgas))
+    if inactive_fixed:
+        raise ValidationError(
+            "constraints.fixed references inactive FPGAs "
+            f"{inactive_fixed}"
+        )
+
+    raw_min_used = (
+        requested_min_used
+        if requested_min_used is not None
+        else len(active_fpgas)
+    )
     if (
         isinstance(raw_min_used, bool)
         or not isinstance(raw_min_used, int)
         or raw_min_used <= 0
-        or raw_min_used > len(platform.fpgas)
+        or raw_min_used > len(active_fpgas)
     ):
         raise ValidationError(
             "constraints.min_used_fpgas: expected an integer between 1 and "
-            f"{len(platform.fpgas)}"
+            f"{len(active_fpgas)} active FPGAs"
         )
 
     raw_tolerance = raw.get("balance_tolerance", 0.10)
@@ -291,12 +442,29 @@ def normalize_partition_constraints(
         "fixed": sorted(
             fixed, key=lambda item: (item["instance"], item["fpga"])
         ),
+        "fpga_selection_policy": selection_policy,
+        "active_fpgas": active_fpgas,
         "min_used_fpgas": raw_min_used,
         "balance_tolerance": float(raw_tolerance),
         "balance_tolerance_by_dimension": dict(
             sorted(dimension_tolerances.items())
         ),
     }
+
+
+def active_partition_fpgas(
+    platform: Platform, constraints: Mapping[str, Any]
+) -> List[FpgaNode]:
+    """Return assignment targets while retaining the full routing fabric."""
+
+    active_ids = constraints.get("active_fpgas")
+    if active_ids is None:
+        active_ids = [fpga.id for fpga in platform.fpgas]
+    active_set = set(active_ids)
+    result = [fpga for fpga in platform.fpgas if fpga.id in active_set]
+    if len(result) != len(active_set) or not result:
+        raise ValidationError("partition constraints contain invalid active FPGAs")
+    return result
 
 
 def load_partition_constraints(
@@ -639,9 +807,10 @@ def assign_clusters(
         if hop_limit is not None
         else None
     )
-    fpga_ids = [fpga.id for fpga in platform.fpgas]
+    partition_fpgas = active_partition_fpgas(platform, constraints)
+    fpga_ids = [fpga.id for fpga in partition_fpgas]
     effective_capacity = {
-        fpga.id: fpga.effective_capacity for fpga in platform.fpgas
+        fpga.id: fpga.effective_capacity for fpga in partition_fpgas
     }
     loads = {
         fpga_id: {field: 0 for field in RESOURCE_FIELDS}
@@ -877,7 +1046,9 @@ def build_partition_assignment(
             "cluster assignment exact coverage failed; "
             f"missing={missing[:8]}, extra={extra[:8]}"
         )
-    fpga_ids = {fpga.id for fpga in platform.fpgas}
+    fpga_ids = {
+        fpga.id for fpga in active_partition_fpgas(platform, constraints)
+    }
     unknown_fpgas = sorted(set(cluster_assignment.values()) - fpga_ids)
     if unknown_fpgas:
         raise ValidationError(
@@ -1114,6 +1285,11 @@ def validate_partition_artifacts_online(
     used_fpgas = len(set(cluster_assignment.values()))
     if used_fpgas < constraints.get("min_used_fpgas", 1):
         raise ValidationError("online assignment uses too few FPGAs")
+    active_fpgas = constraints.get("active_fpgas")
+    if active_fpgas is not None and not set(cluster_assignment.values()) <= set(
+        active_fpgas
+    ):
+        raise ValidationError("online assignment uses an inactive FPGA")
 
     balance = validate_cluster_assignment_balance(
         platform,
@@ -1121,6 +1297,7 @@ def validate_partition_artifacts_online(
         cluster_assignment,
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
+        constraints.get("active_fpgas"),
     )
     result = {
         "status": "pass",
@@ -1238,8 +1415,19 @@ def validate_cluster_assignment_balance(
     cluster_assignment: Mapping[str, str],
     requested_tolerance: float,
     requested_tolerance_by_dimension: Optional[Mapping[str, float]] = None,
+    active_fpgas: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-    fpga_ids = [fpga.id for fpga in platform.fpgas]
+    active_set = (
+        set(active_fpgas)
+        if active_fpgas is not None
+        else {fpga.id for fpga in platform.fpgas}
+    )
+    partition_fpgas = [
+        fpga for fpga in platform.fpgas if fpga.id in active_set
+    ]
+    if len(partition_fpgas) != len(active_set) or not partition_fpgas:
+        raise ValidationError("balance active FPGA set is invalid")
+    fpga_ids = [fpga.id for fpga in partition_fpgas]
     dimensions = ["cells"]
     dimensions.extend(
         field
@@ -1247,7 +1435,7 @@ def validate_cluster_assignment_balance(
         if any(cluster["resources"].get(field, 0) for cluster in clusters)
         and all(
             fpga.effective_capacity.get(field, 0) > 0
-            for fpga in platform.fpgas
+            for fpga in partition_fpgas
         )
     )
     weights = {
@@ -1274,7 +1462,7 @@ def validate_cluster_assignment_balance(
         else:
             capacity_total = sum(
                 fpga.effective_capacity[dimension]
-                for fpga in platform.fpgas
+                for fpga in partition_fpgas
             )
             shares = {
                 fpga.id: (
@@ -1532,6 +1720,14 @@ def validate_partition_artifacts(
         ir,
         platform,
     )
+    inactive_assignment = sorted(
+        set(raw_assignment.values()) - set(constraints["active_fpgas"])
+    )
+    if inactive_assignment:
+        raise ValidationError(
+            "assignment uses inactive FPGAs "
+            f"{inactive_assignment}"
+        )
     if cut_mode == CUT_MODE_STATIC_EXACT:
         required_policy = {
             "max_cross_fpga_dependency_depth",
@@ -1639,6 +1835,7 @@ def validate_partition_artifacts(
         raw_cluster_assignment,
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
+        constraints.get("active_fpgas"),
     )
 
     legal_cut_classes = set(LEGAL_CUT_CLASSES)

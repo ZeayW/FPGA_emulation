@@ -23,6 +23,7 @@ from .ir import EmuIR
 from .io import read_json, write_json
 from .partition import (
     CUT_MODE_STATIC_EXACT,
+    active_partition_fpgas,
     build_partition_assignment,
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
@@ -520,7 +521,7 @@ def _reconstruct_partition_pressure_model(
                     sorted(fpga.effective_capacity.items())
                 ),
             }
-            for fpga in platform.fpgas
+            for fpga in active_partition_fpgas(platform, constraints)
         ],
         "capacities": capacity_records,
         "shortest_routes": _shortest_routes(platform, route_constraints),
@@ -1373,6 +1374,10 @@ def run_partition_pressure_reference(
 def _native_dimensions(
     platform: Platform, model: Mapping[str, Any]
 ) -> List[str]:
+    model_fpga_ids = {record["fpga"] for record in model["fpgas"]}
+    partition_fpgas = [
+        fpga for fpga in platform.fpgas if fpga.id in model_fpga_ids
+    ]
     dimensions = ["cells"]
     dimensions.extend(
         field
@@ -1383,7 +1388,7 @@ def _native_dimensions(
         )
         and all(
             fpga.effective_capacity.get(field, 0) > 0
-            for fpga in platform.fpgas
+            for fpga in partition_fpgas
         )
     )
     return dimensions
@@ -1458,6 +1463,7 @@ def _write_patron_native_input(
         initial_assignment["cluster_assignment"],
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
+        constraints.get("active_fpgas"),
     )
     fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
     domains = sorted(model["capacities"], key=lambda item: item["key"])

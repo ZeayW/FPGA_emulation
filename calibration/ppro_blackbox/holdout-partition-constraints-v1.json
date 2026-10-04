@@ -1,0 +1,5 @@
+{
+  "schema": "emuflow.partition-constraints/v1",
+  "fpga_selection_policy": "minimum-capacity",
+  "balance_tolerance": 0.1
+}

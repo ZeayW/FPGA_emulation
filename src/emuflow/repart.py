@@ -255,6 +255,14 @@ def export_repart_inputs(
     net_weights: Optional[Mapping[str, float]] = None,
     replication_enabled: bool = False,
 ) -> Dict[str, Any]:
+    platform_fpga_ids = {fpga.id for fpga in platform.fpgas}
+    active_fpga_ids = set(
+        constraints.get("active_fpgas", platform_fpga_ids)
+    )
+    if active_fpga_ids != platform_fpga_ids:
+        raise ValidationError(
+            "RePart does not support an active FPGA subset"
+        )
     clusters = sorted(
         clusters_artifact["clusters"], key=lambda item: item["id"]
     )

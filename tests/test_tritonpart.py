@@ -108,6 +108,26 @@ class TritonPartTest(unittest.TestCase):
                 vertex_count,
             )
 
+    def test_export_respects_capacity_selected_partition_targets(self) -> None:
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "fpga_selection_policy": "minimum-capacity",
+            },
+            self.ir,
+            self.platform,
+        )
+        clusters = build_clusters(self.ir, constraints)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = export_tritonpart_inputs(
+                self.ir,
+                self.platform,
+                clusters,
+                constraints,
+                Path(temporary_directory),
+            )
+        self.assertEqual(artifact["fpga_order"], ["fpga0"])
+
     def test_managed_run_does_not_serialize_duplicate_input_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -299,6 +299,28 @@ def _patron_hop_audit_report(
     }
 
 
+def _single_active_hop_audit_report(
+    platform: Platform,
+    assignment: Dict[str, Any],
+    route_constraints: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Audit hop legality when capacity selection leaves one target."""
+
+    audit = validate_assignment_hops(
+        platform, assignment, route_constraints
+    )
+    return {
+        "schema": "emuflow.hop-partition-refinement/v1",
+        "status": "pass",
+        "enabled": False,
+        "reason": "single-active-fpga-has-no-partition-hop-decision",
+        "algorithm": "single-active-fpga-hop-audit-v1",
+        "before": audit,
+        "after": audit,
+        "moves": [],
+    }
+
+
 def run_phase3(
     ir_path: Path,
     platform_path: Path,
@@ -419,6 +441,10 @@ def run_phase3(
         )
     if mfspart_post_refinement is None:
         mfspart_post_refinement = False
+    if mfspart_post_refinement and provider != "tritonpart":
+        raise ValueError(
+            "MFSPart post-refinement requires provider='tritonpart'"
+        )
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
     constraints = load_partition_constraints(
@@ -428,6 +454,22 @@ def run_phase3(
         min_used_fpgas=min_used_fpgas,
         balance_tolerance=balance_tolerance,
     )
+    if (
+        len(constraints["active_fpgas"]) != len(platform.fpgas)
+        and (
+            provider in {"mfspart", "repart", "repart-replication"}
+            or mfspart_post_refinement
+        )
+    ):
+        feature = (
+            "MFSPart post-refinement"
+            if mfspart_post_refinement
+            else f"Phase 3 provider {provider!r}"
+        )
+        raise ValidationError(
+            f"{feature} does not yet support a selected "
+            "assignment-target subset; use greedy, tritonpart, or patron"
+        )
     route_constraints = load_route_constraints(
         route_constraints_path, platform
     )
@@ -454,7 +496,23 @@ def run_phase3(
         )
     patron_validation = None
     patron_initialization = None
-    if provider == "greedy":
+    single_active_selection = len(constraints["active_fpgas"]) == 1
+    if single_active_selection:
+        assignment = assign_clusters(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            seed=seed,
+            route_constraints=route_constraints,
+        )
+        assignment["provider"] = "single-active-fpga-capacity-selection-v1"
+        assignment["provider_metadata"] = {
+            "requested_provider": provider,
+            "reason": "no partition decision exists with one active target",
+            "active_fpgas": list(constraints["active_fpgas"]),
+        }
+    elif provider == "greedy":
         assignment = assign_clusters(
             ir,
             platform,
@@ -740,11 +798,7 @@ def run_phase3(
             "'mfspart', 'patron', or 'greedy'"
         )
     mfspart_post_refinement_report = None
-    if mfspart_post_refinement:
-        if provider != "tritonpart":
-            raise ValueError(
-                "MFSPart post-refinement requires provider='tritonpart'"
-            )
+    if mfspart_post_refinement and not single_active_selection:
         if timing_path_database_path is not None and retain_diagnostics:
             validate_sta_path_database(timing_path_database_path, ir_path)
         assignment, mfspart_post_refinement_report = refine_mfspart_partition(
@@ -765,7 +819,11 @@ def run_phase3(
             defer_semantic_contract=True,
             online_validation=True,
         )
-    if provider == "patron":
+    if single_active_selection:
+        hop_refinement = _single_active_hop_audit_report(
+            platform, assignment, route_constraints
+        )
+    elif provider == "patron":
         # PATRON already evaluates reachability and max-hop legality for every
         # native candidate. A second topology FM pass duplicates a large input
         # and obscures the exact assignment PATRON selected.
@@ -818,6 +876,7 @@ def run_phase3(
         "design": ir.value["design"]["name"],
         "platform": platform.name,
         "provider": assignment["provider"],
+        "requested_provider": provider,
         "seed": assignment["seed"],
         "validation": validation,
         "hop_refinement": persisted_hop_refinement,
@@ -851,7 +910,13 @@ def run_phase3(
         report["artifacts"]["semantic_contract"] = (
             "assignment.json#/semantic_contract"
         )
-    if provider == "tritonpart":
+    if single_active_selection:
+        report["partition_decision"] = {
+            "executed": False,
+            "reason": "one-active-assignment-target",
+            "requested_provider": provider,
+        }
+    elif provider == "tritonpart":
         if retain_diagnostics:
             report["artifacts"]["tritonpart"] = (
                 "tritonpart/tritonpart_input.json"
@@ -952,7 +1017,11 @@ def run_phase3(
     write_json(
         output_dir / "assignment.json", persisted_assignment, compact=True
     )
-    if provider == "patron" and retain_patron_baseline:
+    if (
+        provider == "patron"
+        and retain_patron_baseline
+        and not single_active_selection
+    ):
         write_json(
             output_dir / "patron-initial-assignment.json",
             pack_phase3_assignment(initial, clusters),

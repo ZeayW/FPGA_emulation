@@ -14,6 +14,7 @@ from .io import read_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .partition import (
+    active_partition_fpgas,
     build_partition_assignment,
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
@@ -231,7 +232,10 @@ def _write_native_input(
     cluster_index = {
         cluster["id"]: index for index, cluster in enumerate(clusters)
     }
-    fpga_ids = [fpga.id for fpga in platform.fpgas]
+    partition_fpgas = active_partition_fpgas(
+        platform, partition_constraints
+    )
+    fpga_ids = [fpga.id for fpga in partition_fpgas]
     fpga_index = {fpga_id: index for index, fpga_id in enumerate(fpga_ids)}
     balance = validate_cluster_assignment_balance(
         platform,
@@ -239,6 +243,7 @@ def _write_native_input(
         assignment["cluster_assignment"],
         partition_constraints["balance_tolerance"],
         partition_constraints.get("balance_tolerance_by_dimension", {}),
+        partition_constraints.get("active_fpgas"),
     )
     dimensions = balance["balance_dimensions"]
     nets = _primary_net_records(ir, clusters_artifact, net_weights)
@@ -264,7 +269,7 @@ def _write_native_input(
                 f"DIST {fpga_index[source]} {fpga_index[sink]} "
                 f"{value if value is not None else -1}"
             )
-    for fpga in platform.fpgas:
+    for fpga in partition_fpgas:
         for dimension_index, dimension in enumerate(dimensions):
             balance_bound = balance["balance_allowed_loads"][fpga.id][
                 dimension

@@ -447,6 +447,15 @@ def refine_mfspart_partition(
     intentionally undirected hypergraph export.
     """
 
+    platform_fpga_ids = {fpga.id for fpga in platform.fpgas}
+    active_fpga_ids = set(
+        constraints.get("active_fpgas", platform_fpga_ids)
+    )
+    if active_fpga_ids != platform_fpga_ids:
+        raise ValidationError(
+            "MFSPart post-refinement does not support an active FPGA subset"
+        )
+
     if early_stop <= 0:
         raise ValidationError("MFSPart post-refinement early-stop must be positive")
     nodes, nets, dimensions = _partition_graph(
@@ -567,6 +576,7 @@ def refine_mfspart_partition(
         refined_cluster_assignment,
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
+        constraints.get("active_fpgas"),
     )
     used = len(set(refined_cluster_assignment.values()))
     if used < constraints["min_used_fpgas"]:
@@ -681,6 +691,14 @@ def run_mfspart(
     refiner_checker: Optional[str] = None,
     legalizer: Optional[str] = None,
 ) -> Dict[str, Any]:
+    platform_fpga_ids = {fpga.id for fpga in platform.fpgas}
+    active_fpga_ids = set(
+        constraints.get("active_fpgas", platform_fpga_ids)
+    )
+    if active_fpga_ids != platform_fpga_ids:
+        raise ValidationError(
+            "MFSPart does not support an active FPGA subset"
+        )
     nodes, nets, dimensions = _partition_graph(
         ir, clusters_artifact, platform, net_weights or {}
     )

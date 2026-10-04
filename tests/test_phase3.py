@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
@@ -16,7 +17,7 @@ from emuflow.partition import (
     validate_partition_artifacts,
 )
 from emuflow.phase3 import run_phase3
-from emuflow.platform import Platform
+from emuflow.platform import FpgaNode, Platform
 from emuflow.yosys import import_yosys_json
 
 
@@ -48,6 +49,128 @@ class Phase3Test(unittest.TestCase):
             seed=7,
         )
         return constraints, clusters, assignment
+
+    def test_minimum_capacity_policy_uses_one_partition_target(self) -> None:
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "fpga_selection_policy": "minimum-capacity",
+            },
+            self.ir,
+            self.platform,
+        )
+        self.assertEqual(constraints["active_fpgas"], ["fpga0"])
+        self.assertEqual(constraints["min_used_fpgas"], 1)
+        clusters = build_clusters(self.ir, constraints)
+        assignment = assign_clusters(
+            self.ir,
+            self.platform,
+            clusters,
+            constraints,
+            seed=7,
+        )
+        self.assertEqual(
+            set(assignment["instance_assignment"].values()), {"fpga0"}
+        )
+        report = validate_partition_artifacts(
+            self.ir, self.platform, clusters, assignment
+        )
+        self.assertEqual(report["used_fpgas"], 1)
+        tampered = copy.deepcopy(constraints)
+        tampered["active_fpgas"] = ["fpga0", "fpga1"]
+        with self.assertRaisesRegex(
+            ValidationError, "minimum-capacity selection"
+        ):
+            normalize_partition_constraints(
+                tampered, self.ir, self.platform
+            )
+
+    def test_minimum_capacity_scales_to_homogeneous_32_fpga_platform(
+        self,
+    ) -> None:
+        template = self.platform.fpgas[0]
+        platform = Platform(
+            name="homogeneous_32fpga",
+            kind="virtual",
+            description="selection scalability fixture",
+            fpgas=tuple(
+                FpgaNode(
+                    id=f"fpga{index}",
+                    part=template.part,
+                    utilization_limit=template.utilization_limit,
+                    capacity=dict(template.capacity),
+                )
+                for index in range(32)
+            ),
+            links=(),
+        )
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "fpga_selection_policy": "minimum-capacity",
+                "fixed": [
+                    {"instance": "q_reg[0]", "fpga": "fpga31"}
+                ],
+            },
+            self.ir,
+            platform,
+        )
+        self.assertEqual(constraints["active_fpgas"], ["fpga31"])
+
+    def test_single_active_target_skips_requested_patron(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.json"
+            constraints_path = root / "constraints.json"
+            ir_path.write_text(
+                json.dumps(self.ir.to_dict()), encoding="utf-8"
+            )
+            constraints_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.partition-constraints/v1",
+                        "fpga_selection_policy": "minimum-capacity",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch("emuflow.phase3.run_tritonpart") as tritonpart,
+                patch(
+                    "emuflow.phase3.run_partition_pressure_native"
+                ) as patron,
+            ):
+                report = run_phase3(
+                    ir_path=ir_path,
+                    platform_path=PLATFORM_PATH,
+                    output_dir=root / "phase3",
+                    constraints_path=constraints_path,
+                    provider="patron",
+                    seed=19,
+                )
+            tritonpart.assert_not_called()
+            patron.assert_not_called()
+            self.assertEqual(
+                report["provider"],
+                "single-active-fpga-capacity-selection-v1",
+            )
+            self.assertEqual(report["requested_provider"], "patron")
+            self.assertFalse(report["partition_decision"]["executed"])
+            self.assertEqual(report["validation"]["used_fpgas"], 1)
+
+    def test_explicit_active_subset_rejects_inactive_fixed_instance(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "inactive FPGAs"):
+            normalize_partition_constraints(
+                {
+                    "schema": "emuflow.partition-constraints/v1",
+                    "active_fpgas": ["fpga0"],
+                    "fixed": [
+                        {"instance": "q_reg[0]", "fpga": "fpga1"}
+                    ],
+                },
+                self.ir,
+                self.platform,
+            )
 
     def test_dimension_specific_balance_tolerance_preserves_tight_cell_balance(
         self,
