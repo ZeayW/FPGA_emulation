@@ -363,6 +363,12 @@ requirements, not optional micro-optimizations.
   load or expand the full payload only at the stage that consumes it.  Never
   derive a tiny scheduling, routing, or timing input by repeatedly walking an
   unrelated diagnostic report.
+- The same rule applies inside external-tool Tcl.  Read unbounded net, pin,
+  path, placement, and route tables one record at a time; never use
+  `split [read $channel]` or construct a complete duplicate pin map merely to
+  feed OpenSTA/Vivado.  Resolve graph relationships lazily from the canonical
+  net identity and cache only objects reached by the requested report.  A Tcl
+  value-size limit is a design error in the interface, not a workload limit.
 - Hash canonical bytes once while producing or importing an artifact whenever
   possible.  Do not materialize a second serialized copy solely to compute its
   identity, and do not repeatedly rehash an immutable managed object at every

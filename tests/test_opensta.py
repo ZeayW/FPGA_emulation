@@ -18,7 +18,6 @@ from emuflow.opensta import (
     render_opensta_liberty,
     run_opensta_path_database,
     validate_timing_model_coverage,
-    _write_emuir_timing_pin_map,
 )
 from emuflow.sta import (
     import_sta_path_database_tsv_streaming,
@@ -257,40 +256,28 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertNotIn("-group_count", script)
         self.assertIn("proc emuflow_emit_timing_paths", script)
         self.assertIn("array set emuir_by_pin_full_name {}", script)
-        self.assertIn("EMUFLOW_STA_PIN_MAP", script)
-        self.assertIn(r"pin_full_name_hex\temuir_net_hex", script)
+        self.assertNotIn("EMUFLOW_STA_PIN_MAP", script)
+        self.assertIn("get_nets -quiet -of_objects", script)
+        self.assertNotIn("split [read $map_input]", script)
         self.assertNotIn("get_pins -quiet -of_objects $mapped_net", script)
         emit_body = script[
             script.index("proc emuflow_emit_timing_paths") :
             script.index("if {[info exists env(EMUFLOW_STA_THROUGH_NETS)]")
         ]
-        self.assertNotIn("get_nets -quiet -of_objects $pin", emit_body)
+        self.assertIn("get_nets -quiet -of_objects [list $pin]", emit_body)
         self.assertIn(
             '$required_net ne "" && ![info exists seen_net($required_net)]',
             script,
         )
         self.assertNotIn("forced_net", script)
         self.assertNotIn("forced_position", script)
-        query = script.index("find_timing_paths -path_delay max", script.index("foreach line [lrange $through_lines"))
+        query = script.index(
+            "find_timing_paths -path_delay max",
+            script.index("while {[gets $through_input line] >= 0}"),
+        )
         emit = script.index("emuflow_emit_timing_paths", query)
         next_query = script.find("find_timing_paths -path_delay max", query + 1)
         self.assertLess(emit, next_query)
-
-    def test_timing_pin_map_is_derived_from_emuir_connectivity(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "pins.tsv"
-            _write_emuir_timing_pin_map(self.ir, output)
-            rows = output.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(rows[0], "pin_full_name_hex\temuir_net_hex")
-        decoded = {
-            bytes.fromhex(pin_hex).decode(): bytes.fromhex(net_hex).decode()
-            for pin_hex, net_hex in (
-                row.split("\t") for row in rows[1:]
-            )
-        }
-        self.assertIn("q_reg[0]/D", decoded)
-        self.assertIn("q_reg[0]/Q", decoded)
-        self.assertEqual(len(decoded), len(set(decoded)))
 
     def test_vtr_timing_db_builds_scalarized_opensta_model(self) -> None:
         source = {

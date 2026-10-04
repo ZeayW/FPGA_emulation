@@ -5,7 +5,6 @@
 #   EMUFLOW_STA_VERILOG
 #   EMUFLOW_STA_TOP
 #   EMUFLOW_STA_NET_MAP
-#   EMUFLOW_STA_PIN_MAP
 #   EMUFLOW_STA_CLOCKS
 #   EMUFLOW_STA_OUTPUT
 #   EMUFLOW_STA_MAX_PATHS
@@ -47,13 +46,13 @@ read_verilog $verilog_path
 link_design $top
 
 set clock_input [open $clock_path r]
-set clock_lines [split [read $clock_input] "\n"]
-close $clock_input
-if {[lindex $clock_lines 0] ne "clock_hex\tperiod_ns"} {
+if {[gets $clock_input clock_header] < 0 ||
+    $clock_header ne "clock_hex\tperiod_ns"} {
+  close $clock_input
   error "invalid OpenSTA clock-map header"
 }
 set clock_count 0
-foreach line [lrange $clock_lines 1 end] {
+while {[gets $clock_input line] >= 0} {
   if {$line eq ""} {
     continue
   }
@@ -70,20 +69,23 @@ foreach line [lrange $clock_lines 1 end] {
   create_clock -name $clock_name -period $period $port
   incr clock_count
 }
+close $clock_input
 if {$clock_count == 0} {
   error "OpenSTA requires at least one clock"
 }
 
 set map_input [open $map_path r]
-set map_lines [split [read $map_input] "\n"]
-close $map_input
-set map_header [lindex $map_lines 0]
+if {[gets $map_input map_header] < 0} {
+  close $map_input
+  error "empty EmuIR net-map"
+}
 if {$map_header ne "mapped_net_hex\temuir_net_hex" &&
     $map_header ne "vivado_net_hex\temuir_net_hex"} {
+  close $map_input
   error "invalid EmuIR net-map header"
 }
 array set emuir_by_mapped_net {}
-foreach line [lrange $map_lines 1 end] {
+while {[gets $map_input line] >= 0} {
   if {$line eq ""} {
     continue
   }
@@ -95,31 +97,16 @@ foreach line [lrange $map_lines 1 end] {
   set emuir_name [emuflow_hex_decode [lindex $fields 1]]
   set emuir_by_mapped_net($mapped_name) $emuir_name
 }
+close $map_input
 
-# Load the pin/net identity produced directly from sealed EmuIR connectivity.
-# This static map avoids repeated collection scans while live PathEnd handles
-# are being serialized and gives the exporter an independently sealed identity
-# source instead of inferring EmuIR names from the timing engine's hierarchy.
+# Resolve only pins that actually occur on exported timing paths.  A complete
+# pin map duplicates every flattened instance/pin name and exceeded Tcl's 2 GiB
+# value limit on real Koios netlists.  The mapped Verilog is flat and every
+# connected pin belongs to one generated ``__emuflow_net_<index>`` net, whose
+# independently sealed EmuIR identity is already present in the net map above.
+# Cache those graph lookups lazily so memory and work scale with reported paths,
+# not with every pin in the design.
 array set emuir_by_pin_full_name {}
-set pin_map_path [file normalize [emuflow_required_env EMUFLOW_STA_PIN_MAP]]
-set pin_map_input [open $pin_map_path r]
-set pin_map_lines [split [read $pin_map_input] "\n"]
-close $pin_map_input
-if {[lindex $pin_map_lines 0] ne "pin_full_name_hex\temuir_net_hex"} {
-  error "invalid OpenSTA pin-map header"
-}
-foreach line [lrange $pin_map_lines 1 end] {
-  if {$line eq ""} {
-    continue
-  }
-  set fields [split $line "\t"]
-  if {[llength $fields] != 2} {
-    error "malformed OpenSTA pin-map row"
-  }
-  set pin_full_name [emuflow_hex_decode [lindex $fields 0]]
-  set emuir_name [emuflow_hex_decode [lindex $fields 1]]
-  set emuir_by_pin_full_name($pin_full_name) $emuir_name
-}
 
 set emitted 0
 set queried_paths 0
@@ -129,7 +116,7 @@ set queried_paths 0
 # of retaining those handles across the per-cut-net loop.
 proc emuflow_emit_timing_paths {
     timing_paths output_var emitted_var {required_net ""}} {
-  global emuir_by_pin_full_name
+  global emuir_by_mapped_net emuir_by_pin_full_name
   upvar 1 $output_var output
   upvar 1 $emitted_var emitted
   foreach path_end $timing_paths {
@@ -156,12 +143,21 @@ proc emuflow_emit_timing_paths {
     foreach point $points {
       set pin [get_property $point pin]
       set pin_full_name [get_property $pin full_name]
-      if {[info exists emuir_by_pin_full_name($pin_full_name)]} {
-        set emuir_name $emuir_by_pin_full_name($pin_full_name)
-        if {![info exists seen_net($emuir_name)]} {
-          set seen_net($emuir_name) 1
-          lappend path_nets $emuir_name
+      if {![info exists emuir_by_pin_full_name($pin_full_name)]} {
+        set pin_nets [get_nets -quiet -of_objects [list $pin]]
+        set resolved_emuir_name ""
+        if {[llength $pin_nets] == 1} {
+          set mapped_name [get_property [lindex $pin_nets 0] name]
+          if {[info exists emuir_by_mapped_net($mapped_name)]} {
+            set resolved_emuir_name $emuir_by_mapped_net($mapped_name)
+          }
         }
+        set emuir_by_pin_full_name($pin_full_name) $resolved_emuir_name
+      }
+      set emuir_name $emuir_by_pin_full_name($pin_full_name)
+      if {$emuir_name ne "" && ![info exists seen_net($emuir_name)]} {
+        set seen_net($emuir_name) 1
+        lappend path_nets $emuir_name
       }
     }
     # A directed cut-net certificate is valid only when the path returned by
@@ -199,13 +195,13 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   }
   set endpoint_path [file normalize $env(EMUFLOW_STA_THROUGH_ENDPOINTS)]
   set endpoint_input [open $endpoint_path r]
-  set endpoint_lines [split [read $endpoint_input] "\n"]
-  close $endpoint_input
-  if {[lindex $endpoint_lines 0] ne "emuir_net_hex\tendpoint_pin_hex"} {
+  if {[gets $endpoint_input endpoint_header] < 0 ||
+      $endpoint_header ne "emuir_net_hex\tendpoint_pin_hex"} {
+    close $endpoint_input
     error "invalid OpenSTA through-endpoint map header"
   }
   array set timed_endpoints {}
-  foreach endpoint_line [lrange $endpoint_lines 1 end] {
+  while {[gets $endpoint_input endpoint_line] >= 0} {
     if {$endpoint_line eq ""} {
       continue
     }
@@ -217,16 +213,17 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     set endpoint_pin [emuflow_hex_decode [lindex $endpoint_fields 1]]
     lappend timed_endpoints($endpoint_net) $endpoint_pin
   }
+  close $endpoint_input
   set coverage_output [open $coverage_path w]
   puts $coverage_output "emuir_net_hex\tdriver_count\tqueried_paths\temitted_paths"
   set through_path [file normalize $env(EMUFLOW_STA_THROUGH_NETS)]
   set through_input [open $through_path r]
-  set through_lines [split [read $through_input] "\n"]
-  close $through_input
-  if {[lindex $through_lines 0] ne "mapped_net_hex\temuir_net_hex"} {
+  if {[gets $through_input through_header] < 0 ||
+      $through_header ne "mapped_net_hex\temuir_net_hex"} {
+    close $through_input
     error "invalid OpenSTA through-net map header"
   }
-  foreach line [lrange $through_lines 1 end] {
+  while {[gets $through_input line] >= 0} {
     if {$line eq ""} {
       continue
     }
@@ -327,6 +324,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     }
     puts $coverage_output "[emuflow_hex_encode $emuir_name]\t$driver_count\t[expr {$queried_paths - $before_queried}]\t[expr {$emitted - $before_emitted}]"
   }
+  close $through_input
   close $coverage_output
   close $output
   if {$emitted == 0} {
