@@ -145,8 +145,11 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
     # Path scalar APIs use seconds. Querying the known endpoint directly is
     # linear and avoids materializing/sorting every PathEnd in one giant list.
     set arrival [expr {{[$p arrival] * 1.0e9}}]
-    set required [expr {{[$p required] * 1.0e9}}]
-    set slack [expr {{[$p slack] * 1.0e9}}]
+    # Path.required/slack are vertex-tag values and omit the output-delay
+    # PathEnd constraint. endpoint_slack includes that constraint and returns
+    # user time units; each generated endpoint has exactly one path/clock.
+    set slack [sta::endpoint_slack $pin "" max]
+    set required [expr {{$arrival + $slack}}]
     puts $out "o$i\\t$arrival\\t$required\\t$slack"
   }}
   close $out
