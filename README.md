@@ -5423,6 +5423,9 @@ use an explicitly labelled F7/LUT surrogate. The contract is therefore
 pre-placement timing optimization. Route A's terminal setup result still comes
 from per-sink RWRoute delay extraction, Phase 7 timing binding and global
 OpenSTA. No hard macro is assigned a zero-delay placeholder.
+The compile preflight binds this schema to
+`xilinx-ultrascaleplus-open-v1` before synthesis, so a VTR/Xilinx provider
+mismatch cannot consume a large Yosys run before failing.
 
 ```bash
 emuflow multi-fpga compile design.v \

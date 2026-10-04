@@ -63,7 +63,9 @@ from .sta import (
 from .synthesis import run_generic_yosys, run_xilinx_ultrascaleplus_yosys
 from .vivado_backend import run_vivado_timing_path_database
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
+from .vtr_architecture import ARCHITECTURE_TIMING_DB_SCHEMA
 from .vtr_netlist import normalize_vtr_hard_block_json
+from .xilinx_preplacement_timing import XILINX_PREPLACEMENT_TIMING_SCHEMA
 from .xilinx_primitives import (
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     audit_xilinx_mapped_json,
@@ -82,6 +84,39 @@ MULTI_FPGA_MAPPING_PROFILES = (
 MULTI_FPGA_PHASE6_PROVIDERS = ("auto", "chimew", "baseline")
 PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v2"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
+
+
+def _validate_mapping_timing_contract(
+    mapping_profile: str,
+    timing_db_path: Optional[Path],
+) -> None:
+    """Reject a provider-mismatched timing model before RTL synthesis.
+
+    Provider dispatch inside OpenSTA remains fail-closed, but discovering a
+    VTR/Xilinx mismatch after a large Yosys run wastes substantial compute.
+    The Xilinx mapping profile therefore requires its source-sealed
+    RapidWright pre-placement contract up front.  A supplied VTR hard-block
+    contract must likewise carry the VTR schema.
+    """
+
+    if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+        if timing_db_path is None:
+            raise EmuFlowError(
+                "xilinx-ultrascaleplus-open-v1 requires a source-sealed "
+                "Xilinx pre-placement --architecture-timing-db"
+            )
+        expected_schema = XILINX_PREPLACEMENT_TIMING_SCHEMA
+    elif mapping_profile == VTR_HARD_BLOCK_PROFILE and timing_db_path is not None:
+        expected_schema = ARCHITECTURE_TIMING_DB_SCHEMA
+    else:
+        return
+
+    observed_schema = read_json(timing_db_path).get("schema")
+    if observed_schema != expected_schema:
+        raise EmuFlowError(
+            f"mapping profile {mapping_profile!r} requires Architecture "
+            f"TimingDB schema {expected_schema!r}, got {observed_schema!r}"
+        )
 
 
 _STAGE_SUMMARY_FIELDS = {
@@ -1331,6 +1366,10 @@ def run_multi_fpga_flow(
     if timing_backend == "opensta" and timing_vivado is not None:
         raise EmuFlowError(
             "--timing-vivado applies only to timing-backend=vivado"
+        )
+    if timing_backend == "opensta":
+        _validate_mapping_timing_contract(
+            mapping_profile, architecture_timing_db
         )
     internal_timing_database = timing_paths is None
     if partition_provider == "patron" and not internal_timing_database:

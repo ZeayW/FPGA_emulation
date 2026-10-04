@@ -12,6 +12,7 @@ from emuflow.cli import _build_parser, _dispatch
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.multi_fpga_flow import (
+    _validate_mapping_timing_contract,
     finalize_multi_fpga_physical_checkpoint,
     run_multi_fpga_flow,
     validate_multi_fpga_flow_bundle,
@@ -53,6 +54,39 @@ FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
+    def test_mapping_profile_rejects_mismatched_timing_provider_early(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            vtr_timing = root / "vtr-timing.json"
+            xilinx_timing = root / "xilinx-timing.json"
+            write_json(
+                vtr_timing,
+                {"schema": "emuflow.architecture-timing-db/v1"},
+            )
+            write_json(
+                xilinx_timing,
+                {"schema": "emuflow.xilinx-preplacement-timing-db/v1"},
+            )
+
+            _validate_mapping_timing_contract(
+                "vtr-hard-blocks", vtr_timing
+            )
+            _validate_mapping_timing_contract(
+                "xilinx-ultrascaleplus-open-v1", xilinx_timing
+            )
+            with self.assertRaisesRegex(
+                EmuFlowError, "requires Architecture TimingDB schema"
+            ):
+                _validate_mapping_timing_contract(
+                    "xilinx-ultrascaleplus-open-v1", vtr_timing
+                )
+            with self.assertRaisesRegex(
+                EmuFlowError, "requires a source-sealed Xilinx"
+            ):
+                _validate_mapping_timing_contract(
+                    "xilinx-ultrascaleplus-open-v1", None
+                )
+
     def test_zero_cut_flow_skips_vacuous_interconnect_optimizers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
