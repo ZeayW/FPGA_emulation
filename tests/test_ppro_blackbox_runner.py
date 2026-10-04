@@ -214,6 +214,17 @@ class PProBlackboxRunnerTest(unittest.TestCase):
             self.assertFalse(any(result["reports"].values()))
             self.assertEqual(result["metrics"]["timing"], {})
 
+    def test_zero_exit_compile_failure_is_not_mislabeled_missing_report(self):
+        with tempfile.TemporaryDirectory() as raw:
+            case = Path(raw) / "case"
+            result = execute_blackbox_case(
+                run_spec("compile-zero-run"), binding(case, "compile_zero")
+            )
+            self.assertEqual(result["execution"]["outcome"], "tool_failure")
+            self.assertEqual(result["execution"]["failure_code"], "hdl-compile-error")
+            self.assertFalse(result["derived"]["fit_eligible"])
+            self.assertFalse(any(result["reports"].values()))
+
     def test_license_and_tool_failures_are_distinct(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

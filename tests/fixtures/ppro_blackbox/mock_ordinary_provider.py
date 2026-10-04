@@ -19,7 +19,9 @@ def _csv(path: Path, fields, rows) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--mode", choices=("pass", "missing", "license", "tool", "capacity"), default="pass"
+        "--mode",
+        choices=("pass", "missing", "license", "tool", "capacity", "compile_zero"),
+        default="pass",
     )
     args = parser.parse_args()
     if args.mode == "license":
@@ -34,6 +36,10 @@ def main() -> int:
             file=sys.stdout,
         )
         return 1
+    if args.mode == "compile_zero":
+        print("syntax error near token 'soft'", file=sys.stderr)
+        print("run_compile failed", file=sys.stderr)
+        return 0
 
     root = Path.cwd()
     _csv(

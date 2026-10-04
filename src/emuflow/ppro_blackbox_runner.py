@@ -70,6 +70,14 @@ _CAPACITY_BOUNDARY_PATTERNS = (
         re.I,
     ),
 )
+_HDL_COMPILE_FAILURE_PATTERNS = (
+    # Some PPro front-end failures return zero while producing no ordinary
+    # reports.  Keep these patterns specific to normal compiler diagnostics so
+    # the runner does not misclassify an invalid workload as missing evidence.
+    re.compile(r"run_compile failed", re.I),
+    re.compile(r"syntax error", re.I),
+    re.compile(r"module .* ignored due to previous errors", re.I),
+)
 _TIMING_PATTERNS = {
     "sr0_worst_cross_fpga_delay_ns": re.compile(
         r"^Worst Cross FPGA Delay \(ns\):\s*([0-9]+(?:\.[0-9]+)?)\s*$",
@@ -492,6 +500,8 @@ def classify_process_failure(return_code: int, diagnostic_tail: str) -> tuple[st
         return "infrastructure_failure", "execution-environment"
     if any(pattern.search(diagnostic_tail) for pattern in _CAPACITY_BOUNDARY_PATTERNS):
         return "capacity_infeasible", "capacity-boundary"
+    if any(pattern.search(diagnostic_tail) for pattern in _HDL_COMPILE_FAILURE_PATTERNS):
+        return "tool_failure", "hdl-compile-error"
     return "tool_failure", f"tool-exit-{abs(return_code)}"
 
 
@@ -663,7 +673,7 @@ def execute_blackbox_case(
                 _read_text_tail(stdout_path) + "\n" + _read_text_tail(stderr_path)
             )
             outcome, failure_code = classify_process_failure(0, diagnostic_tail)
-            if outcome == "tool_failure":
+            if outcome == "tool_failure" and failure_code == "tool-exit-0":
                 outcome, failure_code = "missing_report", "ordinary-report-missing"
             observation = _failure_observation(spec, outcome, failure_code, runtime_seconds)
         else:
