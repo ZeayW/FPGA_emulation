@@ -5,13 +5,14 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.cli import _build_parser, _dispatch
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.multi_fpga_flow import (
+    _resolve_partition_openroad,
     _validate_mapping_timing_contract,
     finalize_multi_fpga_physical_checkpoint,
     run_multi_fpga_flow,
@@ -54,6 +55,28 @@ FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
+    def test_partition_engine_is_resolved_before_flow_execution(self) -> None:
+        with patch(
+            "emuflow.multi_fpga_flow.resolve_native_executable",
+            return_value="/sealed/install/bin/openroad",
+        ) as resolver:
+            self.assertEqual(
+                _resolve_partition_openroad("patron", None),
+                "/sealed/install/bin/openroad",
+            )
+            self.assertEqual(
+                _resolve_partition_openroad("tritonpart", "/explicit/openroad"),
+                "/sealed/install/bin/openroad",
+            )
+            self.assertIsNone(_resolve_partition_openroad("greedy", None))
+        self.assertEqual(
+            resolver.call_args_list,
+            [
+                call("openroad", None),
+                call("openroad", "/explicit/openroad"),
+            ],
+        )
+
     def test_mapping_profile_rejects_mismatched_timing_provider_early(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

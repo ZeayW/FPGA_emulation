@@ -47,6 +47,7 @@ from .combinational_cut import (
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
 from .mfspart_refine import DEFAULT_TIMING_PATH_BETA
+from .native_tools import resolve_native_executable
 from .platform import Platform
 from .runtime import validate_virtual_runtime
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
@@ -117,6 +118,17 @@ def _validate_mapping_timing_contract(
             f"mapping profile {mapping_profile!r} requires Architecture "
             f"TimingDB schema {expected_schema!r}, got {observed_schema!r}"
         )
+
+
+def _resolve_partition_openroad(
+    partition_provider: str,
+    executable: Optional[str],
+) -> Optional[str]:
+    """Resolve a required partition engine before producing flow artifacts."""
+
+    if partition_provider in {"tritonpart", "patron"}:
+        return resolve_native_executable("openroad", executable)
+    return executable
 
 
 _STAGE_SUMMARY_FIELDS = {
@@ -1448,7 +1460,6 @@ def run_multi_fpga_flow(
             python_executable=physical_openparf_python,
         )
     if physical and global_timing_engine == "opensta":
-        from .native_tools import resolve_native_executable
         global_sta_executable = resolve_native_executable("sta", global_sta_executable)
         if not Path(global_sta_executable).is_file() or not os.access(global_sta_executable, os.X_OK):
             raise EmuFlowError("global OpenSTA executable is unavailable or not executable")
@@ -1460,6 +1471,7 @@ def run_multi_fpga_flow(
                 "multi-FPGA output path must be an empty directory: "
                 f"{output_dir}"
             )
+    openroad = _resolve_partition_openroad(partition_provider, openroad)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     source_list = [path.resolve() for path in sources]
