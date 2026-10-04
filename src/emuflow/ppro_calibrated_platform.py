@@ -61,10 +61,11 @@ def _sha256(value: Any) -> str:
 
 def _public_capacities(prior: Mapping[str, Any]) -> Dict[str, int]:
     resources = {item["name"]: float(item["value"]) for item in prior["device"]["resources"]}
+    lut = int(math.floor(resources["clb_lut"]))
     bram18k = int(math.floor(resources["bram_kib"] / 18.0))
     dsp48 = int(math.floor(resources["dsp"]))
     result = {
-        "lut": int(math.floor(resources["clb_lut"])),
+        "lut": lut,
         "ff": int(math.floor(resources["clb_ff"])),
         "bram18k": bram18k,
         # The default open VTR frontend reports 36-Kib-class BRAM and generic
@@ -75,6 +76,13 @@ def _public_capacities(prior: Mapping[str, Any]) -> Dict[str, int]:
         "uram288": int(math.floor(resources["uram_kib"] / 288.0)),
         "dsp48": dsp48,
         "dsp": dsp48,
+        # UltraScale+ arithmetic carry is a native one-per-eight-LUT slice
+        # resource.  The public prior exposes CLB LUTs rather than slice/CARRY8
+        # counts, so derive the conservative whole-slice inventory here.  The
+        # Xilinx mapping profile reports CARRY8 separately from its associated
+        # LUTs; omitting this axis otherwise turns every mapped arithmetic
+        # design into a false zero-capacity failure at the Phase 1 gate.
+        "carry8": lut // 8,
         "io": int(math.floor(resources["user_io"])),
     }
     if any(value <= 0 for value in result.values()):

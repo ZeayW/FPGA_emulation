@@ -535,7 +535,9 @@ production transport RTL. Fabric clock and simultaneous reverse-direction
 capacity sharing remain explicit research assumptions. In particular,
 each BoardDB exports both the native Xilinx inventory (`bram18k`, `dsp48`) and
 the conservative VTR planning aliases (`bram=floor(bram18k/2)`,
-`dsp=dsp48`). This keeps Phase 1 capacity checks and Phase 7 physical resource
+`dsp=dsp48`). It also derives `carry8=floor(lut/8)` from the UltraScale+
+eight-LUT slice structure because the open Xilinx mapper reports native CARRY8
+cells as a separate resource dimension. This keeps Phase 1 capacity checks and Phase 7 physical resource
 accounting on one public inventory instead of treating a mapped BRAM design as
 having an unknown resource class.
 `capacity_sharing=per_direction` is not presented as a PPro-discovered board

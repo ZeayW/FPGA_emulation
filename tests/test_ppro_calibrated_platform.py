@@ -189,6 +189,7 @@ class PProCalibratedPlatformTest(unittest.TestCase):
                     fpga.capacity["bram"], fpga.capacity["bram18k"] // 2
                 )
                 self.assertEqual(fpga.capacity["dsp"], fpga.capacity["dsp48"])
+                self.assertEqual(fpga.capacity["carry8"], fpga.capacity["lut"] // 8)
             timing = validate_board_link_timing(artifacts["board_link_timing"], platform)
             self.assertEqual(timing["characterized_links"], 2)
             self.assertFalse(timing["final_link_timing_signoff"])
