@@ -118,7 +118,8 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
   # These generated constraints use only exact internal port names. OpenSTA's
   # get_ports scans every port per call; bind through the indexed cell API.
   # Stream the same portable SDC, without writing another constraint copy.
-  set ::emuflow_cell [[sta::top_instance] cell]
+  set ::emuflow_top [sta::top_instance]
+  set ::emuflow_cell [$::emuflow_top cell]
   set constraints [open global_timing.sdc r]
   while {{[gets $constraints line] >= 0}} {{
     uplevel #0 [string map [list {{[get_ports }} {{[$::emuflow_cell find_port }}] $line]
@@ -131,7 +132,7 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
   puts "global STA: query endpoint scalars"
   puts "global STA: serialize checks"
   for {{set i 0}} {{$i < {len(rows)}}} {{incr i}} {{
-    set pin [$::emuflow_cell find_port o$i]
+    set pin [$::emuflow_top find_pin o$i]
     if {{$pin == "NULL"}} {{ error "missing global STA endpoint o$i" }}
     set p "NULL"
     foreach vertex [$pin vertices] {{

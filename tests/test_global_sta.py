@@ -30,6 +30,7 @@ def test_exports_raw_arc_chain_and_absolute_events(tmp_path):
     assert "31.5" not in (tmp_path / "global_timing.lib").read_text()
     script = (tmp_path / "analyze.tcl").read_text()
     assert "find_timing" in script
+    assert "$::emuflow_top find_pin o$i" in script
     assert "vertex_worst_slack_path $vertex max" in script
     assert "find_timing_paths" not in script
     assert "[$p arrival]" in script
