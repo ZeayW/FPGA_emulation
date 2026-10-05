@@ -713,7 +713,8 @@ acceptance.
 ### Stage 6: blind large-design validation
 
 Status: **independent result assembler, promotion contract, and evaluator
-implemented; real blind runs pending**. A scratch-only application bundle generator now binds an existing
+implemented; AES and CPU blind gates pass, while the three mandatory
+cross-FPGA tiers remain pending**. A scratch-only application bundle generator now binds an existing
 checked benchmark contract and natural RTL source tree to a free-partition
 PPro `application_holdout`; source paths and the EmuFlow platform choice never
 enter the compact observation. Because it emits no placement assignment, this
@@ -737,7 +738,13 @@ documented compile configuration: the ordinary compile log consumed
 `get_ports {clk}`, and the post-partition ordinary clock report identified one
 global `clk` tree with 1,069 loads.  AES remained on one FPGA, so system SSTA
 was correctly treated as not applicable for that gate; cross-FPGA timing still
-has to be proven by the large holdouts below.  Each case joins one
+has to be proven by the large holdouts below.  The sealed AES and PicoRV32
+holdouts already join passing free-partition PPro observations to independently
+validated complete Phase 1--7 EmuFlow runs.  Both use physical seed 1,
+standalone whole-design OpenSTA, 100% original-path coverage, legal schedules,
+macro-cycle equivalence, and zero unrouted nets or DRC violations.  Their
+global results are respectively WNS/TNS = -0.304739/-8.049072 ns and
+-0.043351/-0.078053 ns.  Each case joins one
 passing PPro observation
 to a complete EmuFlow Phase 1--7 result produced with physical seed 1 and
 authoritative OpenSTA global timing. The v4 result cannot be assembled from

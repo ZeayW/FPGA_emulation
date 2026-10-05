@@ -796,6 +796,13 @@ EmuFlow's internal algorithms. Optional EmuFlow variants are reported with an
 explicit `not-claimed` PPro-ranking boundary instead of manufacturing a ranking
 from duplicated PPro results.
 
+The real sealed AES and PicoRV32 cases now pass their complete Phase 1--7
+gates with physical seed 1, standalone whole-design OpenSTA, full original-path
+coverage, legal schedules, macro-cycle equivalence, and zero DRC/unrouted
+violations.  Their global WNS/TNS values are -0.304739/-8.049072 ns and
+-0.043351/-0.078053 ns respectively.  Promotion remains false until the three
+mandatory cross-FPGA classes (Koios compute, Koios DLA, and NVDLA) also pass.
+
 Application holdouts request PPro's documented `run_system_route -timing_budget`
 mode, generated partition RTL, and the documented
 `run_ssta -post_partition -state sr0` analysis so the ordinary
