@@ -15,6 +15,8 @@ import com.xilinx.rapidwright.design.Unisim;
 import com.xilinx.rapidwright.device.BEL;
 import com.xilinx.rapidwright.device.BELPin;
 import com.xilinx.rapidwright.device.Node;
+import com.xilinx.rapidwright.device.Device;
+import com.xilinx.rapidwright.device.IntentCode;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.edif.EDIFCell;
@@ -37,6 +39,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +49,97 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 public final class EmuFlowRWRoute {
+    /** A routed forest has one effective predecessor per non-root node. */
+    static final class RoutedPath<N, E> {
+        private final Map<N, N> parents = new HashMap<>();
+        private final Map<N, E> edges = new HashMap<>();
+        private final Set<N> roots;
+
+        RoutedPath(Set<N> roots) {
+            this.roots = new HashSet<>(roots);
+            if (this.roots.isEmpty() || this.roots.contains(null)) {
+                throw new IllegalStateException("Routed timing has no physical source");
+            }
+        }
+
+        void add(N start, N end, E edge, boolean reversed) {
+            if (reversed) {
+                N swap = start;
+                start = end;
+                end = swap;
+            }
+            if (start == null || end == null || edge == null || parents.containsKey(end)) {
+                throw new IllegalStateException("Null or ambiguous routed timing predecessor: " + end);
+            }
+            parents.put(end, start);
+            edges.put(end, edge);
+        }
+
+        // Return sink-to-source order, as required by TimingModel.determineGroups.
+        List<N> nodes(N sink) {
+            List<N> result = new ArrayList<>();
+            Set<N> seen = new HashSet<>();
+            N node = sink;
+            while (true) {
+                if (node == null || !seen.add(node)) {
+                    throw new IllegalStateException("Unrooted or cyclic routed timing path: " + sink);
+                }
+                result.add(node);
+                if (roots.contains(node)) return result;
+                node = parents.get(node);
+            }
+        }
+
+        E edge(N node) { return edges.get(node); }
+    }
+
+    /** Evaluate the concrete directed route, never a PIP-list-order prefix. */
+    static final class RootedTimingModel extends TimingModel {
+        private RoutedPath<Node, PIP> path;
+        private Map<Node, SitePinInst> roots;
+        private final Map<SitePinInst, BELPin> sourceBELs = new HashMap<>();
+        private Net prepared;
+
+        RootedTimingModel(Device device) { super(device); }
+
+        void prepare(Net net) {
+            prepared = null;
+            sourceBELs.clear();
+            Map<Node, SitePinInst> sources = new HashMap<>();
+            for (SitePinInst pin : net.getPins()) {
+                if (pin.isOutPin()) {
+                    Node node = pin.getConnectedNode();
+                    if (node == null || sources.put(node, pin) != null) {
+                        throw new IllegalStateException("Ambiguous physical timing source: " + net.getName());
+                    }
+                }
+            }
+            RoutedPath<Node, PIP> graph = new RoutedPath<>(sources.keySet());
+            for (PIP pip : net.getPIPs()) {
+                graph.add(pip.getStartNode(), pip.getEndNode(), pip, pip.isReversed());
+            }
+            path = graph;
+            roots = sources;
+            prepared = net;
+        }
+
+        float routedDelay(Net net, SitePinInst sink) {
+            if (prepared != net) throw new IllegalStateException("Timing net was not prepared");
+            List<Node> nodes = path.nodes(sink.getConnectedNode());
+            List<PIP> pips = new ArrayList<>();
+            List<IntentCode> intents = new ArrayList<>();
+            for (int i = 0; i < nodes.size(); i++) {
+                Node node = nodes.get(i);
+                intents.add(node.getAllWiresInNode()[0].getIntentCode());
+                if (i + 1 < nodes.size()) pips.add(path.edge(node));
+            }
+            SitePinInst source = roots.get(nodes.get(nodes.size() - 1));
+            return super.calcDelay(source, sink,
+                sourceBELs.computeIfAbsent(source, EmuFlowRWRoute::timingBELPin), timingBELPin(sink),
+                determineGroups(nodes, intents, pips));
+        }
+    }
+
     private static final String SCHEMA = "emuflow.xilinx-route-db/v2";
     private static final String ROUTER_STRATEGY =
         "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-recovery";
@@ -904,7 +998,7 @@ public final class EmuFlowRWRoute {
         // from global setup analysis: EmuFlow binds these per-FPGA route
         // segments to transport/TDM events and delegates global setup WNS/TNS
         // to OpenSTA.  RapidWright's model is not a hold/sign-off engine.
-        TimingModel timingModel = new TimingModel(design.getDevice());
+        RootedTimingModel timingModel = new RootedTimingModel(design.getDevice());
         timingModel.build();
 
         Path outputPath = Path.of(args[1]);
@@ -942,6 +1036,7 @@ public final class EmuFlowRWRoute {
         ) {
             for (String netName : netNames) {
                 Net net = nets.get(netName);
+                timingModel.prepare(net);
                 JSONObject record = new JSONObject();
                 record.put("net", netName);
                 String kind = netKinds.get(netName);
@@ -956,7 +1051,6 @@ public final class EmuFlowRWRoute {
                 JSONArray pins = new JSONArray();
                 JSONArray alternateSources = new JSONArray();
                 SitePinInst source = net.getSource();
-                BELPin sourceBELPin = source == null ? null : timingBELPin(source);
                 for (SitePinInst pin : net.getPins()) {
                     JSONObject pinValue = pinRecord(pin);
                     if (pin.isOutPin() && pin != source) {
@@ -974,10 +1068,7 @@ public final class EmuFlowRWRoute {
                                 "routed net has no timing source: " + netName
                             );
                         }
-                        BELPin sinkBELPin = timingBELPin(pin);
-                        float delayPs = timingModel.calcDelay(
-                            source, pin, sourceBELPin, sinkBELPin, net
-                        );
+                        float delayPs = timingModel.routedDelay(net, pin);
                         if (!Float.isFinite(delayPs) || delayPs < 0.0f) {
                             throw new IllegalStateException(
                                 "invalid RapidWright route delay for " + netName
