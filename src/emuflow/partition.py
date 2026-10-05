@@ -256,6 +256,155 @@ def normalize_partition_constraints(
             f"{sorted(FPGA_SELECTION_POLICIES)}"
         )
 
+    platform_order = {
+        fpga.id: index for index, fpga in enumerate(platform.fpgas)
+    }
+    directed_neighbors: Dict[str, Set[str]] = {
+        fpga.id: set() for fpga in platform.fpgas
+    }
+    direct_capacity: Dict[Tuple[str, str], int] = defaultdict(int)
+    direct_latency: Dict[Tuple[str, str], int] = {}
+    for link in platform.links:
+        left, right = link.endpoints
+        directions = [(left, right)]
+        if link.direction in {"full_duplex", "half_duplex"}:
+            directions.append((right, left))
+        for source, sink in directions:
+            directed_neighbors[source].add(sink)
+            key = (source, sink)
+            direct_capacity[key] += (
+                link.transport_bits_per_cycle_per_direction
+            )
+            direct_latency[key] = min(
+                direct_latency.get(key, link.latency_cycles),
+                link.latency_cycles,
+            )
+
+    def topology_score(candidate: Sequence[FpgaNode]) -> Tuple[Any, ...]:
+        """Rank capacity-equivalent active subsets by communication quality.
+
+        Inactive FPGAs remain legal transit nodes, so shortest paths are
+        measured on the complete platform.  Directly connected, high-capacity
+        subsets nevertheless win deterministic ties.  This prevents a
+        homogeneous platform from blindly selecting the first N FPGAs even
+        when those FPGAs communicate only through avoidable transit nodes.
+        """
+
+        candidate_ids = tuple(fpga.id for fpga in candidate)
+        distances: Dict[str, Dict[str, int]] = {}
+        for source in candidate_ids:
+            by_sink = {source: 0}
+            pending = deque([source])
+            while pending:
+                current = pending.popleft()
+                for sink in sorted(
+                    directed_neighbors[current], key=platform_order.get
+                ):
+                    if sink in by_sink:
+                        continue
+                    by_sink[sink] = by_sink[current] + 1
+                    pending.append(sink)
+            distances[source] = by_sink
+
+        ordered_pairs = [
+            (source, sink)
+            for source in candidate_ids
+            for sink in candidate_ids
+            if source != sink
+        ]
+        unreachable = sum(
+            sink not in distances[source] for source, sink in ordered_pairs
+        )
+        hops = [
+            distances[source][sink]
+            for source, sink in ordered_pairs
+            if sink in distances[source]
+        ]
+        maximum_hops = max(hops, default=0)
+        total_hops = sum(hops)
+        aggregate_direct_capacity = sum(
+            direct_capacity.get((source, sink), 0)
+            for source, sink in ordered_pairs
+        )
+        aggregate_direct_latency = sum(
+            direct_latency.get((source, sink), 0)
+            for source, sink in ordered_pairs
+            if (source, sink) in direct_latency
+        )
+        return (
+            unreachable,
+            maximum_hops,
+            total_hops,
+            -aggregate_direct_capacity,
+            aggregate_direct_latency,
+            tuple(platform_order[item] for item in candidate_ids),
+        )
+
+    def best_capacity_subset(
+        count: int,
+        required_fixed: Set[str],
+        total_resources: Mapping[str, int],
+    ) -> Optional[Tuple[FpgaNode, ...]]:
+        feasible = []
+        for candidate in combinations(platform.fpgas, count):
+            candidate_ids = {fpga.id for fpga in candidate}
+            if not required_fixed <= candidate_ids:
+                continue
+            if not all(
+                total_resources.get(field, 0)
+                <= sum(
+                    fpga.effective_capacity.get(field, 0)
+                    for fpga in candidate
+                )
+                for field in RESOURCE_FIELDS
+            ):
+                continue
+            feasible.append(candidate)
+        if not feasible:
+            return None
+        return min(feasible, key=topology_score)
+
+    def best_homogeneous_subset(
+        count: int, required_fixed: Set[str]
+    ) -> Tuple[FpgaNode, ...]:
+        """Select a topology-aware homogeneous subset without N-choose-K work."""
+
+        by_id = {fpga.id: fpga for fpga in platform.fpgas}
+        if required_fixed:
+            seeds = [set(required_fixed)]
+        else:
+            seeds = [{fpga.id} for fpga in platform.fpgas]
+        completed = []
+        for selected in seeds:
+            while len(selected) < count:
+                remaining = [
+                    fpga
+                    for fpga in platform.fpgas
+                    if fpga.id not in selected
+                ]
+                best = min(
+                    remaining,
+                    key=lambda fpga: topology_score(
+                        tuple(
+                            by_id[fpga_id]
+                            for fpga_id in sorted(
+                                {*selected, fpga.id},
+                                key=platform_order.get,
+                            )
+                        )
+                    ),
+                )
+                selected.add(best.id)
+            completed.append(
+                tuple(
+                    by_id[fpga_id]
+                    for fpga_id in sorted(
+                        selected, key=platform_order.get
+                    )
+                )
+            )
+        return min(completed, key=topology_score)
+
     def select_minimum_capacity_fpgas() -> List[str]:
         total_resources = ResourceVector.sum(
             ResourceVector.from_mapping(instance["resources"])
@@ -293,15 +442,8 @@ def normalize_partition_constraints(
                     "constraints.fpga_selection_policy: design demand exceeds "
                     "the effective capacity of every supported active subset"
                 )
-            selected = [
-                fpga.id for fpga in platform.fpgas if fpga.id in required_fixed
-            ]
-            selected.extend(
-                fpga.id
-                for fpga in platform.fpgas
-                if fpga.id not in required_fixed
-            )
-            selected_set = set(selected[:count])
+            selected = best_homogeneous_subset(count, required_fixed)
+            selected_set = {fpga.id for fpga in selected}
             return [
                 fpga.id for fpga in platform.fpgas if fpga.id in selected_set
             ]
@@ -309,19 +451,11 @@ def normalize_partition_constraints(
             max(minimum_selection_count, len(required_fixed)),
             len(platform.fpgas) + 1,
         ):
-            for candidate in combinations(platform.fpgas, count):
-                candidate_ids = {fpga.id for fpga in candidate}
-                if not required_fixed <= candidate_ids:
-                    continue
-                if all(
-                    total_resources.get(field, 0)
-                    <= sum(
-                        fpga.effective_capacity.get(field, 0)
-                        for fpga in candidate
-                    )
-                    for field in RESOURCE_FIELDS
-                ):
-                    return [fpga.id for fpga in candidate]
+            candidate = best_capacity_subset(
+                count, required_fixed, total_resources
+            )
+            if candidate is not None:
+                return [fpga.id for fpga in candidate]
         raise ValidationError(
             "constraints.fpga_selection_policy: design demand exceeds the "
             "effective capacity of every supported active subset"

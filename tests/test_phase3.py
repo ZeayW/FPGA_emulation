@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,7 +18,8 @@ from emuflow.partition import (
     validate_partition_artifacts,
 )
 from emuflow.phase3 import run_phase3
-from emuflow.platform import FpgaNode, Platform
+from emuflow.platform import BoardLink, FpgaNode, Platform
+from emuflow.resources import RESOURCE_FIELDS, ResourceVector
 from emuflow.yosys import import_yosys_json
 
 
@@ -116,6 +118,81 @@ class Phase3Test(unittest.TestCase):
             platform,
         )
         self.assertEqual(constraints["active_fpgas"], ["fpga31"])
+        wide_constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "fpga_selection_policy": "minimum-capacity",
+                "min_used_fpgas": 16,
+            },
+            self.ir,
+            platform,
+        )
+        self.assertEqual(
+            wide_constraints["active_fpgas"],
+            [f"fpga{index}" for index in range(16)],
+        )
+
+    def test_minimum_capacity_prefers_well_connected_homogeneous_subset(
+        self,
+    ) -> None:
+        total = ResourceVector.sum(
+            ResourceVector.from_mapping(instance["resources"])
+            for instance in self.ir.value["instances"]
+        ).to_dict()
+        limiting_resource = next(
+            field for field in RESOURCE_FIELDS if total.get(field, 0) > 1
+        )
+        capacity = {field: max(total.get(field, 0), 1) for field in RESOURCE_FIELDS}
+        capacity[limiting_resource] = math.ceil(
+            total[limiting_resource] / 2
+        )
+        fpgas = tuple(
+            FpgaNode(
+                id=f"fpga{index}",
+                part="homogeneous-test-part",
+                utilization_limit=1.0,
+                capacity=dict(capacity),
+            )
+            for index in range(4)
+        )
+        links = (
+            BoardLink(
+                id="link-0-2",
+                endpoints=("fpga0", "fpga2"),
+                direction="full_duplex",
+                mode="abstract",
+                data_lanes_per_direction=64,
+                fabric_clock_mhz=250.0,
+                latency_cycles=2,
+            ),
+            BoardLink(
+                id="link-1-3",
+                endpoints=("fpga1", "fpga3"),
+                direction="full_duplex",
+                mode="abstract",
+                data_lanes_per_direction=64,
+                fabric_clock_mhz=250.0,
+                latency_cycles=2,
+            ),
+        )
+        platform = Platform(
+            name="homogeneous_disconnected_pairs",
+            kind="virtual",
+            description="topology-aware selection fixture",
+            fpgas=fpgas,
+            links=links,
+        )
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "fpga_selection_policy": "minimum-capacity",
+            },
+            self.ir,
+            platform,
+        )
+        self.assertEqual(
+            constraints["active_fpgas"], ["fpga0", "fpga2"]
+        )
 
     def test_single_active_target_skips_requested_patron(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

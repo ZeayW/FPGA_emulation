@@ -488,6 +488,12 @@ constraints may set `fpga_selection_policy` to `minimum-capacity`. EmuFlow
 then chooses the smallest deterministic FPGA subset whose aggregate fitted
 effective capacities cover every mapped resource dimension, honors fixed
 placement, and seals the selected `active_fpgas` in the normalized contract.
+When several equal-size subsets satisfy capacity, selection is topology-aware:
+it first minimizes unreachable directed pairs and route-hop diameter across
+the complete installed topology, then prefers larger direct payload capacity,
+lower direct-link latency, and finally BoardDB order as a deterministic tie
+breaker. Thus a homogeneous platform no longer chooses the first N FPGA IDs
+when another capacity-equivalent subset avoids unnecessary relay hops.
 Only those FPGAs are partition targets and participate in balance bounds; all
 installed BoardDB nodes and links remain visible to Phase 4 as possible relay
 hardware. This prevents a design that fits one XCVU19P-equivalent device from
