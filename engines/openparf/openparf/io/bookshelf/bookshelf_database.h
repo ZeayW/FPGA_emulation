@@ -50,6 +50,12 @@ public:
   virtual void addClockRegionCbk(const std::string &name, unsigned xlo,
                                  unsigned ylo, unsigned xhi, unsigned yhi,
                                  unsigned ymid, unsigned hcxmin) = 0;
+  virtual void initSuperLogicRegionsCbk(unsigned width, unsigned height) = 0;
+  virtual void addSuperLogicRegionCbk(const std::string &name,
+                                      const std::string &type,
+                                      unsigned slr_x, unsigned slr_y,
+                                      unsigned slr_width,
+                                      unsigned slr_height) = 0;
 
   /* parsing nodes file */
   virtual void addNodeCbk(const std::string &node_name,

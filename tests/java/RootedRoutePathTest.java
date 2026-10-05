@@ -27,6 +27,9 @@ public final class RootedRoutePathTest {
             check(graph.nodes("altSink").equals(List.of("altSink", "alternate")));
             check(graph.nodes("source").equals(List.of("source")));
             check(graph.edge("sink").equals("branch->sink"));
+            // Visiting a sibling or another root must not leak prior trace state.
+            check(graph.nodes("other").equals(List.of("other", "branch", "source")));
+            check(graph.nodes("sink").equals(List.of("sink", "branch", "source")));
             rejects(() -> graph.nodes("disconnected"));
             rejects(() -> graph.add("other", "sink", "ambiguous", false));
             rejects(() -> graph.add("branch", "sink", "duplicate", false));
@@ -36,6 +39,14 @@ public final class RootedRoutePathTest {
             new EmuFlowRWRoute.RoutedPath<>(Set.of("root"));
         cyclic.add("a", "b", "a->b", false); cyclic.add("b", "a", "b->a", false);
         rejects(() -> cyclic.nodes("a"));
+        EmuFlowRWRoute.RoutedPath<String, String> broken =
+            new EmuFlowRWRoute.RoutedPath<>(Set.of("root"));
+        broken.add("missing", "sink", "truncated", false);
+        rejects(() -> broken.nodes("sink"));
+        EmuFlowRWRoute.RoutedPath<String, String> otherNet =
+            new EmuFlowRWRoute.RoutedPath<>(Set.of("second-root"));
+        otherNet.add("second-root", "sink", "second-edge", false);
+        check(otherNet.nodes("sink").equals(List.of("sink", "second-root")));
         rejects(() -> new EmuFlowRWRoute.RoutedPath<String, String>(Set.of()));
         System.out.println("Rooted route path checks passed (20 PIP orders, alternate root, invalid paths)");
     }

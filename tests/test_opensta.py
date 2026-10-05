@@ -1,3 +1,4 @@
+import hashlib
 import json
 import stat
 import tempfile
@@ -13,11 +14,19 @@ from emuflow.opensta import (
     classify_through_net_timing_endpoints,
     load_timing_model,
     parse_clock_definitions,
+    require_opensta_engine,
     render_opensta_liberty,
     run_opensta_path_database,
     validate_timing_model_coverage,
+    _write_emuir_timing_pin_map,
 )
-from emuflow.sta import validate_sta_path_database
+from emuflow.sta import (
+    import_sta_path_database_tsv_streaming,
+    iter_sta_path_database_paths,
+    sta_object_index,
+    sta_path_database_qor,
+    validate_sta_path_database,
+)
 from emuflow.verilog import mapped_verilog
 from emuflow.vtr_architecture import run_vtr_architecture_import
 from emuflow.yosys import import_yosys_json
@@ -67,18 +76,169 @@ class OpenStaProviderTest(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "expected CLOCK"):
             parse_clock_definitions(["clk"])
 
+    def test_streamed_path_database_is_sealed_and_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            net = self.ir.value["nets"][0]["id"]
+            objects = sorted(sta_object_index(self.ir))
+            path_id = f"{objects[0]}->{objects[-1]}#00000000"
+            raw = root / "paths.tsv"
+            raw.write_text(
+                "path_id_hex\tclock_domain_hex\tclock_period_ns\t"
+                "slack_ns\tfixed_delay_ns\tpath_nets_hex\n"
+                f"{path_id.encode().hex()}\t{'clk'.encode().hex()}\t"
+                f"10\t-0.5\t0.25\t{net.encode().hex()}\n",
+                encoding="utf-8",
+            )
+            output = root / "paths.json"
+            imported = import_sta_path_database_tsv_streaming(
+                raw,
+                ir_path,
+                output,
+                provider=OPENSTA_PROVIDER,
+            )
+            manifest = json.loads(output.read_text(encoding="utf-8"))
+            records = list(iter_sta_path_database_paths(output, manifest))
+            checked = validate_sta_path_database(output, ir_path)
+            qor = sta_path_database_qor(output, manifest)
+            self.assertEqual(imported["paths"], 1)
+            self.assertNotIn("paths", manifest)
+            self.assertEqual(
+                manifest["payloads"]["paths"]["format"],
+                "jsonl-sta-path-row/v3",
+            )
+            self.assertEqual(records[0]["id"], path_id)
+            self.assertIn("startpoint", records[0])
+            self.assertIn("endpoint", records[0])
+            payload = output.parent / manifest["payloads"]["paths"]["path"]
+            raw_record = json.loads(payload.read_text(encoding="utf-8"))
+            self.assertIsInstance(raw_record, list)
+            self.assertEqual(raw_record[:2], [path_id, "clk"])
+            self.assertEqual(len(raw_record), 8)
+            self.assertIn("normalized_slack", records[0])
+            self.assertEqual(checked["paths"], 1)
+            self.assertEqual(qor["wns_ns"], -0.5)
+            with payload.open("ab") as stream:
+                stream.write(b"{}\n")
+            with self.assertRaisesRegex(Exception, "record 1 is invalid"):
+                list(iter_sta_path_database_paths(output, manifest))
+
+    def test_streamed_path_rows_avoid_repeated_object_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            net = self.ir.value["nets"][0]["id"]
+            raw = root / "paths.tsv"
+            rows = [
+                "path_id_hex\tclock_domain_hex\tclock_period_ns\t"
+                "slack_ns\tfixed_delay_ns\tpath_nets_hex"
+            ]
+            for index in range(1000):
+                path_id = f"path{index:04d}"
+                rows.append(
+                    f"{path_id.encode().hex()}\t{'clk'.encode().hex()}\t"
+                    f"10\t-0.5\t0.25\t{net.encode().hex()}"
+                )
+            raw.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            output = root / "paths.json"
+            import_sta_path_database_tsv_streaming(
+                raw,
+                ir_path,
+                output,
+                provider=OPENSTA_PROVIDER,
+            )
+            manifest = json.loads(output.read_text(encoding="utf-8"))
+            payload = output.parent / manifest["payloads"]["paths"]["path"]
+            records = list(iter_sta_path_database_paths(output, manifest))
+            object_encoded = b"".join(
+                json.dumps(
+                    {
+                        key: value
+                        for key, value in record.items()
+                        if key != "normalized_slack"
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                + b"\n"
+                for record in records
+            )
+            self.assertLess(payload.stat().st_size, len(object_encoded) * 0.7)
+
+    def test_streamed_path_reader_accepts_previous_raw_v2_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "paths.json"
+            payload = root / "paths.json.paths.jsonl"
+            record = {
+                "id": "path0",
+                "clock_domain": "clk",
+                "clock_period_ns": 10.0,
+                "slack_ns": -0.5,
+                "fixed_delay_ns": 0.25,
+                "path_nets": [self.ir.value["nets"][0]["id"]],
+            }
+            encoded = (
+                json.dumps(
+                    record, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+                + b"\n"
+            )
+            payload.write_bytes(encoded)
+            manifest = {
+                "schema": "emuflow.sta-path-database/v2",
+                "normalization": {
+                    "positive_slack_scale_ns": 1.0,
+                    "negative_slack_scale_ns": 0.5,
+                    "max_clock_period_ns": 10.0,
+                },
+                "payloads": {
+                    "paths": {
+                        "format": "jsonl-sta-path-raw/v2",
+                        "path": payload.name,
+                        "sha256": hashlib.sha256(encoded).hexdigest(),
+                        "records": 1,
+                    }
+                },
+            }
+            output.write_text(json.dumps(manifest), encoding="utf-8")
+            records = list(iter_sta_path_database_paths(output, manifest))
+            self.assertEqual(records[0]["id"], "path0")
+            self.assertEqual(records[0]["normalized_slack"], -0.1)
+
+    def test_legacy_opensta_is_rejected_before_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "sta"
+            executable.write_text(
+                "#!/bin/sh\necho 2.6.0\n", encoding="utf-8"
+            )
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            with self.assertRaisesRegex(Exception, "requires 3.1.0 or newer"):
+                require_opensta_engine(str(executable))
+
     def test_path_export_supports_directed_cut_net_queries(self) -> None:
         script = (
             ROOT / "scripts/opensta/export_timing_path_database.tcl"
         ).read_text(encoding="utf-8")
-        # OpenSTA is still commonly linked against Tcl 8.5 on shared HPC
-        # systems.  Keep hexadecimal transport on the older H* API instead of
-        # Tcl 8.6-only `binary encode/decode` subcommands.
+        # Keep hexadecimal transport on the portable H* API.
         self.assertIn("binary format H* $value", script)
         self.assertIn("binary scan [encoding convertto utf-8 $value] H*", script)
         self.assertNotIn("binary decode hex", script)
         self.assertNotIn("binary encode hex", script)
-        self.assertIn("-group_count $max_paths", script)
+        self.assertIn("find_timing_paths -path_delay max", script)
+        self.assertIn("set endpoints [all_registers -data_pins]", script)
+        self.assertIn("foreach endpoint [all_outputs]", script)
+        self.assertIn("set endpoint_count [llength $endpoints]", script)
+        self.assertIn("min($max_paths, $endpoint_count)", script)
+        self.assertIn("-group_path_count $report_limit", script)
+        self.assertIn("-endpoint_path_count 1", script)
+        self.assertIn(
+            "emuflow_emit_timing_paths $timing_paths output emitted", script
+        )
+        self.assertIn("set timing_paths [find_timing_paths", script)
         self.assertIn("EMUFLOW_STA_THROUGH_NETS", script)
         self.assertIn("get_pins -quiet -of_objects $through_net", script)
         self.assertIn("foreach through_pin $through_pins", script)
@@ -93,8 +253,18 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("$emitted == $before_emitted", script)
         self.assertIn("[info exists timed_endpoints($emuir_name)]", script)
         self.assertIn("-to $endpoint_pin", script)
-        self.assertIn("-endpoint_count 1", script)
+        self.assertNotIn("-endpoint_count", script)
+        self.assertNotIn("-group_count", script)
         self.assertIn("proc emuflow_emit_timing_paths", script)
+        self.assertIn("array set emuir_by_pin_full_name {}", script)
+        self.assertIn("EMUFLOW_STA_PIN_MAP", script)
+        self.assertIn(r"pin_full_name_hex\temuir_net_hex", script)
+        self.assertNotIn("get_pins -quiet -of_objects $mapped_net", script)
+        emit_body = script[
+            script.index("proc emuflow_emit_timing_paths") :
+            script.index("if {[info exists env(EMUFLOW_STA_THROUGH_NETS)]")
+        ]
+        self.assertNotIn("get_nets -quiet -of_objects $pin", emit_body)
         self.assertIn(
             '$required_net ne "" && ![info exists seen_net($required_net)]',
             script,
@@ -105,6 +275,22 @@ class OpenStaProviderTest(unittest.TestCase):
         emit = script.index("emuflow_emit_timing_paths", query)
         next_query = script.find("find_timing_paths -path_delay max", query + 1)
         self.assertLess(emit, next_query)
+
+    def test_timing_pin_map_is_derived_from_emuir_connectivity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "pins.tsv"
+            _write_emuir_timing_pin_map(self.ir, output)
+            rows = output.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(rows[0], "pin_full_name_hex\temuir_net_hex")
+        decoded = {
+            bytes.fromhex(pin_hex).decode(): bytes.fromhex(net_hex).decode()
+            for pin_hex, net_hex in (
+                row.split("\t") for row in rows[1:]
+            )
+        }
+        self.assertIn("q_reg[0]/D", decoded)
+        self.assertIn("q_reg[0]/Q", decoded)
+        self.assertEqual(len(decoded), len(set(decoded)))
 
     def test_vtr_timing_db_builds_scalarized_opensta_model(self) -> None:
         source = {
@@ -297,7 +483,12 @@ class OpenStaProviderTest(unittest.TestCase):
             executable.write_text(
                 """#!/usr/bin/env python3
 import os
+import sys
 from pathlib import Path
+
+if sys.argv[1:] == ["-version"]:
+    print("3.1.0")
+    raise SystemExit(0)
 
 through = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()
 _, requested_hex = through[1].split("\\t")
@@ -361,6 +552,56 @@ print("fake OpenSTA pass")
             artifact["source"]["timing_model_qualification"],
             "analytical_uncharacterized",
         )
+        self.assertEqual(report["engine"]["version"], "3.1.0")
+        self.assertEqual(artifact["source"]["engine"]["version"], "3.1.0")
+        self.assertNotIn("used_cell_types", report)
+        self.assertGreater(
+            report["used_cell_type_summary"]["count"], 0
+        )
+        self.assertRegex(
+            report["used_cell_type_summary"]["sha256"], r"^[0-9a-f]{64}$"
+        )
+
+    def test_runner_streams_physical_path_database(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            output_path = root / "database.json"
+            executable = root / "fake-opensta"
+            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            net = self.ir.value["nets"][0]["id"]
+            executable.write_text(
+                f"""#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+if sys.argv[1:] == ["-version"]:
+    print("3.1.0")
+    raise SystemExit(0)
+header = ("path_id_hex\\tclock_domain_hex\\tclock_period_ns\\t"
+          "slack_ns\\tfixed_delay_ns\\tpath_nets_hex")
+Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
+    header + "\\n" + "{{}}\\t{{}}\\t10\\t-0.25\\t0.5\\t{{}}\\n".format(
+        "path0".encode().hex(), "clk".encode().hex(), {net!r}.encode().hex()
+    )
+)
+""",
+                encoding="utf-8",
+            )
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            report = run_opensta_path_database(
+                ir_path=ir_path,
+                output_path=output_path,
+                clocks={"clk": 10.0},
+                executable=str(executable),
+                _stream_output=True,
+            )
+            manifest = json.loads(output_path.read_text(encoding="utf-8"))
+            checked = validate_sta_path_database(output_path, ir_path)
+        self.assertEqual(manifest["schema"], "emuflow.sta-path-database/v2")
+        self.assertNotIn("paths", manifest)
+        self.assertEqual(report["path_qor"]["wns_ns"], -0.25)
+        self.assertEqual(checked["paths"], 1)
 
     def test_structural_endpoint_classifier_distinguishes_data_and_control(self) -> None:
         model = load_timing_model(DEFAULT_TIMING_MODEL)
@@ -490,7 +731,12 @@ print("fake OpenSTA pass")
             executable.write_text(
                 """#!/usr/bin/env python3
 import os
+import sys
 from pathlib import Path
+
+if sys.argv[1:] == ["-version"]:
+    print("3.1.0")
+    raise SystemExit(0)
 
 requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
 requested_hex = [row.split("\\t")[1] for row in requested]
@@ -553,7 +799,12 @@ Path(os.environ["EMUFLOW_STA_THROUGH_COVERAGE"]).write_text(
             executable.write_text(
                 """#!/usr/bin/env python3
 import os
+import sys
 from pathlib import Path
+
+if sys.argv[1:] == ["-version"]:
+    print("3.1.0")
+    raise SystemExit(0)
 
 requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
 requested_hex = requested[0].split("\\t")[1]

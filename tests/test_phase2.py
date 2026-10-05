@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.architecture import ArchitectureDB, compatible_cells_for_bel
 from emuflow.errors import ImportError, ValidationError
@@ -41,6 +42,52 @@ class ArchitectureDBTest(unittest.TestCase):
                     install_root=installation,
                     python_executable=python,
                 )
+
+    def test_stable_native_runner_selects_driver_and_requires_certificate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            installation = root / "openparf-install"
+            (installation / "openparf").mkdir(parents=True)
+            (installation / "openparf.py").write_text("", encoding="utf-8")
+            result_dir = root / "results"
+            config = root / "openparf.json"
+            config.write_text(json.dumps({
+                "benchmark_name": "runner",
+                "result_dir": str(result_dir),
+                "emuflow_stable_global_placement": True,
+            }), encoding="utf-8")
+
+            def fake_run(command, **_kwargs):
+                self.assertEqual(
+                    command[1:3], ["-m", "emuflow.openparf_native_driver"]
+                )
+                result_dir.mkdir(parents=True)
+                (result_dir / "runner.pl").write_text(
+                    "i0 0 0 0\n", encoding="utf-8"
+                )
+                (result_dir / "runner.native-metrics.json").write_text(
+                    json.dumps({
+                        "schema": "emuflow.openparf-native-convergence/v1",
+                        "status": "pass",
+                        "stop_reason": "feasible-hpwl-patience",
+                        "iterations": 42,
+                        "restored_best_feasible": True,
+                        "best_feasible_hpwl": 10.0,
+                        "final_legal_hpwl": 11.0,
+                    }),
+                    encoding="utf-8",
+                )
+                return mock.Mock(returncode=0)
+
+            with mock.patch(
+                "emuflow.openparf.subprocess.run", side_effect=fake_run
+            ):
+                placement = run_openparf(
+                    config,
+                    install_root=installation,
+                    python_executable=Path(sys.executable),
+                )
+            self.assertEqual(placement, (result_dir / "runner.pl").resolve())
 
     def test_secondary_ultrascale_ff_bel_is_supported(self) -> None:
         self.assertEqual(

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import os
 import re
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Iterator, Mapping, Optional
 
 from .errors import ValidationError
 from .io import read_json, write_json
@@ -21,6 +24,10 @@ VIVADO_STA_TSV_HEADER = (
 )
 VIVADO_CUT_NET_MAP_HEADER = "vivado_net_hex\tcut_net_hex"
 STA_PATH_DATABASE_SCHEMA = "emuflow.sta-path-database/v1"
+STA_PATH_DATABASE_STREAM_SCHEMA = "emuflow.sta-path-database/v2"
+STA_PATH_DATABASE_PAYLOAD_FORMAT_V1 = "jsonl-object/v1"
+STA_PATH_DATABASE_PAYLOAD_FORMAT_V2 = "jsonl-sta-path-raw/v2"
+STA_PATH_DATABASE_PAYLOAD_FORMAT = "jsonl-sta-path-row/v3"
 PARTITION_NET_WEIGHTS_SCHEMA = "emuflow.partition-net-weights/v1"
 STA_PATH_DATABASE_PROVIDERS = {
     "opensta-fpga-path-database-v1",
@@ -41,6 +48,198 @@ def _file_sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sta_path_payload(
+    manifest_path: Path, value: Mapping[str, Any]
+) -> tuple[Path, str, int, str]:
+    payloads = value.get("payloads")
+    descriptor = payloads.get("paths") if isinstance(payloads, Mapping) else None
+    if not isinstance(descriptor, Mapping):
+        raise ValidationError("STA path database payload is invalid")
+    relative = descriptor.get("path")
+    digest = descriptor.get("sha256")
+    records = descriptor.get("records")
+    if (
+        descriptor.get("format") not in {
+            STA_PATH_DATABASE_PAYLOAD_FORMAT_V1,
+            STA_PATH_DATABASE_PAYLOAD_FORMAT_V2,
+            STA_PATH_DATABASE_PAYLOAD_FORMAT,
+        }
+        or not isinstance(relative, str)
+        or not relative
+        or Path(relative).is_absolute()
+        or Path(relative).name != relative
+        or not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        or isinstance(records, bool)
+        or not isinstance(records, int)
+        or records <= 0
+    ):
+        raise ValidationError("STA path database payload is invalid")
+    path = manifest_path.parent / relative
+    if not path.is_file():
+        raise ValidationError("STA path database payload is missing")
+    return path, digest, records, str(descriptor["format"])
+
+
+def _sta_path_endpoint_row(endpoint: Mapping[str, Any]) -> list[Any]:
+    return [
+        endpoint.get("object"),
+        endpoint.get("instance"),
+        endpoint.get("port"),
+        endpoint.get("bit"),
+    ]
+
+
+def _sta_path_record_row(record: Mapping[str, Any]) -> list[Any]:
+    """Encode one path without repeating JSON object keys per endpoint."""
+
+    row: list[Any] = [
+        record.get("id"),
+        record.get("clock_domain"),
+        record.get("clock_period_ns"),
+        record.get("slack_ns"),
+        record.get("fixed_delay_ns"),
+        record.get("path_nets"),
+    ]
+    has_startpoint = "startpoint" in record
+    has_endpoint = "endpoint" in record
+    if has_startpoint != has_endpoint:
+        raise ValidationError("STA path database record endpoints are invalid")
+    if has_startpoint:
+        startpoint = record["startpoint"]
+        endpoint = record["endpoint"]
+        if not isinstance(startpoint, Mapping) or not isinstance(
+            endpoint, Mapping
+        ):
+            raise ValidationError(
+                "STA path database record endpoints are invalid"
+            )
+        row.extend(
+            [
+                _sta_path_endpoint_row(startpoint),
+                _sta_path_endpoint_row(endpoint),
+            ]
+        )
+    return row
+
+
+def _sta_path_record_from_row(value: Any, index: int) -> Dict[str, Any]:
+    if not isinstance(value, list) or len(value) not in {6, 8}:
+        raise ValidationError(
+            f"STA path database payload record {index} is invalid"
+        )
+    record: Dict[str, Any] = {
+        "id": value[0],
+        "clock_domain": value[1],
+        "clock_period_ns": value[2],
+        "slack_ns": value[3],
+        "fixed_delay_ns": value[4],
+        "path_nets": value[5],
+    }
+    if len(value) == 8:
+        endpoints = value[6:8]
+        if any(
+            not isinstance(endpoint, list) or len(endpoint) != 4
+            for endpoint in endpoints
+        ):
+            raise ValidationError(
+                f"STA path database payload record {index} is invalid"
+            )
+        for name, endpoint in zip(("startpoint", "endpoint"), endpoints):
+            record[name] = {
+                "object": endpoint[0],
+                "instance": endpoint[1],
+                "port": endpoint[2],
+                "bit": endpoint[3],
+            }
+    return record
+
+
+def iter_sta_path_database_paths(
+    path: Path, value: Mapping[str, Any]
+) -> Iterator[Mapping[str, Any]]:
+    """Iterate a legacy inline or v2 streamed TimingPathDB exactly once."""
+
+    schema = value.get("schema")
+    if schema == STA_PATH_DATABASE_SCHEMA:
+        records = value.get("paths")
+        if not isinstance(records, list):
+            raise ValidationError("STA path database paths are invalid")
+        yield from records
+        return
+    if schema != STA_PATH_DATABASE_STREAM_SCHEMA:
+        raise ValidationError("STA path database schema is invalid")
+    payload_path, expected_digest, expected_records, payload_format = _sta_path_payload(
+        path, value
+    )
+    normalization = (
+        _validate_database_normalization(value.get("normalization"))
+        if payload_format in {
+            STA_PATH_DATABASE_PAYLOAD_FORMAT_V2,
+            STA_PATH_DATABASE_PAYLOAD_FORMAT,
+        }
+        else None
+    )
+    digest = hashlib.sha256()
+    count = 0
+    with payload_path.open("rb") as stream:
+        for raw in stream:
+            digest.update(raw)
+            if not raw.endswith(b"\n"):
+                raise ValidationError("STA path database payload is truncated")
+            try:
+                record = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValidationError(
+                    f"STA path database payload record {count} is invalid"
+                ) from error
+            if payload_format == STA_PATH_DATABASE_PAYLOAD_FORMAT:
+                record = _sta_path_record_from_row(record, count)
+            count += 1
+            if payload_format in {
+                STA_PATH_DATABASE_PAYLOAD_FORMAT_V2,
+                STA_PATH_DATABASE_PAYLOAD_FORMAT,
+            }:
+                if not isinstance(record, dict) or "normalized_slack" in record:
+                    raise ValidationError(
+                        f"STA path database payload record {count - 1} is invalid"
+                    )
+                record = dict(record)
+                try:
+                    record["normalized_slack"] = _normalized_slack(
+                        float(record["clock_period_ns"]),
+                        float(record["slack_ns"]),
+                        normalization,
+                    )
+                except (KeyError, TypeError, ValueError) as error:
+                    raise ValidationError(
+                        f"STA path database payload record {count - 1} is invalid"
+                    ) from error
+            yield record
+    if count != expected_records:
+        raise ValidationError("STA path database payload count disagrees")
+    if digest.hexdigest() != expected_digest:
+        raise ValidationError("STA path database payload digest disagrees")
+
+
+def sta_path_database_qor(
+    database_path: Path, value: Optional[Mapping[str, Any]] = None
+) -> Dict[str, Any]:
+    manifest = read_json(database_path) if value is None else value
+    slacks = [
+        float(record["slack_ns"])
+        for record in iter_sta_path_database_paths(database_path, manifest)
+    ]
+    if not slacks:
+        raise ValidationError("STA path database contains no timing paths")
+    return {
+        "wns_ns": min(slacks),
+        "tns_ns": math.fsum(item for item in slacks if item < 0.0),
+        "failing_endpoints": sum(item < 0.0 for item in slacks),
+        "timed_endpoints": len(slacks),
+    }
 
 
 def _instance_pin_inventory(ir: EmuIR) -> Dict[str, set[tuple[str, int]]]:
@@ -416,6 +615,97 @@ def write_vivado_net_map(
     return _write_net_map(ir_path, output_path, VIVADO_NET_MAP_HEADER)
 
 
+def _parse_sta_path_database_tsv_record(
+    line: str,
+    index: int,
+    *,
+    provider: str,
+    known_nets: set[str],
+    object_index: Mapping[str, Mapping[str, Any]],
+    instances_by_id: Mapping[str, Mapping[str, Any]],
+    nets_by_id: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Any]:
+    fields = line.split("\t")
+    if len(fields) != 6:
+        raise ValidationError(
+            f"STA path database TSV line {index}: expected six fields"
+        )
+    path_id = _hex_decode(
+        fields[0], f"STA path database TSV line {index} path"
+    )
+    clock_domain = _hex_decode(
+        fields[1], f"STA path database TSV line {index} clock"
+    )
+    if not path_id or not clock_domain:
+        raise ValidationError(
+            f"STA path database TSV line {index}: invalid path identity"
+        )
+    try:
+        clock_period = float(fields[2])
+        slack = float(fields[3])
+        fixed_delay = float(fields[4])
+    except ValueError as error:
+        raise ValidationError(
+            f"STA path database TSV line {index}: invalid numeric field"
+        ) from error
+    if (
+        not all(
+            math.isfinite(value)
+            for value in (clock_period, slack, fixed_delay)
+        )
+        or clock_period <= 0.0
+        or fixed_delay < 0.0
+    ):
+        raise ValidationError(
+            f"STA path database TSV line {index}: invalid period/delay"
+        )
+    raw_nets = fields[5].split(",")
+    if not raw_nets or any(not item for item in raw_nets):
+        raise ValidationError(
+            f"STA path database TSV line {index}: empty path-net list"
+        )
+    path_nets = [
+        _hex_decode(
+            item, f"STA path database TSV line {index} path_nets_hex"
+        )
+        for item in raw_nets
+    ]
+    if len(set(path_nets)) != len(path_nets):
+        raise ValidationError(
+            f"STA path database TSV line {index}: duplicate net"
+        )
+    unknown = sorted(set(path_nets) - known_nets)
+    if unknown:
+        raise ValidationError(
+            f"STA path database TSV line {index}: unknown EmuIR nets {unknown}"
+        )
+    record = {
+        "id": path_id,
+        "clock_domain": clock_domain,
+        "clock_period_ns": clock_period,
+        "slack_ns": slack,
+        "fixed_delay_ns": fixed_delay,
+        "path_nets": path_nets,
+    }
+    try:
+        startpoint, endpoint = sta_path_endpoints(record, object_index)
+    except ValidationError:
+        if provider == "vivado-get-timing-path-database-v1":
+            try:
+                startpoint, endpoint = _vivado_hard_macro_path_endpoints(
+                    record, object_index, instances_by_id, nets_by_id
+                )
+            except ValidationError:
+                pass
+            else:
+                record["startpoint"] = startpoint
+                record["endpoint"] = endpoint
+    else:
+        record["startpoint"] = startpoint
+        record["endpoint"] = endpoint
+    return record
+
+
 def import_sta_path_database_tsv(
     input_path: Path,
     ir_path: Path,
@@ -423,8 +713,15 @@ def import_sta_path_database_tsv(
     *,
     provider: str,
     source: Optional[Mapping[str, Any]] = None,
+    _ir: Optional[EmuIR] = None,
+    _return_value: bool = False,
 ) -> Dict[str, Any]:
-    ir = EmuIR.load(ir_path)
+    # Large physical timing graphs can exceed hundreds of MiB.  The OpenSTA
+    # producer already owns the validated EmuIR object, so let that producer
+    # pass the object through rather than reparsing the same JSON solely for
+    # TSV import.  The private arguments deliberately stay out of the public
+    # CLI contract; ordinary standalone callers retain the path-based load.
+    ir = _ir if _ir is not None else EmuIR.load(ir_path)
     known_nets = {net["id"] for net in ir.value["nets"]}
     object_index = sta_object_index(ir)
     instances_by_id = (
@@ -447,97 +744,22 @@ def import_sta_path_database_tsv(
     for index, line in enumerate(lines[1:], start=2):
         if not line:
             continue
-        fields = line.split("\t")
-        if len(fields) != 6:
-            raise ValidationError(
-                f"STA path database TSV line {index}: "
-                "expected six fields"
-            )
-        path_id = _hex_decode(
-            fields[0],
-            f"STA path database TSV line {index} path",
+        record = _parse_sta_path_database_tsv_record(
+            line,
+            index,
+            provider=provider,
+            known_nets=known_nets,
+            object_index=object_index,
+            instances_by_id=instances_by_id,
+            nets_by_id=nets_by_id,
         )
-        clock_domain = _hex_decode(
-            fields[1],
-            f"STA path database TSV line {index} clock",
-        )
-        if not path_id or path_id in path_ids:
+        path_id = record["id"]
+        if path_id in path_ids:
             raise ValidationError(
                 f"STA path database TSV line {index}: "
                 "invalid or duplicate path"
             )
         path_ids.add(path_id)
-        try:
-            clock_period = float(fields[2])
-            slack = float(fields[3])
-            fixed_delay = float(fields[4])
-        except ValueError as error:
-            raise ValidationError(
-                f"STA path database TSV line {index}: "
-                "invalid numeric field"
-            ) from error
-        if (
-            not all(
-                math.isfinite(value)
-                for value in (clock_period, slack, fixed_delay)
-            )
-            or clock_period <= 0.0
-            or fixed_delay < 0.0
-        ):
-            raise ValidationError(
-                f"STA path database TSV line {index}: "
-                "invalid period/delay"
-            )
-        raw_nets = fields[5].split(",")
-        if not raw_nets or any(not item for item in raw_nets):
-            raise ValidationError(
-                f"STA path database TSV line {index}: "
-                "empty path-net list"
-            )
-        path_nets = [
-            _hex_decode(
-                item,
-                f"STA path database TSV line {index} path_nets_hex",
-            )
-            for item in raw_nets
-        ]
-        if len(set(path_nets)) != len(path_nets):
-            raise ValidationError(
-                f"STA path database TSV line {index}: duplicate net"
-            )
-        unknown = sorted(set(path_nets) - known_nets)
-        if unknown:
-            raise ValidationError(
-                f"STA path database TSV line {index}: "
-                f"unknown EmuIR nets {unknown}"
-            )
-        record = {
-            "id": path_id,
-            "clock_domain": clock_domain,
-            "clock_period_ns": clock_period,
-            "slack_ns": slack,
-            "fixed_delay_ns": fixed_delay,
-            "path_nets": path_nets,
-        }
-        try:
-            startpoint, endpoint = sta_path_endpoints(record, object_index)
-        except ValidationError:
-            if provider == "vivado-get-timing-path-database-v1":
-                try:
-                    startpoint, endpoint = _vivado_hard_macro_path_endpoints(
-                        record,
-                        object_index,
-                        instances_by_id,
-                        nets_by_id,
-                    )
-                except ValidationError:
-                    pass
-                else:
-                    record["startpoint"] = startpoint
-                    record["endpoint"] = endpoint
-        else:
-            record["startpoint"] = startpoint
-            record["endpoint"] = endpoint
         paths.append(record)
     if not paths:
         raise ValidationError(
@@ -565,7 +787,7 @@ def import_sta_path_database_tsv(
         "paths": paths,
     }
     write_json(output_path, artifact)
-    return {
+    result = {
         "status": "pass",
         "design": artifact["design"],
         "paths": len(paths),
@@ -576,6 +798,334 @@ def import_sta_path_database_tsv(
             {net for path in paths for net in path["path_nets"]}
         ),
         "output": str(output_path),
+    }
+    if _return_value:
+        result["_value"] = artifact
+    return result
+
+
+def import_sta_path_database_tsv_streaming(
+    input_path: Path,
+    ir_path: Path,
+    output_path: Path,
+    *,
+    provider: str,
+    source: Optional[Mapping[str, Any]] = None,
+    _ir: Optional[EmuIR] = None,
+) -> Dict[str, Any]:
+    """Convert an STA TSV to a small manifest plus a sealed JSONL stream.
+
+    One pass validates identities, derives global normalization, and emits raw
+    records atomically.  Readers derive ``normalized_slack`` lazily from the
+    sealed manifest.  At no point is the path population materialized as one
+    Python list or JSON document.
+    """
+
+    if provider not in STA_PATH_DATABASE_PROVIDERS:
+        raise ValidationError("STA path database provider is invalid")
+    ir = _ir if _ir is not None else EmuIR.load(ir_path)
+    known_nets = {net["id"] for net in ir.value["nets"]}
+    object_index = sta_object_index(ir)
+    instances_by_id = (
+        {item["id"]: item for item in ir.value["instances"]}
+        if provider == "vivado-get-timing-path-database-v1"
+        else {}
+    )
+    nets_by_id = (
+        {item["id"]: item for item in ir.value["nets"]}
+        if provider == "vivado-get-timing-path-database-v1"
+        else {}
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload_path = output_path.with_name(output_path.name + ".paths.jsonl")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=payload_path.name + ".",
+        suffix=".tmp",
+        dir=output_path.parent,
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    payload_digest = hashlib.sha256()
+    path_ids: set[str] = set()
+    path_nets_union: set[str] = set()
+    positive_scale_value: Optional[float] = None
+    most_negative_value: Optional[float] = None
+    max_period = 0.0
+    count = 0
+    structured = 0
+    negative_slacks: list[float] = []
+    worst_slack: Optional[float] = None
+    try:
+        with (
+            input_path.open("r", encoding="utf-8") as source_stream,
+            temporary_path.open("wb") as output_stream,
+        ):
+            header = source_stream.readline().rstrip("\r\n")
+            if header != STA_PATH_DATABASE_TSV_HEADER:
+                raise ValidationError("STA path database TSV: invalid header")
+            for index, raw in enumerate(source_stream, start=2):
+                line = raw.rstrip("\r\n")
+                if not line:
+                    continue
+                record = _parse_sta_path_database_tsv_record(
+                    line,
+                    index,
+                    provider=provider,
+                    known_nets=known_nets,
+                    object_index=object_index,
+                    instances_by_id=instances_by_id,
+                    nets_by_id=nets_by_id,
+                )
+                path_id = record["id"]
+                if path_id in path_ids:
+                    raise ValidationError(
+                        f"STA path database TSV line {index}: duplicate path"
+                    )
+                path_ids.add(path_id)
+                path_nets_union.update(record["path_nets"])
+                slack = float(record["slack_ns"])
+                period = float(record["clock_period_ns"])
+                if slack >= 0.0:
+                    positive_scale_value = (
+                        slack
+                        if positive_scale_value is None
+                        else max(positive_scale_value, slack)
+                    )
+                else:
+                    most_negative_value = (
+                        slack
+                        if most_negative_value is None
+                        else min(most_negative_value, slack)
+                    )
+                    negative_slacks.append(slack)
+                max_period = max(max_period, period)
+                worst_slack = (
+                    slack if worst_slack is None else min(worst_slack, slack)
+                )
+                structured += int(
+                    "startpoint" in record and "endpoint" in record
+                )
+                encoded = (
+                    json.dumps(
+                        _sta_path_record_row(record),
+                        separators=(",", ":"),
+                    )
+                    .encode("utf-8")
+                    + b"\n"
+                )
+                output_stream.write(encoded)
+                payload_digest.update(encoded)
+                count += 1
+        if count == 0:
+            raise ValidationError(
+                "STA path database TSV contains no mapped timing paths"
+            )
+        os.replace(temporary_path, payload_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    positive_scale = (
+        1.0
+        if positive_scale_value in {None, 0.0}
+        else float(positive_scale_value)
+    )
+    most_negative = (
+        -1.0 if most_negative_value is None else float(most_negative_value)
+    )
+    normalization = {
+        "positive_slack_scale_ns": positive_scale,
+        "negative_slack_scale_ns": abs(most_negative),
+        "max_clock_period_ns": max_period,
+    }
+
+    source_value = dict(source) if source is not None else {}
+    source_value.update({"provider": provider, "input": str(input_path)})
+    qor = {
+        "wns_ns": worst_slack,
+        "tns_ns": math.fsum(negative_slacks),
+        "failing_endpoints": len(negative_slacks),
+        "timed_endpoints": count,
+    }
+    artifact = {
+        "schema": STA_PATH_DATABASE_STREAM_SCHEMA,
+        "design": ir.value["design"]["name"],
+        "source": source_value,
+        "normalization": normalization,
+        "summary": {
+            "paths": count,
+            "structured_endpoint_paths": structured,
+            "unique_path_nets": len(path_nets_union),
+            "qor": qor,
+        },
+        "payloads": {
+            "paths": {
+                "format": STA_PATH_DATABASE_PAYLOAD_FORMAT,
+                "path": payload_path.name,
+                "sha256": payload_digest.hexdigest(),
+                "records": count,
+            }
+        },
+    }
+    write_json(output_path, artifact, compact=True)
+    return {
+        "status": "pass",
+        "design": artifact["design"],
+        "paths": count,
+        "structured_endpoint_paths": structured,
+        "unique_path_nets": len(path_nets_union),
+        "path_qor": qor,
+        "output": str(output_path),
+    }
+
+
+def _validate_sta_path_database_stream(
+    database_path: Path,
+    database: Mapping[str, Any],
+    ir: EmuIR,
+) -> Dict[str, Any]:
+    if database.get("schema") != STA_PATH_DATABASE_STREAM_SCHEMA:
+        raise ValidationError("STA path database schema is invalid")
+    if database.get("design") != ir.value["design"]["name"]:
+        raise ValidationError("STA path database design does not match EmuIR")
+    source = database.get("source")
+    if (
+        not isinstance(source, dict)
+        or source.get("provider") not in STA_PATH_DATABASE_PROVIDERS
+    ):
+        raise ValidationError("STA path database source is invalid")
+    normalization = _validate_database_normalization(
+        database.get("normalization")
+    )
+    known_nets = {net["id"] for net in ir.value["nets"]}
+    known_instances = {instance["id"] for instance in ir.value["instances"]}
+    path_ids: set[str] = set()
+    clock_domains: set[str] = set()
+    path_nets_union: set[str] = set()
+    worst_slack: Optional[float] = None
+    structured_endpoint_paths = 0
+    negative_slacks: list[float] = []
+    count = 0
+    for index, path in enumerate(
+        iter_sta_path_database_paths(database_path, database)
+    ):
+        context = f"STA path database paths[{index}]"
+        if not isinstance(path, dict):
+            raise ValidationError(f"{context} is invalid")
+        required_keys = {
+            "id", "clock_domain", "clock_period_ns", "slack_ns",
+            "fixed_delay_ns", "path_nets", "normalized_slack",
+        }
+        endpoint_keys = {"startpoint", "endpoint"}
+        if not (
+            set(path) == required_keys
+            or set(path) == required_keys | endpoint_keys
+        ):
+            raise ValidationError(f"{context} fields are invalid")
+        if endpoint_keys <= set(path):
+            structured_endpoint_paths += 1
+            _validate_endpoint_identity(
+                path["startpoint"], known_instances, f"{context}.startpoint"
+            )
+            _validate_endpoint_identity(
+                path["endpoint"], known_instances, f"{context}.endpoint"
+            )
+        path_id = path["id"]
+        clock_domain = path["clock_domain"]
+        if (
+            not isinstance(path_id, str)
+            or not path_id
+            or path_id in path_ids
+            or not isinstance(clock_domain, str)
+            or not clock_domain
+        ):
+            raise ValidationError(f"{context} identity is invalid")
+        path_ids.add(path_id)
+        clock_domains.add(clock_domain)
+        numeric: Dict[str, float] = {}
+        for name in (
+            "clock_period_ns", "slack_ns", "fixed_delay_ns",
+            "normalized_slack",
+        ):
+            value = path[name]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise ValidationError(f"{context}.{name} is invalid")
+            numeric[name] = float(value)
+        if (
+            numeric["clock_period_ns"] <= 0.0
+            or numeric["fixed_delay_ns"] < 0.0
+        ):
+            raise ValidationError(f"{context} timing is invalid")
+        path_nets = path["path_nets"]
+        if (
+            not isinstance(path_nets, list)
+            or not path_nets
+            or not all(isinstance(net, str) and net for net in path_nets)
+            or len(path_nets) != len(set(path_nets))
+        ):
+            raise ValidationError(f"{context}.path_nets is invalid")
+        unknown = sorted(set(path_nets) - known_nets)
+        if unknown:
+            raise ValidationError(
+                f"{context}.path_nets contains unknown EmuIR nets {unknown}"
+            )
+        expected_normalized = _normalized_slack(
+            numeric["clock_period_ns"], numeric["slack_ns"], normalization
+        )
+        if abs(numeric["normalized_slack"] - expected_normalized) > 1.0e-12:
+            raise ValidationError(
+                f"{context}.normalized_slack is inconsistent"
+            )
+        path_nets_union.update(path_nets)
+        slack = numeric["slack_ns"]
+        worst_slack = slack if worst_slack is None else min(worst_slack, slack)
+        if slack < 0.0:
+            negative_slacks.append(slack)
+        count += 1
+    if count == 0:
+        raise ValidationError("STA path database paths are invalid")
+    summary = database.get("summary")
+    recomputed_qor = {
+        "wns_ns": worst_slack,
+        "tns_ns": math.fsum(negative_slacks),
+        "failing_endpoints": len(negative_slacks),
+        "timed_endpoints": count,
+    }
+    if not isinstance(summary, dict) or (
+        summary.get("paths") != count
+        or summary.get("structured_endpoint_paths")
+        != structured_endpoint_paths
+        or summary.get("unique_path_nets") != len(path_nets_union)
+    ):
+        raise ValidationError("STA path database summary disagrees")
+    reported_qor = summary.get("qor")
+    if not isinstance(reported_qor, dict):
+        raise ValidationError("STA path database QoR summary is invalid")
+    for field in ("wns_ns", "tns_ns"):
+        if not math.isclose(
+            float(reported_qor.get(field, math.nan)),
+            float(recomputed_qor[field]),
+            rel_tol=1.0e-12,
+            abs_tol=1.0e-12,
+        ):
+            raise ValidationError("STA path database QoR summary disagrees")
+    for field in ("failing_endpoints", "timed_endpoints"):
+        if reported_qor.get(field) != recomputed_qor[field]:
+            raise ValidationError("STA path database QoR summary disagrees")
+    return {
+        "status": "pass",
+        "design": database["design"],
+        "provider": source["provider"],
+        "paths": count,
+        "structured_endpoint_paths": structured_endpoint_paths,
+        "unresolved_endpoint_paths": count - structured_endpoint_paths,
+        "clock_domains": sorted(clock_domains),
+        "unique_path_nets": len(path_nets_union),
+        "worst_slack_ns": worst_slack,
+        "path_qor": recomputed_qor,
     }
 
 
@@ -727,9 +1277,27 @@ def validate_sta_path_database(
     database_path: Path,
     ir_path: Path,
 ) -> Dict[str, Any]:
-    return validate_sta_path_database_value(
-        read_json(database_path), EmuIR.load(ir_path)
-    )
+    database = read_json(database_path)
+    ir = EmuIR.load(ir_path)
+    if database.get("schema") == STA_PATH_DATABASE_STREAM_SCHEMA:
+        return _validate_sta_path_database_stream(
+            database_path, database, ir
+        )
+    return validate_sta_path_database_value(database, ir)
+
+
+def validate_sta_path_database_path_value(
+    database_path: Path,
+    database: Mapping[str, Any],
+    ir: EmuIR,
+) -> Dict[str, Any]:
+    """Validate an already-loaded manifest against an already-loaded IR."""
+
+    if database.get("schema") == STA_PATH_DATABASE_STREAM_SCHEMA:
+        return _validate_sta_path_database_stream(
+            database_path, database, ir
+        )
+    return validate_sta_path_database_value(database, ir)
 
 
 def derive_partition_net_weights(

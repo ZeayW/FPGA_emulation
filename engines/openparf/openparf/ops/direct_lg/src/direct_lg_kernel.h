@@ -26,7 +26,10 @@ OPENPARF_BEGIN_NAMESPACE
 
 namespace direct_lg {
 
-void initDLProblem(database::PlaceDB const &db, DLProblem &prob);
+void initDLProblem(database::PlaceDB const &db,
+                   DLProblem &              prob,
+                   int32_t                  num_masked_insts,
+                   int32_t *                masked_inst_ids);
 void writeHalfColumnAvailabilityMapSolution(database::PlaceDB const &db, DLSolver const &solver, uint8_t *hcAvailMap);
 
 /// @brief write DL solution back to the netlist
@@ -35,9 +38,10 @@ void writeDLSolution(database::PlaceDB const &db,
                      DLProblem const &        prob,
                      DLSolver const &         solver,
                      T const *                init_pos,
+                     int32_t                  init_pos_stride,
                      T *                      pos) {
   for (uint32_t i = 0; i < db.numInsts(); ++i) {
-    if (db.isInstLUT(i) || db.isInstFF(i)) {
+    if (prob.instTypes[i] != DLInstanceType::DONTCARE) {
       // Note that we only move LUT/FF in DL
       // So we only need to commit their solution from our DL solver
       const auto &sol = solver.instSol(i);
@@ -46,8 +50,11 @@ void writeDLSolution(database::PlaceDB const &db,
       pos[i * 3 + 1]  = loc.y();
       pos[i * 3 + 2]  = sol.z;
     } else {
-      pos[i * 3]     = init_pos[i * 2];
-      pos[i * 3 + 1] = init_pos[i * 2 + 1];
+      pos[i * 3]     = init_pos[i * init_pos_stride];
+      pos[i * 3 + 1] = init_pos[i * init_pos_stride + 1];
+      if (init_pos_stride == 3) {
+        pos[i * 3 + 2] = init_pos[i * init_pos_stride + 2];
+      }
     }
   }
 }
@@ -60,6 +67,9 @@ void directLegalize(database::PlaceDB const &                db,
                     LayoutXy2GridIndexFunctorType<T>         xy_to_half_column_functor,
                     const std::vector<std::vector<int32_t>> &inst_to_clock_indexes,
                     int32_t                                  num_threads,
+                    int32_t                                  num_masked_insts,
+                    int32_t *                                masked_inst_ids,
+                    int32_t                                  init_pos_stride,
                     T *                                      pos,
                     uint8_t *                                hc_avail_map) {
   DLProblem prob;
@@ -67,16 +77,16 @@ void directLegalize(database::PlaceDB const &                db,
   prob.slrAwareFlag   = param.slrAwareFlag;
   prob.instXYs.resize(db.numInsts());
   for (IndexType i = 0; i < prob.instXYs.size(); ++i) {
-    prob.instXYs[i].set(init_pos[(i << 1)], init_pos[(i << 1) + 1]);
+    prob.instXYs[i].set(init_pos[i * init_pos_stride], init_pos[i * init_pos_stride + 1]);
   }
-  initDLProblem(db, prob);
+  initDLProblem(db, prob, num_masked_insts, masked_inst_ids);
 
   // Perform the DL
   DLSolver solver(prob, param, legality_check_functor, xy_to_half_column_functor, inst_to_clock_indexes, num_threads);
   solver.run();
 
   // Write the DL solution back to the netlist
-  writeDLSolution(db, prob, solver, init_pos, pos);
+  writeDLSolution(db, prob, solver, init_pos, init_pos_stride, pos);
   openparfPrint(kDebug, "writeDLSolution done.\n");
 
   // Return the half column solution
@@ -103,8 +113,8 @@ void directLegalize(database::PlaceDB const &                db,
                       i,
                       inst_id,
                       inst.attr().name().c_str(),
-                      init_pos[i << 1],
-                      init_pos[i << 1 | 1],
+                      init_pos[i * init_pos_stride],
+                      init_pos[i * init_pos_stride + 1],
                       xx,
                       yy);
       }
@@ -126,6 +136,9 @@ void OPENPARF_NOINLINE directLegalizeLauncher(database::PlaceDB const &         
                                               LayoutXy2GridIndexFunctorType<T>         xy_to_half_column_functor,
                                               const std::vector<std::vector<int32_t>> &inst_to_clock_indexes,
                                               int32_t                                  num_threads,
+                                              int32_t                                  num_masked_insts,
+                                              int32_t *                                masked_inst_ids,
+                                              int32_t                                  init_pos_stride,
                                               T *                                      pos,
                                               uint8_t *                                hc_avail_map) {
   directLegalize(db,
@@ -135,6 +148,9 @@ void OPENPARF_NOINLINE directLegalizeLauncher(database::PlaceDB const &         
                  xy_to_half_column_functor,
                  inst_to_clock_indexes,
                  num_threads,
+                 num_masked_insts,
+                 masked_inst_ids,
+                 init_pos_stride,
                  pos,
                  hc_avail_map);
 }

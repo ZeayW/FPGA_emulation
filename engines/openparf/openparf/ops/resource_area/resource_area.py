@@ -65,8 +65,12 @@ class ResourceArea(nn.Module):
         self.slice_capacity = slice_capacity
         self.gp_adjust_packing_rule = gp_adjust_packing_rule
 
-        assert torch.all(self.is_inst_luts != 1)  # LUT1 does not exist.
-        assert torch.all(self.is_inst_ffs <= 6)  # We only have LUT2 to LUT6.
+        # UltraScale slices support LUT1 through LUT6.  The C++ demand-map
+        # kernel already allocates six bins and indexes them by LUT width - 1;
+        # rejecting width one here was an obsolete benchmark assumption.
+        assert torch.all(0 <= self.is_inst_luts) and torch.all(
+            self.is_inst_luts <= 6
+        )
         assert torch.all(0 <= self.is_inst_ffs) and torch.all(
             self.is_inst_ffs <= 1)
         assert gp_adjust_packing_rule == "ultrascale" or gp_adjust_packing_rule == "xarch"

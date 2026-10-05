@@ -9,6 +9,7 @@
 
 // C++ system libraries headers
 #include <algorithm>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -20,7 +21,10 @@ OPENPARF_BEGIN_NAMESPACE
 namespace direct_lg {
 
 /// Initialize the netlist information
-void initDLProblemNetlist(database::PlaceDB const &db, DLProblem &prob) {
+void initDLProblemNetlist(database::PlaceDB const &db,
+                          DLProblem &              prob,
+                          int32_t                  num_masked_insts,
+                          int32_t *                masked_inst_ids) {
   RealType   avgLUTArea = 0;
   RealType   avgFFArea  = 0;
   IndexType &numLUT     = (prob.numLUTInst = 0);
@@ -80,6 +84,7 @@ void initDLProblemNetlist(database::PlaceDB const &db, DLProblem &prob) {
       ++numFF;
     }
   }
+
   avgLUTArea /= numLUT;
   avgFFArea /= numFF;
 
@@ -117,6 +122,16 @@ void initDLProblemNetlist(database::PlaceDB const &db, DLProblem &prob) {
     }
   }
 
+  // Site-macro members have already been legalized as indivisible physical
+  // objects.  Remove them from the ordinary LUT/FF problem while retaining
+  // their locations for site reservation below.
+  for (int32_t i = 0; i < num_masked_insts; ++i) {
+    IndexType inst_id = masked_inst_ids[i];
+    openparfAssertMsg(inst_id < db.numInsts(), "masked instance ID %u is out of range", inst_id);
+    prob.isInstFixed[inst_id] = true;
+    prob.instTypes[inst_id]   = DLInstanceType::DONTCARE;
+  }
+
   // Compute the instance weight
   for (IndexType pid = 0; pid < prob.pinToNet.size(); ++pid) {
     prob.instWts[prob.pinToInst[pid]] += prob.netWts[prob.pinToNet[pid]];
@@ -138,7 +153,10 @@ void initDLProblemNetlist(database::PlaceDB const &db, DLProblem &prob) {
 }
 
 /// Initialize the site map information for the DL problem
-void initDLProblemSiteMap(database::PlaceDB const &db, DLProblem &prob) {
+void initDLProblemSiteMap(database::PlaceDB const &db,
+                          DLProblem &              prob,
+                          int32_t                  num_masked_insts,
+                          int32_t *                masked_inst_ids) {
   auto const &layout   = db.db()->layout();
   IndexType & numSLICE = (prob.numSiteSLICE = 0);
   IndexType & num_LUTs = (prob.num_LUTs = 0);
@@ -146,6 +164,8 @@ void initDLProblemSiteMap(database::PlaceDB const &db, DLProblem &prob) {
 
   prob.siteTypes.resize(db.siteMapDim().x(), db.siteMapDim().y());
   prob.siteXYs.resize(db.siteMapDim().x(), db.siteMapDim().y());
+  prob.validSiteMap.resize(
+          db.siteMapDim().x(), db.siteMapDim().y(), kIndexTypeMax);
 
   // initialize all sites
   // site_map does not contain duplicated sites
@@ -157,10 +177,27 @@ void initDLProblemSiteMap(database::PlaceDB const &db, DLProblem &prob) {
   }
 
   // We assume all instances should be placed at the center in a slice
-  // So we have SLICE offset (0.5, 0.5)
+  // rather than at the lower-left SITEMAP anchor.  The distinction matters
+  // for sparse column-based architectures: OpenPARF represents the vertical
+  // interval up to the next entry as one site bounding box.
   for (auto const &site : layout.siteMap()) {
-    auto x = site.bbox().xl();
-    auto y = site.bbox().yl();
+    auto const &bbox = site.bbox();
+    auto        x    = site.siteMapId().x();
+    auto        y    = site.siteMapId().y();
+    auto        id1d = layout.siteMap().index1D(x, y);
+    for (IndexType ix = bbox.xl(); ix < bbox.xh(); ++ix) {
+      for (IndexType iy = bbox.yl(); iy < bbox.yh(); ++iy) {
+        openparfAssertMsg(
+                prob.validSiteMap(ix, iy) == kIndexTypeMax,
+                "overlapping sites cover grid coordinate (%u, %u)",
+                ix,
+                iy);
+        prob.validSiteMap(ix, iy) = id1d;
+      }
+    }
+    prob.siteXYs(x, y).set(
+            (bbox.xl() + bbox.xh()) * 0.5,
+            (bbox.yl() + bbox.yh()) * 0.5);
     for (auto const &resource : layout.resourceMap()) {
       auto        site_type = layout.siteType(site);
       std::string site_name = site_type.name();
@@ -173,7 +210,6 @@ void initDLProblemSiteMap(database::PlaceDB const &db, DLProblem &prob) {
             prob.siteTypes(x, y) = DLSiteType::SLICE;
           }
           numSLICE++;
-          prob.siteXYs(x, y).set(x + 0.5, y + 0.5);
           if (resource.name() == "LUTL") {
             num_LUTs = std::max(num_LUTs, site_type.resourceCapacity(resource.id()));
           }
@@ -186,13 +222,56 @@ void initDLProblemSiteMap(database::PlaceDB const &db, DLProblem &prob) {
         if (db.isResourceLUT(resource.id()) && site_type.resourceCapacity(resource.id())) {
           prob.siteTypes(x, y) = DLSiteType::SLICE;
           numSLICE++;
-          prob.siteXYs(x, y).set(x + 0.5, y + 0.5);
           num_LUTs = std::max(num_LUTs, site_type.resourceCapacity(resource.id()));
         }
         if (db.isResourceFF(resource.id()) && site_type.resourceCapacity(resource.id())) {
           num_FFs = std::max(num_FFs, site_type.resourceCapacity(resource.id()));
         }
       }
+    }
+  }
+
+  // Reserve every site occupied by a previously legalized macro.  Multiple
+  // members may intentionally share the same physical site, so the operation
+  // is idempotent and site based rather than member based.
+  std::set<std::pair<int32_t, int32_t>> reserved_sites;
+  for (int32_t i = 0; i < num_masked_insts; ++i) {
+    IndexType inst_id = masked_inst_ids[i];
+    // The mask also contains dedicated MUX/carry/hardblock members so they
+    // remain outside the ordinary LUT/FF solver.  Only LUT/FF members consume
+    // a slice site; the remaining members are reserved by their typed
+    // legalizers and may legitimately sit on a non-slice coordinate.
+    if (!db.isInstLUT(inst_id) && !db.isInstFF(inst_id)) {
+      continue;
+    }
+    int32_t   x       = static_cast<int32_t>(prob.instXYs[inst_id].x());
+    int32_t   y       = static_cast<int32_t>(prob.instXYs[inst_id].y());
+    openparfAssertMsg(
+            x >= 0 && x < static_cast<int32_t>(db.siteMapDim().x()) && y >= 0 &&
+                    y < static_cast<int32_t>(db.siteMapDim().y()),
+            "masked instance %u has out-of-range site (%d, %d)",
+            inst_id,
+            x,
+            y);
+    IndexType site_id = prob.validSiteMap(x, y);
+    openparfAssertMsg(
+            site_id != kIndexTypeMax,
+            "masked instance %u does not occupy any site at (%d, %d)",
+            inst_id,
+            x,
+            y);
+    auto const &site = layout.siteMap().at(site_id);
+    openparfAssert(site);
+    int32_t anchor_x = site->siteMapId().x();
+    int32_t anchor_y = site->siteMapId().y();
+    if (reserved_sites.emplace(anchor_x, anchor_y).second) {
+      openparfAssertMsg(
+              prob.siteTypes(anchor_x, anchor_y) != DLSiteType::DONTCARE,
+              "masked instance %u does not occupy a legal LUT/FF site (%d, %d)",
+              inst_id,
+              anchor_x,
+              anchor_y);
+      prob.siteTypes(anchor_x, anchor_y) = DLSiteType::DONTCARE;
     }
   }
   openparfPrint(kDebug, "#CLB-SLICE: %d, #LUTs per Site: %d, #FFs per Site: %d\n", numSLICE, num_LUTs, num_FFs);
@@ -205,11 +284,14 @@ void initDLProblemSlrInfo(database::PlaceDB const &db, DLProblem &prob) {
 }
 
 /// Initialize the DL problem
-void initDLProblem(database::PlaceDB const &db, DLProblem &prob) {
+void initDLProblem(database::PlaceDB const &db,
+                   DLProblem &              prob,
+                   int32_t                  num_masked_insts,
+                   int32_t *                masked_inst_ids) {
   // Initialize netlist information
-  initDLProblemNetlist(db, prob);
+  initDLProblemNetlist(db, prob, num_masked_insts, masked_inst_ids);
   // Initialize the site map information
-  initDLProblemSiteMap(db, prob);
+  initDLProblemSiteMap(db, prob, num_masked_insts, masked_inst_ids);
   // Initialize the SLR information
   initDLProblemSlrInfo(db, prob);
 }
@@ -232,6 +314,9 @@ void writeHalfColumnAvailabilityMapSolution(database::PlaceDB const &db, DLSolve
           LayoutXy2GridIndexFunctorType<T>         xy_to_half_column_functor,                                          \
           const std::vector<std::vector<int32_t>> &inst_to_clock_indexes,                                              \
           int32_t                                  num_threads,                                                        \
+          int32_t                                  num_masked_insts,                                                   \
+          int32_t *                                masked_inst_ids,                                                    \
+          int32_t                                  init_pos_stride,                                                    \
           T *                                      pos,                                                                \
           uint8_t *                                hc_avail_map);
 

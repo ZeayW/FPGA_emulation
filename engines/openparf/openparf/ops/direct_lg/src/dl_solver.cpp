@@ -234,6 +234,7 @@ void DLSolver::buildSiteMap(DLProblem const &prob) {
   _num_LUTs = prob.num_LUTs;
   _num_FFs  = prob.num_FFs;
   _siteMap.resize(prob.siteTypes.sizes(), DLSite(_param.candPQSize, _num_LUTs, _num_FFs));
+  _validSiteMap = prob.validSiteMap;
   for (IndexType i = 0; i < _siteMap.size(); ++i) {
     auto &site = _siteMap[i];
     site.id    = i;
@@ -594,11 +595,15 @@ void DLSolver::initSiteNeighbors() {
       if (!_bndBox.contain(xy)) {
         continue;
       }
-      auto &site = _siteMap(xy.x(), xy.y());
+      auto site_id = siteIdAtSearchCoordinate(xy.x(), xy.y());
+      if (site_id == kIndexTypeMax) {
+        continue;
+      }
+      auto &site = _siteMap[site_id];
       if (instAndSiteAreCompatible(inst, site) && instAndSiteClockCompatible(inst, site)) {
         RealType dist = initXY.manhattanDistance(site.loc);
         if (dist < _param.nbrDistEnd) {
-          nbrListMap(xy.x(), xy.y()).emplace_back(instId, dist);
+          nbrListMap[site_id].emplace_back(instId, dist);
         }
       }
     }
@@ -802,6 +807,13 @@ bool DLSolver::addInstToCandidateImpl(const DLInstance                &instance,
     return true;
   }
 
+  // A 6LUT-only architecture has one legal LUT position per BLE.  Greedy
+  // insertion has already considered every such position, so paired-LUT
+  // matching cannot create another physically qualified solution.
+  if (!_param.allowPairedLUTs) {
+    return false;
+  }
+
   // Since there is no packing problem for LRAM and SHIFT,
   // if greedy adding does not work, then nothing would.
   if (res.candidate_type != LutCandidateType::UNDECIDED) {
@@ -863,8 +875,11 @@ bool DLSolver::addLUTToCandidateImpl(const DLInstance &lut, Candidate::Implement
       return false;
     }
   }
-  // First check the even slots
-  for (IndexType i = 0; i < _param.CLB_capacity; i += _param.BLE_capacity) {
+  // In the generic architecture, the even position is the first member of a
+  // potentially shared 5LUT/6LUT BLE.  A device contract may instead qualify
+  // only the odd 6LUT position; in that mode each BLE accepts exactly one LUT.
+  const IndexType firstSlot = (_param.allowPairedLUTs ? 0 : 1);
+  for (IndexType i = firstSlot; i < _param.CLB_capacity; i += _param.BLE_capacity) {
     if (impl.lut[i] == kIndexTypeMax) {
       impl.lut[i] = lut.id;
       if (impl.candidate_type == LutCandidateType::UNDECIDED) {
@@ -880,6 +895,10 @@ bool DLSolver::addLUTToCandidateImpl(const DLInstance &lut, Candidate::Implement
       }
       return true;
     }
+  }
+
+  if (!_param.allowPairedLUTs) {
+    return false;
   }
 
   // Then check the odd slots
@@ -1532,7 +1551,11 @@ bool DLSolver::ripupSiteAndLegalizeInstance(DLInstance &inst, DLSite &site, Real
       if (!_bndBox.contain(xy)) {
         continue;
       }
-      auto     &site = _siteMap(xy.x(), xy.y());
+      auto site_id = siteIdAtSearchCoordinate(xy.x(), xy.y());
+      if (site_id == kIndexTypeMax) {
+        continue;
+      }
+      auto     &site = _siteMap[site_id];
       Candidate cand(site.det);
       if (instAndSiteAreCompatible(ruInst, site) && instAndSiteClockCompatible(ruInst, site) &&
           addInstToCandidateImpl(ruInst, cand) && addInstToSignature(ruInst, cand.sig)) {
@@ -1624,7 +1647,11 @@ bool DLSolver::greedyLegalizeInst(DLInstance &inst) {
     if (!_bndBox.contain(xy)) {
       continue;
     }
-    auto     &site = _siteMap(xy.x(), xy.y());
+    auto site_id = siteIdAtSearchCoordinate(xy.x(), xy.y());
+    if (site_id == kIndexTypeMax) {
+      continue;
+    }
+    auto     &site = _siteMap[site_id];
     Candidate cand(site.det);
     if (instAndSiteAreCompatible(inst, site) && instAndSiteClockCompatible(inst, site) &&
         addInstToCandidateImpl(inst, cand) && addInstToSignature(inst, cand.sig)) {
@@ -1878,6 +1905,9 @@ void DLSolver::computeLUTScoreAndScoreImprov(SlotAssignMemory &mem) {
 
   // Collect all feasible LUT pairs and compute their best scores and score improvement
   mem.bleP.clear();
+  if (!_param.allowPairedLUTs) {
+    return;
+  }
   for (IndexType aIdx = 0; aIdx < mem.lut.size(); ++aIdx) {
     const auto &lutA = _instArray[mem.lut[aIdx]];
     for (IndexType bIdx = aIdx + 1; bIdx < mem.lut.size(); ++bIdx) {
@@ -1955,6 +1985,14 @@ void DLSolver::findBestFFs(const IndexVector     &ff,
 
 /// Perform max-weighted matching based LUT pairing
 void DLSolver::pairLUTs(SlotAssignMemory &mem) {
+  if (!_param.allowPairedLUTs) {
+    openparfAssertMsg(
+            mem.lut.size() <= _param.num_BLEs_per_CLB,
+            "6LUT-only legalization produced more LUTs than independent BLEs");
+    mem.ble = mem.bleS;
+    return;
+  }
+
   auto &graph = *(mem.graphPtr);
   auto &nodes = mem.nodes;
   auto &edges = mem.edges;

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import copy
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .resources import ResourceVector, classify_primitive_resources
 
 
@@ -27,11 +26,7 @@ XILINX_NORMALIZATION_INPUT_CELLS = {"CARRY4", "INV"}
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def validate_xilinx_primitive_library(
@@ -463,9 +458,10 @@ def audit_xilinx_mapped_json(
     *,
     top: Optional[str] = None,
     library_path: Path = DEFAULT_XILINX_PRIMITIVE_LIBRARY,
+    source: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Reject every mapped cell outside the declared Route A namespace."""
-    source = read_json(path)
+    source = read_json(path) if source is None else source
     modules = source.get("modules") if isinstance(source, dict) else None
     if not isinstance(modules, dict) or not modules:
         raise ValidationError("mapped Yosys JSON contains no modules")

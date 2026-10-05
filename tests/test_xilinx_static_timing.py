@@ -6,7 +6,10 @@ from pathlib import Path
 
 import test_xilinx_rwroute as fixtures
 from emuflow.errors import ValidationError
-from emuflow.xilinx_timing import build_xilinx_routed_timing
+from emuflow.xilinx_timing import (
+    build_xilinx_routed_timing,
+    iter_xilinx_routed_timing_endpoints,
+)
 
 
 class StaticTimingTest(unittest.TestCase):
@@ -49,7 +52,11 @@ class StaticTimingTest(unittest.TestCase):
             route_path.write_text(json.dumps(route))
             output = root / "timing.json"
             report = build_xilinx_routed_timing(root/"mapped.json", root/"packed.json", root/"placement.json", route_path, output)
-            return report, json.loads(output.read_text())
+            value = json.loads(output.read_text())
+            value["endpoints"] = list(
+                iter_xilinx_routed_timing_endpoints(output, value)
+            )
+            return report, value
 
     def test_constants_preserve_signal_endpoint_delays(self):
         baseline = fixtures.XilinxRWRouteTest()._route()
@@ -88,4 +95,3 @@ class StaticTimingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

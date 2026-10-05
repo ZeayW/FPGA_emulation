@@ -1,0 +1,266 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.org/schemas/xilinx-physical-macro-contract-v1.schema.json",
+  "title": "EmuFlow provider-neutral Xilinx physical macro contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "status", "mapping_profile", "top", "source", "policy",
+    "site_macros", "cascade_chains", "ownership", "summary"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.xilinx-physical-macro-contract/v1"},
+    "status": {"const": "pass"},
+    "mapping_profile": {"const": "xilinx-ultrascaleplus-open-v1"},
+    "top": {"type": "string", "minLength": 1},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mapped_json_sha256", "primitive_library_sha256"],
+      "properties": {
+        "mapped_json_sha256": {"$ref": "#/$defs/sha256"},
+        "primitive_library_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider", "placement_or_search", "unknown_or_incomplete_topology",
+        "device_adjacency_without_typed_graph"
+      ],
+      "properties": {
+        "provider": {"const": "mapped-connectivity-derived-physical-macros-v1"},
+        "placement_or_search": {"const": "absent"},
+        "unknown_or_incomplete_topology": {"const": "fail-closed"},
+        "device_adjacency_without_typed_graph": {"const": "adapter_required"}
+      }
+    },
+    "site_macros": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/site_macro"}
+    },
+    "cascade_chains": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/cascade_chain"}
+    },
+    "ownership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["site_macros", "cascade_chains"],
+      "properties": {
+        "site_macros": {"$ref": "#/$defs/ownership_records"},
+        "cascade_chains": {"$ref": "#/$defs/ownership_records"}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "site_macros", "site_macro_kinds", "site_owned_instances",
+        "cascade_chains", "cascade_owned_instances", "recorded_connections"
+      ],
+      "properties": {
+        "site_macros": {"type": "integer", "minimum": 0},
+        "site_macro_kinds": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 1}
+        },
+        "site_owned_instances": {"type": "integer", "minimum": 0},
+        "cascade_chains": {"type": "integer", "minimum": 0},
+        "cascade_owned_instances": {"type": "integer", "minimum": 0},
+        "recorded_connections": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "selection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {"kind": {"const": "all"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "index"],
+          "properties": {
+            "kind": {"const": "bit"},
+            "index": {"type": "integer", "minimum": 0}
+          }
+        }
+      ]
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instance", "port", "selection"],
+      "properties": {
+        "instance": {"type": "string", "minLength": 1},
+        "port": {"type": "string", "minLength": 1},
+        "selection": {"$ref": "#/$defs/selection"}
+      }
+    },
+    "signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "sha256"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "label", "source", "target", "signal"],
+      "properties": {
+        "kind": {"enum": ["dedicated-intra-site", "dedicated-inter-site"]},
+        "label": {"type": "string", "minLength": 1},
+        "source": {"$ref": "#/$defs/endpoint"},
+        "target": {"$ref": "#/$defs/endpoint"},
+        "signal": {"$ref": "#/$defs/signal"}
+      }
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instance", "cell_type", "role"],
+      "properties": {
+        "instance": {"type": "string", "minLength": 1},
+        "cell_type": {"type": "string", "minLength": 1},
+        "role": {"type": "string", "minLength": 1},
+        "physical_role": {"type": "string", "minLength": 1},
+        "physical_roles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "same_site": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relation", "resource", "exclusive"],
+      "properties": {
+        "relation": {"const": "same-site"},
+        "resource": {"const": "ultrascaleplus-slice"},
+        "exclusive": {"const": true}
+      }
+    },
+    "half_site_occupancy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relation", "resource", "mode", "capacity_per_site", "device_binding"
+      ],
+      "properties": {
+        "relation": {"const": "site-mode-occupancy"},
+        "resource": {"const": "ultrascaleplus-ramb36-site"},
+        "mode": {"const": "RAMB18E2-half"},
+        "capacity_per_site": {"const": 2},
+        "device_binding": {"const": "adapter_required"}
+      }
+    },
+    "site_macro": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "members", "connections", "relative_site"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "members": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/member"}
+        },
+        "connections": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/connection"}
+        },
+        "relative_site": {
+          "oneOf": [
+            {"$ref": "#/$defs/same_site"},
+            {"$ref": "#/$defs/half_site_occupancy"}
+          ]
+        }
+      }
+    },
+    "device_adjacency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason"],
+      "properties": {
+        "status": {"const": "adapter_required"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "cascade_relative_sites": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relation", "resource", "connectivity_order", "requirements",
+        "device_adjacency"
+      ],
+      "properties": {
+        "relation": {"const": "ordered-native-cascade"},
+        "resource": {
+          "enum": ["slice-carry-column", "dsp-column", "bram-column", "uram-column"]
+        },
+        "connectivity_order": {
+          "type": "array",
+          "minItems": 2,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "requirements": {
+          "const": [
+            "same-physical-column",
+            "same-slr",
+            "consecutive-native-cascade-neighbors"
+          ]
+        },
+        "device_adjacency": {"$ref": "#/$defs/device_adjacency"}
+      }
+    },
+    "cascade_chain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "kind", "cell_type", "members", "connections", "relative_sites"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"const": "dedicated-cascade-chain"},
+        "cell_type": {"enum": ["CARRY8", "DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"]},
+        "members": {
+          "type": "array",
+          "minItems": 2,
+          "items": {"$ref": "#/$defs/member"}
+        },
+        "connections": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/connection"}
+        },
+        "relative_sites": {"$ref": "#/$defs/cascade_relative_sites"}
+      }
+    },
+    "ownership_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instance", "owner"],
+      "properties": {
+        "instance": {"type": "string", "minLength": 1},
+        "owner": {"type": "string", "minLength": 1}
+      }
+    },
+    "ownership_records": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/ownership_record"}
+    }
+  }
+}

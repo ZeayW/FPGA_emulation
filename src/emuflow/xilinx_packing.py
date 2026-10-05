@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .xilinx_primitives import (
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     audit_xilinx_mapped_json,
@@ -71,11 +70,7 @@ CASCADE_PORTS = {
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _select_module(source: Mapping[str, Any], top: Optional[str]) -> Tuple[str, Dict[str, Any]]:
@@ -126,6 +121,68 @@ def _ff_control_set(cell: Mapping[str, Any]) -> str:
         "parameters": relevant_parameters,
     }
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _slice_ff_control_sets(
+    cells: Mapping[str, Any], assignments: Sequence[Mapping[str, Any]]
+) -> List[str]:
+    """Validate UltraScale+ slice FF controls and return their exact sets.
+
+    UltraScale+ does not require one control set across a complete slice.  It
+    shares clock and set/reset within each half-slice, while clock-enable is
+    shared independently by the FF and FF2 lanes in that half.  Keep this
+    physical rule in one place so native-placement bridging and the
+    independent PackedSiteNetlist checker cannot drift apart.
+    """
+
+    half_cksr: Dict[int, Tuple[Tuple[Any, ...], Tuple[Any, ...]]] = {}
+    lane_ce: Dict[Tuple[int, int], Tuple[Any, ...]] = {}
+    control_sets = set()
+    for assignment in assignments:
+        name = assignment.get("instance")
+        if name not in cells or cells[name].get("type") not in FF_TYPES:
+            continue
+        bel = assignment.get("bel")
+        if bel not in SLICE_FF_BELS:
+            raise ValidationError(
+                f"FF {name!r} has invalid concrete slice BEL {bel!r}"
+            )
+        bel_index = SLICE_FF_BELS.index(bel)
+        half = 0 if bel_index < 8 else 1
+        lane = bel_index % 2
+        cell = cells[name]
+        cell_type = cell["type"]
+        control_port = "R" if cell_type in {"FDCE", "FDRE"} else "S"
+        clock_sr = (_bits(cell, "C"), _bits(cell, control_port))
+        enable = _bits(cell, "CE")
+        previous_cksr = half_cksr.setdefault(half, clock_sr)
+        previous_ce = lane_ce.setdefault((half, lane), enable)
+        if previous_cksr != clock_sr or previous_ce != enable:
+            raise ValidationError(
+                "slice cluster violates UltraScale+ half-slice FF control legality"
+            )
+        control_sets.add(_ff_control_set(cell))
+    return sorted(control_sets)
+
+
+def _validate_declared_slice_control_sets(
+    cluster: Mapping[str, Any], expected: Sequence[str]
+) -> None:
+    """Check the non-duplicated scalar/list control-set representation."""
+
+    scalar = cluster.get("control_set")
+    multiple = cluster.get("control_sets")
+    if len(expected) <= 1:
+        expected_scalar = expected[0] if expected else None
+        if scalar != expected_scalar or multiple is not None:
+            raise ValidationError(
+                "slice cluster FF control-set certificate is invalid"
+            )
+        return
+    if scalar is not None or multiple != list(expected):
+        raise ValidationError(
+            "slice cluster multi-control-set certificate is invalid"
+        )
 
 
 def _slice_cluster(
@@ -539,10 +596,12 @@ def validate_xilinx_packing(
     *,
     top: Optional[str] = None,
     architecture_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    architecture: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Independently re-check ownership, capacities, BELs, and templates."""
 
-    source = read_json(mapped_json)
+    source = read_json(mapped_json) if mapped_value is None else mapped_value
     selected_top, module = _select_module(source, top)
     cells = module.get("cells")
     packed = read_json(packed_path)
@@ -562,8 +621,13 @@ def validate_xilinx_packing(
 
     template_bels: Dict[str, Dict[str, set]] = {}
     if architecture_path is not None:
-        architecture = read_json(architecture_path)
-        templates = architecture.get("site_templates") if isinstance(architecture, dict) else None
+        architecture_value = (
+            read_json(architecture_path) if architecture is None else architecture
+        )
+        templates = (
+            architecture_value.get("site_templates")
+            if isinstance(architecture_value, Mapping) else None
+        )
         if not isinstance(templates, dict):
             raise ValidationError("ArchitectureDB site templates are invalid")
         for template, contract in templates.items():
@@ -609,9 +673,8 @@ def validate_xilinx_packing(
             ff_names = [name for name in instances if cells[name].get("type") in FF_TYPES]
             if lut_count > len(SLICE_LUT_BELS) or len(ff_names) > len(SLICE_FF_BELS):
                 raise ValidationError("slice cluster exceeds physical capacity")
-            control_sets = {_ff_control_set(cells[name]) for name in ff_names}
-            if len(control_sets) > 1:
-                raise ValidationError("slice cluster mixes FF control sets")
+            control_sets = _slice_ff_control_sets(cells, assignments)
+            _validate_declared_slice_control_sets(cluster, control_sets)
             assignment_bels = {
                 assignment["instance"]: assignment.get("bel")
                 for assignment in assignments

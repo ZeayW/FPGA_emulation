@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 import tempfile
@@ -11,17 +10,25 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .ir import EmuIR
 from .opensta import (
     DEFAULT_TIMING_MODEL,
     load_timing_model,
+    require_opensta_engine,
     run_opensta_path_database,
 )
+from .native_tools import resolve_native_executable
 from .resources import ResourceVector
-from .sta import validate_sta_path_database
+from .sta import (
+    STA_PATH_DATABASE_SCHEMA,
+    STA_PATH_DATABASE_STREAM_SCHEMA,
+    sta_path_database_qor,
+)
 from .xilinx_timing import (
     XILINX_ROUTED_TIMING_SCHEMA,
+    XILINX_ROUTED_TIMING_STREAM_SCHEMA,
+    iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
 )
 from .yosys import import_yosys_json
@@ -33,11 +40,7 @@ _RAM_TYPES = {"RAMB18E2", "RAMB36E2", "URAM288"}
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _pin_identity(instance: str, pin: str) -> tuple[str, str, int]:
@@ -84,6 +87,12 @@ def _scalar_pins(pins: set[tuple[str, int]]) -> list[str]:
 def build_xilinx_routed_opensta_inputs(
     mapped_path: Path,
     timing_path: Path,
+    *,
+    timing_validation: Optional[Mapping[str, Any]] = None,
+    _mapped_value: Optional[Mapping[str, Any]] = None,
+    _timing_value: Optional[Mapping[str, Any]] = None,
+    _mapped_sha256: Optional[str] = None,
+    _timing_sha256: Optional[str] = None,
 ) -> tuple[EmuIR, Dict[str, Any], Dict[str, Any]]:
     """Insert one exact routed-delay arc per logical sink.
 
@@ -92,19 +101,55 @@ def build_xilinx_routed_opensta_inputs(
     the two sealed inputs.
     """
 
-    validate_xilinx_routed_timing(timing_path, mapped_path=mapped_path)
-    timing = read_json(timing_path)
-    if timing.get("schema") != XILINX_ROUTED_TIMING_SCHEMA:
-        raise ValidationError("RapidWright routed timing input has the wrong schema")
-    source = import_yosys_json(mapped_path)
+    # Standalone staging follows the same single-pass contract as the
+    # production in-memory path: load each large input once, hash it once, and
+    # hand the exact object to the independent validator and consumer.
+    mapped_value = (
+        read_json(mapped_path) if _mapped_value is None else _mapped_value
+    )
+    timing_value = (
+        read_json(timing_path) if _timing_value is None else _timing_value
+    )
+    timing_sha256 = _timing_sha256 or _sha256(timing_path)
+    mapped_sha256 = _mapped_sha256 or _sha256(mapped_path)
     delays: Dict[tuple[str, str, int], float] = {}
-    for record in timing["endpoints"]:
+
+    def consume_endpoint(record: Mapping[str, Any]) -> None:
         sink = record["sink"]
         key = _pin_identity(sink["instance"], sink["pin"])
         if key in delays:
             raise ValidationError("RapidWright timing repeats a logical sink")
         delays[key] = float(record["route_delay_ns"])
 
+    if timing_validation is None:
+        timing_validation = validate_xilinx_routed_timing(
+            timing_path,
+            mapped_path=mapped_path,
+            source_sha256={"mapped_sha256": mapped_sha256},
+            _value=timing_value,
+            _timing_sha256=timing_sha256,
+            _endpoint_consumer=consume_endpoint,
+        )
+    else:
+        for endpoint in iter_xilinx_routed_timing_endpoints(
+            timing_path, timing_value
+        ):
+            consume_endpoint(endpoint)
+    if (
+        timing_validation.get("status") != "pass"
+        or timing_validation.get("schema")
+        != "emuflow.xilinx-routed-timing-validation/v1"
+        or timing_validation.get("timing_sha256") != timing_sha256
+    ):
+        raise ValidationError("RapidWright routed timing validation seal is invalid")
+    timing = timing_value
+    if timing.get("schema") not in {
+        XILINX_ROUTED_TIMING_SCHEMA, XILINX_ROUTED_TIMING_STREAM_SCHEMA,
+    }:
+        raise ValidationError("RapidWright routed timing input has the wrong schema")
+    if timing.get("source", {}).get("mapped_sha256") != mapped_sha256:
+        raise ValidationError("RapidWright routed timing mapped source seal is stale")
+    source = import_yosys_json(mapped_path, _source_value=mapped_value)
     value = deepcopy(source.value)
     instances = list(value["instances"])
     nets = []
@@ -127,8 +172,13 @@ def build_xilinx_routed_opensta_inputs(
                 delay, f"EMUFLOW_RW_ROUTE_DELAY_{len(delay_types):06d}"
             )
             index = len(bound) - 1
-            instance_id = f"__emuflow_rw_delay__/{index:08d}"
-            net_id = f"__emuflow_rw_delay_net__/{index:08d}"
+            # Keep synthetic identifiers flat.  OpenSTA treats ``/`` as its
+            # hierarchy separator even when the Verilog reader accepted an
+            # escaped identifier containing that character.  Route-delay
+            # cells are not hierarchy, so encoding them as hierarchy is both
+            # misleading and unsafe for later pin/path lookup.
+            instance_id = f"__emuflow_rw_delay__{index:08d}"
+            net_id = f"__emuflow_rw_delay_net__{index:08d}"
             instances.append(
                 {
                     "id": instance_id,
@@ -199,14 +249,27 @@ def build_xilinx_routed_opensta_inputs(
         {"kind": "combinational", "inputs": ["I0", "I1", "S"], "output": "O", "delay_ns": model["cells"]["MUXF8"]["delay_ns"]},
     )
     pin_sets = _pin_sets(routed_ir)
-    hard_blocks = []
+    instances_by_type: Dict[str, list[Mapping[str, Any]]] = {}
     for instance in routed_ir.value["instances"]:
-        cell_type = instance["type"]
+        instances_by_type.setdefault(instance["type"], []).append(instance)
+    hard_blocks = []
+    for cell_type, typed_instances in sorted(instances_by_type.items()):
         if cell_type in model["cells"]:
             continue
-        pins = pin_sets[instance["id"]]
-        inputs = _scalar_pins(pins["inputs"])
-        outputs = _scalar_pins(pins["outputs"])
+        # One Liberty cell declaration is shared by every instance of a
+        # primitive.  Different hard-block instances routinely activate
+        # different legal ports (for example ACOUT on one DSP and ACIN on the
+        # next DSP in a cascade), so deriving the declaration from the first
+        # instance silently drops ports from the remaining instances.  Form
+        # the type-wide union while preserving each original port bit index.
+        typed_inputs: set[tuple[str, int]] = set()
+        typed_outputs: set[tuple[str, int]] = set()
+        for instance in typed_instances:
+            pins = pin_sets[instance["id"]]
+            typed_inputs.update(pins["inputs"])
+            typed_outputs.update(pins["outputs"])
+        inputs = _scalar_pins(typed_inputs)
+        outputs = _scalar_pins(typed_outputs)
         if cell_type in _RAM_TYPES:
             clocks = [pin for pin in inputs if "CLK" in pin.upper()]
             if not clocks or not outputs:
@@ -243,7 +306,15 @@ def build_xilinx_routed_opensta_inputs(
             hard_blocks.append(cell_type)
             continue
         if cell_type.startswith("EMUFLOW_RW_ROUTE_DELAY_"):
-            delay = float(instance["attributes"]["emuflow_route_delay_ns"])
+            instance_delays = {
+                float(instance["attributes"]["emuflow_route_delay_ns"])
+                for instance in typed_instances
+            }
+            if len(instance_delays) != 1:
+                raise ValidationError(
+                    "shared routed-delay timing cell type has unequal delays"
+                )
+            delay = instance_delays.pop()
             model["cells"][cell_type] = {
                 "kind": "combinational", "inputs": ["A"],
                 "output": "Y", "delay_ns": delay,
@@ -288,6 +359,17 @@ def _qor(database: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _qor_path(path: Path) -> Dict[str, Any]:
+    database = read_json(path)
+    if database.get("schema") in {
+        STA_PATH_DATABASE_SCHEMA,
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+    }:
+        return sta_path_database_qor(path, database)
+    # Preserve the minimal schema-less fixture accepted by historical tests.
+    return _qor(database)
+
+
 def run_xilinx_routed_opensta(
     mapped_path: Path,
     timing_path: Path,
@@ -298,9 +380,38 @@ def run_xilinx_routed_opensta(
     executable: Optional[str] = None,
     max_paths: int = 200000,
     log_path: Optional[Path] = None,
+    timing_validation: Optional[Mapping[str, Any]] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    timing_value: Optional[Mapping[str, Any]] = None,
+    source_sha256: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
+    # Engine availability is a constant-time prerequisite.  Check it before
+    # expanding hundreds of thousands of routed endpoints into the temporary
+    # OpenSTA graph so a missing runtime dependency fails immediately rather
+    # than after minutes of staging work.
+    opensta = resolve_native_executable("sta", executable)
+    require_opensta_engine(opensta)
+    mapped_value = (
+        read_json(mapped_path) if mapped_value is None else mapped_value
+    )
+    timing_value = (
+        read_json(timing_path) if timing_value is None else timing_value
+    )
+    input_sha256 = (
+        {
+            "mapped_sha256": _sha256(mapped_path),
+            "routed_timing_sha256": _sha256(timing_path),
+        }
+        if source_sha256 is None else dict(source_sha256)
+    )
     routed_ir, model, metadata = build_xilinx_routed_opensta_inputs(
-        mapped_path, timing_path
+        mapped_path,
+        timing_path,
+        timing_validation=timing_validation,
+        _mapped_value=mapped_value,
+        _timing_value=timing_value,
+        _mapped_sha256=input_sha256.get("mapped_sha256"),
+        _timing_sha256=input_sha256.get("routed_timing_sha256"),
     )
     with tempfile.TemporaryDirectory(prefix="emuflow-rw-opensta-") as temporary:
         root = Path(temporary)
@@ -310,34 +421,38 @@ def run_xilinx_routed_opensta(
         write_json(model_path, model, compact=True)
         report = run_opensta_path_database(
             ir_path, output_path, clocks=clocks,
-            timing_model_path=model_path, executable=executable,
+            timing_model_path=model_path, executable=opensta,
             max_paths=max_paths, log_path=log_path,
+            _stream_output=True,
         )
-        validate_sta_path_database(output_path, ir_path)
     if report["path_limit_reached"]:
         raise ValidationError(
             "RapidWright OpenSTA path limit was reached; global TNS is incomplete"
         )
-    database = read_json(output_path)
+    path_database_sha256 = _sha256(output_path)
     summary = {
         "schema": XILINX_ROUTED_OPENSTA_SCHEMA,
         "status": "pass",
         "authority": "opensta",
         "qualification": model["source"],
         "source": {
-            "mapped_sha256": _sha256(mapped_path),
-            "routed_timing_sha256": _sha256(timing_path),
-            "timing_path_database_sha256": _sha256(output_path),
+            **input_sha256,
+            "timing_path_database_sha256": path_database_sha256,
         },
         "clocks": dict(sorted(clocks.items())),
         "staging": metadata,
-        "qor": _qor(database),
+        "qor": report["path_qor"],
         "opensta": report,
     }
     write_json(summary_path, summary, compact=True)
     return validate_xilinx_routed_opensta_summary(
         summary_path, output_path=output_path,
         mapped_path=mapped_path, timing_path=timing_path,
+        source_sha256={
+            **input_sha256,
+            "timing_path_database_sha256": path_database_sha256,
+        },
+        _qor_value=report["path_qor"],
     )
 
 
@@ -347,6 +462,9 @@ def validate_xilinx_routed_opensta_summary(
     output_path: Path,
     mapped_path: Optional[Path] = None,
     timing_path: Optional[Path] = None,
+    source_sha256: Optional[Mapping[str, str]] = None,
+    _database: Optional[Mapping[str, Any]] = None,
+    _qor_value: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     value = read_json(summary_path)
     if value.get("schema") != XILINX_ROUTED_OPENSTA_SCHEMA or value.get("status") != "pass":
@@ -356,14 +474,26 @@ def validate_xilinx_routed_opensta_summary(
         "mapped_sha256": mapped_path,
         "routed_timing_sha256": timing_path,
     }
+    expected_sha256 = (
+        {field: _sha256(path) for field, path in expected.items()
+         if path is not None}
+        if source_sha256 is None else dict(source_sha256)
+    )
     for field, path in expected.items():
         digest = value.get("source", {}).get(field)
         if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise ValidationError(f"RapidWright OpenSTA source.{field} is invalid")
-        if path is not None and digest != _sha256(path):
+        if path is not None and digest != expected_sha256.get(field):
             raise ValidationError(f"RapidWright OpenSTA source.{field} disagrees")
-    database = read_json(output_path)
-    recomputed = _qor(database)
+    recomputed = (
+        dict(_qor_value)
+        if _qor_value is not None
+        else (
+            _qor(_database)
+            if _database is not None
+            else _qor_path(output_path)
+        )
+    )
     reported = value.get("qor")
     if not isinstance(reported, dict):
         raise ValidationError("RapidWright OpenSTA QoR is invalid")

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from functools import lru_cache
 import os
 import uuid
 from contextlib import contextmanager
@@ -59,6 +61,7 @@ def write_json(
     *,
     compact: bool = False,
     durable: bool | None = None,
+    sort_keys: bool = True,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(
@@ -77,7 +80,7 @@ def write_json(
                 stream,
                 indent=None if compact else 2,
                 separators=(",", ":") if compact else None,
-                sort_keys=True,
+                sort_keys=sort_keys,
             )
             stream.write("\n")
             stream.flush()
@@ -92,3 +95,41 @@ def write_json(
             os.close(descriptor)
         temporary.unlink(missing_ok=True)
         raise
+@lru_cache(maxsize=128)
+def _sha256_for_identity(
+    path: str,
+    device: int,
+    inode: int,
+    size: int,
+    mtime_ns: int,
+    ctime_ns: int,
+) -> str:
+    """Hash one immutable file identity once per process.
+
+    The complete stat identity is deliberately part of the cache key.  A
+    replacement, truncation, or in-place rewrite therefore cannot reuse the
+    digest of the previous artifact.  This cache removes repeated multi-hundred
+    MiB reads from validation hot paths without weakening source seals.
+    """
+
+    del device, inode, size, mtime_ns, ctime_ns
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    """Return a stat-invalidated, process-local SHA-256 digest."""
+
+    resolved = path.resolve()
+    stat = resolved.stat()
+    return _sha256_for_identity(
+        str(resolved),
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+    )

@@ -3,23 +3,28 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Set, Tuple
 
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from .xilinx_placement import XILINX_PLACEMENT_SCHEMA
 
 
 XILINX_ROUTE_DB_SCHEMA = "emuflow.xilinx-route-db/v1"
+XILINX_ROUTE_DB_STREAM_SCHEMA = "emuflow.xilinx-route-db/v2"
+XILINX_ROUTE_NET_PAYLOAD_FORMAT = "jsonl-object/v1"
+XILINX_ROUTE_PIP_PAYLOAD_FORMAT = "jsonl-array/v1"
 RAPIDWRIGHT_TIMING_DATA_REVISION = (
     "127f55cd704c277372697e699f1559e1cdc91f34"
 )
@@ -40,11 +45,7 @@ RAPIDWRIGHT_DEVICE_DATA_MD5 = {
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _md5(path: Path) -> str:
@@ -67,6 +68,260 @@ def _validate_rapidwright_device_data(root: Path) -> Dict[str, str]:
             )
         observed[relative] = actual_md5
     return observed
+
+
+def _route_payload_path(
+    manifest_path: Path,
+    descriptor: object,
+    *,
+    field: str,
+    expected_format: str,
+) -> tuple[Path, str, int]:
+    if not isinstance(descriptor, Mapping):
+        raise ValidationError(f"XilinxRouteDB payloads.{field} is invalid")
+    relative = descriptor.get("path")
+    digest = descriptor.get("sha256")
+    records = descriptor.get("records")
+    if (
+        descriptor.get("format") != expected_format
+        or not isinstance(relative, str)
+        or not relative
+        or Path(relative).is_absolute()
+        or Path(relative).name != relative
+        or not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        or isinstance(records, bool)
+        or not isinstance(records, int)
+        or records < 0
+    ):
+        raise ValidationError(f"XilinxRouteDB payloads.{field} is invalid")
+    path = manifest_path.parent / relative
+    if not path.is_file():
+        raise ValidationError(f"XilinxRouteDB payloads.{field} is missing")
+    return path, digest, records
+
+
+def _hashed_json_lines(
+    path: Path,
+    *,
+    expected_sha256: str,
+    expected_records: int,
+    field: str,
+) -> Iterator[object]:
+    digest = hashlib.sha256()
+    count = 0
+    with path.open("rb") as stream:
+        for raw in stream:
+            digest.update(raw)
+            if not raw.endswith(b"\n"):
+                raise ValidationError(
+                    f"XilinxRouteDB payloads.{field} has a truncated record"
+                )
+            try:
+                value = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValidationError(
+                    f"XilinxRouteDB payloads.{field} record {count} is invalid"
+                ) from error
+            count += 1
+            yield value
+    if count != expected_records:
+        raise ValidationError(
+            f"XilinxRouteDB payloads.{field} record count disagrees"
+        )
+    if digest.hexdigest() != expected_sha256:
+        raise ValidationError(
+            f"XilinxRouteDB payloads.{field} digest disagrees"
+        )
+
+
+def iter_xilinx_route_nets(
+    path: Path,
+    route: Mapping[str, Any],
+    *,
+    include_pips: bool,
+) -> Iterator[Dict[str, Any]]:
+    """Iterate one route net at a time without loading the v2 payloads.
+
+    The legacy v1 object remains readable for immutable historical evidence.
+    New producers emit a small manifest plus line-delimited net and PIP
+    payloads.  Validation consumes both streams exactly once; timing binding
+    reads only the much smaller net/end-point stream and never scans PIPs.
+    """
+
+    schema = route.get("schema")
+    if schema == XILINX_ROUTE_DB_SCHEMA:
+        nets = route.get("nets")
+        if not isinstance(nets, list):
+            raise ValidationError("XilinxRouteDB net collection is invalid")
+        for net in nets:
+            if not isinstance(net, dict):
+                raise ValidationError("XilinxRouteDB net record is invalid")
+            if include_pips:
+                yield net
+            else:
+                yield {key: value for key, value in net.items() if key != "pips"}
+        return
+    if schema != XILINX_ROUTE_DB_STREAM_SCHEMA:
+        raise ValidationError("XilinxRouteDB header is invalid")
+    payloads = route.get("payloads")
+    if not isinstance(payloads, Mapping) or set(payloads) != {"nets", "pips"}:
+        raise ValidationError("XilinxRouteDB payload manifest is invalid")
+    nets_path, nets_digest, nets_count = _route_payload_path(
+        path,
+        payloads["nets"],
+        field="nets",
+        expected_format=XILINX_ROUTE_NET_PAYLOAD_FORMAT,
+    )
+    net_stream = _hashed_json_lines(
+        nets_path,
+        expected_sha256=nets_digest,
+        expected_records=nets_count,
+        field="nets",
+    )
+    if not include_pips:
+        for index, net in enumerate(net_stream):
+            if not isinstance(net, dict):
+                raise ValidationError(
+                    f"XilinxRouteDB payloads.nets record {index} is invalid"
+                )
+            pip_count = net.get("pip_count")
+            if isinstance(pip_count, bool) or not isinstance(pip_count, int) or pip_count < 0:
+                raise ValidationError(
+                    f"XilinxRouteDB payloads.nets record {index} pip count is invalid"
+                )
+            yield net
+        return
+    pips_path, pips_digest, pips_count = _route_payload_path(
+        path,
+        payloads["pips"],
+        field="pips",
+        expected_format=XILINX_ROUTE_PIP_PAYLOAD_FORMAT,
+    )
+    pip_stream = iter(_hashed_json_lines(
+        pips_path,
+        expected_sha256=pips_digest,
+        expected_records=pips_count,
+        field="pips",
+    ))
+    consumed_pips = 0
+    for index, net in enumerate(net_stream):
+        if not isinstance(net, dict):
+            raise ValidationError(
+                f"XilinxRouteDB payloads.nets record {index} is invalid"
+            )
+        pip_count = net.get("pip_count")
+        if isinstance(pip_count, bool) or not isinstance(pip_count, int) or pip_count < 0:
+            raise ValidationError(
+                f"XilinxRouteDB payloads.nets record {index} pip count is invalid"
+            )
+        net_name = net.get("net")
+        pips: List[Dict[str, Any]] = []
+        for _ in range(pip_count):
+            try:
+                record = next(pip_stream)
+            except StopIteration as error:
+                raise ValidationError(
+                    f"XilinxRouteDB payloads.pips ends inside net {net_name!r}"
+                ) from error
+            consumed_pips += 1
+            if (
+                not isinstance(record, list)
+                or len(record) != 8
+                or record[0] != net_name
+                or any(not isinstance(record[field], str) or not record[field]
+                       for field in range(1, 6))
+                or not isinstance(record[6], bool)
+                or not isinstance(record[7], bool)
+            ):
+                raise ValidationError(
+                    f"XilinxRouteDB payloads.pips record {consumed_pips - 1} is invalid"
+                )
+            pips.append({
+                "tile": record[1],
+                "start_wire": record[2],
+                "end_wire": record[3],
+                "start_node": record[4],
+                "end_node": record[5],
+                "bidirectional": record[6],
+                "reversed": record[7],
+            })
+        value = dict(net)
+        value.pop("pip_count", None)
+        value["pips"] = pips
+        yield value
+    try:
+        next(pip_stream)
+    except StopIteration:
+        pass
+    else:
+        raise ValidationError("XilinxRouteDB payloads.pips has unbound records")
+    if consumed_pips != pips_count:
+        raise ValidationError("XilinxRouteDB payloads.pips record count disagrees")
+
+
+class _PipOwnership:
+    """Bounded-memory global PIP ownership checker."""
+
+    def __init__(self, expected_pips: int) -> None:
+        self.count = 0
+        self._memory: Optional[Dict[Tuple[str, str, str], str]] = (
+            {} if expected_pips <= 250_000 else None
+        )
+        self._database: Optional[sqlite3.Connection] = None
+        self._database_path: Optional[Path] = None
+        if self._memory is None:
+            descriptor, name = tempfile.mkstemp(
+                prefix="emuflow-route-pips-", suffix=".sqlite3"
+            )
+            os.close(descriptor)
+            self._database_path = Path(name)
+            self._database = sqlite3.connect(name)
+            self._database.execute("PRAGMA journal_mode=OFF")
+            self._database.execute("PRAGMA synchronous=OFF")
+            self._database.execute("PRAGMA temp_store=FILE")
+            self._database.execute(
+                "CREATE TABLE ownership ("
+                "tile TEXT NOT NULL, first_wire TEXT NOT NULL, "
+                "second_wire TEXT NOT NULL, net TEXT NOT NULL, "
+                "PRIMARY KEY (tile, first_wire, second_wire)) WITHOUT ROWID"
+            )
+
+    def claim_many(
+        self, keys: Iterable[Tuple[str, str, str]], net_name: str
+    ) -> None:
+        records = [(tile, first, second, net_name) for tile, first, second in keys]
+        if self._memory is not None:
+            for key in (record[:3] for record in records):
+                previous = self._memory.get(key)
+                if previous is not None and previous != net_name:
+                    raise ValidationError(f"routing conflict on PIP {key}")
+                self._memory[key] = net_name
+            self.count = len(self._memory)
+            return
+        assert self._database is not None
+        before = self._database.total_changes
+        try:
+            self._database.executemany(
+                "INSERT INTO ownership VALUES (?, ?, ?, ?)", records
+            )
+        except sqlite3.IntegrityError as error:
+            self._database.rollback()
+            raise ValidationError(
+                f"routing conflict while claiming PIPs for {net_name!r}"
+            ) from error
+        self.count += self._database.total_changes - before
+
+    def close(self) -> None:
+        if self._database is not None:
+            self._database.close()
+            self._database = None
+        if self._database_path is not None:
+            self._database_path.unlink(missing_ok=True)
+            self._database_path = None
+
+    def __del__(self) -> None:
+        self.close()
 
 
 def _select_module(mapped: Mapping[str, Any], top: str) -> Mapping[str, Any]:
@@ -110,10 +365,31 @@ def export_rwroute_input(
     packed_path: Path,
     placement_path: Path,
     output_path: Path,
+    *,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    packed_value: Optional[Mapping[str, Any]] = None,
+    placement_value: Optional[Mapping[str, Any]] = None,
+    source_sha256: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
-    mapped, packed, placement = (
-        read_json(mapped_path), read_json(packed_path), read_json(placement_path)
+    mapped = read_json(mapped_path) if mapped_value is None else mapped_value
+    packed = read_json(packed_path) if packed_value is None else packed_value
+    placement = (
+        read_json(placement_path)
+        if placement_value is None else placement_value
     )
+    digests = {
+        "mapped_sha256": _sha256(mapped_path),
+        "packed_sha256": _sha256(packed_path),
+        "placement_sha256": _sha256(placement_path),
+    } if source_sha256 is None else dict(source_sha256)
+    if set(digests) != {
+        "mapped_sha256", "packed_sha256", "placement_sha256"
+    } or any(
+        not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        for digest in digests.values()
+    ):
+        raise ValidationError("RWRoute source digests are invalid")
     if packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA:
         raise ValidationError("PackedSiteNetlist header is invalid")
     if placement.get("schema") != XILINX_PLACEMENT_SCHEMA:
@@ -172,9 +448,9 @@ def export_rwroute_input(
     }
     lines = [
         f"META\tpart\t{placement['part']}",
-        f"META\tmapped_sha256\t{_sha256(mapped_path)}",
-        f"META\tpacked_sha256\t{_sha256(packed_path)}",
-        f"META\tplacement_sha256\t{_sha256(placement_path)}",
+        f"META\tmapped_sha256\t{digests['mapped_sha256']}",
+        f"META\tpacked_sha256\t{digests['packed_sha256']}",
+        f"META\tplacement_sha256\t{digests['placement_sha256']}",
     ]
     for route_name in sorted(route_cells):
         display_name, cell_type, site, bel = route_cells[route_name]
@@ -283,6 +559,13 @@ def run_rwroute(
     device_data_root: Path,
     timing_data_dir: Path,
     log_path: Optional[Path] = None,
+    mapped_path: Optional[Path] = None,
+    packed_path: Optional[Path] = None,
+    placement_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    packed_value: Optional[Mapping[str, Any]] = None,
+    source_sha256: Optional[Mapping[str, str]] = None,
+    route_value_sink: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     classes_dir.mkdir(parents=True, exist_ok=True)
     runtime_home = classes_dir.parent / "rapidwright-runtime-home"
@@ -324,6 +607,11 @@ def run_rwroute(
         str(java), "-Xmx32g", f"-Duser.home={runtime_home}",
         "-cp", f"{classes_dir}:{rapidwright_jar}",
         "EmuFlowRWRoute", str(input_path), str(output_path),
+        RAPIDWRIGHT_TIMING_DATA_REVISION,
+        RAPIDWRIGHT_TIMING_DATA_SHA256["intersite_delay_terms.txt"],
+        RAPIDWRIGHT_TIMING_DATA_SHA256["intrasite_delay_terms.txt"],
+        device_data_md5["data/parts.db"],
+        device_data_md5["data/devices/virtexuplus/xcvu19p_db.dat"],
     ]
     temporary_log = log_path is None
     if temporary_log:
@@ -356,14 +644,21 @@ def run_rwroute(
             + "\n".join(failure_tail.splitlines()[-80:])
         )
     value = read_json(output_path)
-    timing = value.get("timing")
-    if not isinstance(timing, dict):
+    if not isinstance(value.get("timing"), dict):
         raise ValidationError("RWRoute output lacks its timing qualification")
-    timing["source_revision"] = RAPIDWRIGHT_TIMING_DATA_REVISION
-    timing["source_data_sha256"] = dict(RAPIDWRIGHT_TIMING_DATA_SHA256)
-    timing["device_data_md5"] = device_data_md5
-    write_json(output_path, value, compact=True)
-    report = validate_xilinx_route_db(output_path)
+    report = validate_xilinx_route_db(
+        output_path,
+        mapped_path=mapped_path,
+        packed_path=packed_path,
+        placement_path=placement_path,
+        mapped_value=mapped_value,
+        packed_value=packed_value,
+        source_sha256=source_sha256,
+        _value=value,
+    )
+    if route_value_sink is not None:
+        route_value_sink.clear()
+        route_value_sink.update(value)
     return {**report, "output": str(output_path), "log": str(log_path) if log_path else None}
 
 
@@ -373,9 +668,21 @@ def validate_xilinx_route_db(
     mapped_path: Optional[Path] = None,
     packed_path: Optional[Path] = None,
     placement_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    packed_value: Optional[Mapping[str, Any]] = None,
+    source_sha256: Optional[Mapping[str, str]] = None,
+    _value: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    value = read_json(path)
-    if not isinstance(value, dict) or value.get("schema") != XILINX_ROUTE_DB_SCHEMA:
+    # RWRoute already materializes a very large in-memory object.  Accepting
+    # that exact object internally avoids immediately parsing the same route
+    # database a second time before it is sealed.  External callers retain the
+    # ordinary path-only validation API.
+    value = read_json(path) if _value is None else _value
+    if (
+        not isinstance(value, dict)
+        or value.get("schema")
+        not in {XILINX_ROUTE_DB_SCHEMA, XILINX_ROUTE_DB_STREAM_SCHEMA}
+    ):
         raise ValidationError("XilinxRouteDB header is invalid")
     if value.get("status") not in {"candidate", "pass"}:
         raise ValidationError("XilinxRouteDB status is invalid")
@@ -412,20 +719,25 @@ def validate_xilinx_route_db(
     source = value.get("source")
     if not isinstance(source, dict):
         raise ValidationError("XilinxRouteDB source seal is missing")
-    expected_sources = {
+    expected_paths = {
         "mapped_sha256": mapped_path,
         "packed_sha256": packed_path,
         "placement_sha256": placement_path,
     }
-    for key, source_path in expected_sources.items():
+    expected_sources = (
+        {key: _sha256(source_path) for key, source_path in expected_paths.items()
+         if source_path is not None}
+        if source_sha256 is None else dict(source_sha256)
+    )
+    for key, source_path in expected_paths.items():
         digest = source.get(key)
         if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise ValidationError(f"XilinxRouteDB source.{key} is invalid")
-        if source_path is not None and digest != _sha256(source_path):
+        if source_path is not None and digest != expected_sources.get(key):
             raise ValidationError(f"XilinxRouteDB source.{key} does not match input")
     if mapped_path is not None and packed_path is not None:
-        mapped = read_json(mapped_path)
-        packed = read_json(packed_path)
+        mapped = read_json(mapped_path) if mapped_value is None else mapped_value
+        packed = read_json(packed_path) if packed_value is None else packed_value
         top = packed.get("top")
         if not isinstance(top, str):
             raise ValidationError("PackedSiteNetlist top is invalid")
@@ -444,16 +756,21 @@ def validate_xilinx_route_db(
     input_digest = source.get("rwroute_input_sha256")
     if not isinstance(input_digest, str) or re.fullmatch(r"[0-9a-f]{64}", input_digest) is None:
         raise ValidationError("XilinxRouteDB source.rwroute_input_sha256 is invalid")
-    route_nets = value.get("nets")
     excluded_nets = value.get("excluded_nets")
     summary = value.get("summary")
     if (
-        not isinstance(route_nets, list)
-        or not isinstance(excluded_nets, list)
+        not isinstance(excluded_nets, list)
         or not isinstance(summary, dict)
     ):
         raise ValidationError("XilinxRouteDB net collections are invalid")
-    used_pips: Dict[Tuple[str, str, str], str] = {}
+    expected_pips = summary.get("pips")
+    if (
+        isinstance(expected_pips, bool)
+        or not isinstance(expected_pips, int)
+        or expected_pips < 0
+    ):
+        raise ValidationError("XilinxRouteDB summary PIP count is invalid")
+    used_pips = _PipOwnership(expected_pips)
     seen_nets: Set[str] = set()
     checked_nets = 0
     checked_sinks = 0
@@ -461,8 +778,11 @@ def validate_xilinx_route_db(
     static_sinks = 0
     clock_nets = 0
     nets_with_pips = 0
-    route_delays_ps: List[float] = []
-    for index, net in enumerate(route_nets):
+    timed_endpoints = 0
+    maximum_route_delay_ps = 0.0
+    for index, net in enumerate(
+        iter_xilinx_route_nets(path, value, include_pips=True)
+    ):
         context = f"route.nets[{index}]"
         if not isinstance(net, dict) or not isinstance(net.get("net"), str):
             raise ValidationError(f"{context}: invalid net")
@@ -583,7 +903,10 @@ def validate_xilinx_route_db(
                 raise ValidationError(
                     f"{context}.pins[{pin_index}]: route delay is invalid"
                 )
-            route_delays_ps.append(float(delay))
+            timed_endpoints += 1
+            maximum_route_delay_ps = max(
+                maximum_route_delay_ps, float(delay)
+            )
         graph: Dict[str, Set[str]] = defaultdict(set)
         local_pips: Set[Tuple[str, str, str]] = set()
         for pip_index, pip in enumerate(pips):
@@ -605,11 +928,8 @@ def validate_xilinx_route_db(
             if key in local_pips:
                 raise ValidationError(f"{context}: duplicate PIP {key}")
             local_pips.add(key)
-            previous = used_pips.get(key)
-            if previous is not None and previous != net_name:
-                raise ValidationError(f"routing conflict on PIP {key}")
-            used_pips[key] = net_name
             graph[start].add(end)
+        used_pips.claim_many(local_pips, net_name)
         if pips:
             nets_with_pips += 1
         reachable = set(source_nodes)
@@ -662,7 +982,7 @@ def validate_xilinx_route_db(
         "static_nets": static_nets,
         "static_sinks": static_sinks,
         "nets_with_pips": nets_with_pips,
-        "pips": len(used_pips),
+        "pips": used_pips.count,
         "excluded_nets": len(excluded_nets),
         "boundary_clock_nets": boundary_clock_nets,
     }
@@ -685,7 +1005,7 @@ def validate_xilinx_route_db(
     for key, expected in expected_timing.items():
         if timing.get(key) != expected:
             raise ValidationError(f"XilinxRouteDB timing.{key} is invalid")
-    if timing.get("routed_endpoints") != len(route_delays_ps):
+    if timing.get("routed_endpoints") != timed_endpoints:
         raise ValidationError("XilinxRouteDB timed endpoint count disagrees")
     logic_coefficients = timing.get("logic_coefficients_ps")
     expected_logic_coefficients = {
@@ -709,7 +1029,6 @@ def validate_xilinx_route_db(
             raise ValidationError(
                 f"XilinxRouteDB logic timing coefficient {name!r} is invalid"
             )
-    maximum_route_delay_ps = max(route_delays_ps, default=0.0)
     reported_maximum = timing.get("maximum_route_delay_ps")
     if (
         isinstance(reported_maximum, bool)
@@ -720,15 +1039,16 @@ def validate_xilinx_route_db(
         )
     ):
         raise ValidationError("XilinxRouteDB maximum route delay disagrees")
-    value["status"] = "pass"
-    write_json(path, value, compact=True)
-    return {
+    # The independent validation report is the promotion certificate.  Keep
+    # the Java-produced route artifact immutable rather than rewriting a
+    # near-gigabyte JSON document merely to change candidate -> pass.
+    report = {
         "status": "pass", "schema": "emuflow.xilinx-route-validation/v1",
         "nets": checked_nets, "sinks": checked_sinks,
-        "pips": len(used_pips), "route_sha256": _sha256(path),
+        "pips": used_pips.count, "route_sha256": _sha256(path),
         "excluded_nets": len(value.get("excluded_nets", [])),
         "boundary_clock_nets": boundary_clock_nets,
-        "timed_endpoints": len(route_delays_ps),
+        "timed_endpoints": timed_endpoints,
         "maximum_route_delay_ps": maximum_route_delay_ps,
         "timing_provider": timing["provider"],
         "hold_analysis": timing["hold_analysis"],
@@ -739,3 +1059,16 @@ def validate_xilinx_route_db(
         "static_sinks": static_sinks,
         "clock_nets": clock_nets,
     }
+    used_pips.close()
+    if all(path is not None for path in expected_paths.values()):
+        # These digests were checked against the supplied source paths above.
+        # Returning the seal lets the immediately following timing binder
+        # reuse it instead of hashing the same large inputs again.  A
+        # path-free structural check deliberately does not mint such a seal.
+        report["source_sha256"] = {
+            key: source[key]
+            for key in (
+                "mapped_sha256", "packed_sha256", "placement_sha256"
+            )
+        }
+    return report

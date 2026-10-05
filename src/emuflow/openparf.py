@@ -173,6 +173,15 @@ def run_openparf(
         raise EmuFlowError(
             "emuflow_continuous_global_guidance must be a boolean"
         )
+    stable_native = config.get("emuflow_stable_global_placement", False)
+    if not isinstance(stable_native, bool):
+        raise EmuFlowError(
+            "emuflow_stable_global_placement must be a boolean"
+        )
+    if continuous_guidance and stable_native:
+        raise EmuFlowError(
+            "continuous guidance and stable native placement are mutually exclusive"
+        )
     command = (
         [
             str(python.absolute()),
@@ -180,6 +189,12 @@ def run_openparf(
             "emuflow.openparf_continuous_driver",
         ]
         if continuous_guidance
+        else [
+            str(python.absolute()),
+            "-m",
+            "emuflow.openparf_native_driver",
+        ]
+        if stable_native
         else [
             str(python.absolute()),
             str(installation / "openparf.py"),
@@ -222,6 +237,16 @@ def run_openparf(
             "in-tree OpenPARF completed without expected placement: "
             f"{placement}"
         )
+    if stable_native:
+        from .openparf_native_driver import (
+            native_metrics_path,
+            validate_openparf_native_metrics,
+        )
+
+        try:
+            validate_openparf_native_metrics(native_metrics_path(placement))
+        except RuntimeError as error:
+            raise EmuFlowError(str(error)) from error
     return placement.resolve()
 
 

@@ -229,7 +229,11 @@ from .multi_fpga_flow import (
     validate_multi_fpga_flow_bundle,
 )
 from .multi_fpga_bsp_flow import run_multi_fpga_bsp_flow
-from .multi_fpga_physical_flow import run_multi_fpga_physical_flow
+from .multi_fpga_physical_flow import (
+    DEFAULT_RAPIDWRIGHT_PLACER,
+    RAPIDWRIGHT_PLACERS,
+    run_multi_fpga_physical_flow,
+)
 from .opensta import (
     DEFAULT_TIMING_MODEL,
     parse_clock_definitions,
@@ -2225,6 +2229,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--physical-rapidwright-opensta")
     multi_fpga_compile.add_argument(
+        "--physical-rapidwright-placer",
+        choices=RAPIDWRIGHT_PLACERS,
+        default=None,
+        help=(
+            "select the RapidWright placement producer; when the RapidWright "
+            f"backend is selected the default is {DEFAULT_RAPIDWRIGHT_PLACER}, "
+            "which is fail-closed and has no fallback"
+        ),
+    )
+    multi_fpga_compile.add_argument(
+        "--physical-rapidwright-native-constraints", type=Path,
+        help="source-sealed RapidWright native device constraints",
+    )
+    multi_fpga_compile.add_argument(
+        "--physical-rapidwright-provider-manifest", type=Path,
+        help="provider manifest sealing the native device constraints",
+    )
+    multi_fpga_compile.add_argument(
         "--physical-workers",
         type=int,
         default=1,
@@ -2329,6 +2351,22 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_physical.add_argument("--rapidwright-device-data", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-timing-data", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-opensta")
+    multi_fpga_physical.add_argument(
+        "--rapidwright-placer",
+        choices=RAPIDWRIGHT_PLACERS,
+        default=None,
+        help=(
+            "select the RapidWright placement producer; the RapidWright "
+            f"backend defaults to {DEFAULT_RAPIDWRIGHT_PLACER}, which is "
+            "fail-closed and has no fallback"
+        ),
+    )
+    multi_fpga_physical.add_argument(
+        "--rapidwright-native-constraints", type=Path,
+    )
+    multi_fpga_physical.add_argument(
+        "--rapidwright-provider-manifest", type=Path,
+    )
     multi_fpga_physical.add_argument(
         "--workers",
         type=int,
@@ -5570,6 +5608,13 @@ def _dispatch(args: argparse.Namespace) -> int:
                 rapidwright_device_data=args.rapidwright_device_data,
                 rapidwright_timing_data=args.rapidwright_timing_data,
                 rapidwright_opensta=args.rapidwright_opensta,
+                rapidwright_placer=args.rapidwright_placer,
+                rapidwright_native_constraints=(
+                    args.rapidwright_native_constraints
+                ),
+                rapidwright_provider_manifest=(
+                    args.rapidwright_provider_manifest
+                ),
                 original_ir_path=args.original_ir,
                 assignment_path=args.assignment,
                 routes_path=args.routes,
@@ -5720,6 +5765,15 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.physical_rapidwright_timing_data
             ),
             physical_rapidwright_opensta=args.physical_rapidwright_opensta,
+            physical_rapidwright_placer=(
+                args.physical_rapidwright_placer
+            ),
+            physical_rapidwright_native_constraints=(
+                args.physical_rapidwright_native_constraints
+            ),
+            physical_rapidwright_provider_manifest=(
+                args.physical_rapidwright_provider_manifest
+            ),
             physical_workers=args.physical_workers,
             global_sta_executable=args.global_sta_executable,
             global_timing_engine=args.global_timing_engine,

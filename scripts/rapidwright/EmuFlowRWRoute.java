@@ -25,8 +25,14 @@ import com.xilinx.rapidwright.rwroute.Connection;
 import com.xilinx.rapidwright.rwroute.RWRouteConfig;
 import com.xilinx.rapidwright.timing.TimingModel;
 import com.xilinx.rapidwright.util.ParallelismTools;
+import java.io.BufferedInputStream;
+import java.io.BufferedWriter;
+import java.io.InputStream;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.DigestOutputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -134,9 +140,10 @@ public final class EmuFlowRWRoute {
         }
     }
 
-    private static final String SCHEMA = "emuflow.xilinx-route-db/v1";
+    private static final String SCHEMA = "emuflow.xilinx-route-db/v2";
     private static final String ROUTER_STRATEGY =
         "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-recovery";
+    private static final double MAX_RECOVERY_ITERATION_SECONDS = 600.0;
     private static final String[] DSP48E2_COMPONENTS = new String[] {
         "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
         "DSP_ALU", "DSP_M_DATA", "DSP_OUTPUT", "DSP_PREADD"
@@ -152,9 +159,10 @@ public final class EmuFlowRWRoute {
      * Route A therefore widens only connections for which the current search
      * found no route. Those exceptional connections are routed through their
      * own recursive partitioning ternary tree before the unchanged main tree
-     * on every later iteration and are skipped by the main tree itself. This
-     * preserves CUFR's original parallel decomposition without serializing a
-     * large exceptional set: rebuilding the complete tree around even a few
+     * while they remain active and are skipped by the main tree itself. Stable
+     * connections are pruned before the next tree is built. This preserves
+     * CUFR's original parallel decomposition without serializing a large
+     * exceptional set: rebuilding the complete tree around even a few
      * enlarged connections can move ordinary reroutes towards its sequential
      * middle branches.
      * Congested-but-routed connections remain under negotiated congestion and
@@ -355,14 +363,38 @@ public final class EmuFlowRWRoute {
 
         @Override
         protected void routeIndirectConnections(Collection<Connection> connections) {
+            long iterationStartNanos = System.nanoTime();
+            // A connection only needs the exceptional full-device recovery
+            // tree while it remains unrouted, congested, or selected for a
+            // timing-driven reroute. Keeping every connection that was ever
+            // unroutable makes this tree grow monotonically and repeatedly
+            // partitions already-stable routes in later iterations.
+            recoveryConnections.removeIf(
+                connection -> !super.shouldRoute(connection)
+            );
             if (!recoveryConnections.isEmpty()) {
                 List<Connection> snapshot = new ArrayList<>(recoveryConnections);
+                System.out.println(
+                    "INFO: EmuFlow active recovery connections: " + snapshot.size()
+                );
                 RecoveryPartitionTree tree = new RecoveryPartitionTree(
                     snapshot, design.getDevice().getColumns(), design.getDevice().getRows()
                 );
                 routeRecoveryTree(tree.root);
             }
             super.routeIndirectConnections(connections);
+            double elapsedSeconds = (
+                System.nanoTime() - iterationStartNanos
+            ) / 1_000_000_000.0;
+            if (!recoveryConnections.isEmpty()
+                && elapsedSeconds > MAX_RECOVERY_ITERATION_SECONDS) {
+                throw new IllegalStateException(
+                    "RWRoute recovery iteration " + routeIteration + " took "
+                    + elapsedSeconds + " seconds with " + recoveryConnections.size()
+                    + " active connections; refusing an unbounded recovery tail. "
+                    + "Re-run placement with high-fanout routability weighting."
+                );
+            }
         }
 
         private void routeRecoveryTree(RecoveryPartitionTree.Node node) {
@@ -434,7 +466,18 @@ public final class EmuFlowRWRoute {
     }
 
     private static String sha256(Path path) throws Exception {
-        byte[] digest = MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path));
+        MessageDigest hasher = MessageDigest.getInstance("SHA-256");
+        try (InputStream stream = new BufferedInputStream(Files.newInputStream(path))) {
+            byte[] buffer = new byte[1024 * 1024];
+            for (int count = stream.read(buffer); count >= 0; count = stream.read(buffer)) {
+                if (count > 0) hasher.update(buffer, 0, count);
+            }
+        }
+        byte[] digest = hasher.digest();
+        return hexDigest(digest);
+    }
+
+    private static String hexDigest(byte[] digest) {
         StringBuilder value = new StringBuilder();
         for (byte item : digest) value.append(String.format("%02x", item));
         return value.toString();
@@ -471,6 +514,19 @@ public final class EmuFlowRWRoute {
         value.put("bidirectional", pip.isBidirectional());
         value.put("reversed", pip.isReversed());
         return value;
+    }
+
+    private static JSONArray pipPayloadRecord(String netName, PIP pip) {
+        JSONObject value = pipRecord(pip);
+        return new JSONArray()
+            .put(netName)
+            .put(value.getString("tile"))
+            .put(value.getString("start_wire"))
+            .put(value.getString("end_wire"))
+            .put(value.getString("start_node"))
+            .put(value.getString("end_node"))
+            .put(value.getBoolean("bidirectional"))
+            .put(value.getBoolean("reversed"));
     }
 
     private static JSONArray sortedStaticRoots(Net net, boolean vcc) {
@@ -597,6 +653,31 @@ public final class EmuFlowRWRoute {
         return result;
     }
 
+    private static String blockRamLogicalPin(
+        MaterializedCell materialized, String logicalPin
+    ) {
+        if (!materialized.isBlockRam()) return logicalPin;
+        int open = logicalPin.indexOf('[');
+        String port = open < 0 ? logicalPin : logicalPin.substring(0, open);
+        String suffix = open < 0 ? "" : logicalPin.substring(open);
+        // Yosys follows the Xilinx primitive declaration names, whereas the
+        // RapidWright 2026.1 Unisim library exposes the corresponding native
+        // RAMB18E2/RAMB36E2 port names. Translate only at this provider
+        // boundary; source-netlist and timing identities stay unchanged.
+        switch (port) {
+            case "DOADO": port = "DOUTADOUT"; break;
+            case "DOBDO": port = "DOUTBDOUT"; break;
+            case "DOPADOP": port = "DOUTPADOUTP"; break;
+            case "DOPBDOP": port = "DOUTPBDOUTP"; break;
+            case "DIADI": port = "DINADIN"; break;
+            case "DIBDI": port = "DINBDIN"; break;
+            case "DIPADIP": port = "DINPADINP"; break;
+            case "DIPBDIP": port = "DINPBDINP"; break;
+            default: break;
+        }
+        return port + suffix;
+    }
+
     private static void ensureLogicalPinMapping(
         MaterializedCell materialized, String logicalPin
     ) {
@@ -642,8 +723,12 @@ public final class EmuFlowRWRoute {
             physicalPin = "DIN" + physicalPin.substring(1);
         } else if (physicalPin.startsWith("ACOUT")) {
             physicalPin = physicalPin.replace("ACOUT", "ACOUT_B");
+        } else if (physicalPin.startsWith("ACIN")) {
+            physicalPin = physicalPin.replace("ACIN", "ACIN_B");
         } else if (physicalPin.startsWith("BCOUT")) {
             physicalPin = physicalPin.replace("BCOUT", "BCOUT_B");
+        } else if (physicalPin.startsWith("BCIN")) {
+            physicalPin = physicalPin.replace("BCIN", "BCIN_B");
         } else if (physicalPin.startsWith("PATTERNBDETECT")) {
             physicalPin = physicalPin.replace("PATTERNBDETECT", "PATTERN_B_DETECT");
         } else if (physicalPin.startsWith("PATTERNDETECT")) {
@@ -721,8 +806,12 @@ public final class EmuFlowRWRoute {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 2) {
-            throw new IllegalArgumentException("usage: EmuFlowRWRoute <input.tsv> <output.json>");
+        if (args.length != 7) {
+            throw new IllegalArgumentException(
+                "usage: EmuFlowRWRoute <input.tsv> <output.json> "
+                + "<timing-revision> <intersite-sha256> <intrasite-sha256> "
+                + "<parts-db-md5> <device-db-md5>"
+            );
         }
         List<String> lines = Files.readAllLines(Path.of(args[0]));
         String part = null;
@@ -826,11 +915,16 @@ public final class EmuFlowRWRoute {
                         }
                         connected.add(net.createPin(physicalPin, cell.siteInst));
                     } else if (cell.isBlockRam()) {
-                        ensureLogicalPinMapping(cell, row[3]);
-                        SitePinInst primary = net.connect(cell.regularCell, row[3]);
+                        String routedLogicalPin = blockRamLogicalPin(cell, row[3]);
+                        ensureLogicalPinMapping(cell, routedLogicalPin);
+                        SitePinInst primary = net.connect(
+                            cell.regularCell, routedLogicalPin
+                        );
                         if (primary != null) connected.add(primary);
                         Set<String> sitePins = new LinkedHashSet<>(
-                            cell.regularCell.getAllCorrespondingSitePinNames(row[3])
+                            cell.regularCell.getAllCorrespondingSitePinNames(
+                                routedLogicalPin
+                            )
                         );
                         if (sitePins.isEmpty()) {
                             throw new IllegalStateException(
@@ -907,75 +1001,20 @@ public final class EmuFlowRWRoute {
         RootedTimingModel timingModel = new RootedTimingModel(design.getDevice());
         timingModel.build();
 
-        JSONArray routeNets = new JSONArray();
+        Path outputPath = Path.of(args[1]);
+        Path netsPath = outputPath.resolveSibling(
+            outputPath.getFileName().toString() + ".nets.jsonl"
+        );
+        Path pipsPath = outputPath.resolveSibling(
+            outputPath.getFileName().toString() + ".pips.jsonl"
+        );
+        MessageDigest netsDigest = MessageDigest.getInstance("SHA-256");
+        MessageDigest pipsDigest = MessageDigest.getInstance("SHA-256");
         int routed = 0;
         int pips = 0;
+        int certificateNets = 0;
         int timedEndpoints = 0;
         float maximumRouteDelayPs = 0.0f;
-        for (String netName : netNames) {
-            Net net = nets.get(netName);
-            timingModel.prepare(net);
-            JSONObject record = new JSONObject();
-            record.put("net", netName);
-            String kind = netKinds.get(netName);
-            if (!kind.equals("signal") && !kind.equals("clock")) {
-                throw new IllegalStateException("unsupported routed net kind: " + kind);
-            }
-            record.put("kind", kind);
-            record.put(
-                "qualification",
-                kind.equals("clock") ? "fabric-routed-clock" : "ordinary-fabric-signal"
-            );
-            JSONArray pins = new JSONArray();
-            JSONArray alternateSources = new JSONArray();
-            SitePinInst source = net.getSource();
-            for (SitePinInst pin : net.getPins()) {
-                JSONObject pinValue = pinRecord(pin);
-                if (pin.isOutPin() && pin != source) {
-                    // RapidWright may route one logical driver through more
-                    // than one equivalent physical site exit (for example a
-                    // LUT O pin and its HMUX exit).  Preserve those roots for
-                    // connectivity checking without misreporting multiple
-                    // logical drivers.
-                    alternateSources.put(pinValue);
-                    continue;
-                }
-                if (!pin.isOutPin()) {
-                    if (source == null) {
-                        throw new IllegalStateException(
-                            "routed net has no timing source: " + netName
-                        );
-                    }
-                    float delayPs = timingModel.routedDelay(net, pin);
-                    if (!Float.isFinite(delayPs) || delayPs < 0.0f) {
-                        throw new IllegalStateException(
-                            "invalid RapidWright route delay for " + netName
-                            + "/" + pin.getSiteInstName() + "/" + pin.getName()
-                            + ": " + delayPs
-                        );
-                    }
-                    pinValue.put("route_delay_ps", delayPs);
-                    timedEndpoints++;
-                    maximumRouteDelayPs = Math.max(maximumRouteDelayPs, delayPs);
-                }
-                pins.put(pinValue);
-            }
-            record.put("pins", pins);
-            if (alternateSources.length() > 0) {
-                record.put("alternate_sources", alternateSources);
-            }
-            JSONArray netPips = new JSONArray();
-            List<PIP> sortedPips = new ArrayList<>(net.getPIPs());
-            sortedPips.sort(Comparator.comparing(PIP::toString));
-            for (PIP pip : sortedPips) netPips.put(pipRecord(pip));
-            record.put("pips", netPips);
-            record.put("has_gap", net.hasGapRouting());
-            record.put("source_present", net.getSource() != null);
-            record.put("sink_count", net.getSinkPins().size());
-            if (net.hasPIPs()) routed++;
-            pips += sortedPips.size();
-            routeNets.put(record);
-        }
         int staticNets = 0;
         int staticSinks = 0;
         int boundaryClockNets = 0;
@@ -985,40 +1024,126 @@ public final class EmuFlowRWRoute {
                 boundaryClockNets++;
             }
         }
-        for (Net net : new Net[] {design.getGndNet(), design.getVccNet()}) {
-            if (net == null || net.getSinkPins().isEmpty()) continue;
-            boolean vcc = net.isVCCNet();
-            if (!vcc && !net.isGNDNet()) {
-                throw new IllegalStateException("unexpected non-static global net " + net.getName());
-            }
-            JSONObject record = new JSONObject();
-            record.put("net", net.getName());
-            record.put("kind", vcc ? "static_vcc" : "static_gnd");
-            record.put("qualification", "device-tied-static");
-            JSONArray pins = new JSONArray();
-            for (SitePinInst pin : net.getPins()) pins.put(pinRecord(pin));
-            record.put("pins", pins);
-            JSONArray netPips = new JSONArray();
-            List<PIP> sortedPips = new ArrayList<>(net.getPIPs());
-            sortedPips.sort(Comparator.comparing(PIP::toString));
-            for (PIP pip : sortedPips) netPips.put(pipRecord(pip));
-            record.put("pips", netPips);
-            JSONArray roots = sortedStaticRoots(net, vcc);
-            if (roots.length() == 0) {
-                throw new IllegalStateException(
-                    "static net has sinks but no device-tied route root: " + net.getName()
+        try (
+            BufferedWriter netsWriter = new BufferedWriter(new OutputStreamWriter(
+                new DigestOutputStream(Files.newOutputStream(netsPath), netsDigest),
+                StandardCharsets.UTF_8
+            ));
+            BufferedWriter pipsWriter = new BufferedWriter(new OutputStreamWriter(
+                new DigestOutputStream(Files.newOutputStream(pipsPath), pipsDigest),
+                StandardCharsets.UTF_8
+            ))
+        ) {
+            for (String netName : netNames) {
+                Net net = nets.get(netName);
+                timingModel.prepare(net);
+                JSONObject record = new JSONObject();
+                record.put("net", netName);
+                String kind = netKinds.get(netName);
+                if (!kind.equals("signal") && !kind.equals("clock")) {
+                    throw new IllegalStateException("unsupported routed net kind: " + kind);
+                }
+                record.put("kind", kind);
+                record.put(
+                    "qualification",
+                    kind.equals("clock") ? "fabric-routed-clock" : "ordinary-fabric-signal"
                 );
+                JSONArray pins = new JSONArray();
+                JSONArray alternateSources = new JSONArray();
+                SitePinInst source = net.getSource();
+                for (SitePinInst pin : net.getPins()) {
+                    JSONObject pinValue = pinRecord(pin);
+                    if (pin.isOutPin() && pin != source) {
+                        // RapidWright may route one logical driver through more
+                        // than one equivalent physical site exit (for example a
+                        // LUT O pin and its HMUX exit).  Preserve those roots for
+                        // connectivity checking without misreporting multiple
+                        // logical drivers.
+                        alternateSources.put(pinValue);
+                        continue;
+                    }
+                    if (!pin.isOutPin()) {
+                        if (source == null) {
+                            throw new IllegalStateException(
+                                "routed net has no timing source: " + netName
+                            );
+                        }
+                        float delayPs = timingModel.routedDelay(net, pin);
+                        if (!Float.isFinite(delayPs) || delayPs < 0.0f) {
+                            throw new IllegalStateException(
+                                "invalid RapidWright route delay for " + netName
+                                + "/" + pin.getSiteInstName() + "/" + pin.getName()
+                                + ": " + delayPs
+                            );
+                        }
+                        pinValue.put("route_delay_ps", delayPs);
+                        timedEndpoints++;
+                        maximumRouteDelayPs = Math.max(maximumRouteDelayPs, delayPs);
+                    }
+                    pins.put(pinValue);
+                }
+                record.put("pins", pins);
+                if (alternateSources.length() > 0) {
+                    record.put("alternate_sources", alternateSources);
+                }
+                List<PIP> sortedPips = new ArrayList<>(net.getPIPs());
+                sortedPips.sort(Comparator.comparing(PIP::toString));
+                record.put("pip_count", sortedPips.size());
+                for (PIP pip : sortedPips) {
+                    pipsWriter.write(pipPayloadRecord(netName, pip).toString());
+                    pipsWriter.newLine();
+                }
+                record.put("has_gap", net.hasGapRouting());
+                record.put("source_present", net.getSource() != null);
+                record.put("sink_count", net.getSinkPins().size());
+                netsWriter.write(record.toString());
+                netsWriter.newLine();
+                if (net.hasPIPs()) routed++;
+                pips += sortedPips.size();
+                certificateNets++;
             }
-            record.put("roots", roots);
-            record.put("has_gap", net.hasGapRouting());
-            record.put("source_present", net.getSource() != null);
-            record.put("sink_count", net.getSinkPins().size());
-            if (net.hasPIPs()) routed++;
-            pips += sortedPips.size();
-            staticNets++;
-            staticSinks += net.getSinkPins().size();
-            routeNets.put(record);
+            for (Net net : new Net[] {design.getGndNet(), design.getVccNet()}) {
+                if (net == null || net.getSinkPins().isEmpty()) continue;
+                boolean vcc = net.isVCCNet();
+                if (!vcc && !net.isGNDNet()) {
+                    throw new IllegalStateException("unexpected non-static global net " + net.getName());
+                }
+                String netName = net.getName();
+                JSONObject record = new JSONObject();
+                record.put("net", netName);
+                record.put("kind", vcc ? "static_vcc" : "static_gnd");
+                record.put("qualification", "device-tied-static");
+                JSONArray pins = new JSONArray();
+                for (SitePinInst pin : net.getPins()) pins.put(pinRecord(pin));
+                record.put("pins", pins);
+                List<PIP> sortedPips = new ArrayList<>(net.getPIPs());
+                sortedPips.sort(Comparator.comparing(PIP::toString));
+                record.put("pip_count", sortedPips.size());
+                for (PIP pip : sortedPips) {
+                    pipsWriter.write(pipPayloadRecord(netName, pip).toString());
+                    pipsWriter.newLine();
+                }
+                JSONArray roots = sortedStaticRoots(net, vcc);
+                if (roots.length() == 0) {
+                    throw new IllegalStateException(
+                        "static net has sinks but no device-tied route root: " + netName
+                    );
+                }
+                record.put("roots", roots);
+                record.put("has_gap", net.hasGapRouting());
+                record.put("source_present", net.getSource() != null);
+                record.put("sink_count", net.getSinkPins().size());
+                netsWriter.write(record.toString());
+                netsWriter.newLine();
+                if (net.hasPIPs()) routed++;
+                pips += sortedPips.size();
+                staticNets++;
+                staticSinks += net.getSinkPins().size();
+                certificateNets++;
+            }
         }
+        String netsSha256 = hexDigest(netsDigest.digest());
+        String pipsSha256 = hexDigest(pipsDigest.digest());
         JSONObject output = new JSONObject();
         output.put("schema", SCHEMA);
         output.put("status", "candidate");
@@ -1038,7 +1163,17 @@ public final class EmuFlowRWRoute {
                 "router",
                 ROUTER_STRATEGY
             ));
-        output.put("nets", routeNets);
+        output.put("payloads", new JSONObject()
+            .put("nets", new JSONObject()
+                .put("format", "jsonl-object/v1")
+                .put("path", netsPath.getFileName().toString())
+                .put("sha256", netsSha256)
+                .put("records", certificateNets))
+            .put("pips", new JSONObject()
+                .put("format", "jsonl-array/v1")
+                .put("path", pipsPath.getFileName().toString())
+                .put("sha256", pipsSha256)
+                .put("records", pips)));
         output.put("excluded_nets", excluded);
         output.put("timing", new JSONObject()
             .put("provider", "rapidwright-lightweight")
@@ -1047,6 +1182,16 @@ public final class EmuFlowRWRoute {
             .put("setup_route_delays", "available")
             .put("hold_analysis", "unavailable")
             .put("hard_block_clock_timing", "unqualified")
+            .put("source_revision", args[2])
+            .put("source_data_sha256", new JSONObject()
+                .put("intersite_delay_terms.txt", args[3])
+                .put("intrasite_delay_terms.txt", args[4]))
+            .put("device_data_md5", new JSONObject()
+                .put("data/parts.db", args[5])
+                .put(
+                    "data/devices/virtexuplus/xcvu19p_db.dat",
+                    args[6]
+                ))
             .put("logic_coefficients_ps", new JSONObject()
                 .put("ff_clock_to_q", timingModel.LOGIC_FF_DELAY)
                 .put("carry_co", timingModel.CARRY_CO_DELAY)
@@ -1060,13 +1205,13 @@ public final class EmuFlowRWRoute {
             .put("maximum_route_delay_ps", maximumRouteDelayPs));
         output.put("summary", new JSONObject()
             .put("candidate_nets", netNames.size())
-            .put("certificate_nets", routeNets.length())
+            .put("certificate_nets", certificateNets)
             .put("static_nets", staticNets)
             .put("static_sinks", staticSinks)
             .put("nets_with_pips", routed)
             .put("pips", pips)
             .put("excluded_nets", excluded.length())
             .put("boundary_clock_nets", boundaryClockNets));
-        Files.writeString(Path.of(args[1]), output.toString());
+        Files.writeString(outputPath, output.toString(), StandardCharsets.UTF_8);
     }
 }

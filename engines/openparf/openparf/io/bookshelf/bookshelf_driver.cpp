@@ -149,6 +149,18 @@ void Driver::addClockRegionCbk(std::string const &name, unsigned xlo,
   db_.addClockRegionCbk(name, xlo, ylo, xhi, yhi, ymid, hcxmin);
 }
 
+void Driver::initSuperLogicRegionsCbk(unsigned width, unsigned height) {
+  db_.initSuperLogicRegionsCbk(width, height);
+}
+
+void Driver::addSuperLogicRegionCbk(std::string const &name,
+                                    std::string const &type, unsigned slr_x,
+                                    unsigned slr_y, unsigned slr_width,
+                                    unsigned slr_height) {
+  db_.addSuperLogicRegionCbk(name, type, slr_x, slr_y, slr_width,
+                            slr_height);
+}
+
 void Driver::addShapeCbk(std::string const &shape_type) {
   db_.addShapeCbk(shape_type);
 }

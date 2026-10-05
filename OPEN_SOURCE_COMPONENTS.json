@@ -100,10 +100,17 @@
       "license": "BSD-3-Clause"
     },
     {
-      "id": "opensta",
+      "id": "openroad-embedded-opensta",
       "path": "engines/openroad/src/sta",
       "upstream": "https://github.com/The-OpenROAD-Project/OpenSTA",
       "version_or_revision": "aa598a2f14c5c142e90391a69988523505e7db3d",
+      "license": "GPL-3.0-or-later"
+    },
+    {
+      "id": "opensta",
+      "path": "engines/opensta",
+      "upstream": "https://github.com/The-OpenROAD-Project/OpenSTA",
+      "version_or_revision": "051222e4ecc1cb61bb216f392646b602f4b22661 (3.1.0)",
       "license": "GPL-3.0-or-later"
     },
     {

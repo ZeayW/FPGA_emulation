@@ -2,10 +2,17 @@
 """Deterministic OpenSTA protocol fixture for multi-FPGA flow tests."""
 
 import os
+import sys
 from pathlib import Path
 
 
+if sys.argv[1:] == ["-version"]:
+    print("3.1.0")
+    raise SystemExit(0)
+
+
 rows = Path(os.environ["EMUFLOW_STA_NET_MAP"]).read_text().splitlines()[1:]
+output = Path(os.environ["EMUFLOW_STA_OUTPUT"])
 header = (
     "path_id_hex\tclock_domain_hex\tclock_period_ns\t"
     "slack_ns\tfixed_delay_ns\tpath_nets_hex"
@@ -18,9 +25,7 @@ for index, row in enumerate(rows):
     records.append(
         f"{path_id}\t{clock}\t10\t9.5\t0.5\t{emuir_hex}"
     )
-Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
-    "\n".join(records) + "\n"
-)
+output.write_text("\n".join(records) + "\n")
 if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
     requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
     coverage = ["emuir_net_hex\tdriver_count\tqueried_paths\temitted_paths"]

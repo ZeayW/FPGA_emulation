@@ -1024,6 +1024,445 @@ graph. Long virtual DUT periods produced by large emulation frame ratios are
 preserved in the provider-neutral runtime and system-timing contracts; the
 VPR-only runtime SDC records its bounded effective values explicitly. Additional
 architecture mapping profiles remain open gates.
+The Xilinx-native Phase 7 replacement is tracked in the
+[native placer refactor plan](docs/PHASE7_PLACER_REFACTOR_PLAN.md).  OpenPARF
+remains the primary placer and is responsible for native packing, analytical
+placement, resource/macro legalization, and detailed placement; RapidWright
+supplies source-sealed device facts and routing, and standalone OpenSTA supplies
+the final global timing result.  DREAMPlaceFPGA and AMF-Placer are isolated
+comparison branches subject to the same end-to-end gate, not implicit
+fallbacks.
+An internal, non-default qualification path also supports OpenPARF's native
+direct legalization/ISM flow for unconstrained LUT/FF atoms and independent
+singleton DSP48E2, RAMB36E2, and URAM288 resources.  Its result is converted,
+without rerunning EmuFlow's legacy packer or site legalizer, into the standard
+PackedSiteNetlist and `emuflow.xilinx-placement/v1` contracts accepted by the
+RWRoute exporter.  The bridge rechecks mapped-netlist and ArchitectureDB
+digests, complete cell ownership, site/BEL compatibility, and exact physical
+site grouping.  Its atomic A1 gate has completed on a real XCVU19P device
+model: OpenPARF placed 128 atoms into 11 sites; RapidWright routed 22 nets and
+70 sinks with zero missing logical sinks; routed timing covered all 21
+inter-site logical endpoints; and standalone upstream OpenSTA 3.1.0
+(`051222e4ec`) validated 64 timed endpoints at WNS +39.091599 ns and TNS 0 ns.
+This proves the bounded atomic placement-to-timing handoff, not production DLA
+support. The isolated A2 branch now has compiled and physically qualified
+CARRY8/LUT6_2 support plus source-sealed real-device adjacency for CARRY, DSP,
+BRAM, and URAM cascades. It also contains an internal physical-macro legalizer:
+a compact native-window contract owns every DSP/BRAM/URAM chain or singleton,
+excludes those instances from ordinary singleton MCF, assigns whole chains
+using deterministic global-placement displacement cost, and freezes the result
+before ISM. An independent checker replays exact native adjacency. This new
+operator has now passed its compiled XCVU19P DSP gate through the full physical
+handoff. OpenPARF placed 130 atoms into 12 occupied sites while preserving one
+30-lane ACOUT-to-ACIN cascade. RapidWright routed 49 certificate nets, 91 sinks,
+and 493 PIPs with zero missing or unrouted sinks; routed timing covered 48 exact
+logical endpoints at a maximum 1.350700195 ns; and independent upstream OpenSTA
+3.1.0 validated 62 paths at WNS +27.377401 ns and TNS 0 ns. The qualification
+fixture uses real primitive bus widths and the production Xilinx packer, so a
+scalar placeholder cannot satisfy this gate. The standard Route A bridge now preserves
+the source-sealed hard-block cascade graph while materializing OpenPARF's final
+site grouping. A cascade-bearing certificate must bind its source packing,
+native device constraints, and RapidWright provider manifest; the independent
+placement validator reloads that native graph instead of assuming consecutive
+site-name coordinates. The separate real-width two-level BRAM36 and URAM288
+gates now also pass the complete handoff. BRAM placed 130 atoms into 11 sites,
+routed 49 certificate nets/94 sinks/420 PIPs with a 1.332199951 ns maximum
+route delay, and OpenSTA validated 98 endpoints at WNS +38.359802 ns/TNS 0.
+URAM placed 130 atoms into 11 sites, routed 90 certificate nets/127 sinks/537
+PIPs with a 1.503900024 ns maximum route delay, and OpenSTA validated 138
+endpoints at WNS +38.266102 ns/TNS 0. Both have zero missing or unrouted sinks.
+The operator is not described as an exact optimizer. Other relative macros,
+authoritative half-column clock constraints, and Koios DLA medium remain open gates, so this
+path is not yet a public placer selection or the default Phase 7 provider.
+The native RAMB18 audit found that RapidWright exposes upper RAMB18, lower
+RAMB18, and whole RAMB36 as three overlapping views of one tile while the
+current ArchitectureDB retains only one anchor.  Therefore RAMB18 stays
+`adapter_required` until an exact source-sealed tile-group mapping exists;
+coordinate or name arithmetic such as `Y-1`/`Y/2` is not accepted as device
+evidence.
+The version-3 native-device contract now has an exporter and independent
+validator for that tile-group mapping.  The exporter has passed against the
+pinned real XCVU19P database: 2,160 BRAM tile groups were reconstructed with
+distinct lower-RAMB18, upper-RAMB18, and whole-RAMB36 placement/native
+identities, and the complete native-device artifact independently validated.
+The consumer represents each RAMB18 as an independent
+OpenPARF hard-block decision over the source-sealed lower/upper views; it does
+not pair instances by name or packing order.  Explicit lower/upper occupancy
+claims allow two RAMB18 cells to share a tile while a RAMB36 whole-tile claim
+excludes both halves.  Export, legalization, certificate, and tamper-focused
+unit gates pass.  The version-2 atomic placement certificate carries the
+source-sealed tile, anchor, lower/upper/whole role, and exact occupancy claims
+for every split-BRAM assignment; its independent bridge validator rejects
+corrupted roles, claims, physical views, and whole-versus-half overlap.
+Legacy placement no longer reconstructs BRAM sites with coordinate parity or
+site-name arithmetic: split modes require the native tile-group contract, and
+only an already-explicit direct physical site may omit it.  The compiled
+real-device fixture also passed native OpenPARF
+placement, RapidWright routing, and standalone OpenSTA 3.1 timing; this remains
+branch-local and non-default until the remaining primitive/clock and DLA-medium
+gates pass.
+
+The native atomic and CARRY8 adapters store the complete XCVU19P site map once
+in an indexed `site-map.sqlite3` placement contract.  `name_map.json` contains atom
+identity, coordinate axes, and descriptors only; placement validation queries
+the selected coordinates and resource rows instead of repeatedly parsing a
+117 MB JSON site table.  The version-2 physical-macro contract also avoids
+enumerating every legal slice once per MUX member.  A MUX group stores only its
+member resource/BEL-slot template and the sealed legal-window count.  The
+OpenPARF legalizer loads candidate slice coordinates from the same immutable
+SQLite site contract once, groups them into a deterministic two-dimensional
+index, and performs an exact nearest-unoccupied-site query for every macro.
+All in-core placement operators use the geometric center of the complete
+Bookshelf site bounding box, including same-slice LUT/MUX/CARRY macros.  The
+dense lower-left coordinate remains only the serialized site-map identity used
+by the final `.pl`.  Native `direct_lg` now carries an explicit covered-grid to
+site-anchor map: masked macros reserve the owning anchor, while spiral search
+visits a sparse, variable-height site exactly once at its geometric center.
+This keeps global placement, macro legalization, ordinary LUT/FF legalization,
+ISM, and the independent legality checker on one coordinate contract instead
+of silently mixing dense-cell and bounding-box centers.
+The atomic XCVU19P exporter also disables OpenPARF's generic paired-LUT mode.
+Native direct legalization therefore admits at most one LUT per BLE and writes
+it to the qualified odd 6LUT slot; max-matching cannot silently introduce an
+unqualified 5LUT occupant.  This enforces the source-sealed eight-independent-
+6LUT policy in the optimizer itself, before the independent placement
+certificate maps slot indices to RapidWright BELs.
+For a same-site macro, minimizing displacement of the member centroid is
+algebraically identical to the former exhaustive sum-of-squared-displacement
+scan; strict lower-bound pruning and the original site-name tie break preserve
+that decision without repeating a full-device SQL query and site traversal for
+every CARRY/MUX group.  DSP,
+BRAM, and URAM cascade windows remain explicit because they encode directed
+native adjacency rather than a repeated uniform site template.  No full site
+or MUX-window JSON is duplicated into the name map or parsed in the hot path.
+On the 512,880-site XCVU19P fixture, an isolated old full-JSON parse took
+8.32 seconds and 843 MiB peak RSS, while the indexed lookup of the ten
+coordinates used by the real placement took 0.73 seconds and 24.1 MiB peak
+RSS (11.4x faster and 34.2x less peak memory, including Python startup).
+Repeated hot queries improved by 16.8x at the median.  The selected records
+were also compared field-for-field with the former JSON contract and matched
+exactly.  The larger MUXF9 stress gate exposed and removed a second full-JSON
+hot path: the former per-member/per-slice macro-window payload was 904,496,404
+bytes and took 67.78 seconds with 6.80 GiB peak RSS merely to parse.  The
+version-2 template is 1,549 bytes and parses in 0.06 seconds with 6.7 MiB peak
+RSS, while legal windows are streamed from the indexed site database.  This is
+a 583,923x size reduction, 1,130x parse speedup, and 1,035x peak-memory
+reduction.  Placement clusters and summaries, certificate clusters and
+summaries, routed nets and timing, routed path timing, and final OpenSTA
+WNS/TNS all matched the former contract exactly.
+The native RapidWright backend also treats the source-sealed ArchitectureDB and
+each per-partition mapped netlist as immutable process-local inputs. A complete
+ArchitectureDB is parsed and indexed once per file identity, then shared by the
+parallel physical workers; a mapped netlist is parsed once by its owning worker
+and passed in memory through atomic-source construction, macro derivation,
+OpenPARF export, certificate validation, bridge materialization, packing checks,
+and placement checks. SHA-256 results use an inode/size/mtime/ctime-invalidated
+process cache, so repeated contract checks do not reread the same hundreds of
+MiB artifact. Replacement or in-place modification changes the cache identity
+and forces a fresh parse/hash. Unit gates assert both invalidation behavior and
+single mapped-netlist loading in the production call graph. Parallel FPGA
+workers also share one immutable derivation of the device-wide placement
+geometry. The first worker materializes the indexed site database; subsequent
+workers on the same filesystem receive a hard link to that closed immutable
+SQLite contract instead of rescanning every site and rewriting the same rows.
+Partition-specific resource/model declarations remain separate, so sharing
+does not conflate the two logical designs.
+
+The routed physical tail follows the same rule. RWRoute now validates and
+seals its in-memory route object once while publishing it; routed-timing
+binding consumes that exact validation certificate instead of reopening,
+rewriting, and revalidating the often near-gigabyte route database. The timing
+certificate is then passed directly to the selected OpenSTA run. SHA-256
+checks use the same stat-invalidated process cache, so source identity remains
+fail-closed while the normal Phase 7 path performs only the one full route
+parse required to bind physical delays. Standalone validation commands remain
+independent and still perform a fresh semantic check when explicitly invoked.
+The OpenSTA executable/version gate also runs before expanding the routed
+endpoint graph, so a missing shared library or unsupported engine fails in
+constant time instead of after the large staging artifact has been built.
+The same in-core contract now admits connectivity-derived MUXF7/F8/F9 cones.
+Each cone records exact LUT and MUX BEL roles, offers only complete same-slice
+windows, lets OpenPARF choose the window from global-placement displacement,
+and masks the selected slice before ordinary LUT/FF legalization. No
+post-placement greedy repair is used.  Reserved macros now use a thin mask
+entry point on OpenPARF's native `direct_lg` implementation rather than a
+second copied C++ legalizer.  The common solver removes the locked members
+from the ordinary LUT/FF problem, reserves each occupied slice once, and
+preserves their XYZ result while running the upstream slot assignment for all
+remaining logic.  The mask accepts arbitrary cardinality (a valid F7 cone has
+three members), and the Python/C++ boundary canonicalizes its IDs to the C++
+`int32_t` contract instead of reinterpreting PyTorch's default `int64` tensor.
+The shared native slot assigner also handles constant or partially disconnected
+LUTs explicitly: LUT-pair compatibility and input-sharing scoring treat a LUT
+with no input pin as sharing zero input nets instead of dereferencing a missing
+pin.  This removes the upstream zero-input-LUT segmentation fault exposed by
+the real DLA netlist without changing ordinary LUT/FF pairing semantics.
+ISM detailed placement preserves locked macro BELs through its final
+intra-slice pin-access pass; only unlocked slices are locally reordered.
+F7/F8/F9 export, conflict legalization, independent certificate
+reconstruction, tamper-oriented unit gates, and compiled OpenPARF runtime gates
+pass.  Each runtime gate exercises global placement, same-site macro
+legalization, ordinary LUT/FF legalization, and ISM detailed placement before
+the independent certificate accepts the complete source-sealed cone.  For F7
+that includes the exact `A6LUT`/`B6LUT`/`F7MUX_AB` assignment; F8 and F9 extend
+the same invariant across all seven and fifteen macro members respectively.
+The atomic-to-standard physical bridge retains MUXF7/F8/F9 assignments as
+dedicated slice members instead of rejecting them or charging them against
+LUT/FF capacity.  Before RWRoute, the standard packing validator independently
+reconstructs each cone from mapped connectivity and checks its exact dedicated
+BEL topology, while the placement validator checks same-site ownership.  Unit
+gates exercise this complete bridge for F7, F8, and F9 rather than accepting
+only the native OpenPARF certificate.  The pinned real-XCVU19P gates now pass
+the complete physical tail.  F7 placed 7 atoms in two sites, routed 5 nets/10
+sinks/32 PIPs with 0.2865 ns maximum route delay, and reached OpenSTA WNS
++9.0814 ns/TNS 0.  F8 placed 15 atoms in two sites, routed 9 nets/14 sinks/50
+PIPs with 0.256100006 ns maximum route delay, and reached WNS +9.009399 ns/TNS
+0.  F9 placed 31 atoms in two sites, routed 17 nets/22 sinks/112 PIPs with
+0.2755 ns maximum route delay, and reached WNS +8.8682 ns/TNS 0.  These gates
+qualify the MUX hierarchy itself; clock legality, multi-SLR capacity, the
+resource-covering gate, and DLA medium still prevent provider promotion.
+The native atomic exporter now also translates complete ArchitectureDB clock
+regions and SLR ownership into OpenPARF's Bookshelf physical model.  It emits
+the region geometry only when every placement site belongs to a canonical, rectangular,
+gap-free grid; partial coverage, non-rectangular regions, and missing grid
+coordinates fail before placement.  The bundled Bookshelf reader accepts
+multi-digit region names such as `X4Y10`, which are required by real
+UltraScale+ devices.  A new `SUPERLOGICREGIONS` block constructs the native
+`SuperLogicRegionMap` instead of retaining SLR names only as sidecar metadata.
+Equal-size rectangular SLRs enable OpenPARF's native SLL objective;
+incomplete, overlapping, non-contiguous, or unequal-size SLR grids fail closed.
+The first compiled 1x2 gate exposed that upstream only hard-coded SLL lookup
+tables for 1x4 and 2x2 grids and passed `None` to the native op for other
+rectangular topologies.  The pinned engine now constructs the exact
+rectilinear-MST table for reviewed grids of up to 12 SLRs; unit tests reproduce
+both upstream reference tables and cover 1x2.  The rebuilt compiled 1x2 gate
+then placed and independently certified 128 LUT/FF atoms across two SLRs with
+native SLL enforcement enabled; its compact qualification SHA-256 is
+`72178d2f51d1ba12883f56200c16fe680cf1d6344cb7686d9b194aa8a9f51fc1`.
+A renewed DLA route is still required before multi-SLR support is promoted.
+Active UTPlaceFX clock assignment remains deliberately
+disabled: that upstream implementation assumes one SLICE, one DSP, and one RAM
+site class and discovers clocks only from explicit clock-source models, while
+the real device model contains multiple BRAM views plus URAM and the current
+adapter does not yet admit BUFG primitives.  Enabling it would abort or enforce
+the wrong capacity model.  Half-column limits likewise remain disabled until
+their boundaries are source sealed.  Clock-source import, safe multi-resource
+clock planning, and compiled real-device clock/multi-SLR evidence remain
+promotion gates.
+The RapidWright recovery specialization now also prunes a connection from its
+exceptional full-device partition tree as soon as the upstream router no
+longer considers that connection unrouted, congested, or timing-selected.  The
+previous monotonically growing set could rebuild a larger recovery tree around
+already-stable routes in every negotiated-congestion iteration.  The active
+pre-fix DLA route is deliberately left untouched and therefore does not count
+as evidence for this correction.  On the first sealed DLA fpga1 rerun, active
+recovery membership fell throughout negotiation, RWRoute wall time improved
+from 11:58.56 to 7:52.45 (about 34%), and the independent OpenSTA result kept
+WNS at -1.8418 ns while improving TNS from -221.443887 to -220.033683 ns and
+failing endpoints from 560 to 557.  The larger fpga0 route remains a terminal
+promotion gate rather than being inferred from this result.
+The first real-device probe also established that the three identities must be
+kept separate: placement uses `RAMB180/RAMB18E2_L`,
+`RAMB181/RAMB18E2_U`, and `RAMB36/RAMB36E2`, while the database's primary
+views are `RAMBFIFO18`, `RAMB181`, and `RAMBFIFO36`.  The contract records both
+identities instead of treating a logical primitive name as a native BEL name.
+The provider-neutral `emuflow.xilinx-physical-macro-contract/v1` now derives
+these non-atomic constraints directly from mapped connectivity without running
+a packer, placer, or legalizer. It records CARRY8/LUT6_2 and MUXF7/8/9 site
+ownership, RAMB18 half-site occupancy demand, and exact dedicated cascade
+connectivity for carry, DSP, BRAM, and URAM chains.  A source-sealed
+RapidWright device-fact artifact now binds that logical order to directed
+native site-pin paths without inventing a `y+1` relationship. Every accepted
+PIP is checked in both directions and seals all member wires of its endpoint
+and intermediate nodes; BRAM chains additionally fail closed unless every site
+is in one clock region. On the real XCVU19P model it proves 508,992 carry,
+3,808 DSP, 1,980 clock-region-local BRAM, and 316 URAM edges. The placement capability remains `adapter_required`
+until the newly implemented in-core typed legalizer completes its real-runtime
+family gates. The contract is audited infrastructure; CARRY8, DSP48E2,
+RAMB36E2, and URAM288 dedicated-chain consumption are physically qualified on
+their bounded real-width fixtures.
+The isolated A2 branch extends the pinned native extractor and legalizer while
+retaining the XArch CLA4 path: typed CARRY8 units select eight ordered LUT6_2
+members from S[0:7], verify the paired DI drivers, and occupy one full slice.
+The compact same-site legalizer treats CARRY8 as a dedicated slice area type,
+alongside MUXF7/F8/F9, so a real carry macro is accepted by the same native
+window contract exercised by the bounded fixtures. Its ownership mask names
+only the dedicated CARRY8 area type; the eight associated LUT6_2 cells remain
+ordinary LUT demand and are locked through macro membership, not falsely
+declared as a dedicated area type. The UltraScale resource-area estimator
+accepts the complete LUT1--LUT6 range emitted by the real mapper; its six-bin
+C++ kernel already modeled LUT1, so the former Python-side LUT1 rejection was
+removed and widths above six still fail closed.
+The adapter invokes GP, native chain legalization, native mask-aware LUT/FF legalization,
+and ISM, then independently validates exact BEL roles and RapidWright-certified
+CARRY_NEXT adjacency.  Parsed `.shape` records still have no consumer and are
+not used as evidence.
+Final native placement materialization streams the legalized OpenPARF tensor
+directly to an atomically replaced Bookshelf placement file.  It deliberately
+does not copy the same coordinates back through `PlaceDB::apply()` and then
+read them again through the C++ writer.  The streaming path reproduces the
+writer's site semantics by mapping each integer placement point to the origin
+of its covering site bounding box; this matters for sparse or multi-coordinate
+UltraScale+ sites whose interior grid points are not standalone site origins.
+Besides removing a redundant full-design pass, this avoids an upstream
+allocator-corruption failure observed after otherwise successful detailed
+placement on a real mixed-resource DLA partition.  The independent placement
+certificate remains the authority for site capacity, macro legality, and
+source seals.
+Two independent upstream plumbing defects found during that audit are now
+fixed: Bookshelf `OUTPUT CAS` dispatches to the output-cascade callback, and
+ISM freezes both carry primitives and their associated LUTs whenever carry
+legalization is active rather than depending on IO legalization.  The internal
+real-device adapter also derives the dense placement Y-axis orientation from
+the directed, source-sealed `CARRY_NEXT` graph.  UltraScale+ tile grid rows run
+opposite to CARRY8 site-Y order, so assuming increasing tile row would place a
+logically ordered chain on physically reversed dedicated edges.  Mixed or
+nonvertical native directions fail closed; the qualification fixture models
+the real inverted tile-row convention rather than a same-direction synthetic
+grid.  Dense Bookshelf Y coordinates also preserve empty physical tile rows:
+an SLR or clocking seam that terminates one certified CARRY_NEXT chain remains
+an empty row and cannot be compressed into a false edge to the next chain.
+The production atomic route no longer asks OpenPARF's geometric carry-chain
+legalizer to reconstruct that topology.  Each logical multi-CARRY8 cascade is
+one full-slice `site_cascade`; its CARRY8 plus eight LUT6_2 members are
+legalized together against compact `directed-site-chain/v1` windows derived
+only from the source-sealed RapidWright `CARRY_NEXT` chains.  Candidate chains
+are indexed lazily by logical length, so native chains are stored once rather
+than expanded once per logical cascade.  The exact nearest-window index uses
+the complete per-site placement-coordinate vector; it does not assume that a
+valid native edge advances placement Y by one because intervening non-slice
+tile rows make real XCVU19P chain coordinates nonuniform.  The independent placement validator
+checks every unit's BEL roles, same-site ownership, exact directed chain
+window, and native edge.  OpenPARF's rectangle-based carry legalizer is
+disabled when this contract is present because it cannot represent chain
+holes and was observed to cross both an SLR seam and a slice column on Koios
+DLA medium.  The compact adversarial gate and 71 related unit/integration
+tests pass.  Renewed real-DLA placement and its independent certificate check
+now pass for 223,389 atoms in 14,648 occupied sites, including 5,505 CARRY8
+macros and 3,373 certified native carry edges.  The native bridge preserves
+legal UltraScale+ FF control topology rather than imposing the conservative
+packer's one-control-set-per-slice policy: clock and set/reset must agree in
+each half-slice, while enable is checked independently on the FF and FF2 lanes.
+Multiple exact control sets are represented explicitly in the packed-site
+certificate.  A renewed two-FPGA run then exposed a separate local-density
+defect: global `target_density=0.75` allowed hot clock regions to consume
+99--100% of their SLICEL, SLICEM, DSP, and BRAM sites.  The exporter now
+derates the legal site inventory itself to at most 75% for every
+`(SLR, clock-region, site-type)` group before global placement or any exact
+legalizer runs.  Retained sites form contiguous vertical runs, and source-
+sealed CARRY_NEXT chains are clipped only at reserved-site gaps, so neither
+ordinary logic nor typed hard blocks can consume routing headroom that the
+independent gate will later reject.  The first DLA-medium route using that
+inventory still concentrated roughly 80% of occupied sites in six clock
+regions and produced 765k/841k overlapping routing nodes after RWRoute's first
+negotiated-congestion iteration.  That run is diagnostic evidence, not an
+acceptance result.  The version-2 native provider therefore also enables
+OpenPARF's upstream RUDY routing-utilization and pin-density area inflation for
+the LUT and FF area types, using the published ISPD-style six adjustment
+stages; DSP/BRAM/URAM and exact macro legality remain owned by their
+source-sealed legalizers.  The first route-aware-v3 DLA run proved that the
+adjustment executes, but also exposed a separate upstream termination defect:
+the generic OpenPARF stop rule accepted the first density-feasible iterate
+whose HPWL did not beat only its immediate predecessor, even while
+post-inflation HPWL was still oscillating.  One partition therefore legalized
+at 8.936M HPWL and its 57.9M-node RWRoute failed to converge after roughly five
+hours; the sibling partition legalized at 4.066M HPWL and routed successfully.
+Atomic provider v4 keeps native OpenPARF global placement, legalization, and
+detailed placement, but requires a consecutive feasible settling window,
+waits for bounded HPWL patience, restores the best feasible global-placement
+iterate, and emits a compact convergence certificate.  Hitting the iteration
+ceiling is now a failure, not a successful placement.  A fresh two-partition
+DLA-medium placement completed with the declared settling rule: the
+223,389-atom partition stopped at iteration 1,699 and legalized to 8.8232553M
+HPWL, while the 240,377-atom partition stopped at iteration 1,676 and legalized
+to 4.1540576M HPWL.  This removes the prior immediate-predecessor termination
+defect, but renewed RWRoute and OpenSTA qualification are still pending, so no
+final Phase 7 QoR is claimed.
+
+The independently checked atomic placement certificate now stores its large
+assignment table in a byte-sealed SQLite sidecar and keeps only identity,
+source seals, constant-size summary, convergence metrics, and the sidecar
+descriptor in the JSON header.  The bridge accepts the historical inline
+certificate but consumes the new table in one indexed pass; it no longer
+performs one full certificate scan for every occupied site.  Per-FPGA reports
+retain only the compact certificate identity and never embed another copy of
+the assignments.  This preserves the exact audit boundary while removing the
+60--65 MiB JSON parse and the former quadratic site lookup from the production
+handoff.  The producer also releases the full in-memory assignment tree before
+RWRoute and OpenSTA begin.  Optional split-BRAM tile-group metadata is
+canonical JSON inside the SQLite row and is covered by the same sidecar seal;
+the production writer and its regression test therefore exercise the metadata
+path instead of leaving it as an unexecuted schema branch.
+The shared three-route selection work is maintained on
+`feature/phase7-placer-selection`; it combines the OpenPARF implementation with
+the fail-closed DREAMPlaceFPGA and AMF capability probes without treating an
+adapter-only roundtrip as production placement evidence.
+The current sealed comparison snapshot is recorded in
+[`docs/PHASE7_PLACER_REFACTOR_PLAN.md`](docs/PHASE7_PLACER_REFACTOR_PLAN.md):
+OpenPARF remains the sole production candidate; DREAMPlaceFPGA is a research
+control because its pinned public runtime and physical contracts are
+insufficient; and AMF remains blocked until its patched public optimizer
+completes a real native fixture run.  All three routes share the same
+RapidWright routing and standalone OpenSTA promotion boundary.
+The internal
+`probe_xilinx_openparf_carry_native_support` qualification API separates the
+source audit from runtime qualification against a two-CARRY8 macro contract
+and forbids fallback or preplacement.  That compiled gate now passes: native
+OpenPARF placed 20 logical atoms into three sites; the no-search bridge
+preserved two full-slice macros and their CARRY_NEXT edge; RapidWright routed
+four nets, six sinks, and 18 PIPs with zero missing sinks; and standalone
+OpenSTA 3.1.0 (`051222e4ec`) reported WNS +38.742802 ns and TNS 0 ns for the
+complete sequential path.  This is CARRY8-subset evidence, not proof of
+hard-block cascades or Koios DLA medium support.
+The internal `run_rapidwright_openparf_native_candidate_backend` entry point
+uses that native placement and then rejoins the existing RWRoute, routed-
+timing, boundary-timing, and OpenSTA tail.  It never invokes the legacy Xilinx
+site packer, continuous-only OpenPARF guidance adapter, or greedy exact site
+legalizer.  The one-shot multi-FPGA interfaces expose this fail-closed route
+explicitly as `--physical-rapidwright-placer openparf-native` (or
+`multi-fpga physical --rapidwright-placer openparf-native`).  The selector is
+valid only with the RapidWright physical backend; an unsupported primitive or
+constraint aborts instead of falling back to the historical placer.
+The native route also requires the source-sealed device facts explicitly:
+`--physical-rapidwright-native-constraints` and
+`--physical-rapidwright-provider-manifest` for `multi-fpga compile`, or the
+corresponding `--rapidwright-native-constraints` and
+`--rapidwright-provider-manifest` physical-stage options. CARRY8 plus its
+eight LUT6_2 adapters is one exclusive slice macro, CARRY_NEXT chains use the
+directed-site-chain legalizer, and each RAMB18E2 remains an independent lower/upper
+half-site occupant until native legalization. The no-search bridge groups the
+resulting legal half-site assignments by their physical RAMB36 tile; it does
+not reuse the legacy name-ordered RAMB18 packer.
+The same native-constraints and provider-manifest paths are forwarded to the
+post-bridge independent placement validator, which reopens and hash-checks
+both sources before RWRoute starts.  They are not only producer inputs; a
+missing or different source at this validation boundary fails closed.
+Native OpenPARF qualification also requires the supplied ArchitectureDB logic
+crop to form one connected, genuinely two-dimensional site region with finite
+density and filler headroom for every active resource.  Collinear, disconnected,
+or target-density-saturated crops fail before OpenPARF starts; the adapter never folds
+such a crop into a synthetic grid or waits for nonlinear placement to produce
+NaN/infinite coordinates.
+Capacity-normalized LUT/FF models no longer allocate one analytical filler per
+unused logical slot.  The native adapter bounds filler samples per active logic
+area type and rescales their dimensions to preserve exactly the same total
+density area; source-sealed hard-resource area types need only one inactive
+filler sample because the typed legalizer owns all of their movable instances.
+This keeps full-device tensor sizes proportional to the density grid rather
+than to the product of site count and intra-site capacity.
+An internal DREAMPlaceFPGA research path now exposes the same mapped,
+PackedSiteNetlist, and ArchitectureDB identities through a narrow FPGA
+Interchange adapter.  The LUT1--LUT6/LUT6_2, FDRE, DSP48E2, and RAMB36E2
+fixture roundtrips through the official Cap'n Proto LogicalNetlist schema;
+candidate `.phys` import then rechecks complete ownership, site/BEL legality,
+packed-cluster co-location, and exact BEL candidates.  The runner invokes only
+the pinned upstream `Placer.py` process and has no fake placement or greedy
+legalizer fallback.  It remains an internal, non-default research candidate:
+the pinned upstream lacks detailed placement plus cascade, clock-region, and
+multi-SLR contracts, so its RapidWright handoff is emitted only as an explicit
+blocked boundary.  Native execution also fails closed unless the exact source
+revision, compiled `place_io`, and upstream-qualified PyTorch 1.6--1.8 runtime
+are present; no result from an unqualified PyTorch 2.x build is accepted.
 EmuFlow does not claim an open Xilinx bitstream flow. The Vivado provider ends
 at routed checkpoints and timing reports; success there cannot satisfy the
 default open-flow completion gate or replace board-level sign-off.
@@ -1062,6 +1501,11 @@ OpenROAD and OpenPARF: Bison, Flex, Tcl, SWIG 4, Eigen3, zlib, spdlog, LEMON,
 OR-Tools C++, OpenMP, PyTorch, NumPy, PyYAML, and Hummingbird. CUDA is optional
 and disabled by default. GUROBI is not required because OpenPARF's experimental
 router is disabled.
+
+Hummingbird is loaded lazily only when the optional learned OpenPARF delay
+estimator is explicitly enabled.  Baseline global placement, typed hard-block
+legalization, detailed placement, and legality checks do not import learned
+model runtimes or their optional estimator backends on the execution hot path.
 
 Configure, compile, and test from the repository root:
 
@@ -1791,6 +2235,17 @@ self-validates its output or when a child validator reaches the same ancestor.
 The cache exists only for that process: every later standalone validator starts
 a fresh session and therefore still detects filesystem changes. This avoids
 quadratic NFS reads without converting a previous run's `pass` label into trust.
+
+The routed-Xilinx OpenSTA path follows the same single-process rule.  The
+OpenSTA exporter loads the staged routed EmuIR once, reuses that exact object
+while importing and validating the path TSV, and passes the newly produced
+path database directly to the routed-timing summary validator.  It does not
+reparse the routed EmuIR or the potentially large path JSON merely to compute
+QoR or to repeat the producer's validation.  A later standalone validation
+still reloads both artifacts and remains an independent filesystem check.
+Boundary, Static Exact logic-segment, and same-FPGA local-path timing likewise
+share one routed-Xilinx graph load inside the physical backend instead of
+parsing the same mapped netlist once per projection.
 
 Managed execution also enforces a runtime budget at every phase boundary.
 Producer checks are limited to local schema/legality invariants and one linear
@@ -2906,7 +3361,7 @@ launch/capture identities even when OpenSTA's Tcl export adds a second
 backslash-escaping layer.  The adapter accepts only a unique exact alias and
 rejects ambiguous spellings, so a structured endpoint certificate cannot be
 silently attached to the wrong instance.
-OpenSTA 2.6 directed internal-net queries are not used as the cut qualification
+Directed internal-net queries are not used as the cut qualification
 gate. In a reconvergent cone, both `-through` and an internal driver `-from`
 constraint can return the unrelated worst sibling path; inserting the requested
 net into that returned path would be unsound. The reusable v4 cut-timing
@@ -3698,8 +4153,8 @@ the concrete TDM occupancy/wait price; it never replaces the required complete
 Phase 7 WNS/TNS comparison.
 
 Cross-stage partition/routing/TDM work uses a partition-independent STA path
-database. The default provider builds standalone OpenSTA from
-`engines/openroad/src/sta`, renders the versioned open FPGA timing model, and
+database. The default provider builds standalone OpenSTA 3.1 from
+`engines/opensta`, renders the versioned open FPGA timing model, and
 records ordered stable EmuIR net identities for each global path. The Vivado
 adapter is an optional provider that emits the same checked path-database
 contract from a concrete Xilinx part.
@@ -4143,6 +4598,36 @@ emuflow arch validate-rapidwright-device \
   resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json
 ```
 
+Placement consumers must not infer vertical hard-wire adjacency or regional
+capacity from site-name coordinates.  The optional native-constraints
+exporter derives those facts from the same pinned RapidWright database.  Its
+current proof scope is deliberately narrow: CARRY8 `CO[7] -> CI` edges are
+admitted only when `CARRY8/CO7 -> COUT` and `CARRY8/CIN -> CIN` are dedicated
+SitePin connections resolving to the identical canonical native Node.  The
+artifact chain-compresses those proven edges, seals the complete native proof
+stream, and records exact `(SLR, clock region, site type)` site counts bound to
+the ArchitectureDB hash.  If the pinned native database represents the carry
+continuation as an arc between distinct Nodes, the exporter reports
+`dedicated_adjacency.CARRY_NEXT=core_missing` and emits no adjacency rather
+than guessing from coordinates or intent labels.  DSP, BRAM, and URAM cascade
+adjacency remain `unverified`; half-column clock capacity is neither exported
+nor guessed and any consumer requesting it fails closed.
+
+```bash
+PYTHONPATH=src python3 \
+  scripts/rapidwright/export_native_device_constraints.py \
+  --rapidwright-jar /external/rapidwright-2026.1.0-standalone-lin64.jar \
+  --provider-manifest \
+  resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json \
+  --architecture /external/xcvu19p.architecture.json \
+  --scratch-dir /external/scratch \
+  --output /external/xcvu19p.native-constraints.json
+```
+
+This is a provider-side capability artifact, not a coordinate-based legalizer
+or a duplicate routing database.  The generated JSON and compilation scratch
+remain external run artifacts and must not be committed.
+
 The no-route `.device`, route certificate, imported ArchitectureDB, native
 RapidWright database, and physical-region sidecars are external run artifacts
 and must not be committed. The certificate contains counts, hashes, and a
@@ -4202,13 +4687,19 @@ TDP write-enable can bind both lower and upper physical half pins; RWRoute
 receives every resulting sink site pin instead of retaining only the first.
 The compact route contract carries only the width/register/mode properties
 needed for that lowering and deliberately excludes large INIT payloads.
+At the provider boundary, the adapter explicitly translates the Yosys
+RAMB18E2/RAMB36E2 primitive aliases (`DOADO`, `DOBDO`, `DOPADOP`, `DOPBDOP`,
+`DIADI`, `DIBDI`, `DIPADIP`, and `DIPBDIP`) to RapidWright's native Unisim
+port identities while preserving every bus index. The mapped-netlist and
+timing identities remain unchanged; a missing native pin is an error rather
+than an omitted endpoint.
 Unsupported or ambiguous BRAM modes and multi-source expansions fail closed.
 Dedicated carry, DSP, BRAM,
 and URAM cascade
 connectivity is emitted as an exact non-branching adjacency certificate. The
 independent validator reloads the mapped design and ArchitectureDB and rejects
-duplicate ownership, capacity overflow, mixed control sets, incompatible BELs,
-broken mux topology, or a modified cascade chain.
+duplicate ownership, capacity overflow, illegal half-slice control topology,
+incompatible BELs, broken mux topology, or a modified cascade chain.
 
 ```bash
 emuflow arch pack-xilinx \
@@ -4327,6 +4818,9 @@ emuflow multi-fpga compile design.v \
   --physical-architecture /external/xcvu19p.architecture.json \
   --physical-openparf-install /external/openparf-install \
   --physical-openparf-python /external/openparf-python \
+  --physical-rapidwright-placer openparf-native \
+  --physical-rapidwright-native-constraints /external/xcvu19p.native-device-constraints.json \
+  --physical-rapidwright-provider-manifest resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json \
   --physical-rapidwright-jar /external/rapidwright-standalone.jar \
   --physical-rapidwright-java /external/jdk17/bin/java \
   --physical-rapidwright-device-data /external/RapidWright \
@@ -4350,35 +4844,28 @@ routing demand is too large for the two-device configuration.  It is a named
 complete platform configuration, not an arbitrary subset of a larger board.
 Both interconnects remain declared academic models; changing the FPGA count is
 not reported as an algorithmic QoR improvement.
-OpenPARF is used only for analytical global-placement guidance in this
-backend. Packed slice clusters are classified as logic and remain continuous;
-DSP, BRAM, and URAM clusters retain OpenPARF's single-site-resource lookahead
-so their sparse physical columns participate in a feasible global solution.
-The Bookshelf model records a zero-demand auxiliary resource in every slice
-tile because a real UltraScale+ slice is a multi-resource logic site; this
-prevents OpenPARF's structural single-resource detector from sending all packed
-slice clusters through the hard-column min-cost-flow legalizer.
-Final Bookshelf legalization remains disabled: the first-party Xilinx
-legalizer performs the authoritative site/BEL/cascade assignment and
-independently checks it before RWRoute. This keeps global hard-column guidance
-without duplicating final architecture legalization. Each physical FPGA tile
-becomes one OpenPARF site whose capacity is the sum of the supported slice,
-DSP, BRAM, and URAM sites in that tile.  Physical tile columns and rows are
-compressed onto contiguous analytical axes and mapped piecewise-linearly back
-to the same tile grid afterward.  The exporter never uses ArchitectureDB's
-unique site key `tile_col * site_stride + site_index` as a geometric
-coordinate: that key distinguishes multiple sites in one tile but would
-stretch horizontal distance by `site_stride` and corrupt the wirelength
-objective.  The continuous driver emits a compact convergence
-certificate and fails closed when any populated non-I/O area type remains
-above OpenPARF's declared guidance limit.  This preserves OpenPARF's own
-two-tier rule: packed slice logic must reach `stop_overflow`, while sparse
-single-site DSP/BRAM resources may use at most twice that value before the
-exact Xilinx legalizer.  The driver stops at the first valid point so continued
-augmented-multiplier growth cannot turn a converged guidance solution into a
-late numerical divergence; reaching the 1000-iteration ceiling is not accepted
-as successful guidance.  Upstream bitmap plots remain suppressed, so
-diagnostic rendering is not part of the physical hot path.
+The production candidate uses OpenPARF for the complete placement-owned
+sequence: connectivity-derived macro ownership, typed analytical global
+placement, resource and macro legalization, and ISM detailed placement.
+EmuFlow then imports the exact site/BEL answer into an independently checked
+certificate; it does not run a second site search or repair pass before
+RWRoute.  Sparse DLA partitions are admitted to the smallest contiguous SLR
+window that preserves 1.5x resource headroom, instead of being spread over all
+four XCVU19P SLRs.  This keeps high-fanout bounding boxes and the routing search
+domain proportional to the actual partition while retaining explicit
+multi-SLR support when capacity requires it.
+
+The historical continuous-guidance plus first-party greedy-legalization path
+remains available only as the explicitly named `legacy` RapidWright placer.
+It is not silently selected when native placement fails.  The native driver
+emits a compact convergence certificate, pins the upstream ISPD reference
+stopping rule (`stop_overflow=0.10`) and routability-adjustment threshold
+(`0.15`), requires a stable feasible settling window, restores the best
+feasible iterate, and fails closed on non-finite or unlegalizable results.
+Final placement materialization preserves the origin of each covering site
+bounding box, including sparse and multi-coordinate UltraScale+ resources.
+Upstream bitmap plots remain suppressed, so diagnostic rendering is not part
+of the physical hot path.
 RapidWright's external `data/parts.db` and XCVU19P device database are checked
 against the provider-pinned digests and mounted read-only into each isolated
 partition runtime. Missing or mismatched data fails closed; the backend never
@@ -4386,6 +4873,39 @@ downloads device data or silently selects another part database at runtime.
 The current timing qualification is setup-only RapidWright lightweight route
 timing plus OpenSTA.  Hold, package-pin/interface binding, and vendor sign-off
 remain outside Route A and are reported rather than silently inferred.
+
+AMF-Placer is being evaluated as an alternative complete placement route, but
+it is not a selectable provider or default. The public basic release contains
+real mixed-size global placement, macro legalization, CLB packing, and detailed
+placement; it also consumes Vivado-extracted input formats, lacks public core
+support for the current `MUXF9` and `URAM288` inventory, and has not qualified
+XCVU19P multi-SLR or clock legality. Its public build also downloads and
+executes a precompiled PaToH archive and links the GUI-coupled executable
+against Qt5; therefore the pinned runtime is neither source-complete nor a
+validated headless HPC provider. EmuFlow exposes only an internal fail-closed
+capability, adapter contract, and sealed native-runner boundary at this
+milestone. The pinned
+source audit, primitive matrix, and adaptation boundary are documented in
+[`docs/PHASE7_AMF_PLACER_CAPABILITY.md`](docs/PHASE7_AMF_PLACER_CAPABILITY.md).
+The three Vivado-free adapters now pass a single-region LUT/FF/CARRY8 fixture:
+mapped JSON is serialized to AMF text with explicit GND/VCC normalization,
+fixture ArchitectureDB sites/BELs are serialized to device text, and AMF
+`place_cell` records are parsed as data and re-certified by EmuFlow's exact
+legalizer. A new internal runner additionally requires the pinned public source
+revision, executable SHA-256, usage probe, and reviewed portability-patch
+SHA-256 before it will launch the optimizer. It checks native packing, global
+placement, detailed-placement, and completion markers; imports the final
+`place_cell` archive without evaluating Tcl; emits an exact placement
+certificate; and independently revalidates all site/BEL ownership before the
+standard RapidWright routing boundary. Its checked-in subprocess regression is
+explicitly marked `test-double`/`test-only` and is not native AMF evidence.
+Until the patched upstream binary itself passes the resource-covering fixture,
+AMF remains unqualified and unavailable as a provider or default. MUXF9, URAM,
+cascades, real clock legality, XCVU19P, and multi-SLR requests continue to fail
+closed. A bounded public build probe identified and fixed the pinned upstream
+CMake file's retired Boost download URL while preserving its expected archive
+digest; the subsequent real build/runtime qualification remains incomplete and
+is not represented as a native pass.
 
 Route A's Phase 6 macro-cycle checker evaluates the Xilinx primitives emitted
 by the pinned open Yosys mapping rather than accepting a generic-LUT surrogate.
@@ -4460,31 +4980,89 @@ full-device analytical solution from being squeezed into one SLR by the exact
 legalizer after half of its clusters have already been optimized for a
 different SLR.  The unrestricted whole-device guidance mode remains distinct
 and does not silently acquire a region constraint.
+The native atomic/macro qualification exporter also models real multi-site
+tiles directly. One Bookshelf tile carries the summed capacity of its demanded
+physical sites (for example, two DSP48E2 or four URAM288 sites), while a
+source-ordered hard-resource `z` slot maps each placed atom back to one exact
+ArchitectureDB site. Undemanded resources such as LAGUNA are omitted from the
+qualification problem rather than being mistaken for coordinate collisions.
+The name map preserves every physical site identity, and the independent
+validator resolves and rechecks the selected slot before RapidWright export.
+Multiple slice sites at one tile remain fail-closed because LUT/FF `z` already
+denotes BEL occupancy.
+The exporter scans compact physical-site records once and validates LUT/FF,
+CARRY8, mux, and hard-resource compatibility once per distinct site template.
+It does not materialize the complete repeated BEL inventory for every one of
+the hundreds of thousands of sites merely to construct placement geometry;
+inline-BEL architectures retain the same strict per-site validation.  The
+normalized site index is bulk-built in memory and written once as sequential
+SQLite pages, avoiding per-row random writes on the shared experiment volume.
+The v3 physical-macro contract likewise stores each resource class's certified
+singleton-site windows once and lets all DSP/BRAM/URAM singleton groups refer
+to that set by identity.  It never duplicates the same device-wide candidate
+list once per placed instance; cascades retain their distinct directed windows.
+Every typed hard-resource area type must be completely owned by that contract.
+Those instances remain movable under the wirelength objective, but their area
+types are removed from generic electrostatic density and from its convergence
+gate; exact window selection supplies their capacity/non-overlap proof. Partial
+ownership fails before placement, so an unconstrained hard block cannot be
+silently hidden from density.
+The typed contract records OpenPARF's in-core legal coordinate separately from
+the lower-left dense coordinate serialized in the final Bookshelf `.pl`.
+Single-cell slice macros use `dense + 0.5`; sparse tall hard-blocks use their
+complete site-bounding-box center.  The independent importer resolves the
+serialized lower-left coordinate back to the exact physical site.
+An illegal typed placement aborts before ISM detailed placement rather than
+continuing with a malformed site index.
+ISM now treats empty coordinates in a sparse real-device SITEMAP as inert
+working-array entries instead of dereferencing the empty-site sentinel.  This
+keeps native detailed placement enabled on the full XCVU19P grid without
+inventing filler sites or collapsing physical resource spacing.
+At the RapidWright boundary, the transformed DSP48E2 physical macro maps both
+ends of the UltraScale+ A/B cascade buses to their actual `_B` site-pin names
+(`ACOUT_B`/`ACIN_B` and `BCOUT_B`/`BCIN_B`).  Qualification fixtures use the
+real primitive bus widths; scalar stand-ins are not accepted as evidence for
+hard-block routing.  OpenSTA builds one type-wide hard-block timing interface
+from the union of every instance's active ports, so a cascade head and tail
+cannot cause each other's legal AC/BC input or output ports to disappear.
 The standalone entry point expresses this contract explicitly as
 `emuflow arch guide-xilinx-openparf --slr <SLR>`; omitting `--slr` retains the
 whole-device selection problem.
-The production RapidWright backend uses the complete physical device after
-checking the packed partition against the 75% whole-device capacity contract.
-It does not infer routing capacity from site counts by squeezing a partition
-into the smallest capacity-feasible SLR subset: Phase 6 transport can add far
-more physical connections than the original DUT resource vector records, and
-site capacity is not a routing-headroom certificate. Explicit single-SLR
-experiments remain available through the separately named regional planner.
-The complete ordered SLR inventory is recorded once as a global
-`allowed_slrs` constraint; it is not duplicated into every cluster record.
+The production RapidWright backends now choose a compact contiguous SLR window
+from the final post-Phase-6 packed/atomic netlist, so transport cells are part
+of the decision rather than an unmodelled later addition.  The selector uses
+the exact ArchitectureDB resource inventory, requires 1.5x site headroom for
+every represented slice/DSP/BRAM/URAM resource, and chooses the smallest
+capacity-feasible window (with a deterministic central tie break).  If no
+proper subset has that headroom, it retains the complete device.  This avoids
+spreading a sparse partition across all XCVU19P SLRs, which can multiply the
+span of reset/state distribution trees and force RWRoute into very long
+negotiated-routing recovery.  The selected inventory is source-bound once as
+a global `allowed_slrs` constraint and independently rechecked after the
+native OpenPARF bridge; it is not duplicated into every cluster record.
 OpenPARF guidance uses its native RUDY- and pin-utilization-driven area
 inflation for packed slice clusters before exact legalization: this preserves
 the bounded routing search region while preventing one-site density alone from
 hiding large differences in external routing demand. Its continuous
-convergence certificate gates the inflated slice density; sparse hard-macro
+wirelength objective additionally applies a bounded square-root fanout weight
+to nets above 64 pins (capped at 4x). This compensates for the fact
+that one HPWL bounding box otherwise gives a 1000-sink reset/state distribution
+tree the same objective weight as an ordinary local net; it does not alter the
+logical netlist or replace exact routing. The compact convergence certificate
+records the applied policy, weighted-net count, and observed maximum degree.
+The continuous convergence certificate gates the inflated slice density;
+sparse hard-macro
 pseudo-density is not treated as physical legality because the downstream
 architecture-aware legalizer checks every DSP/BRAM/URAM site exactly. Every
 dedicated cascade chain must remain within one SLR, and the independent
 validator checks that physical boundary explicitly.
-For split BRAM tiles, the placement certificate retains the FPGA-Interchange
-tile anchor and also materializes the exact RapidWright site of every
-RAMB18E2/RAMB36E2 assignment; this prevents the lower and upper BRAM views from
-being conflated at the pack/place-to-route boundary.
+For split BRAM tiles, the version-2 placement certificate retains the
+FPGA-Interchange tile anchor, source-sealed native tile identity,
+lower/upper/whole occupancy role and claims, and the exact RapidWright site of
+every RAMB18E2/RAMB36E2 assignment. This prevents the lower and upper BRAM
+views from being conflated at the pack/place-to-route boundary and makes a
+RAMB36 whole-site assignment conflict with either half without relying on
+coordinate parity or site-name rewriting.
 RWRoute is likewise a physical routing provider, not the acceptance oracle.
 Large designs use RapidWright CUFR, the parallel full-design specialization of
 RWRoute: it retains RWRoute's negotiated-congestion legality model while
@@ -4503,7 +5081,12 @@ Ordinary negotiated congestion retains a fixed bounding box. Only a connection
 for which the current search found no route is enlarged. Such exceptional
 connections are routed through a separate recursive partitioning ternary tree
 before CUFR's unchanged main tree on each later iteration and skipped inside
-the main tree. This avoids both a large serial recovery tail and RapidWright's
+the main tree. A recovery iteration is bounded to ten minutes: if placement
+creates a pathological search region, the route fails with a compact
+diagnostic instead of spending hours repeatedly expanding it. The watchdog is
+time-based rather than iteration-based, so ordinary negotiated-congestion
+closure may still use as many fast iterations as it needs. This
+avoids both a large serial recovery tail and RapidWright's
 fixed-box behavior of abandoning a truly unroutable connection while
 preserving CUFR's original parallel decomposition, rather than rebuilding the
 tree around enlarged connections or using the upstream blanket adaptive mode
@@ -4523,7 +5106,56 @@ in this Route A adapter are explicitly qualified as fabric-routed clocks.
 Top-level clocks have no physical source primitive in the out-of-context
 partition, so they are separately qualified as `ideal-boundary-clock` rather
 than being silently counted as routed or invented as a global clock network.
-The adapter emits only a compact, source-sealed route certificate. An
+The adapter emits a source-sealed route certificate without the router's
+search trace.  Because the complete PIP and sink proof can be hundreds of
+megabytes on a real design, the v2 production handoff is not a monolithic JSON
+tree.  Its small manifest owns source, device, timing, summary, and payload
+seals; sibling deterministic JSONL streams own the per-net records and compact
+PIP arrays.  The Java producer hashes each stream while writing it.  The
+independent validator reads each stream once, reconstructs one routed net at a
+time, and uses a bounded-memory/temporary-SQLite ownership index for global PIP
+conflict checking.  The routed-timing binder reads only the net stream and
+never parses the PIP stream.  Legacy v1 RouteDB artifacts remain read-only
+inputs for historical evidence, while all new RapidWright production emits
+v2.
+
+The routed-timing handoff follows the same ownership rule.  A small v2
+manifest seals a deterministic endpoint JSONL stream instead of duplicating
+all endpoints in another large JSON object.  Its validator and OpenSTA staging
+share one streaming pass: every endpoint is independently checked and handed
+to the graph builder as it is read.  The route and timing validators still
+recompute exact counts, maxima, reachability, and content digests; the
+optimization removes repeated whole-document allocation and serialization,
+not validation strength.  The independent validator returns a separate
+passing promotion certificate instead of rewriting either immutable artifact
+merely to change its status field.
+Boundary, logic-segment, and local-path projection consume that same sealed
+endpoint iterator; no downstream Phase 7 stage assumes that the compact v2
+manifest still contains the removed inline `endpoints` array.
+OpenSTA coverage still checks every mapped and generated cell type against the
+timing model, but the run summary does not duplicate the complete generated
+route-delay type set.  It records only the deterministic set cardinality and
+SHA-256 seal; the timing model remains the canonical owner of the names.
+The RapidWright physical OpenSTA tail likewise emits TimingPathDB v2 as a
+small manifest plus a sealed path JSONL stream.  New payloads use fixed-order
+row arrays instead of repeating object and endpoint keys for every path; the
+reader retains the earlier object-stream formats only for validation of
+historical artifacts.  TSV import derives global normalization while writing
+the compact rows in one pass; readers reconstruct the logical path object and
+derive normalized slack lazily from the sealed manifest, and validation and
+QoR recomputation stream the payload.  The upstream logical
+TimingPathDB retains readable v1 compatibility for partition/routing consumers,
+while new physical path evidence no longer creates or reparses a 100+ MiB JSON
+tree.
+On the frozen real-DLA `fpga1` routed-timing input (115,706 timed endpoints),
+the compact-row producer completed in 10:40.42 with a 102,347,409-byte path
+stream.  The former monolithic path database required 152,272,744 bytes and
+10:41.33 on the same input.  Independent streamed validation of the new result
+completed in 6.02 seconds at 36,704 KiB peak RSS, and reproduced the same
+per-FPGA physical WNS -1.8418 ns, TNS -221.443887 ns, and 560 failing
+endpoints.  These figures qualify the storage/runtime contract for one routed
+partition; they are not the final system-global Phase 7 timing result.
+An
 independent EmuFlow checker canonicalizes PIP occupancy, rebuilds every
 directed source-to-sink route, rejects gaps and resource conflicts, and checks
 that the certificate belongs to the exact mapped, packed, and placed inputs.
@@ -4537,6 +5169,11 @@ Historical delay values may change under this correction; compare results
 produced by the same adapter version. The native path regression can be run
 with `RAPIDWRIGHT_JAR=/path/to/rapidwright.jar python -m unittest discover -s tests -p test_rapidwright_rooted_path.py`
 (JDK required).
+The native OpenPARF and legacy placement routes use this same timing tail.
+Extraction retains the v2 streaming net/PIP certificates and computes the
+predecessor map once per net; it does not change placement, routing policy,
+or timing coefficients. The graph regression and streaming integration checks
+are correctness tests, not a new full-flow or QoR qualification.
 Every routed sink carries its route delay in
 picoseconds; the independent checker requires complete sink coverage and
 recomputes the endpoint count and maximum delay instead of trusting the
@@ -4562,7 +5199,14 @@ and RAM/DSP/URAM timing is explicitly reported as an unqualified surrogate.
 The compact summary records those limits and the full OpenSTA path database
 remains the sole per-partition WNS/TNS authority. Its independent validator
 recomputes WNS, TNS, failing endpoint count, and the path population from that
-database. Route A also binds every original same-FPGA TimingPathDB member to
+database. The path exporter uses OpenSTA 3.1's bounded
+`find_timing_paths -group_path_count/-endpoint_path_count` API to obtain one
+worst setup path per timed endpoint in a single search. EmuFlow rejects older
+OpenSTA engines before timing: OpenSTA 2.6 can corrupt its Tcl path-object arena
+while serializing physical RAM paths, and a per-endpoint workaround adds
+unacceptable large-design search cost. The report seals the accepted engine
+version and executable SHA-256. Route A also binds every original
+same-FPGA TimingPathDB member to
 its Xilinx logical launch/capture pins and measures a conservative longest
 path on the same routed graph. Those source-sealed local paths and the
 cross-FPGA logic/transport segments together cover the canonical original

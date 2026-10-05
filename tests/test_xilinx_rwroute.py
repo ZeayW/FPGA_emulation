@@ -3,7 +3,9 @@ import hashlib
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.errors import ValidationError
 from emuflow.xilinx_rwroute import (
@@ -13,6 +15,7 @@ from emuflow.xilinx_rwroute import (
 )
 from emuflow.xilinx_timing import (
     build_xilinx_routed_timing,
+    iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
 )
 
@@ -21,6 +24,72 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_recovery_tree_drops_stable_connections_between_iterations(self):
+        source = (
+            Path(__file__).parents[1]
+            / "scripts/rapidwright/EmuFlowRWRoute.java"
+        ).read_text(encoding="utf-8")
+        self.assertIn("recoveryConnections.removeIf(", source)
+        self.assertIn("!super.shouldRoute(connection)", source)
+        self.assertIn("EmuFlow active recovery connections", source)
+        self.assertIn("MAX_RECOVERY_ITERATION_SECONDS = 600.0", source)
+        self.assertIn("refusing an unbounded recovery tail", source)
+
+    def test_rapidwright_block_ram_aliases_match_yosys_ports(self):
+        source = (
+            Path(__file__).parents[1]
+            / "scripts/rapidwright/EmuFlowRWRoute.java"
+        ).read_text(encoding="utf-8")
+        for yosys, rapidwright in (
+            ("DOADO", "DOUTADOUT"),
+            ("DOBDO", "DOUTBDOUT"),
+            ("DOPADOP", "DOUTPADOUTP"),
+            ("DOPBDOP", "DOUTPBDOUTP"),
+            ("DIADI", "DINADIN"),
+            ("DIBDI", "DINBDIN"),
+            ("DIPADIP", "DINPADINP"),
+            ("DIPBDIP", "DINPBDINP"),
+        ):
+            self.assertIn(
+                f'case "{yosys}": port = "{rapidwright}";', source
+            )
+        self.assertIn("blockRamLogicalPin(cell, row[3])", source)
+
+    def test_rapidwright_dsp_cascade_uses_physical_b_bus_site_pins(self):
+        source = (
+            Path(__file__).parents[1]
+            / "scripts/rapidwright/EmuFlowRWRoute.java"
+        ).read_text(encoding="utf-8")
+        for logical, physical in (
+            ("ACOUT", "ACOUT_B"),
+            ("ACIN", "ACIN_B"),
+            ("BCOUT", "BCOUT_B"),
+            ("BCIN", "BCIN_B"),
+        ):
+            self.assertIn(
+                f'physicalPin.replace("{logical}", "{physical}")', source
+            )
+
+    def test_rapidwright_writer_seals_pinned_timing_inputs_directly(self):
+        source = (
+            Path(__file__).parents[1]
+            / "scripts/rapidwright/EmuFlowRWRoute.java"
+        ).read_text(encoding="utf-8")
+        for field, argument in (
+            ("source_revision", 2),
+            ("intersite_delay_terms.txt", 3),
+            ("intrasite_delay_terms.txt", 4),
+            ("data/parts.db", 5),
+            ("data/devices/virtexuplus/xcvu19p_db.dat", 6),
+        ):
+            self.assertIn(f'"{field}"', source)
+            self.assertIn(f"args[{argument}]", source)
+        self.assertIn('"emuflow.xilinx-route-db/v2"', source)
+        self.assertIn("DigestOutputStream", source)
+        self.assertIn('"jsonl-object/v1"', source)
+        self.assertIn('"jsonl-array/v1"', source)
+        self.assertNotIn('output.put("nets"', source)
+
     def test_device_data_provider_fails_closed_on_unpinned_database(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -96,6 +165,45 @@ class XilinxRWRouteTest(unittest.TestCase):
             }],
         }
 
+    def _stream_route(self, root: Path, value=None):
+        value = copy.deepcopy(self._route() if value is None else value)
+        nets = value.pop("nets")
+        net_payload = root / "route.json.nets.jsonl"
+        pip_payload = root / "route.json.pips.jsonl"
+        net_lines = []
+        pip_lines = []
+        for net in nets:
+            record = copy.deepcopy(net)
+            pips = record.pop("pips")
+            record["pip_count"] = len(pips)
+            net_lines.append(
+                json.dumps(record, sort_keys=True, separators=(",", ":"))
+            )
+            for pip in pips:
+                pip_lines.append(json.dumps([
+                    net["net"], pip["tile"], pip["start_wire"],
+                    pip["end_wire"], pip["start_node"], pip["end_node"],
+                    pip.get("bidirectional", False), pip.get("reversed", False),
+                ], separators=(",", ":")))
+        net_payload.write_text("\n".join(net_lines) + "\n", encoding="utf-8")
+        pip_payload.write_text("\n".join(pip_lines) + "\n", encoding="utf-8")
+        value["schema"] = "emuflow.xilinx-route-db/v2"
+        value["payloads"] = {
+            "nets": {
+                "format": "jsonl-object/v1", "path": net_payload.name,
+                "sha256": hashlib.sha256(net_payload.read_bytes()).hexdigest(),
+                "records": len(net_lines),
+            },
+            "pips": {
+                "format": "jsonl-array/v1", "path": pip_payload.name,
+                "sha256": hashlib.sha256(pip_payload.read_bytes()).hexdigest(),
+                "records": len(pip_lines),
+            },
+        }
+        path = root / "route.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path, net_payload, pip_payload
+
     def test_checker_accepts_connected_tree_and_rejects_tampering(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "route.json"
@@ -109,6 +217,49 @@ class XilinxRWRouteTest(unittest.TestCase):
             path.write_text(json.dumps(broken), encoding="utf-8")
             with self.assertRaises(ValidationError):
                 validate_xilinx_route_db(path)
+
+    def test_streaming_checker_reads_sealed_payloads_without_monolithic_nets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, net_payload, pip_payload = self._stream_route(Path(temporary))
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotIn("nets", manifest)
+            report = validate_xilinx_route_db(path)
+            self.assertEqual(report["nets"], 1)
+            self.assertEqual(report["pips"], 3)
+            pip_payload.write_text(
+                pip_payload.read_text(encoding="utf-8").replace('"T2"', '"T9"'),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "digest disagrees"):
+                validate_xilinx_route_db(path)
+            self.assertTrue(net_payload.is_file())
+
+    def test_streaming_checker_rejects_truncation_and_path_escape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path, _net_payload, pip_payload = self._stream_route(root)
+            pip_payload.write_bytes(pip_payload.read_bytes()[:-1])
+            with self.assertRaisesRegex(ValidationError, "truncated record"):
+                validate_xilinx_route_db(path)
+            path, _net_payload, _pip_payload = self._stream_route(root)
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifest["payloads"]["nets"]["path"] = "../escape.jsonl"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "payloads.nets is invalid"):
+                validate_xilinx_route_db(path)
+
+    def test_checker_never_rewrites_route_artifact(self):
+        for status in ("candidate", "pass"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                value = self._route()
+                value["status"] = status
+                path = Path(temporary) / "route.json"
+                path.write_text(json.dumps(value), encoding="utf-8")
+                original = path.read_bytes()
+                report = validate_xilinx_route_db(path, _value=value)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(report["status"], "pass")
+                self.assertNotIn("source_sha256", report)
 
     def test_checker_accepts_equivalent_alternate_physical_source(self):
         value = self._route()
@@ -257,23 +408,134 @@ class XilinxRWRouteTest(unittest.TestCase):
                 ("placement_sha256", placement_path),
             ):
                 route["source"][key] = hashlib.sha256(path.read_bytes()).hexdigest()
-            route_path = root / "route.json"
-            route_path.write_text(json.dumps(route), encoding="utf-8")
+            route_path, _net_payload, _pip_payload = self._stream_route(
+                root, route
+            )
             output = root / "routed-timing.json"
-            report = build_xilinx_routed_timing(
-                mapped_path, packed_path, placement_path, route_path, output
+            from emuflow import xilinx_rwroute, xilinx_timing
+
+            real_timing_read = xilinx_timing.read_json
+            real_rwroute_sha256 = xilinx_rwroute._sha256
+            real_timing_sha256 = xilinx_timing._sha256
+            with (
+                mock.patch(
+                    "emuflow.xilinx_timing.read_json",
+                    wraps=real_timing_read,
+                ) as timing_read,
+                mock.patch(
+                    "emuflow.xilinx_rwroute.read_json",
+                    side_effect=AssertionError(
+                        "route validator reparsed preloaded objects"
+                    ),
+                ),
+                mock.patch(
+                    "emuflow.xilinx_rwroute._sha256",
+                    wraps=real_rwroute_sha256,
+                ) as rwroute_sha256,
+                mock.patch(
+                    "emuflow.xilinx_timing._sha256",
+                    wraps=real_timing_sha256,
+                ) as timing_sha256,
+            ):
+                report = build_xilinx_routed_timing(
+                    mapped_path, packed_path, placement_path, route_path, output
+                )
+            self.assertEqual(
+                [call.args[0] for call in timing_read.call_args_list].count(
+                    route_path
+                ),
+                1,
+            )
+            self.assertEqual(
+                [call.args[0] for call in rwroute_sha256.call_args_list],
+                [mapped_path, packed_path, placement_path, route_path],
+            )
+            self.assertEqual(
+                [call.args[0] for call in timing_sha256.call_args_list],
+                [output],
             )
             checked = validate_xilinx_routed_timing(
                 output, mapped_path=mapped_path, packed_path=packed_path,
                 placement_path=placement_path, route_path=route_path,
             )
             value = json.loads(output.read_text())
+            endpoints = list(
+                iter_xilinx_routed_timing_endpoints(output, value)
+            )
+            endpoint_payload = output.parent / value["payloads"]["endpoints"]["path"]
+            endpoint_payload.write_text(
+                endpoint_payload.read_text(encoding="utf-8").replace(
+                    "0.012", "0.013", 1
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "digest disagrees"):
+                validate_xilinx_routed_timing(output)
         self.assertEqual(report["logical_endpoints"], 2)
         self.assertEqual(checked["physical_route_sinks"], 2)
         self.assertEqual(
-            [item["route_delay_ns"] for item in value["endpoints"]],
+            [item["route_delay_ns"] for item in endpoints],
             [0.012, 0.0275],
         )
+
+    def test_routed_timing_reuses_exact_route_validation_seal(self):
+        mapped = {
+            "modules": {"top": {"cells": {
+                "src": {
+                    "type": "LUT1", "port_directions": {"O": "output"},
+                    "connections": {"O": [1]},
+                },
+                "sink_a": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [1]},
+                },
+                "sink_b": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [1]},
+                },
+            }}}
+        }
+        packed = {"schema": "emuflow.packed-site-netlist/v1", "top": "top"}
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [
+                {"site": "S0", "assignments": [{"instance": "src", "bel": "A6LUT"}]},
+                {"site": "S1", "assignments": [{"instance": "sink_a", "bel": "AFF"}]},
+                {"site": "S2", "assignments": [{"instance": "sink_b", "bel": "AFF"}]},
+            ],
+        }
+        route = self._route()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped_path, packed_path, placement_path = (
+                root / "mapped.json", root / "packed.json", root / "placement.json"
+            )
+            for path, value in (
+                (mapped_path, mapped), (packed_path, packed),
+                (placement_path, placement),
+            ):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            for key, path in (
+                ("mapped_sha256", mapped_path), ("packed_sha256", packed_path),
+                ("placement_sha256", placement_path),
+            ):
+                route["source"][key] = hashlib.sha256(path.read_bytes()).hexdigest()
+            route_path = root / "route.json"
+            route_path.write_text(json.dumps(route), encoding="utf-8")
+            validation = validate_xilinx_route_db(
+                route_path, mapped_path=mapped_path, packed_path=packed_path,
+                placement_path=placement_path,
+            )
+            output = root / "routed-timing.json"
+            with patch(
+                "emuflow.xilinx_timing.validate_xilinx_route_db",
+                side_effect=AssertionError("route validator ran twice"),
+            ):
+                report = build_xilinx_routed_timing(
+                    mapped_path, packed_path, placement_path, route_path, output,
+                    route_validation=validation,
+                )
+        self.assertEqual(report["logical_endpoints"], 2)
 
     def test_exporter_excludes_intra_site_net(self):
         mapped = {
@@ -339,6 +601,50 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertIn(
             "EXCLUDED\tn1\tboundary_clock\tideal-boundary-clock", text
         )
+
+    def test_exporter_reuses_preloaded_large_objects(self):
+        mapped = {
+            "modules": {"top": {"cells": {
+                "ff": {
+                    "type": "FDRE", "port_directions": {"C": "input"},
+                    "connections": {"C": [1]},
+                },
+            }}}
+        }
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+            "clusters": [{"assignments": [
+                {"instance": "ff", "cell_type": "FDRE", "bel": "AFF"},
+            ]}],
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
+                {"instance": "ff", "bel": "AFF"},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "route.tsv"
+            with mock.patch(
+                "emuflow.xilinx_rwroute.read_json",
+                side_effect=AssertionError("preloaded objects were reparsed"),
+            ):
+                report = export_rwroute_input(
+                    root / "mapped.json",
+                    root / "packed.json",
+                    root / "placement.json",
+                    output,
+                    mapped_value=mapped,
+                    packed_value=packed,
+                    placement_value=placement,
+                    source_sha256={
+                        "mapped_sha256": "1" * 64,
+                        "packed_sha256": "2" * 64,
+                        "placement_sha256": "3" * 64,
+                    },
+                )
+        self.assertEqual(report["logical_cells"], 1)
 
     def test_exporter_physically_expands_lut6_2_for_rapidwright(self):
         mapped = {
@@ -547,6 +853,71 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertIn(("DOA_REG", "0"), parameters)
         self.assertIn(("WRITE_MODE_B", "READ_FIRST"), parameters)
         self.assertFalse(any(row[0] == "PARAM" and row[2].startswith("INIT") for row in rows))
+
+    def test_exporter_keeps_ramb18_vector_pin_identity(self):
+        mapped = {
+            "modules": {"top": {"cells": {
+                "src": {
+                    "type": "LUT1", "port_directions": {"O": "output"},
+                    "connections": {"O": [1]},
+                },
+                "memory": {
+                    "type": "RAMB18E2",
+                    "port_directions": {
+                        "ADDRARDADDR": "input", "DOADO": "output",
+                    },
+                    "connections": {
+                        "ADDRARDADDR": [1] + ["0"] * 13,
+                        "DOADO": [2] + ["0"] * 15,
+                    },
+                },
+                "sink": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [2]},
+                },
+            }}}
+        }
+        assignments = [
+            {"instance": "src", "cell_type": "LUT1", "bel": "A6LUT"},
+            {
+                "instance": "memory", "cell_type": "RAMB18E2",
+                "bel": "RAMB18E2_U",
+            },
+            {"instance": "sink", "cell_type": "FDRE", "bel": "AFF"},
+        ]
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+            "clusters": [{"assignments": assignments}],
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
+                {"instance": "src", "bel": "A6LUT", "site": "SLICE_X0Y0"},
+                {
+                    "instance": "memory", "bel": "RAMB18E2_U",
+                    "site": "RAMB18_X0Y1",
+                },
+                {"instance": "sink", "bel": "AFF", "site": "SLICE_X0Y1"},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / name for name in (
+                "mapped.json", "packed.json", "placement.json"
+            )]
+            for path, value in zip(paths, (mapped, packed, placement)):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            output = root / "route.tsv"
+            export_rwroute_input(*paths, output)
+            rows = [line.split("\t") for line in output.read_text().splitlines()]
+        memory_safe = next(
+            row[1] for row in rows if row[0] == "CELL" and row[2] == "memory"
+        )
+        memory_pins = {
+            row[3] for row in rows
+            if row[0] == "PIN" and row[2] == memory_safe
+        }
+        self.assertEqual(memory_pins, {"ADDRARDADDR[0]", "DOADO[0]"})
 
 
 if __name__ == "__main__":

@@ -83,6 +83,8 @@ typedef bookshelfparser::Parser::token_type token_type;
 (?i:endnet)                  { return token::KWD_ENDNET; }
 (?i:CLOCKREGION)             { return token::KWD_CLOCKREGION; }
 (?i:CLOCKREGIONS)            { return token::KWD_CLOCKREGIONS; }
+(?i:SUPERLOGICREGION)        { return token::KWD_SUPERLOGICREGION; }
+(?i:SUPERLOGICREGIONS)       { return token::KWD_SUPERLOGICREGIONS; }
 (?i:Shape)                   { return token::KWD_SHAPE; }
 (?i:Type)                    { return token::KWD_TYPE; }
 

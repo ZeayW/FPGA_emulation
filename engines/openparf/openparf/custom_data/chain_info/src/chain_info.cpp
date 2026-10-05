@@ -124,11 +124,15 @@ ChainInfo ExtractChainFromOneInst(const PlaceDB &    placedb,
     const auto &model_pin = model.modelPin(pin.modelPinId());
     return model_pin.signalDirect() == SignalDirection::kOutput && model_pin.signalType() == SignalType::kCascade;
   };
-  auto PropPinId = [&model](const Pin &pin) {
-    // return -1  if this pin is not PROP.
+  const bool is_carry8 = model.name() == "CARRY8";
+  const int32_t associated_luts_per_unit = is_carry8 ? 8 : 4;
+  auto AssociatedLutPinId = [&model, is_carry8](const Pin &pin) {
+    // XArch CLA4 associates PROP[0:3].  UltraScale+ CARRY8 associates
+    // one LUT6_2 with each S[0:7]; DI[0:7] is checked separately below.
     const auto &       model_pin = model.modelPin(pin.modelPinId());
     const std::string &name      = model_pin.name();
-    if (name.rfind("PROP") != 0) {
+    const std::string  prefix    = is_carry8 ? "S" : "PROP";
+    if (name.rfind(prefix, 0) != 0) {
       return -1;
     }
     int32_t lb = name.find("[");
@@ -202,16 +206,15 @@ ChainInfo ExtractChainFromOneInst(const PlaceDB &    placedb,
   for (int32_t cla_id : ordinal_cla_ids) {
     const Inst &inst         = netlist.inst(cla_id);
     int32_t     current_size = ordinal_lut_ids.size();
-    ordinal_lut_ids.resize(current_size + 4);
-    bool found_count = 0;
+    ordinal_lut_ids.resize(current_size + associated_luts_per_unit, -1);
     for (auto pin_id : inst.pinIds()) {
       const Pin &pin     = netlist.pin(pin_id);
       const Net &net     = netlist.net(pin.netId());
-      int32_t    prop_id = PropPinId(pin);
-      if (prop_id < 0) {
+      int32_t    lut_slot = AssociatedLutPinId(pin);
+      if (lut_slot < 0) {
         continue;
       }
-      openparfAssert(0 <= prop_id && prop_id < 4);
+      openparfAssert(0 <= lut_slot && lut_slot < associated_luts_per_unit);
       openparfAssert(net.pinIds().size() == 2);
       for (auto adjacent_pin_id : net.pinIds()) {
         const Pin & adjacent_pin     = netlist.pin(adjacent_pin_id);
@@ -220,8 +223,39 @@ ChainInfo ExtractChainFromOneInst(const PlaceDB &    placedb,
         if (IsChain(adjacent_inst)) {
           continue;
         }
+        openparfAssert(ordinal_lut_ids[current_size + lut_slot] == -1);
         SetVisited(adjacent_inst);
-        ordinal_lut_ids[current_size + prop_id] = adjacent_inst_id;
+        ordinal_lut_ids[current_size + lut_slot] = adjacent_inst_id;
+      }
+    }
+    for (int32_t lut_slot = 0; lut_slot < associated_luts_per_unit;
+         ++lut_slot) {
+      openparfAssert(ordinal_lut_ids[current_size + lut_slot] >= 0);
+    }
+    if (is_carry8) {
+      // Each normalized CARRY8 bit must receive DI from O5 and S from O6 of
+      // the same LUT6_2.  The Bookshelf library does not encode dual-output
+      // ownership, so prove it from the two independent mapped nets here.
+      for (auto pin_id : inst.pinIds()) {
+        const Pin &pin = netlist.pin(pin_id);
+        const auto &model_pin = model.modelPin(pin.modelPinId());
+        const std::string &name = model_pin.name();
+        if (name.rfind("DI", 0) != 0) continue;
+        int32_t lb = name.find("[");
+        int32_t rb = name.find("]");
+        int32_t lut_slot = std::stoi(name.substr(lb + 1, rb - lb - 1));
+        openparfAssert(0 <= lut_slot && lut_slot < 8);
+        const Net &net = netlist.net(pin.netId());
+        openparfAssert(net.pinIds().size() == 2);
+        int32_t adjacent_lut_id = -1;
+        for (auto adjacent_pin_id : net.pinIds()) {
+          const Pin &adjacent_pin = netlist.pin(adjacent_pin_id);
+          if (adjacent_pin.instId() != inst.id()) {
+            adjacent_lut_id = adjacent_pin.instId();
+          }
+        }
+        openparfAssert(
+            adjacent_lut_id == ordinal_lut_ids[current_size + lut_slot]);
       }
     }
   }

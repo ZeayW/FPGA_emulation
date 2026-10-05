@@ -3,9 +3,15 @@ import json
 import tempfile
 from pathlib import Path
 
+import emuflow.xilinx_segment_timing as xilinx_segment_timing
 from emuflow.xilinx_segment_timing import (
     build_xilinx_boundary_timing,
     build_xilinx_local_path_timing,
+    build_xilinx_segment_timing_bundle,
+)
+from emuflow.xilinx_timing import (
+    XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
+    XILINX_ROUTED_TIMING_STREAM_SCHEMA,
 )
 
 
@@ -114,7 +120,33 @@ def test_boundary_timing_covers_rx_and_tx_with_routed_delays():
             identity_path, mapped_path, timing_path, output
         )
         database = json.loads(output.read_text())
+        endpoints = timing.pop("endpoints")
+        encoded = b"".join(
+            json.dumps(
+                endpoint, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8") + b"\n"
+            for endpoint in endpoints
+        )
+        payload_path = root / "timing.json.endpoints.jsonl"
+        payload_path.write_bytes(encoded)
+        timing["schema"] = XILINX_ROUTED_TIMING_STREAM_SCHEMA
+        timing["payloads"] = {
+            "endpoints": {
+                "format": XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
+                "path": payload_path.name,
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+                "records": len(endpoints),
+            }
+        }
+        timing_path.write_text(json.dumps(timing), encoding="utf-8")
+        streamed_output = root / "boundary-streamed.json"
+        streamed_result = build_xilinx_boundary_timing(
+            identity_path, mapped_path, timing_path, streamed_output
+        )
+        streamed_database = json.loads(streamed_output.read_text())
     assert result["endpoints"] == 2
+    assert streamed_result["endpoints"] == 2
+    assert streamed_database == database
     delays = {item["id"]: item["delay_ns"] for item in database["endpoints"]}
     assert abs(delays["rx0"] - 0.27) < 1e-12
     assert abs(delays["tx0"] - 0.395) < 1e-12
@@ -235,3 +267,52 @@ def test_local_path_timing_is_source_bound_and_uses_routed_graph():
         "endpoint-longest-path-fallback": 1,
     }
     assert abs(database["paths"][0]["delay_ns"] - 0.595) < 1e-12
+
+
+def test_segment_timing_bundle_loads_the_routed_graph_once(
+    monkeypatch, tmp_path,
+):
+    graph = object()
+    loads = []
+    projections = []
+
+    def load_graph(mapped_path, timing_path):
+        loads.append((mapped_path, timing_path))
+        return graph
+
+    def project(name):
+        def implementation(*_args, _timing_graph=None, **_kwargs):
+            assert _timing_graph is graph
+            projections.append(name)
+            return {"status": "pass", "kind": name}
+        return implementation
+
+    monkeypatch.setattr(xilinx_segment_timing, "_graph", load_graph)
+    monkeypatch.setattr(
+        xilinx_segment_timing,
+        "build_xilinx_boundary_timing",
+        project("boundary"),
+    )
+    monkeypatch.setattr(
+        xilinx_segment_timing,
+        "build_xilinx_logic_segment_timing",
+        project("logic_segment"),
+    )
+    monkeypatch.setattr(
+        xilinx_segment_timing,
+        "build_xilinx_local_path_timing",
+        project("local_path"),
+    )
+    result = build_xilinx_segment_timing_bundle(
+        boundary_identity_path=tmp_path / "boundary-identity.json",
+        mapped_path=tmp_path / "mapped.json",
+        timing_path=tmp_path / "timing.json",
+        boundary_output_path=tmp_path / "boundary.json",
+        logic_identity_path=tmp_path / "logic-identity.json",
+        logic_output_path=tmp_path / "logic.json",
+        local_identity_path=tmp_path / "local-identity.json",
+        local_output_path=tmp_path / "local.json",
+    )
+    assert len(loads) == 1
+    assert projections == ["boundary", "logic_segment", "local_path"]
+    assert set(result) == {"boundary", "logic_segment", "local_path"}

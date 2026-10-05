@@ -95,6 +95,7 @@ struct DLProblem {
                                                  // wirelength optimization
   Vector2D<DLSiteType>        siteTypes;         // Size = #site, type of each site
   Vector2D<XY<RealType>>      siteXYs;           // Size = #site, the actual location of each site
+  Vector2D<IndexType>         validSiteMap;       // Every covered grid point -> site anchor ID
   IndexType                   num_LUTs;          // #LUTs per CLB
   IndexType                   num_FFs;           // #FFs per CLB
   IndexType                   numLUTInst;        // number of LUT instances

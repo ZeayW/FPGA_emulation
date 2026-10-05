@@ -8,6 +8,21 @@ from pathlib import Path
 
 
 class RootedRoutePathTest(unittest.TestCase):
+    def test_streamed_export_uses_prepared_rooted_timing(self):
+        """Guard the production call site even when CI lacks device data/JAR."""
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "scripts/rapidwright/EmuFlowRWRoute.java").read_text()
+        export = source[source.index("Path outputPath = Path.of(args[1]);"):]
+        self.assertIn('"emuflow.xilinx-route-db/v2"', source)
+        self.assertIn('".nets.jsonl"', export)
+        self.assertIn('".pips.jsonl"', export)
+        self.assertEqual(export.count("timingModel.prepare(net);"), 1)
+        self.assertEqual(export.count("timingModel.routedDelay(net, pin)"), 1)
+        self.assertLess(export.index("timingModel.prepare(net);"),
+                        export.index("timingModel.routedDelay(net, pin)"))
+        self.assertNotIn("timingModel.calcDelay(", export)
+        self.assertNotIn("routeNets.put(", export)
+
     @unittest.skipUnless(os.environ.get("RAPIDWRIGHT_JAR"), "set RAPIDWRIGHT_JAR for native test")
     def test_production_path_extractor(self):
         root = Path(__file__).resolve().parents[1]

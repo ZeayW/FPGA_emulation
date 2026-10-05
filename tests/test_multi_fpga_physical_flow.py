@@ -582,6 +582,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
         self.assertEqual(report["execution"]["effective_workers"], 2)
         self.assertFalse(report["execution"]["pack_place_resume"])
         self.assertFalse(report["execution"]["route_resume"])
+        self.assertNotIn("rapidwright_placer", report["execution"])
         self.assertEqual(
             validate_multi_fpga_physical_report(
                 report,
@@ -599,6 +600,47 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     Path(temporary) / "schedule.json",
                     Path(temporary) / "physical",
                     workers=0,
+                )
+
+    def test_rejects_unknown_rapidwright_placer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(ValidationError, "RapidWright placer"):
+                run_multi_fpga_physical_flow(
+                    root,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical",
+                    rapidwright_placer="invented",
+                )
+
+    def test_rapidwright_default_is_openparf_native_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(
+                ValidationError, "openparf-native requires source-sealed"
+            ):
+                run_multi_fpga_physical_flow(
+                    root,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical",
+                    backend="rapidwright",
+                )
+
+    def test_rejects_rapidwright_placer_for_other_backend(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(
+                ValidationError, "applies only to the RapidWright backend"
+            ):
+                run_multi_fpga_physical_flow(
+                    root,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical",
+                    backend="open",
+                    rapidwright_placer="openparf-native",
                 )
 
     def test_rejects_partial_chimew_physical_anchor_inputs(self):

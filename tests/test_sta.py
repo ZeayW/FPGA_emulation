@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
@@ -122,6 +123,20 @@ class StaAdapterTest(unittest.TestCase):
                 output_path,
                 provider="opensta-fpga-path-database-v1",
             )
+            self.assertNotIn("_value", report)
+            with patch(
+                "emuflow.sta.EmuIR.load",
+                side_effect=AssertionError("preloaded EmuIR was reparsed"),
+            ):
+                reused = import_sta_path_database_tsv(
+                    input_path,
+                    ir_path,
+                    output_path,
+                    provider="opensta-fpga-path-database-v1",
+                    _ir=ir,
+                    _return_value=True,
+                )
+            self.assertIsInstance(reused.pop("_value"), dict)
             path = json.loads(output_path.read_text(encoding="utf-8"))[
                 "paths"
             ][0]

@@ -10,7 +10,6 @@ No Python-computed arrival, slack, or TDM wait enters the exported circuit.
 
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 import subprocess
@@ -21,7 +20,7 @@ from typing import Iterable
 
 from .errors import ValidationError
 from .native_tools import resolve_native_executable
-from .opensta import render_opensta_liberty
+from .opensta import render_opensta_liberty, require_opensta_engine
 
 
 @dataclass(frozen=True)
@@ -128,7 +127,7 @@ chain remains explicit; a scalar Liberty cell is shared for each unique delay.
   set out [open measurements.tsv w]
   puts $out "endpoint\\tarrival_ns\\trequired_ns\\tslack_ns"
   puts "global STA: query checks"
-  set paths [find_timing_paths -path_delay max -group_count {len(rows)} -endpoint_count 1]
+  set paths [find_timing_paths -path_delay max -group_path_count {len(rows)} -endpoint_path_count 1]
   puts "global STA: serialize checks"
   foreach p $paths {{
     # PathEnd scalar APIs use seconds. Do not expand/copy every PathRef point
@@ -186,18 +185,17 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
                      executable: str | None = None, *, verify_arcs=True) -> list[dict]:
     rows = export_event_checks(checks, directory)
     tool = resolve_native_executable("sta", executable)
+    engine = require_opensta_engine(tool)
     output = directory / "measurements.tsv"
     output.unlink(missing_ok=True)
-    digest = hashlib.sha256()
-    with Path(tool).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
     with (directory / "opensta.log").open("w") as log:
         # Some packaged OpenSTA builds report ``GITDIR-NOT`` because their
-        # source archive had no .git directory.  Seal the exact executable in
-        # the same process log so engine identity remains independently
-        # replayable without invoking the tool a second time.
-        log.write(f"EmuFlow OpenSTA executable SHA256 {digest.hexdigest()}\n")
+        # source archive had no .git directory. Seal the exact executable in
+        # the process log so engine identity remains independently replayable.
+        log.write(
+            "EmuFlow OpenSTA executable SHA256 "
+            f"{engine['executable_sha256']}\n"
+        )
         log.flush()
         result = subprocess.run([tool, "-exit", "analyze.tcl"], cwd=directory,
                                 stdout=log, stderr=subprocess.STDOUT, check=False)

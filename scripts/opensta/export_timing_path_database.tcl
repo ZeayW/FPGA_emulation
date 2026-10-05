@@ -5,6 +5,7 @@
 #   EMUFLOW_STA_VERILOG
 #   EMUFLOW_STA_TOP
 #   EMUFLOW_STA_NET_MAP
+#   EMUFLOW_STA_PIN_MAP
 #   EMUFLOW_STA_CLOCKS
 #   EMUFLOW_STA_OUTPUT
 #   EMUFLOW_STA_MAX_PATHS
@@ -20,9 +21,8 @@ proc emuflow_required_env {name} {
 }
 
 proc emuflow_hex_decode {value} {
-  # OpenSTA can be linked against Tcl 8.5 on supported HPC hosts.  The
-  # `binary encode/decode` subcommands were only added in Tcl 8.6, while the
-  # H* format and scan forms have been available since Tcl 8.4.
+  # Keep the on-disk transport independent of Tcl's newer encode/decode
+  # subcommands; the H* representation is stable across supported runtimes.
   return [encoding convertfrom utf-8 [binary format H* $value]]
 }
 
@@ -96,8 +96,31 @@ foreach line [lrange $map_lines 1 end] {
   set emuir_by_mapped_net($mapped_name) $emuir_name
 }
 
-set output [open $output_path w]
-puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
+# Load the pin/net identity produced directly from sealed EmuIR connectivity.
+# This static map avoids repeated collection scans while live PathEnd handles
+# are being serialized and gives the exporter an independently sealed identity
+# source instead of inferring EmuIR names from the timing engine's hierarchy.
+array set emuir_by_pin_full_name {}
+set pin_map_path [file normalize [emuflow_required_env EMUFLOW_STA_PIN_MAP]]
+set pin_map_input [open $pin_map_path r]
+set pin_map_lines [split [read $pin_map_input] "\n"]
+close $pin_map_input
+if {[lindex $pin_map_lines 0] ne "pin_full_name_hex\temuir_net_hex"} {
+  error "invalid OpenSTA pin-map header"
+}
+foreach line [lrange $pin_map_lines 1 end] {
+  if {$line eq ""} {
+    continue
+  }
+  set fields [split $line "\t"]
+  if {[llength $fields] != 2} {
+    error "malformed OpenSTA pin-map row"
+  }
+  set pin_full_name [emuflow_hex_decode [lindex $fields 0]]
+  set emuir_name [emuflow_hex_decode [lindex $fields 1]]
+  set emuir_by_pin_full_name($pin_full_name) $emuir_name
+}
+
 set emitted 0
 set queried_paths 0
 
@@ -106,7 +129,7 @@ set queried_paths 0
 # of retaining those handles across the per-cut-net loop.
 proc emuflow_emit_timing_paths {
     timing_paths output_var emitted_var {required_net ""}} {
-  global emuir_by_mapped_net
+  global emuir_by_pin_full_name
   upvar 1 $output_var output
   upvar 1 $emitted_var emitted
   foreach path_end $timing_paths {
@@ -132,17 +155,12 @@ proc emuflow_emit_timing_paths {
     array set seen_net {}
     foreach point $points {
       set pin [get_property $point pin]
-      foreach net [get_nets -quiet -of_objects $pin] {
-        set mapped_name [get_property $net full_name]
-        if {![info exists emuir_by_mapped_net($mapped_name)]} {
-          set mapped_name [get_property $net name]
-        }
-        if {[info exists emuir_by_mapped_net($mapped_name)]} {
-          set emuir_name $emuir_by_mapped_net($mapped_name)
-          if {![info exists seen_net($emuir_name)]} {
-            set seen_net($emuir_name) 1
-            lappend path_nets $emuir_name
-          }
+      set pin_full_name [get_property $pin full_name]
+      if {[info exists emuir_by_pin_full_name($pin_full_name)]} {
+        set emuir_name $emuir_by_pin_full_name($pin_full_name)
+        if {![info exists seen_net($emuir_name)]} {
+          set seen_net($emuir_name) 1
+          lappend path_nets $emuir_name
         }
       }
     }
@@ -168,6 +186,8 @@ proc emuflow_emit_timing_paths {
 
 if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     $env(EMUFLOW_STA_THROUGH_NETS) ne ""} {
+  set output [open $output_path w]
+  puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
   if {![info exists env(EMUFLOW_STA_THROUGH_COVERAGE)] ||
       $env(EMUFLOW_STA_THROUGH_COVERAGE) eq ""} {
     error "EMUFLOW_STA_THROUGH_COVERAGE is required for directed extraction"
@@ -220,18 +240,17 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     if {[llength $through_net] != 1} {
       error "through net '$mapped_name' is absent or ambiguous"
     }
-    # OpenSTA 2.6 accepts pins and nets for -through, but its Tcl net
-    # collection path can dereference invalid state.  Resolve the net to its
-    # connected pins first; this is semantically equivalent for a timing path.
+    # Resolve the net to its connected pins before reconstructing the bounded
+    # timing cone.  This also makes driver selection explicit and auditable.
     set through_pins [get_pins -quiet -of_objects $through_net]
     if {[llength $through_pins] == 0} {
       error "through net '$mapped_name' has no timing pins"
     }
     # OpenSTA does not treat an internal combinational driver as a legal timing
     # startpoint, so querying -from the cut-net driver silently returns no path.
-    # Its 2.6 -through collection path is also unsafe.  Instead, independently
-    # reconstruct the cut's timing cone and query from its real sequential/input
-    # startpoints to its real sequential/output endpoints.  The serialized path
+    # Instead, independently reconstruct the cut's timing cone and query from
+    # its real sequential/input startpoints to its real sequential/output
+    # endpoints.  The serialized path
     # is still checked below (and again by Python) for the requested EmuIR net,
     # so a reconvergent bypass cannot satisfy the coverage certificate.
     set driver_count 0
@@ -260,7 +279,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
         foreach endpoint $endpoints {
           foreach path_end [find_timing_paths -path_delay max \
               -from [list $startpoint] -to [list $endpoint] \
-              -group_count 1 -endpoint_count 1 \
+              -group_path_count 1 -endpoint_path_count 1 \
               -sort_by_slack] {
             set timing_paths [list $path_end]
             incr queried_paths
@@ -291,7 +310,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
           error "timed endpoint '$endpoint_name' is absent or ambiguous"
         }
         foreach path_end [find_timing_paths -path_delay max \
-            -to $endpoint_pin -group_count 1 -endpoint_count 1 \
+            -to $endpoint_pin -group_path_count 1 -endpoint_path_count 1 \
             -sort_by_slack] {
           set timing_paths [list $path_end]
           incr queried_paths
@@ -309,15 +328,35 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     puts $coverage_output "[emuflow_hex_encode $emuir_name]\t$driver_count\t[expr {$queried_paths - $before_queried}]\t[expr {$emitted - $before_emitted}]"
   }
   close $coverage_output
+  close $output
+  if {$emitted == 0} {
+    error "OpenSTA found no timing paths containing mapped EmuIR nets"
+  }
+  puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"
 } else {
+  # OpenSTA 3.1 fixes the legacy PathEnd/Tcl object-lifetime corruption, so
+  # request the bounded endpoint-complete collection once.  Re-running the
+  # path search separately for every endpoint is correct but prohibitively
+  # expensive on large designs.
+  set endpoints [all_registers -data_pins]
+  foreach endpoint [all_outputs] {
+    lappend endpoints $endpoint
+  }
+  set endpoint_count [llength $endpoints]
+  set report_limit [expr {min($max_paths, $endpoint_count)}]
+  if {$report_limit <= 0} {
+    error "OpenSTA found no timing endpoints"
+  }
+  set output [open $output_path w]
+  puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
   set timing_paths [find_timing_paths -path_delay max \
-    -group_count $max_paths -endpoint_count 1 -sort_by_slack]
+      -group_path_count $report_limit -endpoint_path_count 1 \
+      -sort_by_slack]
   set queried_paths [llength $timing_paths]
   emuflow_emit_timing_paths $timing_paths output emitted
+  close $output
+  if {$emitted == 0} {
+    error "OpenSTA found no timing paths containing mapped EmuIR nets"
+  }
+  puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"
 }
-close $output
-
-if {$emitted == 0} {
-  error "OpenSTA found no timing paths containing mapped EmuIR nets"
-}
-puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"

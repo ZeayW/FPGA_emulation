@@ -96,6 +96,8 @@
 %token                KWD_ENDNET
 %token                KWD_CLOCKREGION
 %token                KWD_CLOCKREGIONS
+%token                KWD_SUPERLOGICREGION
+%token                KWD_SUPERLOGICREGIONS
 %token                KWD_SHAPE
 %token                KWD_TYPE
 
@@ -193,7 +195,7 @@ cell_block_line : KWD_PIN STRING KWD_INPUT ENDL             { driver.addCellInpu
                 | KWD_PIN STRING KWD_INPUT KWD_CTRL_SR ENDL { driver.addCellCtrlSRPinCbk(*$2);   delete $2; }
                 | KWD_PIN STRING KWD_INPUT KWD_CTRL_CE ENDL { driver.addCellCtrlCEPinCbk(*$2);   delete $2; }
                 | KWD_PIN STRING KWD_INPUT KWD_CAS ENDL     { driver.addCellInputCasPinCbk(*$2); delete $2; }
-                | KWD_PIN STRING KWD_OUTPUT KWD_CAS ENDL    { driver.addCellInputCasPinCbk(*$2); delete $2; }
+                | KWD_PIN STRING KWD_OUTPUT KWD_CAS ENDL    { driver.addCellOutputCasPinCbk(*$2); delete $2; }
                 | KWD_PAR STRING ENDL                       { driver.addCellParameterCbk(*$2);   delete $2; }
                 ;
 
@@ -203,6 +205,8 @@ cell_block_line : KWD_PIN STRING KWD_INPUT ENDL             { driver.addCellInpu
  */
 scl_top : site_blocks rsrc_block sitemap_block
         | site_blocks rsrc_block sitemap_block clock_region_block
+        | site_blocks rsrc_block sitemap_block super_logic_region_block
+        | site_blocks rsrc_block sitemap_block clock_region_block super_logic_region_block
         ;
 
 /* site blocks */
@@ -311,6 +315,29 @@ clock_region_block_lines : clock_region_block_lines clock_region_block_line
 
 clock_region_block_line : KWD_CLOCKREGION STRING ':' INT INT INT INT INT INT ENDL { driver.addClockRegionCbk(*$2, $4, $5, $6, $7, $8, $9); delete $2; }
                         ;
+
+/* super logic region (SLR) block */
+super_logic_region_block : super_logic_region_block_header
+                           super_logic_region_block_lines
+                           super_logic_region_block_footer
+                         ;
+
+super_logic_region_block_header : KWD_SUPERLOGICREGIONS INT INT ENDL { driver.initSuperLogicRegionsCbk($2, $3); }
+                                ;
+
+super_logic_region_block_footer : KWD_END KWD_SUPERLOGICREGIONS ENDL_STAR
+                                ;
+
+super_logic_region_block_lines : super_logic_region_block_lines super_logic_region_block_line
+                               | super_logic_region_block_line
+                               ;
+
+super_logic_region_block_line : KWD_SUPERLOGICREGION STRING STRING ':' INT INT INT INT ENDL {
+                                  driver.addSuperLogicRegionCbk(*$2, *$3, $5, $6, $7, $8);
+                                  delete $2;
+                                  delete $3;
+                                }
+                              ;
 
 
 /***** node file *****/

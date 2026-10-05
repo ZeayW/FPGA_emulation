@@ -5,6 +5,8 @@
  */
 
 #include "database/database.h"
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 
 // c++ headers
@@ -187,7 +189,9 @@ class BookshelfDatabaseCallbacks : public bookshelfparser::BookshelfDatabase {
 
   void initClockRegionsCbk(unsigned width, unsigned height) { db_.layout().clockRegionMap().reshape(width, height); }
 
-  void initSuperLogicRegionsCbk(unsigned width, unsigned height) { db_.layout().superLogicRegionMap().reshape(width, height); }
+  void initSuperLogicRegionsCbk(unsigned width, unsigned height) override {
+    db_.layout().superLogicRegionMap().reshape(width, height);
+  }
 
   /// @brief add clock region.
   /// We assume the site width/height is 1, so the site indices are the same as
@@ -202,10 +206,23 @@ class BookshelfDatabaseCallbacks : public bookshelfparser::BookshelfDatabase {
                          unsigned           yh,
                          unsigned           hc_ymid,
                          unsigned           hc_xmin) {
-    openparfAssert(name.length() == 4 && name.substr(0, 1) == "X" && name.substr(2, 1) == "Y");
+    // UltraScale+ devices can have ten or more clock-region rows.  The
+    // original Bookshelf callback accepted only the four-character X0Y0
+    // spelling and silently made real names such as X4Y10 impossible to
+    // represent.  Parse both axes completely and reject non-canonical input.
+    auto const y_pos = name.find('Y', 1);
+    openparfAssert(name.length() >= 4 && name[0] == 'X' &&
+                   y_pos != std::string::npos && y_pos > 1 &&
+                   y_pos + 1 < name.length());
+    auto const x_digits = name.substr(1, y_pos - 1);
+    auto const y_digits = name.substr(y_pos + 1);
+    openparfAssert(std::all_of(x_digits.begin(), x_digits.end(),
+                              [](unsigned char c) { return std::isdigit(c); }) &&
+                   std::all_of(y_digits.begin(), y_digits.end(),
+                              [](unsigned char c) { return std::isdigit(c); }));
 
-    IndexType clock_region_ix = std::stoi(name.substr(1, 1));
-    IndexType clock_region_iy = std::stoi(name.substr(3, 1));
+    IndexType clock_region_ix = std::stoi(x_digits);
+    IndexType clock_region_iy = std::stoi(y_digits);
     auto     &clock_region    = db_.layout().clockRegionMap().at(clock_region_ix, clock_region_iy);
     openparfAssert(clock_region.id() == clock_region_ix * db_.layout().clockRegionMap().height() + clock_region_iy);
     clock_region.setName(name);
@@ -341,7 +358,7 @@ class BookshelfDatabaseCallbacks : public bookshelfparser::BookshelfDatabase {
                               unsigned           slr_ix,
                               unsigned           slr_iy,
                               unsigned           slr_width,
-                              unsigned           slr_height) {
+                              unsigned           slr_height) override {
     using BoxType = geometry::Box<int32_t>;
 
     auto   &super_logic_region = db_.layout().superLogicRegionMap().at(slr_ix, slr_iy);

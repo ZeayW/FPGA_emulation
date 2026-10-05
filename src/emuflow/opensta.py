@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
+import re
 import subprocess
 import tempfile
 from collections import defaultdict
@@ -17,7 +19,8 @@ from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .sta import (
     import_sta_path_database_tsv,
-    validate_sta_path_database,
+    import_sta_path_database_tsv_streaming,
+    validate_sta_path_database_path_value,
     write_emuir_net_map,
 )
 from .verilog import mapped_verilog
@@ -35,6 +38,42 @@ FPGA_TIMING_MODEL_SCHEMA = "emuflow.fpga-timing-model/v1"
 FPGA_TIMING_MODEL_SCHEMA_V2 = "emuflow.fpga-timing-model/v2"
 OPENSTA_PROVIDER = "opensta-fpga-path-database-v1"
 OPENSTA_THROUGH_COVERAGE_SCHEMA = "emuflow.opensta-through-net-coverage/v1"
+MINIMUM_OPENSTA_VERSION = (3, 1, 0)
+
+
+def require_opensta_engine(executable: str) -> Dict[str, str]:
+    """Fail closed on legacy engines with unsafe Tcl path-object ownership."""
+    version_result = subprocess.run(
+        [executable, "-version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    version_match = re.search(
+        r"(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:\s|$)",
+        version_result.stdout,
+    )
+    if version_result.returncode != 0 or version_match is None:
+        raise ValidationError(
+            "OpenSTA executable does not report a semantic version"
+        )
+    version_tuple = tuple(int(field) for field in version_match.groups())
+    if version_tuple < MINIMUM_OPENSTA_VERSION:
+        minimum = ".".join(str(field) for field in MINIMUM_OPENSTA_VERSION)
+        actual = ".".join(str(field) for field in version_tuple)
+        raise ValidationError(
+            f"OpenSTA {actual} is unsupported; EmuFlow requires {minimum} or newer"
+        )
+    executable_digest = hashlib.sha256()
+    with Path(executable).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            executable_digest.update(chunk)
+    return {
+        "name": "OpenSTA",
+        "version": ".".join(str(field) for field in version_tuple),
+        "executable_sha256": executable_digest.hexdigest(),
+    }
 
 
 def _runtime_data_path(relative: Path) -> Path:
@@ -66,6 +105,75 @@ def _finite_nonnegative(value: Any, context: str) -> float:
     ):
         raise ValidationError(f"{context}: expected a non-negative number")
     return float(value)
+
+
+def _emuir_timing_pin_map(ir: EmuIR) -> Dict[str, str]:
+    """Return immutable OpenSTA timing-pin to EmuIR-net identities.
+
+    Connectivity is already exact in EmuIR, so materialize it once before
+    launching OpenSTA.  The timing engine then supplies timing, while this
+    independently sealed map preserves the provider-neutral net identity.
+    """
+
+    pins_by_instance: DefaultDict[str, set[tuple[str, int]]] = defaultdict(set)
+    for net in ir.value["nets"]:
+        for collection in ("drivers", "sinks"):
+            for endpoint in net[collection]:
+                if endpoint["instance"] is not None:
+                    pins_by_instance[endpoint["instance"]].add(
+                        (endpoint["port"], endpoint["bit"])
+                    )
+    for instance in ir.value["instances"]:
+        for endpoint in instance.get("constant_connections", []):
+            pins_by_instance[instance["id"]].add(
+                (endpoint["port"], endpoint["bit"])
+            )
+
+    port_widths = {
+        port["id"]: int(port["width"]) for port in ir.value["ports"]
+    }
+    mapping: Dict[str, str] = {}
+
+    def bind(pin_name: str, net_id: str) -> None:
+        previous = mapping.get(pin_name)
+        if previous is not None and previous != net_id:
+            raise ValidationError(
+                f"OpenSTA timing pin {pin_name!r} maps to multiple EmuIR nets"
+            )
+        mapping[pin_name] = net_id
+
+    for net in ir.value["nets"]:
+        net_id = net["id"]
+        for collection in ("drivers", "sinks"):
+            for endpoint in net[collection]:
+                instance = endpoint["instance"]
+                port = endpoint["port"]
+                bit = int(endpoint["bit"])
+                if instance is None:
+                    width = port_widths[port]
+                    bind(port if width == 1 else f"{port}[{bit}]", net_id)
+                    continue
+                pins = pins_by_instance[instance]
+                width = 1 + max(
+                    candidate_bit
+                    for candidate_port, candidate_bit in pins
+                    if candidate_port == port
+                )
+                scalar_pin = port if width == 1 else f"{port}__{bit}"
+                bind(f"{instance}/{scalar_pin}", net_id)
+
+    return mapping
+
+
+def _write_emuir_timing_pin_map(ir: EmuIR, output_path: Path) -> None:
+    mapping = _emuir_timing_pin_map(ir)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as stream:
+        stream.write("pin_full_name_hex\temuir_net_hex\n")
+        for pin_name, net_id in sorted(mapping.items()):
+            stream.write(
+                f"{pin_name.encode().hex()}\t{net_id.encode().hex()}\n"
+            )
 
 
 def load_timing_model(path: Path) -> Dict[str, Any]:
@@ -995,6 +1103,27 @@ def validate_timing_model_coverage(
     }
 
 
+def _sealed_string_set_summary(values: Iterable[str]) -> Dict[str, Any]:
+    """Describe a string set without copying a potentially huge list.
+
+    Generated route-delay cells can create tens of thousands of distinct
+    timing-model cell names.  The complete set remains available to the
+    coverage checker above, but a persisted run report only needs a stable
+    population count and content seal.
+    """
+
+    ordered = sorted(set(values))
+    digest = hashlib.sha256()
+    for value in ordered:
+        encoded = value.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, byteorder="big"))
+        digest.update(encoded)
+    return {
+        "count": len(ordered),
+        "sha256": digest.hexdigest(),
+    }
+
+
 def _scalar_endpoint_pin(
     endpoint: Mapping[str, Any],
     pin_sets: Mapping[str, Mapping[str, set[tuple[str, int]]]],
@@ -1277,11 +1406,21 @@ def run_opensta_path_database(
     through_nets: Optional[Sequence[str]] = None,
     through_coverage_path: Optional[Path] = None,
     validate_output: bool = True,
+    _return_database: bool = False,
+    _stream_output: bool = False,
 ) -> Dict[str, Any]:
     if max_paths <= 0:
         raise ValidationError("OpenSTA max_paths must be positive")
+    if _stream_output and _return_database:
+        raise ValidationError(
+            "streamed OpenSTA output cannot return an inline database"
+        )
     ir = EmuIR.load(ir_path)
     through_net_ids = list(through_nets or [])
+    if _stream_output and through_net_ids:
+        raise ValidationError(
+            "streamed OpenSTA output does not support directed through-net queries"
+        )
     if (
         any(not isinstance(net, str) or not net for net in through_net_ids)
         or len(through_net_ids) != len(set(through_net_ids))
@@ -1307,6 +1446,7 @@ def run_opensta_path_database(
     )
     clock_map = _clock_map(ir, clocks)
     opensta = resolve_native_executable("sta", executable)
+    engine = require_opensta_engine(opensta)
     structural = (
         classify_through_net_timing_endpoints(
             ir, model, through_net_ids, instance_cell_types
@@ -1321,6 +1461,7 @@ def run_opensta_path_database(
         verilog_path = root / "mapped.v"
         liberty_path = root / "timing.lib"
         net_map_path = root / "net-map.tsv"
+        pin_map_path = root / "pin-map.tsv"
         clock_path = root / "clocks.tsv"
         raw_path = root / "paths.tsv"
         through_path = root / "through-nets.tsv"
@@ -1341,6 +1482,7 @@ def run_opensta_path_database(
             render_opensta_liberty(model), encoding="utf-8"
         )
         write_emuir_net_map(ir_path, net_map_path)
+        _write_emuir_timing_pin_map(ir, pin_map_path)
         if through_net_ids:
             with through_path.open("w", encoding="utf-8") as stream:
                 stream.write("mapped_net_hex\temuir_net_hex\n")
@@ -1368,6 +1510,7 @@ def run_opensta_path_database(
                 "EMUFLOW_STA_VERILOG": str(verilog_path),
                 "EMUFLOW_STA_TOP": ir.value["design"]["top"],
                 "EMUFLOW_STA_NET_MAP": str(net_map_path),
+                "EMUFLOW_STA_PIN_MAP": str(pin_map_path),
                 "EMUFLOW_STA_CLOCKS": str(clock_path),
                 "EMUFLOW_STA_OUTPUT": str(raw_path),
                 "EMUFLOW_STA_MAX_PATHS": str(max_paths),
@@ -1403,23 +1546,36 @@ def run_opensta_path_database(
             raise EmuFlowError(
                 "OpenSTA reported success but did not create its path TSV"
             )
-        imported = import_sta_path_database_tsv(
-            raw_path,
-            ir_path,
-            output_path,
-            provider=OPENSTA_PROVIDER,
-            source={
-                "timing_model": model["name"],
-                "timing_model_qualification": model["source"][
-                    "qualification"
-                ],
-                "architecture_timing_db": (
-                    str(architecture_timing_db_path)
-                    if architecture_timing_db_path is not None
-                    else None
-                ),
-            },
-        )
+        source_value = {
+            "timing_model": model["name"],
+            "timing_model_qualification": model["source"]["qualification"],
+            "engine": engine,
+            "architecture_timing_db": (
+                str(architecture_timing_db_path)
+                if architecture_timing_db_path is not None else None
+            ),
+        }
+        if _stream_output:
+            imported = import_sta_path_database_tsv_streaming(
+                raw_path,
+                ir_path,
+                output_path,
+                provider=OPENSTA_PROVIDER,
+                source=source_value,
+                _ir=ir,
+            )
+            database = read_json(output_path)
+        else:
+            imported = import_sta_path_database_tsv(
+                raw_path,
+                ir_path,
+                output_path,
+                provider=OPENSTA_PROVIDER,
+                source=source_value,
+                _ir=ir,
+                _return_value=True,
+            )
+            database = imported.pop("_value")
 
         through_query_records = (
             _read_through_coverage_tsv(
@@ -1430,14 +1586,13 @@ def run_opensta_path_database(
         )
 
     checked = (
-        validate_sta_path_database(output_path, ir_path)
+        validate_sta_path_database_path_value(output_path, database, ir)
         if validate_output
         else {"status": "deferred-to-managed-stage"}
     )
     covered_through_nets = []
     through_coverage: Dict[str, Any] | None = None
     if through_net_ids:
-        database = read_json(output_path)
         path_nets = {
             net
             for path in database["paths"]
@@ -1503,12 +1658,13 @@ def run_opensta_path_database(
         }
         if through_coverage_path is not None:
             write_json(through_coverage_path, through_coverage)
-    return {
+    result = {
         "status": "pass",
         "design": ir.value["design"]["name"],
         "provider": OPENSTA_PROVIDER,
         "timing_model": model["name"],
         "timing_model_qualification": model["source"]["qualification"],
+        "engine": engine,
         "clocks": clock_map,
         "paths": imported["paths"],
         "max_paths": max_paths,
@@ -1517,8 +1673,15 @@ def run_opensta_path_database(
         "through_net_coverage": through_coverage,
         "path_limit_reached": imported["paths"] >= max_paths,
         "unique_path_nets": imported["unique_path_nets"],
-        "used_cell_types": coverage["used_cell_types"],
+        "used_cell_type_summary": _sealed_string_set_summary(
+            coverage["used_cell_types"]
+        ),
         "checker": checked,
         "output": str(output_path),
         "log": str(log_path) if log_path is not None else None,
     }
+    if "path_qor" in imported:
+        result["path_qor"] = imported["path_qor"]
+    if _return_database:
+        result["_database"] = database
+    return result

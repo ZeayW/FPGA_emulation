@@ -36,7 +36,8 @@ their own licenses.
 | `engines/yosys/libs/minisat` | [MiniSat](https://github.com/niklasso/minisat) | Yosys v0.57 vendored snapshot | MIT | Yosys SAT solving |
 | `engines/repart` | [RePart](https://github.com/Welement-zyf/RePart) | `211a9d8fd526576387cad7ac6dd3531354aeb31c` | GPL-3.0-only | Multilevel hypergraph partitioning |
 | `engines/openroad` | [OpenROAD](https://github.com/The-OpenROAD-Project/OpenROAD) | `a008522d88b669ac4c985609533cf5a3d2649222` | BSD-3-Clause | TritonPart and timing infrastructure |
-| `engines/openroad/src/sta` | [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) | `aa598a2f14c5c142e90391a69988523505e7db3d` | GPL-3.0-or-later | Static timing analysis |
+| `engines/openroad/src/sta` | [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) | `aa598a2f14c5c142e90391a69988523505e7db3d` | GPL-3.0-or-later | API-coupled timing engine embedded in the pinned OpenROAD/TritonPart build |
+| `engines/opensta` | [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) | `051222e4ecc1cb61bb216f392646b602f4b22661` / 3.1.0 | GPL-3.0-or-later | Standalone authoritative TimingPathDB and global timing engine |
 | `engines/openroad/third-party/abc` | [OpenROAD ABC](https://github.com/The-OpenROAD-Project/abc) | `ef5389d31526003c2ebd7e6d6d6fe3848a20f0a2` | ABC upstream notices | OpenROAD logic functions |
 | `engines/openroad/src/grt/src/fastroute` | [FastRoute source in OpenROAD](https://github.com/The-OpenROAD-Project/OpenROAD/tree/a008522d88b669ac4c985609533cf5a3d2649222/src/grt/src/fastroute) | OpenROAD pinned snapshot | BSD-3-Clause | OpenROAD global routing support |
 | `engines/openroad/src/stt/src/flt` | [Flute3 source in OpenROAD](https://github.com/The-OpenROAD-Project/OpenROAD/tree/a008522d88b669ac4c985609533cf5a3d2649222/src/stt/src/flt) | OpenROAD pinned snapshot | BSD-3-Clause | Rectilinear Steiner trees |

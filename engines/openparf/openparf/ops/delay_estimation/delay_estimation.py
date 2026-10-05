@@ -3,7 +3,6 @@ import torch
 from torch._C import device
 from . import delay_estimation_cpp
 import pdb
-from hummingbird import ml
 from torch.utils.data import dataloader
 
 

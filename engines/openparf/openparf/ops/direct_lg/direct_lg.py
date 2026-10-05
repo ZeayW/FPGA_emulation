@@ -63,6 +63,11 @@ class DirectLegalizeParam(object):
 
         self.CLB_capacity = None
         self.BLE_capacity = None
+        # A physical adapter may expose the 16 UltraScale LUT slot indices
+        # while qualifying only the eight independent 6LUT BELs.  Keep the
+        # upstream paired-LUT policy by default; device exporters must opt out
+        # explicitly when a shared 5LUT implementation is not source-sealed.
+        self.allowPairedLUTs = bool(params.allow_paired_luts)
         self.omp_dynamic_chunk_size = 64
 
         # Clock Region Attribute
@@ -110,6 +115,28 @@ class DirectLegalize(object):
 
     def __call__(self, pos):
         return self.forward(pos)
+
+
+class MaskedDirectLegalize(DirectLegalize):
+    """Native LUT/FF legalization with already-legalized site macros locked."""
+
+    def __init__(self, placedb, params, masked_inst_ids):
+        super(MaskedDirectLegalize, self).__init__(placedb, params)
+        self.masked_inst_ids = masked_inst_ids.to(
+            device="cpu", dtype=torch.int32
+        ).contiguous()
+
+    def forward(self, pos_xyz):
+        local_pos_xyz = pos_xyz.cpu() if pos_xyz.is_cuda else pos_xyz
+        rv = direct_lg_cpp.masked_forward(
+            self.placedb,
+            self.param,
+            self.masked_inst_ids,
+            local_pos_xyz,
+        )
+        with torch.no_grad():
+            pos_xyz.data.copy_(rv.to(pos_xyz.device))
+        return pos_xyz
 
 
 class ClockAwareDirectLegalize(DirectLegalize):

@@ -190,8 +190,22 @@ class MultiFpgaFlowTest(unittest.TestCase):
             "--out",
             "build",
         ]
-        self.assertTrue(_build_parser().parse_args(base).timing_driven)
-        self.assertIsNone(_build_parser().parse_args(base).ratio_quantum)
+        defaults = _build_parser().parse_args(base)
+        self.assertTrue(defaults.timing_driven)
+        self.assertIsNone(defaults.ratio_quantum)
+        self.assertIsNone(defaults.physical_rapidwright_placer)
+        self.assertEqual(
+            _build_parser()
+            .parse_args(
+                [
+                    *base,
+                    "--physical-rapidwright-placer",
+                    "legacy",
+                ]
+            )
+            .physical_rapidwright_placer,
+            "legacy",
+        )
         self.assertFalse(
             _build_parser().parse_args(
                 [*base, "--no-timing-driven"]
@@ -414,7 +428,12 @@ class MultiFpgaFlowTest(unittest.TestCase):
             fake_sta.write_text(
                 """#!/usr/bin/env python3
 import os
+import sys
 from pathlib import Path
+
+if sys.argv[1:] == ["-version"]:
+    print("3.1.0")
+    raise SystemExit(0)
 
 rows = Path(os.environ["EMUFLOW_STA_NET_MAP"]).read_text().splitlines()[1:]
 header = (
@@ -523,7 +542,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     cut_mode="sequential-only",
                     timing_driven=False,
                     clock_periods={"clk": 10.0},
-                    opensta=str(fake_sta),
+                    opensta=str(FAKE_OPENSTA),
                     global_sta_executable=str(fake_sta),
                     router=str(tlr_router()),
                     frame_slots=32,
@@ -827,7 +846,12 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             fake_sta.write_text(
                 """#!/usr/bin/env python3
 import os
+import sys
 from pathlib import Path
+
+if sys.argv[1:] == ["-version"]:
+    print("3.1.0")
+    raise SystemExit(0)
 
 rows = Path(os.environ["EMUFLOW_STA_NET_MAP"]).read_text().splitlines()[1:]
 header = (
@@ -875,7 +899,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 timing_driven=True,
                 board_link_timing_db=link_timing_path,
                 clock_periods={"clk": 10.0},
-                opensta=str(fake_sta),
+                opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
@@ -1055,7 +1079,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 timing_driven=True,
                 board_link_timing_db=link_timing_path,
                 clock_periods={"clk": 10.0},
-                opensta=str(fake_sta),
+                opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 timing_dag_optimizer=str(tdm_timing_dag_optimizer()),

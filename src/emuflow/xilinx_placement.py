@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 from bisect import bisect_left
@@ -12,8 +11,11 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 
 from .architecture import ArchitectureDB
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
+from .xilinx_native_device_constraints import (
+    load_xilinx_native_device_constraints,
+)
 
 
 XILINX_PLACEMENT_SCHEMA = "emuflow.xilinx-placement/v1"
@@ -22,6 +24,15 @@ XILINX_CONSTRAINTS_SCHEMA = "emuflow.xilinx-placement-constraints/v1"
 XILINX_SINGLE_SLR_PLAN_PROVIDER = "emuflow-xilinx-single-slr-planner-v1"
 XILINX_EXACT_SITE_LEGALIZER_PROVIDER = (
     "emuflow-xilinx-exact-site-legalizer-v3-physical-grid"
+)
+XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER = (
+    "openparf-native-mcf-direct-lg-ism-atomic-bridge-v1"
+)
+XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER = (
+    "openparf-native-carry8-full-slice-bridge-v1"
+)
+XILINX_AMF_NATIVE_BRIDGE_PROVIDER = (
+    "amf-placer-public-basic-2.0-native-bridge-v1"
 )
 XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 0.75
 _SITE_XY_RE = re.compile(r"^(?P<kind>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
@@ -32,14 +43,7 @@ class XilinxSingleSlrInfeasible(ValidationError):
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while True:
-            chunk = stream.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
+    return file_sha256(path)
 
 
 def _nonempty(value: Any, context: str) -> str:
@@ -116,32 +120,46 @@ def _local_site_limits(
 
 
 def _materialize_assignment_sites(
-    anchor_site: str, assignments: Sequence[Mapping[str, Any]]
+    anchor_site: str, assignments: Sequence[Mapping[str, Any]],
+    *, native_bram_groups: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Expand an Interchange BRAM tile anchor into RapidWright site names."""
 
-    kind, physical_x, physical_y = _physical_site_coordinate(anchor_site)
+    native_group = (
+        native_bram_groups.get(anchor_site)
+        if native_bram_groups is not None else None
+    )
     result: List[Dict[str, Any]] = []
     for assignment in assignments:
         physical_site = anchor_site
-        if kind == "RAMB18":
+        if native_group is not None:
             bel = assignment.get("bel")
             cell_type = assignment.get("cell_type")
-            if cell_type == "RAMB18E2":
-                if bel == "RAMB18E2_U":
-                    physical_site = f"RAMB18_X{physical_x}Y{physical_y}"
-                elif bel == "RAMB18E2_L" and physical_y > 0:
-                    physical_site = f"RAMB18_X{physical_x}Y{physical_y - 1}"
-                else:
-                    raise ValidationError(
-                        f"BRAM anchor {anchor_site!r} has invalid RAMB18 BEL {bel!r}"
-                    )
-            elif cell_type == "RAMB36E2" and bel == "RAMB36E2":
-                physical_site = f"RAMB36_X{physical_x}Y{physical_y // 2}"
-            else:
+            role = (
+                "lower" if cell_type == "RAMB18E2" and bel == "RAMB18E2_L"
+                else "upper" if cell_type == "RAMB18E2" and bel == "RAMB18E2_U"
+                else "whole" if cell_type == "RAMB36E2" and bel == "RAMB36E2"
+                else None
+            )
+            view = native_group.get(role) if role is not None else None
+            if not isinstance(view, Mapping) or view.get("bel") != bel:
                 raise ValidationError(
-                    f"BRAM anchor {anchor_site!r} cannot materialize "
+                    f"BRAM anchor {anchor_site!r} has no certified view for "
                     f"{cell_type!r} on {bel!r}"
+                )
+            physical_site = view.get("site")
+            if not isinstance(physical_site, str) or not physical_site:
+                raise ValidationError("certified BRAM view has no physical site")
+        elif assignment.get("cell_type") in {"RAMB18E2", "RAMB36E2"}:
+            # An unambiguous direct-site certificate may already name its
+            # physical site.  Split/overlapping BRAM modes require the native
+            # tile group; never reconstruct a half or whole site from an
+            # anchor coordinate or a naming convention.
+            physical_site = assignment.get("site")
+            if physical_site != anchor_site:
+                raise ValidationError(
+                    f"BRAM anchor {anchor_site!r} requires a source-sealed native "
+                    "BRAM tile group; coordinate/name inference is forbidden"
                 )
         result.append({**assignment, "site": physical_site})
     return result
@@ -1225,31 +1243,94 @@ def validate_xilinx_placement(
     placement_path: Path,
     *,
     constraints_path: Optional[Path] = None,
+    native_constraints_path: Optional[Path] = None,
+    provider_manifest_path: Optional[Path] = None,
+    architecture: Optional[ArchitectureDB] = None,
+    packed_value: Optional[Mapping[str, Any]] = None,
+    placement_value: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Independently re-check cluster ownership, sites, BELs, and cascades."""
 
-    packed = read_json(packed_path)
-    placement = read_json(placement_path)
-    architecture = ArchitectureDB.load(architecture_path)
+    packed = read_json(packed_path) if packed_value is None else packed_value
+    placement = (
+        read_json(placement_path)
+        if placement_value is None else placement_value
+    )
+    architecture = (
+        ArchitectureDB.load(architecture_path)
+        if architecture is None else architecture
+    )
     if not isinstance(packed, dict) or packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA:
         raise ValidationError("PackedSiteNetlist header is invalid")
     if not isinstance(placement, dict) or placement.get("schema") != XILINX_PLACEMENT_SCHEMA:
         raise ValidationError("Xilinx placement header is invalid")
     if placement.get("status") != "pass" or placement.get("part") != architecture.part:
         raise ValidationError("Xilinx placement identity is invalid")
-    if placement.get("provider") != XILINX_EXACT_SITE_LEGALIZER_PROVIDER:
+    provider = placement.get("provider")
+    if provider not in {
+        XILINX_EXACT_SITE_LEGALIZER_PROVIDER,
+        XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER,
+        XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER,
+        XILINX_AMF_NATIVE_BRIDGE_PROVIDER,
+    }:
         raise ValidationError("Xilinx placement provider is invalid")
-    policy = placement.get("policy")
-    if policy != {
+    expected_policy = {
         "clock_region_site_utilization_limit": XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT,
         "capacity_rounding": "ceil-with-one-site-minimum",
-    }:
+    }
+    if provider == XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER:
+        expected_policy.update({
+            "packing": "native-openparf-atomic-site-groups-v1",
+            "placement_certificate": "emuflow.openparf-atomic-placement/v2",
+        })
+    elif provider == XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER:
+        expected_policy.update({
+            "packing": "preserved-carry8-full-slice-macros-v1",
+            "placement_certificate": "emuflow.openparf-carry8-placement/v1",
+        })
+    elif provider == XILINX_AMF_NATIVE_BRIDGE_PROVIDER:
+        expected_policy.update({
+            "packing": "emuflow-packed-site-netlist-authoritative-v1",
+            "placement_certificate": "emuflow.amf-native-placement/v1",
+        })
+    if placement.get("policy") != expected_policy:
         raise ValidationError("Xilinx placement routability policy is invalid")
     source = placement.get("source", {})
     if source.get("packed_sha256") != _sha256(packed_path):
         raise ValidationError("Xilinx placement packed digest is invalid")
     if source.get("architecture_sha256") != _sha256(architecture_path):
         raise ValidationError("Xilinx placement architecture digest is invalid")
+
+    native = None
+    native_bram_groups: Dict[str, Mapping[str, Any]] = {}
+    has_native_seal = any(
+        key in source
+        for key in ("native_constraints_sha256", "provider_manifest_sha256")
+    )
+    if provider == XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER and has_native_seal:
+        if native_constraints_path is None or provider_manifest_path is None:
+            raise ValidationError(
+                "OpenPARF native placement validation requires native "
+                "constraints and provider manifest"
+            )
+        if (
+            source.get("native_constraints_sha256")
+            != _sha256(native_constraints_path)
+            or source.get("provider_manifest_sha256")
+            != _sha256(provider_manifest_path)
+        ):
+            raise ValidationError(
+                "OpenPARF native placement source identity is invalid"
+            )
+        native, _native_report = load_xilinx_native_device_constraints(
+            native_constraints_path,
+            architecture_path=architecture_path,
+            provider_manifest_path=provider_manifest_path,
+        )
+        native_bram_groups = {
+            group["anchor"]: group
+            for group in native["payload"].get("bram_tile_groups", [])
+        }
 
     cluster_by_id = {cluster["id"]: cluster for cluster in packed.get("clusters", [])}
     constraints, constraints_sha = _load_constraints(
@@ -1305,9 +1386,77 @@ def validate_xilinx_placement(
             site, _cluster_constraint(constraints, cluster_id)
         ):
             raise ValidationError(f"{context}: placement constraint is violated")
-        resolved = _resolve_cluster_bels(cluster, contracts[site_base[site_name]])
-        if resolved is not None:
-            resolved = _materialize_assignment_sites(site_name, resolved)
+        if provider == XILINX_AMF_NATIVE_BRIDGE_PROVIDER:
+            expected_assignments = {
+                assignment.get("instance"): assignment
+                for assignment in cluster.get("assignments", [])
+                if isinstance(assignment, Mapping)
+            }
+            actual_assignments = entry.get("assignments")
+            if (
+                not isinstance(actual_assignments, list)
+                or len(actual_assignments) != len(expected_assignments)
+            ):
+                raise ValidationError(f"{context}: AMF assignment count is invalid")
+            resolved = []
+            used_bels = set()
+            site_contract = contracts[site_base[site_name]]
+            for actual in actual_assignments:
+                if not isinstance(actual, Mapping):
+                    raise ValidationError(f"{context}: AMF assignment is invalid")
+                instance = actual.get("instance")
+                expected = expected_assignments.get(instance)
+                if expected is None or actual.get("cell_type") != expected.get("cell_type"):
+                    raise ValidationError(f"{context}: AMF cell identity is invalid")
+                bel_name = actual.get("bel")
+                allowed = expected.get("bel_candidates") or [expected.get("bel")]
+                bel = site_contract.get(bel_name) if isinstance(bel_name, str) else None
+                if (
+                    bel_name not in allowed
+                    or bel_name in used_bels
+                    or bel is None
+                    or actual.get("cell_type") not in bel.get("compatible_cells", [])
+                    or bel.get("placement_mode") not in cluster.get("site_templates", [])
+                ):
+                    raise ValidationError(f"{context}: AMF BEL assignment is invalid")
+                used_bels.add(bel_name)
+                resolved.append({
+                    "instance": instance,
+                    "cell_type": actual.get("cell_type"),
+                    "bel": bel_name,
+                    "placement_mode": bel.get("placement_mode"),
+                    "site": site_name,
+                })
+            resolved.sort(key=lambda item: item["instance"])
+            actual_normalized = sorted(
+                (dict(item) for item in actual_assignments),
+                key=lambda item: item.get("instance", ""),
+            )
+            if actual_normalized != resolved:
+                raise ValidationError(f"{context}: AMF assignment metadata is invalid")
+        else:
+            resolved = _resolve_cluster_bels(cluster, contracts[site_base[site_name]])
+            if resolved is not None:
+                explicit_sites = {
+                    assignment.get("instance"): assignment.get("site")
+                    for assignment in entry.get("assignments", [])
+                    if isinstance(assignment, Mapping)
+                }
+                resolved = [
+                    {
+                        **assignment,
+                        **(
+                            {"site": explicit_sites[assignment["instance"]]}
+                            if assignment["instance"] in explicit_sites else {}
+                        ),
+                    }
+                    for assignment in resolved
+                ]
+                resolved = _materialize_assignment_sites(
+                    site_name,
+                    resolved,
+                    native_bram_groups=(native_bram_groups or None),
+                )
         if resolved is None or entry.get("assignments") != resolved:
             raise ValidationError(f"{context}: exact BEL assignment is invalid")
         for assignment in resolved:
@@ -1328,6 +1477,68 @@ def validate_xilinx_placement(
         raise ValidationError("Xilinx placement cell ownership is incomplete")
     owner = {instance: cluster_id for instance, cluster_id in cell_owners.items()}
     chains = _cascade_cluster_chains(packed, owner)
+    native_edges_by_kind: Dict[str, Set[Tuple[str, str]]] = {}
+    if provider == XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER and chains:
+        if native_constraints_path is None or provider_manifest_path is None:
+            raise ValidationError(
+                "OpenPARF cascade placement validation requires native "
+                "constraints and provider manifest"
+            )
+        if (
+            source.get("native_constraints_sha256")
+            != _sha256(native_constraints_path)
+            or source.get("provider_manifest_sha256")
+            != _sha256(provider_manifest_path)
+        ):
+            raise ValidationError(
+                "OpenPARF cascade placement native source identity is invalid"
+            )
+        if native is None:
+            native, _native_report = load_xilinx_native_device_constraints(
+                native_constraints_path,
+                architecture_path=architecture_path,
+                provider_manifest_path=provider_manifest_path,
+            )
+        for family in native["payload"]["dedicated_adjacency"]:
+            native_edges_by_kind[family["kind"]] = {
+                edge
+                for native_chain in family["chains"]
+                for edge in zip(native_chain, native_chain[1:])
+            }
+            kind_by_cell_type = {
+                "CARRY8": "CARRY_NEXT",
+                "DSP48E2": "DSP_CASCADE",
+            "RAMB36E2": "BRAM_CASCADE",
+            "URAM288": "URAM_CASCADE",
+        }
+        typed_chains = []
+        for raw_chain in packed.get("cascade_chains", []):
+            cluster_chain = []
+            for instance in raw_chain.get("instances", []):
+                cluster = owner.get(instance)
+                if cluster is not None and (
+                    not cluster_chain or cluster_chain[-1] != cluster
+                ):
+                    cluster_chain.append(cluster)
+            if len(cluster_chain) > 1:
+                typed_chains.append((raw_chain.get("cell_type"), cluster_chain))
+        if [chain for _cell_type, chain in typed_chains] != chains:
+            raise ValidationError("cascade chain typing is inconsistent")
+        for cell_type, chain in typed_chains:
+            kind = kind_by_cell_type.get(cell_type)
+            if kind is None or kind not in native_edges_by_kind:
+                raise ValidationError(
+                    f"OpenPARF cascade type {cell_type!r} lacks native adjacency"
+                )
+            site_path = [placed[cluster] for cluster in chain]
+            if any(
+                edge not in native_edges_by_kind[kind]
+                for edge in zip(site_path, site_path[1:])
+            ):
+                raise ValidationError(
+                    "OpenPARF cascade placement violates source-sealed native "
+                    "adjacency: " + " -> ".join(chain)
+                )
     for chain in chains:
         coordinates = [_physical_site_coordinate(placed[cluster]) for cluster in chain]
         slrs = {
@@ -1341,16 +1552,17 @@ def validate_xilinx_placement(
                 "dedicated cascade placement crosses an SLR boundary: "
                 + " -> ".join(chain)
             )
-        first_kind, first_x, first_y = coordinates[0]
-        expected = [
-            (first_kind, first_x, first_y + offset)
-            for offset in range(len(chain))
-        ]
-        if coordinates != expected:
-            raise ValidationError(
-                "dedicated cascade placement is not physically contiguous: "
-                + " -> ".join(chain)
-            )
+        if provider != XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER:
+            first_kind, first_x, first_y = coordinates[0]
+            expected = [
+                (first_kind, first_x, first_y + offset)
+                for offset in range(len(chain))
+            ]
+            if coordinates != expected:
+                raise ValidationError(
+                    "dedicated cascade placement is not physically contiguous: "
+                    + " -> ".join(chain)
+                )
     expected_local_summary = {
         "clock_region_site_groups": len(local_capacity),
         "maximum_clock_region_site_utilization": max(

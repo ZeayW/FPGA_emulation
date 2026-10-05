@@ -1319,6 +1319,8 @@ class Placer(nn.Module):
             self.op_cls.move_boundary_op(pos)
             if self.params.align_carry_chain_flag:
                 self.op_cls.chain_alignment_op(pos)
+            if self.op_cls.typed_hardblock_legalization_op is not None:
+                self.op_cls.typed_hardblock_legalization_op.align_site_macros(pos)
 
         # define optimizer
         self.optimizer = NesterovAcceleratedGradientOptimizer(
@@ -1410,15 +1412,17 @@ class Placer(nn.Module):
             
             self.data_cls.sll_flag = False
 
-            self.plot(
-                os.path.join(
-                    self.params.plot_dir,
-                    "iter%s_initial.bmp" % ("{:04}".format(opt_iter.iteration)),
-                ),
-                opt_iter,
-                plot_target_at_names=self.params.plot_target_at_names,
-                filler_flag=False,
-            )
+            if self.params.plot_flag:
+                self.plot(
+                    os.path.join(
+                        self.params.plot_dir,
+                        "iter%s_initial.bmp"
+                        % ("{:04}".format(opt_iter.iteration)),
+                    ),
+                    opt_iter,
+                    plot_target_at_names=self.params.plot_target_at_names,
+                    filler_flag=False,
+                )
             logger.info("<initial metric>: " + str(cur_metric))
             metrics.append(cur_metric)
             # logger.info("<initial metric>: " + str(cur_metric))
@@ -1494,19 +1498,22 @@ class Placer(nn.Module):
 
                     # adjust instance areas
                     if self._gp_adjust_area_condition(metrics[-1]) is True:
-                        self.plot(
-                            os.path.join(
-                                self.params.plot_dir,
-                                "iter%s_before_area_adjustment_%d.bmp"
-                                % (
-                                    "{:04}".format(opt_iter.iteration),
-                                    self.num_gp_adjust_area,
+                        if self.params.plot_flag:
+                            self.plot(
+                                os.path.join(
+                                    self.params.plot_dir,
+                                    "iter%s_before_area_adjustment_%d.bmp"
+                                    % (
+                                        "{:04}".format(opt_iter.iteration),
+                                        self.num_gp_adjust_area,
+                                    ),
                                 ),
-                            ),
-                            opt_iter,
-                            plot_target_at_names=self.params.plot_target_at_names,
-                            filler_flag=True,
-                        )
+                                opt_iter,
+                                plot_target_at_names=(
+                                    self.params.plot_target_at_names
+                                ),
+                                filler_flag=True,
+                            )
                         self._gp_adjust_area(metrics[-1], opt_iter, self.data_cls.sll_flag)
                         self.last_area_inflation_iter = cur_metric.opt_iter.iteration
                         continue
@@ -1532,16 +1539,19 @@ class Placer(nn.Module):
                             self.optimizer.state_dict()
                         )
                         self.initialize_learning_rate(self.model, self.optimizer, 0.1)
-                        self.plot(
-                            os.path.join(
-                                self.params.plot_dir,
-                                "iter%s_after_ck_assignment.bmp"
-                                % ("{:04}".format(opt_iter.iteration)),
-                            ),
-                            opt_iter,
-                            plot_target_at_names=self.params.plot_target_at_names,
-                            filler_flag=True,
-                        )
+                        if self.params.plot_flag:
+                            self.plot(
+                                os.path.join(
+                                    self.params.plot_dir,
+                                    "iter%s_after_ck_assignment.bmp"
+                                    % ("{:04}".format(opt_iter.iteration)),
+                                ),
+                                opt_iter,
+                                plot_target_at_names=(
+                                    self.params.plot_target_at_names
+                                ),
+                                filler_flag=True,
+                            )
                         self.best_pos_before_ck_ssir_lg = None
                         self.best_sol_metric = None
                         continue
@@ -1810,14 +1820,50 @@ class Placer(nn.Module):
                     pos[movable_range[0] : movable_range[1]]
                 )
                 pos_xyz[movable_range[0] : movable_range[1], 2].zero_()
-            elif self.params.carry_chain_legalization_flag:
-                assert self.data_cls.io_pos_xyz is not None
-                pos_xyz = self.data_cls.io_pos_xyz.to(self.device).to(self.dtype)
+            elif (
+                self.params.carry_chain_legalization_flag
+                or (
+                    self.op_cls.typed_hardblock_legalization_op is not None
+                    and self.op_cls.typed_hardblock_legalization_op.site_macro_ids.numel()
+                )
+            ):
+                # Seed native macro legalization from the current GP solution.
+                pos_xyz = self.data_cls.inst_locs_xyz.to(
+                    self.device
+                ).to(self.dtype).clone()
                 with torch.no_grad():
-                    pos_xyz[:, :2].data.copy_(pos[: self.data_cls.movable_range[1]])
-                logger.info("Start Carry Chain Legalization...")
-                self.op_cls.chain_legalization_op(pos_xyz)
+                    movable_range = self.data_cls.movable_range
+                    pos_xyz[movable_range[0] : movable_range[1], :2].data.copy_(
+                        pos[movable_range[0] : movable_range[1]]
+                    )
+                if self.params.carry_chain_legalization_flag:
+                    logger.info("Start Carry Chain Legalization...")
+                    stage_tt = time.time()
+                    self.op_cls.chain_legalization_op(pos_xyz)
+                    logger.info(
+                        "carry-chain legalization takes %.3f seconds",
+                        time.time() - stage_tt,
+                    )
+                if (
+                    self.op_cls.typed_hardblock_legalization_op is not None
+                    and self.op_cls.typed_hardblock_legalization_op.site_macro_ids.numel()
+                ):
+                    logger.info("Start same-site physical macro legalization...")
+                    stage_tt = time.time()
+                    self.op_cls.typed_hardblock_legalization_op.legalize_site_macros(
+                        pos_xyz
+                    )
+                    logger.info(
+                        "same-site physical macro legalization takes %.3f seconds",
+                        time.time() - stage_tt,
+                    )
+                logger.info("Start masked LUT/FF direct legalization...")
+                stage_tt = time.time()
                 self.op_cls.masked_direct_lg_op(pos_xyz)
+                logger.info(
+                    "masked LUT/FF direct legalization takes %.3f seconds",
+                    time.time() - stage_tt,
+                )
             else:
                 if self.params.confine_clock_region_flag:
                     self.op_cls.direct_lg_op.reset_honor_fence_region_constraints(
@@ -1836,6 +1882,24 @@ class Placer(nn.Module):
                 else:
                     pos_xyz = self.op_cls.direct_lg_op(pos)
 
+            # Dedicated DSP/BRAM/URAM chains are legalized inside OpenPARF,
+            # after the ordinary resource legalizers have finished.  Their
+            # exact legal windows come from a source-sealed native-device
+            # contract; no coordinate-inferred or post-export repair is used.
+            if (
+                self.op_cls.typed_hardblock_legalization_op is not None
+                and self.op_cls.typed_hardblock_legalization_op.hardblock_ids.numel()
+            ):
+                logger.info("Start typed hardblock chain legalization...")
+                stage_tt = time.time()
+                self.op_cls.typed_hardblock_legalization_op.legalize_hardblocks(
+                    pos_xyz
+                )
+                logger.info(
+                    "typed hardblock chain legalization takes %.3f seconds",
+                    time.time() - stage_tt,
+                )
+
             # apply solution
             loc_xyz = pos_xyz[
                 self.data_cls.movable_range[0] : self.data_cls.movable_range[1]
@@ -1848,6 +1912,7 @@ class Placer(nn.Module):
             ].data.copy_(loc_xyz)
 
             # evaluate
+            stage_tt = time.time()
             opt_iter.iteration += 1
             cur_metric = EvalMetric(self.params, copy.deepcopy(opt_iter))
             cur_metric.evaluate(self.data_cls, eval_ops, self.data_cls.pos[0])
@@ -1873,8 +1938,17 @@ class Placer(nn.Module):
                 else:
                     legal = self.op_cls.legality_check_op(self.data_cls.inst_locs_xyz)
                 if not legal:
+                    if self.op_cls.typed_hardblock_legalization_op is not None:
+                        raise RuntimeError(
+                            "typed hardblock legalization produced an illegal "
+                            "in-core placement"
+                        )
                     logger.warning("Placement is not LEGAL")
                 legality_check_done = True
+            logger.info(
+                "post-legalization evaluation takes %.3f seconds",
+                time.time() - stage_tt,
+            )
             if self.params.gp_timing_analysis_flag or debug_timing_flag:
                 max_dly, wns, tns = self.timing_analysis(self.data_cls.pos[0], opt_iter)
                 logger.info(
@@ -1937,16 +2011,14 @@ class Placer(nn.Module):
                     self.data_cls.half_column_available_clock_region
                 )
                 self.op_cls.ism_dp_op.reset_slr_aware_flag(self.params.slr_aware_flag)
-            if self.params.io_legalization_flag:
-                chain_at_name = self.params.carry_chain_at_name
-                chain_at_id = self.placedb.getAreaTypeIndexFromName(chain_at_name)
-                inst_ids = self.data_cls.area_type_inst_groups[chain_at_id]
-                inst_ids = inst_ids[
-                    torch.logical_and(
-                        self.data_cls.movable_range[0] <= inst_ids,
-                        inst_ids < self.data_cls.movable_range[1],
-                    )
-                ]
+            if self.params.carry_chain_legalization_flag:
+                # A legalized carry macro includes both the carry primitives
+                # and their associated LUTs.  ISM must not move either half of
+                # that native macro after chain legalization.
+                inst_ids = torch.unique(torch.cat((
+                    self.data_cls.chain_cla_ids.bs,
+                    self.data_cls.chain_lut_ids.bs,
+                ))).cpu()
                 fixed_mask = torch.zeros(
                     self.data_cls.inst_locs_xyz.shape[0],
                     dtype=torch.uint8,
@@ -1954,6 +2026,18 @@ class Placer(nn.Module):
                     requires_grad=False,
                 )
                 fixed_mask[inst_ids] = 1
+                self.op_cls.ism_dp_op.fixed_mask = fixed_mask
+            if self.op_cls.typed_hardblock_legalization_op is not None:
+                typed_ids = self.op_cls.typed_hardblock_legalization_op.inst_ids.cpu()
+                if not hasattr(self.op_cls.ism_dp_op, "fixed_mask"):
+                    raise RuntimeError("ISM detailed placer has no fixed-mask contract")
+                fixed_mask = self.op_cls.ism_dp_op.fixed_mask
+                if fixed_mask is None:
+                    fixed_mask = torch.zeros(
+                        self.data_cls.inst_locs_xyz.shape[0],
+                        dtype=torch.uint8, device="cpu", requires_grad=False,
+                    )
+                fixed_mask[typed_ids] = 1
                 self.op_cls.ism_dp_op.fixed_mask = fixed_mask
             loc_xyz = self.op_cls.ism_dp_op(self.data_cls.inst_locs_xyz)
             # apply solution
@@ -2652,6 +2736,12 @@ class Placer(nn.Module):
                 )
             )
             for area_type, ov in enumerate(metrics[-1].overflow):
+                # Typed hard-block area types are owned by their exact-window
+                # legalizer. Their diagnostic overflow remains reportable,
+                # but it is not a convergence condition for the continuous
+                # density problem from which they were explicitly removed.
+                if not self.data_cls.optimization_area_type_mask[area_type]:
+                    continue
                 # do not concern the overflow of IOs
                 if area_type in io_at_ids:
                     continue
@@ -2993,7 +3083,74 @@ class Placer(nn.Module):
 
     def write(self, filename):
         """@brief write to file"""
-        self.apply()
         if not os.path.exists(os.path.dirname(filename)):
             os.makedirs(os.path.dirname(filename))
-        self.placedb.writeBookshelfPl(filename)
+        # The placement tensor is already the authoritative result after
+        # legalization and detailed placement.  Copying hundreds of thousands
+        # of locations back through PlaceDB::apply() only so the C++ Bookshelf
+        # writer can read them again is both redundant and unsafe: the pinned
+        # upstream implementation corrupts the allocator for some real-device
+        # mixed-resource designs during that round trip.  Stream the final
+        # tensor directly instead.  This also keeps result materialization
+        # linear and avoids a second full placement representation.
+        locations = self.data_cls.inst_locs_xyz.detach().cpu()
+        num_insts = self.placedb.numInsts()
+        if (
+            locations.dim() != 2
+            or locations.shape[0] != num_insts
+            or locations.shape[1] < 3
+        ):
+            raise RuntimeError(
+                "final placement tensor shape disagrees with PlaceDB instances"
+            )
+        temporary = "%s.tmp.%d" % (filename, os.getpid())
+        try:
+            # The C++ Bookshelf writer does not serialize the integer point
+            # verbatim.  It first finds the physical site bbox covering that
+            # point and emits the bbox origin.  Build the same compact lookup
+            # without mutating the C++ PlaceDB.  Some UltraScale+ sites span
+            # multiple dense coordinates, so merely truncating x/y can name an
+            # interior coordinate which is not a site origin.
+            valid_site_map = {}
+            for bbox in self.placedb.collectSiteBoxes():
+                origin = (int(bbox.xl()), int(bbox.yl()))
+                for site_x in range(origin[0], int(bbox.xh())):
+                    for site_y in range(origin[1], int(bbox.yh())):
+                        valid_site_map[(site_x, site_y)] = origin
+            with open(temporary, "w", encoding="utf-8") as stream:
+                for inst_id in range(num_insts):
+                    coordinates = [float(value) for value in locations[inst_id, :3]]
+                    if not all(math.isfinite(value) for value in coordinates):
+                        raise RuntimeError(
+                            "final placement contains a non-finite coordinate "
+                            "for instance %s" % self.placedb.instName(inst_id)
+                        )
+                    # PlaceDB::apply constructs an integer InstAttr::PointType
+                    # from the floating point placement center, then the C++
+                    # writer maps that point to its covering site bbox.  Match
+                    # both operations exactly; the downstream certificate
+                    # independently proves resource and occupancy legality.
+                    integer_coordinates = [int(value) for value in coordinates]
+                    site_coordinates = valid_site_map.get(
+                        tuple(integer_coordinates[:2])
+                    )
+                    if site_coordinates is None:
+                        raise RuntimeError(
+                            "final placement is outside every valid site for "
+                            "instance %s" % self.placedb.instName(inst_id)
+                        )
+                    stream.write(
+                        "%s %d %d %d\n"
+                        % (
+                            self.placedb.instName(inst_id),
+                            site_coordinates[0],
+                            site_coordinates[1],
+                            integer_coordinates[2],
+                        )
+                    )
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, filename)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)

@@ -41,6 +41,10 @@
     "description": "place architecture-defined packed clusters with the single-site-resource legalizer instead of the LUT/FF direct legalizer",
     "default": 0
   },
+  "typed_hardblock_chain_constraints": {
+    "description": "source-sealed exact legal windows for native DSP/BRAM/URAM chain legalization",
+    "default": ""
+  },
   "logic_area_type_names": {
     "description": "area types used for logic-overflow decisions; defaults to the native LUT/FF architecture",
     "default": ["LUT", "FF"]
@@ -194,6 +198,10 @@
     "description": "Map model to area types with sizes",
     "default": {}
   },
+  "gp_max_fillers_per_area_type": {
+    "description": "Optional positive per-area-type cap on analytical filler count; filler size is rescaled to preserve exact total density area",
+    "default": {}
+  },
   "gp_resource2area_types_map": {
     "description": "Map resource to area types",
     "default": {}
@@ -209,6 +217,10 @@
   "BLE_capacity": {
     "description": "number of LUT/FF pairs in a basic logic block (BLE)",
     "default": 2
+  },
+  "allow_paired_luts": {
+    "description": "whether direct legalization may occupy both 5LUT/6LUT positions in one BLE",
+    "default": 1
   },
   "num_ControlSets_per_CLB": {
     "description": "number of Clock/ControlSetSR/ControlSetCE tuples in a CLB",

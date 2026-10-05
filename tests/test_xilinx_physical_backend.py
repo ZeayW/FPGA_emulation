@@ -5,13 +5,241 @@ from types import SimpleNamespace
 from unittest import mock
 
 from emuflow.xilinx_physical_backend import (
+    _compact_openparf_qualification,
     _physical_clock_periods,
     _select_xilinx_slr_window,
+    run_rapidwright_openparf_native_candidate_backend,
     run_rapidwright_partition_backend,
 )
 
 
 class XilinxPhysicalBackendTest(unittest.TestCase):
+    def test_native_qualification_report_references_large_certificate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            certificate_path = Path(temporary) / "placement-certificate.json"
+            certificate_path.write_text("sealed-certificate\n", encoding="utf-8")
+            report = _compact_openparf_qualification({
+                "status": "pass",
+                "runtime": {"installation": "/versioned/openparf"},
+                "certificate": {
+                    "schema": "emuflow.openparf-atomic-placement/v2",
+                    "status": "pass",
+                    "part": "xcvu19p-test",
+                    "provider": "native-openparf",
+                    "runtime_validation": "native-openparf",
+                    "source": {"mapped_sha256": "a" * 64},
+                    "summary": {"atoms": 200_000, "occupied_sites": 10_000},
+                    "native_convergence": {
+                        "metrics": {
+                            "stop_reason": "feasible-hpwl-patience",
+                            "iterations": 1700,
+                        },
+                    },
+                    "clusters": [{"large": "payload"}],
+                },
+            }, certificate_path)
+        self.assertNotIn("clusters", report["certificate"])
+        self.assertEqual(report["certificate"]["summary"]["atoms"], 200_000)
+        self.assertEqual(
+            report["certificate"]["native_convergence"]["metrics"][
+                "stop_reason"
+            ],
+            "feasible-hpwl-patience",
+        )
+        self.assertEqual(
+            report["certificate"]["artifact"]["bytes"],
+            len("sealed-certificate\n"),
+        )
+
+    def test_native_candidate_bypasses_legacy_placement_call_graph(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            physical = root / "physical"
+            packed_path = physical / "packed-sites.json"
+            placement_path = physical / "placement.json"
+            native_constraints = root / "native-constraints.json"
+            provider_manifest = root / "provider-manifest.json"
+            mapped_value = {"modules": {}}
+            architecture_value = {"site_templates": {}}
+            architecture_object = SimpleNamespace(
+                part="xcvu19p-test", value=architecture_value
+            )
+
+            def materialize(
+                mapped, architecture_path, certificate, packed, placement, **kwargs
+            ):
+                self.assertEqual(mapped, physical / "partition.mapped.json")
+                self.assertEqual(architecture_path, root / "architecture.json")
+                self.assertEqual(
+                    certificate,
+                    physical / "openparf-native/placement-certificate.json",
+                )
+                self.assertEqual(kwargs, {
+                    "top": "top",
+                    "source_packed_path": physical / "openparf-atomic-source.json",
+                    "constraints_path": physical / "placement-region.json",
+                    "native_constraints_path": native_constraints,
+                    "provider_manifest_path": provider_manifest,
+                    "mapped_value": mapped_value,
+                    "architecture": architecture_object,
+                })
+                packed.write_text(
+                    __import__("json").dumps({"summary": {"clusters": 2}}),
+                    encoding="utf-8",
+                )
+                placement.write_text(
+                    __import__("json").dumps({"summary": {"clusters": 1}}),
+                    encoding="utf-8",
+                )
+                return {"status": "pass"}
+
+            def stop_at_export(mapped, packed, placement, output, **kwargs):
+                self.assertEqual(mapped, physical / "partition.mapped.json")
+                self.assertEqual(packed, packed_path)
+                self.assertEqual(placement, placement_path)
+                self.assertEqual(output, physical / "rwroute.tsv")
+                self.assertIs(kwargs["mapped_value"], mapped_value)
+                self.assertEqual(kwargs["packed_value"], {"summary": {"clusters": 2}})
+                self.assertEqual(
+                    kwargs["placement_value"], {"summary": {"clusters": 1}}
+                )
+                self.assertEqual(
+                    kwargs["source_sha256"],
+                    {
+                        "mapped_sha256": "0" * 64,
+                        "packed_sha256": "0" * 64,
+                        "placement_sha256": "0" * 64,
+                    },
+                )
+                raise RuntimeError("native-bridge-reached-rwroute")
+
+            def qualify(*_args, **_kwargs):
+                certificate_path = (
+                    physical / "openparf-native/placement-certificate.json"
+                )
+                certificate_path.parent.mkdir(parents=True, exist_ok=True)
+                certificate_path.write_text("{}\n", encoding="utf-8")
+                return {
+                    "status": "pass",
+                    "certificate": {
+                        "schema": "emuflow.openparf-atomic-placement/v2",
+                        "status": "pass",
+                        "part": "xcvu19p-test",
+                        "provider": "native-openparf",
+                        "runtime_validation": "native-openparf",
+                        "source": {},
+                        "summary": {},
+                    },
+                }
+
+            forbidden = AssertionError("legacy placement path was called")
+            with (
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.ArchitectureDB.load",
+                    return_value=architecture_object,
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.emit_xilinx_mapped_json",
+                    return_value={"top": "top"},
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.read_json",
+                    side_effect=[
+                        mapped_value,
+                        {"summary": {"clusters": 2}},
+                        {"summary": {"clusters": 1}},
+                    ],
+                ) as read,
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.build_xilinx_openparf_atomic_source",
+                    return_value={"summary": {"physical_atoms": 2}},
+                ) as build_source,
+                mock.patch(
+                    "emuflow.xilinx_physical_backend._select_xilinx_slr_window",
+                    return_value=("SLR1",),
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.run_xilinx_openparf_atomic_qualification",
+                    side_effect=qualify,
+                ) as qualify,
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.materialize_xilinx_openparf_atomic_contract",
+                    side_effect=materialize,
+                ) as bridge,
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.validate_xilinx_packing",
+                    return_value={"status": "pass"},
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.validate_xilinx_placement",
+                    return_value={"status": "pass"},
+                ) as validate_placement,
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.export_rwroute_input",
+                    side_effect=stop_at_export,
+                ) as export,
+                mock.patch(
+                    "emuflow.xilinx_physical_backend._sha256",
+                    return_value="0" * 64,
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.pack_xilinx_sites",
+                    side_effect=forbidden,
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.run_xilinx_openparf_guidance",
+                    side_effect=forbidden,
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.place_xilinx_clusters",
+                    side_effect=forbidden,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "native-bridge-reached-rwroute"
+                ):
+                    run_rapidwright_openparf_native_candidate_backend(
+                        fpga="fpga0",
+                        part="xcvu19p-test",
+                        merged_ir_path=root / "input.json",
+                        architecture_path=root / "architecture.json",
+                        runtime={},
+                        original_cells=0,
+                        transport_cells=0,
+                        output_dir=physical,
+                        boundary_identity_path=root / "boundary.json",
+                        rapidwright_jar=root / "rapidwright.jar",
+                        java=root / "java",
+                        classes_dir=root / "classes",
+                        java_source=root / "route.java",
+                        device_data_root=root / "device-data",
+                        timing_data_dir=root / "timing-data",
+                        openparf_native_constraints=native_constraints,
+                        openparf_provider_manifest=provider_manifest,
+                    )
+            build_source.assert_called_once()
+            qualify.assert_called_once()
+            bridge.assert_called_once()
+            export.assert_called_once()
+            validate_placement.assert_called_once_with(
+                packed_path,
+                root / "architecture.json",
+                placement_path,
+                constraints_path=physical / "placement-region.json",
+                native_constraints_path=native_constraints,
+                provider_manifest_path=provider_manifest,
+                architecture=architecture_object,
+                packed_value={"summary": {"clusters": 2}},
+                placement_value={"summary": {"clusters": 1}},
+            )
+            self.assertEqual(read.call_count, 3)
+            self.assertIs(
+                build_source.call_args.kwargs["mapped_value"], mapped_value
+            )
+            self.assertIs(
+                qualify.call_args.kwargs["mapped_value"], mapped_value
+            )
+
     def test_physical_clocks_only_include_emuir_clocks(self):
         runtime = {
             "fabric_clock": {"period_ns": 4.0},
@@ -29,7 +257,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             {"clk": 40.0, "fabric_clk": 4.0},
         )
 
-    def test_slr_window_exposes_complete_device_after_capacity_check(self):
+    def test_slr_window_uses_smallest_central_window_with_headroom(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             arch = root / "arch.json"
@@ -65,10 +293,10 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             }), encoding="utf-8")
             self.assertEqual(
                 _select_xilinx_slr_window(packed, arch),
-                ("SLR0", "SLR1", "SLR2", "SLR3"),
+                ("SLR1", "SLR2"),
             )
 
-    def test_slr_window_does_not_infer_routing_capacity_from_site_demand(self):
+    def test_slr_window_uses_one_central_slr_for_sparse_partition(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             arch = root / "arch.json"
@@ -103,7 +331,61 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             }), encoding="utf-8")
             self.assertEqual(
                 _select_xilinx_slr_window(packed, arch),
-                ("SLR0", "SLR1", "SLR2", "SLR3"),
+                ("SLR1",),
+            )
+
+    def test_atomic_slr_window_counts_slice_site_equivalents_not_atoms(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch = root / "arch.json"
+            packed = root / "atomic.json"
+            sites = [
+                {
+                    "name": f"SLICE_X{x}Y{slr}", "type": "SLICEL",
+                    "template": "SLICEL", "x": x, "y": slr,
+                    "tile": {"grid_col": x, "grid_row": slr * 10},
+                    "physical_region": {"slr": f"SLR{slr}"},
+                }
+                for slr in range(3) for x in range(16)
+            ]
+            arch.write_text(__import__("json").dumps({
+                "schema": "emuflow.archdb/v1", "part": "test",
+                "source": {"format": "test/v1"}, "policy": {"name": "test"},
+                "site_templates": {"SLICEL": {
+                    "bels": [{
+                        "name": "A6LUT", "type": "LUT6", "z": 0,
+                        "compatible_cells": ["LUT6"],
+                    }],
+                    "alternative_templates": [],
+                }},
+                "sites": sites,
+            }), encoding="utf-8")
+            clusters = [
+                {
+                    "id": f"lut-{index}", "kind": "slice",
+                    "assignments": [{
+                        "instance": f"lut-{index}", "cell_type": "LUT6",
+                    }],
+                }
+                for index in range(64)
+            ] + [
+                {
+                    "id": f"ff-{index}", "kind": "slice",
+                    "assignments": [{
+                        "instance": f"ff-{index}", "cell_type": "FDRE",
+                    }],
+                }
+                for index in range(64)
+            ]
+            packed.write_text(__import__("json").dumps({
+                "schema": "emuflow.openparf-atomic-source/v1",
+                "clusters": clusters,
+            }), encoding="utf-8")
+            # 64 LUTs and 64 FFs require eight slice sites, not 128 sites;
+            # one 16-site SLR therefore has the required 1.5x headroom.
+            self.assertEqual(
+                _select_xilinx_slr_window(packed, arch),
+                ("SLR1",),
             )
 
     def test_production_backend_uses_compact_two_slr_window(self):
@@ -125,6 +407,10 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 mock.patch(
                     "emuflow.xilinx_physical_backend.emit_xilinx_mapped_json",
                     return_value={"top": "top"},
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.read_json",
+                    return_value={"modules": {}},
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.pack_xilinx_sites",
