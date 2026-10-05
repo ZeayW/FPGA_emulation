@@ -395,11 +395,13 @@ def render_ppro_runtime_binding(
     # which is useful structural evidence but cannot satisfy the blind timing
     # gate. Keep calibration microbenchmarks on their original route mode so
     # this qualification-only change cannot silently alter fitted parameters.
-    system_route_command = (
-        "run_system_route -timing_budget"
-        if experiment_kind == "application_holdout"
-        else "run_system_route"
-    )
+    if experiment_kind == "application_holdout":
+        system_route_commands = (
+            "run_system_route -timing_budget",
+            "run_ssta -state sr0",
+        )
+    else:
+        system_route_commands = ("run_system_route",)
     tcl = "\n".join(
         (
             "# Generated runtime-only PPro black-box calibration script.",
@@ -422,7 +424,7 @@ def render_ppro_runtime_binding(
                 for resource in ("lut", "ff", "bram", "uram", "dsp")
             ),
             f"run_partition -costmode 1 -max_process_num {config.max_processes}",
-            system_route_command,
+            *system_route_commands,
             "exit",
             "",
         )

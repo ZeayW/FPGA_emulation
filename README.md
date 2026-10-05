@@ -778,12 +778,13 @@ explicit `not-claimed` PPro-ranking boundary instead of manufacturing a ranking
 from duplicated PPro results.
 
 Application holdouts request PPro's documented `run_system_route -timing_budget`
-mode so the ordinary `sr0_time.rpt` can carry the blind
-cross-FPGA timing observation. Calibration microbenchmarks retain the original
-plain `run_system_route` mode; changing the holdout timing request therefore
-does not silently refit or relabel the calibrated link model. A routed holdout
-whose timing report is absent or empty remains useful structural evidence but
-cannot pass the timing or platform-promotion gate.
+mode followed by the documented `run_ssta -state sr0` analysis so the ordinary
+`sr0_time.rpt` can carry the blind cross-FPGA timing observation. Calibration
+microbenchmarks retain the original plain `run_system_route` mode; changing the
+holdout timing request therefore does not silently refit or relabel the
+calibrated link model. A routed holdout whose timing report is absent or empty
+remains useful structural evidence but cannot pass the timing or
+platform-promotion gate.
 
 ## Flow roadmap
 
