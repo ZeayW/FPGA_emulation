@@ -9,7 +9,7 @@ from emuflow.errors import ValidationError
 from emuflow.ppro_blackbox_constraints import (
     parse_logical_targets,
     render_ppro_prepartition_constraints,
-    render_ppro_ssta_constraints,
+    render_ppro_timing_sdc,
 )
 from emuflow.ppro_blackbox_communication import generate_communication_probe_bundle
 from emuflow.ppro_blackbox_microbench import generate_capacity_probe_bundle
@@ -126,7 +126,7 @@ class PProBlackboxConstraintsTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            render_ppro_ssta_constraints(source, output)
+            render_ppro_timing_sdc(source, output)
             self.assertEqual(
                 output.read_text(encoding="utf-8").splitlines()[1:],
                 [

@@ -662,13 +662,16 @@ Application holdouts request system-route timing budgeting, materialize the
 partitioned RTL with `run_gen_rtl`, and then invoke PPro's documented
 post-partition SSTA stage.  The benchmark contract must define a period for
 every clock; those clocks are copied into the hash-bound provider-neutral
-constraint record and rendered as a disposable standard SDC passed through
-the documented SSTA `-config` interface.  A route-only or constraint-free SSTA
-invocation is not accepted as timing evidence: on the NVDLA holdout it
-completed successfully but reported all 1,374 endpoints as clockless false
-paths with zero delay.  The generated RTL and sealed timing context are
-therefore part of the timing qualification path, while fit microbenchmarks
-remain on the original route-only flow.
+constraint record and rendered as a disposable standard SDC.  Following the
+installed ordinary user example, a one-line disposable compile config adds
+that SDC through `run_compile -config`; post-partition SSTA then consumes the
+clocked compiled design.  Passing an SDC directly to the unrelated
+`run_ssta -config` option is explicitly forbidden: a real NVDLA diagnostic did
+so successfully but PPro logged that no constraint file was read and reported
+all 1,374 endpoints as clockless false paths with zero delay.  The generated
+RTL and compile-bound sealed timing context are therefore part of the timing
+qualification path, while fit microbenchmarks remain on the original
+route-only flow.
 
 Because this mode emits no placement assignment, its runtime does not require
 logical-to-physical placement targets. Controlled capacity, topology, and
@@ -790,8 +793,10 @@ explicit `not-claimed` PPro-ranking boundary instead of manufacturing a ranking
 from duplicated PPro results.
 
 Application holdouts request PPro's documented `run_system_route -timing_budget`
-mode followed by the documented `run_ssta -state sr0` analysis so the ordinary
-`sr0_time.rpt` can carry the blind cross-FPGA timing observation. Calibration
+mode, generated partition RTL, and the documented
+`run_ssta -post_partition -state sr0` analysis so the ordinary
+`sr0_time.rpt` can carry the blind cross-FPGA timing observation.  Benchmark
+SDC is registered during `run_compile`, as described above. Calibration
 microbenchmarks retain the original plain `run_system_route` mode; changing the
 holdout timing request therefore does not silently refit or relabel the
 calibrated link model. A routed holdout whose timing report is absent or empty

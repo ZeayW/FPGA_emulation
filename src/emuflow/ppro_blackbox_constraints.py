@@ -152,7 +152,7 @@ def _validated_constraints(
     return constraints, normalized_clocks
 
 
-def render_ppro_ssta_constraints(
+def render_ppro_timing_sdc(
     documented_constraints_path: Path,
     output_path: Path,
 ) -> None:

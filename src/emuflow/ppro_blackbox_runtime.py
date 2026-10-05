@@ -21,7 +21,7 @@ from .errors import ValidationError
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
 from .ppro_blackbox_constraints import (
     render_ppro_prepartition_constraints,
-    render_ppro_ssta_constraints,
+    render_ppro_timing_sdc,
     validate_logical_targets,
 )
 from .ppro_blackbox_provenance import require_current_runner_revision
@@ -353,7 +353,8 @@ def render_ppro_runtime_binding(
     temporary_dir = case_dir / ".tmp"
     runtime_filelist = case_dir / ".runtime-files.f"
     ppro_constraints = case_dir / ".prepartition.cfg"
-    ssta_constraints = case_dir / ".ssta.sdc"
+    timing_sdc = case_dir / ".timing.sdc"
+    compile_config = case_dir / ".compile.cfg"
     tcl_path = case_dir / ".run-ppro.tcl"
     launcher_path = case_dir / ".run-ppro.sh"
     output_path = case_dir / "observation.json"
@@ -364,7 +365,8 @@ def render_ppro_runtime_binding(
             temporary_dir,
             runtime_filelist,
             ppro_constraints,
-            ssta_constraints,
+            timing_sdc,
+            compile_config,
             tcl_path,
             launcher_path,
         )
@@ -388,9 +390,19 @@ def render_ppro_runtime_binding(
         ppro_constraints,
     )
     if experiment_kind == "application_holdout":
-        render_ppro_ssta_constraints(
+        render_ppro_timing_sdc(
             config.documented_constraints.resolve(),
-            ssta_constraints,
+            timing_sdc,
+        )
+        # PPro's installed user example documents standard SDC ingestion at
+        # compile time through ``run_compile -config`` and an ``add_file``
+        # entry.  ``run_ssta -config`` is a different interface: passing an
+        # SDC to it was experimentally ignored and left every routed endpoint
+        # clockless.  Keep the disposable wrapper minimal and bind only the
+        # independently generated SDC.
+        compile_config.write_text(
+            "add_file " + _tcl_word(str(timing_sdc), "PPro timing SDC") + "\n",
+            encoding="utf-8",
         )
     temporary_dir.mkdir()
     runtime_home = temporary_dir / "home"
@@ -399,19 +411,15 @@ def render_ppro_runtime_binding(
     top = spec["workload"]["top_module"]
     # Application holdouts must ask the documented system-route interface to
     # perform timing budgeting and then materialize the partitioned RTL before
-    # invoking post-partition SSTA.  A route-only ``run_ssta -state sr0`` run
-    # can succeed while classifying every endpoint as a clockless false path;
-    # that produces a syntactically valid timing-budget report but no usable
-    # timing observation.  ``run_gen_rtl`` plus ``-post_partition`` is the
-    # documented stage boundary for analyzing the generated FPGA designs.
+    # invoking post-partition SSTA.  Benchmark clocks were already bound at
+    # compile time through the generated compile config above.
     # Keep calibration microbenchmarks on their original route mode so this
     # qualification-only change cannot silently alter fitted parameters.
     if experiment_kind == "application_holdout":
         system_route_commands = (
             "run_system_route -timing_budget",
             f"run_gen_rtl -max_process_num {config.max_processes}",
-            "run_ssta -post_partition -state sr0 -config "
-            + _tcl_word(str(ssta_constraints), "PPro SSTA constraints"),
+            "run_ssta -post_partition -state sr0",
         )
     else:
         system_route_commands = ("run_system_route",)
@@ -426,7 +434,13 @@ def render_ppro_runtime_binding(
             "run_compile -top "
             + _tcl_word(top, "PPro top module")
             + " -lib work -filelist "
-            + _tcl_word(str(runtime_filelist), "PPro runtime filelist"),
+            + _tcl_word(str(runtime_filelist), "PPro runtime filelist")
+            + (
+                " -config "
+                + _tcl_word(str(compile_config), "PPro compile config")
+                if experiment_kind == "application_holdout"
+                else ""
+            ),
             "run_pre_partition -stf "
             + _tcl_word(str(config.platform_reference.resolve()), "PPro platform reference")
             + " -config "
@@ -462,7 +476,8 @@ def render_ppro_runtime_binding(
     cleanup_paths = (
         runtime_filelist,
         ppro_constraints,
-        ssta_constraints,
+        timing_sdc,
+        compile_config,
         tcl_path,
         launcher_path,
         case_dir / "runtime_Flag.tcl",

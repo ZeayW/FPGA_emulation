@@ -250,12 +250,21 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             )
             self.assertIn("run_system_route -timing_budget", script)
             self.assertIn("run_gen_rtl -max_process_num 4", script)
-            self.assertIn(
-                "run_ssta -post_partition -state sr0 -config ", script
+            self.assertIn("run_ssta -post_partition -state sr0", script)
+            self.assertNotIn("run_ssta -post_partition -state sr0 -config", script)
+            compile_config = (config.case_dir / ".compile.cfg").read_text(
+                encoding="utf-8"
             )
-            self.assertNotIn("run_ssta -state sr0\n", script)
             self.assertEqual(
-                (config.case_dir / ".ssta.sdc").read_text(encoding="utf-8"),
+                compile_config,
+                "add_file {" + str((config.case_dir / ".timing.sdc").resolve()) + "}\n",
+            )
+            self.assertIn(
+                " -config {" + str((config.case_dir / ".compile.cfg").resolve()) + "}",
+                script,
+            )
+            self.assertEqual(
+                (config.case_dir / ".timing.sdc").read_text(encoding="utf-8"),
                 "# Generated from provider-neutral benchmark timing constraints.\n"
                 "create_clock -name {clk} -period 10.000000000 "
                 "[get_ports {clk}]\n",
