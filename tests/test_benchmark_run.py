@@ -23,6 +23,9 @@ KOIOS_GEMM_NATIVE_SPEC = (
 KOIOS_ATTENTION_NATIVE_SPEC = (
     ROOT / "benchmarks" / "runs" / "koios_attention_l5_native.json"
 )
+KOIOS_LENET_NATIVE_SPEC = (
+    ROOT / "benchmarks" / "runs" / "koios_lenet_l6_native.json"
+)
 KOIOS_DLA_LARGE_NATIVE_SPEC = (
     ROOT / "benchmarks" / "runs" / "koios_dla_large_l6_native.json"
 )
@@ -139,6 +142,12 @@ class BenchmarkRunTest(unittest.TestCase):
                 KOIOS_ATTENTION_NATIVE_SPEC,
                 "attention_layer",
                 "attention_layer.v",
+                "koios_compute",
+            ),
+            (
+                KOIOS_LENET_NATIVE_SPEC,
+                "myproject",
+                "lenet.v",
                 "koios_compute",
             ),
             (

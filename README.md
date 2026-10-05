@@ -697,7 +697,7 @@ cannot be supplied or relabelled by the result assembler. Bundle generation
 fails before a provider run if that class is absent, rather than deferring the
 error until an expensive blind-result assembly. The qualifying
 contracts are PicoRV32 (`open_cpu`), secworks AES (`secworks_aes`), native
-Koios GEMM/attention (`koios_compute`), native Koios DLA-large (`koios_dla`),
+Koios GEMM/attention/LeNet (`koios_compute`), native Koios DLA-large (`koios_dla`),
 and the generated NVDLA contract (`nvdla`).  Older logic-only Koios contracts
 remain integration fixtures and cannot satisfy a promotion tier.
 The local renderer and tamper tests pass; acceptance of these standard

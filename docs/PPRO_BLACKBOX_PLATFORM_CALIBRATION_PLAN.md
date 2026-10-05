@@ -242,7 +242,7 @@ progression:
 | smoke | SERV, PicoRV32 | Harness and frontend sanity only |
 | medium | secworks AES | First unseen connected holdout |
 | diversity | Ibex, VeeR EH1 | CPU hierarchy, memory, and SystemVerilog holdout |
-| large | Koios GEMM, attention, convolution | Independent wide-datapath and hard-block holdouts |
+| large | Koios GEMM, attention, LeNet, convolution | Independent wide-datapath and hard-block holdouts |
 | large primary | Koios DLA medium, then DLA large or TPU-like large | Multi-FPGA capacity, routing, TDM, and timing validation |
 | very large final | NVDLA `NV_nvdla` | Million-cell hierarchy, capacity, and runtime stress |
 
@@ -760,7 +760,7 @@ are mandatory. The class is declared by the checked benchmark contract,
 included in its compilation identity, and cannot be supplied by the result
 assembler. Application bundle generation fails closed before launching PPro
 when this class is absent. Qualifying contracts are PicoRV32, secworks AES,
-native-hard-block Koios GEMM/attention, native-hard-block Koios DLA-large, and
+native-hard-block Koios GEMM/attention/LeNet, native-hard-block Koios DLA-large, and
 the generated NVDLA shared frontend; logic-only Koios fixtures cannot be
 relabelled into a promotion tier. Duplicate result identities and duplicate
 workload/algorithm entries fail closed. Promotion additionally requires the same complete
@@ -773,7 +773,7 @@ the promotion report explicitly marks their PPro ranking as `not-claimed`:
 the free PPro holdout did not execute those algorithms. Global WNS/TNS are
 mandatory evidence, not replaced by an intermediate Phase 3--6 metric.
 
-Run secworks AES and one CPU holdout, then Koios GEMM/attention, Koios DLA
+Run secworks AES and one CPU holdout, then Koios GEMM/attention/LeNet, Koios DLA
 medium/large, and finally NVDLA if the smaller gates pass.  Keep one physical
 seed unless a variance study is explicitly requested.
 

@@ -20,7 +20,7 @@ python3 scripts/benchmarks/fetch.py fetch picorv32
 
 The checked-in run contracts cover SERV L1, PicoRV32 L2, secworks AES L3,
 the current Koios L5 logic-only fixtures, and native-hard-block Koios
-GEMM/attention/DLA-large calibration holdouts. Run the AES progression rung
+GEMM/attention/LeNet/DLA-large calibration holdouts. Run the AES progression rung
 with:
 
 ```bash
@@ -111,6 +111,10 @@ NVDLA top is the final scale target. Compile one Koios source file at a time:
 several variants reuse top-level module names. Native BRAM/DSP preservation is
 required before interpreting logic-only Koios results as representative QoR.
 The PPro black-box promotion path uses `koios_gemm_l5_native.json`,
-`koios_attention_l5_native.json`, and `koios_dla_large_l6_native.json`.
+`koios_attention_l5_native.json`, `koios_lenet_l6_native.json`, and
+`koios_dla_large_l6_native.json`. GEMM and attention are fast native mapping
+regressions. LeNet is the primary compute-tier candidate because the calibrated
+XCVU19P capacity model can legitimately keep the smaller two designs on one
+FPGA; a single-FPGA result cannot satisfy the mandatory interconnect gate.
 Their promotion classes are part of the sealed benchmark identity; the
 logic-only DLA small/medium contracts cannot be relabelled into those tiers.
