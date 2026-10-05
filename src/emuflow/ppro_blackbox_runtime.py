@@ -390,15 +390,19 @@ def render_ppro_runtime_binding(
 
     top = spec["workload"]["top_module"]
     # Application holdouts must ask the documented system-route interface to
-    # perform timing budgeting. Without this option PPro may still produce a
-    # valid partition and route while leaving the ordinary sr0_time.rpt empty,
-    # which is useful structural evidence but cannot satisfy the blind timing
-    # gate. Keep calibration microbenchmarks on their original route mode so
-    # this qualification-only change cannot silently alter fitted parameters.
+    # perform timing budgeting and then materialize the partitioned RTL before
+    # invoking post-partition SSTA.  A route-only ``run_ssta -state sr0`` run
+    # can succeed while classifying every endpoint as a clockless false path;
+    # that produces a syntactically valid timing-budget report but no usable
+    # timing observation.  ``run_gen_rtl`` plus ``-post_partition`` is the
+    # documented stage boundary for analyzing the generated FPGA designs.
+    # Keep calibration microbenchmarks on their original route mode so this
+    # qualification-only change cannot silently alter fitted parameters.
     if experiment_kind == "application_holdout":
         system_route_commands = (
             "run_system_route -timing_budget",
-            "run_ssta -state sr0",
+            f"run_gen_rtl -max_process_num {config.max_processes}",
+            "run_ssta -post_partition -state sr0",
         )
     else:
         system_route_commands = ("run_system_route",)

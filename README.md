@@ -658,6 +658,14 @@ emuflow-ppro-calibration generate-application-holdout \
   --source-root third_party/rtl/secworks_aes
 ```
 
+Application holdouts request system-route timing budgeting, materialize the
+partitioned RTL with `run_gen_rtl`, and then invoke PPro's documented
+post-partition SSTA stage.  A route-only SSTA invocation is not accepted as
+timing evidence: on the NVDLA holdout it completed successfully but reported
+all 1,374 endpoints as clockless false paths with zero delay.  The generated
+RTL stage is therefore part of the timing qualification path, while fit
+microbenchmarks remain on the original route-only flow.
+
 Because this mode emits no placement assignment, its runtime does not require
 logical-to-physical placement targets. Controlled capacity, topology, and
 communication probes still require the complete runtime-only target mapping.

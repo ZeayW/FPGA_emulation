@@ -247,7 +247,9 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertIn("run_system_route -timing_budget", script)
-            self.assertIn("run_ssta -state sr0", script)
+            self.assertIn("run_gen_rtl -max_process_num 4", script)
+            self.assertIn("run_ssta -post_partition -state sr0", script)
+            self.assertNotIn("run_ssta -state sr0\n", script)
             lines = (config.case_dir / ".runtime-files.f").read_text(
                 encoding="utf-8"
             ).splitlines()
