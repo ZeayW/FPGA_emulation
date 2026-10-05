@@ -177,13 +177,66 @@ def build_placement_ir(
             # multi-hop physical implementation.
             preserved_shadow_nets.add(top_net["id"])
 
+    removed_ports = {"source_values", "shadow_values"}
+    dut_ports_by_id = {port["id"]: port for port in netlist["ports"]}
+    shared_input_ports: Dict[str, Dict[str, Any]] = {}
+    for port in transport_ir.value["ports"]:
+        if port["id"] in removed_ports:
+            continue
+        existing = dut_ports_by_id.get(port["id"])
+        if existing is None:
+            continue
+        shared_fields = ("direction", "width", "clock", "reset")
+        if any(existing.get(field) != port.get(field) for field in shared_fields):
+            raise ValidationError(
+                "transport top port is incompatible with DUT port "
+                f"{port['id']!r}"
+            )
+        if port["direction"] != "input":
+            raise ValidationError(
+                "transport top port collides with non-input DUT port "
+                f"{port['id']!r}"
+            )
+        shared_input_ports[port["id"]] = port
+
+    # A shared clock/reset is one electrical top-level input, not two nets
+    # driven by duplicate copies of the same port.  Stitch every transport
+    # consumer onto the existing DUT net and consume the transport-only net.
+    for port_id, port in shared_input_ports.items():
+        for bit in range(port["width"]):
+            transport_net = _top_net(
+                top_net_index, port_id, bit, "drivers"
+            )
+            local_matches = [
+                net
+                for net in local_nets.values()
+                if any(
+                    endpoint["instance"] is None
+                    and endpoint["port"] == port_id
+                    and endpoint["bit"] == bit
+                    for endpoint in net["drivers"]
+                )
+            ]
+            if len(local_matches) != 1:
+                raise ValidationError(
+                    f"shared top input {port_id}[{bit}] expected one DUT "
+                    f"net, found {len(local_matches)}"
+                )
+            local_net = local_matches[0]
+            local_net["sinks"].extend(
+                remap_endpoint(endpoint)
+                for endpoint in transport_net["sinks"]
+                if endpoint["instance"] is not None
+            )
+            local_net["fanout"] = len(local_net["sinks"])
+            consumed_transport_nets.add(transport_net["id"])
+
     # The generated transport RTL keeps each packed interface at width one
     # when a partition has no TX or no RX signals.  Yosys consequently emits
     # a dangling top-level source_values/shadow_values net for that dummy bit.
     # Both interface ports are removed below, so consume every remaining net
     # that references them as well.  Real interface bits have already been
     # stitched into local DUT nets by the loops above.
-    removed_ports = {"source_values", "shadow_values"}
     for net in transport_ir.value["nets"]:
         if any(
             endpoint["instance"] is None
@@ -217,16 +270,16 @@ def build_placement_ir(
         transport_nets.append(value)
 
     ports = [deepcopy(port) for port in netlist["ports"]]
-    port_ids = {port["id"] for port in ports}
+    ports_by_id = {port["id"]: port for port in ports}
     for port in transport_ir.value["ports"]:
         if port["id"] in removed_ports:
             continue
-        if port["id"] in port_ids:
-            raise ValidationError(
-                f"transport top port collides with DUT port {port['id']!r}"
-            )
+        existing = ports_by_id.get(port["id"])
+        if existing is not None:
+            # Compatibility and net stitching were validated above.
+            continue
         ports.append(deepcopy(port))
-        port_ids.add(port["id"])
+        ports_by_id[port["id"]] = ports[-1]
 
     instances = [deepcopy(item) for item in netlist["instances"]]
     instances.extend(

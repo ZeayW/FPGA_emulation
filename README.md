@@ -805,8 +805,10 @@ mandatory cross-FPGA classes (Koios compute, Koios DLA, and NVDLA) also pass.
 
 Application holdouts request PPro's documented `run_system_route -timing_budget`
 mode, generated partition RTL, and the documented
-`run_ssta -post_partition -state sr0` analysis so the ordinary
-`sr0_time.rpt` can carry the blind cross-FPGA timing observation.  Benchmark
+`run_ssta -post_partition -state gr0` analysis so the ordinary
+`gr0_time.rpt` can carry the blind cross-FPGA timing observation.  The state
+must match the `gr0` tree materialized by `run_gen_rtl`; `sr0` is only the
+system-route report prefix and is not a generated-RTL SSTA base state. Benchmark
 SDC is registered during `run_compile`, as described above. Calibration
 microbenchmarks retain the original plain `run_system_route` mode; changing the
 holdout timing request therefore does not silently refit or relabel the
@@ -5216,6 +5218,14 @@ can be parsed and structurally checked without vendor data, but the report
 deliberately marks hardware release as
 `blocked_on_external_phy_provider`; a black box is an interface, not a claimed
 GT implementation.
+
+When Phase 7 lowers the split DUT and generated transport into one placement
+IR, an identical DUT/transport clock or reset input is represented by one
+shared top-level port and one shared net.  The lowerer checks direction, width,
+clock, and reset semantics before stitching transport sinks onto the DUT net;
+incompatible or output-port collisions fail closed.  This prevents otherwise
+valid designs whose DUT already exposes `reset` from failing physical lowering
+or acquiring duplicate top-level drivers.
 
 FPGA placement follows the same rule. The default Phase 2/7 path launches the
 OpenPARF Python, C++, and PyTorch-operator source compiled by the root CMake

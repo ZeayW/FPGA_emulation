@@ -267,7 +267,7 @@ def _parse_timing_report(text: str) -> Dict[str, float]:
     if any(not math.isfinite(value) or value < 0 for value in values):
         raise ValidationError("PPro timing report contains an invalid normalized delay")
     if not values:
-        # A normal PPro application run can emit an empty sr0_time.rpt while
+        # A normal PPro application run can emit an empty SSTA report while
         # still producing valid partition and system-route reports.  Preserve
         # those independent black-box observations instead of rejecting the
         # entire run.  Latency-fit and promotion gates separately require the

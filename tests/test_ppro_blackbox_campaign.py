@@ -34,7 +34,7 @@ class PProBlackboxCampaignTest(unittest.TestCase):
             "out.mkdir(parents=True, exist_ok=True)\n"
             f"(out / 'pa0.rpt').write_text({PARTITION_REPORT!r})\n"
             f"(out / 'sr0.rpt').write_text({ROUTE_REPORT!r})\n"
-            f"(out / 'sr0_time.rpt').write_text({TIMING_REPORT!r})\n",
+            f"(out / 'gr0_time.rpt').write_text({TIMING_REPORT!r})\n",
             encoding="utf-8",
         )
         executable.chmod(0o700)

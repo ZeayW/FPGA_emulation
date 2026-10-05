@@ -419,7 +419,12 @@ def render_ppro_runtime_binding(
         system_route_commands = (
             "run_system_route -timing_budget",
             f"run_gen_rtl -max_process_num {config.max_processes}",
-            "run_ssta -post_partition -state sr0",
+            # run_gen_rtl materializes the gr0 state.  PPro interprets
+            # run_ssta's -state argument as that generated-RTL base state,
+            # not as the preceding system-route report prefix.  Naming sr0
+            # here makes SSTA look for a nonexistent gen_rtl/sr0/SSTA tree
+            # and silently leaves an empty timing report behind.
+            "run_ssta -post_partition -state gr0",
         )
     else:
         system_route_commands = ("run_system_route",)
@@ -492,7 +497,7 @@ def render_ppro_runtime_binding(
             "resource_summary": report_dir / "pa0.rpt",
             "partition_summary": report_dir / "pa0.rpt",
             "route_summary": report_dir / "sr0.rpt",
-            "system_timing": report_dir / "sr0_time.rpt",
+            "system_timing": report_dir / "gr0_time.rpt",
         },
         output_path=output_path,
         environment={

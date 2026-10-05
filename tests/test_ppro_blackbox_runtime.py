@@ -239,7 +239,7 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
                     source_filelist=filelist,
                     config=config,
                 )
-            render_ppro_runtime_binding(
+            binding = render_ppro_runtime_binding(
                 spec,
                 source_filelist=filelist,
                 compilation_context=context,
@@ -250,8 +250,12 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             )
             self.assertIn("run_system_route -timing_budget", script)
             self.assertIn("run_gen_rtl -max_process_num 4", script)
-            self.assertIn("run_ssta -post_partition -state sr0", script)
-            self.assertNotIn("run_ssta -post_partition -state sr0 -config", script)
+            self.assertIn("run_ssta -post_partition -state gr0", script)
+            self.assertNotIn("run_ssta -post_partition -state gr0 -config", script)
+            self.assertEqual(
+                binding.report_paths["system_timing"].name,
+                "gr0_time.rpt",
+            )
             compile_config = (config.case_dir / ".compile.cfg").read_text(
                 encoding="utf-8"
             )
@@ -383,7 +387,7 @@ cat > "$out/sr0.rpt" <<'EOF'
 | F11 | F33 | 1 | 1 | OUTPUT | 1 | 1600 | 4 | 1 |
 2.5 fpga tdm detailed info file path
 EOF
-cat > "$out/sr0_time.rpt" <<'EOF'
+cat > "$out/gr0_time.rpt" <<'EOF'
 10.25 data arrival time ( normalized delay 10.25 )
 EOF
 """,

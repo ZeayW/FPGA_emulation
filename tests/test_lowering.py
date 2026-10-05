@@ -1,11 +1,151 @@
 import unittest
 from copy import deepcopy
 
+from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.lowering import build_placement_ir
 
 
 class PlacementIrLoweringTest(unittest.TestCase):
+    @staticmethod
+    def _empty_transport_ir(port):
+        return EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "transport",
+                    "top": "transport",
+                    "source_format": "yosys-json",
+                },
+                "ports": [port],
+                "instances": [],
+                "nets": [],
+                "clocks": [],
+                "warnings": [],
+            }
+        )
+
+    @staticmethod
+    def _empty_netlist(port):
+        return {
+            "schema": "emuflow.fpga-netlist/v1",
+            "design": {
+                "name": "dut",
+                "top": "dut",
+                "source_format": "yosys-json",
+            },
+            "platform": "virtual",
+            "fpga": "fpga0",
+            "ports": [port],
+            "instances": [],
+            "nets": [],
+            "resources": {},
+        }
+
+    @staticmethod
+    def _empty_transport():
+        return {
+            "schema": "emuflow.transport-endpoints/v1",
+            "design": "dut",
+            "platform": "virtual",
+            "fpga": "fpga0",
+            "frame_slots": 8,
+            "source_signals": [],
+            "shadow_signals": [],
+            "endpoints": [],
+        }
+
+    def test_compatible_reset_port_is_shared_with_transport(self) -> None:
+        reset = {
+            "id": "reset",
+            "name": "reset",
+            "direction": "input",
+            "width": 1,
+            "clock": False,
+            "reset": True,
+        }
+        netlist = self._empty_netlist(reset)
+        netlist["nets"] = [
+            {
+                "id": "reset@fpga0",
+                "original_net": "reset_net",
+                "name": "reset_net",
+                "cut_class": "combinational",
+                "drivers": [
+                    {"instance": None, "port": "reset", "bit": 0}
+                ],
+                "sinks": [],
+            }
+        ]
+        transport_ir = self._empty_transport_ir(reset)
+        transport_ir.value["instances"] = [
+            {
+                "id": "transport_ff",
+                "name": "transport_ff",
+                "type": "FDRE",
+                "resources": {"ff": 1},
+                "parameters": {},
+                "attributes": {},
+                "constant_connections": [],
+            }
+        ]
+        transport_ir.value["nets"] = [
+            {
+                "id": "transport_reset",
+                "name": "transport_reset",
+                "drivers": [
+                    {"instance": None, "port": "reset", "bit": 0}
+                ],
+                "sinks": [
+                    {"instance": "transport_ff", "port": "R", "bit": 0}
+                ],
+                "fanout": 1,
+                "cut_class": "combinational",
+            }
+        ]
+        result = build_placement_ir(
+            netlist,
+            self._empty_transport(),
+            transport_ir,
+        )
+        self.assertEqual(
+            [port["id"] for port in result.value["ports"]], ["reset"]
+        )
+        reset_net = next(
+            net for net in result.value["nets"] if net["id"] == "reset_net"
+        )
+        self.assertEqual(
+            reset_net["sinks"],
+            [
+                {
+                    "instance": "__emuflow_transport__/transport_ff",
+                    "port": "R",
+                    "bit": 0,
+                }
+            ],
+        )
+        self.assertNotIn(
+            "__emuflow_transport__/transport_reset",
+            {net["id"] for net in result.value["nets"]},
+        )
+
+    def test_incompatible_dut_transport_port_collision_fails(self) -> None:
+        dut_reset = {
+            "id": "reset",
+            "name": "reset",
+            "direction": "input",
+            "width": 1,
+            "clock": False,
+            "reset": True,
+        }
+        transport_reset = {**dut_reset, "width": 2}
+        with self.assertRaisesRegex(ValidationError, "incompatible"):
+            build_placement_ir(
+                self._empty_netlist(dut_reset),
+                self._empty_transport(),
+                self._empty_transport_ir(transport_reset),
+            )
+
     def test_shadow_output_is_stitched_to_original_remote_sinks(self) -> None:
         netlist = {
             "schema": "emuflow.fpga-netlist/v1",
