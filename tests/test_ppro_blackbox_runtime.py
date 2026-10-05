@@ -96,6 +96,7 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
                 self.assertIn(f"-{resource}_area 75", script)
             self.assertIn("run_partition -costmode 1 -max_process_num 4", script)
             self.assertIn("run_system_route", script)
+            self.assertNotIn("run_system_route -timing_budget", script)
             self.assertIn("rtlpart_linux < ", launcher)
             ppro_constraints = (config.case_dir / ".prepartition.cfg").read_text(
                 encoding="utf-8"
@@ -241,6 +242,10 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
                 compilation_context=context,
                 config=config,
             )
+            script = (config.case_dir / ".run-ppro.tcl").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("run_system_route -timing_budget", script)
             lines = (config.case_dir / ".runtime-files.f").read_text(
                 encoding="utf-8"
             ).splitlines()

@@ -389,6 +389,17 @@ def render_ppro_runtime_binding(
     runtime_home.mkdir()
 
     top = spec["workload"]["top_module"]
+    # Application holdouts must ask the documented system-route interface to
+    # perform timing budgeting. Without this option PPro may still produce a
+    # valid partition and route while leaving the ordinary sr0_time.rpt empty,
+    # which is useful structural evidence but cannot satisfy the blind timing
+    # gate. Keep calibration microbenchmarks on their original route mode so
+    # this qualification-only change cannot silently alter fitted parameters.
+    system_route_command = (
+        "run_system_route -timing_budget"
+        if experiment_kind == "application_holdout"
+        else "run_system_route"
+    )
     tcl = "\n".join(
         (
             "# Generated runtime-only PPro black-box calibration script.",
@@ -411,7 +422,7 @@ def render_ppro_runtime_binding(
                 for resource in ("lut", "ff", "bram", "uram", "dsp")
             ),
             f"run_partition -costmode 1 -max_process_num {config.max_processes}",
-            "run_system_route",
+            system_route_command,
             "exit",
             "",
         )

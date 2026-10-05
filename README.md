@@ -777,6 +777,14 @@ EmuFlow's internal algorithms. Optional EmuFlow variants are reported with an
 explicit `not-claimed` PPro-ranking boundary instead of manufacturing a ranking
 from duplicated PPro results.
 
+Application holdouts request PPro's documented `run_system_route -timing_budget`
+mode so the ordinary `sr0_time.rpt` can carry the blind
+cross-FPGA timing observation. Calibration microbenchmarks retain the original
+plain `run_system_route` mode; changing the holdout timing request therefore
+does not silently refit or relabel the calibrated link model. A routed holdout
+whose timing report is absent or empty remains useful structural evidence but
+cannot pass the timing or platform-promotion gate.
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both
