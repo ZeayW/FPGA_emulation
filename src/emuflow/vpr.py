@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterable, Optional
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
+from .process_output import run_with_bounded_output
 from .route_artifact import validate_vpr_route_artifacts
 from .synthesis import (
     _yosys_define,
@@ -174,13 +175,7 @@ def run_vtr_yosys(
         include_dirs=include_list,
         defines=define_list,
     )
-    completed = subprocess.run(
-        [command, "-p", script],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
+    completed = run_with_bounded_output([command, "-p", script])
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(completed.stdout, encoding="utf-8")

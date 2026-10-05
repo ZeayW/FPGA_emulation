@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, Optional
 
 from .errors import EmuFlowError
 from .native_tools import resolve_native_executable
+from .process_output import run_with_bounded_output
 from .xilinx_primitives import (
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     normalize_xilinx_mapped_json,
@@ -241,13 +242,7 @@ def run_generic_yosys(
         include_dirs=include_list,
         defines=define_list,
     )
-    completed = subprocess.run(
-        [command, "-p", script],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
+    completed = run_with_bounded_output([command, "-p", script])
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(completed.stdout, encoding="utf-8")
@@ -304,13 +299,7 @@ def run_yosys(
         defines=define_list,
         mapping_profile=mapping_profile,
     )
-    completed = subprocess.run(
-        [command, "-p", script],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
+    completed = run_with_bounded_output([command, "-p", script])
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(completed.stdout, encoding="utf-8")
