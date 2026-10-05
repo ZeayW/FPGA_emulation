@@ -281,7 +281,8 @@ int main() {
         self.assertEqual(script.count("dffunmap"), 2)
         self.assertIn("abc -lut 6", script)
         self.assertIn('write_blif -attr -cname "build/cpu.eblif"', script)
-        self.assertIn('-I"rtl/include"', script)
+        self.assertIn("-Irtl/include", script)
+        self.assertNotIn('-I"rtl/include"', script)
         self.assertIn("-DSYNTHESIS", script)
 
     def test_hard_block_script_uses_the_pinned_vtr_profile(self) -> None:

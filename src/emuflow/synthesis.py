@@ -18,6 +18,7 @@ VALID_XILINX_FAMILIES = {"xcup", "xcu", "xc7"}
 VALID_SYNTHESIS_POLICIES = {"native", "logic-only"}
 YOSYS_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 YOSYS_DEFINE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:=[^\s;]+)?$")
+YOSYS_INCLUDE_DIR = re.compile(r"^[A-Za-z0-9_./:+-]+$")
 LOGIC_ONLY_MAP = (
     Path(__file__).resolve().parents[2] / "scripts" / "yosys" / "logic_only_map.v"
 )
@@ -43,6 +44,26 @@ def _yosys_define(value: str) -> str:
             f"unsupported Yosys define {value!r}; expected NAME or NAME=VALUE"
         )
     return value
+
+
+def _yosys_include_dir(value: Path) -> str:
+    """Return the exact ``-Idir`` token accepted by ``read_verilog``.
+
+    Yosys treats ``-I\"dir\"`` as a directory whose name contains literal
+    quote characters.  Quoting the complete token instead makes it a source
+    filename.  Therefore include directories must use the documented compact
+    form and are restricted to a shell-independent path alphabet.  This fails
+    closed for whitespace or command separators instead of producing a script
+    that is either unsafe or silently unable to locate headers.
+    """
+
+    raw = str(value)
+    if not YOSYS_INCLUDE_DIR.fullmatch(raw):
+        raise EmuFlowError(
+            f"unsupported Yosys include directory {raw!r}; "
+            "paths must not contain whitespace or command separators"
+        )
+    return f"-I{raw}"
 
 
 def build_yosys_script(
@@ -83,7 +104,7 @@ def build_yosys_script(
     include_list = list(include_dirs)
     define_list = [_yosys_define(value) for value in defines]
     read_options = [
-        *(f"-I{_yosys_quote(str(path))}" for path in include_list),
+        *(_yosys_include_dir(path) for path in include_list),
         *(f"-D{value}" for value in define_list),
     ]
     read_sources = " ".join(_yosys_quote(str(path)) for path in source_list)
@@ -161,7 +182,7 @@ def build_generic_yosys_script(
         raise EmuFlowError("synthesis requires at least one RTL source")
     top_identifier = _yosys_identifier(top)
     read_options = [
-        *(f"-I{_yosys_quote(str(path))}" for path in include_dirs),
+        *(_yosys_include_dir(path) for path in include_dirs),
         *(f"-D{_yosys_define(value)}" for value in defines),
     ]
     read_sources = " ".join(_yosys_quote(str(path)) for path in source_list)

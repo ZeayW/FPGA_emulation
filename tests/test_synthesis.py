@@ -114,7 +114,8 @@ class SynthesisTest(unittest.TestCase):
             include_dirs=[Path("rtl/include")],
             defines=["SYNTHESIS", "WIDTH=32"],
         )
-        self.assertIn('-I"rtl/include"', script)
+        self.assertIn("-Irtl/include", script)
+        self.assertNotIn('-I"rtl/include"', script)
         self.assertIn("-DSYNTHESIS", script)
         self.assertIn("-DWIDTH=32", script)
 
@@ -140,8 +141,17 @@ class SynthesisTest(unittest.TestCase):
         self.assertIn('write_json "build/counter-generic.json"', script)
         self.assertNotIn("synth_xilinx", script)
         self.assertNotIn("xcup", script)
-        self.assertIn('-I"rtl/include"', script)
+        self.assertIn("-Irtl/include", script)
         self.assertIn("-DSYNTHESIS", script)
+
+    def test_include_directory_with_unsafe_yosys_token_characters_is_rejected(self) -> None:
+        with self.assertRaisesRegex(EmuFlowError, "include directory"):
+            build_yosys_script(
+                [Path("rtl/design.v")],
+                top="design",
+                output=Path("build/design.json"),
+                include_dirs=[Path("rtl/include with spaces")],
+            )
 
     def test_optional_mapped_verilog_preserves_names(self) -> None:
         script = build_yosys_script(

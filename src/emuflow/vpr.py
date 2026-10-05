@@ -16,7 +16,12 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .route_artifact import validate_vpr_route_artifacts
-from .synthesis import _yosys_define, _yosys_identifier, _yosys_quote
+from .synthesis import (
+    _yosys_define,
+    _yosys_identifier,
+    _yosys_include_dir,
+    _yosys_quote,
+)
 
 
 VPR_REPORT_SCHEMA = "emuflow.vpr-report/v1"
@@ -65,7 +70,7 @@ def build_vtr_yosys_script(
         raise EmuFlowError("VTR synthesis requires at least one RTL source")
     top_identifier = _yosys_identifier(top)
     read_options = [
-        *(f"-I{_yosys_quote(str(path))}" for path in include_dirs),
+        *(_yosys_include_dir(path) for path in include_dirs),
         *(f"-D{_yosys_define(value)}" for value in defines),
     ]
     read_sources = " ".join(_yosys_quote(str(path)) for path in source_list)
