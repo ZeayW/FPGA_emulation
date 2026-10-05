@@ -660,11 +660,15 @@ emuflow-ppro-calibration generate-application-holdout \
 
 Application holdouts request system-route timing budgeting, materialize the
 partitioned RTL with `run_gen_rtl`, and then invoke PPro's documented
-post-partition SSTA stage.  A route-only SSTA invocation is not accepted as
-timing evidence: on the NVDLA holdout it completed successfully but reported
-all 1,374 endpoints as clockless false paths with zero delay.  The generated
-RTL stage is therefore part of the timing qualification path, while fit
-microbenchmarks remain on the original route-only flow.
+post-partition SSTA stage.  The benchmark contract must define a period for
+every clock; those clocks are copied into the hash-bound provider-neutral
+constraint record and rendered as a disposable standard SDC passed through
+the documented SSTA `-config` interface.  A route-only or constraint-free SSTA
+invocation is not accepted as timing evidence: on the NVDLA holdout it
+completed successfully but reported all 1,374 endpoints as clockless false
+paths with zero delay.  The generated RTL and sealed timing context are
+therefore part of the timing qualification path, while fit microbenchmarks
+remain on the original route-only flow.
 
 Because this mode emits no placement assignment, its runtime does not require
 logical-to-physical placement targets. Controlled capacity, topology, and

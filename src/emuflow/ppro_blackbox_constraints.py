@@ -17,6 +17,7 @@ from .io import read_json
 _INSTANCE = re.compile(r"^[A-Za-z_][A-Za-z0-9_./\[\]-]*$")
 _LOGICAL_FPGA = re.compile(r"^F[0-9]+$")
 _PHYSICAL_TARGET = re.compile(r"^[A-Za-z0-9_.:-]+$")
+_HDL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
 
 def _object(value: Any, context: str) -> Mapping[str, Any]:
@@ -77,20 +78,16 @@ def parse_logical_targets(values: list[str]) -> Dict[str, str]:
     return validate_logical_targets(result)
 
 
-def render_ppro_prepartition_constraints(
+def _validated_constraints(
     documented_constraints_path: Path,
-    logical_targets: Mapping[str, str],
-    output_path: Path,
-) -> None:
-    """Render only fixed instance assignments from a generated constraint JSON."""
-
+) -> tuple[Mapping[str, Any], list[tuple[str, float]]]:
     constraints = _object(
         read_json(documented_constraints_path.resolve()), "documented constraints"
     )
     _strict_keys(
         constraints,
         {"control_mode", "documented_actions", "seed"},
-        {"assignments", "forced_tdm_ratio"},
+        {"assignments", "forced_tdm_ratio", "timing_clocks"},
         "documented constraints",
     )
     if constraints["control_mode"] not in {"none", "fixed_assignment"}:
@@ -121,6 +118,74 @@ def render_ppro_prepartition_constraints(
         raise ValidationError(
             "PPro constraint renderer does not guess route, TDM, or random-seed syntax"
         )
+    timing_clocks = constraints.get("timing_clocks", [])
+    if not isinstance(timing_clocks, list):
+        raise ValidationError("documented timing clocks must be an array")
+    normalized_clocks: list[tuple[str, float]] = []
+    seen_clock_ports: set[str] = set()
+    for index, raw_clock in enumerate(timing_clocks):
+        clock = _object(raw_clock, f"documented timing clock {index}")
+        _strict_keys(
+            clock,
+            {"port", "period_ns"},
+            set(),
+            f"documented timing clock {index}",
+        )
+        port = clock["port"]
+        period = clock["period_ns"]
+        if not isinstance(port, str) or _HDL_IDENTIFIER.fullmatch(port) is None:
+            raise ValidationError("documented timing clock has an invalid port")
+        if port in seen_clock_ports:
+            raise ValidationError("documented timing clocks repeat a port")
+        if (
+            isinstance(period, bool)
+            or not isinstance(period, (int, float))
+            or float(period) <= 0.0
+            or float(period) != float(period)
+            or float(period) == float("inf")
+        ):
+            raise ValidationError(
+                "documented timing clock period must be finite and positive"
+            )
+        seen_clock_ports.add(port)
+        normalized_clocks.append((port, float(period)))
+    return constraints, normalized_clocks
+
+
+def render_ppro_ssta_constraints(
+    documented_constraints_path: Path,
+    output_path: Path,
+) -> None:
+    """Render benchmark clocks as a bounded standard SDC timing context."""
+
+    _, timing_clocks = _validated_constraints(documented_constraints_path)
+    if not timing_clocks:
+        raise ValidationError(
+            "PPro application timing qualification requires documented clocks"
+        )
+    lines = ["# Generated from provider-neutral benchmark timing constraints."]
+    for port, period in timing_clocks:
+        lines.append(
+            "create_clock -name {"
+            + port
+            + "} -period "
+            + f"{period:.9f}"
+            + " [get_ports {"
+            + port
+            + "}]"
+        )
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def render_ppro_prepartition_constraints(
+    documented_constraints_path: Path,
+    logical_targets: Mapping[str, str],
+    output_path: Path,
+) -> None:
+    """Render only fixed instance assignments from a generated constraint JSON."""
+
+    constraints, _ = _validated_constraints(documented_constraints_path)
+    actions = constraints["documented_actions"]
     raw_assignments = constraints.get("assignments", [])
     if not isinstance(raw_assignments, list):
         raise ValidationError("documented constraints assignments must be an array")

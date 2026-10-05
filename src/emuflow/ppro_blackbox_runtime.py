@@ -21,6 +21,7 @@ from .errors import ValidationError
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
 from .ppro_blackbox_constraints import (
     render_ppro_prepartition_constraints,
+    render_ppro_ssta_constraints,
     validate_logical_targets,
 )
 from .ppro_blackbox_provenance import require_current_runner_revision
@@ -352,6 +353,7 @@ def render_ppro_runtime_binding(
     temporary_dir = case_dir / ".tmp"
     runtime_filelist = case_dir / ".runtime-files.f"
     ppro_constraints = case_dir / ".prepartition.cfg"
+    ssta_constraints = case_dir / ".ssta.sdc"
     tcl_path = case_dir / ".run-ppro.tcl"
     launcher_path = case_dir / ".run-ppro.sh"
     output_path = case_dir / "observation.json"
@@ -362,6 +364,7 @@ def render_ppro_runtime_binding(
             temporary_dir,
             runtime_filelist,
             ppro_constraints,
+            ssta_constraints,
             tcl_path,
             launcher_path,
         )
@@ -384,6 +387,11 @@ def render_ppro_runtime_binding(
         config.logical_targets,
         ppro_constraints,
     )
+    if experiment_kind == "application_holdout":
+        render_ppro_ssta_constraints(
+            config.documented_constraints.resolve(),
+            ssta_constraints,
+        )
     temporary_dir.mkdir()
     runtime_home = temporary_dir / "home"
     runtime_home.mkdir()
@@ -402,7 +410,8 @@ def render_ppro_runtime_binding(
         system_route_commands = (
             "run_system_route -timing_budget",
             f"run_gen_rtl -max_process_num {config.max_processes}",
-            "run_ssta -post_partition -state sr0",
+            "run_ssta -post_partition -state sr0 -config "
+            + _tcl_word(str(ssta_constraints), "PPro SSTA constraints"),
         )
     else:
         system_route_commands = ("run_system_route",)
@@ -453,6 +462,7 @@ def render_ppro_runtime_binding(
     cleanup_paths = (
         runtime_filelist,
         ppro_constraints,
+        ssta_constraints,
         tcl_path,
         launcher_path,
         case_dir / "runtime_Flag.tcl",

@@ -158,10 +158,21 @@ def generate_application_holdout_bundle(
     sources = identity["sources"]
     relative_records = identity["source_records"]
     rtl_sha256 = identity["rtl_sha256"]
+    clock_periods = identity["clock_periods_ns"]
+    if not isinstance(clock_periods, dict) or set(clock_periods) != set(
+        identity["clocks"]
+    ):
+        raise ValidationError(
+            "application holdout benchmark must define a period for every clock"
+        )
     constraints = {
         "control_mode": "none",
         "documented_actions": [],
         "seed": seed,
+        "timing_clocks": [
+            {"port": clock, "period_ns": float(clock_periods[clock])}
+            for clock in identity["clocks"]
+        ],
     }
 
     root = output_dir.resolve()

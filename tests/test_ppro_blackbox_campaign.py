@@ -195,6 +195,7 @@ class PProBlackboxCampaignTest(unittest.TestCase):
                         "top": "top",
                         "sources": ["top.v"],
                         "clocks": ["clk"],
+                        "clock_periods_ns": {"clk": 10.0},
                         "platform": "unused.json",
                         "synthesis": {
                             "family": "xcup",

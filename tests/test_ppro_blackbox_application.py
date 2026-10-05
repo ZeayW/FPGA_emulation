@@ -10,6 +10,43 @@ from emuflow.ppro_blackbox_application import generate_application_holdout_bundl
 
 
 class PProBlackboxApplicationTest(unittest.TestCase):
+    def test_holdout_requires_a_period_for_every_clock(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "source"
+            source_root.mkdir()
+            (source_root / "top.v").write_text(
+                "module top(input wire clk); endmodule\n", encoding="utf-8"
+            )
+            benchmark = root / "benchmark.json"
+            benchmark.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.benchmark-run/v1",
+                        "id": "missing_period",
+                        "design_id": "missing_period",
+                        "calibration_holdout_class": "open_cpu",
+                        "top": "top",
+                        "sources": ["top.v"],
+                        "clocks": ["clk"],
+                        "platform": "unused.json",
+                        "synthesis": {"family": "xcup", "policy": "logic-only"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "period for every clock"):
+                generate_application_holdout_bundle(
+                    root / "bundle",
+                    benchmark_run_path=benchmark,
+                    source_root=source_root,
+                    campaign_id="blind",
+                    public_prior_id="prior-v1",
+                    configuration_id="platform-v1",
+                    tool_release="2026.1",
+                    runner_revision="d" * 64,
+                )
+
     def test_holdout_class_is_required_before_bundle_generation(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -107,6 +144,10 @@ class PProBlackboxApplicationTest(unittest.TestCase):
             self.assertEqual(context["defines"], [])
             constraints = json.loads(bundle.constraints_path.read_text(encoding="utf-8"))
             self.assertEqual(constraints["control_mode"], "none")
+            self.assertEqual(
+                constraints["timing_clocks"],
+                [{"period_ns": 10.0, "port": "clk"}],
+            )
 
     def test_source_change_changes_rtl_identity(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -125,6 +166,7 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                         "top": "top",
                         "sources": ["top.v"],
                         "clocks": ["clk"],
+                        "clock_periods_ns": {"clk": 10.0},
                         "platform": "unused.json",
                         "synthesis": {"family": "xcup", "policy": "logic-only"},
                     }
@@ -214,6 +256,7 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                 "top": "top",
                 "sources": ["top.v"],
                 "clocks": ["clk"],
+                "clock_periods_ns": {"clk": 10.0},
                 "platform": "unused.json",
                 "synthesis": {
                     "family": "xcup",

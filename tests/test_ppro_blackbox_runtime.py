@@ -178,6 +178,7 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
                         "top": "ppro_blackbox_latency",
                         "sources": ["probe.v"],
                         "clocks": ["clk"],
+                        "clock_periods_ns": {"clk": 10.0},
                         "platform": "unused.json",
                         "synthesis": {
                             "family": "xcup",
@@ -203,6 +204,7 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
                 "control_mode": "none",
                 "documented_actions": [],
                 "seed": 7,
+                "timing_clocks": [{"port": "clk", "period_ns": 10.0}],
             }
             application_constraints.write_text(
                 json.dumps(application_value), encoding="utf-8"
@@ -248,8 +250,16 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             )
             self.assertIn("run_system_route -timing_budget", script)
             self.assertIn("run_gen_rtl -max_process_num 4", script)
-            self.assertIn("run_ssta -post_partition -state sr0", script)
+            self.assertIn(
+                "run_ssta -post_partition -state sr0 -config ", script
+            )
             self.assertNotIn("run_ssta -state sr0\n", script)
+            self.assertEqual(
+                (config.case_dir / ".ssta.sdc").read_text(encoding="utf-8"),
+                "# Generated from provider-neutral benchmark timing constraints.\n"
+                "create_clock -name {clk} -period 10.000000000 "
+                "[get_ports {clk}]\n",
+            )
             lines = (config.case_dir / ".runtime-files.f").read_text(
                 encoding="utf-8"
             ).splitlines()

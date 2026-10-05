@@ -9,6 +9,7 @@ from emuflow.errors import ValidationError
 from emuflow.ppro_blackbox_constraints import (
     parse_logical_targets,
     render_ppro_prepartition_constraints,
+    render_ppro_ssta_constraints,
 )
 from emuflow.ppro_blackbox_communication import generate_communication_probe_bundle
 from emuflow.ppro_blackbox_microbench import generate_capacity_probe_bundle
@@ -104,6 +105,34 @@ class PProBlackboxConstraintsTest(unittest.TestCase):
             self.assertEqual(
                 output.read_text(encoding="utf-8"),
                 "# Generated from provider-neutral documented user constraints.\n",
+            )
+
+    def test_timing_clocks_render_as_standard_sdc(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "constraints.json"
+            output = root / "timing.sdc"
+            source.write_text(
+                json.dumps(
+                    {
+                        "control_mode": "none",
+                        "documented_actions": [],
+                        "seed": 1,
+                        "timing_clocks": [
+                            {"port": "clk", "period_ns": 10.0},
+                            {"port": "aux_clk", "period_ns": 20.0},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            render_ppro_ssta_constraints(source, output)
+            self.assertEqual(
+                output.read_text(encoding="utf-8").splitlines()[1:],
+                [
+                    "create_clock -name {clk} -period 10.000000000 [get_ports {clk}]",
+                    "create_clock -name {aux_clk} -period 20.000000000 [get_ports {aux_clk}]",
+                ],
             )
 
     def test_real_probe_constraints_all_render_without_private_database_input(self):
