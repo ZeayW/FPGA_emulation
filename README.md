@@ -671,7 +671,11 @@ so successfully but PPro logged that no constraint file was read and reported
 all 1,374 endpoints as clockless false paths with zero delay.  The generated
 RTL and compile-bound sealed timing context are therefore part of the timing
 qualification path, while fit microbenchmarks remain on the original
-route-only flow.
+route-only flow.  This corrected entry point has also been exercised on real
+secworks AES RTL: the ordinary compile log consumed `get_ports {clk}` and the
+post-partition clock report found one global `clk` tree with 1,069 loads.  The
+design stayed on one FPGA, so that run qualifies SDC ingestion rather than
+cross-FPGA SSTA; the latter remains a mandatory large-holdout gate.
 
 Because this mode emits no placement assignment, its runtime does not require
 logical-to-physical placement targets. Controlled capacity, topology, and

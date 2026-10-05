@@ -731,7 +731,13 @@ and cross-flow checks pass.  The real authorized C0 v3 compile-context probe
 also passed in 25.50 seconds at source commit
 `f98b8227f2002d987973c0d410679810abfb3b9f`: the sealed header include and
 `NAME=VALUE` define compiled, all four ordinary report classes were present,
-and only the compact redacted observation was retained. Each case joins one
+and only the compact redacted observation was retained.  A subsequent real
+secworks AES timing-ingestion gate registered a 10 ns standard SDC through the
+documented compile configuration: the ordinary compile log consumed
+`get_ports {clk}`, and the post-partition ordinary clock report identified one
+global `clk` tree with 1,069 loads.  AES remained on one FPGA, so system SSTA
+was correctly treated as not applicable for that gate; cross-FPGA timing still
+has to be proven by the large holdouts below.  Each case joins one
 passing PPro observation
 to a complete EmuFlow Phase 1--7 result produced with physical seed 1 and
 authoritative OpenSTA global timing. The v4 result cannot be assembled from
