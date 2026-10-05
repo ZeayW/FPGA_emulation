@@ -54,6 +54,21 @@ class PProBlackboxCalibrationTest(unittest.TestCase):
         )
         self.assertEqual(normalized, validate_redacted_artifact(normalized))
 
+    def test_application_holdout_preserves_route_evidence_without_timing_metric(self):
+        value = copy.deepcopy(self.passing)
+        value["identity"]["role"] = "holdout"
+        value["experiment"]["kind"] = "application_holdout"
+        value["experiment"]["control_mode"] = "free_optimization"
+        value["metrics"]["assignments"] = [
+            {"partition": "P0", "fpga": "F0"},
+            {"partition": "P1", "fpga": "F1"},
+        ]
+        value["metrics"]["timing"] = {}
+        value["derived"] = {"fit_eligible": False, "reason": "holdout-not-fit"}
+        normalized = validate_blackbox_observation(value)
+        self.assertEqual(normalized["metrics"]["timing"], {})
+        self.assertFalse(normalized["derived"]["fit_eligible"])
+
     def test_license_failure_is_not_hardware_evidence(self):
         normalized = validate_blackbox_observation(self.license_failure)
         self.assertFalse(normalized["derived"]["fit_eligible"])

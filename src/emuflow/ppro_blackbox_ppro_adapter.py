@@ -262,13 +262,17 @@ def _parse_route_report(
     }
 
 
-def _parse_timing_report(text: str, *, has_routes: bool) -> Dict[str, float]:
+def _parse_timing_report(text: str) -> Dict[str, float]:
     values = [float(match) for match in _NORMALIZED_DELAY.findall(text)]
     if any(not math.isfinite(value) or value < 0 for value in values):
         raise ValidationError("PPro timing report contains an invalid normalized delay")
     if not values:
-        if has_routes:
-            raise ValidationError("PPro timing report lacks cross-FPGA normalized delay")
+        # A normal PPro application run can emit an empty sr0_time.rpt while
+        # still producing valid partition and system-route reports.  Preserve
+        # those independent black-box observations instead of rejecting the
+        # entire run.  Latency-fit and promotion gates separately require the
+        # normalized-delay metric, so an empty report cannot become timing
+        # calibration or promotion evidence.
         return {}
     return {"sr0_worst_cross_fpga_delay_ns": max(values)}
 
@@ -302,7 +306,7 @@ def parse_ppro_2026_ordinary_reports(
     timing: Dict[str, float] = {}
     if report_paths["system_timing"].is_file():
         timing_text = _read_text(report_paths["system_timing"])
-        timing = _parse_timing_report(timing_text, has_routes=bool(routes))
+        timing = _parse_timing_report(timing_text)
     return {
         "design": dict(design_metrics),
         "resource_demand": resource_demand,

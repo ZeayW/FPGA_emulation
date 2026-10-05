@@ -765,14 +765,11 @@ def validate_blackbox_observation(value: Mapping[str, Any]) -> Dict[str, Any]:
             uses_multiple_fpgas = len({item["fpga"] for item in assignments}) > 1
             if uses_multiple_fpgas and (
                 not normalized_reports["route_summary"]
-                or not normalized_reports["system_timing"]
                 or not routes
                 or "maximum_tdm_ratio" not in communication
-                or "sr0_worst_cross_fpga_delay_ns" not in timing
             ):
                 raise ValidationError(
-                    "observation: multi-FPGA application holdout lacks route or "
-                    "system-timing evidence"
+                    "observation: multi-FPGA application holdout lacks route evidence"
                 )
     else:
         expected_boundary_code = {

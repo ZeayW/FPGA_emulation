@@ -227,7 +227,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
         value["ppro"]["metrics"]["routes"] = []
         value["ppro"]["metrics"]["communication"] = {}
         value["ppro"]["metrics"]["timing"] = {}
-        with self.assertRaisesRegex(ValidationError, "route or system-timing"):
+        with self.assertRaisesRegex(ValidationError, "route evidence"):
             validate_holdout_result(value)
 
     def test_single_fpga_ppro_rejects_emuflow_cross_fpga_result(self):

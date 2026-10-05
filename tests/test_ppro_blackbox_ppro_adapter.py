@@ -92,6 +92,19 @@ class PProBlackboxPProAdapterTest(unittest.TestCase):
                     {"F11": "F0"},
                 )
 
+    def test_empty_normal_timing_report_preserves_partition_and_route_metrics(self):
+        with tempfile.TemporaryDirectory() as raw:
+            reports = self._reports(Path(raw))
+            reports["system_timing"].write_text("", encoding="utf-8")
+            metrics = parse_ppro_2026_ordinary_reports(
+                reports,
+                {"instances": 1234},
+                {"F11": "F0", "F33": "F1"},
+            )
+        self.assertEqual(metrics["resource_demand"]["lut"], 1000.0)
+        self.assertEqual(metrics["communication"]["maximum_tdm_ratio"], 16.0)
+        self.assertEqual(metrics["timing"], {})
+
 
 if __name__ == "__main__":
     unittest.main()
