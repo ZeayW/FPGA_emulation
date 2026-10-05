@@ -6,6 +6,7 @@
   "top": "aes",
   "sources": ["src/rtl/*.v"],
   "clocks": ["clk"],
+  "clock_periods_ns": {"clk": 10.0},
   "platform": "platforms/virtual/xcvu3p_2fpga_p2p.json",
   "synthesis": {
     "family": "xcup",
