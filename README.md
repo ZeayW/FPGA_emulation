@@ -1535,8 +1535,13 @@ back to every original path and writes the unchanged full-population
 merged independently, so transport legality and original-path WNS/TNS remain
 unchanged. The engine log records original and representative check counts.
 This is an exact model reduction, not a cache or a Python timing substitute.
-Unit regressions cover identity restoration and linear scaling; a new real
-large-design runtime qualification is still pending.
+Unit regressions cover identity restoration and linear scaling.  On the
+completed Koios C-LSTM physical result, an independent read-only replay of the
+binding reduced 400,000 checks to 54,898 exact representatives (7.29x) while
+binding and classification took 11.82 seconds on one HPC worker.  That replay
+did not rerun OpenSTA and is therefore compression/scalability evidence only;
+a new real large-design end-to-end OpenSTA runtime qualification is still
+pending.
 
 The exported Verilog/Liberty/SDC uses fixed-event cutpoints: launch times are
 absolute TX edges, and readiness/relay/commit deadlines are explicit. These
