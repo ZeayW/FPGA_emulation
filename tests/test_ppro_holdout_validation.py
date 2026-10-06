@@ -207,7 +207,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
         ):
             validate_holdout_result(normalized)
 
-    def test_large_holdout_cannot_skip_interconnect_reports(self):
+    def test_natural_single_fpga_large_holdout_needs_no_interconnect_reports(self):
         value = result("gemm-single", "gemm", "large", "a", 0.0)
         value["ppro"]["reports"]["route_summary"] = False
         value["ppro"]["reports"]["system_timing"] = False
@@ -220,8 +220,8 @@ class PProHoldoutValidationTest(unittest.TestCase):
         value["emuflow"]["maximum_tdm_ratio"] = 0
         value["emuflow"]["worst_cross_fpga_delay_ns"] = 0.0
         value["emuflow"]["busiest_pairs"] = []
-        with self.assertRaisesRegex(ValidationError, "route or system-timing"):
-            validate_holdout_result(value)
+        normalized = validate_holdout_result(value)
+        self.assertEqual(normalized["emuflow"]["busiest_pairs"], [])
 
     def test_unconstrained_cross_fpga_ssta_cannot_pass_holdout_gate(self):
         value = result("gemm-unconstrained", "gemm", "large", "a", 6.96)
@@ -241,8 +241,8 @@ class PProHoldoutValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "route evidence"):
             validate_holdout_result(value)
 
-    def test_single_fpga_ppro_rejects_emuflow_cross_fpga_result(self):
-        value = result("aes-mismatch", "aes", "medium", "a", 0.0)
+    def test_free_optimizers_may_choose_different_partition_counts(self):
+        value = result("aes-mismatch", "aes", "medium", "a", 10.0)
         value["ppro"]["reports"]["route_summary"] = False
         value["ppro"]["reports"]["system_timing"] = False
         value["ppro"]["metrics"]["assignments"] = [
@@ -251,8 +251,27 @@ class PProHoldoutValidationTest(unittest.TestCase):
         value["ppro"]["metrics"]["routes"] = []
         value["ppro"]["metrics"]["communication"] = {}
         value["ppro"]["metrics"]["timing"] = {}
-        with self.assertRaisesRegex(ValidationError, "disagrees with cross-FPGA"):
-            validate_holdout_result(value)
+        normalized = validate_holdout_result(value)
+        self.assertEqual(normalized["ppro"]["metrics"]["routes"], [])
+        self.assertEqual(normalized["emuflow"]["busiest_pairs"], ["F0->F1"])
+
+    def test_promotion_requires_one_natural_matched_cross_fpga_holdout(self):
+        values = self.complete_results()
+        for value in values:
+            value["ppro"]["reports"]["route_summary"] = False
+            value["ppro"]["reports"]["system_timing"] = False
+            value["ppro"]["metrics"]["assignments"] = [
+                {"partition": "P0", "fpga": "F0"}
+            ]
+            value["ppro"]["metrics"]["routes"] = []
+            value["ppro"]["metrics"]["communication"] = {}
+            value["ppro"]["metrics"]["timing"] = {}
+            value["emuflow"]["maximum_tdm_ratio"] = 0
+            value["emuflow"]["worst_cross_fpga_delay_ns"] = 0.0
+            value["emuflow"]["busiest_pairs"] = []
+        report = evaluate_holdout_promotion(values)
+        self.assertFalse(report["promoted"])
+        self.assertEqual(report["application_interconnect_gate"]["status"], "fail")
 
     def test_nvdla_final_holdout_rejects_black_box_memory(self):
         with self.assertRaisesRegex(ValidationError, "physically implementable"):

@@ -20,9 +20,8 @@ from .ppro_calibrated_platform import validate_calibrated_platform_bundle
 
 
 HOLDOUT_RESULT_SCHEMA = "emuflow.ppro-holdout-result/v4"
-PROMOTION_REPORT_SCHEMA = "emuflow.ppro-platform-promotion/v2"
+PROMOTION_REPORT_SCHEMA = "emuflow.ppro-platform-promotion/v3"
 _TIERS = {"medium", "diversity", "large", "large_primary", "very_large_final"}
-_INTERCONNECT_TIERS = {"large", "large_primary", "very_large_final"}
 _BENCHMARK_CLASS_TIERS = {
     "secworks_aes": "medium",
     "open_cpu": "diversity",
@@ -232,7 +231,7 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
     if not assignments:
         raise ValidationError("PPro holdout lacks partition assignment evidence")
     ppro_cross_fpga = len({item["fpga"] for item in assignments}) > 1
-    interconnect_required = value["tier"] in _INTERCONNECT_TIERS or ppro_cross_fpga
+    interconnect_required = ppro_cross_fpga
     ppro_routes = ppro["metrics"]["routes"]
     ppro_communication = ppro["metrics"]["communication"]
     ppro_timing = ppro["metrics"]["timing"]
@@ -348,24 +347,27 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
         "original_path_coverage": coverage,
     }
     emuflow_cross_fpga = bool(busiest_pairs)
-    if interconnect_required and (
-        not emuflow_cross_fpga
-        or normalized_emuflow["maximum_tdm_ratio"] < 1
+    if emuflow_cross_fpga and (
+        normalized_emuflow["maximum_tdm_ratio"] < 1
         or normalized_emuflow["worst_cross_fpga_delay_ns"] <= 0.0
     ):
-        raise ValidationError("EmuFlow holdout lacks required cross-FPGA evidence")
+        raise ValidationError("EmuFlow multi-FPGA holdout lacks cross-FPGA evidence")
+    if not emuflow_cross_fpga and (
+        normalized_emuflow["maximum_tdm_ratio"] != 0
+        or normalized_emuflow["worst_cross_fpga_delay_ns"] != 0.0
+    ):
+        raise ValidationError(
+            "single-FPGA EmuFlow holdout contains cross-FPGA metrics"
+        )
     if not ppro_cross_fpga and (
         ppro_routes
         or ppro_communication
         or ppro_timing
         or ppro["reports"]["route_summary"]
         or ppro["reports"]["system_timing"]
-        or emuflow_cross_fpga
-        or normalized_emuflow["maximum_tdm_ratio"] != 0
-        or normalized_emuflow["worst_cross_fpga_delay_ns"] != 0.0
     ):
         raise ValidationError(
-            "single-FPGA PPro holdout disagrees with cross-FPGA evidence"
+            "single-FPGA PPro holdout contains cross-FPGA evidence"
         )
     return {
         "schema": HOLDOUT_RESULT_SCHEMA,
@@ -595,20 +597,6 @@ def assemble_holdout_result(
         for path in paths
         if isinstance(path, Mapping) and path.get("path_scope") == "cross-fpga"
     ]
-    ppro_cross_fpga = len(
-        {item["fpga"] for item in ppro["metrics"]["assignments"]}
-    ) > 1
-    interconnect_required = (
-        _BENCHMARK_CLASS_TIERS[benchmark_class] in _INTERCONNECT_TIERS
-        or ppro_cross_fpga
-    )
-    if interconnect_required and not cross_delays:
-        raise ValidationError("holdout flow has no cross-FPGA timing paths")
-    if not ppro_cross_fpga and cross_delays:
-        raise ValidationError(
-            "single-FPGA PPro holdout disagrees with EmuFlow cross-FPGA timing"
-        )
-
     runtime = flow_report.get("runtime")
     if not isinstance(runtime, Mapping):
         raise ValidationError("holdout flow runtime report is missing")
@@ -734,23 +722,35 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
         ppro_cross_fpga = len(
             {entry["fpga"] for entry in ppro["metrics"]["assignments"]}
         ) > 1
-        ppro_tdm = _nonnegative_integer(
-            ppro["metrics"]["communication"].get(
-                "maximum_tdm_ratio", 0 if not ppro_cross_fpga else -1
-            ),
-            "PPro holdout maximum TDM ratio",
-        )
-        ppro_delay = float(
-            ppro["metrics"]["timing"].get(
-                "sr0_worst_cross_fpga_delay_ns", 0.0 if not ppro_cross_fpga else -1.0
+        emuflow_cross_fpga = bool(emuflow["busiest_pairs"])
+        interconnect_comparison_available = ppro_cross_fpga and emuflow_cross_fpga
+        if interconnect_comparison_available:
+            ppro_tdm = _nonnegative_integer(
+                ppro["metrics"]["communication"].get("maximum_tdm_ratio", -1),
+                "PPro holdout maximum TDM ratio",
             )
-        )
-        if ppro_delay < 0:
-            raise ValidationError("PPro holdout lacks worst cross-FPGA delay")
-        if ppro_delay:
-            delay_error = abs(emuflow["worst_cross_fpga_delay_ns"] - ppro_delay) / ppro_delay
+            ppro_delay = float(
+                ppro["metrics"]["timing"].get(
+                    "sr0_worst_cross_fpga_delay_ns", -1.0
+                )
+            )
+            if ppro_delay < 0:
+                raise ValidationError("PPro holdout lacks worst cross-FPGA delay")
+            if ppro_delay:
+                delay_error = (
+                    abs(emuflow["worst_cross_fpga_delay_ns"] - ppro_delay)
+                    / ppro_delay
+                )
+            else:
+                delay_error = (
+                    0.0
+                    if emuflow["worst_cross_fpga_delay_ns"] == 0.0
+                    else 1.0
+                )
+            tdm_difference = abs(emuflow["maximum_tdm_ratio"] - ppro_tdm)
         else:
-            delay_error = 0.0 if emuflow["worst_cross_fpga_delay_ns"] == 0.0 else 1.0
+            delay_error = None
+            tdm_difference = None
         complete = all(
             emuflow[name]
             for name in (
@@ -762,6 +762,11 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
             )
         ) and emuflow["original_path_coverage"] == 1.0
         ppro_pairs = _ppro_pair_order(ppro)
+        busiest_pair_order_agrees = (
+            _major_order_agreement(ppro_pairs, emuflow["busiest_pairs"])
+            if interconnect_comparison_available
+            else None
+        )
         case = {
             "id": item["id"],
             "workload_id": item["workload_id"],
@@ -771,22 +776,29 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
             "configuration_match": emuflow["configuration_match"],
             "maximum_resource_utilization_error": max(utilization_errors.values(), default=None),
             "resource_comparison_available": bool(common_resources),
-            "tdm_ratio_difference": abs(emuflow["maximum_tdm_ratio"] - ppro_tdm),
+            "ppro_cross_fpga": ppro_cross_fpga,
+            "emuflow_cross_fpga": emuflow_cross_fpga,
+            "interconnect_comparison_available": interconnect_comparison_available,
+            "tdm_ratio_difference": tdm_difference,
             "cross_fpga_delay_relative_error": delay_error,
-            "busiest_pair_order_agrees": _major_order_agreement(
-                ppro_pairs, emuflow["busiest_pairs"]
-            ),
+            "busiest_pair_order_agrees": busiest_pair_order_agrees,
             "complete_phase1_7_gate": complete,
             "global_wns_ns": emuflow["global_wns_ns"],
             "global_tns_ns": emuflow["global_tns_ns"],
         }
+        interconnect_case_passes = (
+            not interconnect_comparison_available
+            or (
+                tdm_difference <= 1
+                and delay_error <= 0.15
+                and busiest_pair_order_agrees
+            )
+        )
         case["passes"] = (
             case["configuration_match"]
             and case["resource_comparison_available"]
             and case["maximum_resource_utilization_error"] <= 0.10
-            and case["tdm_ratio_difference"] <= 1
-            and case["cross_fpga_delay_relative_error"] <= 0.15
-            and case["busiest_pair_order_agrees"]
+            and interconnect_case_passes
             and case["complete_phase1_7_gate"]
         )
         cases.append(case)
@@ -803,16 +815,25 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
     benchmark_classes = {
         case["benchmark_class"] for case in cases if case["passes"]
     }
+    application_interconnect_gate = any(
+        case["passes"] and case["interconnect_comparison_available"]
+        for case in cases
+    )
     promotion = (
         all(case["passes"] for case in cases)
         and _TIERS <= tiers
         and set(_BENCHMARK_CLASS_TIERS) <= benchmark_classes
+        and application_interconnect_gate
     )
     return {
         "schema": PROMOTION_REPORT_SCHEMA,
         "status": "pass" if promotion else "fail",
         "promoted": promotion,
         "cases": cases,
+        "application_interconnect_gate": {
+            "status": "pass" if application_interconnect_gate else "fail",
+            "requirement": "at-least-one-natural-matched-cross-fpga-holdout",
+        },
         "algorithm_ranking": {
             "status": "not-claimed",
             "reason": (

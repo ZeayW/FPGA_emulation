@@ -824,9 +824,16 @@ and NVDLA), rejects duplicate result identities and duplicate
 workload/algorithm entries, and never accepts a Phase 3--6-only claim as a
 complete validation. AES and CPU are natural single-device functional,
 resource, physical, and timing holdouts when they fit one FPGA; they are not
-forced across devices merely to manufacture communication evidence. Koios
-compute, Koios DLA, and NVDLA carry the mandatory interconnect/TDM/system-timing
-gate. PPro application holdouts use PPro's free optimizer; they
+forced across devices merely to manufacture communication evidence. The same
+rule applies to Koios and NVDLA: each flow uses its natural minimum-capacity
+selection, while every side that actually crosses FPGA boundaries must provide
+complete route, TDM, constrained system-timing, and physical evidence. Because
+PPro and EmuFlow use different partition optimizers, per-workload interconnect
+metrics are compared only when both natural solutions cross FPGA boundaries;
+promotion still requires at least one such matched application holdout. This
+keeps the application gate independent of hand-forced placement while the
+controlled microbenchmarks remain the authority for link calibration. PPro
+application holdouts use PPro's free optimizer; they
 therefore validate platform behavior per workload but cannot directly rank
 EmuFlow's internal algorithms. Optional EmuFlow variants are reported with an
 explicit `not-claimed` PPro-ranking boundary instead of manufacturing a ranking
@@ -836,8 +843,9 @@ The real sealed AES and PicoRV32 cases now pass their complete Phase 1--7
 gates with physical seed 1, standalone whole-design OpenSTA, full original-path
 coverage, legal schedules, macro-cycle equivalence, and zero DRC/unrouted
 violations.  Their global WNS/TNS values are -0.304739/-8.049072 ns and
--0.043351/-0.078053 ns respectively.  Promotion remains false until the three
-mandatory cross-FPGA classes (Koios compute, Koios DLA, and NVDLA) also pass.
+-0.043351/-0.078053 ns respectively.  Promotion remains false until all three
+large benchmark classes pass and at least one natural PPro/EmuFlow pair
+provides comparable cross-FPGA evidence.
 
 Application holdouts request PPro's documented `run_system_route -timing_budget`
 mode, generated partition RTL, and the documented
