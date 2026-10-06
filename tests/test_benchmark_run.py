@@ -26,6 +26,9 @@ KOIOS_ATTENTION_NATIVE_SPEC = (
 KOIOS_LENET_NATIVE_SPEC = (
     ROOT / "benchmarks" / "runs" / "koios_lenet_l6_native.json"
 )
+KOIOS_CLSTM_LARGE_NATIVE_SPEC = (
+    ROOT / "benchmarks" / "runs" / "koios_clstm_large_l6_native.json"
+)
 KOIOS_DLA_LARGE_NATIVE_SPEC = (
     ROOT / "benchmarks" / "runs" / "koios_dla_large_l6_native.json"
 )
@@ -149,6 +152,12 @@ class BenchmarkRunTest(unittest.TestCase):
                 KOIOS_LENET_NATIVE_SPEC,
                 "myproject",
                 "lenet.v",
+                "koios_compute",
+            ),
+            (
+                KOIOS_CLSTM_LARGE_NATIVE_SPEC,
+                "C_LSTM_datapath",
+                "clstm_like.large.v",
                 "koios_compute",
             ),
             (
