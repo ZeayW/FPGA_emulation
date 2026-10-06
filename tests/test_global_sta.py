@@ -5,7 +5,8 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.global_sta import (
-    EventCheck, adopt_opensta_results, bind_physical_checks, compare_system_timing, export_event_checks,
+    EventCheck, _compress_path_equivalent_checks, _write_expanded_measurements,
+    adopt_opensta_results, bind_physical_checks, compare_system_timing, export_event_checks,
     read_engine_identity, read_measurements, run_event_checks, validate_checks,
 )
 
@@ -112,6 +113,43 @@ def test_check_population_validation_is_linear():
     rows = [EventCheck(str(i), role, "end", 0, (1,), 2)
             for i in range(20000) for role in ("target", "runtime")]
     assert len(validate_checks(rows)) == 40000
+
+
+def test_exact_compression_uses_complete_path_bundles(tmp_path):
+    first = example()
+    second = [EventCheck("q", row.role, f"q-{row.event}", row.launch_ns,
+                         row.arcs_ns, row.required_ns) for row in first]
+    changed = [EventCheck("r", row.role, f"r-{row.event}", row.launch_ns,
+                          row.arcs_ns, row.required_ns) for row in first]
+    changed[0] = EventCheck("r", "tx", "r-first", 0, (3.25,), 4)
+    rows = validate_checks(first + second + changed)
+    representatives, mapping = _compress_path_equivalent_checks(rows)
+    assert representatives == first + changed
+    assert mapping == list(range(5)) + list(range(5)) + list(range(5, 10))
+
+    values = [{"path": row.path, "role": row.role, "event": row.event,
+               "arrival_ns": row.launch_ns + sum(row.arcs_ns),
+               "required_ns": row.required_ns,
+               "slack_ns": row.required_ns-row.launch_ns-sum(row.arcs_ns)}
+              for row in representatives]
+    output = tmp_path / "measurements.tsv"
+    _write_expanded_measurements(output, rows, values, mapping)
+    expanded = read_measurements(output, rows)
+    assert len(expanded) == len(rows)
+    assert expanded[5]["path"] == "q"
+    assert expanded[5]["event"] == "q-first"
+    assert expanded[5]["slack_ns"] == expanded[0]["slack_ns"]
+
+
+def test_exact_compression_scales_for_repeated_path_classes():
+    rows = [EventCheck(f"p{i}", role, f"{role}-{i}", 0, (1, 2), deadline)
+            for i in range(20000)
+            for role, deadline in (("target", 4), ("runtime", 40))]
+    rows = validate_checks(rows)
+    representatives, mapping = _compress_path_equivalent_checks(rows)
+    assert len(representatives) == 2
+    assert len(mapping) == len(rows)
+    assert set(mapping) == {0, 1}
 
 
 def test_comparison_checks_each_path_and_event():

@@ -196,9 +196,74 @@ def read_measurements(path: Path, rows: list[EventCheck], *, verify_arcs=True) -
              "slack_ns": values[f"o{i}"][2]} for i, r in enumerate(rows)]
 
 
+def _compress_path_equivalent_checks(
+        rows: list[EventCheck]) -> tuple[list[EventCheck], list[int]]:
+    """Deduplicate complete, numerically identical original-path bundles.
+
+    Every exported check is an independent timing chain.  Two original paths
+    therefore have identical OpenSTA results exactly when their ordered
+    target/runtime/transport check bundles have the same role, launch, arcs
+    and deadline.  Event and path identities are deliberately excluded from
+    the numerical signature, but the whole bundle is the unit of compression:
+    individual TX, commit or observation rows are never merged in isolation.
+    """
+    path_indices: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        path_indices.setdefault(row.path, []).append(index)
+
+    representatives: list[EventCheck] = []
+    representative_bundles: dict[tuple, tuple[int, ...]] = {}
+    original_to_representative = [-1] * len(rows)
+    for indices in path_indices.values():
+        signature = tuple(
+            (rows[index].role, rows[index].launch_ns,
+             rows[index].arcs_ns, rows[index].required_ns)
+            for index in indices
+        )
+        representative_indices = representative_bundles.get(signature)
+        if representative_indices is None:
+            start = len(representatives)
+            representatives.extend(rows[index] for index in indices)
+            representative_indices = tuple(range(start, len(representatives)))
+            representative_bundles[signature] = representative_indices
+        for index, representative_index in zip(indices, representative_indices):
+            original_to_representative[index] = representative_index
+    if any(index < 0 for index in original_to_representative):
+        raise ValidationError("global STA path compression lost a timing check")
+    return representatives, original_to_representative
+
+
+def _write_expanded_measurements(path: Path, rows: list[EventCheck],
+                                 representative_values: list[dict],
+                                 original_to_representative: list[int]) -> None:
+    """Restore the canonical full-population TSV from OpenSTA scalars."""
+    if len(original_to_representative) != len(rows):
+        raise ValidationError("global STA expansion population disagrees")
+    with path.open("w") as stream:
+        stream.write("endpoint\tarrival_ns\trequired_ns\tslack_ns\n")
+        for index, (row, representative_index) in enumerate(
+                zip(rows, original_to_representative)):
+            try:
+                value = representative_values[representative_index]
+            except IndexError as exc:
+                raise ValidationError(
+                    "global STA expansion references a missing representative"
+                ) from exc
+            local_arrival = value["arrival_ns"] - row.launch_ns
+            local_required = value["required_ns"] - row.launch_ns
+            stream.write(
+                f"o{index}\t{local_arrival:.17g}\t{local_required:.17g}\t"
+                f"{value['slack_ns']:.17g}\n"
+            )
+
+
 def run_event_checks(checks: Iterable[EventCheck], directory: Path,
                      executable: str | None = None, *, verify_arcs=True) -> list[dict]:
-    rows = export_event_checks(checks, directory)
+    rows = validate_checks(checks)
+    representatives, original_to_representative = (
+        _compress_path_equivalent_checks(rows)
+    )
+    export_event_checks(representatives, directory)
     tool = resolve_native_executable("sta", executable)
     engine = require_opensta_engine(tool)
     output = directory / "measurements.tsv"
@@ -216,6 +281,18 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
                                 stdout=log, stderr=subprocess.STDOUT, check=False)
     if result.returncode or not output.is_file():
         raise ValidationError("global OpenSTA failed; see opensta.log")
+    representative_values = read_measurements(
+        output, representatives, verify_arcs=verify_arcs
+    )
+    _write_expanded_measurements(
+        output, rows, representative_values, original_to_representative
+    )
+    with (directory / "opensta.log").open("a") as log:
+        log.write(
+            "EmuFlow exact path-bundle compression "
+            f"original_checks={len(rows)} "
+            f"representative_checks={len(representatives)}\n"
+        )
     return read_measurements(output, rows, verify_arcs=verify_arcs)
 
 

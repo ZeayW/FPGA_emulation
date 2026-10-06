@@ -1524,6 +1524,20 @@ The same engine/path options are available on `multi-fpga compile` for a fresh c
 physical flow. Its terminal validator reconstructs the binding and verifies
 the retained engine scalars; it does not invoke OpenSTA a second time.
 
+Large designs can contain hundreds of thousands of original paths whose full
+event-check bundles are numerically identical. Because the exported OpenSTA
+model is a disjoint union of independent chains, production execution now
+deduplicates only complete path bundles with identical ordered roles, launch
+times, measured arcs, and deadlines. OpenSTA evaluates one representative for
+each exact numerical class; EmuFlow then expands those engine-produced scalars
+back to every original path and writes the unchanged full-population
+`measurements.tsv`. Individual TX, commit, target, or runtime rows are never
+merged independently, so transport legality and original-path WNS/TNS remain
+unchanged. The engine log records original and representative check counts.
+This is an exact model reduction, not a cache or a Python timing substitute.
+Unit regressions cover identity restoration and linear scaling; a new real
+large-design runtime qualification is still pending.
+
 The exported Verilog/Liberty/SDC uses fixed-event cutpoints: launch times are
 absolute TX edges, and readiness/relay/commit deadlines are explicit. These
 are a timing abstraction of transport registers, not synthesizable RTL.
