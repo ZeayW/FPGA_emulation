@@ -152,6 +152,46 @@ def test_exact_compression_scales_for_repeated_path_classes():
     assert set(mapping) == {0, 1}
 
 
+def test_run_event_checks_expands_engine_representatives(tmp_path, monkeypatch):
+    import emuflow.global_sta as sta
+
+    first = example()[:4]
+    # Keep target/runtime plus both TX legality checks as one complete bundle.
+    second = [EventCheck("q", row.role, f"q-{row.event}", row.launch_ns,
+                         row.arcs_ns, row.required_ns) for row in first]
+    monkeypatch.setattr(sta, "resolve_native_executable",
+                        lambda name, executable: "/test/sta")
+    monkeypatch.setattr(sta, "require_opensta_engine",
+                        lambda tool: {"executable_sha256": "a" * 64})
+
+    def engine(command, *, cwd, stdout, stderr, check):
+        assert command == ["/test/sta", "-exit", "analyze.tcl"]
+        assert (cwd / "global_timing.v").read_text().count("input i") == 4
+        representatives = first
+        (cwd / "measurements.tsv").write_text(
+            "endpoint\tarrival_ns\trequired_ns\tslack_ns\n" +
+            "".join(
+                f"o{i}\t{sum(row.arcs_ns)}\t"
+                f"{row.required_ns-row.launch_ns}\t"
+                f"{row.required_ns-row.launch_ns-sum(row.arcs_ns)}\n"
+                for i, row in enumerate(representatives)
+            )
+        )
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr(sta.subprocess, "run", engine)
+    values = run_event_checks(first + second, tmp_path)
+    assert len(values) == 8
+    assert values[4]["path"] == "q"
+    assert values[4]["event"] == "q-first"
+    assert values[4]["slack_ns"] == values[0]["slack_ns"]
+    assert len((tmp_path / "measurements.tsv").read_text().splitlines()) == 9
+    assert (tmp_path / "opensta.log").read_text().splitlines()[-1] == (
+        "EmuFlow exact path-bundle compression "
+        "original_checks=8 representative_checks=4"
+    )
+
+
 def test_comparison_checks_each_path_and_event():
     reference = {"timing_scope": "cross-fpga-subset", "paths": [{
         "path": "p", "system_delay_bound_ns": 31.5,
