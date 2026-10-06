@@ -72,13 +72,22 @@ def normalize_vtr_hard_block_json(
     removed = set()
     grouped_cells: Dict[str, Dict[str, Any]] = {}
     atom_count = 0
+    compacted_memory_groups = 0
     for (prefix, atom_type), raw_group in sorted(memory_groups.items()):
         group = sorted(raw_group)
         indices = [item[0] for item in group]
-        if indices != list(range(len(group))):
+        if len(indices) != len(set(indices)):
             raise ValidationError(
-                f"VTR memory {prefix!r} has non-contiguous bit atoms {indices}"
+                f"VTR memory {prefix!r} has duplicate bit atoms {indices}"
             )
+        # Yosys may delete unused or constant memory bit slices while the
+        # surviving one-bit VTR atoms retain their original indices (for
+        # example, bits[2]..bits[15]).  The index is only a grouping/ordering
+        # key: these atoms are independent one-bit memories sharing address
+        # and control ports.  Compacting the live atoms into a narrower word
+        # macro preserves all observable behavior and the physical BRAM count.
+        if indices != list(range(len(group))):
+            compacted_memory_groups += 1
         for _, name, _ in group:
             removed.add(name)
         atom_count += len(group)
@@ -161,6 +170,7 @@ def normalize_vtr_hard_block_json(
             "attributes": {
                 "emuflow_hard_macro": "1",
                 "emuflow_vtr_atom_count": str(len(group)),
+                "emuflow_vtr_atom_indices": ",".join(map(str, indices)),
                 "emuflow_vtr_atoms": ",".join(
                     item[1] for item in group
                 ),
@@ -203,5 +213,6 @@ def normalize_vtr_hard_block_json(
         "multiplier_macros": multiplier_count,
         "memory_macros": len(grouped_cells),
         "memory_atoms_collapsed": atom_count,
+        "memory_compacted_groups": compacted_memory_groups,
         "output": str(output_path),
     }

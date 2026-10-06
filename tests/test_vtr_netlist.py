@@ -118,6 +118,7 @@ class VtrNetlistTest(unittest.TestCase):
             value = read_json(normalized)
             cells = value["modules"]["top"]["cells"]
             self.assertEqual(report["memory_atoms_collapsed"], 2)
+            self.assertEqual(report["memory_compacted_groups"], 0)
             self.assertEqual(report["memory_macros"], 1)
             self.assertEqual(report["multiplier_macros"], 1)
             self.assertEqual(len(cells), 3)
@@ -130,6 +131,9 @@ class VtrNetlistTest(unittest.TestCase):
             self.assertEqual(memory["parameters"]["DATA_WIDTH"], 2)
             self.assertEqual(memory["parameters"]["DEPTH"], 4)
             self.assertEqual(memory["connections"]["data"], [18, 7])
+            self.assertEqual(
+                memory["attributes"]["emuflow_vtr_atom_indices"], "0,1"
+            )
 
             ir = import_yosys_json(normalized, top="top", clocks=["clk"])
             resources = ir.resource_totals().to_dict()
@@ -159,6 +163,36 @@ class VtrNetlistTest(unittest.TestCase):
                     for net in ram_input_nets
                 )
             )
+
+    def test_optimized_memory_bit_indices_are_compacted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "raw.json"
+            normalized = root / "normalized.json"
+            value = _raw_vtr_json()
+            cells = value["modules"]["top"]["cells"]
+            for old_index, new_index in ((0, 2), (1, 5)):
+                old_name = f"memory.0.0.bits[{old_index}].bit_cell"
+                new_name = f"memory.0.0.bits[{new_index}].bit_cell"
+                cells[new_name] = cells.pop(old_name)
+            write_json(source, value)
+
+            report = normalize_vtr_hard_block_json(
+                source, normalized, top="top"
+            )
+            memory = read_json(normalized)["modules"]["top"]["cells"][
+                "memory.0.0.memory_macro"
+            ]
+
+            self.assertEqual(report["memory_atoms_collapsed"], 2)
+            self.assertEqual(report["memory_compacted_groups"], 1)
+            self.assertEqual(memory["parameters"]["DATA_WIDTH"], 2)
+            self.assertEqual(memory["connections"]["data"], [18, 7])
+            self.assertEqual(
+                memory["attributes"]["emuflow_vtr_atom_indices"], "2,5"
+            )
+            ir = import_yosys_json(normalized, top="top", clocks=["clk"])
+            self.assertEqual(ir.resource_totals().to_dict()["bram"], 1)
 
     def test_cycle_model_accepts_vtr_hard_macros(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

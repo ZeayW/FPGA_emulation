@@ -706,6 +706,14 @@ contracts are PicoRV32 (`open_cpu`), secworks AES (`secworks_aes`), native
 Koios GEMM/attention/LeNet (`koios_compute`), native Koios DLA-large (`koios_dla`),
 and the generated NVDLA contract (`nvdla`).  Older logic-only Koios contracts
 remain integration fixtures and cannot satisfy a promotion tier.
+
+The VTR hard-block importer accepts Yosys-optimized memory atom sets whose
+surviving bit indices do not start at zero or contain gaps. It orders and
+compacts only the live one-bit atoms into a word macro, records the original
+indices for audit, and preserves one physical BRAM resource. This covers real
+designs where synthesis removes constant or unused memory bit slices without
+recreating those dead slices as logic or storage.
+
 The local renderer and tamper tests pass; acceptance of these standard
 filelist options by the authorized PPro installation remains a required real
 black-box probe before NVDLA is launched.
