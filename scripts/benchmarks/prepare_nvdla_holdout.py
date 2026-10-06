@@ -40,6 +40,70 @@ DEFINES = [
     "NVDLA_PDP_ENABLE",
     "NVDLA_RUBIK_ENABLE",
 ]
+NVDLA_CSB_INPUTS = [
+    "csb2nvdla_valid",
+    "csb2nvdla_addr",
+    "csb2nvdla_wdat",
+    "csb2nvdla_write",
+    "csb2nvdla_nposted",
+]
+NVDLA_CSB_OUTPUTS = [
+    "csb2nvdla_ready",
+    "nvdla2csb_valid",
+    "nvdla2csb_data",
+    "nvdla2csb_wr_complete",
+]
+NVDLA_CORE_INPUTS = [
+    "nvdla_core2dbb_aw_awready",
+    "nvdla_core2dbb_w_wready",
+    "nvdla_core2dbb_b_bvalid",
+    "nvdla_core2dbb_b_bid",
+    "nvdla_core2dbb_ar_arready",
+    "nvdla_core2dbb_r_rvalid",
+    "nvdla_core2dbb_r_rid",
+    "nvdla_core2dbb_r_rlast",
+    "nvdla_core2dbb_r_rdata",
+    "nvdla_core2cvsram_aw_awready",
+    "nvdla_core2cvsram_w_wready",
+    "nvdla_core2cvsram_b_bvalid",
+    "nvdla_core2cvsram_b_bid",
+    "nvdla_core2cvsram_ar_arready",
+    "nvdla_core2cvsram_r_rvalid",
+    "nvdla_core2cvsram_r_rid",
+    "nvdla_core2cvsram_r_rlast",
+    "nvdla_core2cvsram_r_rdata",
+]
+NVDLA_CORE_OUTPUTS = [
+    "nvdla_core2dbb_aw_awvalid",
+    "nvdla_core2dbb_aw_awid",
+    "nvdla_core2dbb_aw_awlen",
+    "nvdla_core2dbb_aw_awaddr",
+    "nvdla_core2dbb_w_wvalid",
+    "nvdla_core2dbb_w_wdata",
+    "nvdla_core2dbb_w_wstrb",
+    "nvdla_core2dbb_w_wlast",
+    "nvdla_core2dbb_b_bready",
+    "nvdla_core2dbb_ar_arvalid",
+    "nvdla_core2dbb_ar_arid",
+    "nvdla_core2dbb_ar_arlen",
+    "nvdla_core2dbb_ar_araddr",
+    "nvdla_core2dbb_r_rready",
+    "nvdla_core2cvsram_aw_awvalid",
+    "nvdla_core2cvsram_aw_awid",
+    "nvdla_core2cvsram_aw_awlen",
+    "nvdla_core2cvsram_aw_awaddr",
+    "nvdla_core2cvsram_w_wvalid",
+    "nvdla_core2cvsram_w_wdata",
+    "nvdla_core2cvsram_w_wstrb",
+    "nvdla_core2cvsram_w_wlast",
+    "nvdla_core2cvsram_b_bready",
+    "nvdla_core2cvsram_ar_arvalid",
+    "nvdla_core2cvsram_ar_arid",
+    "nvdla_core2cvsram_ar_arlen",
+    "nvdla_core2cvsram_ar_araddr",
+    "nvdla_core2cvsram_r_rready",
+    "dla_intr",
+]
 _CPP_DIRECTIVE = re.compile(r"^#(ifdef|ifndef|else|endif)", re.MULTILINE)
 
 
@@ -194,6 +258,32 @@ def prepare_nvdla_holdout(
         "sources": relative_sources,
         "clocks": ["dla_core_clk", "dla_csb_clk"],
         "clock_periods_ns": {"dla_core_clk": 10.0, "dla_csb_clk": 10.0},
+        "timing_io": {
+            "input_groups": [
+                {
+                    "clock": "dla_core_clk",
+                    "delay_ns": 0.0,
+                    "ports": NVDLA_CORE_INPUTS,
+                },
+                {
+                    "clock": "dla_csb_clk",
+                    "delay_ns": 0.0,
+                    "ports": NVDLA_CSB_INPUTS,
+                },
+            ],
+            "output_groups": [
+                {
+                    "clock": "dla_core_clk",
+                    "delay_ns": 0.0,
+                    "ports": NVDLA_CORE_OUTPUTS,
+                },
+                {
+                    "clock": "dla_csb_clk",
+                    "delay_ns": 0.0,
+                    "ports": NVDLA_CSB_OUTPUTS,
+                },
+            ],
+        },
         "platform": platform,
         "synthesis": {
             "family": "xcup",

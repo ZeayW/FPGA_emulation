@@ -268,6 +268,30 @@ endmodule
             self.assertEqual(
                 spec.value["calibration_holdout_class"], "nvdla"
             )
+            self.assertEqual(
+                {
+                    group["clock"]
+                    for group in spec.value["timing_io"]["input_groups"]
+                },
+                {"dla_core_clk", "dla_csb_clk"},
+            )
+            self.assertEqual(
+                {
+                    group["clock"]
+                    for group in spec.value["timing_io"]["output_groups"]
+                },
+                {"dla_core_clk", "dla_csb_clk"},
+            )
+            constrained_ports = {
+                port
+                for direction in ("input_groups", "output_groups")
+                for group in spec.value["timing_io"][direction]
+                for port in group["ports"]
+            }
+            self.assertNotIn("dla_reset_rstn", constrained_ports)
+            self.assertNotIn("test_mode", constrained_ports)
+            self.assertIn("nvdla_core2dbb_r_rdata", constrained_ports)
+            self.assertIn("nvdla2csb_data", constrained_ports)
             sources = spec.resolve_sources(source)
             self.assertNotIn(
                 (source / "vmod" / "vlibs" / "NV_DW_lsd.v").resolve(), sources

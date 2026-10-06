@@ -122,6 +122,22 @@ class PProBlackboxConstraintsTest(unittest.TestCase):
                             {"port": "clk", "period_ns": 10.0},
                             {"port": "aux_clk", "period_ns": 20.0},
                         ],
+                        "timing_io": {
+                            "input_groups": [
+                                {
+                                    "clock": "clk",
+                                    "delay_ns": 0.0,
+                                    "ports": ["request", "payload"],
+                                }
+                            ],
+                            "output_groups": [
+                                {
+                                    "clock": "aux_clk",
+                                    "delay_ns": 1.25,
+                                    "ports": ["response"],
+                                }
+                            ],
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -132,8 +148,39 @@ class PProBlackboxConstraintsTest(unittest.TestCase):
                 [
                     "create_clock -name {clk} -period 10.000000000 [get_ports {clk}]",
                     "create_clock -name {aux_clk} -period 20.000000000 [get_ports {aux_clk}]",
+                    "set_input_delay 0.000000000 -clock [get_clocks {clk}] "
+                    "[get_ports {request payload}]",
+                    "set_output_delay 1.250000000 -clock [get_clocks {aux_clk}] "
+                    "[get_ports {response}]",
                 ],
             )
+
+    def test_timing_io_rejects_unknown_clock_and_duplicate_port(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "constraints.json"
+            base = {
+                "control_mode": "none",
+                "documented_actions": [],
+                "seed": 1,
+                "timing_clocks": [{"port": "clk", "period_ns": 10.0}],
+                "timing_io": {
+                    "input_groups": [
+                        {"clock": "other", "delay_ns": 0.0, "ports": ["d"]}
+                    ],
+                    "output_groups": [],
+                },
+            }
+            source.write_text(json.dumps(base), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "undeclared timing clock"):
+                render_ppro_timing_sdc(source, root / "timing.sdc")
+            base["timing_io"]["input_groups"] = [
+                {"clock": "clk", "delay_ns": 0.0, "ports": ["d"]},
+                {"clock": "clk", "delay_ns": 1.0, "ports": ["d"]},
+            ]
+            source.write_text(json.dumps(base), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "repeat a port"):
+                render_ppro_timing_sdc(source, root / "timing.sdc")
 
     def test_real_probe_constraints_all_render_without_private_database_input(self):
         with tempfile.TemporaryDirectory() as raw:

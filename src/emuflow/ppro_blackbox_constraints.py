@@ -80,14 +80,18 @@ def parse_logical_targets(values: list[str]) -> Dict[str, str]:
 
 def _validated_constraints(
     documented_constraints_path: Path,
-) -> tuple[Mapping[str, Any], list[tuple[str, float]]]:
+) -> tuple[
+    Mapping[str, Any],
+    list[tuple[str, float]],
+    Dict[str, list[tuple[str, float, list[str]]]],
+]:
     constraints = _object(
         read_json(documented_constraints_path.resolve()), "documented constraints"
     )
     _strict_keys(
         constraints,
         {"control_mode", "documented_actions", "seed"},
-        {"assignments", "forced_tdm_ratio", "timing_clocks"},
+        {"assignments", "forced_tdm_ratio", "timing_clocks", "timing_io"},
         "documented constraints",
     )
     if constraints["control_mode"] not in {"none", "fixed_assignment"}:
@@ -149,7 +153,76 @@ def _validated_constraints(
             )
         seen_clock_ports.add(port)
         normalized_clocks.append((port, float(period)))
-    return constraints, normalized_clocks
+    normalized_io: Dict[str, list[tuple[str, float, list[str]]]] = {
+        "input_groups": [],
+        "output_groups": [],
+    }
+    raw_timing_io = constraints.get("timing_io")
+    if raw_timing_io is not None:
+        timing_io = _object(raw_timing_io, "documented timing I/O")
+        _strict_keys(
+            timing_io,
+            {"input_groups", "output_groups"},
+            set(),
+            "documented timing I/O",
+        )
+        clock_ports = {port for port, _ in normalized_clocks}
+        for direction in ("input", "output"):
+            groups = timing_io[f"{direction}_groups"]
+            if not isinstance(groups, list):
+                raise ValidationError(
+                    f"documented timing I/O {direction} groups must be an array"
+                )
+            seen_ports: set[str] = set()
+            for index, raw_group in enumerate(groups):
+                context = f"documented timing I/O {direction} group {index}"
+                group = _object(raw_group, context)
+                _strict_keys(
+                    group,
+                    {"clock", "delay_ns", "ports"},
+                    set(),
+                    context,
+                )
+                clock = group["clock"]
+                delay = group["delay_ns"]
+                ports = group["ports"]
+                if clock not in clock_ports:
+                    raise ValidationError(
+                        f"{context}: references an undeclared timing clock"
+                    )
+                if (
+                    isinstance(delay, bool)
+                    or not isinstance(delay, (int, float))
+                    or float(delay) < 0.0
+                    or float(delay) != float(delay)
+                    or float(delay) == float("inf")
+                ):
+                    raise ValidationError(
+                        f"{context}: delay must be finite and nonnegative"
+                    )
+                if (
+                    not isinstance(ports, list)
+                    or not ports
+                    or not all(
+                        isinstance(port, str)
+                        and _HDL_IDENTIFIER.fullmatch(port) is not None
+                        for port in ports
+                    )
+                    or len(ports) != len(set(ports))
+                    or any(port in clock_ports for port in ports)
+                ):
+                    raise ValidationError(
+                        f"{context}: ports must be unique non-clock HDL identifiers"
+                    )
+                if seen_ports.intersection(ports):
+                    raise ValidationError(
+                        f"documented timing I/O {direction} groups repeat a port"
+                    )
+                seen_ports.update(ports)
+                normalized_io[f"{direction}_groups"].append(
+                    (clock, float(delay), list(ports))
+                )
+    return constraints, normalized_clocks, normalized_io
 
 
 def render_ppro_timing_sdc(
@@ -158,7 +231,9 @@ def render_ppro_timing_sdc(
 ) -> None:
     """Render benchmark clocks as a bounded standard SDC timing context."""
 
-    _, timing_clocks = _validated_constraints(documented_constraints_path)
+    _, timing_clocks, timing_io = _validated_constraints(
+        documented_constraints_path
+    )
     if not timing_clocks:
         raise ValidationError(
             "PPro application timing qualification requires documented clocks"
@@ -174,6 +249,21 @@ def render_ppro_timing_sdc(
             + port
             + "}]"
         )
+    for direction, command in (
+        ("input", "set_input_delay"),
+        ("output", "set_output_delay"),
+    ):
+        for clock, delay, ports in timing_io[f"{direction}_groups"]:
+            lines.append(
+                command
+                + " "
+                + f"{delay:.9f}"
+                + " -clock [get_clocks {"
+                + clock
+                + "}] [get_ports {"
+                + " ".join(ports)
+                + "}]"
+            )
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -184,7 +274,7 @@ def render_ppro_prepartition_constraints(
 ) -> None:
     """Render only fixed instance assignments from a generated constraint JSON."""
 
-    constraints, _ = _validated_constraints(documented_constraints_path)
+    constraints, _, _ = _validated_constraints(documented_constraints_path)
     actions = constraints["documented_actions"]
     raw_assignments = constraints.get("assignments", [])
     if not isinstance(raw_assignments, list):

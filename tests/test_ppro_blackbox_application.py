@@ -91,7 +91,8 @@ class PProBlackboxApplicationTest(unittest.TestCase):
             source_root = root / "source"
             source_root.mkdir()
             (source_root / "top.v").write_text(
-                "module top(input wire clk, output reg q); always @(posedge clk) q <= ~q; endmodule\n",
+                "module top(input wire clk, input wire d, output reg q); "
+                "always @(posedge clk) q <= d; endmodule\n",
                 encoding="utf-8",
             )
             benchmark = root / "benchmark.json"
@@ -106,6 +107,14 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                         "sources": ["*.v"],
                         "clocks": ["clk"],
                         "clock_periods_ns": {"clk": 10.0},
+                        "timing_io": {
+                            "input_groups": [
+                                {"clock": "clk", "delay_ns": 0.0, "ports": ["d"]}
+                            ],
+                            "output_groups": [
+                                {"clock": "clk", "delay_ns": 0.0, "ports": ["q"]}
+                            ],
+                        },
                         "platform": "unused-by-ppro.json",
                         "synthesis": {"family": "xcup", "policy": "logic-only"},
                     }
@@ -147,6 +156,17 @@ class PProBlackboxApplicationTest(unittest.TestCase):
             self.assertEqual(
                 constraints["timing_clocks"],
                 [{"period_ns": 10.0, "port": "clk"}],
+            )
+            self.assertEqual(
+                constraints["timing_io"],
+                {
+                    "input_groups": [
+                        {"clock": "clk", "delay_ns": 0.0, "ports": ["d"]}
+                    ],
+                    "output_groups": [
+                        {"clock": "clk", "delay_ns": 0.0, "ports": ["q"]}
+                    ],
+                },
             )
 
     def test_source_change_changes_rtl_identity(self):
@@ -224,6 +244,60 @@ class PProBlackboxApplicationTest(unittest.TestCase):
             )
             first = generate_application_holdout_bundle(root / "one", **kwargs)
             value["clock_periods_ns"]["clk"] = 8.0
+            benchmark.write_text(json.dumps(value), encoding="utf-8")
+            second = generate_application_holdout_bundle(root / "two", **kwargs)
+            self.assertEqual(
+                first.run_spec["workload"]["rtl_sha256"],
+                second.run_spec["workload"]["rtl_sha256"],
+            )
+            self.assertNotEqual(
+                first.run_spec["workload"]["parameters_sha256"],
+                second.run_spec["workload"]["parameters_sha256"],
+            )
+
+    def test_timing_io_changes_compilation_identity_not_rtl_identity(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "source"
+            source_root.mkdir()
+            (source_root / "top.v").write_text(
+                "module top(input clk, input d, output reg q); "
+                "always @(posedge clk) q <= d; endmodule\n",
+                encoding="utf-8",
+            )
+            benchmark = root / "benchmark.json"
+            value = {
+                "schema": "emuflow.benchmark-run/v1",
+                "id": "io_identity",
+                "design_id": "io_identity",
+                "calibration_holdout_class": "open_cpu",
+                "top": "top",
+                "sources": ["top.v"],
+                "clocks": ["clk"],
+                "clock_periods_ns": {"clk": 10.0},
+                "timing_io": {
+                    "input_groups": [
+                        {"clock": "clk", "delay_ns": 0.0, "ports": ["d"]}
+                    ],
+                    "output_groups": [
+                        {"clock": "clk", "delay_ns": 0.0, "ports": ["q"]}
+                    ],
+                },
+                "platform": "unused.json",
+                "synthesis": {"family": "xcup", "policy": "logic-only"},
+            }
+            benchmark.write_text(json.dumps(value), encoding="utf-8")
+            kwargs = dict(
+                benchmark_run_path=benchmark,
+                source_root=source_root,
+                campaign_id="blind",
+                public_prior_id="prior-v1",
+                configuration_id="platform-v1",
+                tool_release="2026.1",
+                runner_revision="d" * 64,
+            )
+            first = generate_application_holdout_bundle(root / "one", **kwargs)
+            value["timing_io"]["input_groups"][0]["delay_ns"] = 1.0
             benchmark.write_text(json.dumps(value), encoding="utf-8")
             second = generate_application_holdout_bundle(root / "two", **kwargs)
             self.assertEqual(

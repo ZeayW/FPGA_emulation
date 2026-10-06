@@ -106,6 +106,7 @@ def benchmark_rtl_identity(
         ),
         "clocks": benchmark.value["clocks"],
         "clock_periods_ns": benchmark.value.get("clock_periods_ns"),
+        "timing_io": benchmark.value.get("timing_io"),
         "rtl_inputs": rtl_inputs,
         "top": benchmark.value["top"],
     }
@@ -125,6 +126,7 @@ def benchmark_rtl_identity(
         "top_module": benchmark.value["top"],
         "clocks": benchmark.value["clocks"],
         "clock_periods_ns": benchmark.value.get("clock_periods_ns"),
+        "timing_io": benchmark.value.get("timing_io"),
         "calibration_holdout_class": benchmark.value.get(
             "calibration_holdout_class"
         ),
@@ -174,6 +176,8 @@ def generate_application_holdout_bundle(
             for clock in identity["clocks"]
         ],
     }
+    if identity["timing_io"] is not None:
+        constraints["timing_io"] = identity["timing_io"]
 
     root = output_dir.resolve()
     root.mkdir(parents=True, exist_ok=True)

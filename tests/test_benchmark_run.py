@@ -227,6 +227,28 @@ class BenchmarkRunTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "clock_periods_ns"):
             BenchmarkRun(value)
 
+    def test_timing_io_contract_is_clock_bound_and_disjoint(self) -> None:
+        value = json.loads(SECWORKS_AES_SPEC.read_text(encoding="utf-8"))
+        value["timing_io"] = {
+            "input_groups": [
+                {"clock": "other", "delay_ns": 0.0, "ports": ["address"]}
+            ],
+            "output_groups": [],
+        }
+        with self.assertRaisesRegex(ValidationError, "undeclared clock"):
+            BenchmarkRun(value)
+        value["timing_io"]["input_groups"] = [
+            {"clock": "clk", "delay_ns": 0.0, "ports": ["address"]},
+            {"clock": "clk", "delay_ns": 1.0, "ports": ["address"]},
+        ]
+        with self.assertRaisesRegex(ValidationError, "duplicate ports"):
+            BenchmarkRun(value)
+        value["timing_io"]["input_groups"] = [
+            {"clock": "clk", "delay_ns": 0.0, "ports": ["clk"]}
+        ]
+        with self.assertRaisesRegex(ValidationError, "clock ports"):
+            BenchmarkRun(value)
+
     def test_unknown_physical_mapping_profile_is_rejected(self) -> None:
         value = json.loads(KOIOS_DLA_MEDIUM_SPEC.read_text(encoding="utf-8"))
         value["physical_mapping_profile"] = "implicit"

@@ -866,6 +866,26 @@ keeps the diagnostic sufficient to distinguish one exceptional interface path
 from a wholly unconstrained report without retaining or publishing the raw
 vendor report.
 
+A fresh physical-memory NVDLA black-box run with the corrected compile-time SDC
+and post-partition `gr0` SSTA path passed in 844.62 seconds. PPro selected three
+logical partitions and reported four directed one-hop routes, 684 crossing
+signals, maximum TDM ratio 8, and 51.66 ns worst data-arrival delay. The new
+coverage counters showed that all 1,521 reported cross-FPGA paths were
+unconstrained, however, so this result is retained as route/TDM evidence and is
+explicitly rejected as timing or platform-promotion evidence.
+
+Benchmark contracts may now declare an explicit `timing_io` environment. Each
+input/output group names its design clock, finite nonnegative external delay,
+and exact top-level data ports; the contract is included in the workload
+identity and rendered as standard `set_input_delay`/`set_output_delay` SDC.
+Clock, reset, test, clock-gating, and power-control ports are never swept into a
+catch-all collection. The NVDLA preparer binds the public CSB interface to
+`dla_csb_clk`, the public DBB/CVSRAM data interfaces and interrupt to
+`dla_core_clk`, and uses a documented zero-delay ideal synchronous environment
+for this calibration probe. This is a research timing-environment assumption,
+not a measured board property. It must pass a fresh ordinary PPro run before it
+can replace the rejected unconstrained observation.
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both

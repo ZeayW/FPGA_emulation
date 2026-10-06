@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -31,6 +32,7 @@ VALID_CALIBRATION_HOLDOUT_CLASSES = {
     "koios_dla",
     "nvdla",
 }
+_HDL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
 
 def _required_string(value: Mapping[str, Any], key: str, context: str) -> str:
@@ -69,6 +71,70 @@ def _relative_path(value: str, context: str) -> str:
     return path.as_posix()
 
 
+def _validate_timing_io(value: Any, clocks: List[str]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict) or set(value) != {
+        "input_groups",
+        "output_groups",
+    }:
+        raise ValidationError(
+            "benchmark.timing_io: expected input_groups and output_groups"
+        )
+    clock_set = set(clocks)
+    for direction in ("input", "output"):
+        groups = value[f"{direction}_groups"]
+        if not isinstance(groups, list):
+            raise ValidationError(
+                f"benchmark.timing_io.{direction}_groups: expected an array"
+            )
+        seen_ports: set[str] = set()
+        for index, group in enumerate(groups):
+            context = f"benchmark.timing_io.{direction}_groups[{index}]"
+            if not isinstance(group, dict) or set(group) != {
+                "clock",
+                "delay_ns",
+                "ports",
+            }:
+                raise ValidationError(
+                    f"{context}: expected clock, delay_ns, and ports"
+                )
+            clock = group["clock"]
+            delay = group["delay_ns"]
+            ports = group["ports"]
+            if clock not in clock_set:
+                raise ValidationError(f"{context}.clock: undeclared clock")
+            if (
+                isinstance(delay, bool)
+                or not isinstance(delay, (int, float))
+                or not math.isfinite(float(delay))
+                or float(delay) < 0.0
+            ):
+                raise ValidationError(
+                    f"{context}.delay_ns: expected a finite nonnegative delay"
+                )
+            if (
+                not isinstance(ports, list)
+                or not ports
+                or not all(
+                    isinstance(port, str)
+                    and _HDL_IDENTIFIER.fullmatch(port) is not None
+                    for port in ports
+                )
+                or len(ports) != len(set(ports))
+            ):
+                raise ValidationError(
+                    f"{context}.ports: expected unique HDL port identifiers"
+                )
+            if any(port in clock_set for port in ports):
+                raise ValidationError(f"{context}.ports: clock ports are not data I/O")
+            if seen_ports.intersection(ports):
+                raise ValidationError(
+                    f"benchmark.timing_io.{direction}_groups: duplicate ports"
+                )
+            seen_ports.update(ports)
+
+
 class BenchmarkRun:
     def __init__(self, value: Mapping[str, Any]):
         self.value = dict(value)
@@ -105,6 +171,7 @@ class BenchmarkRun:
                 "benchmark.clock_periods_ns: expected one positive finite "
                 "period for every declared clock"
             )
+        _validate_timing_io(value.get("timing_io"), clocks)
         physical_mapping_profile = value.get("physical_mapping_profile")
         if (
             physical_mapping_profile is not None

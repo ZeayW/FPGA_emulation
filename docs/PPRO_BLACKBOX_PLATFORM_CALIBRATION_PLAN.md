@@ -255,6 +255,15 @@ without ordinary system-route and system-timing reports. A medium/diversity
 case that naturally uses multiple FPGAs is held to the same strict
 interconnect-evidence rule.
 
+Application timing must include the benchmark's external synchronous
+environment, not clocks alone. An optional `timing_io` contract assigns exact
+top-level data ports to declared clocks and finite input/output delays. It is
+part of the blind workload identity and is rendered through standard SDC.
+Reset, test, clock-control, and power-control ports remain outside those groups.
+Missing I/O timing is never repaired by ignoring unconstrained SSTA rows; the
+ordinary report must show complete constrained cross-FPGA coverage for
+promotion.
+
 The single-FPGA EmuFlow path is not a shortened flow: Phase 4 and Phase 5 emit
 checked zero-route and zero-schedule artifacts, Phase 6 still performs splitting
 and equivalence checks, and Phase 7 still performs physical implementation and
