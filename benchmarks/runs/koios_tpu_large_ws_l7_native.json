@@ -7,6 +7,39 @@
   "sources": ["tpu_like.large.ws.v"],
   "clocks": ["clk", "clk_mem"],
   "clock_periods_ns": {"clk": 10.0, "clk_mem": 10.0},
+  "timing_io": {
+    "input_groups": [
+      {
+        "clock": "clk",
+        "delay_ns": 0.0,
+        "ports": ["PADDR", "PWRITE", "PSEL", "PENABLE", "PWDATA"]
+      },
+      {
+        "clock": "clk_mem",
+        "delay_ns": 0.0,
+        "ports": [
+          "bram_addr_a_ext",
+          "bram_wdata_a_ext",
+          "bram_we_a_ext",
+          "bram_addr_b_ext",
+          "bram_wdata_b_ext",
+          "bram_we_b_ext"
+        ]
+      }
+    ],
+    "output_groups": [
+      {
+        "clock": "clk",
+        "delay_ns": 0.0,
+        "ports": ["PRDATA", "PREADY"]
+      },
+      {
+        "clock": "clk_mem",
+        "delay_ns": 0.0,
+        "ports": ["bram_rdata_a_ext", "bram_rdata_b_ext"]
+      }
+    ]
+  },
   "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
   "platform": "platforms/virtual/xcvu3p_4fpga_mesh.json",
   "synthesis": {

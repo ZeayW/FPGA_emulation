@@ -248,6 +248,43 @@ class BenchmarkRunTest(unittest.TestCase):
                 self.assertTrue(excluded.isdisjoint(outputs))
                 self.assertTrue(set(inputs).isdisjoint(outputs))
 
+    def test_native_koios_tpu_timing_io_covers_both_domains(self) -> None:
+        spec = BenchmarkRun.load(KOIOS_TPU_LARGE_WS_NATIVE_SPEC)
+        timing_io = spec.value["timing_io"]
+        inputs = {
+            group["clock"]: set(group["ports"])
+            for group in timing_io["input_groups"]
+        }
+        outputs = {
+            group["clock"]: set(group["ports"])
+            for group in timing_io["output_groups"]
+        }
+        self.assertEqual(set(inputs), {"clk", "clk_mem"})
+        self.assertEqual(set(outputs), {"clk", "clk_mem"})
+        self.assertEqual(
+            inputs["clk"], {"PADDR", "PWRITE", "PSEL", "PENABLE", "PWDATA"}
+        )
+        self.assertEqual(outputs["clk"], {"PRDATA", "PREADY"})
+        self.assertEqual(
+            inputs["clk_mem"],
+            {
+                "bram_addr_a_ext",
+                "bram_wdata_a_ext",
+                "bram_we_a_ext",
+                "bram_addr_b_ext",
+                "bram_wdata_b_ext",
+                "bram_we_b_ext",
+            },
+        )
+        self.assertEqual(
+            outputs["clk_mem"], {"bram_rdata_a_ext", "bram_rdata_b_ext"}
+        )
+        excluded = {"clk", "clk_mem", "reset", "resetn"}
+        self.assertTrue(excluded.isdisjoint(set().union(*inputs.values())))
+        self.assertTrue(excluded.isdisjoint(set().union(*outputs.values())))
+        for group in timing_io["input_groups"] + timing_io["output_groups"]:
+            self.assertEqual(group["delay_ns"], 0.0)
+
     def test_unknown_calibration_holdout_class_is_rejected(self) -> None:
         value = json.loads(SECWORKS_AES_SPEC.read_text(encoding="utf-8"))
         value["calibration_holdout_class"] = "user-label"
