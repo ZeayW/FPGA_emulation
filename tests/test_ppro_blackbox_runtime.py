@@ -254,7 +254,7 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             self.assertNotIn("run_ssta -post_partition -state gr0 -config", script)
             self.assertEqual(
                 binding.report_paths["system_timing"].name,
-                "gr0_time.rpt",
+                "gr0_ssta_post_part.rpt",
             )
             compile_config = (config.case_dir / ".compile.cfg").read_text(
                 encoding="utf-8"
@@ -387,7 +387,7 @@ cat > "$out/sr0.rpt" <<'EOF'
 | F11 | F33 | 1 | 1 | OUTPUT | 1 | 1600 | 4 | 1 |
 2.5 fpga tdm detailed info file path
 EOF
-cat > "$out/gr0_time.rpt" <<'EOF'
+cat > "$out/gr0_ssta_post_part.rpt" <<'EOF'
 10.25 data arrival time ( normalized delay 10.25 )
 EOF
 """,

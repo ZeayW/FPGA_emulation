@@ -497,7 +497,10 @@ def render_ppro_runtime_binding(
             "resource_summary": report_dir / "pa0.rpt",
             "partition_summary": report_dir / "pa0.rpt",
             "route_summary": report_dir / "sr0.rpt",
-            "system_timing": report_dir / "gr0_time.rpt",
+            # PPro 2026.1 publishes the post-partition SSTA summary under
+            # this ordinary report name.  ``gr0_time.rpt`` is not emitted by
+            # the installed release, even when ``run_ssta`` succeeds.
+            "system_timing": report_dir / "gr0_ssta_post_part.rpt",
         },
         output_path=output_path,
         environment={

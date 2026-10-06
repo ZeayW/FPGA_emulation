@@ -827,7 +827,10 @@ mandatory cross-FPGA classes (Koios compute, Koios DLA, and NVDLA) also pass.
 Application holdouts request PPro's documented `run_system_route -timing_budget`
 mode, generated partition RTL, and the documented
 `run_ssta -post_partition -state gr0` analysis so the ordinary
-`gr0_time.rpt` can carry the blind cross-FPGA timing observation.  The state
+`gr0_ssta_post_part.rpt` can carry the blind cross-FPGA timing observation.
+This is the ordinary report name emitted by the authorized 2026.1 run; a
+successful `run_ssta` does not emit the previously assumed `gr0_time.rpt`.
+The state
 must match the `gr0` tree materialized by `run_gen_rtl`; `sr0` is only the
 system-route report prefix and is not a generated-RTL SSTA base state. Benchmark
 SDC is registered during `run_compile`, as described above. Calibration
