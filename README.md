@@ -490,10 +490,14 @@ effective capacities cover every mapped resource dimension, honors fixed
 placement, and seals the selected `active_fpgas` in the normalized contract.
 When several equal-size subsets satisfy capacity, selection is topology-aware:
 it first minimizes unreachable directed pairs and route-hop diameter across
-the complete installed topology, then prefers larger direct payload capacity,
-lower direct-link latency, and finally BoardDB order as a deterministic tie
-breaker. Thus a homogeneous platform no longer chooses the first N FPGA IDs
-when another capacity-equivalent subset avoids unnecessary relay hops.
+the complete installed topology, then maximizes the weakest active endpoint's
+aggregate ingress/egress boundary capacity, aggregate endpoint boundary
+capacity, and direct payload capacity before preferring lower direct-link
+latency and finally BoardDB order as a deterministic tie breaker. The endpoint
+term is the application-independent single-node cut bound seen by Phase 4; it
+does not inspect partition traffic or scheduling. Thus a homogeneous platform
+no longer chooses the first N FPGA IDs when another capacity-equivalent subset
+avoids unnecessary relay hops or has strictly stronger routable boundaries.
 Only those FPGAs are partition targets and participate in balance bounds; all
 installed BoardDB nodes and links remain visible to Phase 4 as possible relay
 hardware. This prevents a design that fits one XCVU19P-equivalent device from

@@ -280,6 +280,23 @@ def normalize_partition_constraints(
                 link.latency_cycles,
             )
 
+    boundary_egress_capacity = {
+        fpga.id: sum(
+            direct_capacity.get((fpga.id, sink.id), 0)
+            for sink in platform.fpgas
+            if sink.id != fpga.id
+        )
+        for fpga in platform.fpgas
+    }
+    boundary_ingress_capacity = {
+        fpga.id: sum(
+            direct_capacity.get((source.id, fpga.id), 0)
+            for source in platform.fpgas
+            if source.id != fpga.id
+        )
+        for fpga in platform.fpgas
+    }
+
     def topology_score(candidate: Sequence[FpgaNode]) -> Tuple[Any, ...]:
         """Rank capacity-equivalent active subsets by communication quality.
 
@@ -331,10 +348,30 @@ def normalize_partition_constraints(
             for source, sink in ordered_pairs
             if (source, sink) in direct_latency
         )
+        # Inactive devices remain legal relays, but every transported bit must
+        # first leave its source FPGA and finally enter its sink FPGA.  A
+        # direct-pair-only score therefore misses the exact single-node cuts
+        # that bound a routable partition on an asymmetric platform.  Prefer
+        # subsets whose weakest active endpoint has the most ingress/egress
+        # headroom before considering direct-pair bandwidth.  This is a
+        # topology property only: it does not inspect a partition, timing
+        # schedule, or application-specific communication demand.
+        endpoint_boundaries = [
+            capacity
+            for fpga_id in candidate_ids
+            for capacity in (
+                boundary_egress_capacity[fpga_id],
+                boundary_ingress_capacity[fpga_id],
+            )
+        ]
+        minimum_endpoint_boundary = min(endpoint_boundaries, default=0)
+        aggregate_endpoint_boundary = sum(endpoint_boundaries)
         return (
             unreachable,
             maximum_hops,
             total_hops,
+            -minimum_endpoint_boundary,
+            -aggregate_endpoint_boundary,
             -aggregate_direct_capacity,
             aggregate_direct_latency,
             tuple(platform_order[item] for item in candidate_ids),

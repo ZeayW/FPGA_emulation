@@ -194,6 +194,71 @@ class Phase3Test(unittest.TestCase):
             constraints["active_fpgas"], ["fpga0", "fpga2"]
         )
 
+    def test_minimum_capacity_prefers_endpoint_boundary_headroom(self) -> None:
+        total = ResourceVector.sum(
+            ResourceVector.from_mapping(instance["resources"])
+            for instance in self.ir.value["instances"]
+        ).to_dict()
+        limiting_resource = next(
+            field for field in RESOURCE_FIELDS if total.get(field, 0) > 1
+        )
+        capacity = {
+            field: max(total.get(field, 0), 1) for field in RESOURCE_FIELDS
+        }
+        capacity[limiting_resource] = math.ceil(
+            total[limiting_resource] / 2
+        )
+        fpgas = tuple(
+            FpgaNode(
+                id=f"fpga{index}",
+                part="asymmetric-boundary-test-part",
+                utilization_limit=1.0,
+                capacity=dict(capacity),
+            )
+            for index in range(4)
+        )
+
+        def directed(source: int, sink: int, width: int) -> BoardLink:
+            return BoardLink(
+                id=f"link-{source}-{sink}",
+                endpoints=(f"fpga{source}", f"fpga{sink}"),
+                direction="unidirectional",
+                mode="abstract",
+                data_lanes_per_direction=width,
+                fabric_clock_mhz=250.0,
+                latency_cycles=2,
+            )
+
+        # fpga0/fpga2 and fpga1/fpga2 have the same direct-pair capacity.
+        # Only the latter pair has enough ingress and egress at both active
+        # endpoints once inactive devices are allowed to act as relays.
+        links = (
+            directed(0, 2, 64),
+            directed(2, 0, 128),
+            directed(0, 3, 64),
+            directed(3, 0, 128),
+            directed(1, 2, 128),
+            directed(2, 1, 64),
+            directed(1, 3, 64),
+            directed(3, 1, 128),
+        )
+        platform = Platform(
+            name="asymmetric_endpoint_boundaries",
+            kind="virtual",
+            description="endpoint-cut-aware selection fixture",
+            fpgas=fpgas,
+            links=links,
+        )
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "fpga_selection_policy": "minimum-capacity",
+            },
+            self.ir,
+            platform,
+        )
+        self.assertEqual(constraints["active_fpgas"], ["fpga1", "fpga2"])
+
     def test_single_active_target_skips_requested_patron(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
