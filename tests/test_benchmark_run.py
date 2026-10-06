@@ -29,6 +29,9 @@ KOIOS_LENET_NATIVE_SPEC = (
 KOIOS_CLSTM_LARGE_NATIVE_SPEC = (
     ROOT / "benchmarks" / "runs" / "koios_clstm_large_l6_native.json"
 )
+KOIOS_TDARKNET_LARGE_NATIVE_SPEC = (
+    ROOT / "benchmarks" / "runs" / "koios_tdarknet_large_l7_native.json"
+)
 KOIOS_DLA_LARGE_NATIVE_SPEC = (
     ROOT / "benchmarks" / "runs" / "koios_dla_large_l6_native.json"
 )
@@ -158,6 +161,12 @@ class BenchmarkRunTest(unittest.TestCase):
                 KOIOS_CLSTM_LARGE_NATIVE_SPEC,
                 "C_LSTM_datapath",
                 "clstm_like.large.v",
+                "koios_compute",
+            ),
+            (
+                KOIOS_TDARKNET_LARGE_NATIVE_SPEC,
+                "td_fused_top",
+                "tdarknet_like.large.v",
                 "koios_compute",
             ),
             (

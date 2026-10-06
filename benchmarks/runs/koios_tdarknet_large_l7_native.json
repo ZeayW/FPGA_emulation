@@ -1,0 +1,16 @@
+{
+  "schema": "emuflow.benchmark-run/v1",
+  "id": "koios_tdarknet_large_l7_native",
+  "design_id": "koios",
+  "calibration_holdout_class": "koios_compute",
+  "top": "td_fused_top",
+  "sources": ["tdarknet_like.large.v"],
+  "clocks": ["ap_clk"],
+  "clock_periods_ns": {"ap_clk": 10.0},
+  "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
+  "platform": "platforms/virtual/xcvu3p_4fpga_mesh.json",
+  "synthesis": {
+    "family": "xcup",
+    "policy": "native"
+  }
+}
