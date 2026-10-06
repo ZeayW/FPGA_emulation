@@ -1538,10 +1538,15 @@ This is an exact model reduction, not a cache or a Python timing substitute.
 Unit regressions cover identity restoration and linear scaling.  On the
 completed Koios C-LSTM physical result, an independent read-only replay of the
 binding reduced 400,000 checks to 54,898 exact representatives (7.29x) while
-binding and classification took 11.82 seconds on one HPC worker.  That replay
-did not rerun OpenSTA and is therefore compression/scalability evidence only;
-a new real large-design end-to-end OpenSTA runtime qualification is still
-pending.
+binding and classification took 11.82 seconds on one HPC worker.  A subsequent
+real OpenSTA qualification evaluated those 54,898 representatives, expanded
+the engine results back to all 400,000 original checks, and matched the prior
+full-population measurements with a maximum numeric delta of 0.0.  The complete
+compressed binding, OpenSTA execution, expansion, and independent comparison
+took 367.04 seconds on one HPC worker.  This qualifies the exact model reduction
+and its large-design runtime path; it does not by itself promote C-LSTM as a
+cross-FPGA timing holdout because that workload's observed crossing remained
+unconstrained.
 
 The exported Verilog/Liberty/SDC uses fixed-event cutpoints: launch times are
 absolute TX edges, and readiness/relay/commit deadlines are explicit. These
