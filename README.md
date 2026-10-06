@@ -707,7 +707,7 @@ cannot be supplied or relabelled by the result assembler. Bundle generation
 fails before a provider run if that class is absent, rather than deferring the
 error until an expensive blind-result assembly. The qualifying
 contracts are PicoRV32 (`open_cpu`), secworks AES (`secworks_aes`), native
-Koios GEMM/attention/LeNet (`koios_compute`), native Koios DLA-large (`koios_dla`),
+Koios GEMM/attention/LeNet/TPU-large-WS (`koios_compute`), native Koios DLA-large (`koios_dla`),
 and the generated NVDLA contract (`nvdla`).  Older logic-only Koios contracts
 remain integration fixtures and cannot satisfy a promotion tier.
 Native Koios C-LSTM-large is also checked as a diagnostic `koios_compute`
@@ -715,6 +715,16 @@ candidate. Its first free-optimization run placed the design on two reported
 partitions, but the only crossing was the top-level `i_ready` interface and all
 1,000 reported cross-FPGA SSTA paths were unconstrained. It is therefore not
 accepted as the qualifying Koios interconnect holdout.
+Native Koios GEMM also reproducibly reports two partitions, 330 crossing
+signals, and maximum TDM ratio 8, but its 662 timing-budget rows are all
+clockless false paths and its post-partition SSTA report contains no data path.
+It remains useful route/TDM evidence, not timing qualification. The unmodified
+upstream tDarknet-large source is rejected by PPro because procedural shift
+register outputs are not declared `reg`; a mechanical declaration-only
+diagnostic compiles but fits one FPGA, so that unpublished compatibility copy
+is neither retained nor used as interconnect evidence. TPU-large-WS is the next
+checked, two-clock native candidate selected to seek a resource-forced internal
+compute crossing rather than manufacturing one with placement constraints.
 Every qualifying checked contract binds a period for each declared clock;
 PicoRV32 uses an explicit 10 ns `clk` period, so its PPro and complete-flow
 identities cannot depend on an implicit provider default.
