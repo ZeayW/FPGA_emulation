@@ -47,6 +47,26 @@ Critical Path Report
   42.00 data arrival time ( normalized delay 42.00 )
 """
 
+POST_PARTITION_SSTA_REPORT = """
+## Setup ## : (Max Frequency is infered by setup slack or datapath delay)
+|         PathGroup          | Constrained Period(ns) | Illegal/Total | worst slack/data path(ns) | Max Freq(MHz) | CrossFpga  |
+| None to clk(unconstrained) |           --           |   0/551256    |           6.960           |    143.678    |     1      |
+Setup:(Path is sorted by slack from small to large)
+Setup-PathGroup: None to clk(unconstrained)
+PathName  PathGroup                   CrossFpga  Slack(ns)   Startpoint  Endpoint
+Path1     None to clk(unconstrained)          1      6.960   i_ready    FPGA_4/u0/d
+
+Path1
+Startpoint: i_ready (input port)
+Endpoint: FPGA_4/u0 (rising edge-triggered flip-flop)
+Path Group: unconstrained
+Path Type: max
+   0.000    0.000 ^ input external delay
+   6.960    6.960 ^ FPGA_4/u0/d (S2C_DFFRS)
+            6.960   data arrival time
+(Path is unconstrained)
+"""
+
 
 class PProBlackboxPProAdapterTest(unittest.TestCase):
     def _reports(self, root: Path):
@@ -104,6 +124,27 @@ class PProBlackboxPProAdapterTest(unittest.TestCase):
         self.assertEqual(metrics["resource_demand"]["lut"], 1000.0)
         self.assertEqual(metrics["communication"]["maximum_tdm_ratio"], 16.0)
         self.assertEqual(metrics["timing"], {})
+
+    def test_post_partition_ssta_preserves_delay_and_constraint_qualification(self):
+        with tempfile.TemporaryDirectory() as raw:
+            reports = self._reports(Path(raw))
+            reports["system_timing"].write_text(
+                POST_PARTITION_SSTA_REPORT, encoding="utf-8"
+            )
+            metrics = parse_ppro_2026_ordinary_reports(
+                reports,
+                {"instances": 1234},
+                {"F11": "F0", "F33": "F1"},
+            )
+        self.assertEqual(
+            metrics["timing"]["sr0_worst_cross_fpga_delay_ns"], 6.96
+        )
+        self.assertEqual(
+            metrics["timing"]["sr0_reported_cross_fpga_path_count"], 1.0
+        )
+        self.assertEqual(
+            metrics["timing"]["sr0_all_cross_fpga_paths_constrained"], 0.0
+        )
 
 
 if __name__ == "__main__":

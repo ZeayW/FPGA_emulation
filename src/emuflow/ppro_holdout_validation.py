@@ -242,8 +242,11 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
         or not ppro_routes
         or "maximum_tdm_ratio" not in ppro_communication
         or "sr0_worst_cross_fpga_delay_ns" not in ppro_timing
+        or ppro_timing.get("sr0_all_cross_fpga_paths_constrained") != 1.0
     ):
-        raise ValidationError("PPro holdout lacks route or system-timing evidence")
+        raise ValidationError(
+            "PPro holdout lacks constrained route or system-timing evidence"
+        )
     emuflow = value["emuflow"]
     if not isinstance(emuflow, Mapping):
         raise ValidationError("holdout EmuFlow summary is invalid")

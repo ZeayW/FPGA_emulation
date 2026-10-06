@@ -63,7 +63,10 @@ def ppro_observation(identifier: str, delay: float):
                 {"id": "r1", "source": "F0", "sinks": ["F1"], "effective_hops": 1, "signal_count": 1},
             ],
             "communication": {"maximum_tdm_ratio": 2},
-            "timing": {"sr0_worst_cross_fpga_delay_ns": delay},
+            "timing": {
+                "sr0_worst_cross_fpga_delay_ns": delay,
+                "sr0_all_cross_fpga_paths_constrained": 1.0,
+            },
         },
         "provenance": {"class": "black_box_observation"},
         "derived": {"fit_eligible": False, "reason": "holdout-not-fit"},
@@ -218,6 +221,14 @@ class PProHoldoutValidationTest(unittest.TestCase):
         value["emuflow"]["worst_cross_fpga_delay_ns"] = 0.0
         value["emuflow"]["busiest_pairs"] = []
         with self.assertRaisesRegex(ValidationError, "route or system-timing"):
+            validate_holdout_result(value)
+
+    def test_unconstrained_cross_fpga_ssta_cannot_pass_holdout_gate(self):
+        value = result("gemm-unconstrained", "gemm", "large", "a", 6.96)
+        value["ppro"]["metrics"]["timing"][
+            "sr0_all_cross_fpga_paths_constrained"
+        ] = 0.0
+        with self.assertRaisesRegex(ValidationError, "constrained route"):
             validate_holdout_result(value)
 
     def test_multi_fpga_medium_holdout_cannot_skip_interconnect_reports(self):

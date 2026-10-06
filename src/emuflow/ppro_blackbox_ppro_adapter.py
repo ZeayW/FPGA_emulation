@@ -28,6 +28,15 @@ _LOGICAL_FPGA = re.compile(r"^F[0-9]+$")
 _NORMALIZED_DELAY = re.compile(
     r"normalized\s+delay\s+([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE
 )
+_SSTA_PATH_ROW = re.compile(
+    r"^(Path[0-9]+)\s+(.+?)\s{2,}([0-9]+)\s+"
+    r"(-?[0-9]+(?:\.[0-9]+)?)\s{2,}"
+)
+_SSTA_DETAIL_START = re.compile(r"^(Path[0-9]+)\s*$")
+_SSTA_DATA_ARRIVAL = re.compile(
+    r"^\s*(-?[0-9]+(?:\.[0-9]+)?)\s+data arrival time\s*$",
+    re.IGNORECASE,
+)
 _RESOURCE_MAP = {
     "LUT": "lut",
     "FF": "ff",
@@ -262,11 +271,50 @@ def _parse_route_report(
     }
 
 
+def _parse_post_partition_ssta(text: str) -> Dict[str, float]:
+    cross_paths: Dict[str, bool] = {}
+    for line in text.splitlines():
+        match = _SSTA_PATH_ROW.match(line)
+        if match is None or int(match.group(3)) <= 0:
+            continue
+        cross_paths[match.group(1)] = "unconstrained" not in match.group(2).lower()
+    if not cross_paths:
+        return {}
+
+    arrivals: Dict[str, float] = {}
+    current_path: str | None = None
+    for line in text.splitlines():
+        start = _SSTA_DETAIL_START.fullmatch(line)
+        if start is not None:
+            current_path = start.group(1)
+            continue
+        if current_path not in cross_paths:
+            continue
+        arrival = _SSTA_DATA_ARRIVAL.match(line)
+        if arrival is not None:
+            arrivals[current_path] = float(arrival.group(1))
+
+    values = list(arrivals.values())
+    if any(not math.isfinite(value) or value < 0 for value in values):
+        raise ValidationError("PPro SSTA report contains an invalid data arrival time")
+    result = {
+        "sr0_reported_cross_fpga_path_count": float(len(cross_paths)),
+        "sr0_all_cross_fpga_paths_constrained": float(all(cross_paths.values())),
+    }
+    if values:
+        result["sr0_worst_cross_fpga_delay_ns"] = max(values)
+    return result
+
+
 def _parse_timing_report(text: str) -> Dict[str, float]:
     values = [float(match) for match in _NORMALIZED_DELAY.findall(text)]
     if any(not math.isfinite(value) or value < 0 for value in values):
         raise ValidationError("PPro timing report contains an invalid normalized delay")
-    if not values:
+    if values:
+        return {"sr0_worst_cross_fpga_delay_ns": max(values)}
+
+    ssta = _parse_post_partition_ssta(text)
+    if not ssta:
         # A normal PPro application run can emit an empty SSTA report while
         # still producing valid partition and system-route reports.  Preserve
         # those independent black-box observations instead of rejecting the
@@ -274,7 +322,7 @@ def _parse_timing_report(text: str) -> Dict[str, float]:
         # normalized-delay metric, so an empty report cannot become timing
         # calibration or promotion evidence.
         return {}
-    return {"sr0_worst_cross_fpga_delay_ns": max(values)}
+    return ssta
 
 
 def parse_ppro_2026_ordinary_reports(

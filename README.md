@@ -707,9 +707,14 @@ cannot be supplied or relabelled by the result assembler. Bundle generation
 fails before a provider run if that class is absent, rather than deferring the
 error until an expensive blind-result assembly. The qualifying
 contracts are PicoRV32 (`open_cpu`), secworks AES (`secworks_aes`), native
-Koios GEMM/attention/LeNet/C-LSTM-large (`koios_compute`), native Koios DLA-large (`koios_dla`),
+Koios GEMM/attention/LeNet (`koios_compute`), native Koios DLA-large (`koios_dla`),
 and the generated NVDLA contract (`nvdla`).  Older logic-only Koios contracts
 remain integration fixtures and cannot satisfy a promotion tier.
+Native Koios C-LSTM-large is also checked as a diagnostic `koios_compute`
+candidate. Its first free-optimization run placed the design on two reported
+partitions, but the only crossing was the top-level `i_ready` interface and all
+1,000 reported cross-FPGA SSTA paths were unconstrained. It is therefore not
+accepted as the qualifying Koios interconnect holdout.
 Every qualifying checked contract binds a period for each declared clock;
 PicoRV32 uses an explicit 10 ns `clk` period, so its PPro and complete-flow
 identities cannot depend on an implicit provider default.
@@ -839,6 +844,12 @@ holdout timing request therefore does not silently refit or relabel the
 calibrated link model. A routed holdout whose timing report is absent or empty
 remains useful structural evidence but cannot pass the timing or
 platform-promotion gate.
+The post-partition SSTA parser also distinguishes constrained cross-FPGA paths
+from interface-originated or otherwise unconstrained paths. It may retain the
+reported cross-FPGA data-arrival delay as a compact black-box observation, but
+promotion requires every reported cross-FPGA path to be constrained. A large
+report containing only `None to clk(unconstrained)` paths therefore cannot be
+mistaken for timing-closure evidence.
 
 ## Flow roadmap
 
