@@ -710,6 +710,9 @@ contracts are PicoRV32 (`open_cpu`), secworks AES (`secworks_aes`), native
 Koios GEMM/attention/LeNet (`koios_compute`), native Koios DLA-large (`koios_dla`),
 and the generated NVDLA contract (`nvdla`).  Older logic-only Koios contracts
 remain integration fixtures and cannot satisfy a promotion tier.
+Every qualifying checked contract binds a period for each declared clock;
+PicoRV32 uses an explicit 10 ns `clk` period, so its PPro and complete-flow
+identities cannot depend on an implicit provider default.
 
 The VTR hard-block importer accepts Yosys-optimized memory atom sets whose
 surviving bit indices do not start at zero or contain gaps. It orders and

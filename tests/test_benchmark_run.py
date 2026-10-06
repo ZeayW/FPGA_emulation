@@ -45,6 +45,7 @@ class BenchmarkRunTest(unittest.TestCase):
         spec = BenchmarkRun.load(PICORV32_SPEC)
         self.assertEqual(spec.value["top"], "picorv32")
         self.assertEqual(spec.value["synthesis"]["policy"], "logic-only")
+        self.assertEqual(spec.value["clock_periods_ns"], {"clk": 10.0})
         source_root = ROOT / "third_party" / "rtl" / "picorv32"
         if source_root.is_dir():
             sources = spec.resolve_sources(source_root)
