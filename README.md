@@ -886,6 +886,15 @@ for this calibration probe. This is a research timing-environment assumption,
 not a measured board property. It must pass a fresh ordinary PPro run before it
 can replace the rejected unconstrained observation.
 
+The native Koios GEMM and DLA-large holdout contracts use the same explicit
+public-interface rule. GEMM binds its BRAM and AXI data/control ports to
+`s00_axi_aclk`; DLA-large binds its DDR data/control and result ports to `clk`.
+Both currently use a documented zero-delay ideal synchronous environment, and
+their clocks and resets are excluded. These contracts prevent an ordinary PPro
+SSTA report from being promoted when its cross-FPGA rows are unconstrained;
+they remain candidates until fresh black-box runs demonstrate complete
+constrained-path coverage.
+
 ## Flow roadmap
 
 The timing provider and physical backend are selected independently. Both

@@ -264,6 +264,13 @@ Missing I/O timing is never repaired by ignoring unconstrained SSTA rows; the
 ordinary report must show complete constrained cross-FPGA coverage for
 promotion.
 
+The native Koios GEMM and DLA-large contracts now enumerate their public data
+interfaces explicitly. GEMM assigns BRAM and AXI ports to `s00_axi_aclk`, while
+DLA-large assigns DDR and result ports to `clk`; clocks and resets are excluded.
+Both use zero-delay ideal synchronous I/O as a declared research assumption,
+not a calibrated board property. Their timing status remains unqualified until
+fresh ordinary PPro runs report that every cross-FPGA path is constrained.
+
 The single-FPGA EmuFlow path is not a shortened flow: Phase 4 and Phase 5 emit
 checked zero-route and zero-schedule artifacts, Phase 6 still performs splitting
 and equivalence checks, and Phase 7 still performs physical implementation and

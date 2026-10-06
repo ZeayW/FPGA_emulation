@@ -203,6 +203,51 @@ class BenchmarkRunTest(unittest.TestCase):
                         [filename],
                     )
 
+    def test_native_koios_holdout_timing_io_is_explicit(self) -> None:
+        expected = [
+            (
+                KOIOS_GEMM_NATIVE_SPEC,
+                "s00_axi_aclk",
+                14,
+                20,
+                {"s00_axi_aclk", "s00_axi_aresetn"},
+                {"bram_rdata_a", "s00_axi_awaddr"},
+                {"bram_addr_a", "s00_axi_rvalid"},
+            ),
+            (
+                KOIOS_DLA_LARGE_NATIVE_SPEC,
+                "clk",
+                96,
+                49,
+                {"clk", "i_reset"},
+                {"i_ddr_wen_0_0", "i_ddr_5_7"},
+                {"o_dummy_out_0_0", "o_valid"},
+            ),
+        ]
+        for path, clock, input_count, output_count, excluded, required_inputs, required_outputs in expected:
+            with self.subTest(path=path.name):
+                spec = BenchmarkRun.load(path)
+                timing_io = spec.value["timing_io"]
+                self.assertEqual(len(timing_io["input_groups"]), 1)
+                self.assertEqual(len(timing_io["output_groups"]), 1)
+                input_group = timing_io["input_groups"][0]
+                output_group = timing_io["output_groups"][0]
+                self.assertEqual(input_group["clock"], clock)
+                self.assertEqual(output_group["clock"], clock)
+                self.assertEqual(input_group["delay_ns"], 0.0)
+                self.assertEqual(output_group["delay_ns"], 0.0)
+                inputs = input_group["ports"]
+                outputs = output_group["ports"]
+                self.assertEqual(len(inputs), input_count)
+                self.assertEqual(len(outputs), output_count)
+                self.assertEqual(len(inputs), len(set(inputs)))
+                self.assertEqual(len(outputs), len(set(outputs)))
+                self.assertTrue(required_inputs.issubset(inputs))
+                self.assertTrue(required_outputs.issubset(outputs))
+                self.assertTrue(excluded.isdisjoint(inputs))
+                self.assertTrue(excluded.isdisjoint(outputs))
+                self.assertTrue(set(inputs).isdisjoint(outputs))
+
     def test_unknown_calibration_holdout_class_is_rejected(self) -> None:
         value = json.loads(SECWORKS_AES_SPEC.read_text(encoding="utf-8"))
         value["calibration_holdout_class"] = "user-label"

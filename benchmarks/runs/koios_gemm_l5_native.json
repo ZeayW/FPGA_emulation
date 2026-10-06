@@ -7,6 +7,58 @@
   "sources": ["gemm_layer.v"],
   "clocks": ["s00_axi_aclk"],
   "clock_periods_ns": {"s00_axi_aclk": 10.0},
+  "timing_io": {
+    "input_groups": [
+      {
+        "clock": "s00_axi_aclk",
+        "delay_ns": 0.0,
+        "ports": [
+          "bram_rdata_a",
+          "bram_rdata_b",
+          "bram_rdata_c",
+          "s00_axi_awaddr",
+          "s00_axi_awprot",
+          "s00_axi_awvalid",
+          "s00_axi_wdata",
+          "s00_axi_wstrb",
+          "s00_axi_wvalid",
+          "s00_axi_bready",
+          "s00_axi_araddr",
+          "s00_axi_arprot",
+          "s00_axi_arvalid",
+          "s00_axi_rready"
+        ]
+      }
+    ],
+    "output_groups": [
+      {
+        "clock": "s00_axi_aclk",
+        "delay_ns": 0.0,
+        "ports": [
+          "bram_addr_a",
+          "bram_wdata_a",
+          "bram_we_a",
+          "bram_en_a",
+          "bram_addr_b",
+          "bram_wdata_b",
+          "bram_we_b",
+          "bram_en_b",
+          "bram_addr_c",
+          "bram_wdata_c",
+          "bram_we_c",
+          "bram_en_c",
+          "s00_axi_awready",
+          "s00_axi_wready",
+          "s00_axi_bresp",
+          "s00_axi_bvalid",
+          "s00_axi_arready",
+          "s00_axi_rdata",
+          "s00_axi_rresp",
+          "s00_axi_rvalid"
+        ]
+      }
+    ]
+  },
   "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
   "platform": "platforms/virtual/xcvu3p_4fpga_mesh.json",
   "synthesis": {
