@@ -299,6 +299,10 @@ def _parse_post_partition_ssta(text: str) -> Dict[str, float]:
         raise ValidationError("PPro SSTA report contains an invalid data arrival time")
     result = {
         "sr0_reported_cross_fpga_path_count": float(len(cross_paths)),
+        "sr0_constrained_cross_fpga_path_count": float(sum(cross_paths.values())),
+        "sr0_unconstrained_cross_fpga_path_count": float(
+            len(cross_paths) - sum(cross_paths.values())
+        ),
         "sr0_all_cross_fpga_paths_constrained": float(all(cross_paths.values())),
     }
     if values:

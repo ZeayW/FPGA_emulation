@@ -860,6 +860,11 @@ reported cross-FPGA data-arrival delay as a compact black-box observation, but
 promotion requires every reported cross-FPGA path to be constrained. A large
 report containing only `None to clk(unconstrained)` paths therefore cannot be
 mistaken for timing-closure evidence.
+The compact observation records the reported, constrained, and unconstrained
+cross-FPGA path counts separately in addition to the all-constrained gate. This
+keeps the diagnostic sufficient to distinguish one exceptional interface path
+from a wholly unconstrained report without retaining or publishing the raw
+vendor report.
 
 ## Flow roadmap
 
