@@ -868,6 +868,11 @@ reported cross-FPGA data-arrival delay as a compact black-box observation, but
 promotion requires every reported cross-FPGA path to be constrained. A large
 report containing only `None to clk(unconstrained)` paths therefore cannot be
 mistaken for timing-closure evidence.
+PPro repeats each detailed data-arrival value with the opposite sign in the
+subsequent required-time/slack subtraction summary.  The adapter binds the
+first detailed arrival to each path and ignores that later arithmetic operand;
+it still rejects a non-finite or genuinely negative first arrival.  This keeps
+valid violated paths from being misclassified as malformed timing reports.
 The compact observation records the reported, constrained, and unconstrained
 cross-FPGA path counts separately in addition to the all-constrained gate. This
 keeps the diagnostic sufficient to distinguish one exceptional interface path

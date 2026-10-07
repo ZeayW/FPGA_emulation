@@ -291,7 +291,13 @@ def _parse_post_partition_ssta(text: str) -> Dict[str, float]:
         if current_path not in cross_paths:
             continue
         arrival = _SSTA_DATA_ARRIVAL.match(line)
-        if arrival is not None:
+        if arrival is not None and current_path not in arrivals:
+            # PPro prints the actual path arrival once in the detailed path
+            # table, then repeats it with the opposite sign in the required
+            # time/slack subtraction summary.  The latter is an arithmetic
+            # operand, not a second (negative) path delay.  Preserve the first
+            # detailed value and keep the normal finite/nonnegative check
+            # below so a genuinely invalid first arrival still fails closed.
             arrivals[current_path] = float(arrival.group(1))
 
     values = list(arrivals.values())
