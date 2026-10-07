@@ -242,7 +242,7 @@ def run_generic_yosys(
         include_dirs=include_list,
         defines=define_list,
     )
-    completed = run_with_bounded_output([command, "-p", script])
+    completed = run_with_bounded_output([command, "-q", "-p", script])
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(completed.stdout, encoding="utf-8")
@@ -299,7 +299,7 @@ def run_yosys(
         defines=define_list,
         mapping_profile=mapping_profile,
     )
-    completed = run_with_bounded_output([command, "-p", script])
+    completed = run_with_bounded_output([command, "-q", "-p", script])
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(completed.stdout, encoding="utf-8")

@@ -175,7 +175,7 @@ def run_vtr_yosys(
         include_dirs=include_list,
         defines=define_list,
     )
-    completed = run_with_bounded_output([command, "-p", script])
+    completed = run_with_bounded_output([command, "-q", "-p", script])
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(completed.stdout, encoding="utf-8")

@@ -10,6 +10,7 @@ from unittest.mock import patch
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.vpr import (
     build_vtr_yosys_script,
+    run_vtr_yosys,
     run_vpr_pack_place,
     run_vpr_route_packed,
     validate_vpr_pack_place_checkpoint,
@@ -20,6 +21,28 @@ from emuflow.vpr import (
 
 
 class VprTest(unittest.TestCase):
+    def test_production_vtr_yosys_invocation_is_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "design.v"
+            output = root / "design.eblif"
+            source.write_text("module design; endmodule\n", encoding="utf-8")
+            captured = []
+
+            def complete(command):
+                captured.append(command)
+                output.write_text(".model design\n.end\n", encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0, stdout="")
+
+            with patch(
+                "emuflow.vpr.resolve_native_executable", return_value="yosys"
+            ), patch(
+                "emuflow.vpr.run_with_bounded_output", side_effect=complete
+            ):
+                run_vtr_yosys([source], "design", output)
+
+        self.assertEqual(captured[0][1:3], ["-q", "-p"])
+
     def test_vtr_rr_edge_ids_cover_graphs_larger_than_uint32(self) -> None:
         compiler = (
             shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")

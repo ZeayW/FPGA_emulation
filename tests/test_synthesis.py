@@ -1,14 +1,49 @@
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.cli import _build_parser, main
 from emuflow.errors import EmuFlowError
-from emuflow.synthesis import build_generic_yosys_script, build_yosys_script
+from emuflow.synthesis import (
+    build_generic_yosys_script,
+    build_yosys_script,
+    run_generic_yosys,
+    run_yosys,
+)
 from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 class SynthesisTest(unittest.TestCase):
+    def test_production_yosys_invocations_are_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "design.v"
+            source.write_text("module design; endmodule\n", encoding="utf-8")
+            captured = []
+
+            def complete(command):
+                captured.append(command)
+                output = command[-1].split('write_json "', 1)[1].split('"', 1)[0]
+                Path(output).write_text("{}\n", encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0, stdout="")
+
+            with patch(
+                "emuflow.synthesis.resolve_native_executable",
+                return_value="yosys",
+            ), patch(
+                "emuflow.synthesis.run_with_bounded_output",
+                side_effect=complete,
+            ):
+                run_generic_yosys([source], "design", root / "generic.json")
+                run_yosys([source], "design", root / "mapped.json")
+
+        self.assertEqual(
+            [command[1:3] for command in captured],
+            [["-q", "-p"], ["-q", "-p"]],
+        )
+
     def test_cli_exposes_fail_closed_mapping_profile(self) -> None:
         args = _build_parser().parse_args([
             "synth-yosys",

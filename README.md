@@ -3074,6 +3074,10 @@ single publish/import trust boundary rather than repeated inside the hot path.
 Managed staging keeps atomic temporary-file replacement but defers per-file
 `fsync` to final checkpoint publication.
 
+Production Yosys frontends use quiet batch invocation and retain only a bounded
+error tail. Verbose synthesis output is an explicit diagnostic mode, never a
+multi-gigabyte stream in the normal Phase 1 hot path.
+
 The managed Phase 1--7 implementation applies that rule at each concrete
 boundary. Phase 1 owns the synthesized EmuIR and performs resource and clock
 analysis once; its normalized platform and source copies are distinct replay
