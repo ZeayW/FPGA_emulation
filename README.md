@@ -891,6 +891,9 @@ Benchmark contracts may now declare an explicit `timing_io` environment. Each
 input/output group names its design clock, finite nonnegative external delay,
 and exact top-level data ports; the contract is included in the workload
 identity and rendered as standard `set_input_delay`/`set_output_delay` SDC.
+Each declared HDL base name is resolved as either the exact scalar port or its
+exact-base `name[*]` vector bits after PPro elaboration; the renderer never
+uses a loose `name*` prefix that could constrain a different interface.
 Clock, reset, test, clock-gating, and power-control ports are never swept into a
 catch-all collection. The NVDLA preparer binds the public CSB interface to
 `dla_csb_clk`, the public DBB/CVSRAM data interfaces and interrupt to

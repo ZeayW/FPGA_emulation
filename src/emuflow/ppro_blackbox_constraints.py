@@ -254,6 +254,17 @@ def render_ppro_timing_sdc(
         ("output", "set_output_delay"),
     ):
         for clock, delay, ports in timing_io[f"{direction}_groups"]:
+            # Benchmark contracts name provider-neutral HDL ports by their
+            # declared base identifier.  PPro preserves scalar ports with
+            # that name but exposes vector ports as individual ``name[bit]``
+            # objects in the post-partition timing graph.  Query the exact
+            # scalar and the standard exact-base bus pattern; a loose
+            # ``name*`` prefix could accidentally constrain unrelated ports.
+            port_queries = [
+                query
+                for port in ports
+                for query in (port, f"{port}[*]")
+            ]
             lines.append(
                 command
                 + " "
@@ -261,7 +272,7 @@ def render_ppro_timing_sdc(
                 + " -clock [get_clocks {"
                 + clock
                 + "}] [get_ports {"
-                + " ".join(ports)
+                + " ".join(port_queries)
                 + "}]"
             )
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

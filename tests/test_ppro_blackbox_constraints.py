@@ -149,9 +149,9 @@ class PProBlackboxConstraintsTest(unittest.TestCase):
                     "create_clock -name {clk} -period 10.000000000 [get_ports {clk}]",
                     "create_clock -name {aux_clk} -period 20.000000000 [get_ports {aux_clk}]",
                     "set_input_delay 0.000000000 -clock [get_clocks {clk}] "
-                    "[get_ports {request payload}]",
+                    "[get_ports {request request[*] payload payload[*]}]",
                     "set_output_delay 1.250000000 -clock [get_clocks {aux_clk}] "
-                    "[get_ports {response}]",
+                    "[get_ports {response response[*]}]",
                 ],
             )
 
