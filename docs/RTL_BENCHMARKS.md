@@ -118,3 +118,7 @@ XCVU19P capacity model can legitimately keep the smaller two designs on one
 FPGA; a single-FPGA result cannot satisfy the mandatory interconnect gate.
 Their promotion classes are part of the sealed benchmark identity; the
 logic-only DLA small/medium contracts cannot be relabelled into those tiers.
+The native LeNet holdout explicitly binds every non-clock top-level input and
+output to `ap_clk` with zero external delay, matching the other native Koios
+holdouts and preventing an older unconstrained observation from being joined
+to a newly validated full-flow result.

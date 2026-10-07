@@ -206,6 +206,15 @@ class BenchmarkRunTest(unittest.TestCase):
     def test_native_koios_holdout_timing_io_is_explicit(self) -> None:
         expected = [
             (
+                KOIOS_LENET_NATIVE_SPEC,
+                "ap_clk",
+                3,
+                17,
+                {"ap_clk"},
+                {"ap_rst", "conv2d_input_V_q0"},
+                {"ap_done", "const_size_out_1_ap_vld"},
+            ),
+            (
                 KOIOS_GEMM_NATIVE_SPEC,
                 "s00_axi_aclk",
                 14,

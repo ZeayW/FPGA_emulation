@@ -294,6 +294,10 @@ entries.  Interconnect-only timing projection, route/TDM optimization,
 cross-stage search, and frame-length search are skipped as vacuous; the original
 TimingPathDB still feeds the physical backend and authoritative global OpenSTA
 signoff.
+Native application holdouts also seal explicit top-level timing-I/O groups.
+LeNet binds every non-clock input and output to `ap_clk` with zero external
+delay; observations made before that timing contract must be regenerated and
+cannot be joined to the current full-flow result by weakening identity checks.
 The large, large-primary, and very-large tiers always require real multi-FPGA
 route/timing evidence. Optional reports are parsed when present.
 The first authorized v3 LUT pilot at source commit

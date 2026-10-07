@@ -7,6 +7,31 @@
   "sources": ["lenet.v"],
   "clocks": ["ap_clk"],
   "clock_periods_ns": {"ap_clk": 10.0},
+  "timing_io": {
+    "input_groups": [
+      {
+        "clock": "ap_clk",
+        "delay_ns": 0.0,
+        "ports": ["ap_rst", "ap_start", "conv2d_input_V_q0"]
+      }
+    ],
+    "output_groups": [
+      {
+        "clock": "ap_clk",
+        "delay_ns": 0.0,
+        "ports": [
+          "ap_done", "ap_idle", "ap_ready",
+          "conv2d_input_V_address0", "conv2d_input_V_ce0",
+          "layer11_out_V_address0", "layer11_out_V_ce0",
+          "layer11_out_V_we0", "layer11_out_V_d0",
+          "layer11_out_V_address1", "layer11_out_V_ce1",
+          "layer11_out_V_we1", "layer11_out_V_d1",
+          "const_size_in_1", "const_size_in_1_ap_vld",
+          "const_size_out_1", "const_size_out_1_ap_vld"
+        ]
+      }
+    ]
+  },
   "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
   "platform": "platforms/virtual/xcvu3p_4fpga_mesh.json",
   "synthesis": {
