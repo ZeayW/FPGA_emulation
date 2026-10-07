@@ -41,8 +41,14 @@ OPENSTA_THROUGH_COVERAGE_SCHEMA = "emuflow.opensta-through-net-coverage/v1"
 MINIMUM_OPENSTA_VERSION = (3, 1, 0)
 
 
-def require_opensta_engine(executable: str) -> Dict[str, str]:
-    """Fail closed on legacy engines with unsafe Tcl path-object ownership."""
+def check_opensta_engine_version(executable: str) -> str:
+    """Fail closed on a legacy engine without hashing the executable.
+
+    One-shot flows use this lightweight probe before synthesis so an invalid
+    runtime cannot waste the expensive frontend.  The authoritative provider
+    invocation still calls :func:`require_opensta_engine` once, where the
+    executable is content-sealed for retained evidence.
+    """
     version_result = subprocess.run(
         [executable, "-version"],
         stdout=subprocess.PIPE,
@@ -65,13 +71,19 @@ def require_opensta_engine(executable: str) -> Dict[str, str]:
         raise ValidationError(
             f"OpenSTA {actual} is unsupported; EmuFlow requires {minimum} or newer"
         )
+    return ".".join(str(field) for field in version_tuple)
+
+
+def require_opensta_engine(executable: str) -> Dict[str, str]:
+    """Validate and content-seal the OpenSTA engine used for evidence."""
+    version = check_opensta_engine_version(executable)
     executable_digest = hashlib.sha256()
     with Path(executable).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             executable_digest.update(chunk)
     return {
         "name": "OpenSTA",
-        "version": ".".join(str(field) for field in version_tuple),
+        "version": version,
         "executable_sha256": executable_digest.hexdigest(),
     }
 

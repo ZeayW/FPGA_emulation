@@ -4,6 +4,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.opensta import (
     DEFAULT_TIMING_MODEL,
@@ -11,6 +12,7 @@ from emuflow.opensta import (
     FPGA_TIMING_MODEL_SCHEMA_V2,
     OPENSTA_PROVIDER,
     build_vtr_opensta_timing_model,
+    check_opensta_engine_version,
     classify_through_net_timing_endpoints,
     load_timing_model,
     parse_clock_definitions,
@@ -217,6 +219,18 @@ class OpenStaProviderTest(unittest.TestCase):
             executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
             with self.assertRaisesRegex(Exception, "requires 3.1.0 or newer"):
                 require_opensta_engine(str(executable))
+
+    def test_lightweight_version_check_does_not_hash_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "sta"
+            executable.write_text(
+                "#!/bin/sh\necho 3.1.0\n", encoding="utf-8"
+            )
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            with mock.patch("pathlib.Path.open", side_effect=AssertionError("hashed")):
+                self.assertEqual(
+                    check_opensta_engine_version(str(executable)), "3.1.0"
+                )
 
     def test_path_export_supports_directed_cut_net_queries(self) -> None:
         script = (

@@ -789,6 +789,12 @@ profile, then derives utilization, TDM,
 pair load, physical closure, equivalence, legality, and authoritative OpenSTA
 WNS/TNS directly from canonical artifacts:
 
+The one-shot flow now probes the selected OpenSTA semantic version before
+creating frontend artifacts or starting synthesis.  Unsupported engines fail
+immediately, while the executable is still content-hashed only once by the
+authoritative timing invocation; this avoids both hours of wasted synthesis
+and a duplicate hot-path hash.
+
 ```sh
 emuflow-ppro-calibration assemble-holdout-result \
   --id aes-default --workload-id aes \

@@ -33,7 +33,11 @@ from .multi_fpga_bsp_flow import (
     run_multi_fpga_bsp_flow,
     validate_multi_fpga_bsp_flow_report,
 )
-from .opensta import DEFAULT_TIMING_MODEL, run_opensta_path_database
+from .opensta import (
+    DEFAULT_TIMING_MODEL,
+    check_opensta_engine_version,
+    run_opensta_path_database,
+)
 from .openparf import validate_openparf_runtime
 from .phase1 import run_phase1
 from .phase3 import promote_patron_baseline, run_phase3, validate_phase3
@@ -1459,10 +1463,15 @@ def run_multi_fpga_flow(
             install_root=physical_openparf_install,
             python_executable=physical_openparf_python,
         )
+    if timing_backend == "opensta" and internal_timing_database:
+        opensta = resolve_native_executable("sta", opensta)
+        check_opensta_engine_version(opensta)
     if physical and global_timing_engine == "opensta":
         global_sta_executable = resolve_native_executable("sta", global_sta_executable)
         if not Path(global_sta_executable).is_file() or not os.access(global_sta_executable, os.X_OK):
             raise EmuFlowError("global OpenSTA executable is unavailable or not executable")
+        if global_sta_executable != opensta:
+            check_opensta_engine_version(global_sta_executable)
 
     output_dir = output_dir.resolve()
     if output_dir.exists():

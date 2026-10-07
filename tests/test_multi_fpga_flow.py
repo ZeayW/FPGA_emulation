@@ -719,6 +719,31 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     )
             self.assertFalse(root.exists())
 
+    def test_opensta_version_preflight_precedes_frontend(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "multi"
+            legacy_sta = Path(temporary_directory) / "sta"
+            legacy_sta.write_text("#!/bin/sh\necho 2.6.0\n", encoding="utf-8")
+            legacy_sta.chmod(legacy_sta.stat().st_mode | stat.S_IXUSR)
+            with self.assertRaisesRegex(
+                ValidationError, "requires 3.1.0 or newer"
+            ):
+                run_multi_fpga_flow(
+                    platform_path=PLATFORM,
+                    output_dir=root,
+                    yosys_json=ROOT / "examples/yosys/counter.json",
+                    top="counter",
+                    clocks=["clk"],
+                    partition_provider="greedy",
+                    cut_mode="sequential-only",
+                    timing_driven=False,
+                    clock_periods={"clk": 10.0},
+                    opensta=str(legacy_sta),
+                    router=str(tlr_router()),
+                    frame_slots=32,
+                )
+            self.assertFalse(root.exists())
+
     def test_finalizes_checked_independent_physical_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "multi"
