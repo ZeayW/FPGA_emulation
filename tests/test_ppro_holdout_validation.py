@@ -234,6 +234,49 @@ class PProHoldoutValidationTest(unittest.TestCase):
             {"aes": ["a", "b"]},
         )
 
+    def test_hard_resource_mapping_is_diagnostic_across_synthesis_providers(self):
+        values = self.complete_results()
+        value = values[2]
+        for record in value["ppro"]["metrics"]["fpga_utilization"]:
+            record["resources"].update(
+                {"bram36k": 0.07, "dsp48": 0.23, "ff": 0.02}
+            )
+        value["emuflow"]["resource_utilization"].update(
+            {"bram36k": 0.42, "dsp48": 0.07, "ff": 0.01}
+        )
+
+        report = evaluate_holdout_promotion(values)
+
+        self.assertTrue(report["promoted"])
+        case = report["cases"][2]
+        self.assertEqual(
+            case["hard_resource_mapping_gate"],
+            "not-applicable-across-synthesis-providers",
+        )
+        self.assertAlmostEqual(
+            case["hard_resource_mapping_diagnostics"]["bram36k"][
+                "absolute_difference"
+            ],
+            0.35,
+        )
+        self.assertAlmostEqual(
+            case["maximum_soft_resource_utilization_error"], 0.05
+        )
+
+    def test_soft_resource_mapping_divergence_still_fails_promotion(self):
+        values = self.complete_results()
+        values[2]["ppro"]["metrics"]["fpga_utilization"][0]["resources"][
+            "lut"
+        ] = 0.20
+
+        report = evaluate_holdout_promotion(values)
+
+        self.assertFalse(report["promoted"])
+        self.assertGreater(
+            report["cases"][2]["maximum_soft_resource_utilization_error"],
+            0.10,
+        )
+
     def test_single_fpga_medium_holdout_needs_no_interconnect_reports(self):
         value = result("aes-single", "aes", "medium", "a", 0.0)
         value["ppro"]["reports"]["route_summary"] = False

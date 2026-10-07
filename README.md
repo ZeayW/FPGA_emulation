@@ -578,8 +578,15 @@ cells as a separate resource dimension. This keeps Phase 1 capacity checks and P
 accounting on one public inventory instead of treating a mapped BRAM design as
 having an unknown resource class. Blind holdout comparison reads the Phase 3
 planning keys (`bram` and `dsp`) and compares them with PPro's BRAM36 and DSP48
-metrics; it does not silently replace missing planning keys with zero-valued
-native-inventory aliases.
+metrics as explicit diagnostics; it does not silently replace missing planning
+keys with zero-valued native-inventory aliases. Those hard-resource differences
+are not a platform-promotion gate because PPro and the open VTR frontend use
+different synthesis and inference policies. Forced BRAM/DSP/URAM
+microbenchmarks independently certify hard-resource units and capacity. The
+application promotion gate instead keeps a 10% maximum absolute-utilization
+error for LUT and FF, whose mapped counts are comparable across the two tested
+frontends, while publishing every hard-resource difference without treating it
+as a discovered BoardDB error.
 `capacity_sharing=per_direction` is not presented as a PPro-discovered board
 property, and bundle validation fails when this provenance record is missing.
 Platform generation also requires topology evidence for every ordered FPGA
@@ -851,6 +858,15 @@ therefore validate platform behavior per workload but cannot directly rank
 EmuFlow's internal algorithms. Optional EmuFlow variants are reported with an
 explicit `not-claimed` PPro-ranking boundary instead of manufacturing a ranking
 from duplicated PPro results.
+
+The same separation applies to synthesis mapping. Application holdouts compare
+LUT/FF utilization within 10%, but report BRAM36/DSP48/URAM utilization only as
+cross-provider diagnostics. For example, an inferred small RAM may become
+LUTRAM in PPro and a full VTR memory tile in the open physical surrogate; that
+is a compiler-policy difference, not evidence that calibrated device capacity
+or inter-FPGA timing is wrong. Hardware-unit and capacity claims remain gated
+by the controlled forced-resource probes rather than by accidental agreement
+between two unrelated synthesis heuristics.
 
 The real sealed AES and PicoRV32 cases now pass their complete Phase 1--7
 gates with physical seed 1, standalone whole-design OpenSTA, full original-path

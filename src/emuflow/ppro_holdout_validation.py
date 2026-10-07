@@ -20,7 +20,7 @@ from .ppro_calibrated_platform import validate_calibrated_platform_bundle
 
 
 HOLDOUT_RESULT_SCHEMA = "emuflow.ppro-holdout-result/v4"
-PROMOTION_REPORT_SCHEMA = "emuflow.ppro-platform-promotion/v3"
+PROMOTION_REPORT_SCHEMA = "emuflow.ppro-platform-promotion/v4"
 _TIERS = {"medium", "diversity", "large", "large_primary", "very_large_final"}
 _BENCHMARK_CLASS_TIERS = {
     "secworks_aes": "medium",
@@ -42,6 +42,8 @@ _RESOURCE_NAMES = {
     "dsp": "dsp48",
     "uram288": "uram288",
 }
+_SOFT_MAPPING_RESOURCES = frozenset({"lut", "ff"})
+_HARD_MAPPING_RESOURCES = frozenset({"bram36k", "dsp48", "uram288"})
 
 
 def _sha256_file(path: Path) -> str:
@@ -718,10 +720,26 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
         ppro = item["ppro"]
         emuflow = item["emuflow"]
         ppro_utilization = _ppro_resource_utilization(ppro)
-        common_resources = sorted(set(ppro_utilization) & set(emuflow["resource_utilization"]))
-        utilization_errors = {
+        common_resources = set(ppro_utilization) & set(
+            emuflow["resource_utilization"]
+        )
+        common_soft_resources = sorted(
+            common_resources & _SOFT_MAPPING_RESOURCES
+        )
+        soft_utilization_errors = {
             name: abs(ppro_utilization[name] - emuflow["resource_utilization"][name])
-            for name in common_resources
+            for name in common_soft_resources
+        }
+        hard_resource_diagnostics = {
+            name: {
+                "ppro_utilization": ppro_utilization[name],
+                "emuflow_utilization": emuflow["resource_utilization"][name],
+                "absolute_difference": abs(
+                    ppro_utilization[name]
+                    - emuflow["resource_utilization"][name]
+                ),
+            }
+            for name in sorted(common_resources & _HARD_MAPPING_RESOURCES)
         }
         ppro_cross_fpga = len(
             {entry["fpga"] for entry in ppro["metrics"]["assignments"]}
@@ -778,8 +796,15 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
             "tier": item["tier"],
             "algorithm_id": item["algorithm_id"],
             "configuration_match": emuflow["configuration_match"],
-            "maximum_resource_utilization_error": max(utilization_errors.values(), default=None),
-            "resource_comparison_available": bool(common_resources),
+            "maximum_soft_resource_utilization_error": max(
+                soft_utilization_errors.values(), default=None
+            ),
+            "soft_resource_utilization_error": soft_utilization_errors,
+            "soft_resource_comparison_available": bool(common_soft_resources),
+            "hard_resource_mapping_diagnostics": hard_resource_diagnostics,
+            "hard_resource_mapping_gate": (
+                "not-applicable-across-synthesis-providers"
+            ),
             "ppro_cross_fpga": ppro_cross_fpga,
             "emuflow_cross_fpga": emuflow_cross_fpga,
             "interconnect_comparison_available": interconnect_comparison_available,
@@ -800,8 +825,8 @@ def evaluate_holdout_promotion(results: Sequence[Mapping[str, Any]]) -> Dict[str
         )
         case["passes"] = (
             case["configuration_match"]
-            and case["resource_comparison_available"]
-            and case["maximum_resource_utilization_error"] <= 0.10
+            and case["soft_resource_comparison_available"]
+            and case["maximum_soft_resource_utilization_error"] <= 0.10
             and interconnect_case_passes
             and case["complete_phase1_7_gate"]
         )
