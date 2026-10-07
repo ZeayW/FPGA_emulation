@@ -34,8 +34,12 @@ _PHYSICAL_MEMORY_POLICY = "physically-implementable-shared-memory-model-v1"
 _RESOURCE_NAMES = {
     "lut": "lut",
     "ff": "ff",
-    "bram18k": "bram36k",
-    "dsp48": "dsp48",
+    # Phase 3 owns resources in the provider-neutral planning namespace.  The
+    # calibrated platform defines ``bram`` as one BRAM36 and ``dsp`` as one
+    # DSP48; the native inventory aliases are physical reference capacities,
+    # not keys emitted by the partition report.
+    "bram": "bram36k",
+    "dsp": "dsp48",
     "uram288": "uram288",
 }
 

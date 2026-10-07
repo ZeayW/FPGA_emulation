@@ -572,7 +572,10 @@ the conservative VTR planning aliases (`bram=floor(bram18k/2)`,
 eight-LUT slice structure because the open Xilinx mapper reports native CARRY8
 cells as a separate resource dimension. This keeps Phase 1 capacity checks and Phase 7 physical resource
 accounting on one public inventory instead of treating a mapped BRAM design as
-having an unknown resource class.
+having an unknown resource class. Blind holdout comparison reads the Phase 3
+planning keys (`bram` and `dsp`) and compares them with PPro's BRAM36 and DSP48
+metrics; it does not silently replace missing planning keys with zero-valued
+native-inventory aliases.
 `capacity_sharing=per_direction` is not presented as a PPro-discovered board
 property, and bundle validation fails when this provenance record is missing.
 Platform generation also requires topology evidence for every ordered FPGA

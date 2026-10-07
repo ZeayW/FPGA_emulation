@@ -13,6 +13,7 @@ from emuflow.platform import Platform
 from emuflow.ppro_blackbox_application import benchmark_rtl_identity
 from emuflow.ppro_calibration_cli import main
 from emuflow.ppro_holdout_validation import (
+    _resource_utilization,
     _validate_holdout_preparation,
     assemble_holdout_result,
     evaluate_holdout_promotion,
@@ -124,6 +125,59 @@ def result(identifier: str, workload: str, tier: str, algorithm: str, delay: flo
 
 
 class PProHoldoutValidationTest(unittest.TestCase):
+    def test_resource_utilization_uses_phase3_planning_aliases(self):
+        platform = Platform.from_dict(
+            {
+                "schema": "emuflow.boarddb/v1",
+                "platform": {
+                    "name": "calibrated",
+                    "kind": "virtual",
+                    "description": "test",
+                },
+                "fpgas": [
+                    {
+                        "id": fpga,
+                        "part": "academic",
+                        "utilization_limit": 0.75,
+                        "capacity": {
+                            "lut": 1000,
+                            "ff": 2000,
+                            "bram": 500,
+                            "bram18k": 1000,
+                            "dsp": 100,
+                            "dsp48": 100,
+                            "uram288": 20,
+                        },
+                    }
+                    for fpga in ("F0", "F1")
+                ],
+                "links": [],
+            }
+        )
+        utilization = _resource_utilization(
+            {
+                "F0": {
+                    "lut": 100,
+                    "ff": 200,
+                    "bram": 50,
+                    "dsp": 25,
+                    "uram288": 4,
+                },
+                "F1": {},
+            },
+            platform,
+        )
+        self.assertEqual(
+            utilization,
+            {
+                "bram36k": 0.1,
+                "dsp48": 0.25,
+                "ff": 0.1,
+                "lut": 0.1,
+                "uram288": 0.2,
+            },
+        )
+
     @staticmethod
     def physical_nvdla_preparation():
         return {
