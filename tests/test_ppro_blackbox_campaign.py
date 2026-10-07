@@ -181,7 +181,7 @@ class PProBlackboxCampaignTest(unittest.TestCase):
             include.mkdir(parents=True)
             (include / "config.vh").write_text("`define WIDTH 8\n", encoding="utf-8")
             (source / "top.v").write_text(
-                '`include "config.vh"\nmodule top(input clk); endmodule\n',
+                '`include "config.vh"\nmodule top(input clk, input d, output q); assign q = d; endmodule\n',
                 encoding="utf-8",
             )
             benchmark = root / "benchmark.json"
@@ -196,6 +196,14 @@ class PProBlackboxCampaignTest(unittest.TestCase):
                         "sources": ["top.v"],
                         "clocks": ["clk"],
                         "clock_periods_ns": {"clk": 10.0},
+                        "timing_io": {
+                            "input_groups": [
+                                {"clock": "clk", "delay_ns": 0.0, "ports": ["d"]}
+                            ],
+                            "output_groups": [
+                                {"clock": "clk", "delay_ns": 0.0, "ports": ["q"]}
+                            ],
+                        },
                         "platform": "unused.json",
                         "synthesis": {
                             "family": "xcup",

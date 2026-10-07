@@ -167,6 +167,11 @@ def generate_application_holdout_bundle(
         raise ValidationError(
             "application holdout benchmark must define a period for every clock"
         )
+    timing_io = identity["timing_io"]
+    if timing_io is None:
+        raise ValidationError(
+            "application holdout benchmark must define explicit timing_io"
+        )
     constraints = {
         "control_mode": "none",
         "documented_actions": [],
@@ -175,9 +180,8 @@ def generate_application_holdout_bundle(
             {"port": clock, "period_ns": float(clock_periods[clock])}
             for clock in identity["clocks"]
         ],
+        "timing_io": timing_io,
     }
-    if identity["timing_io"] is not None:
-        constraints["timing_io"] = identity["timing_io"]
 
     root = output_dir.resolve()
     root.mkdir(parents=True, exist_ok=True)

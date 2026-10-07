@@ -9,6 +9,17 @@ from emuflow.errors import ValidationError
 from emuflow.ppro_blackbox_application import generate_application_holdout_bundle
 
 
+def _timing_io():
+    return {
+        "input_groups": [
+            {"clock": "clk", "delay_ns": 0.0, "ports": ["d"]}
+        ],
+        "output_groups": [
+            {"clock": "clk", "delay_ns": 0.0, "ports": ["q"]}
+        ],
+    }
+
+
 class PProBlackboxApplicationTest(unittest.TestCase):
     def test_holdout_requires_a_period_for_every_clock(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -36,6 +47,46 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ValidationError, "period for every clock"):
+                generate_application_holdout_bundle(
+                    root / "bundle",
+                    benchmark_run_path=benchmark,
+                    source_root=source_root,
+                    campaign_id="blind",
+                    public_prior_id="prior-v1",
+                    configuration_id="platform-v1",
+                    tool_release="2026.1",
+                    runner_revision="d" * 64,
+                )
+
+    def test_holdout_requires_explicit_timing_io(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "source"
+            source_root.mkdir()
+            (source_root / "top.v").write_text(
+                "module top(input wire clk, input wire d, output wire q); "
+                "assign q = d; endmodule\n",
+                encoding="utf-8",
+            )
+            benchmark = root / "benchmark.json"
+            benchmark.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.benchmark-run/v1",
+                        "id": "missing_timing_io",
+                        "design_id": "missing_timing_io",
+                        "calibration_holdout_class": "open_cpu",
+                        "top": "top",
+                        "sources": ["top.v"],
+                        "clocks": ["clk"],
+                        "clock_periods_ns": {"clk": 10.0},
+                        "platform": "unused.json",
+                        "synthesis": {"family": "xcup", "policy": "logic-only"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "explicit timing_io"):
                 generate_application_holdout_bundle(
                     root / "bundle",
                     benchmark_run_path=benchmark,
@@ -187,6 +238,7 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                         "sources": ["top.v"],
                         "clocks": ["clk"],
                         "clock_periods_ns": {"clk": 10.0},
+                        "timing_io": _timing_io(),
                         "platform": "unused.json",
                         "synthesis": {"family": "xcup", "policy": "logic-only"},
                     }
@@ -202,9 +254,15 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                 tool_release="2026.1",
                 runner_revision="d" * 64,
             )
-            rtl.write_text("module top(input clk); endmodule\n", encoding="utf-8")
+            rtl.write_text(
+                "module top(input clk, input d, output q); assign q = d; endmodule\n",
+                encoding="utf-8",
+            )
             first = generate_application_holdout_bundle(root / "one", **kwargs)
-            rtl.write_text("module top(input clk); wire x = clk; endmodule\n", encoding="utf-8")
+            rtl.write_text(
+                "module top(input clk, input d, output q); wire x = d; assign q = x; endmodule\n",
+                encoding="utf-8",
+            )
             second = generate_application_holdout_bundle(root / "two", **kwargs)
             self.assertNotEqual(
                 first.run_spec["workload"]["rtl_sha256"],
@@ -217,7 +275,8 @@ class PProBlackboxApplicationTest(unittest.TestCase):
             source_root = root / "source"
             source_root.mkdir()
             (source_root / "top.v").write_text(
-                "module top(input clk); endmodule\n", encoding="utf-8"
+                "module top(input clk, input d, output q); assign q = d; endmodule\n",
+                encoding="utf-8",
             )
             benchmark = root / "benchmark.json"
             value = {
@@ -229,6 +288,7 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                 "sources": ["top.v"],
                 "clocks": ["clk"],
                 "clock_periods_ns": {"clk": 10.0},
+                "timing_io": _timing_io(),
                 "platform": "unused.json",
                 "synthesis": {"family": "xcup", "policy": "logic-only"},
             }
@@ -316,7 +376,7 @@ class PProBlackboxApplicationTest(unittest.TestCase):
             include = source_root / "include"
             include.mkdir(parents=True)
             (source_root / "top.v").write_text(
-                '`include "config.vh"\nmodule top(input clk); endmodule\n',
+                '`include "config.vh"\nmodule top(input clk, input d, output q); assign q = d; endmodule\n',
                 encoding="utf-8",
             )
             header = include / "config.vh"
@@ -331,6 +391,7 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                 "sources": ["top.v"],
                 "clocks": ["clk"],
                 "clock_periods_ns": {"clk": 10.0},
+                "timing_io": _timing_io(),
                 "platform": "unused.json",
                 "synthesis": {
                     "family": "xcup",

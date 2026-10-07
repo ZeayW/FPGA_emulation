@@ -880,12 +880,14 @@ from a wholly unconstrained report without retaining or publishing the raw
 vendor report.
 
 A fresh physical-memory NVDLA black-box run with the corrected compile-time SDC
-and post-partition `gr0` SSTA path passed in 844.62 seconds. PPro selected three
+and post-partition `gr0` SSTA path passed in 612.22 seconds. PPro selected three
 logical partitions and reported four directed one-hop routes, 684 crossing
-signals, maximum TDM ratio 8, and 51.66 ns worst data-arrival delay. The new
-coverage counters showed that all 1,521 reported cross-FPGA paths were
-unconstrained, however, so this result is retained as route/TDM evidence and is
-explicitly rejected as timing or platform-promotion evidence.
+signals, maximum TDM ratio 8, and 51.66 ns worst data-arrival delay. All 1,000
+reported cross-FPGA timing paths were constrained and none were unconstrained,
+so the observation is eligible for the timing holdout gate. The bundle generator
+now rejects an application holdout that lacks explicit `timing_io`; a stale
+clock-only benchmark contract can no longer consume a PPro run and silently
+produce unusable timing evidence.
 
 Benchmark contracts may now declare an explicit `timing_io` environment. Each
 input/output group names its design clock, finite nonnegative external delay,
@@ -899,8 +901,8 @@ catch-all collection. The NVDLA preparer binds the public CSB interface to
 `dla_csb_clk`, the public DBB/CVSRAM data interfaces and interrupt to
 `dla_core_clk`, and uses a documented zero-delay ideal synchronous environment
 for this calibration probe. This is a research timing-environment assumption,
-not a measured board property. It must pass a fresh ordinary PPro run before it
-can replace the rejected unconstrained observation.
+not a measured board property. The fresh NVDLA run above validates that the
+scalar and elaborated vector-port bindings reach the ordinary PPro SSTA report.
 
 The native Koios GEMM, DLA-large, and TPU-large-WS holdout contracts use the
 same explicit public-interface rule. GEMM binds its BRAM and AXI data/control
