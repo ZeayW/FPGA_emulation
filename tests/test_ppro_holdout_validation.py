@@ -526,7 +526,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 "schema": "emuflow.boarddb/v1",
                 "platform": {"name": "calibrated", "kind": "virtual", "description": "test"},
                 "fpgas": [
-                    {"id": fpga, "part": "academic", "utilization_limit": 0.75,
+                    {"id": fpga, "part": "xcvu19p-fsva3824-2-e", "utilization_limit": 0.75,
                      "capacity": {"lut": 100, "ff": 200}}
                     for fpga in ("F0", "F1")
                 ],
@@ -567,6 +567,14 @@ class PProHoldoutValidationTest(unittest.TestCase):
             ).hexdigest()
             manifest = {
                 "configuration_id": "lx2-m2",
+                "physical_contract": {
+                    "frontend_mapping_profile": "xilinx-ultrascaleplus-open-v1",
+                    "physical_backend": "rapidwright",
+                    "physical_placer": "openparf-native",
+                    "provider_id": "rapidwright-xilinx-device-v1",
+                    "provider_revision": "127f55cd704c277372697e699f1559e1cdc91f34",
+                    "part": "xcvu19p-fsva3824-2-e",
+                },
                 "profiles": {"nominal": {
                     "boarddb": boarddb_digest,
                     "board_link_timing": canonical_digest(link_timing),
@@ -599,10 +607,26 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 {"from": "F0", "to": "F1", "tdm_ratio": 1},
             ]}
             physical = {
-                "execution": {"seed": 1},
+                "backend": {"id": "rapidwright"},
+                "architecture": {
+                    "provider": "rapidwright-xilinx-device-v1",
+                    "provider_revision": "127f55cd704c277372697e699f1559e1cdc91f34",
+                    "part": "xcvu19p-fsva3824-2-e",
+                },
+                "execution": {"seed": 1, "rapidwright_placer": "openparf-native"},
                 "fpgas": [
-                    {"physical_result": {"closure": {"unrouted_nets": 0, "drc_violations": 0}}},
-                    {"physical_result": {"closure": {"unrouted_nets": 0, "drc_violations": 0}}},
+                    {
+                        "part": "xcvu19p-fsva3824-2-e",
+                        "physical_result": {
+                            "identity": {
+                                "backend": "rapidwright",
+                                "fpga": fpga,
+                                "part": "xcvu19p-fsva3824-2-e",
+                            },
+                            "closure": {"unrouted_nets": 0, "drc_violations": 0},
+                        },
+                    }
+                    for fpga in ("F0", "F1")
                 ],
             }
             qor = {"timing": {
@@ -634,6 +658,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
             flow_report = {
                 "status": "pass",
                 "stages": {"frontend": {"synthesis": {
+                    "mapping_profile": "xilinx-ultrascaleplus-open-v1",
                     "sources": [str(rtl.resolve())],
                     "include_dirs": [],
                     "defines": [],
@@ -719,6 +744,37 @@ class PProHoldoutValidationTest(unittest.TestCase):
             )
             flow_report["artifacts"]["transport_cost"]["sha256"] = sha(
                 paths["transport_cost"]
+            )
+
+            physical["architecture"]["provider_revision"] = "0" * 40
+            paths["physical_flow_report"].write_text(
+                json.dumps(physical), encoding="utf-8"
+            )
+            flow_report["artifacts"]["physical_flow_report"]["sha256"] = sha(
+                paths["physical_flow_report"]
+            )
+            (flow / "multi-fpga-flow-report.json").write_text(
+                json.dumps(flow_report), encoding="utf-8"
+            )
+            with patch(
+                "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                return_value={"status": "pass", "configuration_id": "lx2-m2"},
+            ), patch(
+                "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                return_value={"status": "pass"},
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, "provider identity"
+                ):
+                    assemble_holdout_result(
+                        result_id="blind-aes-a", workload_id="blind-aes",
+                        algorithm_id="default",
+                        ppro_observation_path=observation_path, flow_root=flow,
+                        benchmark_run_path=benchmark, source_root=source_root,
+                        platform_bundle_root=bundle, profile="nominal",
+                    )
+            physical["architecture"]["provider_revision"] = (
+                "127f55cd704c277372697e699f1559e1cdc91f34"
             )
 
             physical["execution"]["seed"] = 2

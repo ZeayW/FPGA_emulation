@@ -258,6 +258,9 @@ def _parser() -> argparse.ArgumentParser:
     generate.add_argument("--payload-fit", type=Path, required=True)
     generate.add_argument("--latency-fit", type=Path, required=True)
     generate.add_argument("--transport-fit", type=Path, required=True)
+    generate.add_argument(
+        "--rapidwright-provider-manifest", type=Path, required=True
+    )
     generate.add_argument("--aggressive-fabric-clock-mhz", type=float, required=True)
     generate.add_argument("--nominal-fabric-clock-mhz", type=float, required=True)
     generate.add_argument("--conservative-fabric-clock-mhz", type=float, required=True)
@@ -537,6 +540,9 @@ def _dispatch(args: argparse.Namespace) -> Any:
             payload_fit=read_json(args.payload_fit.resolve()),
             latency_fit=read_json(args.latency_fit.resolve()),
             transport_fit=read_json(args.transport_fit.resolve()),
+            rapidwright_provider=read_json(
+                args.rapidwright_provider_manifest.resolve()
+            ),
             fabric_clock_mhz={
                 "aggressive": args.aggressive_fabric_clock_mhz,
                 "nominal": args.nominal_fabric_clock_mhz,

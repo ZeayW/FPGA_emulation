@@ -497,6 +497,9 @@ def assemble_holdout_result(
         raise ValidationError("PPro observation disagrees with calibrated platform")
     manifest_path = bundle_root / "manifest.json"
     manifest = read_json(manifest_path)
+    physical_contract = manifest.get("physical_contract")
+    if not isinstance(physical_contract, Mapping):
+        raise ValidationError("calibrated platform lacks a physical contract")
     profile_record = manifest["profiles"].get(profile)
     if not isinstance(profile_record, Mapping):
         raise ValidationError("calibrated platform manifest lacks selected profile")
@@ -548,6 +551,14 @@ def assemble_holdout_result(
         )
 
     synthesis = flow_report["stages"]["frontend"].get("synthesis")
+    if (
+        not isinstance(synthesis, Mapping)
+        or synthesis.get("mapping_profile")
+        != physical_contract.get("frontend_mapping_profile")
+    ):
+        raise ValidationError(
+            "flow frontend mapping is not the calibrated RapidWright contract"
+        )
     raw_sources = synthesis.get("sources") if isinstance(synthesis, Mapping) else None
     if not isinstance(raw_sources, list) or any(
         not isinstance(path, str) for path in raw_sources
@@ -577,10 +588,54 @@ def assemble_holdout_result(
     phase3 = read_json(root / "partition/phase3_report.json")
     schedule = read_json(root / artifacts["schedule"]["path"])
     physical = read_json(root / artifacts["physical_flow_report"]["path"])
+    physical_backend = physical.get("backend")
+    if (
+        not isinstance(physical_backend, Mapping)
+        or physical_backend.get("id") != physical_contract.get("physical_backend")
+    ):
+        raise ValidationError(
+            "flow physical backend is not the calibrated RapidWright contract"
+        )
+    architecture = physical.get("architecture")
+    if (
+        not isinstance(architecture, Mapping)
+        or architecture.get("provider") != physical_contract.get("provider_id")
+        or architecture.get("provider_revision")
+        != physical_contract.get("provider_revision")
+        or architecture.get("part") != physical_contract.get("part")
+    ):
+        raise ValidationError(
+            "flow RapidWright provider identity is not the calibrated contract"
+        )
+    physical_fpgas = physical.get("fpgas")
+    if not isinstance(physical_fpgas, list) or not physical_fpgas:
+        raise ValidationError("flow physical report lacks FPGA results")
+    for record in physical_fpgas:
+        result = record.get("physical_result") if isinstance(record, Mapping) else None
+        physical_identity = (
+            result.get("identity") if isinstance(result, Mapping) else None
+        )
+        if (
+            not isinstance(record, Mapping)
+            or record.get("part") != physical_contract.get("part")
+            or not isinstance(physical_identity, Mapping)
+            or physical_identity.get("backend")
+            != physical_contract.get("physical_backend")
+            or physical_identity.get("part") != physical_contract.get("part")
+        ):
+            raise ValidationError(
+                "flow physical FPGA identity is not the calibrated contract"
+            )
     qor = read_json(root / artifacts["qor_report"]["path"])
     execution = physical.get("execution")
     if not isinstance(execution, Mapping) or execution.get("seed") != 1:
         raise ValidationError("holdout flow requires recorded physical seed 1")
+    if execution.get("rapidwright_placer") != physical_contract.get(
+        "physical_placer"
+    ):
+        raise ValidationError(
+            "flow physical placer is not the calibrated RapidWright contract"
+        )
 
     timing = qor.get("timing")
     if not isinstance(timing, Mapping):

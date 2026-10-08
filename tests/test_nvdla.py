@@ -269,6 +269,10 @@ endmodule
                 spec.value["calibration_holdout_class"], "nvdla"
             )
             self.assertEqual(
+                spec.value["physical_mapping_profile"],
+                "xilinx-ultrascaleplus-open-v1",
+            )
+            self.assertEqual(
                 {
                     group["clock"]
                     for group in spec.value["timing_io"]["input_groups"]

@@ -24,6 +24,11 @@ from emuflow.open_transport_characterization import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RAPIDWRIGHT_PROVIDER = json.loads(
+    (ROOT / "resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json").read_text(
+        encoding="utf-8"
+    )
+)
 
 
 def fit_artifacts():
@@ -173,6 +178,7 @@ class PProCalibratedPlatformTest(unittest.TestCase):
             payload_fit=payload,
             latency_fit=latency,
             transport_fit=transport,
+            rapidwright_provider=RAPIDWRIGHT_PROVIDER,
             fabric_clock_mhz={"aggressive": 300.0, "nominal": 250.0, "conservative": 200.0},
         )
 
@@ -185,6 +191,7 @@ class PProCalibratedPlatformTest(unittest.TestCase):
             self.assertEqual(len(platform.links), 1)
             self.assertEqual(platform.links[0].data_lanes_per_direction, 64)
             for fpga in platform.fpgas:
+                self.assertEqual(fpga.part, "xcvu19p-fsva3824-2-e")
                 self.assertEqual(
                     fpga.capacity["bram"], fpga.capacity["bram18k"] // 2
                 )
@@ -197,6 +204,17 @@ class PProCalibratedPlatformTest(unittest.TestCase):
                 artifacts["transport_cost"], expected_platform=platform.name
             )
         self.assertEqual(result["manifest"]["fabric_clock_provenance"], "research_assumption")
+        self.assertEqual(
+            result["manifest"]["physical_contract"],
+            {
+                "frontend_mapping_profile": "xilinx-ultrascaleplus-open-v1",
+                "physical_backend": "rapidwright",
+                "physical_placer": "openparf-native",
+                "provider_id": "rapidwright-xilinx-device-v1",
+                "provider_revision": "127f55cd704c277372697e699f1559e1cdc91f34",
+                "part": "xcvu19p-fsva3824-2-e",
+            },
+        )
         provenance = result["manifest"]["parameter_provenance"]
         self.assertEqual(provenance["device.capacity"]["class"], "public_spec")
         self.assertEqual(
@@ -298,6 +316,7 @@ class PProCalibratedPlatformTest(unittest.TestCase):
                 payload_fit=payload,
                 latency_fit=latency,
                 transport_fit=transport,
+                rapidwright_provider=RAPIDWRIGHT_PROVIDER,
                 fabric_clock_mhz={"aggressive": 300.0, "nominal": 250.0, "conservative": 200.0},
             )
 
@@ -317,6 +336,7 @@ class PProCalibratedPlatformTest(unittest.TestCase):
                 payload_fit=payload,
                 latency_fit=latency,
                 transport_fit=transport,
+                rapidwright_provider=RAPIDWRIGHT_PROVIDER,
                 fabric_clock_mhz={"aggressive": 300.0, "nominal": 250.0, "conservative": 200.0},
             )
 
@@ -343,6 +363,7 @@ class PProCalibratedPlatformTest(unittest.TestCase):
                 payload_fit=payload,
                 latency_fit=latency,
                 transport_fit=transport,
+                rapidwright_provider=RAPIDWRIGHT_PROVIDER,
                 fabric_clock_mhz={"aggressive": 300.0, "nominal": 250.0, "conservative": 200.0},
             )
 
@@ -363,6 +384,7 @@ class PProCalibratedPlatformTest(unittest.TestCase):
                 payload_fit=payload,
                 latency_fit=latency,
                 transport_fit=transport,
+                rapidwright_provider=RAPIDWRIGHT_PROVIDER,
                 fabric_clock_mhz={"aggressive": 300.0, "nominal": 250.0, "conservative": 200.0},
             )
 

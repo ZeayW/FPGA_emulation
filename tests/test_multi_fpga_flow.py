@@ -110,6 +110,23 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     "xilinx-ultrascaleplus-open-v1", None
                 )
 
+    def test_rapidwright_backend_rejects_vtr_mapping_before_frontend(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "flow"
+            with self.assertRaisesRegex(
+                EmuFlowError,
+                "physical-backend=rapidwright requires",
+            ):
+                run_multi_fpga_flow(
+                    platform_path=PLATFORM,
+                    output_dir=output,
+                    yosys_json=ROOT / "examples/yosys/counter.json",
+                    mapping_profile="vtr-hard-blocks",
+                    physical=True,
+                    physical_backend="rapidwright",
+                )
+            self.assertFalse(output.exists())
+
     def test_zero_cut_flow_skips_vacuous_interconnect_optimizers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -402,6 +402,19 @@ requirements, not optional micro-optimizations.
   is hashed, and why the check cannot reuse an existing validated certificate.
   If those answers are absent, keep the data out of the production hot path.
 
+## PPro-calibrated platform physical contract
+
+- A PPro-calibrated platform run combines PPro-fitted inter-FPGA behavior with
+  the source-sealed XCVU19P RapidWright device model. It must use
+  `xilinx-ultrascaleplus-open-v1`, `physical-backend=rapidwright`, and the
+  `openparf-native` placer. A VTR mapping or open/VPR physical backend is a
+  separate academic experiment and cannot be reported as calibrated
+  RapidWright+PPro evidence.
+- Every generated calibrated BoardDB must carry the exact provider part, and
+  the platform manifest must seal the provider revision and device identity.
+  Holdout preparation and result assembly must fail closed on any mapping,
+  part, backend, or placer mismatch before accepting Phase 1--7 evidence.
+
 ## End-to-end acceptance is mandatory
 
 - A Phase 6 algorithm, provider, optimization, or default-selection change is

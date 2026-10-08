@@ -44,6 +44,7 @@ from .physical_backend import (
     validate_physical_partition_result,
 )
 from .platform import Platform
+from .rapidwright_provider import validate_rapidwright_provider_manifest
 from .runtime import (
     PHYSICAL_SUMMARY_SCHEMA,
     build_virtual_runtime,
@@ -757,12 +758,32 @@ def run_multi_fpga_physical_flow(
             raise ValidationError("RapidWright Java adapter source is missing")
         if rapidwright_classes is None:
             rapidwright_classes = output_dir / ".rapidwright-classes"
+        provider_identity = None
+        if rapidwright_provider_manifest is not None:
+            provider_identity = validate_rapidwright_provider_manifest(
+                read_json(rapidwright_provider_manifest.resolve())
+            )
+            if any(
+                fpga.part != provider_identity["part"]
+                for fpga in platform.fpgas
+            ):
+                raise ValidationError(
+                    "RapidWright provider part disagrees with the BoardDB"
+                )
         architecture_source = {
             "status": "pass",
             "mode": "provided-xilinx-architecture-db",
             "path": str(architecture_path),
             "sha256": _sha256(architecture_path),
             "provider": "rapidwright-xilinx-device-v1",
+            **(
+                {
+                    "provider_revision": provider_identity["revision"],
+                    "part": provider_identity["part"],
+                }
+                if provider_identity is not None
+                else {}
+            ),
         }
     else:
         if architecture is not None:

@@ -24,15 +24,18 @@ from .platform import Platform
 from .ppro_blackbox_calibration import validate_public_platform_prior
 from .ppro_blackbox_stage3 import CALIBRATED_CAPACITY_SCHEMA, TOPOLOGY_FIT_SCHEMA
 from .ppro_blackbox_stage4 import LATENCY_FIT_SCHEMA, PAYLOAD_FIT_SCHEMA
+from .rapidwright_provider import validate_rapidwright_provider_manifest
+from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 TRANSPORT_COST_SCHEMA = "emuflow.transport-cost/v2"
-CALIBRATED_MANIFEST_SCHEMA = "emuflow.ppro-calibrated-platform-manifest/v1"
+CALIBRATED_MANIFEST_SCHEMA = "emuflow.ppro-calibrated-platform-manifest/v2"
 _PROFILES = ("aggressive", "nominal", "conservative")
 _MAX_HOLDOUT_RELATIVE_ERROR = 0.15
 _ZERO_ACTUAL_ABSOLUTE_TOLERANCE = 1.0
 _PARAMETER_PROVENANCE = {
     "device.capacity": "public_spec",
+    "device.physical_model": "rapidwright_provider",
     "device.effective_utilization_limit": "black_box_fitted",
     "topology.directed_reachability": "black_box_fitted",
     "link.payload_capacity": "black_box_fitted",
@@ -68,10 +71,9 @@ def _public_capacities(prior: Mapping[str, Any]) -> Dict[str, int]:
         "lut": lut,
         "ff": int(math.floor(resources["clb_ff"])),
         "bram18k": bram18k,
-        # The default open VTR frontend reports 36-Kib-class BRAM and generic
-        # DSP demand.  Keep conservative planning aliases beside the native
-        # Xilinx resource names so Phase 1 and the routed physical backend use
-        # the same public capacity inventory.
+        # Phase 3 reports provider-neutral BRAM36/DSP planning demand. Keep
+        # those aliases beside the native Xilinx resource names so Phase 1 and
+        # the RapidWright physical backend use one capacity inventory.
         "bram": bram18k // 2,
         "uram288": int(math.floor(resources["uram_kib"] / 288.0)),
         "dsp48": dsp48,
@@ -88,6 +90,47 @@ def _public_capacities(prior: Mapping[str, Any]) -> Dict[str, int]:
     if any(value <= 0 for value in result.values()):
         raise ValidationError("public prior contains a non-positive device capacity")
     return result
+
+
+def _rapidwright_capacities(
+    prior: Mapping[str, Any], provider: Mapping[str, Any]
+) -> Dict[str, int]:
+    """Bind public VU19P capacity to the exact RapidWright device identity."""
+
+    public = _public_capacities(prior)
+    checked = validate_rapidwright_provider_manifest(provider)
+    public_part = str(prior["device"]["part"]).lower()
+    if checked["device_identity"]["device"].lower() != public_part:
+        raise ValidationError(
+            "RapidWright provider device disagrees with the calibrated public prior"
+        )
+    resources = checked["expected_physical_resources"]
+    required = {
+        "CLB_LUT",
+        "CLB_FF",
+        "DSP48E2",
+        "RAMB18E2",
+        "RAMB36E2",
+        "URAM288",
+    }
+    if not required.issubset(resources):
+        raise ValidationError(
+            "RapidWright provider lacks the required XCVU19P physical resources"
+        )
+    physical = {
+        "lut": resources["CLB_LUT"],
+        "ff": resources["CLB_FF"],
+        "bram18k": resources["RAMB18E2"],
+        "bram": resources["RAMB36E2"],
+        "uram288": resources["URAM288"],
+        "dsp48": resources["DSP48E2"],
+        "dsp": resources["DSP48E2"],
+        "carry8": resources["CLB_LUT"] // 8,
+        "io": public["io"],
+    }
+    if any(value <= 0 for value in physical.values()):
+        raise ValidationError("RapidWright provider contains a non-positive capacity")
+    return physical
 
 
 def _utilization_limit(
@@ -447,6 +490,7 @@ def generate_calibrated_platform_profiles(
     payload_fit: Mapping[str, Any],
     latency_fit: Mapping[str, Any],
     transport_fit: Mapping[str, Any],
+    rapidwright_provider: Mapping[str, Any],
     fabric_clock_mhz: Mapping[str, float],
 ) -> Dict[str, Any]:
     """Generate three immutable, validated profiles; perform no fitting here."""
@@ -465,8 +509,9 @@ def generate_calibrated_platform_profiles(
         latency_fit=latency_fit,
         transport_fit=transport_fit,
     )
+    checked_provider = validate_rapidwright_provider_manifest(rapidwright_provider)
     fpga_count = _configuration_count(normalized_prior, configuration_id)
-    public_capacity = _public_capacities(normalized_prior)
+    public_capacity = _rapidwright_capacities(normalized_prior, rapidwright_provider)
     utilization_limit, capacity_projection = _utilization_limit(capacity_fit, public_capacity)
     direct_edges = _direct_topology(topology_fit, fpga_count)
     payload_widths = _payload_widths(payload_fit, fpga_count)
@@ -483,6 +528,7 @@ def generate_calibrated_platform_profiles(
         "payload_fit": _sha256(payload_fit),
         "latency_fit": _sha256(latency_fit),
         "transport_fit": _sha256(transport_fit),
+        "rapidwright_provider": _sha256(rapidwright_provider),
     }
     for profile in _PROFILES:
         frequency = float(fabric_clock_mhz[profile])
@@ -528,7 +574,7 @@ def generate_calibrated_platform_profiles(
             "fpgas": [
                 {
                     "id": f"F{index}",
-                    "part": "academic-xcvu19p-behavioral",
+                    "part": checked_provider["part"],
                     "utilization_limit": utilization_limit,
                     "capacity": public_capacity,
                 }
@@ -598,6 +644,14 @@ def generate_calibrated_platform_profiles(
         "schema": CALIBRATED_MANIFEST_SCHEMA,
         "configuration_id": configuration_id,
         "claim_scope": "PPro-behavior-equivalent-academic-model",
+        "physical_contract": {
+            "frontend_mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            "physical_backend": "rapidwright",
+            "physical_placer": "openparf-native",
+            "provider_id": checked_provider["provider_id"],
+            "provider_revision": checked_provider["revision"],
+            "part": checked_provider["part"],
+        },
         "not_claimed": [
             "physical-board-equivalence",
             "package-pin-equivalence",
@@ -610,6 +664,13 @@ def generate_calibrated_platform_profiles(
             "device.capacity": {
                 "class": "public_spec",
                 "source_sha256": source_hashes["prior"],
+            },
+            "device.physical_model": {
+                "class": "rapidwright_provider",
+                "source_sha256": source_hashes["rapidwright_provider"],
+                "provider_id": checked_provider["provider_id"],
+                "provider_revision": checked_provider["revision"],
+                "part": checked_provider["part"],
             },
             "device.effective_utilization_limit": {
                 "class": "black_box_fitted",
@@ -686,6 +747,35 @@ def validate_calibrated_platform_bundle(root: Path) -> Dict[str, Any]:
         raise ValidationError("calibrated platform claim scope is invalid")
     if manifest.get("fabric_clock_provenance") != "research_assumption":
         raise ValidationError("calibrated platform fabric-clock provenance is invalid")
+    physical_contract = manifest.get("physical_contract")
+    if not isinstance(physical_contract, dict):
+        raise ValidationError("calibrated platform physical contract is invalid")
+    expected_fixed_contract = {
+        "frontend_mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+        "physical_backend": "rapidwright",
+        "physical_placer": "openparf-native",
+        "provider_id": "rapidwright-xilinx-device-v1",
+    }
+    if (
+        set(physical_contract)
+        != set(expected_fixed_contract) | {"provider_revision", "part"}
+        or any(
+            physical_contract.get(field) != value
+            for field, value in expected_fixed_contract.items()
+        )
+    ):
+        raise ValidationError("calibrated platform physical contract is invalid")
+    if (
+        not isinstance(physical_contract["provider_revision"], str)
+        or len(physical_contract["provider_revision"]) != 40
+        or any(
+            character not in "0123456789abcdef"
+            for character in physical_contract["provider_revision"]
+        )
+        or not isinstance(physical_contract["part"], str)
+        or not physical_contract["part"]
+    ):
+        raise ValidationError("calibrated platform RapidWright identity is invalid")
     parameter_provenance = manifest.get("parameter_provenance")
     if not isinstance(parameter_provenance, dict) or set(parameter_provenance) != set(
         _PARAMETER_PROVENANCE
@@ -697,6 +787,14 @@ def validate_calibrated_platform_bundle(root: Path) -> Dict[str, Any]:
             raise ValidationError(
                 f"calibrated platform {parameter} provenance is invalid"
             )
+    physical_model = parameter_provenance["device.physical_model"]
+    if any(
+        physical_model.get(field) != physical_contract[field]
+        for field in ("provider_id", "provider_revision", "part")
+    ):
+        raise ValidationError(
+            "calibrated platform physical-model provenance disagrees"
+        )
     sharing = parameter_provenance["link.capacity_sharing"]
     if sharing.get("value") != "per_direction" or not isinstance(
         sharing.get("reason"), str
@@ -710,6 +808,7 @@ def validate_calibrated_platform_bundle(root: Path) -> Dict[str, Any]:
         raise ValidationError("calibrated platform source hashes are invalid")
     for parameter, source in (
         ("device.capacity", "prior"),
+        ("device.physical_model", "rapidwright_provider"),
         ("device.effective_utilization_limit", "capacity_fit"),
         ("topology.directed_reachability", "topology_fit"),
         ("link.payload_capacity", "payload_fit"),
@@ -742,12 +841,21 @@ def validate_calibrated_platform_bundle(root: Path) -> Dict[str, Any]:
         ):
             raise ValidationError(f"calibrated platform {profile} artifact hash mismatch")
         platform = Platform.from_dict(artifacts["boarddb"])
+        if any(fpga.part != physical_contract["part"] for fpga in platform.fpgas):
+            raise ValidationError(
+                "calibrated BoardDB part disagrees with the RapidWright provider"
+            )
         timing = validate_board_link_timing(artifacts["board_link_timing"], platform)
         transport = validate_transport_cost_database(
             artifacts["transport_cost"], expected_platform=platform.name
         )
         summaries[profile] = {
             "platform": platform.name,
+            "part": physical_contract["part"],
+            "frontend_mapping_profile": physical_contract[
+                "frontend_mapping_profile"
+            ],
+            "physical_backend": physical_contract["physical_backend"],
             "fpgas": len(platform.fpgas),
             "links": len(platform.links),
             "directed_timing_links": timing["directed_links"],

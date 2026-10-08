@@ -1343,6 +1343,15 @@ def run_multi_fpga_flow(
             f"{mapping_profile!r}; expected one of "
             f"{', '.join(MULTI_FPGA_MAPPING_PROFILES)}"
         )
+    if (
+        physical
+        and physical_backend == "rapidwright"
+        and mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+    ):
+        raise EmuFlowError(
+            "physical-backend=rapidwright requires "
+            "mapping-profile=xilinx-ultrascaleplus-open-v1"
+        )
     if phase6_provider not in MULTI_FPGA_PHASE6_PROVIDERS:
         raise EmuFlowError(
             "unsupported Phase 6 provider "

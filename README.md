@@ -477,6 +477,16 @@ generator consumed the completed capacity, topology, payload/TDM, latency,
 and open-transport fits; it rejected no observation and re-read all generated
 contracts through the independent platform validator.
 
+Every generated profile is now physically bound to the source-sealed
+RapidWright XCVU19P provider: the BoardDB carries the exact
+`xcvu19p-fsva3824-2-e` part and provider resource inventory, while the manifest
+requires `xilinx-ultrascaleplus-open-v1`, the `rapidwright` backend, and the
+`openparf-native` placer. PPro remains the black-box authority for fitted
+platform utilization, topology, payload/TDM, and board-delay behavior;
+RapidWright is the device-level implementation authority. A VTR-mapped or
+`physical-backend=open` run is therefore not a calibrated-platform holdout and
+is rejected by the result assembler.
+
 This is a behavior-equivalent academic platform model, not a released hardware
 signoff platform. Generation fails closed if any fit excluded an observation,
 lacks a resolved independent holdout, has an unidentifiable coefficient,
@@ -562,16 +572,20 @@ The same command provides explicit `fit-capacity`, `finalize-capacity`, `fit-top
 `fit-payload`, `fit-latency`, `fit-transport`, `generate-platform`, and
 `validate-platform` operations. It never accepts an installation path, license
 endpoint, internal platform file, or raw report directory as serialized input.
+`generate-platform` requires the checked-in
+`--rapidwright-provider-manifest`; the emitted manifest is v2 and seals that
+provider's revision and exact part.
 `evaluate-holdouts` applies the final blind promotion gate and rejects any case
 that stops before complete Phase 7 or omits authoritative global WNS/TNS.
 
 Every generated platform manifest records parameter-level provenance. Device
-capacity is public-spec evidence; effective utilization, topology, payload,
+capacity starts from public-spec evidence and is normalized to the exact
+source-sealed RapidWright XCVU19P resource inventory; effective utilization, topology, payload,
 and delay are black-box fitted; transport cost is characterized from the open
 production transport RTL. Fabric clock and simultaneous reverse-direction
 capacity sharing remain explicit research assumptions. In particular,
 each BoardDB exports both the native Xilinx inventory (`bram18k`, `dsp48`) and
-the conservative VTR planning aliases (`bram=floor(bram18k/2)`,
+the provider-neutral planning aliases (`bram=bram36k`,
 `dsp=dsp48`). It also derives `carry8=floor(lut/8)` from the UltraScale+
 eight-LUT slice structure because the open Xilinx mapper reports native CARRY8
 cells as a separate resource dimension. This keeps Phase 1 capacity checks and Phase 7 physical resource
@@ -580,8 +594,8 @@ having an unknown resource class. Blind holdout comparison reads the Phase 3
 planning keys (`bram` and `dsp`) and compares them with PPro's BRAM36 and DSP48
 metrics as explicit diagnostics; it does not silently replace missing planning
 keys with zero-valued native-inventory aliases. Those hard-resource differences
-are not a platform-promotion gate because PPro and the open VTR frontend use
-different synthesis and inference policies. Forced BRAM/DSP/URAM
+are not a platform-promotion gate because PPro and the open Xilinx Yosys
+frontend still use different synthesis and inference policies. Forced BRAM/DSP/URAM
 microbenchmarks independently certify hard-resource units and capacity. The
 application promotion gate instead keeps a 10% maximum absolute-utilization
 error for LUT and FF, whose mapped counts are comparable across the two tested
@@ -743,20 +757,21 @@ Every qualifying checked contract binds a period for each declared clock;
 PicoRV32 uses an explicit 10 ns `clk` period, so its PPro and complete-flow
 identities cannot depend on an implicit provider default.
 
-The VTR hard-block importer accepts Yosys-optimized memory atom sets whose
+The separate VTR research backend's hard-block importer accepts Yosys-optimized memory atom sets whose
 surviving bit indices do not start at zero or contain gaps. It orders and
 compacts only the live one-bit atoms into a word macro, records the original
 indices for audit, and preserves one physical BRAM resource. This covers real
 designs where synthesis removes constant or unused memory bit slices without
 recreating those dead slices as logic or storage.
 
-The hard-block frontend lowers inferred memories and multipliers inside their
+That VTR hard-block frontend lowers inferred memories and multipliers inside their
 original RTL hierarchy before flattening the design.  Flattening is still
 mandatory for the Phase 1 consumer, but deferring it until after hard-block
 lowering avoids duplicating parameterized process state and generated
-arithmetic in large hierarchical workloads such as NVDLA.  This changes only
+arithmetic in large hierarchical workloads. This changes only
 the pass order: the emitted design remains a flat LUT6/DFF plus VTR RAM/DSP
-netlist and is checked by the same hard-block atom and physical-flow gates.
+netlist and is checked by the same hard-block atom and physical-flow gates. It
+is not the PPro-calibrated RapidWright holdout route.
 
 The local renderer and tamper tests pass; acceptance of these standard
 filelist options by the authorized PPro installation remains a required real
@@ -768,7 +783,8 @@ the corrected `partition_o` preprocessing directives, the existing
 Yosys-compatible `NV_DW_lsd` replacement, and interface-accurate RAM wrapper
 declarations. All remaining upstream files are referenced in place. The
 resulting benchmark contract is the only permitted source list for both PPro
-and EmuFlow:
+and EmuFlow. It explicitly fixes the EmuFlow mapping profile to
+`xilinx-ultrascaleplus-open-v1`; omission may not fall back to VTR:
 
 ```bash
 python3 scripts/benchmarks/prepare_nvdla_holdout.py \
@@ -830,10 +846,14 @@ A calibrated full-flow run must bind all three profile artifacts together:
 
 ```sh
 emuflow multi-fpga compile \
+  --mapping-profile xilinx-ultrascaleplus-open-v1 \
   --platform <bundle>/<profile>/boarddb.json \
   --board-link-timing-db <bundle>/<profile>/board-link-timing.json \
   --transport-cost-db <bundle>/<profile>/transport-cost.json \
   --partition-constraints calibration/ppro_blackbox/holdout-partition-constraints-v1.json \
+  --physical --physical-backend rapidwright \
+  --physical-rapidwright-placer openparf-native \
+  --physical-rapidwright-provider-manifest resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json \
   <other checked benchmark and physical options>
 ```
 
@@ -870,19 +890,18 @@ from duplicated PPro results.
 The same separation applies to synthesis mapping. Application holdouts compare
 LUT/FF utilization within 10%, but report BRAM36/DSP48/URAM utilization only as
 cross-provider diagnostics. For example, an inferred small RAM may become
-LUTRAM in PPro and a full VTR memory tile in the open physical surrogate; that
+LUTRAM in PPro and a RAMB primitive in the open Xilinx mapper; that
 is a compiler-policy difference, not evidence that calibrated device capacity
 or inter-FPGA timing is wrong. Hardware-unit and capacity claims remain gated
 by the controlled forced-resource probes rather than by accidental agreement
 between two unrelated synthesis heuristics.
 
-The real sealed AES and PicoRV32 cases now pass their complete Phase 1--7
-gates with physical seed 1, standalone whole-design OpenSTA, full original-path
-coverage, legal schedules, macro-cycle equivalence, and zero DRC/unrouted
-violations.  Their global WNS/TNS values are -0.304739/-8.049072 ns and
--0.043351/-0.078053 ns respectively.  Promotion remains false until all three
-large benchmark classes pass and at least one natural PPro/EmuFlow pair
-provides comparable cross-FPGA evidence.
+Earlier sealed AES and PicoRV32 Phase 1--7 results used the VTR physical
+surrogate. Their historical WNS/TNS values remain diagnostic records, but they
+do not satisfy the new RapidWright-bound platform contract. All five holdout
+classes, including AES and PicoRV32, must be requalified with physical seed 1,
+standalone whole-design OpenSTA, full original-path coverage, legal schedules,
+macro-cycle equivalence, and zero DRC/unrouted violations before promotion.
 
 Application holdouts request PPro's documented `run_system_route -timing_budget`
 mode, generated partition RTL, and the documented

@@ -701,6 +701,13 @@ evidence must match its observed one-hop edges exactly. This prevents a fit
 from one platform size from silently generating a larger, partly uncalibrated
 BoardDB.
 
+The production v2 profile additionally binds one exact device implementation
+contract: `xilinx-ultrascaleplus-open-v1` synthesis, the source-sealed
+RapidWright `xcvu19p-fsva3824-2-e` provider, the `rapidwright` physical backend,
+and `openparf-native` placement. PPro calibrates the inter-FPGA behavior while
+RapidWright owns the intra-FPGA physical model. VTR remains a separate open
+academic backend and cannot qualify a PPro-calibrated holdout.
+
 Production integration binds the three artifacts as one profile, not as
 independent optional hints. BoardDB is the Phase 1--7 capacity/topology
 contract, BoardLinkTimingDB drives board routing/TDM evaluation and final
@@ -731,8 +738,10 @@ acceptance.
 ### Stage 6: blind large-design validation
 
 Status: **independent result assembler, promotion contract, and evaluator
-implemented; AES and CPU blind gates pass, while the three mandatory
-cross-FPGA tiers remain pending**. A scratch-only application bundle generator now binds an existing
+implemented; all application classes require RapidWright-bound requalification**.
+Earlier AES and CPU physical results used the VTR surrogate and are retained
+only as historical diagnostics; they no longer satisfy the calibrated physical
+contract. A scratch-only application bundle generator now binds an existing
 checked benchmark contract and natural RTL source tree to a free-partition
 PPro `application_holdout`; source paths and the EmuFlow platform choice never
 enter the compact observation. Because it emits no placement assignment, this
@@ -756,16 +765,10 @@ documented compile configuration: the ordinary compile log consumed
 `get_ports {clk}`, and the post-partition ordinary clock report identified one
 global `clk` tree with 1,069 loads.  AES remained on one FPGA, so system SSTA
 was correctly treated as not applicable for that gate; cross-FPGA timing still
-has to be proven by the large holdouts below.  The sealed AES and PicoRV32
-holdouts already join passing free-partition PPro observations to independently
-validated complete Phase 1--7 EmuFlow runs.  Both use physical seed 1,
-standalone whole-design OpenSTA, 100% original-path coverage, legal schedules,
-macro-cycle equivalence, and zero unrouted nets or DRC violations.  Their
-global results are respectively WNS/TNS = -0.304739/-8.049072 ns and
--0.043351/-0.078053 ns.  Each case joins one
-passing PPro observation
-to a complete EmuFlow Phase 1--7 result produced with physical seed 1 and
-authoritative OpenSTA global timing. The v4 result cannot be assembled from
+has to be proven by the large holdouts below. Each qualifying case joins one
+passing PPro observation to a RapidWright complete EmuFlow Phase 1--7 result
+produced with physical seed 1 and authoritative OpenSTA global timing. The v4
+result cannot be assembled from
 caller-supplied completion booleans: it independently validates and replays the
 sealed flow bundle, binds the exact calibrated BoardDB, BoardLinkTimingDB, and
 TransportCostDB profile, re-derives the natural RTL identity, and extracts
@@ -800,6 +803,9 @@ validates the pinned source stamp, references upstream RTL in place, and
 generates only the normalized `partition_o`, the checked `NV_DW_lsd`
 compatibility module, and one explicit RAM abstraction. It emits the single
 ordered source/include/define contract that both PPro and EmuFlow must consume.
+It also fixes the EmuFlow frontend mapping to
+`xilinx-ultrascaleplus-open-v1`; a missing mapping may not inherit the VTR
+default.
 The default black-box scale abstraction may validate capacity and communication
 trends but cannot pass the final physical-memory/timing gate. The implemented
 `physically-implementable-shared-memory-model-v1` alternative recognizes every

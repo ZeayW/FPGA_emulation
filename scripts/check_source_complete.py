@@ -144,6 +144,7 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/emuflow/physical_regions.py",
     "schemas/archdb-v1.schema.json",
     "schemas/rapidwright-device-provider-v1.schema.json",
+    "schemas/ppro-calibrated-platform-manifest-v2.schema.json",
     "schemas/rapidwright-route-resource-certificate-v1.schema.json",
     "schemas/xilinx-primitive-library-db-v1.schema.json",
     "schemas/packed-site-netlist-v1.schema.json",

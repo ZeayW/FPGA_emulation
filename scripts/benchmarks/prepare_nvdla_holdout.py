@@ -19,6 +19,7 @@ from typing import Any, Dict, List
 
 from emuflow.benchmark import BenchmarkRun
 from emuflow.io import write_json
+from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from scripts.benchmarks.nvdla_ram_stubs import (
     BLACKBOX_MEMORY_POLICY,
     MEMORY_POLICIES,
@@ -258,6 +259,7 @@ def prepare_nvdla_holdout(
         "sources": relative_sources,
         "clocks": ["dla_core_clk", "dla_csb_clk"],
         "clock_periods_ns": {"dla_core_clk": 10.0, "dla_csb_clk": 10.0},
+        "physical_mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
         "timing_io": {
             "input_groups": [
                 {
