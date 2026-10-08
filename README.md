@@ -750,6 +750,14 @@ indices for audit, and preserves one physical BRAM resource. This covers real
 designs where synthesis removes constant or unused memory bit slices without
 recreating those dead slices as logic or storage.
 
+The hard-block frontend lowers inferred memories and multipliers inside their
+original RTL hierarchy before flattening the design.  Flattening is still
+mandatory for the Phase 1 consumer, but deferring it until after hard-block
+lowering avoids duplicating parameterized process state and generated
+arithmetic in large hierarchical workloads such as NVDLA.  This changes only
+the pass order: the emitted design remains a flat LUT6/DFF plus VTR RAM/DSP
+netlist and is checked by the same hard-block atom and physical-flow gates.
+
 The local renderer and tamper tests pass; acceptance of these standard
 filelist options by the authorized PPro installation remains a required real
 black-box probe before NVDLA is launched.

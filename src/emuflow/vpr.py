@@ -94,7 +94,7 @@ def build_vtr_yosys_script(
             (
                 (
                     f"synth -top {top_identifier} -run begin:fine "
-                    "-noalumacc -flatten"
+                    "-noalumacc"
                 ),
                 f"read_verilog -lib {_yosys_quote(str(_VTR_MODEL_LIBRARY))}",
                 "wreduce t:$mul",
@@ -102,6 +102,12 @@ def build_vtr_yosys_script(
                 f"memory_libmap -lib {_yosys_quote(str(_VTR_MEMORY_LIBRARY))}",
                 f"techmap -map {_yosys_quote(str(_VTR_MEMORY_MAP))}",
                 "memory_map",
+                # Keep parameterized RTL hierarchy intact until memories and
+                # multipliers have become compact architecture cells.  Early
+                # flattening makes large designs such as NVDLA duplicate their
+                # generated arithmetic and inferred-memory process state before
+                # hard-block lowering, causing pathological time and memory use.
+                "flatten",
                 "opt -full",
                 "techmap",
             )
