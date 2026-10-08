@@ -5530,6 +5530,17 @@ primitives, runs Yosys structural `check`, and subjects the emitted netlist to
 the exact primitive-namespace and resource-accounting audit below. Removing
 these two diagnostic/cleanup traversals therefore does not weaken the
 accepted-netlist gate.
+The same profile also keeps large mapped designs out of a diagnostic JSON hot
+path.  Its Yosys backend writes signal-bit identifiers directly instead of
+retaining a string for every bit, omits only automatically generated hidden
+net names and `src` location attributes, and retains all user-visible names,
+cell parameters, preservation attributes, port directions, and connections.
+The Xilinx normalizer then mutates that owned document in place, emits it
+without a multi-million-key re-sort, and audits the same in-memory object
+instead of deep-copying and re-reading it.  These are representation-only
+changes: primitive inventory, connectivity, resource accounting, and the
+physical naming contract remain authoritative and are covered by the same
+fail-closed audit.
 Distributed RAM and SRL inference are lowered in this first packer profile.
 Every final mapped cell must belong to the checked-in
 `xilinx-ultrascaleplus-open-v1.primitives.json` namespace; unknown cells,

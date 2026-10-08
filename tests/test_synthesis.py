@@ -132,6 +132,11 @@ class SynthesisTest(unittest.TestCase):
         self.assertIn("blackbox =A:whitebox", script)
         self.assertIn("; flatten; check;", script)
         self.assertNotIn("; flatten; opt_clean;", script)
+        self.assertIn(
+            'write_json -no-hidden-netnames -no-source-attributes '
+            '"build/design.json"',
+            script,
+        )
         for option in ("-nocarry", "-nodsp", "-nobram"):
             self.assertNotIn(option, script)
 

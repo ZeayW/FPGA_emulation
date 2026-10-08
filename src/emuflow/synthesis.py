@@ -187,7 +187,14 @@ def build_yosys_script(
         # honor them for constant-control FFs.
         'setattr -set KEEP "yes" c:*',
         'setattr -set DONT_TOUCH "yes" c:*',
-        f"write_json {_yosys_quote(str(output))}",
+        *(
+            [
+                "write_json -no-hidden-netnames -no-source-attributes "
+                f"{_yosys_quote(str(output))}"
+            ]
+            if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+            else [f"write_json {_yosys_quote(str(output))}"]
+        ),
     ]
     if verilog_output is not None:
         commands.append(

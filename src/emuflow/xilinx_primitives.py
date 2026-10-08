@@ -179,7 +179,10 @@ def normalize_xilinx_mapped_json(
             raise ValidationError("mapped Yosys JSON top is ambiguous")
         selected_top = marked[0]
 
-    normalized = copy.deepcopy(source)
+    # This artifact can contain millions of mapped cells.  The input is owned
+    # by this normalization transaction, so mutate it in place instead of
+    # keeping a second complete object graph in memory.
+    normalized = source
     module = normalized["modules"][selected_top]
     cells = module.get("cells")
     if not isinstance(cells, dict):
@@ -431,10 +434,17 @@ def normalize_xilinx_mapped_json(
     }
     final.update(replacement)
     final.update(helpers)
-    module["cells"] = dict(sorted(final.items()))
-    write_json(output_path, normalized)
+    module["cells"] = final
+    # Yosys has already emitted cells deterministically, and every helper is
+    # appended in a deterministic traversal.  Re-sorting a multi-million-cell
+    # dictionary would create another giant key array without adding semantic
+    # stability.
+    write_json(output_path, normalized, compact=True, sort_keys=False)
     audit = audit_xilinx_mapped_json(
-        output_path, top=selected_top, library_path=library_path
+        output_path,
+        top=selected_top,
+        library_path=library_path,
+        source=normalized,
     )
     return {
         "status": "pass",

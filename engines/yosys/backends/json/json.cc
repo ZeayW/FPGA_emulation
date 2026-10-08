@@ -35,18 +35,22 @@ struct JsonWriter
 	bool aig_mode;
 	bool compat_int_mode;
 	bool scopeinfo_mode;
+	bool no_hidden_netnames;
+	bool no_source_attributes;
 
 	Design *design;
 	Module *module;
 
 	SigMap sigmap;
 	int sigidcounter;
-	dict<SigBit, string> sigids;
+	dict<SigBit, int> sigids;
 	pool<Aig> aig_models;
 
-	JsonWriter(std::ostream &f, bool use_selection, bool aig_mode, bool compat_int_mode, bool scopeinfo_mode) :
+	JsonWriter(std::ostream &f, bool use_selection, bool aig_mode, bool compat_int_mode, bool scopeinfo_mode,
+			bool no_hidden_netnames, bool no_source_attributes) :
 			f(f), use_selection(use_selection), aig_mode(aig_mode),
-			compat_int_mode(compat_int_mode), scopeinfo_mode(scopeinfo_mode) { }
+			compat_int_mode(compat_int_mode), scopeinfo_mode(scopeinfo_mode),
+			no_hidden_netnames(no_hidden_netnames), no_source_attributes(no_source_attributes) { }
 
 	string get_string(string str)
 	{
@@ -79,26 +83,26 @@ struct JsonWriter
 		return get_string(RTLIL::unescape_id(name));
 	}
 
-	string get_bits(SigSpec sig)
+	void write_bits(SigSpec sig)
 	{
 		bool first = true;
-		string str = "[";
+		f << "[";
 		for (auto bit : sigmap(sig)) {
-			str += first ? " " : ", ";
+			f << (first ? " " : ", ");
 			first = false;
-			if (sigids.count(bit) == 0) {
-				string &s = sigids[bit];
-				if (bit.wire == nullptr) {
-					if (bit == State::S0) s = "\"0\"";
-					else if (bit == State::S1) s = "\"1\"";
-					else if (bit == State::Sz) s = "\"z\"";
-					else s = "\"x\"";
-				} else
-					s = stringf("%d", sigidcounter++);
+			if (bit.wire == nullptr) {
+				if (bit == State::S0) f << "\"0\"";
+				else if (bit == State::S1) f << "\"1\"";
+				else if (bit == State::Sz) f << "\"z\"";
+				else f << "\"x\"";
+				continue;
 			}
-			str += sigids[bit];
+			auto it = sigids.find(bit);
+			if (it == sigids.end())
+				it = sigids.emplace(bit, sigidcounter++).first;
+			f << it->second;
 		}
-		return str + " ]";
+		f << " ]";
 	}
 
 	void write_parameter_value(const Const &value)
@@ -134,6 +138,8 @@ struct JsonWriter
 	{
 		bool first = true;
 		for (auto &param : parameters) {
+			if (no_source_attributes && param.first == ID::src)
+				continue;
 			f << stringf("%s\n", first ? "" : ",");
 			f << stringf("        %s%s: ", for_module ? "" : "    ", get_name(param.first).c_str());
 			write_parameter_value(param.second);
@@ -182,7 +188,9 @@ struct JsonWriter
 				f << stringf("          \"upto\": 1,\n");
 			if (w->is_signed)
 				f << stringf("          \"signed\": %d,\n", w->is_signed);
-			f << stringf("          \"bits\": %s\n", get_bits(w).c_str());
+			f << "          \"bits\": ";
+			write_bits(w);
+			f << "\n";
 			f << stringf("        }");
 			first = false;
 		}
@@ -229,7 +237,8 @@ struct JsonWriter
 			bool first2 = true;
 			for (auto &conn : c->connections()) {
 				f << stringf("%s\n", first2 ? "" : ",");
-				f << stringf("            %s: %s", get_name(conn.first).c_str(), get_bits(conn.second).c_str());
+				f << stringf("            %s: ", get_name(conn.first).c_str());
+				write_bits(conn.second);
 				first2 = false;
 			}
 			f << stringf("\n          }\n");
@@ -264,10 +273,14 @@ struct JsonWriter
 		for (auto w : module->wires()) {
 			if (use_selection && !module->selected(w))
 				continue;
+			if (no_hidden_netnames && w->name[0] == '$')
+				continue;
 			f << stringf("%s\n", first ? "" : ",");
 			f << stringf("        %s: {\n", get_name(w->name).c_str());
 			f << stringf("          \"hide_name\": %s,\n", w->name[0] == '$' ? "1" : "0");
-			f << stringf("          \"bits\": %s,\n", get_bits(w).c_str());
+			f << "          \"bits\": ";
+			write_bits(w);
+			f << ",\n";
 			if (w->start_offset)
 				f << stringf("          \"offset\": %d,\n", w->start_offset);
 			if (w->upto)
@@ -357,6 +370,13 @@ struct JsonBackend : public Backend {
 		log("\n");
 		log("    -noscopeinfo\n");
 		log("        don't include $scopeinfo cells in the output\n");
+		log("\n");
+		log("    -no-hidden-netnames\n");
+		log("        omit automatically generated net names while retaining all signal\n");
+		log("        connectivity and user-visible net names\n");
+		log("\n");
+		log("    -no-source-attributes\n");
+		log("        omit diagnostic source-location attributes\n");
 		log("\n");
 		log("\n");
 		log("The general syntax of the JSON output created by this command is as follows:\n");
@@ -604,6 +624,8 @@ struct JsonBackend : public Backend {
 		bool compat_int_mode = false;
 		bool use_selection = false;
 		bool scopeinfo_mode = true;
+		bool no_hidden_netnames = false;
+		bool no_source_attributes = false;
 
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++)
@@ -624,13 +646,22 @@ struct JsonBackend : public Backend {
 				scopeinfo_mode = false;
 				continue;
 			}
+			if (args[argidx] == "-no-hidden-netnames") {
+				no_hidden_netnames = true;
+				continue;
+			}
+			if (args[argidx] == "-no-source-attributes") {
+				no_source_attributes = true;
+				continue;
+			}
 			break;
 		}
 		extra_args(f, filename, args, argidx);
 
 		log_header(design, "Executing JSON backend.\n");
 
-		JsonWriter json_writer(*f, use_selection, aig_mode, compat_int_mode, scopeinfo_mode);
+		JsonWriter json_writer(*f, use_selection, aig_mode, compat_int_mode, scopeinfo_mode,
+				no_hidden_netnames, no_source_attributes);
 		json_writer.write_design(design);
 	}
 } JsonBackend;
@@ -658,6 +689,13 @@ struct JsonPass : public Pass {
 		log("    -noscopeinfo\n");
 		log("        don't include $scopeinfo cells in the output\n");
 		log("\n");
+		log("    -no-hidden-netnames\n");
+		log("        omit automatically generated net names while retaining all signal\n");
+		log("        connectivity and user-visible net names\n");
+		log("\n");
+		log("    -no-source-attributes\n");
+		log("        omit diagnostic source-location attributes\n");
+		log("\n");
 		log("See 'help write_json' for a description of the JSON format used.\n");
 		log("\n");
 	}
@@ -667,6 +705,8 @@ struct JsonPass : public Pass {
 		bool aig_mode = false;
 		bool compat_int_mode = false;
 		bool scopeinfo_mode = true;
+		bool no_hidden_netnames = false;
+		bool no_source_attributes = false;
 
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++)
@@ -685,6 +725,14 @@ struct JsonPass : public Pass {
 			}
 			if (args[argidx] == "-noscopeinfo") {
 				scopeinfo_mode = false;
+				continue;
+			}
+			if (args[argidx] == "-no-hidden-netnames") {
+				no_hidden_netnames = true;
+				continue;
+			}
+			if (args[argidx] == "-no-source-attributes") {
+				no_source_attributes = true;
 				continue;
 			}
 			break;
@@ -708,7 +756,8 @@ struct JsonPass : public Pass {
 			f = &buf;
 		}
 
-		JsonWriter json_writer(*f, true, aig_mode, compat_int_mode, scopeinfo_mode);
+		JsonWriter json_writer(*f, true, aig_mode, compat_int_mode, scopeinfo_mode,
+				no_hidden_netnames, no_source_attributes);
 		json_writer.write_design(design);
 
 		if (!empty) {
