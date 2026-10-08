@@ -143,6 +143,19 @@ def build_yosys_script(
         post_mapping.append(
             f"techmap -map {_yosys_quote(str(LOGIC_ONLY_MAP))}"
         )
+    # ``synth_xilinx`` has already optimized every retained mapped primitive.
+    # Running ``opt_clean`` after flattening a large Xilinx design rebuilds a
+    # global SigPool and walks millions of mapped signals merely to remove
+    # debug/unused objects.  It is not a technology-mapping or correctness
+    # step and can take longer than synthesis while consuming tens of GiB.
+    # Keep the structural ``check`` below and let the audited importer reject
+    # unsupported or malformed primitives; skip only this redundant cleanup
+    # for the exact Route A profile.
+    post_flatten_cleanup = (
+        []
+        if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+        else ["opt_clean"]
+    )
     commands = [
         " ".join(["read_verilog", "-sv", *read_options, read_sources]),
         f"hierarchy -check -top {top_identifier}",
@@ -160,7 +173,7 @@ def build_yosys_script(
         # primitives explicitly before writing the interchange JSON.
         "flatten",
         *post_mapping,
-        "opt_clean",
+        *post_flatten_cleanup,
         "check",
         # Yosys 0.57+ exports debug-only hierarchy metadata as $scopeinfo
         # cells by default. They are pinless and have no hardware behavior.

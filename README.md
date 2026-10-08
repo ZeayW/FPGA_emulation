@@ -5522,9 +5522,14 @@ half of a DUAL_CY4 CARRY8. Its generic INV macro becomes a LUT1 with INIT=1.
 The profile stops `synth_xilinx` before its final reporting label because that
 label runs `stat -tech xilinx`; the recursive diagnostic hierarchy can consume
 tens of GiB on large RTL even though it does not change the mapped netlist.
-EmuFlow still converts Xilinx library whiteboxes to leaf primitives and runs
-its existing post-flatten `opt_clean` and structural `check`, so removing the
-diagnostic report does not weaken the accepted-netlist gate.
+It also omits a redundant `opt_clean` after flattening: `synth_xilinx` has
+already optimized each retained mapped primitive, while rebuilding a global
+signal pool for millions of flattened signals changes no hardware and can take
+longer than synthesis. EmuFlow still converts Xilinx library whiteboxes to leaf
+primitives, runs Yosys structural `check`, and subjects the emitted netlist to
+the exact primitive-namespace and resource-accounting audit below. Removing
+these two diagnostic/cleanup traversals therefore does not weaken the
+accepted-netlist gate.
 Distributed RAM and SRL inference are lowered in this first packer profile.
 Every final mapped cell must belong to the checked-in
 `xilinx-ultrascaleplus-open-v1.primitives.json` namespace; unknown cells,

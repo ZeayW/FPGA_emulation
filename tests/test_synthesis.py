@@ -130,6 +130,8 @@ class SynthesisTest(unittest.TestCase):
             self.assertIn(option, script)
         self.assertIn("-run begin:check", script)
         self.assertIn("blackbox =A:whitebox", script)
+        self.assertIn("; flatten; check;", script)
+        self.assertNotIn("; flatten; opt_clean;", script)
         for option in ("-nocarry", "-nodsp", "-nobram"):
             self.assertNotIn(option, script)
 
