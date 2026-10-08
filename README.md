@@ -5519,6 +5519,12 @@ dedicated carry mapping enabled. Yosys 0.57 represents that carry structure as
 CARRY4 macros even for `xcup`; the deterministic normalizer pairs connected
 CARRY4 macros into SINGLE_CY8 CARRY8 cells and maps an odd tail to the lower
 half of a DUAL_CY4 CARRY8. Its generic INV macro becomes a LUT1 with INIT=1.
+The profile stops `synth_xilinx` before its final reporting label because that
+label runs `stat -tech xilinx`; the recursive diagnostic hierarchy can consume
+tens of GiB on large RTL even though it does not change the mapped netlist.
+EmuFlow still converts Xilinx library whiteboxes to leaf primitives and runs
+its existing post-flatten `opt_clean` and structural `check`, so removing the
+diagnostic report does not weaken the accepted-netlist gate.
 Distributed RAM and SRL inference are lowered in this first packer profile.
 Every final mapped cell must belong to the checked-in
 `xilinx-ultrascaleplus-open-v1.primitives.json` namespace; unknown cells,

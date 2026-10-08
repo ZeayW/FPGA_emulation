@@ -130,7 +130,14 @@ def build_yosys_script(
         # Route A v1 retains the hard resources consumed by real designs.
         # Distributed RAM and SRLs are outside the v1 packer contract, so
         # lower those structures to audited LUT/FF primitives explicitly.
-        synth_options.extend(["-uram", "-nolutram", "-nosrl"])
+        # Stop before synth_xilinx's final ``check`` label.  That label also
+        # runs ``stat -tech xilinx``; on large hierarchical designs the
+        # diagnostic hierarchy tree can consume tens of GiB even though it
+        # does not alter the mapped netlist.  The explicit post-flatten check
+        # below remains the authoritative structural validation.
+        synth_options.extend(
+            ["-uram", "-nolutram", "-nosrl", "-run begin:check"]
+        )
     post_mapping = []
     if policy == "logic-only":
         post_mapping.append(
@@ -140,6 +147,14 @@ def build_yosys_script(
         " ".join(["read_verilog", "-sv", *read_options, read_sources]),
         f"hierarchy -check -top {top_identifier}",
         " ".join(synth_options),
+        # The skipped synth_xilinx check label normally performs this
+        # conversion after validating the mapped design.  Preserve it so the
+        # JSON backend treats Xilinx library whiteboxes as leaf primitives.
+        *(
+            ["blackbox =A:whitebox"]
+            if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+            else []
+        ),
         # synth_xilinx preserves hierarchy in some Yosys releases. EmuIR
         # currently imports one module, so flatten the already mapped
         # primitives explicitly before writing the interchange JSON.
