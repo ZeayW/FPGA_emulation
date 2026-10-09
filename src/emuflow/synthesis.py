@@ -28,6 +28,104 @@ LOGIC_ONLY_MAP = (
 )
 
 
+def build_scalable_xilinx_yosys_script(
+    sources: Iterable[Path],
+    top: str,
+    output: Path,
+    *,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
+    stream_json: bool = False,
+) -> str:
+    """Build the hierarchical, native-Xilinx large-design mapping script.
+
+    ``synth_xilinx`` is the reference mapping recipe, but its repeated global
+    optimization passes become the dominant cost on million-cell hierarchical
+    designs before Phase 3 has divided the design.  This recipe preserves the
+    same public UltraScale+ primitive namespace while doing the expensive
+    lowering in the order that scales for a partitioning frontend:
+
+    * elaborate and normalize RTL while hierarchy is still compact;
+    * map DSP and block/UltraRAM before flattening;
+    * flatten only after stateful hard blocks are compact primitives; and
+    * use one LUT6 ABC pass over the resulting flat combinational graph.
+
+    It deliberately does not use VTR models, memory modes, or cell names.
+    Every output is still audited by ``xilinx-ultrascaleplus-open-v1`` before
+    it can enter Phase 1.  The caller must qualify equivalence and resource
+    parity against the reference mapper before promoting this recipe.
+    """
+
+    source_list = list(sources)
+    if not source_list:
+        raise EmuFlowError("synthesis requires at least one RTL source")
+    top_identifier = _yosys_identifier(top)
+    read_options = [
+        *(_yosys_include_dir(path) for path in include_dirs),
+        *(f"-D{_yosys_define(value)}" for value in defines),
+    ]
+    read_sources = " ".join(_yosys_quote(str(path)) for path in source_list)
+    write_json = "write_json -no-hidden-netnames -no-source-attributes"
+    if not stream_json:
+        write_json += f" {_yosys_quote(str(output))}"
+
+    commands = [
+        " ".join(["read_verilog", "-sv", *read_options, read_sources]),
+        "read_verilog -lib -specify +/xilinx/cells_sim.v",
+        "read_verilog -lib +/xilinx/cells_xtra.v",
+        f"hierarchy -check -top {top_identifier}",
+        # This is Yosys' architecture-neutral coarse synthesis boundary.  It
+        # keeps memories and multipliers available for the native Xilinx maps
+        # below and, unlike a VTR recipe, imports no foreign architecture.
+        f"synth -top {top_identifier} -run begin:fine -noalumacc",
+        "memory_dff",
+        "alumacc -macc-only",
+        "maccmap -unmap",
+        "techmap -map +/mul2dsp.v -map +/xilinx/xcu_dsp_map.v "
+        "-D DSP_A_MAXWIDTH=27 -D DSP_B_MAXWIDTH=18 "
+        "-D DSP_A_MAXWIDTH_PARTIAL=18 -D DSP_A_MINWIDTH=2 "
+        "-D DSP_B_MINWIDTH=2 -D DSP_Y_MINWIDTH=9 "
+        "-D DSP_SIGNEDONLY=1 -D DSP_NAME=$__MUL27X18",
+        "select a:mul2dsp",
+        "setattr -unset mul2dsp",
+        "select -clear",
+        "xilinx_dsp -family xcup",
+        "chtype -set $mul t:$__soft_mul",
+        "techmap -map +/cmp2lut.v -map +/cmp2lcu.v -D LUT_WIDTH=6",
+        "alumacc",
+        "share",
+        "memory -nomap",
+        "memory_libmap -logic-cost-rom 0.015625 "
+        "-lib +/xilinx/lutrams_xcu.txt -lib +/xilinx/brams_xc4v.txt "
+        "-D HAS_SIZE_36 -D HAS_MIXWIDTH_SDP -D HAS_ADDRCE "
+        "-lib +/xilinx/urams.txt -no-auto-distributed",
+        "techmap -map +/xilinx/lutrams_xc5v_map.v",
+        "techmap -map +/xilinx/brams_xcu_map.v",
+        "techmap -map +/xilinx/urams_map.v",
+        "memory_map",
+        # Stateful and arithmetic hard blocks are compact now.  Flattening at
+        # this boundary avoids duplicating high-level memory/process state.
+        "flatten",
+        "techmap -map +/techmap.v -D LUT_SIZE=6 -map +/xilinx/arith_map.v",
+        "techmap -map +/techmap.v -map +/xilinx/cells_map.v",
+        "dfflegalize -cell $_DFFE_?P?P_ 01 -cell $_SDFFE_?P?P_ 01 "
+        "-cell $_DLATCH_?P?_ 01",
+        "techmap -map +/xilinx/ff_map.v",
+        "opt_expr -mux_undef -noclkinv",
+        "abc -lut 6",
+        "techmap -map +/xilinx/lut_map.v -map +/xilinx/cells_map.v "
+        "-D LUT_WIDTH=6",
+        "clean",
+        "check",
+        "blackbox =A:whitebox",
+        "delete t:$scopeinfo",
+        'setattr -set KEEP "yes" c:*',
+        'setattr -set DONT_TOUCH "yes" c:*',
+        write_json,
+    ]
+    return "; ".join(commands)
+
+
 def _yosys_quote(value: str) -> str:
     # Yosys accepts double-quoted strings with JSON-compatible escaping.
     return json.dumps(value)
@@ -472,6 +570,87 @@ def run_xilinx_ultrascaleplus_yosys(
     return {
         "status": "pass",
         "provider": "yosys-synth-xilinx",
+        "family": "xcup",
+        "policy": "native",
+        "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+        "normalization": normalization,
+        "primitive_audit": normalization["primitive_audit"],
+    }
+
+
+def run_scalable_xilinx_ultrascaleplus_yosys(
+    sources: Iterable[Path],
+    top: str,
+    output: Path,
+    *,
+    executable: Optional[str] = None,
+    log_path: Optional[Path] = None,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
+) -> Dict[str, Any]:
+    """Run and audit the candidate scalable native-Xilinx mapper.
+
+    This entry point is intentionally separate from the production mapper
+    while runtime, primitive inventory, functional equivalence, and physical
+    QoR are being compared.  Both routes produce the exact same externally
+    declared mapping profile; the provider field records which implementation
+    produced the candidate so experimental results cannot be confused.
+    """
+
+    source_list = list(sources)
+    for source in source_list:
+        if not source.is_file():
+            raise EmuFlowError(f"RTL source does not exist: {source}")
+    include_list = list(include_dirs)
+    for include_dir in include_list:
+        if not include_dir.is_dir():
+            raise EmuFlowError(
+                f"Verilog include directory does not exist: {include_dir}"
+            )
+    define_list = list(defines)
+    command = resolve_native_executable("yosys", executable)
+    raw_output = output.with_name(
+        f".{output.name}.scalable-pre-normalize"
+        + (".json.gz" if output.suffix == ".gz" else "")
+    )
+    raw_output.parent.mkdir(parents=True, exist_ok=True)
+    script = build_scalable_xilinx_yosys_script(
+        source_list,
+        top,
+        raw_output,
+        include_dirs=include_list,
+        defines=define_list,
+        stream_json=raw_output.suffix == ".gz",
+    )
+    try:
+        if raw_output.suffix == ".gz":
+            completed = _run_yosys_streaming_gzip(
+                [command, "-q", "-p", script], raw_output, log_path
+            )
+        else:
+            completed = run_with_bounded_output([command, "-q", "-p", script])
+            if log_path is not None:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text(completed.stdout, encoding="utf-8")
+        if completed.returncode != 0:
+            tail = "\n".join(completed.stdout.splitlines()[-20:])
+            raise EmuFlowError(
+                "scalable Xilinx synthesis failed with exit code "
+                f"{completed.returncode}\n{tail}"
+            )
+        if not raw_output.is_file():
+            raise EmuFlowError(
+                "scalable Xilinx synthesis reported success but did not "
+                f"create expected output: {raw_output}"
+            )
+        normalization = normalize_xilinx_mapped_json(
+            raw_output, output, top=top
+        )
+    finally:
+        raw_output.unlink(missing_ok=True)
+    return {
+        "status": "pass",
+        "provider": "yosys-native-xilinx-hierarchical-v1",
         "family": "xcup",
         "policy": "native",
         "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,

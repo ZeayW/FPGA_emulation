@@ -10,6 +10,7 @@ from emuflow.errors import EmuFlowError
 from emuflow.io import read_json
 from emuflow.synthesis import (
     build_generic_yosys_script,
+    build_scalable_xilinx_yosys_script,
     build_yosys_script,
     run_generic_yosys,
     run_yosys,
@@ -187,6 +188,40 @@ class SynthesisTest(unittest.TestCase):
             family="xcup",
             policy="native",
             mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            stream_json=True,
+        )
+        self.assertTrue(
+            script.endswith("write_json -no-hidden-netnames -no-source-attributes")
+        )
+        self.assertNotIn("design.json.gz", script)
+
+    def test_scalable_xilinx_script_keeps_native_hard_block_contract(self) -> None:
+        script = build_scalable_xilinx_yosys_script(
+            [Path("rtl/design.v")],
+            top="design",
+            output=Path("build/design.json"),
+            include_dirs=[Path("rtl/include")],
+            defines=["SYNTHESIS"],
+        )
+        self.assertIn("-Irtl/include", script)
+        self.assertIn("-DSYNTHESIS", script)
+        self.assertIn("+/xilinx/xcu_dsp_map.v", script)
+        self.assertIn("+/xilinx/brams_xcu_map.v", script)
+        self.assertIn("+/xilinx/urams_map.v", script)
+        self.assertIn("+/xilinx/ff_map.v", script)
+        self.assertIn("+/xilinx/lut_map.v", script)
+        self.assertIn("abc -lut 6", script)
+        self.assertIn("; flatten;", script)
+        self.assertIn("blackbox =A:whitebox", script)
+        self.assertNotIn("VTR_", script)
+        self.assertNotIn("vtr_", script)
+        self.assertNotIn("synth_xilinx", script)
+
+    def test_scalable_xilinx_streaming_script_uses_stdout(self) -> None:
+        script = build_scalable_xilinx_yosys_script(
+            [Path("rtl/design.v")],
+            top="design",
+            output=Path("build/design.json.gz"),
             stream_json=True,
         )
         self.assertTrue(
