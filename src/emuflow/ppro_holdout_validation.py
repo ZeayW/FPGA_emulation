@@ -586,18 +586,26 @@ def assemble_holdout_result(
         clock["id"] for clock in ir.value["clocks"]
     ) != sorted(identity["clocks"]):
         raise ValidationError("flow EmuIR top or clocks disagree with benchmark contract")
-    timing_database = read_json(
-        root / artifacts["timing_path_database"]["path"]
+    # The complete TimingPathDB can contain hundreds of thousands of paths.
+    # Its canonical compact timing-environment certificate is already projected
+    # into the sealed parent report, so the holdout assembler must not parse the
+    # large database again merely to recover one digest.
+    flow_timing = flow_report.get("timing")
+    timing_sta = (
+        flow_timing.get("sta") if isinstance(flow_timing, Mapping) else None
     )
-    timing_source = timing_database.get("source")
     timing_environment = (
-        timing_source.get("timing_io")
-        if isinstance(timing_source, Mapping)
+        timing_sta.get("timing_io")
+        if isinstance(timing_sta, Mapping)
         else None
     )
     expected_timing_io_sha256 = timing_io_sha256(identity["timing_io"])
     if (
-        expected_timing_io_sha256 is None
+        not isinstance(flow_timing, Mapping)
+        or flow_timing.get("backend") != "opensta"
+        or not isinstance(timing_sta, Mapping)
+        or timing_sta.get("provider") != "opensta-fpga-path-database-v1"
+        or expected_timing_io_sha256 is None
         or not isinstance(timing_environment, Mapping)
         or timing_environment.get("sha256") != expected_timing_io_sha256
     ):

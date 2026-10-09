@@ -679,23 +679,23 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 json.dumps(transport_cost), encoding="utf-8"
             )
             paths["timing_path_database"].write_text(
-                json.dumps(
-                    {
-                        "source": {
-                            "provider": "opensta-fpga-path-database-v1",
-                            "timing_io": {
-                                "sha256": timing_io_sha256(identity["timing_io"]),
-                                "input_ports": 1,
-                                "output_ports": 1,
-                            },
-                        }
-                    }
-                ),
+                "opaque TimingPathDB payload that must not be reparsed",
                 encoding="utf-8",
             )
             sha = lambda path: __import__("hashlib").sha256(path.read_bytes()).hexdigest()
             flow_report = {
                 "status": "pass",
+                "timing": {
+                    "backend": "opensta",
+                    "sta": {
+                        "provider": "opensta-fpga-path-database-v1",
+                        "timing_io": {
+                            "sha256": timing_io_sha256(identity["timing_io"]),
+                            "input_ports": 1,
+                            "output_ports": 1,
+                        },
+                    },
+                },
                 "stages": {"frontend": {"synthesis": {
                     "mapping_profile": "xilinx-ultrascaleplus-open-v1",
                     "sources": [str(rtl.resolve())],
@@ -749,6 +749,32 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 value["evidence"]["platform_transport_cost_sha256"],
                 manifest["profiles"]["nominal"]["transport_cost"],
             )
+
+            expected_timing_sha = flow_report["timing"]["sta"]["timing_io"][
+                "sha256"
+            ]
+            flow_report["timing"]["sta"]["timing_io"]["sha256"] = "0" * 64
+            (flow / "multi-fpga-flow-report.json").write_text(
+                json.dumps(flow_report), encoding="utf-8"
+            )
+            with patch(
+                "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                return_value={"status": "pass", "configuration_id": "lx2-m2"},
+            ), patch(
+                "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                return_value={"status": "pass"},
+            ):
+                with self.assertRaisesRegex(ValidationError, "timing I/O"):
+                    assemble_holdout_result(
+                        result_id="blind-aes-a", workload_id="blind-aes",
+                        algorithm_id="default",
+                        ppro_observation_path=observation_path, flow_root=flow,
+                        benchmark_run_path=benchmark, source_root=source_root,
+                        platform_bundle_root=bundle, profile="nominal",
+                    )
+            flow_report["timing"]["sta"]["timing_io"][
+                "sha256"
+            ] = expected_timing_sha
 
             tampered_transport_cost = dict(transport_cost)
             tampered_transport_cost["profile"] = "conservative"
