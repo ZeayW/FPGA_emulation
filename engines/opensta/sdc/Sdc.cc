@@ -1162,7 +1162,7 @@ Sdc::removeClock(Clock *clk)
   clearCycleAcctings();
 
   deleteClkPinMappings(clk);
-  clocks_.erase(std::ranges::find(clocks_, clk));
+  clocks_.erase(std::find(clocks_.begin(), clocks_.end(), clk));
   clock_name_map_.erase(clk->name());
   delete clk;
 }

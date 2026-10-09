@@ -93,8 +93,8 @@ void
 Mode::removeScene(Scene *scene)
 {
   // std iterators just plain suck
-  auto tail = std::ranges::remove(scenes_, scene);
-  scenes_.erase(tail.begin(), tail.end());
+  auto tail = std::remove(scenes_.begin(), scenes_.end(), scene);
+  scenes_.erase(tail, scenes_.end());
 }
 
 SceneSet

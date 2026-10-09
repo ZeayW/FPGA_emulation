@@ -980,6 +980,14 @@ I/O-constrained PPro observation.
 Each declared HDL base name is resolved as either the exact scalar port or its
 exact-base `name[*]` vector bits after PPro elaboration; the renderer never
 uses a loose `name*` prefix that could constrain a different interface.
+The same binding has now been exercised with a source-built standalone OpenSTA
+3.1 engine, not only the fake-runner contract tests.  A vector-output counter
+emitted eight timed endpoints at WNS +8.63 ns and a vector-input Static Exact
+fixture emitted two at WNS +8.33 ns; both retained the exact timing-I/O contract
+SHA and TNS 0.  That run also exposed and fixed OpenSTA's `NULL` sentinel for a
+path point without a resolvable net: the exporter now skips the sentinel rather
+than querying it as a net object.  This is an exporter qualification only, not
+an application holdout or calibrated-platform Phase 1--7 result.
 Clock, reset, test, clock-gating, and power-control ports are never swept into a
 catch-all collection. The NVDLA preparer binds the public CSB interface to
 `dla_csb_clk`, the public DBB/CVSRAM data interfaces and interrupt to

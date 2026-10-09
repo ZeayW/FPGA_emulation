@@ -276,6 +276,10 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("array set emuir_by_pin_full_name {}", script)
         self.assertNotIn("EMUFLOW_STA_PIN_MAP", script)
         self.assertIn("get_nets -quiet -of_objects", script)
+        self.assertIn(
+            '[lindex $pin_nets 0] ne "NULL"',
+            script,
+        )
         self.assertNotIn("split [read $map_input]", script)
         self.assertNotIn("get_pins -quiet -of_objects $mapped_net", script)
         emit_body = script[

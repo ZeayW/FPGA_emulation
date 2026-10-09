@@ -305,7 +305,7 @@ CcsCeffDelayCalc::initRegions(const LibertyLibrary *drvr_library,
       report_->error(1701, "unsupported ccs region count.");
       break;
   }
-  std::ranges::fill(region_ceff_, c2_ + c1_);
+  std::fill(region_ceff_.begin(), region_ceff_.end(), c2_ + c1_);
 }
 
 void

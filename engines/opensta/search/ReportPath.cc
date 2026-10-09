@@ -3602,7 +3602,7 @@ hierPinsThruEdge(const Edge *edge,
   hierPinsAbove(drvr_pin, network, drvr_hpins);
   hierPinsAbove(load_pin, network, load_hpins);
   if (drvr_hpins.empty()) {
-    std::ranges::reverse(load_hpins);
+    std::reverse(load_hpins.begin(), load_hpins.end());
     return load_hpins;
   }
   if (load_hpins.empty())

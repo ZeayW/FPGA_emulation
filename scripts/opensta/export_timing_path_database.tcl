@@ -194,7 +194,7 @@ proc emuflow_emit_timing_paths {
       if {![info exists emuir_by_pin_full_name($pin_full_name)]} {
         set pin_nets [get_nets -quiet -of_objects [list $pin]]
         set resolved_emuir_name ""
-        if {[llength $pin_nets] == 1} {
+        if {[llength $pin_nets] == 1 && [lindex $pin_nets 0] ne "NULL"} {
           set mapped_name [get_property [lindex $pin_nets 0] name]
           if {[info exists emuir_by_mapped_net($mapped_name)]} {
             set resolved_emuir_name $emuir_by_mapped_net($mapped_name)

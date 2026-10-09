@@ -811,6 +811,14 @@ ordered source/include/define contract that both PPro and EmuFlow must consume.
 It also fixes the EmuFlow frontend mapping to
 `xilinx-ultrascaleplus-open-v1`; a missing mapping may not inherit the VTR
 default.
+The pre-partition timing-I/O exporter has additionally passed a real standalone
+OpenSTA 3.1 smoke for both a vector input and a vector output.  The qualification
+found that `get_nets -of_objects` can return OpenSTA's `NULL` sentinel for an
+unresolved path point; the exporter now excludes that sentinel before reading
+net properties.  The two smoke cases emitted 2 and 8 timed endpoints
+respectively with their timing-I/O identities intact.  This closes the real
+engine binding check, but it does not replace any required application holdout
+or physical Phase 1--7 gate.
 The default black-box scale abstraction may validate capacity and communication
 trends but cannot pass the final physical-memory/timing gate. The implemented
 `physically-implementable-shared-memory-model-v1` alternative recognizes every

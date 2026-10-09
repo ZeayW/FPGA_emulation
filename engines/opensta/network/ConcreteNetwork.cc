@@ -469,7 +469,7 @@ ConcreteNetwork::deleteLibrary(Library *library)
 {
   ConcreteLibrary *clib = reinterpret_cast<ConcreteLibrary*>(library);
   library_map_.erase(clib->name());
-  library_seq_.erase(std::ranges::find(library_seq_, clib));
+  library_seq_.erase(std::find(library_seq_.begin(), library_seq_.end(), clib));
   delete clib;
 }
 

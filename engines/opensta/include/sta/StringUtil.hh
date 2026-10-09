@@ -78,7 +78,11 @@ stringBeginEqual(std::string_view str,
 {
   if (str.size() < prefix.size())
     return false;
-  return std::ranges::equal(str.substr(0, prefix.size()), prefix, charEqual);
+  return std::equal(str.begin(),
+                    str.begin() + prefix.size(),
+                    prefix.begin(),
+                    prefix.end(),
+                    charEqual);
 }
 
 // Case insensitive compare.
@@ -86,7 +90,11 @@ inline bool
 stringEqual(std::string_view s1,
             std::string_view s2)
 {
-  return std::ranges::equal(s1, s2, charEqual);
+  return std::equal(s1.begin(),
+                    s1.end(),
+                    s2.begin(),
+                    s2.end(),
+                    charEqual);
 }
 
 std::pair<float, bool>
