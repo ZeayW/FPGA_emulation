@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
+import io
 import json
 from functools import lru_cache
 import os
@@ -30,7 +32,12 @@ def json_write_policy(*, durable: bool):
 
 
 def read_json(path: Path) -> Dict[str, Any]:
-    with path.open("r", encoding="utf-8") as stream:
+    stream = (
+        gzip.open(path, "rt", encoding="utf-8")
+        if path.suffix == ".gz"
+        else path.open("r", encoding="utf-8")
+    )
+    with stream:
         value = json.load(stream)
     if not isinstance(value, dict):
         raise ValueError(f"{path}: expected a JSON object at the document root")
@@ -73,8 +80,23 @@ def write_json(
         0o666,
     )
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            descriptor = -1
+        binary_stream = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        if path.suffix == ".gz":
+            compressed_stream = gzip.GzipFile(
+                filename="",
+                mode="wb",
+                compresslevel=1,
+                fileobj=binary_stream,
+                mtime=0,
+            )
+            stream = io.TextIOWrapper(compressed_stream, encoding="utf-8")
+        else:
+            stream = io.TextIOWrapper(binary_stream, encoding="utf-8")
+        effective_durable = (
+            _DURABLE_WRITES.get() if durable is None else durable
+        )
+        with stream:
             json.dump(
                 value,
                 stream,
@@ -84,11 +106,9 @@ def write_json(
             )
             stream.write("\n")
             stream.flush()
-            effective_durable = (
-                _DURABLE_WRITES.get() if durable is None else durable
-            )
-            if effective_durable:
-                os.fsync(stream.fileno())
+        if effective_durable:
+            with temporary.open("rb") as sync_stream:
+                os.fsync(sync_stream.fileno())
         os.replace(temporary, path)
     except BaseException:
         if descriptor >= 0:

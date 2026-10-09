@@ -1497,7 +1497,14 @@ def run_multi_fpga_flow(
     define_list = list(defines)
     frontend_root = output_dir / "frontend"
     frontend_root.mkdir(parents=True, exist_ok=True)
-    synthesized_json = frontend_root / "synthesized.json"
+    synthesized_json = frontend_root / (
+        "synthesized.json.gz"
+        if (
+            mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+            and (yosys_json is None or yosys_json.suffix == ".gz")
+        )
+        else "synthesized.json"
+    )
     synthesis_mode: str
     if yosys_json is not None:
         if source_list:

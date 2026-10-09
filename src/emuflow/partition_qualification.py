@@ -22,6 +22,7 @@ from .experiment_dag import EXPERIMENT_SPEC_V2_SCHEMA, validate_experiment_spec
 from .experiment_identity import build_implementation_closure
 from .experiment_storage import validate_experiment_write_path
 from .io import read_json, write_json
+from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 PARTITION_QUALIFICATION_CONFIG_SCHEMA = (
@@ -371,7 +372,13 @@ def compile_partition_qualification_spec(
         [
             _artifact("sources", "source-input"),
             _artifact("phase1", "consumer-checkpoint"),
-            _artifact("synthesized.json", "consumer-checkpoint"),
+            _artifact(
+                "synthesized.json.gz"
+                if contract["physical_mapping_profile"]
+                == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+                else "synthesized.json",
+                "consumer-checkpoint",
+            ),
             _artifact("experiment-frontend-report.json", "evidence-critical"),
         ],
         inputs=(

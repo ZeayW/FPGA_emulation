@@ -40,6 +40,7 @@ _IMPORTANT_JSON_NAMES = {
     "ratio_plan.json",
     "platform.normalized.json",
     "synthesized.json",
+    "synthesized.json.gz",
 }
 
 

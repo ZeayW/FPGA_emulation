@@ -10,6 +10,16 @@ from emuflow.managed_json_storage import pack_managed_json
 
 
 class JsonIoTest(unittest.TestCase):
+    def test_gzip_json_round_trip_is_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "document.json.gz"
+            value = {"schema": "example/v1", "items": list(range(128))}
+            write_json(path, value, compact=True)
+            first = path.read_bytes()
+            self.assertEqual(read_json(path), value)
+            write_json(path, value, compact=True)
+            self.assertEqual(path.read_bytes(), first)
+
     def test_hash_cache_reuses_only_unchanged_file_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "artifact.bin"

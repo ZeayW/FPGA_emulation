@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import gzip
+import os
 import re
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
@@ -77,6 +80,7 @@ def build_yosys_script(
     include_dirs: Iterable[Path] = (),
     defines: Iterable[str] = (),
     mapping_profile: Optional[str] = None,
+    stream_json: bool = False,
 ) -> str:
     source_list = list(sources)
     if not source_list:
@@ -189,8 +193,12 @@ def build_yosys_script(
         'setattr -set DONT_TOUCH "yes" c:*',
         *(
             [
-                "write_json -no-hidden-netnames -no-source-attributes "
-                f"{_yosys_quote(str(output))}"
+                "write_json -no-hidden-netnames -no-source-attributes"
+                + (
+                    ""
+                    if stream_json
+                    else f" {_yosys_quote(str(output))}"
+                )
             ]
             if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
             else [f"write_json {_yosys_quote(str(output))}"]
@@ -202,6 +210,73 @@ def build_yosys_script(
             f"{_yosys_quote(str(verilog_output))}"
         )
     return "; ".join(commands)
+
+
+def _run_yosys_streaming_gzip(
+    command: list[str],
+    output: Path,
+    log_path: Optional[Path],
+) -> subprocess.CompletedProcess[str]:
+    """Stream a JSON-only Yosys stdout directly into deterministic gzip.
+
+    Large mapped designs can produce several-GiB JSON documents.  Creating an
+    uncompressed checkpoint before parsing it is unnecessary I/O and can
+    exhaust a shared filesystem quota.  Yosys runs in quiet mode, so stdout is
+    reserved for the backend document and stderr remains a bounded diagnostic
+    artifact.
+    """
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp")
+    diagnostic = output.with_name(
+        f".{output.name}.{uuid.uuid4().hex}.stderr.tmp"
+    )
+    process: Optional[subprocess.Popen[bytes]] = None
+    try:
+        with diagnostic.open("wb") as errors:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=errors,
+            )
+            if process.stdout is None:  # pragma: no cover - guaranteed by PIPE
+                raise AssertionError("Yosys stdout pipe was not created")
+            with temporary.open("wb") as raw:
+                with gzip.GzipFile(
+                    filename="",
+                    mode="wb",
+                    compresslevel=1,
+                    fileobj=raw,
+                    mtime=0,
+                ) as compressed:
+                    for chunk in iter(lambda: process.stdout.read(1024 * 1024), b""):
+                        compressed.write(chunk)
+                raw.flush()
+                os.fsync(raw.fileno())
+            return_code = process.wait()
+        diagnostic_bytes = diagnostic.read_bytes()
+        maximum = 2 * 1024 * 1024
+        diagnostic_text = diagnostic_bytes[-maximum:].decode(
+            "utf-8", errors="replace"
+        )
+        if log_path is not None:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(diagnostic_text, encoding="utf-8")
+        if return_code == 0:
+            os.replace(temporary, output)
+        else:
+            temporary.unlink(missing_ok=True)
+        return subprocess.CompletedProcess(
+            command,
+            return_code,
+            stdout=diagnostic_text,
+        )
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        temporary.unlink(missing_ok=True)
+        diagnostic.unlink(missing_ok=True)
 
 
 def build_generic_yosys_script(
@@ -333,9 +408,15 @@ def run_yosys(
         include_dirs=include_list,
         defines=define_list,
         mapping_profile=mapping_profile,
+        stream_json=output.suffix == ".gz",
     )
-    completed = run_with_bounded_output([command, "-q", "-p", script])
-    if log_path is not None:
+    if output.suffix == ".gz":
+        completed = _run_yosys_streaming_gzip(
+            [command, "-q", "-p", script], output, log_path
+        )
+    else:
+        completed = run_with_bounded_output([command, "-q", "-p", script])
+    if log_path is not None and output.suffix != ".gz":
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(completed.stdout, encoding="utf-8")
     if completed.returncode != 0:
@@ -366,7 +447,10 @@ def run_xilinx_ultrascaleplus_yosys(
 ) -> Dict[str, Any]:
     """Run the explicit Route A mapping profile and audit every primitive."""
 
-    raw_output = output.with_name(f".{output.name}.pre-normalize")
+    raw_output = output.with_name(
+        f".{output.name}.pre-normalize"
+        + (".json.gz" if output.suffix == ".gz" else "")
+    )
     try:
         run_yosys(
             sources,

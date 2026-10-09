@@ -194,7 +194,14 @@ def run_frontend_checkpoint(
         if not managed_dag_node:
             record["sha256"] = _sha256(copied)
         source_records.append(record)
-    synthesized = output_dir / "synthesized.json"
+    synthesized = output_dir / (
+        "synthesized.json.gz"
+        if (
+            mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+            and (yosys_json is None or yosys_json.suffix == ".gz")
+        )
+        else "synthesized.json"
+    )
     synthesis_report: Dict[str, Any] | None = None
     normalization_report: Dict[str, Any] | None = None
     if yosys_json is not None:
@@ -283,6 +290,7 @@ def run_frontend_checkpoint(
         "clocks": sorted(set(clocks)),
         "require_no_fabric_clock": require_no_fabric_clock,
         "source_artifacts": source_records,
+        "synthesized_artifact": synthesized.name,
         "phase1": phase1,
         **({"synthesis": synthesis_report} if synthesis_report is not None else {}),
         **(
@@ -328,7 +336,10 @@ def validate_frontend_checkpoint(
             raise ValidationError("frontend managed-validation contract is invalid")
     elif report.get("validation_mode") is not None:
         raise ValidationError("frontend checkpoint requires managed validation")
-    synthesized = _require(root, "synthesized.json")
+    synthesized_name = report.get("synthesized_artifact")
+    if synthesized_name not in {"synthesized.json", "synthesized.json.gz"}:
+        raise ValidationError("frontend synthesized artifact is invalid")
+    synthesized = _require(root, synthesized_name)
     ir_path = _require(root, "phase1/design.emuir.json")
     phase1_path = _require(root, "phase1/phase1_report.json")
     normalized_platform = _require(root, "phase1/platform.normalized.json")

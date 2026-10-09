@@ -1,11 +1,13 @@
 import subprocess
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.cli import _build_parser, main
 from emuflow.errors import EmuFlowError
+from emuflow.io import read_json
 from emuflow.synthesis import (
     build_generic_yosys_script,
     build_yosys_script,
@@ -16,6 +18,43 @@ from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 class SynthesisTest(unittest.TestCase):
+    def test_xilinx_json_can_stream_directly_to_gzip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "design.v"
+            source.write_text("module design; endmodule\n", encoding="utf-8")
+            executable = root / "fake-yosys"
+            executable.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import json
+                    import sys
+                    sys.stderr.write("diagnostic tail\\n")
+                    json.dump({"modules": {"design": {"cells": {}}}}, sys.stdout)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            output = root / "mapped.json.gz"
+            log = root / "yosys.log"
+
+            run_yosys(
+                [source],
+                "design",
+                output,
+                executable=str(executable),
+                log_path=log,
+                mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            )
+
+            self.assertEqual(
+                read_json(output),
+                {"modules": {"design": {"cells": {}}}},
+            )
+            self.assertEqual(log.read_text(encoding="utf-8"), "diagnostic tail\n")
+
     def test_production_yosys_invocations_are_quiet(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -139,6 +178,21 @@ class SynthesisTest(unittest.TestCase):
         )
         for option in ("-nocarry", "-nodsp", "-nobram"):
             self.assertNotIn(option, script)
+
+    def test_route_a_streaming_script_uses_stdout(self) -> None:
+        script = build_yosys_script(
+            [Path("rtl/design.v")],
+            top="design",
+            output=Path("build/design.json.gz"),
+            family="xcup",
+            policy="native",
+            mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            stream_json=True,
+        )
+        self.assertTrue(
+            script.endswith("write_json -no-hidden-netnames -no-source-attributes")
+        )
+        self.assertNotIn("design.json.gz", script)
 
     def test_route_a_profile_rejects_incompatible_family(self) -> None:
         with self.assertRaisesRegex(EmuFlowError, "requires family"):
