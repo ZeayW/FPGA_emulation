@@ -17,8 +17,8 @@ XILINX_PRIMITIVE_LIBRARY_SCHEMA = (
 )
 XILINX_ULTRASCALEPLUS_OPEN_PROFILE = "xilinx-ultrascaleplus-open-v1"
 DEFAULT_XILINX_PRIMITIVE_LIBRARY = (
-    Path(__file__).resolve().parents[2]
-    / "resources"
+    Path(__file__).resolve().parent
+    / "data"
     / "rapidwright"
     / "xilinx-ultrascaleplus-open-v1.primitives.json"
 )

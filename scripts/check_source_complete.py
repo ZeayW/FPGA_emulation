@@ -154,7 +154,7 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "schemas/xilinx-preplacement-timing-db-v1.schema.json",
     "schemas/physical-region-sidecar-v1.schema.json",
     "resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json",
-    "resources/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
+    "src/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
     "scripts/rapidwright/export_physical_regions.py",
     "scripts/rapidwright/EmuFlowRouteResourceCertificate.java",
     "scripts/rapidwright/EmuFlowRWRoute.java",

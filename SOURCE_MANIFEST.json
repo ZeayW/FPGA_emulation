@@ -45,7 +45,7 @@
         "schemas/xilinx-primitive-library-db-v1.schema.json",
         "schemas/packed-site-netlist-v1.schema.json",
         "resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json",
-        "resources/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
+        "src/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
         "scripts/rapidwright/export_physical_regions.py",
         "scripts/rapidwright/EmuFlowRouteResourceCertificate.java",
         "scripts/rapidwright/export_route_resource_certificate.py"
@@ -95,7 +95,7 @@
         "src/emuflow/synthesis.py",
         "src/emuflow/xilinx_primitives.py",
         "schemas/xilinx-primitive-library-db-v1.schema.json",
-        "resources/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
+        "src/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
         "tests/test_xilinx_primitives.py",
         "examples/rtl/xilinx_hard_blocks_smoke.v",
         "scripts/yosys/logic_only_map.v"
