@@ -48,7 +48,7 @@ from .archive import (
     validate_validation_archive,
 )
 from .architecture import ArchitectureDB
-from .benchmark import run_benchmark
+from .benchmark import BenchmarkRun, run_benchmark
 from .board_arm_mps4 import materialize_arm_mps4_boarddb
 from .board_link_timing import (
     build_board_link_timing_model,
@@ -1853,6 +1853,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--runtime-directory", default="runtime-final"
     )
     multi_fpga_compile.add_argument("sources", nargs="*", type=Path)
+    multi_fpga_compile.add_argument(
+        "--benchmark-run",
+        type=Path,
+        help=(
+            "consume sources, top, clocks, clock periods, compilation context, "
+            "and physical mapping profile from a checked benchmark contract"
+        ),
+    )
+    multi_fpga_compile.add_argument(
+        "--source-root",
+        type=Path,
+        help="source root used to resolve --benchmark-run",
+    )
     multi_fpga_compile.add_argument("--top")
     multi_fpga_compile.add_argument("--clock", action="append", default=[])
     multi_fpga_compile.add_argument(
@@ -1907,11 +1920,13 @@ def _build_parser() -> argparse.ArgumentParser:
             "generic-soft",
             "xilinx-ultrascaleplus-open-v1",
         ),
-        default="vtr-hard-blocks",
+        default=None,
         help=(
             "RTL mapping profile; vtr-hard-blocks preserves public VTR "
             "multiplier/RAM blocks, while xilinx-ultrascaleplus-open-v1 "
-            "uses the fail-closed Route A primitive namespace"
+            "uses the fail-closed Route A primitive namespace; a checked "
+            "--benchmark-run owns this value, otherwise the default is "
+            "vtr-hard-blocks"
         ),
     )
     multi_fpga_compile.add_argument("--partition-constraints", type=Path)
@@ -5647,6 +5662,61 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             _print_json(report["summary"])
             return 0
+        if args.benchmark_run is not None:
+            if args.source_root is None:
+                raise EmuFlowError("--benchmark-run requires --source-root")
+            manual_context = {
+                "positional sources": args.sources,
+                "--top": args.top,
+                "--clock": args.clock,
+                "--clock-period": args.clock_period,
+                "--include-dir": args.include_dir,
+                "--define": args.define,
+                "--mapping-profile": args.mapping_profile,
+                "--yosys-json": args.yosys_json,
+            }
+            conflicts = [
+                name
+                for name, value in manual_context.items()
+                if value not in (None, [], ())
+            ]
+            if conflicts:
+                raise EmuFlowError(
+                    "--benchmark-run owns its frontend contract and cannot be "
+                    "combined with " + ", ".join(conflicts)
+                )
+            benchmark = BenchmarkRun.load(args.benchmark_run)
+            mapping_profile = benchmark.value.get("physical_mapping_profile")
+            synthesis = benchmark.value["synthesis"]
+            if (
+                mapping_profile is None
+                or synthesis.get("family") != "xcup"
+                or synthesis.get("policy") != "native"
+            ):
+                raise EmuFlowError(
+                    "--benchmark-run requires an explicit native Xilinx "
+                    "physical_mapping_profile"
+                )
+            sources = benchmark.resolve_sources(args.source_root)
+            include_dirs = benchmark.resolve_include_dirs(args.source_root)
+            defines = list(synthesis.get("defines", []))
+            top = benchmark.value["top"]
+            clocks = list(benchmark.value["clocks"])
+            clock_periods = dict(benchmark.value["clock_periods_ns"])
+        else:
+            if args.source_root is not None:
+                raise EmuFlowError("--source-root requires --benchmark-run")
+            sources = args.sources
+            include_dirs = args.include_dir
+            defines = args.define
+            top = args.top
+            clocks = args.clock
+            clock_periods = (
+                parse_clock_definitions(args.clock_period)
+                if args.clock_period
+                else None
+            )
+            mapping_profile = args.mapping_profile or "vtr-hard-blocks"
         if args.archive_cleanup and args.archive_out is None:
             raise EmuFlowError("--archive-cleanup requires --archive-out")
         if args.slot_refinement_iterations is None:
@@ -5654,14 +5724,14 @@ def _dispatch(args: argparse.Namespace) -> int:
         report = run_multi_fpga_flow(
             platform_path=args.platform,
             output_dir=args.out,
-            sources=args.sources,
-            include_dirs=args.include_dir,
-            defines=args.define,
-            top=args.top,
-            clocks=args.clock,
+            sources=sources,
+            include_dirs=include_dirs,
+            defines=defines,
+            top=top,
+            clocks=clocks,
             yosys_json=args.yosys_json,
             yosys=args.yosys,
-            mapping_profile=args.mapping_profile,
+            mapping_profile=mapping_profile,
             partition_constraints=args.partition_constraints,
             partition_provider=args.partition_provider,
             seed=args.seed,
@@ -5700,11 +5770,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             timing_driven=args.timing_driven,
             timing_backend=args.timing_backend,
-            clock_periods=(
-                parse_clock_definitions(args.clock_period)
-                if args.clock_period
-                else None
-            ),
+            clock_periods=clock_periods,
             timing_model=args.timing_model,
             architecture_timing_db=args.architecture_timing_db,
             opensta=args.opensta,
