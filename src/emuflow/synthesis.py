@@ -77,15 +77,13 @@ def build_scalable_xilinx_yosys_script(
         # This is Yosys' architecture-neutral coarse synthesis boundary.  It
         # keeps memories and multipliers available for the native Xilinx maps
         # below and, unlike a VTR recipe, imports no foreign architecture.
-        # Stop before generic ``synth`` enters its ``fine`` label.  ``fine``
-        # begins with ``memory_map`` and would lower every still-generic
-        # memory into soft logic before the Xilinx BRAM/URAM libraries below
-        # can see it.  Keep sharing disabled here as well because it is run
-        # once, deliberately, after DSP extraction.
-        f"synth -top {top_identifier} -run begin:coarse -noalumacc -noshare",
+        # Yosys ``-run from:to`` uses an exclusive end label.  Therefore
+        # ``begin:fine`` executes ``begin`` and ``coarse`` (including ``proc``
+        # and ``memory -nomap``) but stops before ``fine`` starts with generic
+        # ``memory_map``.  Keep sharing disabled here because it is run once,
+        # deliberately, after DSP extraction.
+        f"synth -top {top_identifier} -run begin:fine -noalumacc -noshare",
         "memory_dff",
-        "alumacc -macc-only",
-        "maccmap -unmap",
         "techmap -map +/mul2dsp.v -map +/xilinx/xcu_dsp_map.v "
         "-D DSP_A_MAXWIDTH=27 -D DSP_B_MAXWIDTH=18 "
         "-D DSP_A_MAXWIDTH_PARTIAL=18 -D DSP_A_MINWIDTH=2 "
