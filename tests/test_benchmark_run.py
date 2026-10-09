@@ -53,8 +53,14 @@ class BenchmarkRunTest(unittest.TestCase):
     def test_picorv32_l2_spec_and_source(self) -> None:
         spec = BenchmarkRun.load(PICORV32_SPEC)
         self.assertEqual(spec.value["top"], "picorv32")
-        self.assertEqual(spec.value["synthesis"]["policy"], "logic-only")
+        self.assertEqual(spec.value["synthesis"]["policy"], "native")
         self.assertEqual(spec.value["clock_periods_ns"], {"clk": 10.0})
+        self.assertEqual(
+            spec.value["physical_mapping_profile"],
+            "xilinx-ultrascaleplus-open-v1",
+        )
+        self.assertIn("mem_rdata", spec.value["timing_io"]["input_groups"][0]["ports"])
+        self.assertIn("mem_addr", spec.value["timing_io"]["output_groups"][0]["ports"])
         source_root = ROOT / "third_party" / "rtl" / "picorv32"
         if source_root.is_dir():
             sources = spec.resolve_sources(source_root)
@@ -67,7 +73,15 @@ class BenchmarkRunTest(unittest.TestCase):
         spec = BenchmarkRun.load(SECWORKS_AES_SPEC)
         self.assertEqual(spec.value["design_id"], "secworks_aes")
         self.assertEqual(spec.value["top"], "aes")
-        self.assertEqual(spec.value["synthesis"]["policy"], "logic-only")
+        self.assertEqual(spec.value["synthesis"]["policy"], "native")
+        self.assertEqual(
+            spec.value["physical_mapping_profile"],
+            "xilinx-ultrascaleplus-open-v1",
+        )
+        self.assertEqual(
+            spec.value["timing_io"]["output_groups"][0]["ports"],
+            ["read_data"],
+        )
         source_root = ROOT / "third_party" / "rtl" / "secworks_aes"
         if source_root.is_dir():
             sources = spec.resolve_sources(source_root)

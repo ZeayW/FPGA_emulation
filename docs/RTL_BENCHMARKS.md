@@ -18,8 +18,9 @@ Fetch one design:
 python3 scripts/benchmarks/fetch.py fetch picorv32
 ```
 
-The checked-in run contracts cover SERV L1, PicoRV32 L2, secworks AES L3,
-the current Koios L5 logic-only fixtures, and native-hard-block Koios
+The checked-in run contracts cover SERV L1, native UltraScale+ PicoRV32 L2
+and secworks AES L3 calibration holdouts, the separate Koios L5 logic-only
+fixtures, and native-hard-block Koios
 GEMM/attention/LeNet/DLA-large calibration holdouts. Run the AES progression rung
 with:
 
@@ -30,8 +31,11 @@ emuflow benchmark benchmarks/runs/secworks_aes_l3.json \
   --out build/secworks-aes-l3
 ```
 
-Its `logic-only` policy is an open-flow integration baseline, not a claim that
-its mapped QoR matches the upstream Kintex-7 result.
+The AES and PicoRV32 calibration contracts use the same audited
+`xilinx-ultrascaleplus-open-v1` primitive profile as the RapidWright physical
+backend and declare complete non-clock timing-I/O groups. Historical
+logic-only results remain external experiment records; they are not the
+current calibrated holdout contract and cannot qualify the platform.
 
 ## Recommended progression
 

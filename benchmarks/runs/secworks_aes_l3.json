@@ -1,15 +1,32 @@
 {
   "schema": "emuflow.benchmark-run/v1",
-  "id": "secworks_aes_l3_logic_only",
+  "id": "secworks_aes_l3_native",
   "design_id": "secworks_aes",
   "calibration_holdout_class": "secworks_aes",
   "top": "aes",
   "sources": ["src/rtl/*.v"],
   "clocks": ["clk"],
   "clock_periods_ns": {"clk": 10.0},
+  "timing_io": {
+    "input_groups": [
+      {
+        "clock": "clk",
+        "delay_ns": 0.0,
+        "ports": ["cs", "we", "address", "write_data"]
+      }
+    ],
+    "output_groups": [
+      {
+        "clock": "clk",
+        "delay_ns": 0.0,
+        "ports": ["read_data"]
+      }
+    ]
+  },
+  "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
   "platform": "platforms/virtual/xcvu3p_2fpga_p2p.json",
   "synthesis": {
     "family": "xcup",
-    "policy": "logic-only"
+    "policy": "native"
   }
 }

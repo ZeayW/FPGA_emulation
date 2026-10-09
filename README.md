@@ -856,7 +856,8 @@ A calibrated full-flow run must bind all three profile artifacts together:
 
 ```sh
 emuflow multi-fpga compile \
-  --mapping-profile xilinx-ultrascaleplus-open-v1 \
+  --benchmark-run benchmarks/runs/secworks_aes_l3.json \
+  --source-root third_party/rtl/secworks_aes \
   --platform <bundle>/<profile>/boarddb.json \
   --board-link-timing-db <bundle>/<profile>/board-link-timing.json \
   --transport-cost-db <bundle>/<profile>/transport-cost.json \
@@ -866,6 +867,15 @@ emuflow multi-fpga compile \
   --physical-rapidwright-provider-manifest resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json \
   <other checked benchmark and physical options>
 ```
+
+`--benchmark-run` is the authoritative frontend adapter for calibrated
+holdouts. It resolves the source list, include directories, defines, top,
+clocks, clock periods, and `xilinx-ultrascaleplus-open-v1` mapping profile from
+one checked contract. Positional sources or manual frontend overrides are
+rejected in this mode, so an application run cannot accidentally repeat the
+historical VTR-mapped NVDLA invocation. Without `--benchmark-run`, the general
+research command retains its explicit/manual interface and VTR mapping
+default.
 
 Phase 6 extracts the same structural features used during open transport
 characterization, seals a per-FPGA resource prediction, and the bundle

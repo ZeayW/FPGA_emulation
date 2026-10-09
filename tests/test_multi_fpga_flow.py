@@ -512,6 +512,59 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 run.call_args.kwargs["slot_refinement_iterations"], 7
             )
 
+    def test_cli_checked_benchmark_owns_native_frontend_contract(self):
+        root = Path(__file__).resolve().parents[1]
+        benchmark = root / "benchmarks/runs/picorv32_l2.json"
+        source_root = root / "third_party/rtl/picorv32"
+        args = _build_parser().parse_args(
+            [
+                "multi-fpga",
+                "compile",
+                "--benchmark-run",
+                str(benchmark),
+                "--source-root",
+                str(source_root),
+                "--platform",
+                "platform.json",
+                "--out",
+                "unused",
+            ]
+        )
+        with (
+            patch("emuflow.cli.run_multi_fpga_flow") as run,
+            patch("emuflow.cli._print_json"),
+        ):
+            run.return_value = {"status": "pass"}
+            self.assertEqual(_dispatch(args), 0)
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs["top"], "picorv32")
+        self.assertEqual(kwargs["clocks"], ["clk"])
+        self.assertEqual(kwargs["clock_periods"], {"clk": 10.0})
+        self.assertEqual(
+            kwargs["mapping_profile"], "xilinx-ultrascaleplus-open-v1"
+        )
+        self.assertEqual([path.name for path in kwargs["sources"]], ["picorv32.v"])
+
+    def test_cli_checked_benchmark_rejects_manual_frontend_override(self):
+        root = Path(__file__).resolve().parents[1]
+        args = _build_parser().parse_args(
+            [
+                "multi-fpga",
+                "compile",
+                "rtl/other.v",
+                "--benchmark-run",
+                str(root / "benchmarks/runs/picorv32_l2.json"),
+                "--source-root",
+                str(root / "third_party/rtl/picorv32"),
+                "--platform",
+                "platform.json",
+                "--out",
+                "unused",
+            ]
+        )
+        with self.assertRaisesRegex(EmuFlowError, "owns its frontend contract"):
+            _dispatch(args)
+
     def test_exact_mode_allows_unified_slot_refinement(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(
