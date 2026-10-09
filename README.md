@@ -5545,6 +5545,12 @@ path.  Its Yosys backend writes signal-bit identifiers directly instead of
 retaining a string for every bit, omits only automatically generated hidden
 net names and `src` location attributes, and retains all user-visible names,
 cell parameters, preservation attributes, port directions, and connections.
+For the Xilinx profile, the backend JSON stream is written directly to a
+deterministic level-1 gzip artifact; it is never first materialized as a
+multi-gigabyte uncompressed checkpoint.  Normalization reads that compressed
+scratch artifact and removes it after producing the normalized
+`synthesized.json.gz`.  Generic and VTR profiles keep their existing explicit
+formats and are not selected by this Xilinx path.
 The Xilinx normalizer then mutates that owned document in place, emits it
 without a multi-million-key re-sort, and audits the same in-memory object
 instead of deep-copying and re-reading it.  These are representation-only
