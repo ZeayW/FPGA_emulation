@@ -205,6 +205,12 @@ class SynthesisTest(unittest.TestCase):
         )
         self.assertIn("-Irtl/include", script)
         self.assertIn("-DSYNTHESIS", script)
+        self.assertIn(
+            "synth -top design -run begin:coarse -noalumacc -noshare",
+            script,
+        )
+        self.assertNotIn("-run begin:fine", script)
+        self.assertLess(script.index("memory_libmap"), script.index("memory_map"))
         self.assertIn("+/xilinx/xcu_dsp_map.v", script)
         self.assertIn("+/xilinx/brams_xcu_map.v", script)
         self.assertIn("+/xilinx/urams_map.v", script)
