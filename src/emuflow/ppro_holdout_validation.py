@@ -9,6 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
+from .benchmark import timing_io_sha256
 from .errors import ValidationError
 from .io import read_json
 from .ir import EmuIR
@@ -533,6 +534,7 @@ def assemble_holdout_result(
         "qor_report",
         "board_link_timing",
         "transport_cost",
+        "timing_path_database",
     ):
         if label not in artifacts:
             raise ValidationError(f"sealed flow lacks {label} evidence")
@@ -584,6 +586,24 @@ def assemble_holdout_result(
         clock["id"] for clock in ir.value["clocks"]
     ) != sorted(identity["clocks"]):
         raise ValidationError("flow EmuIR top or clocks disagree with benchmark contract")
+    timing_database = read_json(
+        root / artifacts["timing_path_database"]["path"]
+    )
+    timing_source = timing_database.get("source")
+    timing_environment = (
+        timing_source.get("timing_io")
+        if isinstance(timing_source, Mapping)
+        else None
+    )
+    expected_timing_io_sha256 = timing_io_sha256(identity["timing_io"])
+    if (
+        expected_timing_io_sha256 is None
+        or not isinstance(timing_environment, Mapping)
+        or timing_environment.get("sha256") != expected_timing_io_sha256
+    ):
+        raise ValidationError(
+            "flow OpenSTA timing I/O environment disagrees with benchmark contract"
+        )
 
     phase3 = read_json(root / "partition/phase3_report.json")
     schedule = read_json(root / artifacts["schedule"]["path"])

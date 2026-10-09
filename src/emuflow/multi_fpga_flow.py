@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 from .board_link_timing import (
     directed_route_link_delays,
@@ -1252,6 +1252,7 @@ def run_multi_fpga_flow(
     timing_driven: bool = True,
     timing_backend: str = "opensta",
     clock_periods: Optional[Dict[str, float]] = None,
+    timing_io: Optional[Mapping[str, Any]] = None,
     timing_model: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db: Optional[Path] = None,
     opensta: Optional[str] = None,
@@ -1388,6 +1389,10 @@ def run_multi_fpga_flow(
         )
     if timing_backend == "vivado" and opensta is not None:
         raise EmuFlowError("--opensta applies only to timing-backend=opensta")
+    if timing_backend != "opensta" and timing_io is not None:
+        raise EmuFlowError(
+            "benchmark timing_io currently requires timing-backend=opensta"
+        )
     if timing_backend == "opensta" and timing_vivado is not None:
         raise EmuFlowError(
             "--timing-vivado applies only to timing-backend=vivado"
@@ -1641,6 +1646,7 @@ def run_multi_fpga_flow(
                 ir_path=ir_path,
                 output_path=path_database_path,
                 clocks=clock_periods,
+                timing_io=timing_io,
                 timing_model_path=timing_model,
                 architecture_timing_db_path=architecture_timing_db,
                 executable=opensta,

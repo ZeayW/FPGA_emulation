@@ -543,6 +543,10 @@ class MultiFpgaFlowTest(unittest.TestCase):
         self.assertEqual(
             kwargs["mapping_profile"], "xilinx-ultrascaleplus-open-v1"
         )
+        self.assertEqual(
+            kwargs["timing_io"],
+            json.loads(benchmark.read_text(encoding="utf-8"))["timing_io"],
+        )
         self.assertEqual([path.name for path in kwargs["sources"]], ["picorv32.v"])
 
     def test_cli_checked_benchmark_rejects_manual_frontend_override(self):

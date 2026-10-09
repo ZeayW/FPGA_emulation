@@ -5690,12 +5690,14 @@ def _dispatch(args: argparse.Namespace) -> int:
             mapping_profile = benchmark.value.get("physical_mapping_profile")
             synthesis = benchmark.value["synthesis"]
             periods = benchmark.value.get("clock_periods_ns")
+            timing_io = benchmark.value.get("timing_io")
             if (
                 benchmark.value.get("calibration_holdout_class") is None
                 or mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE
                 or synthesis.get("family") != "xcup"
                 or synthesis.get("policy") != "native"
                 or not isinstance(periods, dict)
+                or timing_io is None
             ):
                 raise EmuFlowError(
                     "--benchmark-run requires a timed calibration holdout with "
@@ -5721,6 +5723,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 else None
             )
             mapping_profile = args.mapping_profile or "vtr-hard-blocks"
+            timing_io = None
         if args.archive_cleanup and args.archive_out is None:
             raise EmuFlowError("--archive-cleanup requires --archive-out")
         if args.slot_refinement_iterations is None:
@@ -5775,6 +5778,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             timing_driven=args.timing_driven,
             timing_backend=args.timing_backend,
             clock_periods=clock_periods,
+            timing_io=timing_io,
             timing_model=args.timing_model,
             architecture_timing_db=args.architecture_timing_db,
             opensta=args.opensta,

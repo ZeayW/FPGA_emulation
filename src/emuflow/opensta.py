@@ -13,6 +13,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, DefaultDict, Dict, Iterable, Mapping, Optional, Sequence
 
+from .benchmark import timing_io_sha256
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
@@ -39,6 +40,77 @@ FPGA_TIMING_MODEL_SCHEMA_V2 = "emuflow.fpga-timing-model/v2"
 OPENSTA_PROVIDER = "opensta-fpga-path-database-v1"
 OPENSTA_THROUGH_COVERAGE_SCHEMA = "emuflow.opensta-through-net-coverage/v1"
 MINIMUM_OPENSTA_VERSION = (3, 1, 0)
+
+
+def _write_timing_io_map(
+    ir: EmuIR,
+    clocks: Mapping[str, float],
+    timing_io: Optional[Mapping[str, Any]],
+    output_path: Path,
+) -> Dict[str, Any]:
+    """Validate and serialize the exact benchmark top-level timing context."""
+
+    rows: list[tuple[str, str, float, str]] = []
+    ports = {item["id"]: item for item in ir.value["ports"]}
+    if timing_io is not None:
+        if not isinstance(timing_io, Mapping) or set(timing_io) != {
+            "input_groups",
+            "output_groups",
+        }:
+            raise ValidationError("OpenSTA timing_io contract is invalid")
+        seen: set[tuple[str, str]] = set()
+        for direction in ("input", "output"):
+            groups = timing_io[f"{direction}_groups"]
+            if not isinstance(groups, list):
+                raise ValidationError("OpenSTA timing_io groups are invalid")
+            for group in groups:
+                if not isinstance(group, Mapping) or set(group) != {
+                    "clock",
+                    "delay_ns",
+                    "ports",
+                }:
+                    raise ValidationError("OpenSTA timing_io group is invalid")
+                clock = group["clock"]
+                delay = group["delay_ns"]
+                declared_ports = group["ports"]
+                if clock not in clocks:
+                    raise ValidationError("OpenSTA timing_io clock is undeclared")
+                if (
+                    isinstance(delay, bool)
+                    or not isinstance(delay, (int, float))
+                    or not math.isfinite(float(delay))
+                    or float(delay) < 0.0
+                    or not isinstance(declared_ports, list)
+                    or not declared_ports
+                ):
+                    raise ValidationError("OpenSTA timing_io group is invalid")
+                for port in declared_ports:
+                    item = ports.get(port) if isinstance(port, str) else None
+                    key = (direction, port)
+                    if (
+                        item is None
+                        or item.get("direction") != direction
+                        or key in seen
+                        or port in clocks
+                    ):
+                        raise ValidationError(
+                            f"OpenSTA timing_io {direction} port {port!r} is invalid"
+                        )
+                    seen.add(key)
+                    rows.append((direction, str(clock), float(delay), port))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as stream:
+        stream.write("direction\tclock_hex\tdelay_ns\tport_hex\n")
+        for direction, clock, delay, port in rows:
+            stream.write(
+                f"{direction}\t{clock.encode().hex()}\t{delay:.17g}\t"
+                f"{port.encode().hex()}\n"
+            )
+    return {
+        "sha256": timing_io_sha256(timing_io),
+        "input_ports": sum(direction == "input" for direction, *_ in rows),
+        "output_ports": sum(direction == "output" for direction, *_ in rows),
+    }
 
 
 def check_opensta_engine_version(executable: str) -> str:
@@ -1361,6 +1433,7 @@ def run_opensta_path_database(
     ir_path: Path,
     output_path: Path,
     clocks: Optional[Mapping[str, float]] = None,
+    timing_io: Optional[Mapping[str, Any]] = None,
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
     executable: Optional[str] = None,
@@ -1425,6 +1498,7 @@ def run_opensta_path_database(
         liberty_path = root / "timing.lib"
         net_map_path = root / "net-map.tsv"
         clock_path = root / "clocks.tsv"
+        timing_io_path = root / "timing-io.tsv"
         raw_path = root / "paths.tsv"
         through_path = root / "through-nets.tsv"
         through_endpoint_path = root / "through-endpoints.tsv"
@@ -1463,6 +1537,9 @@ def run_opensta_path_database(
             stream.write("clock_hex\tperiod_ns\n")
             for name, period in clock_map.items():
                 stream.write(f"{name.encode().hex()}\t{period:.12g}\n")
+        timing_io_summary = _write_timing_io_map(
+            ir, clock_map, timing_io, timing_io_path
+        )
 
         environment = os.environ.copy()
         environment.update(
@@ -1472,6 +1549,7 @@ def run_opensta_path_database(
                 "EMUFLOW_STA_TOP": ir.value["design"]["top"],
                 "EMUFLOW_STA_NET_MAP": str(net_map_path),
                 "EMUFLOW_STA_CLOCKS": str(clock_path),
+                "EMUFLOW_STA_TIMING_IO": str(timing_io_path),
                 "EMUFLOW_STA_OUTPUT": str(raw_path),
                 "EMUFLOW_STA_MAX_PATHS": str(max_paths),
                 "EMUFLOW_STA_THROUGH_NETS": (
@@ -1514,6 +1592,7 @@ def run_opensta_path_database(
                 str(architecture_timing_db_path)
                 if architecture_timing_db_path is not None else None
             ),
+            "timing_io": timing_io_summary,
         }
         if _stream_output:
             imported = import_sta_path_database_tsv_streaming(
@@ -1626,6 +1705,7 @@ def run_opensta_path_database(
         "timing_model_qualification": model["source"]["qualification"],
         "engine": engine,
         "clocks": clock_map,
+        "timing_io": timing_io_summary,
         "paths": imported["paths"],
         "max_paths": max_paths,
         "through_nets": through_net_ids,

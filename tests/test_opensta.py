@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from emuflow.errors import ValidationError
 from emuflow.opensta import (
     DEFAULT_TIMING_MODEL,
     FPGA_TIMING_MODEL_SCHEMA,
@@ -253,6 +254,9 @@ class OpenStaProviderTest(unittest.TestCase):
         )
         self.assertIn("set timing_paths [find_timing_paths", script)
         self.assertIn("EMUFLOW_STA_THROUGH_NETS", script)
+        self.assertIn("EMUFLOW_STA_TIMING_IO", script)
+        self.assertIn("set_input_delay -clock $clock -max", script)
+        self.assertIn("set_output_delay -clock $clock -max", script)
         self.assertIn("get_pins -quiet -of_objects $through_net", script)
         self.assertIn("foreach through_pin $through_pins", script)
         self.assertIn("direction] ne \"output\"", script)
@@ -579,6 +583,11 @@ from pathlib import Path
 if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
+timing_io = Path(os.environ["EMUFLOW_STA_TIMING_IO"]).read_text().splitlines()
+assert timing_io == [
+    "direction\\tclock_hex\\tdelay_ns\\tport_hex",
+    "output\\t" + "clk".encode().hex() + "\\t1.25\\t" + "q".encode().hex(),
+]
 header = ("path_id_hex\\tclock_domain_hex\\tclock_period_ns\\t"
           "slack_ns\\tfixed_delay_ns\\tpath_nets_hex")
 Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
@@ -594,6 +603,12 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 ir_path=ir_path,
                 output_path=output_path,
                 clocks={"clk": 10.0},
+                timing_io={
+                    "input_groups": [],
+                    "output_groups": [
+                        {"clock": "clk", "delay_ns": 1.25, "ports": ["q"]}
+                    ],
+                },
                 executable=str(executable),
                 _stream_output=True,
             )
@@ -602,7 +617,43 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
         self.assertEqual(manifest["schema"], "emuflow.sta-path-database/v2")
         self.assertNotIn("paths", manifest)
         self.assertEqual(report["path_qor"]["wns_ns"], -0.25)
+        self.assertEqual(report["timing_io"]["output_ports"], 1)
+        self.assertRegex(report["timing_io"]["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            manifest["source"]["timing_io"], report["timing_io"]
+        )
         self.assertEqual(checked["paths"], 1)
+
+    def test_timing_io_rejects_absent_or_wrong_direction_ports(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            output_path = root / "database.json"
+            executable = root / "fake-opensta"
+            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            executable.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = \"-version\" ]; then echo 3.1.0; exit 0; fi\n"
+                "exit 99\n",
+                encoding="utf-8",
+            )
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            for port in ("missing", "q"):
+                with self.subTest(port=port), self.assertRaisesRegex(
+                    ValidationError, "timing_io input port"
+                ):
+                    run_opensta_path_database(
+                        ir_path,
+                        output_path,
+                        clocks={"clk": 10.0},
+                        timing_io={
+                            "input_groups": [
+                                {"clock": "clk", "delay_ns": 0.0, "ports": [port]}
+                            ],
+                            "output_groups": [],
+                        },
+                        executable=str(executable),
+                    )
 
     def test_structural_endpoint_classifier_distinguishes_data_and_control(self) -> None:
         model = load_timing_model(DEFAULT_TIMING_MODEL)

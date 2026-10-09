@@ -8,6 +8,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from emuflow.benchmark import timing_io_sha256
 from emuflow.errors import ValidationError
 from emuflow.platform import Platform
 from emuflow.ppro_blackbox_application import benchmark_rtl_identity
@@ -494,7 +495,11 @@ class PProHoldoutValidationTest(unittest.TestCase):
             source_root = root / "sources"
             source_root.mkdir()
             rtl = source_root / "design.v"
-            rtl.write_text("module top(input clk); endmodule\n", encoding="utf-8")
+            rtl.write_text(
+                "module top(input clk, input request, output response); "
+                "assign response = request; endmodule\n",
+                encoding="utf-8",
+            )
             benchmark = root / "benchmark.json"
             benchmark.write_text(
                 json.dumps(
@@ -506,8 +511,26 @@ class PProHoldoutValidationTest(unittest.TestCase):
                         "top": "top",
                         "sources": ["design.v"],
                         "clocks": ["clk"],
+                        "clock_periods_ns": {"clk": 10.0},
+                        "timing_io": {
+                            "input_groups": [
+                                {
+                                    "clock": "clk",
+                                    "delay_ns": 0.0,
+                                    "ports": ["request"],
+                                }
+                            ],
+                            "output_groups": [
+                                {
+                                    "clock": "clk",
+                                    "delay_ns": 0.0,
+                                    "ports": ["response"],
+                                }
+                            ],
+                        },
+                        "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
                         "platform": "unused.json",
-                        "synthesis": {"family": "xcup", "policy": "logic-only"},
+                        "synthesis": {"family": "xcup", "policy": "native"},
                     }
                 ),
                 encoding="utf-8",
@@ -642,6 +665,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 "qor_report": flow / "runtime/qor_report.json",
                 "board_link_timing": flow / "timing/board-link-timing.json",
                 "transport_cost": flow / "split/transport-cost.json",
+                "timing_path_database": flow / "timing/path-database.json",
             }
             paths["board_link_timing"].parent.mkdir(parents=True, exist_ok=True)
             paths["transport_cost"].parent.mkdir(parents=True, exist_ok=True)
@@ -653,6 +677,21 @@ class PProHoldoutValidationTest(unittest.TestCase):
             )
             paths["transport_cost"].write_text(
                 json.dumps(transport_cost), encoding="utf-8"
+            )
+            paths["timing_path_database"].write_text(
+                json.dumps(
+                    {
+                        "source": {
+                            "provider": "opensta-fpga-path-database-v1",
+                            "timing_io": {
+                                "sha256": timing_io_sha256(identity["timing_io"]),
+                                "input_ports": 1,
+                                "output_ports": 1,
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
             )
             sha = lambda path: __import__("hashlib").sha256(path.read_bytes()).hexdigest()
             flow_report = {

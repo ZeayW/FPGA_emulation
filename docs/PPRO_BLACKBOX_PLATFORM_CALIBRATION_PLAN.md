@@ -258,7 +258,11 @@ interconnect-evidence rule.
 Application timing must include the benchmark's external synchronous
 environment, not clocks alone. An optional `timing_io` contract assigns exact
 top-level data ports to declared clocks and finite input/output delays. It is
-part of the blind workload identity and is rendered through standard SDC.
+part of the blind workload identity and is rendered through standard SDC by
+both PPro and EmuFlow's pre-partition OpenSTA provider. The TimingPathDB stores
+only its canonical SHA-256 and port counts, and the independent holdout
+assembler checks that SHA against the benchmark contract; the full port list is
+not duplicated into the timing hot path.
 Reset, test, clock-control, and power-control ports remain outside those groups.
 Missing I/O timing is never repaired by ignoring unconstrained SSTA rows; the
 ordinary report must show complete constrained cross-FPGA coverage for

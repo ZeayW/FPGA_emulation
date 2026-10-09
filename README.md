@@ -968,7 +968,13 @@ produce unusable timing evidence.
 Benchmark contracts may now declare an explicit `timing_io` environment. Each
 input/output group names its design clock, finite nonnegative external delay,
 and exact top-level data ports; the contract is included in the workload
-identity and rendered as standard `set_input_delay`/`set_output_delay` SDC.
+identity and rendered as standard `set_input_delay`/`set_output_delay` SDC in
+both the ordinary PPro run and EmuFlow's pre-partition OpenSTA extraction.
+The OpenSTA path database retains only the canonical contract SHA-256 and input/
+output port counts; the checked benchmark remains the single owner of the port
+groups. The blind holdout assembler rejects a Phase 1--7 result unless that SHA
+matches the exact benchmark contract, so a clock-only EmuFlow timing run cannot
+be compared with an I/O-constrained PPro observation.
 Each declared HDL base name is resolved as either the exact scalar port or its
 exact-base `name[*]` vector bits after PPro elaboration; the renderer never
 uses a loose `name*` prefix that could constrain a different interface.

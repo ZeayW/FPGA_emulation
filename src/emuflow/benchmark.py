@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 from pathlib import Path
@@ -133,6 +134,22 @@ def _validate_timing_io(value: Any, clocks: List[str]) -> None:
                     f"benchmark.timing_io.{direction}_groups: duplicate ports"
                 )
             seen_ports.update(ports)
+
+
+def timing_io_sha256(value: Any) -> Optional[str]:
+    """Return the canonical identity of a benchmark timing-I/O contract.
+
+    The benchmark run remains the canonical owner. Timing producers persist
+    only this compact identity so a holdout assembler can prove that PPro and
+    EmuFlow consumed the same environment without duplicating all port groups.
+    """
+
+    if value is None:
+        return None
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class BenchmarkRun:
