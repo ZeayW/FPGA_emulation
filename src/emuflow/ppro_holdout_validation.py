@@ -15,7 +15,10 @@ from .io import read_json
 from .ir import EmuIR
 from .multi_fpga_flow import validate_multi_fpga_flow_bundle
 from .platform import Platform
-from .ppro_blackbox_application import benchmark_rtl_identity
+from .ppro_blackbox_application import (
+    APPLICATION_HOLDOUT_GENERATOR_ID,
+    benchmark_rtl_identity,
+)
 from .ppro_blackbox_calibration import validate_blackbox_observation
 from .ppro_calibrated_platform import validate_calibrated_platform_bundle
 
@@ -489,6 +492,8 @@ def assemble_holdout_result(
         or ppro["workload"]["parameters_sha256"]
         != identity["parameters_sha256"]
         or ppro["workload"]["top_module"] != identity["top_module"]
+        or ppro["workload"]["generator_id"]
+        != APPLICATION_HOLDOUT_GENERATOR_ID
     ):
         raise ValidationError("PPro observation disagrees with benchmark RTL identity")
 
@@ -501,6 +506,14 @@ def assemble_holdout_result(
     physical_contract = manifest.get("physical_contract")
     if not isinstance(physical_contract, Mapping):
         raise ValidationError("calibrated platform lacks a physical contract")
+    if (
+        identity["physical_mapping_profile"]
+        != physical_contract.get("frontend_mapping_profile")
+        or identity["synthesis"] != {"family": "xcup", "policy": "native"}
+    ):
+        raise ValidationError(
+            "benchmark frontend is not the calibrated RapidWright contract"
+        )
     profile_record = manifest["profiles"].get(profile)
     if not isinstance(profile_record, Mapping):
         raise ValidationError("calibrated platform manifest lacks selected profile")

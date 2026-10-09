@@ -35,7 +35,7 @@ def ppro_observation(identifier: str, delay: float):
         },
         "tool": {"name": "PPro mock", "release": "mock", "runner_revision": "1" * 64},
         "workload": {
-            "generator_id": "upstream-connected-rtl",
+            "generator_id": "ppro-blackbox-application-holdout-v2",
             "generator_revision": "2" * 64,
             "rtl_sha256": "3" * 64,
             "parameters_sha256": "4" * 64,
@@ -749,6 +749,30 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 value["evidence"]["platform_transport_cost_sha256"],
                 manifest["profiles"]["nominal"]["transport_cost"],
             )
+
+            observation["workload"]["generator_id"] = (
+                "ppro-blackbox-application-holdout-v1"
+            )
+            observation_path.write_text(json.dumps(observation), encoding="utf-8")
+            with patch(
+                "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                return_value={"status": "pass", "configuration_id": "lx2-m2"},
+            ), patch(
+                "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                return_value={"status": "pass"},
+            ):
+                with self.assertRaisesRegex(ValidationError, "RTL identity"):
+                    assemble_holdout_result(
+                        result_id="blind-aes-a", workload_id="blind-aes",
+                        algorithm_id="default",
+                        ppro_observation_path=observation_path, flow_root=flow,
+                        benchmark_run_path=benchmark, source_root=source_root,
+                        platform_bundle_root=bundle, profile="nominal",
+                    )
+            observation["workload"]["generator_id"] = (
+                "ppro-blackbox-application-holdout-v2"
+            )
+            observation_path.write_text(json.dumps(observation), encoding="utf-8")
 
             expected_timing_sha = flow_report["timing"]["sta"]["timing_io"][
                 "sha256"

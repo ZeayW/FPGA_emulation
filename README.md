@@ -696,6 +696,17 @@ emuflow-ppro-calibration generate-application-holdout \
   --source-root third_party/rtl/secworks_aes
 ```
 
+The current application producer is
+`ppro-blackbox-application-holdout-v2`.  It fails before creating a provider
+bundle unless the benchmark explicitly selects
+`xilinx-ultrascaleplus-open-v1` with `synthesis.family=xcup` and
+`synthesis.policy=native`.  Those frontend fields are part of the shared
+PPro/EmuFlow parameter identity, and the final assembler requires both the v2
+producer and an exact match to the calibrated platform's RapidWright physical
+contract.  A VTR-mapped or logic-only benchmark is therefore rejected before
+an expensive PPro run; it cannot be silently relabelled as calibrated
+RapidWright evidence.
+
 Application holdouts request system-route timing budgeting, materialize the
 partitioned RTL with `run_gen_rtl`, and then invoke PPro's documented
 post-partition SSTA stage.  The benchmark contract must define a period for

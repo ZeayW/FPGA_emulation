@@ -785,7 +785,12 @@ secworks AES, open CPU, Koios compute, Koios DLA, or NVDLA; all five classes
 are mandatory. The class is declared by the checked benchmark contract,
 included in its compilation identity, and cannot be supplied by the result
 assembler. Application bundle generation fails closed before launching PPro
-when this class is absent. Qualifying contracts are PicoRV32, secworks AES,
+when this class is absent. The v2 application producer additionally requires
+the explicit `xilinx-ultrascaleplus-open-v1` plus `xcup/native` frontend,
+includes that frontend selection in the common parameter identity, and is the
+only application generator accepted by the result assembler. VTR or logic-only
+contracts now fail before bundle creation rather than surviving until physical
+result assembly. Qualifying contracts are PicoRV32, secworks AES,
 native-hard-block Koios GEMM/attention/LeNet, native-hard-block Koios DLA-large, and
 the generated NVDLA shared frontend; logic-only Koios fixtures cannot be
 relabelled into a promotion tier. Duplicate result identities and duplicate

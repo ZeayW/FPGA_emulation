@@ -13,10 +13,13 @@ from .errors import ValidationError
 from .io import write_json
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
 from .ppro_blackbox_runner import RUN_SPEC_SCHEMA, validate_run_spec
+from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
-_GENERATOR_ID = "ppro-blackbox-application-holdout-v1"
-_GENERATOR_REVISION = hashlib.sha256(_GENERATOR_ID.encode("utf-8")).hexdigest()
+APPLICATION_HOLDOUT_GENERATOR_ID = "ppro-blackbox-application-holdout-v2"
+_GENERATOR_REVISION = hashlib.sha256(
+    APPLICATION_HOLDOUT_GENERATOR_ID.encode("utf-8")
+).hexdigest()
 _EXPECTED_REPORTS = [
     "partition_summary",
     "resource_summary",
@@ -106,6 +109,13 @@ def benchmark_rtl_identity(
         ),
         "clocks": benchmark.value["clocks"],
         "clock_periods_ns": benchmark.value.get("clock_periods_ns"),
+        "physical_mapping_profile": benchmark.value.get(
+            "physical_mapping_profile"
+        ),
+        "synthesis": {
+            "family": benchmark.value["synthesis"]["family"],
+            "policy": benchmark.value["synthesis"]["policy"],
+        },
         "timing_io": benchmark.value.get("timing_io"),
         "rtl_inputs": rtl_inputs,
         "top": benchmark.value["top"],
@@ -127,6 +137,13 @@ def benchmark_rtl_identity(
         "clocks": benchmark.value["clocks"],
         "clock_periods_ns": benchmark.value.get("clock_periods_ns"),
         "timing_io": benchmark.value.get("timing_io"),
+        "physical_mapping_profile": benchmark.value.get(
+            "physical_mapping_profile"
+        ),
+        "synthesis": {
+            "family": benchmark.value["synthesis"]["family"],
+            "policy": benchmark.value["synthesis"]["policy"],
+        },
         "calibration_holdout_class": benchmark.value.get(
             "calibration_holdout_class"
         ),
@@ -155,6 +172,18 @@ def generate_application_holdout_bundle(
         raise ValidationError(
             "application holdout benchmark contract lacks "
             "calibration_holdout_class"
+        )
+    if (
+        identity["physical_mapping_profile"]
+        != XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+        or identity["synthesis"] != {"family": "xcup", "policy": "native"}
+    ):
+        raise ValidationError(
+            "application holdout requires the calibrated Xilinx frontend "
+            "contract: physical_mapping_profile="
+            f"{XILINX_ULTRASCALEPLUS_OPEN_PROFILE!r}, synthesis.family='xcup', "
+            "and synthesis.policy='native'; VTR or logic-only contracts are "
+            "separate research backends"
         )
     benchmark = BenchmarkRun.load(identity["benchmark_run"])
     sources = identity["sources"]
@@ -222,7 +251,7 @@ def generate_application_holdout_bundle(
             "runner_revision": runner_revision,
         },
         "workload": {
-            "generator_id": _GENERATOR_ID,
+            "generator_id": APPLICATION_HOLDOUT_GENERATOR_ID,
             "generator_revision": _GENERATOR_REVISION,
             "rtl_sha256": rtl_sha256,
             "parameters_sha256": identity["parameters_sha256"],

@@ -204,10 +204,11 @@ class PProBlackboxCampaignTest(unittest.TestCase):
                                 {"clock": "clk", "delay_ns": 0.0, "ports": ["q"]}
                             ],
                         },
+                        "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
                         "platform": "unused.json",
                         "synthesis": {
                             "family": "xcup",
-                            "policy": "logic-only",
+                            "policy": "native",
                             "include_dirs": ["include"],
                             "defines": ["SYNTHESIS"],
                         },

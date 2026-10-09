@@ -40,8 +40,9 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                         "top": "top",
                         "sources": ["top.v"],
                         "clocks": ["clk"],
+                        "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
                         "platform": "unused.json",
-                        "synthesis": {"family": "xcup", "policy": "logic-only"},
+                        "synthesis": {"family": "xcup", "policy": "native"},
                     }
                 ),
                 encoding="utf-8",
@@ -80,8 +81,9 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                         "sources": ["top.v"],
                         "clocks": ["clk"],
                         "clock_periods_ns": {"clk": 10.0},
+                        "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
                         "platform": "unused.json",
-                        "synthesis": {"family": "xcup", "policy": "logic-only"},
+                        "synthesis": {"family": "xcup", "policy": "native"},
                     }
                 ),
                 encoding="utf-8",
@@ -116,8 +118,9 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                         "top": "top",
                         "sources": ["top.v"],
                         "clocks": ["clk"],
+                        "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
                         "platform": "unused.json",
-                        "synthesis": {"family": "xcup", "policy": "logic-only"},
+                        "synthesis": {"family": "xcup", "policy": "native"},
                     }
                 ),
                 encoding="utf-8",
@@ -135,6 +138,56 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                     tool_release="2026.1",
                     runner_revision="d" * 64,
                 )
+
+    def test_holdout_rejects_vtr_or_logic_only_frontend_before_generation(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "source"
+            source_root.mkdir()
+            (source_root / "top.v").write_text(
+                "module top(input wire clk, input wire d, output wire q); "
+                "assign q = d; endmodule\n",
+                encoding="utf-8",
+            )
+            benchmark = root / "benchmark.json"
+            value = {
+                "schema": "emuflow.benchmark-run/v1",
+                "id": "wrong_frontend",
+                "design_id": "wrong_frontend",
+                "calibration_holdout_class": "open_cpu",
+                "top": "top",
+                "sources": ["top.v"],
+                "clocks": ["clk"],
+                "clock_periods_ns": {"clk": 10.0},
+                "timing_io": _timing_io(),
+                "physical_mapping_profile": "vtr-hard-blocks",
+                "platform": "unused.json",
+                "synthesis": {"family": "xcup", "policy": "native"},
+            }
+            kwargs = dict(
+                benchmark_run_path=benchmark,
+                source_root=source_root,
+                campaign_id="blind",
+                public_prior_id="prior-v1",
+                configuration_id="platform-v1",
+                tool_release="2026.1",
+                runner_revision="d" * 64,
+            )
+            benchmark.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "calibrated Xilinx frontend contract"
+            ):
+                generate_application_holdout_bundle(root / "vtr", **kwargs)
+            self.assertFalse((root / "vtr").exists())
+
+            value["physical_mapping_profile"] = "xilinx-ultrascaleplus-open-v1"
+            value["synthesis"]["policy"] = "logic-only"
+            benchmark.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "calibrated Xilinx frontend contract"
+            ):
+                generate_application_holdout_bundle(root / "logic-only", **kwargs)
+            self.assertFalse((root / "logic-only").exists())
 
     def test_catalog_holdout_is_free_partition_and_path_redacted(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -166,8 +219,9 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                                 {"clock": "clk", "delay_ns": 0.0, "ports": ["q"]}
                             ],
                         },
+                        "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
                         "platform": "unused-by-ppro.json",
-                        "synthesis": {"family": "xcup", "policy": "logic-only"},
+                        "synthesis": {"family": "xcup", "policy": "native"},
                     }
                 ),
                 encoding="utf-8",
@@ -187,6 +241,10 @@ class PProBlackboxApplicationTest(unittest.TestCase):
             self.assertEqual(spec["experiment"]["kind"], "application_holdout")
             self.assertEqual(spec["experiment"]["control_mode"], "none")
             self.assertEqual(spec["experiment"]["documented_actions"], [])
+            self.assertEqual(
+                spec["workload"]["generator_id"],
+                "ppro-blackbox-application-holdout-v2",
+            )
             self.assertEqual(
                 spec["adapter"]["expected_reports"],
                 ["partition_summary", "resource_summary"],
@@ -239,8 +297,9 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                         "clocks": ["clk"],
                         "clock_periods_ns": {"clk": 10.0},
                         "timing_io": _timing_io(),
+                        "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
                         "platform": "unused.json",
-                        "synthesis": {"family": "xcup", "policy": "logic-only"},
+                        "synthesis": {"family": "xcup", "policy": "native"},
                     }
                 ),
                 encoding="utf-8",
@@ -289,8 +348,9 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                 "clocks": ["clk"],
                 "clock_periods_ns": {"clk": 10.0},
                 "timing_io": _timing_io(),
+                "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
                 "platform": "unused.json",
-                "synthesis": {"family": "xcup", "policy": "logic-only"},
+                "synthesis": {"family": "xcup", "policy": "native"},
             }
             benchmark.write_text(json.dumps(value), encoding="utf-8")
             kwargs = dict(
@@ -343,8 +403,9 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                         {"clock": "clk", "delay_ns": 0.0, "ports": ["q"]}
                     ],
                 },
+                "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
                 "platform": "unused.json",
-                "synthesis": {"family": "xcup", "policy": "logic-only"},
+                "synthesis": {"family": "xcup", "policy": "native"},
             }
             benchmark.write_text(json.dumps(value), encoding="utf-8")
             kwargs = dict(
@@ -392,10 +453,11 @@ class PProBlackboxApplicationTest(unittest.TestCase):
                 "clocks": ["clk"],
                 "clock_periods_ns": {"clk": 10.0},
                 "timing_io": _timing_io(),
+                "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
                 "platform": "unused.json",
                 "synthesis": {
                     "family": "xcup",
-                    "policy": "logic-only",
+                    "policy": "native",
                     "include_dirs": ["include"],
                     "defines": ["SYNTHESIS"],
                 },
