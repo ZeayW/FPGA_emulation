@@ -971,8 +971,12 @@ and post-partition `gr0` SSTA path passed in 612.22 seconds. PPro selected three
 logical partitions and reported four directed one-hop routes, 684 crossing
 signals, maximum TDM ratio 8, and 51.66 ns worst data-arrival delay. All 1,000
 reported cross-FPGA timing paths were constrained and none were unconstrained,
-so the observation is eligible for the timing holdout gate. The bundle generator
-now rejects an application holdout that lacks explicit `timing_io`; a stale
+so the run qualifies the timing-ingestion and report-adapter behavior. It
+predates the v2 frontend-identity contract, however, and is now diagnostic
+rather than an admissible promotion observation; NVDLA must be rerun with the
+v2 application producer before joining a RapidWright Phase 1--7 result. The
+bundle generator now rejects an application holdout that lacks explicit
+`timing_io`; a stale
 clock-only benchmark contract can no longer consume a PPro run and silently
 produce unusable timing evidence.
 

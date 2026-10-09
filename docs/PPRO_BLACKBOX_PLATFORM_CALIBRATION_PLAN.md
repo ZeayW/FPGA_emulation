@@ -770,7 +770,9 @@ documented compile configuration: the ordinary compile log consumed
 `get_ports {clk}`, and the post-partition ordinary clock report identified one
 global `clk` tree with 1,069 loads.  AES remained on one FPGA, so system SSTA
 was correctly treated as not applicable for that gate; cross-FPGA timing still
-has to be proven by the large holdouts below. Each qualifying case joins one
+has to be proven by the large holdouts below. These pre-v2 runs remain runner
+and timing-ingestion qualification only; their application observations cannot
+enter promotion after the frontend identity became explicit. Each qualifying case joins one
 passing PPro observation to a RapidWright complete EmuFlow Phase 1--7 result
 produced with physical seed 1 and authoritative OpenSTA global timing. The v4
 result cannot be assembled from
