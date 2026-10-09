@@ -8,6 +8,7 @@ import pytest
 import emuflow.xilinx_opensta as xilinx_opensta
 import emuflow.xilinx_timing as xilinx_timing
 from emuflow.errors import ValidationError
+from emuflow.opensta import render_opensta_liberty
 from emuflow.xilinx_opensta import (
     build_xilinx_routed_opensta_inputs,
     run_xilinx_routed_opensta,
@@ -50,7 +51,7 @@ def test_routed_opensta_staging_inserts_one_exact_delay_per_sink(monkeypatch):
                     },
                     "ff": {
                         "type": "FDRE",
-                        "parameters": {},
+                        "parameters": {"IS_C_INVERTED": "1"},
                         "port_directions": {
                             "C": "input", "CE": "input", "D": "input",
                             "Q": "output", "R": "input",
@@ -152,6 +153,17 @@ def test_routed_opensta_staging_inserts_one_exact_delay_per_sink(monkeypatch):
         assert metadata["inserted_route_delay_cells"] == 1
         assert model["cells"][delay_instances[0]["type"]]["delay_ns"] == 0.123
         assert model["cells"]["LUT1"]["delay_ns"] == 0.07
+        ff = next(
+            instance for instance in routed_ir.value["instances"]
+            if instance["id"] == "ff"
+        )
+        assert ff["type"] == "FDRE__NEG"
+        assert metadata["falling_edge_ff_instances"] == 1
+        liberty = render_opensta_liberty(model)
+        assert "cell (FDRE__NEG)" in liberty
+        assert 'clocked_on : "!C";' in liberty
+        assert "timing_type : setup_falling;" in liberty
+        assert "timing_type : falling_edge;" in liberty
         assert delay_instances[0]["id"] == "__emuflow_rw_delay__00000000"
         assert "/" not in delay_instances[0]["id"]
         delay_nets = [

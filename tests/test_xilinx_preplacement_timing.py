@@ -50,7 +50,7 @@ def _mapped_fixture(path: Path) -> None:
             "connections": {"A": [8], "P": [9]},
         },
         "ff": {
-            "type": "FDRE", "parameters": {},
+            "type": "FDRE", "parameters": {"IS_C_INVERTED": "1"},
             "port_directions": {"C": "input", "CE": "input", "D": "input", "Q": "output", "R": "input"},
             "connections": {"C": [2], "CE": ["1"], "D": [9], "Q": [10], "R": ["0"]},
         },
@@ -121,6 +121,8 @@ CLK ADDR_A[0] 500
         assert model["cells"]["RAMB18E2"]["setup_ns"] > 0.0
         assert model["cells"]["RAMB18E2"]["clock_to_q_ns"] > 0.0
         assert model["cells"]["DSP48E2"]["delay_ns"] == 5.374
+        assert types["ff"] == "FDRE__NEG"
+        assert model["cells"]["FDRE__NEG"]["kind"] == "falling_edge_ff"
         assert model["source"]["qualification"] == "analytical_uncharacterized"
 
 

@@ -84,6 +84,22 @@ def _scalar_pins(pins: set[tuple[str, int]]) -> list[str]:
     ]
 
 
+def _integer_parameter(
+    instance: Mapping[str, Any], name: str, fallback: int = 0
+) -> int:
+    raw = instance.get("parameters", {}).get(name)
+    if isinstance(raw, bool):
+        return fallback
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            return int(raw, 2) if all(bit in "01" for bit in raw) else int(raw)
+        except ValueError:
+            return fallback
+    return fallback
+
+
 def build_xilinx_routed_opensta_inputs(
     mapped_path: Path,
     timing_path: Path,
@@ -215,6 +231,18 @@ def build_xilinx_routed_opensta_inputs(
         raise ValidationError(
             f"RapidWright timing has {len(missing)} unbound logical sinks"
         )
+    negedge_ff_count = 0
+    for instance in instances:
+        cell_type = instance["type"]
+        if (
+            cell_type in {"FDCE", "FDPE", "FDRE", "FDSE"}
+            and _integer_parameter(instance, "IS_C_INVERTED") == 1
+        ):
+            # This IR exists only to stage OpenSTA.  Keep the physical mapped
+            # netlist unchanged, but select a distinct Liberty cell whose
+            # active edge is falling so half-cycle paths remain visible.
+            instance["type"] = f"{cell_type}__NEG"
+            negedge_ff_count += 1
     value["instances"] = sorted(instances, key=lambda item: item["id"])
     value["nets"] = sorted(nets, key=lambda item: item["id"])
     value.setdefault("warnings", []).append(
@@ -232,6 +260,8 @@ def build_xilinx_routed_opensta_inputs(
         model["cells"][ff]["clock_to_q_ns"] = (
             float(coefficients["ff_clock_to_q"]) / 1000.0
         )
+        model["cells"][f"{ff}__NEG"] = deepcopy(model["cells"][ff])
+        model["cells"][f"{ff}__NEG"]["kind"] = "falling_edge_ff"
     model["cells"]["LUT6_2"] = {
         "kind": "combinational",
         "inputs": [f"I{index}" for index in range(6)],
@@ -343,6 +373,7 @@ def build_xilinx_routed_opensta_inputs(
         "inserted_route_delay_cells": len(bound),
         "unique_route_delay_cells": len(delay_types),
         "hard_block_types_unqualified": sorted(set(hard_blocks)),
+        "falling_edge_ff_instances": negedge_ff_count,
     }
     return routed_ir, model, metadata
 

@@ -178,7 +178,7 @@ def load_timing_model(path: Path) -> Dict[str, Any]:
             ):
                 raise ValidationError(f"{context}: invalid pin definition")
             _finite_nonnegative(raw_cell.get("delay_ns"), f"{context}.delay_ns")
-        elif kind == "rising_edge_ff":
+        elif kind in {"rising_edge_ff", "falling_edge_ff"}:
             pins = [
                 raw_cell.get("clock"),
                 raw_cell.get("data"),
@@ -338,11 +338,17 @@ def render_opensta_liberty(model: Mapping[str, Any]) -> str:
                         ]
                     )
                 lines.append("    }")
-        elif kind == "rising_edge_ff":
+        elif kind in {"rising_edge_ff", "falling_edge_ff"}:
+            falling = kind == "falling_edge_ff"
+            clocked_on = (
+                f"!{cell['clock']}" if falling else cell["clock"]
+            )
+            setup_type = "setup_falling" if falling else "setup_rising"
+            edge_type = "falling_edge" if falling else "rising_edge"
             lines.extend(
                 [
                     "    ff (IQ, IQN) {",
-                    f'      clocked_on : "{cell["clock"]}";',
+                    f'      clocked_on : "{clocked_on}";',
                     f'      next_state : "{cell["data"]}";',
                     "    }",
                     f"    pin ({cell['clock']}) {{",
@@ -355,7 +361,7 @@ def render_opensta_liberty(model: Mapping[str, Any]) -> str:
                     "      capacitance : 0.001;",
                     "      timing () {",
                     f'        related_pin : "{cell["clock"]}";',
-                    "        timing_type : setup_rising;",
+                    f"        timing_type : {setup_type};",
                     *_scalar_table(
                         "rise_constraint",
                         float(cell["setup_ns"]),
@@ -386,7 +392,7 @@ def render_opensta_liberty(model: Mapping[str, Any]) -> str:
                     '      function : "IQ";',
                     "      timing () {",
                     f'        related_pin : "{cell["clock"]}";',
-                    "        timing_type : rising_edge;",
+                    f"        timing_type : {edge_type};",
                     "        timing_sense : non_unate;",
                     *_scalar_table(
                         "cell_rise",
@@ -915,6 +921,19 @@ def build_xilinx_preplacement_opensta_timing_model(
     }
     for instance in ir.value["instances"]:
         cell_type = instance["type"]
+        if (
+            cell_type in {"FDCE", "FDPE", "FDRE", "FDSE"}
+            and _integer_parameter(instance, "IS_C_INVERTED", 0) == 1
+        ):
+            timing_type = f"{cell_type}__NEG"
+            if timing_type not in model["cells"]:
+                model["cells"][timing_type] = deepcopy(
+                    model["cells"][cell_type]
+                )
+                model["cells"][timing_type]["kind"] = "falling_edge_ff"
+            instance_cell_types[instance["id"]] = timing_type
+    for instance in ir.value["instances"]:
+        cell_type = instance["type"]
         if cell_type in model["cells"]:
             continue
         pins = pin_sets[instance["id"]]
@@ -1156,7 +1175,8 @@ def classify_through_net_timing_endpoints(
             pin = _scalar_endpoint_pin(driver, pin_sets)
             kind = cell["kind"]
             if (
-                (kind == "rising_edge_ff" and pin == cell["output"])
+                (kind in {"rising_edge_ff", "falling_edge_ff"}
+                 and pin == cell["output"])
                 or (kind == "rising_edge_bank" and pin in cell["outputs"])
             ):
                 timing_startpoints.add(net_id)
@@ -1191,7 +1211,7 @@ def classify_through_net_timing_endpoints(
                     for successor in output_nets.get((instance_id, output), ()):
                         forward_edges[net_id].add(successor)
                         reverse_edges[successor].add(net_id)
-            elif kind == "rising_edge_ff":
+            elif kind in {"rising_edge_ff", "falling_edge_ff"}:
                 if pin == cell["data"]:
                     direct_timed.add(net_id)
                     direct_timed_counts[net_id] += 1

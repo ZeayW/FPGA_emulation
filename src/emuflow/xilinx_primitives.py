@@ -22,7 +22,17 @@ DEFAULT_XILINX_PRIMITIVE_LIBRARY = (
     / "rapidwright"
     / "xilinx-ultrascaleplus-open-v1.primitives.json"
 )
-XILINX_NORMALIZATION_INPUT_CELLS = {"CARRY4", "INV"}
+XILINX_NEGEDGE_FF_ALIASES = {
+    "FDCE_1": "FDCE",
+    "FDPE_1": "FDPE",
+    "FDRE_1": "FDRE",
+    "FDSE_1": "FDSE",
+}
+XILINX_NORMALIZATION_INPUT_CELLS = {
+    "CARRY4",
+    "INV",
+    *XILINX_NEGEDGE_FF_ALIASES,
+}
 
 
 def _sha256(path: Path) -> str:
@@ -243,6 +253,29 @@ def normalize_xilinx_mapped_json(
             )
         return list(value)
 
+    negedge_ff_count = 0
+    for name, cell in cells.items():
+        normalized_type = XILINX_NEGEDGE_FF_ALIASES.get(cell.get("type"))
+        if normalized_type is None:
+            continue
+        parameters = cell.get("parameters")
+        if not isinstance(parameters, dict):
+            parameters = {}
+            cell["parameters"] = parameters
+        clock_inverted = parameters.get("IS_C_INVERTED")
+        if clock_inverted not in (None, "1", "1 "):
+            raise ValidationError(
+                f"mapped cell {name!r} has conflicting inverted-clock parameter"
+            )
+        parameters["IS_C_INVERTED"] = "1"
+        attributes = cell.get("attributes")
+        if not isinstance(attributes, dict):
+            attributes = {}
+            cell["attributes"] = attributes
+        attributes["emuflow_normalized"] = "yosys-negedge-ff-alias-v1"
+        cell["type"] = normalized_type
+        negedge_ff_count += 1
+
     carry_names = sorted(
         name for name, cell in cells.items() if cell.get("type") == "CARRY4"
     )
@@ -365,9 +398,11 @@ def normalize_xilinx_mapped_json(
         replacement[name]["connections"]["S"] = routed_s
 
     inv_count = 0
-    for name, cell in sorted(cells.items()):
+    inv_names: List[str] = []
+    for name, cell in cells.items():
         if cell.get("type") != "INV":
             continue
+        inv_names.append(name)
         replacement[name] = {
             **cell,
             "type": "LUT1",
@@ -396,7 +431,7 @@ def normalize_xilinx_mapped_json(
         inv_count += 1
 
     mux_constant_lut_count = 0
-    for name, cell in sorted(cells.items()):
+    for name, cell in cells.items():
         if cell.get("type") != "MUXF7":
             continue
         connections = cell.get("connections")
@@ -427,14 +462,17 @@ def normalize_xilinx_mapped_json(
         if changed:
             replacement[name] = replacement_cell
 
-    final = {
-        name: cell
-        for name, cell in cells.items()
-        if name not in removed and cell.get("type") not in {"CARRY4", "INV"}
-    }
-    final.update(replacement)
-    final.update(helpers)
-    module["cells"] = final
+    # Mutate the owned input dictionary instead of building a second
+    # multi-million-entry table.  Replacement/helper traversal is
+    # deterministic, and Python preserves insertion order.
+    for name in removed:
+        cells.pop(name, None)
+    for name in carry_names:
+        cells.pop(name, None)
+    for name in inv_names:
+        cells.pop(name, None)
+    cells.update(replacement)
+    cells.update(helpers)
     # Yosys has already emitted cells deterministically, and every helper is
     # appended in a deterministic traversal.  Re-sorting a multi-million-cell
     # dictionary would create another giant key array without adding semantic
@@ -456,6 +494,7 @@ def normalize_xilinx_mapped_json(
         "carry8_paired_cells": paired,
         "carry8_single_cells": single,
         "inv_lowered_cells": inv_count,
+        "negedge_ff_normalized_cells": negedge_ff_count,
         "mux_constant_lut_cells": mux_constant_lut_count,
         "carry_route_through_lut6_2_cells": 8 * (paired + single),
         "helper_lut_cells": len(helpers),
@@ -503,7 +542,7 @@ def audit_xilinx_mapped_json(
     inventory: Counter[str] = Counter()
     hard_blocks: Counter[str] = Counter()
     totals = []
-    for instance, raw_cell in sorted(cells.items()):
+    for instance, raw_cell in cells.items():
         if not isinstance(raw_cell, dict):
             raise ValidationError(f"mapped cell {instance!r} is invalid")
         cell_type = raw_cell.get("type")

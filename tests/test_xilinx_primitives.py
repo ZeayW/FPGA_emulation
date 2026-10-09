@@ -88,6 +88,59 @@ class XilinxPrimitiveContractTest(unittest.TestCase):
             ):
                 audit_xilinx_mapped_json(path, top="top")
 
+    def test_yosys_negedge_ff_aliases_preserve_clock_polarity(self) -> None:
+        aliases = {
+            "fdce": ("FDCE_1", "FDCE"),
+            "fdpe": ("FDPE_1", "FDPE"),
+            "fdre": ("FDRE_1", "FDRE"),
+            "fdse": ("FDSE_1", "FDSE"),
+        }
+        cells = {}
+        for index, (name, (source_type, _)) in enumerate(aliases.items()):
+            cells[name] = {
+                "type": source_type,
+                "parameters": {"INIT": "0"},
+                "attributes": {},
+                "port_directions": {
+                    "C": "input", "CE": "input", "D": "input",
+                    "R" if "R" in source_type else (
+                        "CLR" if "C" in source_type else (
+                            "PRE" if "P" in source_type else "S"
+                        )
+                    ): "input",
+                    "Q": "output",
+                },
+                "connections": {
+                    "C": [2], "CE": ["1"], "D": [10 + index],
+                    "R" if "R" in source_type else (
+                        "CLR" if "C" in source_type else (
+                            "PRE" if "P" in source_type else "S"
+                        )
+                    ): ["0"],
+                    "Q": [20 + index],
+                },
+            }
+        value = {
+            "modules": {
+                "top": {"attributes": {"top": "1"}, "cells": cells}
+            }
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "raw.json"
+            output = Path(temporary) / "normalized.json"
+            source.write_text(json.dumps(value), encoding="utf-8")
+            report = normalize_xilinx_mapped_json(source, output, top="top")
+            normalized = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(report["negedge_ff_normalized_cells"], 4)
+        for name, (_, expected_type) in aliases.items():
+            cell = normalized["modules"]["top"]["cells"][name]
+            self.assertEqual(cell["type"], expected_type)
+            self.assertEqual(cell["parameters"]["IS_C_INVERTED"], "1")
+            self.assertEqual(
+                cell["attributes"]["emuflow_normalized"],
+                "yosys-negedge-ff-alias-v1",
+            )
+
     def test_yosys_carry4_pairs_and_inv_are_normalized(self) -> None:
         def carry(ci, cyinit, base):
             return {

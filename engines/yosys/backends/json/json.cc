@@ -43,7 +43,12 @@ struct JsonWriter
 
 	SigMap sigmap;
 	int sigidcounter;
-	dict<SigBit, int> sigids;
+	// A hash-table entry per signal bit is prohibitively expensive for large
+	// mapped designs (NVDLA has tens of millions of cell-port bits).  Keep one
+	// compact integer vector per canonical wire instead.  SigMap still provides
+	// the required alias canonicalization, while the common one-bit-wire case
+	// no longer allocates a separate hash node for every bit.
+	dict<Wire*, std::vector<int>> sigids;
 	pool<Aig> aig_models;
 
 	JsonWriter(std::ostream &f, bool use_selection, bool aig_mode, bool compat_int_mode, bool scopeinfo_mode,
@@ -97,10 +102,14 @@ struct JsonWriter
 				else f << "\"x\"";
 				continue;
 			}
-			auto it = sigids.find(bit);
-			if (it == sigids.end())
-				it = sigids.emplace(bit, sigidcounter++).first;
-			f << it->second;
+			auto &wire_ids = sigids[bit.wire];
+			if (wire_ids.empty())
+				wire_ids.assign(bit.wire->width, -1);
+			log_assert(bit.offset >= 0 && bit.offset < GetSize(wire_ids));
+			int &id = wire_ids.at(bit.offset);
+			if (id < 0)
+				id = sigidcounter++;
+			f << id;
 		}
 		f << " ]";
 	}

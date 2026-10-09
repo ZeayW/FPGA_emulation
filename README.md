@@ -757,6 +757,16 @@ Every qualifying checked contract binds a period for each declared clock;
 PicoRV32 uses an explicit 10 ns `clk` period, so its PPro and complete-flow
 identities cannot depend on an implicit provider default.
 
+The calibrated Xilinx frontend also preserves falling-edge registers. Yosys
+internal `FDCE_1`/`FDPE_1`/`FDRE_1`/`FDSE_1` aliases are normalized to the
+corresponding UltraScale+ primitive with `IS_C_INVERTED=1`; pre-placement and
+routed OpenSTA staging then bind those instances to falling-edge Liberty
+cells, including falling-edge setup and clock-to-Q arcs. They are never
+silently treated as rising-edge registers. Large mapped JSON emission uses a
+compact per-wire signal-ID table, and Python normalization mutates its owned
+object graph in place, so the NVDLA gate does not require per-bit hash nodes or
+a second multi-million-cell dictionary.
+
 The separate VTR research backend's hard-block importer accepts Yosys-optimized memory atom sets whose
 surviving bit indices do not start at zero or contain gaps. It orders and
 compacts only the live one-bit atoms into a word macro, records the original
