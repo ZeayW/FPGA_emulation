@@ -842,6 +842,16 @@ Local interface, coverage, and tamper tests pass. The physical model is still a
 candidate rather than final evidence until that exact source completes remote
 synthesis and the full NVDLA Phase 1--7 promotion gate.
 
+The first four-FPGA, 20%-utilization NVDLA attempt exposed a frontend mapping
+disagreement rather than a calibration failure: the ordinary PPro observation
+reported about 2.18 million LUTs, while the initial open UltraScale+ Yosys
+strategy reported about 4.13 million LUTs. The run therefore failed closed at
+Phase 1, as required. Mapper qualification is now an explicit bounded step:
+the checked NVDLA contract is synthesized with hierarchical/flattened classic
+ABC and ABC9 strategies, only compact primitive statistics are retained, and
+the calibrated capacity is not edited to manufacture feasibility. Any
+selected strategy must pass a small physical regression before NVDLA is rerun.
+
 Gate: the promotion criteria above, including a complete Phase 1--7 run and
 global WNS/TNS.  A Phase 3/4/5 or PPro-only comparison is not completion.
 

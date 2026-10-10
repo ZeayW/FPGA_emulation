@@ -962,6 +962,16 @@ or inter-FPGA timing is wrong. Hardware-unit and capacity claims remain gated
 by the controlled forced-resource probes rather than by accidental agreement
 between two unrelated synthesis heuristics.
 
+Large holdouts also use a bounded mapper-qualification path before changing
+the production frontend. `scripts/benchmarks/qualify_xilinx_mapping.py`
+consumes the checked `benchmark-run` contract and compares only four explicit
+Yosys strategies: hierarchical/flattened mapping crossed with classic
+ABC/ABC9. It writes compact primitive counts through Yosys `stat -json`; it
+does not write or retain a multi-GiB mapped netlist. A strategy may become the
+production default only after a small physical regression and the complete
+large Phase 1--7 gate pass. Resource pressure is never hidden by changing a
+calibrated BoardDB or its utilization limit.
+
 Earlier sealed AES and PicoRV32 Phase 1--7 results used the VTR physical
 surrogate. Their historical WNS/TNS values remain diagnostic records, but they
 do not satisfy the new RapidWright-bound platform contract. All five holdout

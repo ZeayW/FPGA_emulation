@@ -9,6 +9,8 @@ from emuflow.cli import _build_parser, main
 from emuflow.errors import EmuFlowError
 from emuflow.io import read_json
 from emuflow.synthesis import (
+    DEFAULT_XILINX_MAPPING_STRATEGY,
+    build_xilinx_mapping_statistics_script,
     build_generic_yosys_script,
     build_yosys_script,
     run_generic_yosys,
@@ -178,6 +180,40 @@ class SynthesisTest(unittest.TestCase):
         )
         for option in ("-nocarry", "-nodsp", "-nobram"):
             self.assertNotIn(option, script)
+
+    def test_route_a_mapping_strategies_are_explicit(self) -> None:
+        cases = {
+            DEFAULT_XILINX_MAPPING_STRATEGY: (),
+            "flatten-classic-v1": ("-flatten",),
+            "hierarchical-abc9-v1": ("-abc9",),
+            "flatten-abc9-v1": ("-flatten", "-abc9"),
+        }
+        for strategy, expected in cases.items():
+            with self.subTest(strategy=strategy):
+                script = build_yosys_script(
+                    [Path("rtl/design.v")],
+                    top="design",
+                    output=Path("build/design.json"),
+                    mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+                    mapping_strategy=strategy,
+                )
+                synth = script.split(";", 3)[2]
+                for option in ("-flatten", "-abc9"):
+                    self.assertEqual(option in synth, option in expected)
+
+    def test_mapping_statistics_script_writes_only_compact_stats(self) -> None:
+        script = build_xilinx_mapping_statistics_script(
+            [Path("rtl/design.v")],
+            top="design",
+            output=Path("build/statistics.json"),
+            mapping_strategy="flatten-abc9-v1",
+        )
+        self.assertIn("-flatten -abc9", script)
+        self.assertIn(
+            'tee -q -o "build/statistics.json" stat -json -top design',
+            script,
+        )
+        self.assertNotIn("write_json", script)
 
     def test_route_a_streaming_script_uses_stdout(self) -> None:
         script = build_yosys_script(

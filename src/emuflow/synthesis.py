@@ -5,6 +5,7 @@ import gzip
 import os
 import re
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
@@ -20,12 +21,33 @@ from .xilinx_primitives import (
 
 VALID_XILINX_FAMILIES = {"xcup", "xcu", "xc7"}
 VALID_SYNTHESIS_POLICIES = {"native", "logic-only"}
+DEFAULT_XILINX_MAPPING_STRATEGY = "hierarchical-classic-v1"
+VALID_XILINX_MAPPING_STRATEGIES = {
+    DEFAULT_XILINX_MAPPING_STRATEGY,
+    "flatten-classic-v1",
+    "hierarchical-abc9-v1",
+    "flatten-abc9-v1",
+}
 YOSYS_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 YOSYS_DEFINE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:=[^\s;]+)?$")
 YOSYS_INCLUDE_DIR = re.compile(r"^[A-Za-z0-9_./:+-]+$")
 LOGIC_ONLY_MAP = (
     Path(__file__).resolve().parents[2] / "scripts" / "yosys" / "logic_only_map.v"
 )
+
+
+def _xilinx_mapping_strategy_options(strategy: str) -> list[str]:
+    if strategy not in VALID_XILINX_MAPPING_STRATEGIES:
+        raise EmuFlowError(
+            f"unsupported Xilinx mapping strategy {strategy!r}; "
+            f"expected one of {sorted(VALID_XILINX_MAPPING_STRATEGIES)}"
+        )
+    options: list[str] = []
+    if strategy.startswith("flatten-"):
+        options.append("-flatten")
+    if "-abc9-" in strategy:
+        options.append("-abc9")
+    return options
 
 
 def _yosys_quote(value: str) -> str:
@@ -80,6 +102,7 @@ def build_yosys_script(
     include_dirs: Iterable[Path] = (),
     defines: Iterable[str] = (),
     mapping_profile: Optional[str] = None,
+    mapping_strategy: Optional[str] = None,
     stream_json: bool = False,
 ) -> str:
     source_list = list(sources)
@@ -104,6 +127,13 @@ def build_yosys_script(
             raise EmuFlowError(
                 f"{mapping_profile} requires family='xcup' and policy='native'"
             )
+    if mapping_strategy is not None:
+        if mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+            raise EmuFlowError(
+                "an explicit Xilinx mapping strategy requires the "
+                f"{XILINX_ULTRASCALEPLUS_OPEN_PROFILE!r} profile"
+            )
+        _xilinx_mapping_strategy_options(mapping_strategy)
     top_identifier = _yosys_identifier(top)
 
     include_list = list(include_dirs)
@@ -141,6 +171,12 @@ def build_yosys_script(
         # below remains the authoritative structural validation.
         synth_options.extend(
             ["-uram", "-nolutram", "-nosrl", "-run begin:check"]
+        )
+        selected_strategy = (
+            mapping_strategy or DEFAULT_XILINX_MAPPING_STRATEGY
+        )
+        synth_options.extend(
+            _xilinx_mapping_strategy_options(selected_strategy)
         )
     post_mapping = []
     if policy == "logic-only":
@@ -209,6 +245,59 @@ def build_yosys_script(
             "write_verilog -norename "
             f"{_yosys_quote(str(verilog_output))}"
         )
+    return "; ".join(commands)
+
+
+def build_xilinx_mapping_statistics_script(
+    sources: Iterable[Path],
+    top: str,
+    output: Path,
+    *,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
+    mapping_strategy: str = DEFAULT_XILINX_MAPPING_STRATEGY,
+) -> str:
+    """Build a compact Route A mapping qualification script.
+
+    This runs the same technology mapper as production but writes only Yosys'
+    primitive-count statistics.  It deliberately avoids materializing the
+    multi-GiB mapped JSON used by the full flow, so alternative mapping
+    strategies can be compared without turning diagnostic data into a hot-path
+    or storage burden.
+    """
+
+    source_list = list(sources)
+    if not source_list:
+        raise EmuFlowError("synthesis requires at least one RTL source")
+    strategy_options = _xilinx_mapping_strategy_options(mapping_strategy)
+    top_identifier = _yosys_identifier(top)
+    read_options = [
+        *(_yosys_include_dir(path) for path in include_dirs),
+        *(f"-D{_yosys_define(value)}" for value in defines),
+    ]
+    read_sources = " ".join(_yosys_quote(str(path)) for path in source_list)
+    synth_options = [
+        "synth_xilinx -family xcup",
+        f"-top {top_identifier}",
+        "-noiopad",
+        "-noclkbuf",
+        "-uram",
+        "-nolutram",
+        "-nosrl",
+        "-run begin:check",
+    ]
+    synth_options.extend(strategy_options)
+    commands = [
+        " ".join(["read_verilog", "-sv", *read_options, read_sources]),
+        f"hierarchy -check -top {top_identifier}",
+        " ".join(synth_options),
+        "blackbox =A:whitebox",
+        "flatten",
+        "check",
+        "delete t:$scopeinfo",
+        "tee -q -o "
+        f"{_yosys_quote(str(output))} stat -json -top {top_identifier}",
+    ]
     return "; ".join(commands)
 
 
@@ -380,6 +469,7 @@ def run_yosys(
     include_dirs: Iterable[Path] = (),
     defines: Iterable[str] = (),
     mapping_profile: Optional[str] = None,
+    mapping_strategy: Optional[str] = None,
 ) -> None:
     source_list = list(sources)
     for source in source_list:
@@ -408,6 +498,7 @@ def run_yosys(
         include_dirs=include_list,
         defines=define_list,
         mapping_profile=mapping_profile,
+        mapping_strategy=mapping_strategy,
         stream_json=output.suffix == ".gz",
     )
     if output.suffix == ".gz":
@@ -444,6 +535,7 @@ def run_xilinx_ultrascaleplus_yosys(
     log_path: Optional[Path] = None,
     include_dirs: Iterable[Path] = (),
     defines: Iterable[str] = (),
+    mapping_strategy: str = DEFAULT_XILINX_MAPPING_STRATEGY,
 ) -> Dict[str, Any]:
     """Run the explicit Route A mapping profile and audit every primitive."""
 
@@ -463,6 +555,7 @@ def run_xilinx_ultrascaleplus_yosys(
             include_dirs=include_dirs,
             defines=defines,
             mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            mapping_strategy=mapping_strategy,
         )
         normalization = normalize_xilinx_mapped_json(
             raw_output, output, top=top
@@ -475,6 +568,76 @@ def run_xilinx_ultrascaleplus_yosys(
         "family": "xcup",
         "policy": "native",
         "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+        "mapping_strategy": mapping_strategy,
         "normalization": normalization,
         "primitive_audit": normalization["primitive_audit"],
+    }
+
+
+def run_xilinx_mapping_statistics(
+    sources: Iterable[Path],
+    top: str,
+    output: Path,
+    *,
+    executable: Optional[str] = None,
+    log_path: Optional[Path] = None,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
+    mapping_strategy: str = DEFAULT_XILINX_MAPPING_STRATEGY,
+) -> Dict[str, Any]:
+    """Run one bounded mapping qualification and return compact statistics."""
+
+    source_list = list(sources)
+    for source in source_list:
+        if not source.is_file():
+            raise EmuFlowError(f"RTL source does not exist: {source}")
+    include_list = list(include_dirs)
+    for include_dir in include_list:
+        if not include_dir.is_dir():
+            raise EmuFlowError(
+                f"Verilog include directory does not exist: {include_dir}"
+            )
+    define_list = list(defines)
+    command = resolve_native_executable("yosys", executable)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.unlink(missing_ok=True)
+    script = build_xilinx_mapping_statistics_script(
+        source_list,
+        top,
+        output,
+        include_dirs=include_list,
+        defines=define_list,
+        mapping_strategy=mapping_strategy,
+    )
+    started = time.monotonic()
+    completed = run_with_bounded_output([command, "-q", "-p", script])
+    elapsed_seconds = time.monotonic() - started
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(completed.stdout, encoding="utf-8")
+    if completed.returncode != 0:
+        output.unlink(missing_ok=True)
+        tail = "\n".join(completed.stdout.splitlines()[-20:])
+        raise EmuFlowError(
+            "Xilinx mapping qualification failed with exit code "
+            f"{completed.returncode}\n{tail}"
+        )
+    if not output.is_file():
+        raise EmuFlowError(
+            "Yosys mapping qualification did not create statistics: "
+            f"{output}"
+        )
+    statistics = json.loads(output.read_text(encoding="utf-8"))
+    if not isinstance(statistics, dict) or not isinstance(
+        statistics.get("modules"), dict
+    ):
+        raise EmuFlowError("Yosys mapping statistics are malformed")
+    return {
+        "status": "pass",
+        "schema": "emuflow.xilinx-mapping-qualification/v1",
+        "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+        "mapping_strategy": mapping_strategy,
+        "top": top,
+        "elapsed_seconds": elapsed_seconds,
+        "statistics": statistics,
     }
