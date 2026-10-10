@@ -24,6 +24,7 @@ from emuflow.xilinx_openparf_atomic import (
     OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA,
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
+    legalize_xilinx_openparf_ff_control_sets,
     load_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_sites,
     run_xilinx_openparf_atomic_qualification,
@@ -1249,6 +1250,48 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 validate_xilinx_openparf_atomic_placement(
                     controls, output2 / "name_map.json", mapped, architecture
                 )
+
+    def test_fdce_clear_conflict_is_repaired_before_physical_bridge(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            mapped_value = json.loads(mapped.read_text())
+            cells = mapped_value["modules"]["top"]["cells"]
+            cells["ff"] = _cell(
+                "FDCE", {"C": [10], "CE": ["1"], "CLR": [20],
+                         "D": [1], "Q": [2]}
+            )
+            cells["ff2"] = _cell(
+                "FDCE", {"C": [10], "CE": ["1"], "CLR": [21],
+                         "D": [1], "Q": [3]}
+            )
+            mapped.write_text(json.dumps(mapped_value), encoding="utf-8")
+            packed_value = json.loads(packed.read_text())
+            packed_value["clusters"][0]["assignments"] = [
+                {"instance": "lut", "cell_type": "LUT6", "bel": "A6LUT"},
+                {"instance": "ff", "cell_type": "FDCE", "bel": "AFF"},
+                {"instance": "ff2", "cell_type": "FDCE", "bel": "BFF"},
+            ]
+            packed.write_text(json.dumps(packed_value), encoding="utf-8")
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "controls.pl"
+            placement.write_text(
+                "a0 0 0 0\na1 0 0 2\na2 0 0 5\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValidationError, "control-set"):
+                validate_xilinx_openparf_atomic_placement(
+                    placement, output / "name_map.json", mapped, architecture
+                )
+            report = legalize_xilinx_openparf_ff_control_sets(
+                placement, output / "name_map.json", mapped,
+                output / "ff-control-set-legalization.json",
+            )
+            self.assertEqual(report["illegal_halves"], 1)
+            self.assertEqual(report["moved_ff_atoms"], 1)
+            validate_xilinx_openparf_atomic_placement(
+                placement, output / "name_map.json", mapped, architecture
+            )
 
     def test_relative_hard_and_coordinate_ambiguity_fail_before_export(self):
         with tempfile.TemporaryDirectory() as temporary:

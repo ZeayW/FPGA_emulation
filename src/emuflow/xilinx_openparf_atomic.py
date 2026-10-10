@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import tempfile
 import threading
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -53,7 +54,7 @@ OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA = (
 )
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = (
-    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v4"
+    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v5"
 )
 XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-site-database/v1"
@@ -92,7 +93,10 @@ _ALLOWED_ASSIGNMENT_KEYS = {
 }
 _FF_CLOCK = "C"
 _FF_ENABLE = "CE"
-_FF_SR = {"FDCE": "R", "FDRE": "R", "FDPE": "S", "FDSE": "S"}
+_FF_SR = {"FDCE": "CLR", "FDRE": "R", "FDPE": "PRE", "FDSE": "S"}
+OPENPARF_FF_CONTROL_LEGALIZATION_SCHEMA = (
+    "emuflow.openparf-ff-control-legalization/v1"
+)
 _TARGET_DENSITY = 0.75
 _CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
 _GLOBAL_PLACEMENT_STOP_OVERFLOW = 0.10
@@ -940,11 +944,249 @@ def _expanded_pins(cell: Mapping[str, Any]) -> List[Tuple[str, str, Any]]:
 
 
 def _control_tuple(cell_type: str, cell: Mapping[str, Any]) -> Tuple[Any, Any, Any]:
+    parameters = cell.get("parameters")
+    control_mode = (
+        cell_type,
+        _FF_SR[cell_type],
+        _pin_bit(cell, _FF_SR[cell_type]),
+        tuple(
+            (str(key), json.dumps(value, sort_keys=True, separators=(",", ":")))
+            for key, value in sorted(parameters.items()) if str(key).startswith("IS_")
+        ) if isinstance(parameters, Mapping) else (),
+    )
     return (
         _pin_bit(cell, _FF_CLOCK),
-        _pin_bit(cell, _FF_SR[cell_type]),
+        control_mode,
         _pin_bit(cell, _FF_ENABLE),
     )
+
+
+def legalize_xilinx_openparf_ff_control_sets(
+    placement_path: Path,
+    name_map_path: Path,
+    mapped_path: Path,
+    output_path: Path,
+    *,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Repair only native FF slots that violate UltraScale+ control sets.
+
+    OpenPARF's generic direct legalizer models FF capacity but not the shared
+    CK/SR and lane-local CE wires of an UltraScale+ half-slice.  Preserve every
+    already-compatible FF and all non-FF atoms, then move only conflicting FFs
+    to the nearest compatible half-slice.  The independent placement importer
+    still rechecks the complete result after this bounded legalization pass.
+    """
+
+    name_map = read_json(name_map_path)
+    mapped = read_json(mapped_path) if mapped_value is None else mapped_value
+    if name_map.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA:
+        raise ValidationError("OpenPARF atomic name map is invalid")
+    _top, module = _select_module(mapped, name_map.get("top"))
+    cells = module.get("cells")
+    if not isinstance(cells, Mapping):
+        raise ValidationError("mapped JSON cells are invalid")
+    atoms = {
+        item["openparf"]: item for item in name_map.get("atoms", [])
+        if isinstance(item, Mapping) and isinstance(item.get("openparf"), str)
+    }
+    if len(atoms) != len(name_map.get("atoms", [])) or not atoms:
+        raise ValidationError("OpenPARF atomic name map has duplicate atoms")
+
+    raw: Dict[str, Tuple[int, int, int]] = {}
+    with placement_path.open("r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            fields = line.strip().split()
+            if not fields or fields[0].startswith("#"):
+                continue
+            if len(fields) not in {4, 5} or fields[0] not in atoms:
+                raise ImportError(
+                    f"{placement_path}:{line_number}: invalid atomic placement row"
+                )
+            try:
+                numeric = [float(value) for value in fields[1:4]]
+            except ValueError as error:
+                raise ImportError("OpenPARF atomic placement is non-numeric") from error
+            if any(not math.isfinite(value) or not value.is_integer() for value in numeric):
+                raise ValidationError("OpenPARF atomic placement is not discrete")
+            if fields[0] in raw:
+                raise ValidationError("OpenPARF atomic placement duplicates an atom")
+            raw[fields[0]] = tuple(int(value) for value in numeric)
+    if set(raw) != set(atoms):
+        raise ValidationError("OpenPARF atomic placement does not cover every atom")
+
+    ff_sites = {
+        (site["dense_x"], site["dense_y"]): site
+        for site in load_xilinx_openparf_atomic_sites(
+            name_map_path, resources=["FF"]
+        )
+        if site.get("resources", {}).get("FF", 0) >= 16
+        and len(site.get("physical_sites", {}).get("FF", [])) == 1
+    }
+    if not ff_sites:
+        raise ValidationError("OpenPARF site database has no complete FF sites")
+    exclusive_sites = {
+        (raw[name][0], raw[name][1])
+        for name, atom in atoms.items()
+        if atom.get("resource") == "CARRY8"
+    }
+
+    ff_by_half: Dict[Tuple[int, int, int], List[str]] = defaultdict(list)
+    for name, atom in atoms.items():
+        if atom.get("resource") != "FF":
+            continue
+        x, y, z = raw[name]
+        if (x, y) not in ff_sites or not 0 <= z < 16:
+            raise ValidationError("OpenPARF FF placement uses an invalid slot")
+        ff_by_half[(x, y, 0 if z < 8 else 1)].append(name)
+
+    states: Dict[Tuple[int, int, int], Dict[str, Any]] = {}
+    moved: List[str] = []
+    illegal_halves = 0
+    for half_key, names in sorted(ff_by_half.items()):
+        scored: Counter = Counter()
+        by_signature: Dict[Tuple[Any, Any], Dict[int, Counter]] = defaultdict(
+            lambda: {0: Counter(), 1: Counter()}
+        )
+        for name in names:
+            atom = atoms[name]
+            cell = cells[atom["instance"]]
+            clock, sr, enable = _control_tuple(atom["cell_type"], cell)
+            lane = raw[name][2] % 2
+            by_signature[(clock, sr)][lane][enable] += 1
+        for signature, lanes in by_signature.items():
+            scored[signature] = sum(
+                max(counts.values(), default=0) for counts in lanes.values()
+            )
+        signature = min(scored, key=lambda item: (-scored[item], repr(item)))
+        lane_enable = {
+            lane: min(counts, key=lambda item: (-counts[item], repr(item)))
+            for lane, counts in by_signature[signature].items() if counts
+        }
+        state = {
+            "signature": signature,
+            "lane_enable": lane_enable,
+            "occupied": set(),
+        }
+        states[half_key] = state
+        half_moved = False
+        for name in sorted(names):
+            atom = atoms[name]
+            clock, sr, enable = _control_tuple(
+                atom["cell_type"], cells[atom["instance"]]
+            )
+            z = raw[name][2]
+            if (clock, sr) == signature and lane_enable.get(z % 2) == enable:
+                state["occupied"].add(z)
+            else:
+                moved.append(name)
+                half_moved = True
+        if half_moved:
+            illegal_halves += 1
+
+    def candidate_at(
+        coordinate: Tuple[int, int], half: int, signature: Tuple[Any, Any],
+        enable: Any, preferred_lane: int,
+    ) -> Optional[int]:
+        if coordinate in exclusive_sites:
+            return None
+        key = (coordinate[0], coordinate[1], half)
+        state = states.get(key)
+        if state is None:
+            state = {"signature": None, "lane_enable": {}, "occupied": set()}
+            states[key] = state
+        if state["signature"] not in {None, signature}:
+            return None
+        for lane in (preferred_lane, 1 - preferred_lane):
+            lane_control = state["lane_enable"].get(lane)
+            if lane_control not in {None, enable}:
+                continue
+            slots = [half * 8 + lane + 2 * offset for offset in range(4)]
+            free = next((slot for slot in slots if slot not in state["occupied"]), None)
+            if free is None:
+                continue
+            state["signature"] = signature
+            state["lane_enable"][lane] = enable
+            state["occupied"].add(free)
+            return free
+        return None
+
+    max_x = max(x for x, _y in ff_sites)
+    min_x = min(x for x, _y in ff_sites)
+    max_y = max(y for _x, y in ff_sites)
+    min_y = min(y for _x, y in ff_sites)
+    total_distance = 0
+    maximum_distance = 0
+    for name in sorted(moved, key=lambda item: (*raw[item][:2], item)):
+        atom = atoms[name]
+        clock, sr, enable = _control_tuple(
+            atom["cell_type"], cells[atom["instance"]]
+        )
+        origin_x, origin_y, origin_z = raw[name]
+        assigned = None
+        maximum_radius = (
+            max(abs(origin_x - min_x), abs(origin_x - max_x))
+            + max(abs(origin_y - min_y), abs(origin_y - max_y))
+        )
+        for radius in range(maximum_radius + 1):
+            for delta_y in range(-radius, radius + 1):
+                delta_x = radius - abs(delta_y)
+                xs = (
+                    (origin_x,) if delta_x == 0
+                    else (origin_x - delta_x, origin_x + delta_x)
+                )
+                for x in xs:
+                    coordinate = (x, origin_y + delta_y)
+                    if coordinate not in ff_sites:
+                        continue
+                    original_half = 0 if origin_z < 8 else 1
+                    for half in (original_half, 1 - original_half):
+                        z = candidate_at(
+                            coordinate, half, (clock, sr), enable,
+                            origin_z % 2,
+                        )
+                        if z is not None:
+                            assigned = (coordinate[0], coordinate[1], z)
+                            break
+                    if assigned is not None:
+                        break
+                if assigned is not None:
+                    break
+            if assigned is not None:
+                total_distance += radius
+                maximum_distance = max(maximum_distance, radius)
+                break
+        if assigned is None:
+            raise ValidationError(
+                "UltraScale+ FF control-set legalization exhausted all slice sites"
+            )
+        raw[name] = assigned
+
+    before_sha256 = _sha256(placement_path)
+    if moved:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=placement_path.parent,
+            prefix=placement_path.name + ".", suffix=".tmp", delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            for name in sorted(raw):
+                x, y, z = raw[name]
+                stream.write(f"{name} {x} {y} {z}\n")
+        os.replace(temporary, placement_path)
+    report = {
+        "schema": OPENPARF_FF_CONTROL_LEGALIZATION_SCHEMA,
+        "status": "pass",
+        "provider": "nearest-compatible-ultrascaleplus-half-slice-v1",
+        "placement_before_sha256": before_sha256,
+        "placement_after_sha256": _sha256(placement_path),
+        "ff_atoms": sum(atom.get("resource") == "FF" for atom in atoms.values()),
+        "illegal_halves": illegal_halves,
+        "moved_ff_atoms": len(moved),
+        "total_manhattan_distance": total_distance,
+        "maximum_manhattan_distance": maximum_distance,
+    }
+    write_json(output_path, report, compact=True)
+    return report
 
 
 def _placement_sites(
@@ -3812,6 +4054,11 @@ def run_xilinx_openparf_atomic_qualification(
         install_root=openparf_install,
         python_executable=openparf_python,
     )
+    ff_control_legalization = legalize_xilinx_openparf_ff_control_sets(
+        placement, output_dir / "name_map.json", mapped_path,
+        output_dir / "ff-control-set-legalization.json",
+        mapped_value=mapped_value,
+    )
     certificate = validate_xilinx_openparf_atomic_placement(
         placement, output_dir / "name_map.json", mapped_path,
         architecture_path, output_dir / "placement-certificate.json",
@@ -3823,6 +4070,8 @@ def run_xilinx_openparf_atomic_qualification(
     serialized_certificate = read_json(
         output_dir / "placement-certificate.json"
     )
+    certificate["ff_control_legalization"] = ff_control_legalization
+    serialized_certificate["ff_control_legalization"] = ff_control_legalization
     convergence_path = native_metrics_path(placement)
     if convergence_path.is_file():
         convergence = {
@@ -3895,6 +4144,10 @@ def run_xilinx_openparf_hardblock_qualification(
         install_root=openparf_install,
         python_executable=openparf_python,
     )
+    ff_control_legalization = legalize_xilinx_openparf_ff_control_sets(
+        placement, output_dir / "name_map.json", mapped_path,
+        output_dir / "ff-control-set-legalization.json",
+    )
     certificate = validate_xilinx_openparf_atomic_placement(
         placement, output_dir / "name_map.json", mapped_path,
         architecture_path, output_dir / "placement-certificate.json",
@@ -3904,6 +4157,8 @@ def run_xilinx_openparf_hardblock_qualification(
     serialized_certificate = read_json(
         output_dir / "placement-certificate.json"
     )
+    certificate["ff_control_legalization"] = ff_control_legalization
+    serialized_certificate["ff_control_legalization"] = ff_control_legalization
     convergence_path = native_metrics_path(placement)
     if convergence_path.is_file():
         convergence = {

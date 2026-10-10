@@ -106,7 +106,9 @@ def _bits(cell: Mapping[str, Any], port: str) -> Tuple[Any, ...]:
 
 def _ff_control_set(cell: Mapping[str, Any]) -> str:
     cell_type = cell.get("type")
-    control_port = "R" if cell_type in {"FDCE", "FDRE"} else "S"
+    control_port = {
+        "FDCE": "CLR", "FDRE": "R", "FDPE": "PRE", "FDSE": "S",
+    }[cell_type]
     parameters = cell.get("parameters")
     relevant_parameters = {
         key: value
@@ -135,7 +137,7 @@ def _slice_ff_control_sets(
     independent PackedSiteNetlist checker cannot drift apart.
     """
 
-    half_cksr: Dict[int, Tuple[Tuple[Any, ...], Tuple[Any, ...]]] = {}
+    half_cksr: Dict[int, Tuple[Any, ...]] = {}
     lane_ce: Dict[Tuple[int, int], Tuple[Any, ...]] = {}
     control_sets = set()
     for assignment in assignments:
@@ -152,8 +154,20 @@ def _slice_ff_control_sets(
         lane = bel_index % 2
         cell = cells[name]
         cell_type = cell["type"]
-        control_port = "R" if cell_type in {"FDCE", "FDRE"} else "S"
-        clock_sr = (_bits(cell, "C"), _bits(cell, control_port))
+        control_port = {
+            "FDCE": "CLR", "FDRE": "R", "FDPE": "PRE", "FDSE": "S",
+        }[cell_type]
+        parameters = cell.get("parameters")
+        relevant_parameters = {
+            key: value
+            for key, value in sorted(parameters.items())
+            if key.startswith("IS_")
+        } if isinstance(parameters, dict) else {}
+        clock_sr = (
+            _bits(cell, "C"), cell_type, control_port,
+            _bits(cell, control_port),
+            json.dumps(relevant_parameters, sort_keys=True, separators=(",", ":")),
+        )
         enable = _bits(cell, "CE")
         previous_cksr = half_cksr.setdefault(half, clock_sr)
         previous_ce = lane_ce.setdefault((half, lane), enable)

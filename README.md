@@ -5833,12 +5833,19 @@ routing demand is too large for the two-device configuration.  It is a named
 complete platform configuration, not an arbitrary subset of a larger board.
 Both interconnects remain declared academic models; changing the FPGA count is
 not reported as an algorithmic QoR improvement.
-The production candidate uses OpenPARF for the complete placement-owned
-sequence: connectivity-derived macro ownership, typed analytical global
-placement, resource and macro legalization, and ISM detailed placement.
-EmuFlow then imports the exact site/BEL answer into an independently checked
-certificate; it does not run a second site search or repair pass before
-RWRoute.  Sparse DLA partitions are admitted to the smallest contiguous SLR
+The production candidate uses OpenPARF for connectivity-derived macro
+ownership, typed analytical global placement, resource and macro
+legalization, and ISM detailed placement. OpenPARF's generic FF capacity model
+does not encode UltraScale+ half-slice CK/SR sharing or lane-local CE sharing.
+After native detailed placement, EmuFlow therefore runs one narrow,
+deterministic FF-only legality pass: it preserves every compatible FF and all
+non-FF atoms, moves only conflicting FFs to the nearest compatible half-slice,
+and records the moved count and Manhattan distance in
+`ff-control-set-legalization.json`. The independent importer then rechecks all
+site/BEL occupancy and exact control-set legality before RWRoute. In
+particular, FDCE/FDPE use their real `CLR`/`PRE` ports; absent-port aliases are
+never treated as common controls. Sparse DLA partitions are admitted to the
+smallest contiguous SLR
 window that preserves 1.5x resource headroom, instead of being spread over all
 four XCVU19P SLRs.  This keeps high-fanout bounding boxes and the routing search
 domain proportional to the actual partition while retaining explicit
