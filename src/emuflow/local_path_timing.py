@@ -191,6 +191,85 @@ def _same_endpoint(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
     )
 
 
+def _resolve_local_path_fpga(
+    path: Mapping[str, Any],
+    start: Mapping[str, Any],
+    end: Mapping[str, Any],
+    original_nets: Mapping[str, Mapping[str, Any]],
+    instance_assignment: Mapping[str, Any],
+) -> str | None:
+    """Resolve a path owner without pretending top-level ports are instances.
+
+    OpenSTA legitimately reports primary inputs and outputs as path endpoints,
+    whose provider-neutral ``instance`` is ``None``.  The selected
+    ``path_nets`` still certify the exact path: their unique drivers, together
+    with any cell endpoints, identify the FPGA that owns the local logic.  Use
+    only those drivers rather than every fanout sink, because unrelated sinks
+    of the same net may live on other FPGAs.
+
+    Return ``None`` when the evidence contains no assigned instance or an
+    instance is absent from the assignment.  Multiple evidenced FPGAs mean the
+    path is cross-partition and must have appeared in Phase 4 instead.
+    """
+
+    path_id = path.get("id")
+    instances: set[str] = set()
+    for endpoint in (start, end):
+        instance = endpoint.get("instance")
+        if instance is None:
+            continue
+        if not isinstance(instance, str) or not instance:
+            raise ValidationError(
+                f"original path {path_id!r} has an invalid endpoint instance"
+            )
+        instances.add(instance)
+
+    path_nets = path.get("path_nets")
+    if not isinstance(path_nets, list) or not path_nets:
+        raise ValidationError(
+            f"original path {path_id!r} has invalid selected nets"
+        )
+    for net_id in path_nets:
+        net = original_nets.get(net_id)
+        if not isinstance(net, Mapping):
+            raise ValidationError(
+                f"original path {path_id!r} names an unknown selected net"
+            )
+        drivers = net.get("drivers")
+        if (
+            not isinstance(drivers, list)
+            or len(drivers) != 1
+            or not isinstance(drivers[0], Mapping)
+        ):
+            raise ValidationError(
+                f"original path {path_id!r} lacks one unique selected-net "
+                "driver"
+            )
+        instance = drivers[0].get("instance")
+        if instance is None:
+            continue
+        if not isinstance(instance, str) or not instance:
+            raise ValidationError(
+                f"original path {path_id!r} has an invalid selected-net driver"
+            )
+        instances.add(instance)
+
+    if not instances:
+        return None
+    assigned_fpgas = set()
+    for instance in instances:
+        assigned = instance_assignment.get(instance)
+        if not isinstance(assigned, str) or not assigned:
+            return None
+        assigned_fpgas.add(assigned)
+    if len(assigned_fpgas) != 1:
+        raise ValidationError(
+            f"original path {path_id!r} is cross-partition but absent "
+            "from the Phase 4 timing population"
+        )
+    return next(iter(assigned_fpgas))
+
+
 def _explicit_vpr_path_pins(
     path: Mapping[str, Any],
     original_nets: Mapping[str, Mapping[str, Any]],
@@ -408,21 +487,19 @@ def _write_local_path_query(
         except ValidationError as error:
             unresolved.append({"path": path["id"], "reason": str(error)})
             continue
-        start_instance = start["instance"]
-        end_instance = end["instance"]
-        start_fpga = instance_assignment.get(start_instance)
-        end_fpga = instance_assignment.get(end_instance)
-        if not isinstance(start_fpga, str) or not isinstance(end_fpga, str):
+        path_fpga = _resolve_local_path_fpga(
+            path,
+            start,
+            end,
+            original_nets,
+            instance_assignment,
+        )
+        if path_fpga is None:
             unresolved.append(
-                {"path": path["id"], "reason": "endpoint-partition-unresolved"}
+                {"path": path["id"], "reason": "path-partition-unresolved"}
             )
             continue
-        if start_fpga != end_fpga:
-            raise ValidationError(
-                f"original path {path['id']!r} is cross-partition but absent "
-                "from the Phase 4 timing population"
-            )
-        if start_fpga != fpga:
+        if path_fpga != fpga:
             continue
         record = {
             "id": path["id"],

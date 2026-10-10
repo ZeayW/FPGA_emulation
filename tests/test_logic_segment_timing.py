@@ -18,6 +18,7 @@ from emuflow.logic_segment_timing import (
 )
 from emuflow.local_path_timing import (
     _explicit_vpr_path_pins,
+    _resolve_local_path_fpga,
     import_vpr_local_path_timing,
     path_id_set_sha256,
     validate_local_path_identity,
@@ -27,6 +28,84 @@ from emuflow.routing import SYSTEM_ROUTES_SCHEMA, system_route_timing_paths
 
 
 class LogicSegmentTimingTest(unittest.TestCase):
+    def test_local_path_owner_uses_selected_drivers_for_top_level_ports(self):
+        nets = {
+            "input": {
+                "drivers": [
+                    {"instance": None, "port": "address", "bit": 0}
+                ],
+                "sinks": [
+                    {"instance": "logic", "port": "A", "bit": 0},
+                    {"instance": "unrelated", "port": "A", "bit": 0},
+                ],
+            },
+            "output": {
+                "drivers": [
+                    {"instance": "logic", "port": "Y", "bit": 0}
+                ],
+                "sinks": [
+                    {"instance": None, "port": "read_data", "bit": 0}
+                ],
+            },
+        }
+        self.assertEqual(
+            _resolve_local_path_fpga(
+                {"id": "port-to-port", "path_nets": ["input", "output"]},
+                {"instance": None, "port": "address", "bit": 0},
+                {"instance": None, "port": "read_data", "bit": 0},
+                nets,
+                {"logic": "fpga0", "unrelated": "fpga1"},
+            ),
+            "fpga0",
+        )
+
+    def test_local_path_owner_rejects_unreported_cross_partition_path(self):
+        nets = {
+            "n0": {
+                "drivers": [
+                    {"instance": "launch", "port": "Q", "bit": 0}
+                ],
+                "sinks": [],
+            },
+            "n1": {
+                "drivers": [
+                    {"instance": "logic", "port": "Y", "bit": 0}
+                ],
+                "sinks": [],
+            },
+        }
+        with self.assertRaisesRegex(
+            ValidationError,
+            "cross-partition but absent from the Phase 4 timing population",
+        ):
+            _resolve_local_path_fpga(
+                {"id": "missing-cross", "path_nets": ["n0", "n1"]},
+                {"instance": "launch", "port": "Q", "bit": 0},
+                {"instance": None, "port": "result", "bit": 0},
+                nets,
+                {"launch": "fpga0", "logic": "fpga1"},
+            )
+
+    def test_local_path_owner_keeps_pure_port_passthrough_unresolved(self):
+        self.assertIsNone(
+            _resolve_local_path_fpga(
+                {"id": "passthrough", "path_nets": ["n0"]},
+                {"instance": None, "port": "a", "bit": 0},
+                {"instance": None, "port": "y", "bit": 0},
+                {
+                    "n0": {
+                        "drivers": [
+                            {"instance": None, "port": "a", "bit": 0}
+                        ],
+                        "sinks": [
+                            {"instance": None, "port": "y", "bit": 0}
+                        ],
+                    }
+                },
+                {},
+            )
+        )
+
     def test_zero_route_flow_has_no_logic_segment_route_timing(self):
         empty_routes = {"schema": SYSTEM_ROUTES_SCHEMA, "routes": []}
         self.assertEqual(_route_timing_paths(empty_routes), [])

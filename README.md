@@ -6153,6 +6153,14 @@ cross-FPGA logic/transport segments together cover the canonical original
 path-ID set; only then may global OpenSTA report `whole-original-design`
 WNS/TNS. Missing, duplicate, or differently sealed members fail closed rather
 than falling back to a cross-FPGA-only timing claim.
+An original OpenSTA path may legitimately start or end at a top-level data
+port, whose provider-neutral endpoint has no cell instance.  For such paths,
+the local-path binder resolves ownership from the cell endpoints that do exist
+plus the unique drivers of the exact ordered `path_nets` certificate.  It does
+not inspect unrelated fanout sinks.  A pure top-level passthrough, a missing
+instance assignment, a non-unique driver, or evidence spanning multiple FPGAs
+still fails closed; a cross-FPGA path cannot be relabelled as local merely
+because one endpoint is a port.
 Boundary timing shares one invocation-local multi-source
 longest-path solution across TX endpoints; RX queries retain their distinct
 sources. This avoids repeated graph traversal without changing timing coverage,
