@@ -906,6 +906,14 @@ emuflow platform derive-utilization-profile \
 Such a profile is an explicit stress configuration, not the unchanged
 calibrated nominal profile; its results must be labelled accordingly.
 
+The native OpenPARF convergence certificate distinguishes a stable HPWL
+plateau from a bounded feasible result.  Reaching the global-placement
+iteration bound is accepted only when a density-feasible solution was saved
+and restored; it is recorded as `maximum-iterations-feasible` and still must
+pass the independent atomic site/resource legality certificate and routed
+physical checks.  Exhausting the bound without a saved feasible solution
+remains a hard failure.
+
 `--benchmark-run` is the authoritative frontend adapter for calibrated
 holdouts. It resolves the source list, include directories, defines, top,
 clocks, clock periods, and `xilinx-ultrascaleplus-open-v1` mapping profile from

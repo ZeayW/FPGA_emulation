@@ -27,6 +27,7 @@ def _engine(*, patience=2, minimum=3):
             wirelength_weights=[1.0, 1.0],
             max_global_place_iters=100,
             gp_adjust_area=True,
+            gp_max_adjust_area_iters=6,
             stop_overflow=0.1,
             io_legalization_flag=False,
             emuflow_relative_hpwl_improvement=0.0,
@@ -68,6 +69,12 @@ class OpenparfNativeDriverTest(unittest.TestCase):
         engine.gp_adjust_area = True
         self.assertFalse(stable_native_stop_condition(engine, [_metric(20, [1, 1])]))
 
+    def test_adjustment_limit_starts_stable_window(self):
+        engine = _engine(patience=0, minimum=1)
+        engine.gp_adjust_area = True
+        engine.num_gp_adjust_area = 6
+        self.assertTrue(stable_native_stop_condition(engine, [_metric(20, [1, 1])]))
+
     def test_infeasible_iterate_resets_stable_feasible_window(self):
         engine = _engine(patience=0, minimum=2)
         self.assertFalse(stable_native_stop_condition(engine, [_metric(11, [2, 2])]))
@@ -86,6 +93,10 @@ class OpenparfNativeDriverTest(unittest.TestCase):
         self.assertTrue(torch.equal(
             engine.data_cls.pos[0], torch.full((1, 2), 7.0, dtype=torch.float64)
         ))
+        self.assertEqual(
+            engine._emuflow_stable_convergence["stop_reason"],
+            "maximum-iterations-feasible",
+        )
 
     def test_validates_compact_native_certificate(self):
         value = {
@@ -102,11 +113,11 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             path.write_text(json.dumps(value), encoding="utf-8")
             self.assertEqual(validate_openparf_native_metrics(path), value)
 
-    def test_rejects_maximum_iteration_as_nonconvergence(self):
+    def test_accepts_bounded_feasible_maximum_iteration(self):
         value = {
             "schema": OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
             "status": "pass",
-            "stop_reason": "maximum-iterations",
+            "stop_reason": "maximum-iterations-feasible",
             "iterations": 100,
             "restored_best_feasible": True,
             "best_feasible_hpwl": 10.0,
@@ -115,7 +126,22 @@ class OpenparfNativeDriverTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "metrics.json"
             path.write_text(json.dumps(value), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "did not converge"):
+            self.assertEqual(validate_openparf_native_metrics(path), value)
+
+    def test_rejects_bounded_infeasible_maximum_iteration(self):
+        value = {
+            "schema": OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
+            "status": "fail",
+            "stop_reason": "maximum-iterations-infeasible",
+            "iterations": 100,
+            "restored_best_feasible": False,
+            "best_feasible_hpwl": None,
+            "final_legal_hpwl": 11.0,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "metrics.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "certificate is invalid"):
                 validate_openparf_native_metrics(path)
 
 

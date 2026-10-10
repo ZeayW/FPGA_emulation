@@ -75,9 +75,11 @@ def _active_overflow_is_feasible(engine: Any, metric: Any) -> bool:
 def _area_adjustment_is_finished(engine: Any) -> bool:
     if not bool(getattr(engine.params, "gp_adjust_area", False)):
         return True
-    return (
-        int(getattr(engine, "num_gp_adjust_area", 0)) > 0
-        and not bool(getattr(engine, "gp_adjust_area", True))
+    adjustments = int(getattr(engine, "num_gp_adjust_area", 0))
+    maximum = int(getattr(engine.params, "gp_max_adjust_area_iters", 0))
+    return adjustments > 0 and (
+        not bool(getattr(engine, "gp_adjust_area", True))
+        or (maximum > 0 and adjustments >= maximum)
     )
 
 
@@ -120,7 +122,11 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
     maximum_iterations = int(engine.params.max_global_place_iters)
     if iteration >= maximum_iterations:
         _restore_best_feasible(engine, state)
-        state["stop_reason"] = "maximum-iterations"
+        state["stop_reason"] = (
+            "maximum-iterations-feasible"
+            if state["restored_best_feasible"]
+            else "maximum-iterations-infeasible"
+        )
         return True
     if not _has_active_area_type(engine):
         _restore_best_feasible(engine, state)
@@ -185,6 +191,7 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
     )
     status = "pass" if state.get("stop_reason") in {
         "feasible-hpwl-patience",
+        "maximum-iterations-feasible",
         "empty-active-subspace",
     } else "fail"
     current_metric = getattr(engine, "cur_metric_record", None)
@@ -240,12 +247,14 @@ def validate_openparf_native_metrics(path: Path) -> dict[str, Any]:
         raise RuntimeError("OpenPARF native convergence certificate is invalid")
     stop_reason = value.get("stop_reason")
     if stop_reason not in {
-        "feasible-hpwl-patience", "empty-active-subspace"
+        "feasible-hpwl-patience",
+        "maximum-iterations-feasible",
+        "empty-active-subspace",
     }:
         raise RuntimeError("OpenPARF native placement did not converge")
-    if stop_reason == "feasible-hpwl-patience" and not value.get(
-        "restored_best_feasible"
-    ):
+    if stop_reason in {
+        "feasible-hpwl-patience", "maximum-iterations-feasible"
+    } and not value.get("restored_best_feasible"):
         raise RuntimeError("OpenPARF did not restore its best feasible placement")
     iterations = value.get("iterations")
     if not isinstance(iterations, int) or iterations < 0:
@@ -284,16 +293,29 @@ def main() -> int:
     )
     os.environ["OMP_NUM_THREADS"] = str(params.num_threads)
 
+    original_call = placer.Placer.__call__
     original_write = placer.Placer.write
+    completed_engine: dict[str, Any] = {}
 
-    def write_with_metrics(engine: Any, filename: str) -> None:
-        original_write(engine, filename)
-        _write_native_metrics(engine, Path(filename))
+    def call_and_capture(engine: Any) -> Any:
+        try:
+            return original_call(engine)
+        finally:
+            completed_engine["value"] = engine
 
     placer.Placer.stop_condition = stable_native_stop_condition
-    placer.Placer.write = write_with_metrics
+    placer.Placer.__call__ = call_and_capture
     placement_path = Path(params.result_dir) / f"{params.design_name()}.pl"
     place(params, str(placement_path))
+    engine = completed_engine.get("value")
+    if engine is None:
+        raise RuntimeError("OpenPARF native driver did not capture its placer")
+    # Some upstream flows pre-create an empty Bookshelf placement and bypass
+    # the Python writer on exit.  The captured, legalized engine is the
+    # authority; materialize it explicitly before sealing convergence.
+    if not placement_path.is_file() or placement_path.stat().st_size == 0:
+        original_write(engine, str(placement_path))
+    _write_native_metrics(engine, placement_path)
     if params.route_flag:
         route(params, str(placement_path))
     return 0
