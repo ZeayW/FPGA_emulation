@@ -11,12 +11,14 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .boundary_timing import (
+    build_boundary_timing_database,
     validate_boundary_identity_database,
     validate_boundary_timing_database,
 )
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .logic_segment_timing import (
+    LOGIC_SEGMENT_TIMING_SCHEMA,
     import_vpr_logic_segment_timing,
     prepare_logic_segment_query_inputs,
     validate_logic_segment_timing,
@@ -25,13 +27,15 @@ from .logic_segment_timing import (
     write_vpr_logic_segment_query,
 )
 from .local_path_timing import (
+    LOCAL_PATH_TIMING_SCHEMA,
     import_vpr_local_path_timing,
     prepare_vpr_local_path_query_inputs,
     validate_local_path_timing,
     write_vpr_local_path_query,
     write_xilinx_local_path_query,
 )
-from .lowering import run_placement_ir_lowering
+from .ir import EMUIR_SCHEMA, EmuIR
+from .lowering import PLACEMENT_IR_REPORT_SCHEMA, run_placement_ir_lowering
 from .netlist import SPLIT_MANIFEST_SCHEMA
 from .packed_netlist import run_packed_netlist_import
 from .packed_placement import run_packed_openparf_placement
@@ -75,6 +79,7 @@ MULTI_FPGA_PHYSICAL_SCHEMA = "emuflow.multi-fpga-physical-flow/v1"
 RAPIDWRIGHT_PLACERS = ("legacy", "openparf-native")
 DEFAULT_RAPIDWRIGHT_PLACER = "openparf-native"
 _TRANSPORT_MODULE = re.compile(r"^module\s+([A-Za-z_][A-Za-z0-9_$]*)", re.M)
+_INACTIVE_PARTITION_PROVIDER = "inactive-empty-partition-v1"
 
 # VPR stores SDC times in signed 32-bit picoseconds. Leave a deliberate
 # margin below INT_MAX so a rounded parser value cannot overflow. This only
@@ -87,11 +92,120 @@ def _implementation_stage(
     item: Mapping[str, Any], backend: str, stage: str
 ) -> Mapping[str, Any]:
     """Return one physical stage from its backend-specific report owner."""
+    if item.get("active") is False:
+        return item["stages"][stage]
     if backend == "vivado":
         return item["stages"]["vivado_implementation"][stage]
     if backend == "rapidwright":
         return item["stages"]["rapidwright_implementation"][stage]
     return item["stages"][stage]
+
+
+def _partition_has_physical_work(
+    netlist: Mapping[str, Any], transport: Mapping[str, Any]
+) -> bool:
+    """Return whether one installed FPGA needs an implementation image.
+
+    A selected DUT partition has instances/nets/ports.  A routing-only relay
+    has transport endpoints or internal source/shadow signals.  Only a device
+    with neither kind of evidence is inactive.  In particular, do not infer
+    inactivity merely from an empty DUT instance list: that would silently
+    drop a legal multi-hop relay.
+    """
+
+    fields = (
+        (netlist, "instances"),
+        (netlist, "nets"),
+        (netlist, "ports"),
+        (transport, "endpoints"),
+        (transport, "source_signals"),
+        (transport, "shadow_signals"),
+    )
+    for document, field in fields:
+        value = document.get(field)
+        if not isinstance(value, list):
+            raise ValidationError(
+                f"physical partition {field} inventory must be an array"
+            )
+        if value:
+            return True
+    return False
+
+
+def _inactive_transport_ir(transport: Mapping[str, Any]) -> EmuIR:
+    """Create the exact empty transport IR for an unused installed FPGA."""
+
+    design = transport.get("design")
+    fpga = transport.get("fpga")
+    if not isinstance(design, str) or not design or not isinstance(fpga, str):
+        raise ValidationError("inactive partition transport identity is invalid")
+    return EmuIR(
+        {
+            "schema": EMUIR_SCHEMA,
+            "design": {
+                "name": f"{design}__{fpga}__inactive_transport",
+                "top": f"{design}__{fpga}__inactive_transport",
+                "source_format": _INACTIVE_PARTITION_PROVIDER,
+            },
+            "ports": [],
+            "instances": [],
+            "nets": [],
+            "clocks": [],
+            "warnings": [],
+        }
+    )
+
+
+def _write_inactive_logic_timing(
+    identity_path: Path, output_path: Path
+) -> Dict[str, Any]:
+    identity = read_json(identity_path)
+    database = {
+        "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
+        "status": "pass",
+        "design": identity["design"],
+        "platform": identity["platform"],
+        "fpga": identity["fpga"],
+        "provider": _INACTIVE_PARTITION_PROVIDER,
+        "qualification": "not-applicable-empty-partition",
+        "coverage": {
+            **identity["coverage"],
+            "endpoint_exact_segments": 0,
+            "cone_bound_segments": 0,
+        },
+        "unsupported_member_paths": identity["unsupported_member_paths"],
+        "unmeasured_segments": [],
+        "segments": [],
+        **(
+            {"semantic_contract_sha256": identity["semantic_contract_sha256"]}
+            if "semantic_contract_sha256" in identity
+            else {}
+        ),
+    }
+    validation = validate_logic_segment_timing(database)
+    write_json(output_path, database)
+    return {**validation, "output": str(output_path)}
+
+
+def _write_inactive_local_timing(
+    identity_path: Path, output_path: Path
+) -> Dict[str, Any]:
+    identity = read_json(identity_path)
+    database = {
+        "schema": LOCAL_PATH_TIMING_SCHEMA,
+        "status": "pass",
+        "design": identity["design"],
+        "fpga": identity["fpga"],
+        "provider": _INACTIVE_PARTITION_PROVIDER,
+        "qualification": "not-applicable-empty-partition",
+        "source": identity["source"],
+        "identity_schema": identity["schema"],
+        "coverage": identity["coverage"],
+        "paths": [],
+    }
+    validation = validate_local_path_timing(database)
+    write_json(output_path, database)
+    return {**validation, "output": str(output_path)}
 
 
 def _sha256(path: Path) -> str:
@@ -326,6 +440,7 @@ def validate_multi_fpga_physical_report(
     transport_cells = 0
     emitted_atoms = 0
     worst_critical_path = 0.0
+    active_fpgas = 0
     for fpga_id in expected:
         item = by_id[fpga_id]
         if item.get("status") != "pass":
@@ -368,7 +483,34 @@ def validate_multi_fpga_physical_report(
             original_cells=item["original_cells"],
             transport_cells=item["transport_cells"],
         )
-        if backend_id == "open":
+        active = item.get("active", True)
+        if not isinstance(active, bool):
+            raise ValidationError(
+                f"physical activity marker for {fpga_id} is invalid"
+            )
+        if not active:
+            if (
+                result.get("implementation_status") != "inactive"
+                or item["original_cells"] != 0
+                or item["transport_cells"] != 0
+                or "boundary_timing" not in stages
+                or any(
+                    name in stages
+                    for name in (
+                        "vpr_pack_place",
+                        "rapidwright_implementation",
+                        "vivado_implementation",
+                    )
+                )
+            ):
+                raise ValidationError(
+                    f"inactive physical partition {fpga_id} is inconsistent"
+                )
+        elif result.get("implementation_status") == "inactive":
+            raise ValidationError(
+                f"active physical partition {fpga_id} is marked inactive"
+            )
+        elif backend_id == "open":
             open_required = (
                 "eblif",
                 "vpr_pack_place",
@@ -468,6 +610,7 @@ def validate_multi_fpga_physical_report(
             raise ValidationError(
                 f"physical backend {backend_id!r} is unsupported"
             )
+        active_fpgas += int(active)
         original_cells += item["original_cells"]
         transport_cells += item["transport_cells"]
         critical_path = result["timing"].get("critical_path_ns", 0.0)
@@ -476,6 +619,8 @@ def validate_multi_fpga_physical_report(
                 f"physical critical path for {fpga_id} is invalid"
             )
         worst_critical_path = max(worst_critical_path, float(critical_path))
+    if active_fpgas <= 0:
+        raise ValidationError("multi-FPGA physical flow has no active FPGA")
     embedded_summary = report.get("physical_summary")
     summary_ref = report.get("physical_summary_ref")
     if embedded_summary is not None and summary_ref is not None:
@@ -499,6 +644,8 @@ def validate_multi_fpga_physical_report(
     return {
         "status": "pass",
         "fpgas": len(expected),
+        "active_fpgas": active_fpgas,
+        "inactive_fpgas": len(expected) - active_fpgas,
         "original_cells": original_cells,
         "transport_cells": transport_cells,
         "merged_cells": original_cells + transport_cells,
@@ -806,6 +953,240 @@ def run_multi_fpga_physical_flow(
         source_root = split_root / fpga_id
         fpga_root = output_dir / fpga_id
         fpga_root.mkdir(parents=True, exist_ok=True)
+        netlist_path = source_root / "netlist.json"
+        transport_path = source_root / "transport.json"
+        netlist = read_json(netlist_path)
+        transport = read_json(transport_path)
+        fpga_part = next(
+            fpga.part for fpga in platform.fpgas if fpga.id == fpga_id
+        )
+        fabric_period = runtime["fabric_clock"]["period_ns"]
+        dut_period = runtime["virtual_dut_clock"]["nominal_period_ns"]
+        cross_period = runtime["timing_model"]["fabric_to_dut_max_delay_ns"]
+        if not _partition_has_physical_work(netlist, transport):
+            # Do not synthesize the shared controller or invoke a placer for an
+            # FPGA that is not part of this design's selected/relay subgraph.
+            # The old path created five controller-only cells and could leave
+            # OpenPARF's ISM loop running forever at zero HPWL.  Retain exact
+            # empty coverage evidence instead of inventing physical timing.
+            transport_ir_path = fpga_root / "transport.emuir.json"
+            write_json(
+                transport_ir_path,
+                _inactive_transport_ir(transport).to_dict(),
+            )
+            transport_report = {
+                "status": "pass",
+                "provider": _INACTIVE_PARTITION_PROVIDER,
+                "execution": "not-run-empty-partition",
+                "instances": 0,
+                "nets": 0,
+                "output": str(transport_ir_path),
+                "sha256": _sha256(transport_ir_path),
+            }
+            merged_ir = fpga_root / "placement.emuir.json"
+            lowering_report = run_placement_ir_lowering(
+                netlist_path,
+                transport_path,
+                transport_ir_path,
+                merged_ir,
+                fpga_root / "placement-ir-report.json",
+            )
+            if (
+                lowering_report.get("instances") != 0
+                or lowering_report.get("nets") != 0
+                or lowering_report.get("transport_instances") != 0
+            ):
+                raise ValidationError(
+                    f"inactive partition {fpga_id} produced physical cells"
+                )
+            boundary_identity_path = Path(
+                lowering_report["boundary_identity"]["output"]
+            )
+            boundary_identity = read_json(boundary_identity_path)
+            boundary_timing_path = fpga_root / "boundary-timing.json"
+            boundary_timing = build_boundary_timing_database(
+                boundary_identity,
+                {},
+                provider=_INACTIVE_PARTITION_PROVIDER,
+                qualification="not-applicable-empty-partition",
+            )
+            boundary_validation = validate_boundary_timing_database(
+                boundary_timing, boundary_identity
+            )
+            write_json(boundary_timing_path, boundary_timing)
+            stages: Dict[str, Any] = {
+                "transport_synthesis": transport_report,
+                "placement_ir": lowering_report,
+                "boundary_timing": {
+                    "status": "pass",
+                    "execution": "not-applicable-empty-partition",
+                    "import": {
+                        **boundary_validation,
+                        "output": str(boundary_timing_path),
+                    },
+                },
+            }
+            artifact_paths = {
+                "placement_ir": merged_ir,
+                "boundary_identity": boundary_identity_path,
+                "boundary_timing": boundary_timing_path,
+            }
+            if all(path is not None for path in logic_context):
+                assert original_ir_path is not None
+                assert assignment_path is not None
+                assert routes_path is not None
+                assert path_database_path is not None
+                assert effective_logic_path_database_path is not None
+                logic_identity_path = fpga_root / "logic-segment-identity.json"
+                logic_query_path = fpga_root / "logic-segment-query.tsv"
+                logic_writer = (
+                    write_vpr_logic_segment_query
+                    if backend == "open"
+                    else write_xilinx_logic_segment_query
+                    if backend == "rapidwright"
+                    else write_vivado_logic_segment_query
+                )
+                logic_query_report = logic_writer(
+                    original_ir_path,
+                    assignment_path,
+                    effective_logic_path_database_path,
+                    routes_path,
+                    schedule_path,
+                    platform,
+                    merged_ir,
+                    boundary_identity_path,
+                    fpga_id,
+                    logic_query_path,
+                    logic_identity_path,
+                    prepared_inputs=prepared_logic_inputs,
+                )
+                logic_timing_path = fpga_root / "logic-segment-timing.json"
+                logic_import_report = _write_inactive_logic_timing(
+                    logic_identity_path, logic_timing_path
+                )
+                stages["logic_segment_timing"] = {
+                    "status": "pass",
+                    "execution": "not-applicable-empty-partition",
+                    "query": logic_query_report,
+                    "import": logic_import_report,
+                }
+                artifact_paths.update(
+                    {
+                        "logic_identity": logic_identity_path,
+                        "logic_timing": logic_timing_path,
+                    }
+                )
+                if backend in {"open", "rapidwright"}:
+                    local_identity_path = fpga_root / "local-path-identity.json"
+                    local_query_path = fpga_root / "local-path-query.tsv"
+                    local_writer = (
+                        write_vpr_local_path_query
+                        if backend == "open"
+                        else write_xilinx_local_path_query
+                    )
+                    local_query_report = local_writer(
+                        original_ir_path,
+                        assignment_path,
+                        path_database_path,
+                        routes_path,
+                        merged_ir,
+                        fpga_id,
+                        local_query_path,
+                        local_identity_path,
+                        prepared_inputs=prepared_local_inputs,
+                    )
+                    local_timing_path = fpga_root / "local-path-timing.json"
+                    local_import_report = _write_inactive_local_timing(
+                        local_identity_path, local_timing_path
+                    )
+                    stages["local_path_timing"] = {
+                        "status": "pass",
+                        "execution": "not-applicable-empty-partition",
+                        "query": local_query_report,
+                        "import": local_import_report,
+                    }
+                    artifact_paths.update(
+                        {
+                            "local_identity": local_identity_path,
+                            "local_timing": local_timing_path,
+                        }
+                    )
+            physical_result = {
+                "schema": PHYSICAL_PARTITION_RESULT_SCHEMA,
+                "status": "pass",
+                "implementation_status": "inactive",
+                "identity": {
+                    "backend": backend,
+                    "fpga": fpga_id,
+                    "part": fpga_part,
+                },
+                "cell_accounting": {
+                    "original_cells": 0,
+                    "transport_cells": 0,
+                    "routed_cells": 0,
+                    "physical_cells": 0,
+                    "infrastructure_cells": 0,
+                    "optimization_cells": 0,
+                },
+                "closure": {
+                    "unrouted_nets": 0,
+                    "drc_violations": 0,
+                    "drc_warnings": 0,
+                },
+                "clocks": {
+                    "fabric_period_ns": fabric_period,
+                    "dut_period_ns": dut_period,
+                },
+                "timing": {
+                    "applicable": False,
+                    "wns_ns": 0.0,
+                    "tns_ns": 0.0,
+                    "failing_endpoints": 0,
+                    "failing_endpoint_constraints": 0,
+                    "timing_met": True,
+                    "dut_wns_ns": 0.0,
+                    "fabric_wns_ns": 0.0,
+                    "fabric_to_dut_wns_ns": 0.0,
+                    "critical_path_ns": 0.0,
+                    "clock_domain_delays_ns": {
+                        "overall": 0.0,
+                        "fabric": 0.0,
+                        "dut": 0.0,
+                        "cross": 0.0,
+                    },
+                    "clock_domain_presence": {
+                        "fabric": False,
+                        "dut": False,
+                        "cross": False,
+                    },
+                },
+                "hard_resources": {},
+                "artifacts": {
+                    name: {"path": str(path), "sha256": _sha256(path)}
+                    for name, path in sorted(artifact_paths.items())
+                },
+            }
+            validate_physical_partition_result(
+                physical_result,
+                backend=backend,
+                fpga=fpga_id,
+                part=fpga_part,
+                original_cells=0,
+                transport_cells=0,
+            )
+            record = {
+                "fpga": fpga_id,
+                "part": fpga_part,
+                "status": "pass",
+                "active": False,
+                "original_cells": 0,
+                "transport_cells": 0,
+                "critical_path_ns": 0.0,
+                "stages": stages,
+                "physical_result": physical_result,
+            }
+            return record, physical_summary_item(physical_result)
+
         transport_rtl = split_root / item["transport_rtl"]
         module_match = _TRANSPORT_MODULE.search(
             transport_rtl.read_text(encoding="utf-8")
@@ -839,21 +1220,14 @@ def run_multi_fpga_physical_flow(
 
         merged_ir = fpga_root / "placement.emuir.json"
         lowering_report = run_placement_ir_lowering(
-            source_root / "netlist.json",
-            source_root / "transport.json",
+            netlist_path,
+            transport_path,
             transport_ir_path,
             merged_ir,
             fpga_root / "placement-ir-report.json",
         )
-        netlist = read_json(source_root / "netlist.json")
         original_cells = len(netlist["instances"])
         transport_cells = lowering_report["transport_instances"]
-        fpga_part = next(
-            fpga.part for fpga in platform.fpgas if fpga.id == fpga_id
-        )
-        fabric_period = runtime["fabric_clock"]["period_ns"]
-        dut_period = runtime["virtual_dut_clock"]["nominal_period_ns"]
-        cross_period = runtime["timing_model"]["fabric_to_dut_max_delay_ns"]
         stages = {
             "transport_synthesis": transport_report,
             "placement_ir": lowering_report,
@@ -1374,6 +1748,7 @@ def run_multi_fpga_physical_flow(
             "fpga": fpga_id,
             "part": fpga_part,
             "status": "pass",
+            "active": True,
             "original_cells": original_cells,
             "transport_cells": transport_cells,
             "critical_path_ns": physical_result["timing"][

@@ -397,6 +397,57 @@ class Phase7CTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "slower"):
             validate_physical_summary(slower, runtime, self.platform)
 
+    def test_physical_summary_excludes_inactive_installed_fpga(self):
+        runtime = build_virtual_runtime(self.schedule, self.platform)
+        physical = self._physical_summary()
+        physical["fpgas"][1] = {
+            "fpga": "fpga1",
+            "active": False,
+            "original_cells": 0,
+            "transport_cells": 0,
+            "routed_cells": 0,
+            "physical_cells": 0,
+            "infrastructure_cells": 0,
+            "optimization_cells": 0,
+            "unrouted_nets": 0,
+            "drc_violations": 0,
+            "wns_ns": 0.0,
+            "timing": {
+                "applicable": False,
+                "dut_wns_ns": 0.0,
+                "fabric_wns_ns": 0.0,
+                "fabric_to_dut_wns_ns": 0.0,
+                "tns_ns": 0.0,
+                "failing_endpoints": 0,
+                "failing_endpoint_constraints": 0,
+                "timing_met": True,
+            },
+            "clock_domain_delays_ns": {
+                "overall": 0.0,
+                "fabric": 0.0,
+                "dut": 0.0,
+                "cross": 0.0,
+            },
+            "clock_domain_presence": {
+                "fabric": False,
+                "dut": False,
+                "cross": False,
+            },
+            "clocks": {
+                "fabric_period_ns": 4.0,
+                "dut_period_ns": 128.0,
+            },
+        }
+        result = validate_physical_summary(physical, runtime, self.platform)
+        self.assertEqual(result["active_fpgas"], 1)
+        self.assertEqual(result["inactive_fpgas"], 1)
+        self.assertEqual(result["worst_wns_ns"], 1.25)
+        self.assertEqual(result["original_cells"], 80)
+
+        physical["fpgas"][1]["clock_domain_presence"]["fabric"] = True
+        with self.assertRaisesRegex(ValidationError, "inactive physical summary"):
+            validate_physical_summary(physical, runtime, self.platform)
+
     def test_qor_prefers_endpoint_exact_physical_interface_timing(self):
         physical = self._physical_summary()
         identities = {}

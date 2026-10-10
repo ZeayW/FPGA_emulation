@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import tempfile
 import threading
@@ -11,6 +12,7 @@ from emuflow.ir import EmuIR
 from emuflow.multi_fpga_physical_flow import (
     MULTI_FPGA_PHYSICAL_SCHEMA,
     _implementation_stage,
+    _partition_has_physical_work,
     _partition_declares_dut_clock,
     _physical_clock_delays,
     _record_chimew_fixed_io_target,
@@ -72,6 +74,28 @@ def _merged_ir(fpga):
 
 
 class MultiFpgaPhysicalFlowTest(unittest.TestCase):
+    def test_only_exactly_empty_partitions_skip_physical_work(self):
+        netlist = {"instances": [], "nets": [], "ports": []}
+        transport = {
+            "endpoints": [],
+            "source_signals": [],
+            "shadow_signals": [],
+        }
+        self.assertFalse(_partition_has_physical_work(netlist, transport))
+
+        relay = copy.deepcopy(transport)
+        relay["endpoints"] = [{"id": "relay-rx"}]
+        self.assertTrue(_partition_has_physical_work(netlist, relay))
+
+        passthrough = copy.deepcopy(netlist)
+        passthrough["ports"] = [{"id": "input"}]
+        self.assertTrue(_partition_has_physical_work(passthrough, transport))
+
+        with self.assertRaisesRegex(ValidationError, "inventory"):
+            _partition_has_physical_work(
+                {"instances": None, "nets": [], "ports": []}, transport
+            )
+
     def test_backend_specific_implementation_stage_owner(self):
         item = {
             "stages": {
@@ -154,6 +178,89 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
         with self.assertRaisesRegex(
             ValidationError, "RapidWright physical stages"
         ), patch(
+            "emuflow.multi_fpga_physical_flow."
+            "validate_physical_partition_result"
+        ):
+            validate_multi_fpga_physical_report(report)
+
+    def test_validator_keeps_inactive_coverage_without_backend_run(self):
+        active = {
+            "fpga": "fpga0",
+            "status": "pass",
+            "active": True,
+            "part": "xcvu19p-fsva3824-2-e",
+            "original_cells": 1,
+            "transport_cells": 1,
+            "stages": {
+                "transport_synthesis": {"status": "pass"},
+                "placement_ir": {
+                    "status": "pass",
+                    "instances": 2,
+                    "boundary_identity": {
+                        "validation": {"status": "pass"}
+                    },
+                },
+                "rapidwright_implementation": {
+                    "status": "pass",
+                    **{
+                        name: {}
+                        for name in (
+                            "mapped_netlist",
+                            "packing",
+                            "placement",
+                            "route",
+                            "routed_timing",
+                            "opensta",
+                            "boundary_timing",
+                        )
+                    },
+                },
+            },
+            "physical_result": {"timing": {"critical_path_ns": 1.0}},
+        }
+        inactive = {
+            "fpga": "fpga1",
+            "status": "pass",
+            "active": False,
+            "part": "xcvu19p-fsva3824-2-e",
+            "original_cells": 0,
+            "transport_cells": 0,
+            "stages": {
+                "transport_synthesis": {"status": "pass"},
+                "placement_ir": {
+                    "status": "pass",
+                    "instances": 0,
+                    "boundary_identity": {
+                        "validation": {"status": "pass"}
+                    },
+                },
+                "boundary_timing": {"status": "pass"},
+            },
+            "physical_result": {
+                "implementation_status": "inactive",
+                "timing": {"critical_path_ns": 0.0},
+            },
+        }
+        report = {
+            "schema": MULTI_FPGA_PHYSICAL_SCHEMA,
+            "status": "pass",
+            "backend": physical_backend_descriptor("rapidwright"),
+            "expected_fpgas": ["fpga0", "fpga1"],
+            "fpgas": [active, inactive],
+            "physical_summary_ref": "physical-summary.json",
+        }
+        with patch(
+            "emuflow.multi_fpga_physical_flow."
+            "validate_physical_partition_result"
+        ):
+            validation = validate_multi_fpga_physical_report(report)
+        self.assertEqual(validation["active_fpgas"], 1)
+        self.assertEqual(validation["inactive_fpgas"], 1)
+
+        inactive["stages"]["rapidwright_implementation"] = {
+            "status": "pass"
+        }
+        with self.assertRaisesRegex(ValidationError, "inactive physical"), patch(
             "emuflow.multi_fpga_physical_flow."
             "validate_physical_partition_result"
         ):

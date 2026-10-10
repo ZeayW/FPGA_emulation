@@ -124,6 +124,64 @@ class PhysicalBackendContractTest(unittest.TestCase):
                 transport_cells=5,
             )
 
+    def test_inactive_partition_is_zero_work_not_fake_timing(self):
+        result = self._result()
+        result["implementation_status"] = "inactive"
+        result["cell_accounting"] = {
+            "original_cells": 0,
+            "transport_cells": 0,
+            "routed_cells": 0,
+            "physical_cells": 0,
+            "infrastructure_cells": 0,
+            "optimization_cells": 0,
+        }
+        result["timing"] = {
+            "applicable": False,
+            "wns_ns": 0.0,
+            "tns_ns": 0.0,
+            "failing_endpoints": 0,
+            "failing_endpoint_constraints": 0,
+            "timing_met": True,
+            "dut_wns_ns": 0.0,
+            "fabric_wns_ns": 0.0,
+            "fabric_to_dut_wns_ns": 0.0,
+            "critical_path_ns": 0.0,
+            "clock_domain_delays_ns": {
+                "overall": 0.0,
+                "fabric": 0.0,
+                "dut": 0.0,
+                "cross": 0.0,
+            },
+            "clock_domain_presence": {
+                "fabric": False,
+                "dut": False,
+                "cross": False,
+            },
+        }
+        validation = validate_physical_partition_result(
+            result,
+            backend="open",
+            fpga="fpga0",
+            part="academic-part",
+            original_cells=0,
+            transport_cells=0,
+        )
+        summary = physical_summary_item(result)
+        self.assertFalse(validation["active"])
+        self.assertFalse(summary["active"])
+        self.assertFalse(summary["timing"]["applicable"])
+
+        result["timing"]["wns_ns"] = 1.0
+        with self.assertRaisesRegex(ValidationError, "nonzero timing"):
+            validate_physical_partition_result(
+                result,
+                backend="open",
+                fpga="fpga0",
+                part="academic-part",
+                original_cells=0,
+                transport_cells=0,
+            )
+
     def test_common_result_rejects_provider_identity_and_accepts_timing_failure(self):
         result = self._result()
         result["identity"]["backend"] = "vivado"

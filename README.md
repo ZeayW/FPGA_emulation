@@ -521,6 +521,18 @@ supported for controlled studies. `greedy`, `tritonpart`, and `patron` support
 this contract; the optional MFSPart and RePart research providers currently
 fail closed on a strict subset instead of silently using inactive devices.
 
+Phase 7 implements the resulting selected/relay subgraph, not every installed
+device unconditionally. An FPGA with an exactly empty split netlist and empty
+transport endpoint/source/shadow inventories receives an explicit
+`inactive-empty-partition-v1` zero-work record and source-sealed empty
+boundary/logic/local timing coverage; Yosys, OpenPARF, RapidWright, and Vivado
+are not invoked for it, and its non-applicable zero timing is excluded from
+per-FPGA WNS/TNS aggregation. A transport relay remains active even when it
+contains no DUT instance, so multi-hop routing cannot be silently removed.
+This contract avoids controller-only physical runs on unused devices without
+fabricating placement, routing, or timing evidence. The RapidWright-bound AES,
+CPU, Koios, and NVDLA blind Phase 1--7 promotion runs remain pending.
+
 ```json
 {
   "schema": "emuflow.partition-constraints/v1",

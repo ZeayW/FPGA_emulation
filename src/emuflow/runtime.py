@@ -445,8 +445,14 @@ def validate_physical_summary(
     total_tns = 0.0
     total_failing_endpoints = 0
     total_failing_endpoint_constraints = 0
+    active_fpgas = 0
     for fpga_id in sorted(by_id):
         item = by_id[fpga_id]
+        active = item.get("active", True)
+        if not isinstance(active, bool):
+            raise ValidationError(
+                f"physical summary {fpga_id}.active must be boolean"
+            )
         for field in (
             "original_cells",
             "transport_cells",
@@ -527,6 +533,43 @@ def validate_physical_summary(
             raise ValidationError(
                 f"physical summary {fpga_id}.timing must be an object"
             )
+        if not active:
+            if (
+                any(
+                    item[field] != 0
+                    for field in (
+                        "original_cells",
+                        "transport_cells",
+                        "routed_cells",
+                        "physical_cells",
+                        "infrastructure_cells",
+                    )
+                )
+                or optimization_cells != 0
+                or float(slack) != 0.0
+                or timing.get("applicable") is not False
+                or any(
+                    float(timing.get(field, math.nan)) != 0.0
+                    for field in (
+                        "dut_wns_ns",
+                        "fabric_wns_ns",
+                        "fabric_to_dut_wns_ns",
+                        "tns_ns",
+                    )
+                )
+                or timing.get("failing_endpoints") != 0
+                or timing.get("failing_endpoint_constraints") != 0
+                or timing.get("timing_met") is not True
+                or item.get("clock_domain_presence")
+                != {"fabric": False, "dut": False, "cross": False}
+                or item.get("clock_domain_delays_ns")
+                != {"overall": 0.0, "fabric": 0.0, "dut": 0.0, "cross": 0.0}
+            ):
+                raise ValidationError(
+                    f"inactive physical summary {fpga_id} is inconsistent"
+                )
+            continue
+        active_fpgas += 1
         timing_met = timing.get("timing_met")
         if timing_met is not None and timing_met is not (float(slack) >= 0):
             raise ValidationError(
@@ -617,10 +660,14 @@ def validate_physical_summary(
                     timing_values["fabric_to_dut_wns_ns"],
                 )
             )
+    if active_fpgas <= 0 or worst_slack is None:
+        raise ValidationError("physical summary has no active FPGA")
     return {
         "status": "pass",
         "scope": "per-fpga-local-physical-closure",
         "fpgas": len(by_id),
+        "active_fpgas": active_fpgas,
+        "inactive_fpgas": len(by_id) - active_fpgas,
         "original_cells": total_original,
         "transport_cells": total_transport,
         "routed_cells": total_cells,

@@ -40,6 +40,11 @@ def _physical_delay_database(
     result: Dict[str, Dict[str, Any]] = {}
     for item in physical_summary["fpgas"]:
         fpga = item["fpga"]
+        active = item.get("active", True)
+        if not isinstance(active, bool):
+            raise ValidationError(
+                f"physical summary {fpga}.active must be boolean"
+            )
         raw_delays = item.get("clock_domain_delays_ns", {})
         if not isinstance(raw_delays, dict):
             raise ValidationError(
@@ -65,6 +70,22 @@ def _physical_delay_database(
             return value
 
         presence = item.get("clock_domain_presence")
+        if not active:
+            if (
+                presence != {"fabric": False, "dut": False, "cross": False}
+                or set(raw_delays) != {"overall", "fabric", "dut", "cross"}
+                or any(delay(domain) != 0.0 for domain in raw_delays)
+            ):
+                raise ValidationError(
+                    f"inactive physical summary {fpga} has physical delay"
+                )
+            result[fpga] = {
+                "dut": 0.0,
+                "cross": 0.0,
+                "dut_present": False,
+                "active": False,
+            }
+            continue
         if presence is None:
             dut_present = True
         elif (
@@ -92,6 +113,7 @@ def _physical_delay_database(
             # conservative bound until endpoint-specific timing is exported.
             "cross": cross_delay,
             "dut_present": dut_present,
+            "active": True,
         }
     return result
 
@@ -586,6 +608,14 @@ def build_system_timing(
             raise ValidationError(
                 f"system timing path {record['path']} uses unknown FPGAs "
                 f"{unknown}"
+            )
+        inactive = sorted(
+            {fpga for fpga in partitions if not delays[fpga]["active"]}
+        )
+        if inactive:
+            raise ValidationError(
+                f"system timing path {record['path']} crosses inactive FPGAs "
+                f"{inactive}"
             )
         local_delay = sum(delays[fpga]["dut"] for fpga in partitions)
         scheduled_hops = record["scheduled_hops"]

@@ -182,6 +182,87 @@ def validate_physical_partition_result(
     timing = result.get("timing")
     if not isinstance(timing, dict):
         raise ValidationError(f"physical result for {fpga} has no timing")
+    if result.get("implementation_status") == "inactive":
+        if any(
+            accounting.get(field) != 0
+            for field in (
+                "original_cells",
+                "transport_cells",
+                "routed_cells",
+                "physical_cells",
+                "infrastructure_cells",
+                "optimization_cells",
+            )
+        ):
+            raise ValidationError(
+                f"inactive physical result for {fpga} contains cells"
+            )
+        if timing.get("applicable") is not False:
+            raise ValidationError(
+                f"inactive physical result for {fpga} claims timing"
+            )
+        zero_timing_fields = (
+            "wns_ns",
+            "tns_ns",
+            "dut_wns_ns",
+            "fabric_wns_ns",
+            "fabric_to_dut_wns_ns",
+            "critical_path_ns",
+        )
+        if any(
+            float(timing.get(field, math.nan)) != 0.0
+            for field in zero_timing_fields
+        ):
+            raise ValidationError(
+                f"inactive physical result for {fpga} has nonzero timing"
+            )
+        if (
+            timing.get("failing_endpoints") != 0
+            or timing.get("failing_endpoint_constraints") != 0
+            or timing.get("timing_met") is not True
+            or timing.get("clock_domain_presence")
+            != {"fabric": False, "dut": False, "cross": False}
+            or timing.get("clock_domain_delays_ns")
+            != {"overall": 0.0, "fabric": 0.0, "dut": 0.0, "cross": 0.0}
+        ):
+            raise ValidationError(
+                f"inactive physical result for {fpga} timing marker is invalid"
+            )
+        clocks = result.get("clocks")
+        if (
+            not isinstance(clocks, dict)
+            or any(
+                isinstance(clocks.get(field), bool)
+                or not isinstance(clocks.get(field), (int, float))
+                or not math.isfinite(float(clocks[field]))
+                or float(clocks[field]) <= 0.0
+                for field in ("fabric_period_ns", "dut_period_ns")
+            )
+        ):
+            raise ValidationError(
+                f"inactive physical result for {fpga} clock contract is invalid"
+            )
+        artifacts = result.get("artifacts")
+        if not isinstance(artifacts, dict) or not artifacts:
+            raise ValidationError(
+                f"inactive physical result for {fpga} has no coverage evidence"
+            )
+        return {
+            "status": "pass",
+            "backend": backend,
+            "fpga": fpga,
+            "part": part,
+            "active": False,
+            "routed_cells": 0,
+            "physical_cells": 0,
+            "wns_ns": None,
+            "tns_ns": None,
+            "failing_endpoints": 0,
+        }
+    if result.get("implementation_status") not in {None, "implemented"}:
+        raise ValidationError(
+            f"physical result implementation status for {fpga} is invalid"
+        )
     for field in (
         "wns_ns",
         "dut_wns_ns",
@@ -300,9 +381,11 @@ def physical_summary_item(result: Mapping[str, Any]) -> Dict[str, Any]:
     accounting = result["cell_accounting"]
     timing = result["timing"]
     clocks = result["clocks"]
+    active = result.get("implementation_status") != "inactive"
     return {
         "fpga": identity["fpga"],
         "backend": identity["backend"],
+        "active": active,
         **accounting,
         "unrouted_nets": result["closure"]["unrouted_nets"],
         "drc_violations": result["closure"]["drc_violations"],
@@ -313,6 +396,7 @@ def physical_summary_item(result: Mapping[str, Any]) -> Dict[str, Any]:
         ),
         "wns_ns": timing["wns_ns"],
         "timing": {
+            "applicable": active,
             "dut_wns_ns": timing["dut_wns_ns"],
             "fabric_wns_ns": timing["fabric_wns_ns"],
             "fabric_to_dut_wns_ns": timing[
