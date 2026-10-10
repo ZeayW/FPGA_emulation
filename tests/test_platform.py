@@ -86,6 +86,36 @@ class PlatformTest(unittest.TestCase):
             12_257_280,
         )
 
+    def test_derived_utilization_profile_preserves_hardware_contract(self) -> None:
+        platform = Platform.load(
+            ROOT / "platforms/virtual/rapidwright_xcvu19p_4fpga_mesh.json"
+        )
+        derived = platform.with_utilization_limit(
+            0.2, name="rapidwright_xcvu19p_4fpga_mesh_u20"
+        )
+        self.assertEqual(derived.name, "rapidwright_xcvu19p_4fpga_mesh_u20")
+        self.assertTrue(
+            all(fpga.utilization_limit == 0.2 for fpga in derived.fpgas)
+        )
+        self.assertEqual(
+            [fpga.capacity for fpga in derived.fpgas],
+            [fpga.capacity for fpga in platform.fpgas],
+        )
+        self.assertEqual(derived.links, platform.links)
+        self.assertEqual(derived.clocks, platform.clocks)
+        self.assertEqual(derived.resets, platform.resets)
+        self.assertEqual(
+            Platform.from_dict(derived.to_dict()).to_dict(), derived.to_dict()
+        )
+
+    def test_derived_utilization_profile_rejects_invalid_limit(self) -> None:
+        platform = Platform.load(
+            ROOT / "platforms/virtual/rapidwright_xcvu19p_4fpga_mesh.json"
+        )
+        for value in (0.0, 1.1, True):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                platform.with_utilization_limit(value)
+
     def test_unknown_endpoint_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValidationError, "unknown FPGA IDs"):
             Platform.from_dict(

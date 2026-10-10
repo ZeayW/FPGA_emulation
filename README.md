@@ -891,6 +891,21 @@ emuflow multi-fpga compile \
   <other checked benchmark and physical options>
 ```
 
+Controlled capacity-headroom experiments must not edit a calibrated BoardDB
+in place.  Derive a separately named profile while preserving its device,
+topology, board-service, and link contracts exactly:
+
+```sh
+emuflow platform derive-utilization-profile \
+  --input <bundle>/<profile>/boarddb.json \
+  --utilization-limit 0.20 \
+  --name <experiment-name> \
+  --output <experiment-root>/boarddb.json
+```
+
+Such a profile is an explicit stress configuration, not the unchanged
+calibrated nominal profile; its results must be labelled accordingly.
+
 `--benchmark-run` is the authoritative frontend adapter for calibrated
 holdouts. It resolves the source list, include directories, defines, top,
 clocks, clock periods, and `xilinx-ultrascaleplus-open-v1` mapping profile from

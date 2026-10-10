@@ -1171,6 +1171,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     platform_validate.add_argument("path", type=Path)
     platform_validate.add_argument("--normalized-out", type=Path)
+    platform_utilization = platform_subparsers.add_parser(
+        "derive-utilization-profile",
+        help="derive a BoardDB with a uniform per-FPGA utilization limit",
+    )
+    platform_utilization.add_argument("--input", type=Path, required=True)
+    platform_utilization.add_argument(
+        "--output", "-o", type=Path, required=True
+    )
+    platform_utilization.add_argument(
+        "--utilization-limit", type=float, required=True
+    )
+    platform_utilization.add_argument("--name", required=True)
     platform_mps4 = platform_subparsers.add_parser(
         "arm-mps4-materialize",
         help="materialize Arm's documented three-MPS4 serial-link topology",
@@ -4671,6 +4683,23 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0 if report.get("status") not in {"failed", "submit_failed"} else 2
 
     if args.command == "platform":
+        if args.platform_command == "derive-utilization-profile":
+            source = Platform.load(args.input)
+            derived = source.with_utilization_limit(
+                args.utilization_limit, name=args.name
+            )
+            write_json(args.output, derived.to_dict())
+            report = derived.summary()
+            report.update(
+                {
+                    "status": "pass",
+                    "output": str(args.output),
+                    "source_platform": source.name,
+                    "utilization_limit": args.utilization_limit,
+                }
+            )
+            _print_json(report)
+            return 0
         if args.platform_command == "arm-mps4-materialize":
             report = materialize_arm_mps4_boarddb(
                 output_path=args.output,

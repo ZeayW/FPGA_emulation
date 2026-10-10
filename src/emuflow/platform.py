@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -724,3 +724,38 @@ class Platform:
             )
             / 1_000_000_000.0,
         }
+
+    def with_utilization_limit(
+        self, utilization_limit: float, *, name: Optional[str] = None
+    ) -> "Platform":
+        """Return an immutable capacity-headroom profile of this platform.
+
+        The device capacities, topology, board services, and link contracts are
+        preserved exactly.  Only the per-FPGA admissible utilization is changed,
+        which keeps controlled capacity experiments separate from the source
+        BoardDB instead of encouraging in-place edits.
+        """
+
+        if (
+            isinstance(utilization_limit, bool)
+            or not isinstance(utilization_limit, (int, float))
+            or not 0.0 < float(utilization_limit) <= 1.0
+        ):
+            raise ValidationError(
+                "utilization_limit: expected a number in the interval (0, 1]"
+            )
+        derived_name = self.name if name is None else _require_nonempty_string(
+            name, "platform.name"
+        )
+        return replace(
+            self,
+            name=derived_name,
+            description=(
+                f"{self.description} Derived capacity-headroom profile with "
+                f"a uniform {float(utilization_limit):g} utilization limit."
+            ).strip(),
+            fpgas=tuple(
+                replace(fpga, utilization_limit=float(utilization_limit))
+                for fpga in self.fpgas
+            ),
+        )
