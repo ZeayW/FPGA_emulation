@@ -308,7 +308,7 @@ def finalize_multi_fpga_physical_checkpoint(
     members = {
         "frontend": "frontend/phase1/phase1_report.json",
         "platform": "frontend/phase1/platform.normalized.json",
-        "emuir": "frontend/phase1/design.emuir.json",
+        "emuir": "frontend/phase1/design.emuir.sqlite",
         "partition": "partition/phase3_report.json",
         "assignment": "partition/assignment.json",
         "system_route": "system-route/phase4_report.json",
@@ -979,7 +979,7 @@ def validate_multi_fpga_flow_bundle(
         flow_root, Path("frontend/phase1/platform.normalized.json"), "platform"
     )
     ir_path = _checked_flow_member(
-        flow_root, Path("frontend/phase1/design.emuir.json"), "EmuIR"
+        flow_root, Path("frontend/phase1/design.emuir.sqlite"), "EmuIR"
     )
     assignment_path = _checked_flow_member(
         flow_root, Path("partition/assignment.json"), "assignment"
@@ -1589,14 +1589,21 @@ def run_multi_fpga_flow(
         else:
             raise ValidationError("frontend mapping profile is invalid")
 
+    # Yosys JSON is a transient interchange stream, never a downstream
+    # checkpoint.  Seal its bytes once, import the canonical indexed EmuIR,
+    # and remove the duplicated graph even when Phase 1 rejects the design.
+    synthesized_json_sha256 = _sha256(synthesized_json)
     phase1_root = frontend_root / "phase1"
-    frontend_report = run_phase1(
-        synthesized_json,
-        platform_path,
-        phase1_root,
-        top=top,
-        clocks=clocks,
-    )
+    try:
+        frontend_report = run_phase1(
+            synthesized_json,
+            platform_path,
+            phase1_root,
+            top=top,
+            clocks=clocks,
+        )
+    finally:
+        synthesized_json.unlink(missing_ok=True)
     if frontend_report["status"] != "pass":
         raise EmuFlowError(
             "multi-FPGA frontend failed capacity or clock-topology checks"
@@ -1618,7 +1625,8 @@ def run_multi_fpga_flow(
             "sources": [str(path) for path in source_list],
             "include_dirs": [str(path) for path in include_dir_list],
             "defines": define_list,
-            "yosys_json_sha256": _sha256(synthesized_json),
+            "yosys_json_sha256": synthesized_json_sha256,
+            "interchange_retention": "deleted-after-phase1-import",
             **(
                 {"tool_report": synthesis_report}
                 if yosys_json is None
@@ -1632,7 +1640,7 @@ def run_multi_fpga_flow(
             ),
         },
     }
-    ir_path = phase1_root / "design.emuir.json"
+    ir_path = phase1_root / "design.emuir.sqlite"
 
     timing_root = output_dir / "timing"
     path_database_path = timing_root / "path-database.json"
@@ -2508,7 +2516,7 @@ def run_multi_fpga_flow(
                 ),
             },
             "emuir": {
-                "path": "frontend/phase1/design.emuir.json",
+                "path": "frontend/phase1/design.emuir.sqlite",
                 "sha256": _sha256(ir_path),
             },
             "partition_constraints": {

@@ -258,7 +258,7 @@ def run_partition_checkpoint(
         raise ValidationError(
             "MFSPart post-refinement requires provider=tritonpart"
         )
-    ir_path = _require(frontend_root, "phase1/design.emuir.json")
+    ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")
     if not managed_dag_node:
         validate_timing_checkpoint(frontend_root, timing_root)
     weights_path = _require(timing_root, "partition-net-weights.json")
@@ -505,7 +505,7 @@ def validate_partition_checkpoint(
     online_validation: bool = False,
 ) -> Dict[str, Any]:
     validation_started = time.perf_counter()
-    ir_path = _require(frontend_root, "phase1/design.emuir.json")
+    ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")
     weights = _require(timing_root, "partition-net-weights.json")
     timing_path_database = timing_root / "path-database.json"
     report = read_json(_require(root, "experiment-partition-report.json"))

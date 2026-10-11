@@ -82,7 +82,7 @@ class AcademicChimewTest(unittest.TestCase):
             clocks=["clk"],
         )
         run_phase3(
-            phase1 / "design.emuir.json",
+            phase1 / "design.emuir.sqlite",
             PLATFORM,
             phase3,
             provider="greedy",
@@ -97,7 +97,7 @@ class AcademicChimewTest(unittest.TestCase):
         )
         run_phase5(phase4 / "routes.json", PLATFORM, phase5)
         return (
-            phase1 / "design.emuir.json",
+            phase1 / "design.emuir.sqlite",
             phase3 / "assignment.json",
             phase4 / "routes.json",
             phase5 / "schedule.json",

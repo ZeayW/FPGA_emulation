@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Set
 
 from .errors import ValidationError
+from .emuir_storage import is_emuir_sqlite, read_emuir_sqlite, write_emuir_sqlite
 from .io import read_json
 from .resources import ResourceVector
 
@@ -30,7 +31,20 @@ class EmuIR:
 
     @classmethod
     def load(cls, path: Path) -> "EmuIR":
+        sqlite_target = path.name.endswith(".emuir.sqlite")
+        if sqlite_target and not is_emuir_sqlite(path):
+            raise ValueError(f"{path}: malformed EmuIR SQLite artifact")
+        if sqlite_target:
+            return cls(read_emuir_sqlite(path))
         return cls(read_json(path))
+
+    def save(self, path: Path) -> None:
+        if path.name.endswith(".emuir.sqlite"):
+            write_emuir_sqlite(path, self.value)
+            return
+        raise ValueError(
+            "new EmuIR artifacts must use the indexed .emuir.sqlite format"
+        )
 
     def validate(self) -> None:
         value = self.value

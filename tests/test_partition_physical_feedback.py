@@ -364,7 +364,7 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
             routes_path = root / "route-constraints.json"
             initial_path = root / "initial.json"
             system_timing_path = root / "system-timing.json"
-            write_json(frontend / "phase1/design.emuir.json", self.ir.value)
+            self.ir.save(frontend / "phase1/design.emuir.sqlite")
             write_json(platform_path, self.platform.to_dict())
             write_json(timing_root / "path-database.json", self.timing)
             write_json(

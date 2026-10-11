@@ -1034,6 +1034,14 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 report["stages"]["frontend"]["synthesis"]["mode"],
                 "provided-yosys-json",
             )
+            self.assertEqual(
+                report["stages"]["frontend"]["synthesis"][
+                    "interchange_retention"
+                ],
+                "deleted-after-phase1-import",
+            )
+            self.assertFalse((output / "frontend/synthesized.json").exists())
+            self.assertFalse((output / "frontend/synthesized.json.gz").exists())
             persisted = json.loads(
                 (output / "multi-fpga-flow-report.json").read_text(
                     encoding="utf-8"
@@ -1045,7 +1053,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             )
             for relative in (
                 "multi-fpga-flow-report.json",
-                "frontend/phase1/design.emuir.json",
+                "frontend/phase1/design.emuir.sqlite",
                 "partition/assignment.json",
                 "system-route/routes.json",
                 "tdm/schedule.json",

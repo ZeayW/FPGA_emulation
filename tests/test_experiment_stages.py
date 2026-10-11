@@ -89,7 +89,7 @@ class ExperimentStagesTest(unittest.TestCase):
             root = Path(temporary)
             shared = root / "shared"
             for relative in (
-                "frontend/phase1/design.emuir.json",
+                "frontend/phase1/design.emuir.sqlite",
                 "partition/clusters.json",
                 "partition/assignment.json",
                 "partition/phase3_report.json",
@@ -409,9 +409,7 @@ class ExperimentStagesTest(unittest.TestCase):
             self.assertEqual(
                 validate_frontend_checkpoint(output, platform)["status"], "pass"
             )
-            (output / "phase1/design.emuir.json").write_text(
-                "{}\n", encoding="utf-8"
-            )
+            (output / "phase1/design.emuir.sqlite").write_bytes(b"corrupt")
             with self.assertRaisesRegex(Exception, "EmuIR seal"):
                 validate_frontend_checkpoint(output, platform)
 
@@ -465,13 +463,36 @@ class ExperimentStagesTest(unittest.TestCase):
             write_json(
                 ir,
                 {
+                    "schema": "emuflow.emuir/v1",
+                    "design": {
+                        "name": "d",
+                        "top": "d",
+                        "source_format": "test",
+                    },
+                    "ports": [],
+                    "instances": [
+                        {
+                            "id": name,
+                            "type": "LUT1",
+                            "resources": {"lut": 1},
+                            "constant_connections": [],
+                        }
+                        for name in ("a", "b")
+                    ],
                     "nets": [
                         {
                             "id": "n0",
-                            "drivers": [{"instance": "a"}],
-                            "sinks": [{"instance": "b"}],
+                            "cut_class": "combinational",
+                            "drivers": [
+                                {"instance": "a", "port": "O", "bit": 0}
+                            ],
+                            "sinks": [
+                                {"instance": "b", "port": "I", "bit": 0}
+                            ],
                         }
-                    ]
+                    ],
+                    "clocks": [],
+                    "warnings": [],
                 },
             )
             write_json(

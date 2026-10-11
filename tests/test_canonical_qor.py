@@ -40,7 +40,7 @@ class CanonicalQorTest(unittest.TestCase):
     def _fixture(self, root: Path):
         shared = root / "shared"
         for relative in (
-            "frontend/phase1/design.emuir.json",
+            "frontend/phase1/design.emuir.sqlite",
             "partition/assignment.json",
             "system-route/routes.json",
             "tdm/schedule.json",
@@ -50,7 +50,7 @@ class CanonicalQorTest(unittest.TestCase):
             write_json(path, {"path": relative})
         frozen = {
             "emuir_sha256": _sha256(
-                shared / "frontend/phase1/design.emuir.json"
+                shared / "frontend/phase1/design.emuir.sqlite"
             ),
             "assignment_sha256": _sha256(
                 shared / "partition/assignment.json"

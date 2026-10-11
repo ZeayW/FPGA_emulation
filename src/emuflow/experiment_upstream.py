@@ -65,7 +65,7 @@ EXPERIMENT_ROUTE_SCHEMA = "emuflow.experiment-route-checkpoint/v2"
 EXPERIMENT_TDM_SCHEMA = "emuflow.experiment-tdm-checkpoint/v2"
 EXPERIMENT_SHARED_SCHEMA = "emuflow.experiment-shared-phase1-5/v1"
 _SHARED_REQUIRED_ARTIFACTS = {
-    "frontend/phase1/design.emuir.json",
+    "frontend/phase1/design.emuir.sqlite",
     "frontend/phase1/phase1_report.json",
     "partition/clusters.json",
     "partition/assignment.json",
@@ -309,7 +309,7 @@ def run_frontend_checkpoint(
                     for record in source_records
                 },
                 "synthesized_sha256": _sha256(synthesized),
-                "emuir_sha256": _sha256(output_dir / "phase1/design.emuir.json"),
+                "emuir_sha256": _sha256(output_dir / "phase1/design.emuir.sqlite"),
                 "platform_sha256": _sha256(platform_path.resolve()),
                 "phase1_report_sha256": _sha256(
                     output_dir / "phase1/phase1_report.json"
@@ -340,7 +340,7 @@ def validate_frontend_checkpoint(
     if synthesized_name not in {"synthesized.json", "synthesized.json.gz"}:
         raise ValidationError("frontend synthesized artifact is invalid")
     synthesized = _require(root, synthesized_name)
-    ir_path = _require(root, "phase1/design.emuir.json")
+    ir_path = _require(root, "phase1/design.emuir.sqlite")
     phase1_path = _require(root, "phase1/phase1_report.json")
     normalized_platform = _require(root, "phase1/platform.normalized.json")
     source_records = report.get("source_artifacts")
@@ -427,7 +427,7 @@ def run_timing_checkpoint(
     criticality_exponent: float = 2.0,
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
-    ir_path = _require(frontend_root, "phase1/design.emuir.json")
+    ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")
     output_dir = _prepare_empty_output(output_dir, "timing checkpoint")
     database = output_dir / "path-database.json"
     sta = run_opensta_path_database(
@@ -503,7 +503,7 @@ def validate_timing_checkpoint(
     *,
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
-    ir_path = _require(frontend_root, "phase1/design.emuir.json")
+    ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")
     report = read_json(_require(root, "experiment-timing-report.json"))
     if report.get("schema") != EXPERIMENT_TIMING_SCHEMA or report.get("status") != "pass":
         raise ValidationError("timing checkpoint report is invalid")
@@ -588,7 +588,7 @@ def run_cut_timing_checkpoint(
     max_paths: int = 200000,
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
-    ir_path = _require(frontend_root, "phase1/design.emuir.json")
+    ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")
     assignment_path = _require(partition_root, "assignment.json")
     if not managed_dag_node:
         validate_timing_checkpoint(frontend_root, timing_root)
@@ -687,7 +687,7 @@ def validate_cut_timing_checkpoint(
     architecture_timing_db_path: Optional[Path] = None,
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
-    ir_path = _require(frontend_root, "phase1/design.emuir.json")
+    ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")
     complete_database = _require(timing_root, "path-database.json")
     if not managed_dag_node:
         validate_timing_checkpoint(frontend_root, timing_root)
@@ -1159,8 +1159,8 @@ def materialize_shared_phase1_5(
         )
     output_dir = _prepare_empty_output(output_dir, "shared Phase 1-5 checkpoint")
     mapping = {
-        "frontend/phase1/design.emuir.json": (
-            frontend_root / "phase1/design.emuir.json",
+        "frontend/phase1/design.emuir.sqlite": (
+            frontend_root / "phase1/design.emuir.sqlite",
             "frontend",
         ),
         "frontend/phase1/phase1_report.json": (

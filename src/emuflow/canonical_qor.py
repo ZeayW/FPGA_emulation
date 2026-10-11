@@ -161,7 +161,7 @@ def _clock_metrics(clock: Any, label: str) -> tuple[float, float, int]:
 def _shared_hashes(shared_root: Path) -> Dict[str, str]:
     return {
         "emuir_sha256": _sha256(
-            _require(shared_root, "frontend/phase1/design.emuir.json")
+            _require(shared_root, "frontend/phase1/design.emuir.sqlite")
         ),
         "assignment_sha256": _sha256(
             _require(shared_root, "partition/assignment.json")

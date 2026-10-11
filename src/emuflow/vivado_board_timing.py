@@ -228,7 +228,7 @@ def run_vivado_board_timing(
         raise ValidationError("Vivado board timing does not cover BoardDB")
 
     required_flow_paths = {
-        "original_ir": flow_root / "frontend/phase1/design.emuir.json",
+        "original_ir": flow_root / "frontend/phase1/design.emuir.sqlite",
         "assignment": flow_root / "partition/assignment.json",
         "path_database": flow_root / "timing/path-database.json",
         "routes": flow_root / "system-route/routes.json",

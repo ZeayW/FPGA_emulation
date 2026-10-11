@@ -140,14 +140,14 @@ def run_phase1(
         "require_no_fabric_clock": require_no_fabric_clock,
         "warnings": list(ir.value.get("warnings", [])),
         "artifacts": {
-            "emuir": "design.emuir.json",
+            "emuir": "design.emuir.sqlite",
             "platform": "platform.normalized.json",
             "report": "phase1_report.json",
         },
     }
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    write_json(output_dir / "design.emuir.json", ir.to_dict())
+    ir.save(output_dir / "design.emuir.sqlite")
     write_json(output_dir / "platform.normalized.json", platform.to_dict())
     write_json(output_dir / "phase1_report.json", report)
     return report

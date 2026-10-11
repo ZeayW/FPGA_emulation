@@ -298,7 +298,7 @@ def _require_file(root: Path, relative: str) -> Path:
 
 def _shared_paths(root: Path) -> Dict[str, Path]:
     return {
-        "ir": _require_file(root, "frontend/phase1/design.emuir.json"),
+        "ir": _require_file(root, "frontend/phase1/design.emuir.sqlite"),
         "clusters": _require_file(root, "partition/clusters.json"),
         "assignment": _require_file(root, "partition/assignment.json"),
         "phase3_report": _require_file(root, "partition/phase3_report.json"),
@@ -443,7 +443,7 @@ def _placement_aware_positions(
     *,
     region_count: int,
 ) -> Dict[str, Any]:
-    ir = read_json(ir_path)
+    ir = EmuIR.load(ir_path).value
     schedule = read_json(schedule_path)
     placement_source = read_json(placement_source_path)
     locations = {
@@ -540,7 +540,7 @@ def validate_shared_phase1_5(
                     "managed shared checkpoint artifact table is invalid"
                 )
             required = {
-                "ir": "frontend/phase1/design.emuir.json",
+                "ir": "frontend/phase1/design.emuir.sqlite",
                 "assignment": "partition/assignment.json",
                 "routes": "system-route/routes.json",
                 "schedule": "tdm/schedule.json",

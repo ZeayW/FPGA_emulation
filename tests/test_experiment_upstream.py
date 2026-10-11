@@ -168,7 +168,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
             root = Path(temporary)
             frontend = root / "frontend"
             output = root / "timing"
-            ir_path = frontend / "phase1/design.emuir.json"
+            ir_path = frontend / "phase1/design.emuir.sqlite"
             ir_path.parent.mkdir(parents=True)
             ir_path.write_text("{}", encoding="utf-8")
             database_value = {"schema": "emuflow.sta-paths/v1", "paths": []}
@@ -239,7 +239,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 )
             }
             files = {
-                "frontend": ("phase1/design.emuir.json", "phase1/phase1_report.json"),
+                "frontend": ("phase1/design.emuir.sqlite", "phase1/phase1_report.json"),
                 "timing": ("path-database.json", "partition-net-weights.json"),
                 "partition": ("clusters.json", "assignment.json", "phase3_report.json"),
                 "cut-timing": (
@@ -366,7 +366,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
             output = root / "partition"
             (frontend / "phase1").mkdir(parents=True)
             timing.mkdir()
-            (frontend / "phase1/design.emuir.json").write_text(
+            (frontend / "phase1/design.emuir.sqlite").write_text(
                 "{}", encoding="utf-8"
             )
             (timing / "partition-net-weights.json").write_text(
@@ -491,7 +491,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
             (frontend / "phase1").mkdir(parents=True)
             timing.mkdir()
             partition.mkdir()
-            (frontend / "phase1/design.emuir.json").write_text(
+            (frontend / "phase1/design.emuir.sqlite").write_text(
                 "{}", encoding="utf-8"
             )
             complete = timing / "path-database.json"
@@ -654,7 +654,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
         (frontend / "phase1").mkdir(parents=True)
         timing.mkdir()
         partition.mkdir()
-        (frontend / "phase1/design.emuir.json").write_text(
+        (frontend / "phase1/design.emuir.sqlite").write_text(
             "{}", encoding="utf-8"
         )
         (timing / "partition-net-weights.json").write_text(
@@ -684,7 +684,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
             "seed_attempts": 2,
             "repair_balance": True,
             "emuir_sha256": _sha256(
-                frontend / "phase1/design.emuir.json"
+                frontend / "phase1/design.emuir.sqlite"
             ),
             "platform_sha256": _sha256(platform),
             "weights_sha256": _sha256(

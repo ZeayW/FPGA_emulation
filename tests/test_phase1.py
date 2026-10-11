@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from emuflow.ir import EmuIR
 from emuflow.phase1 import run_phase1
 
 
@@ -29,8 +30,10 @@ class Phase1Test(unittest.TestCase):
             self.assertEqual(
                 report["clock_topology"]["fabric_logic_clock_nets"], 0
             )
+            emuir = output / "design.emuir.sqlite"
+            self.assertTrue(emuir.is_file())
+            self.assertEqual(EmuIR.load(emuir).value["design"]["name"], "counter")
             for filename in (
-                "design.emuir.json",
                 "platform.normalized.json",
                 "phase1_report.json",
             ):

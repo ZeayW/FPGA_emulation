@@ -1256,10 +1256,10 @@ The characterization increment is deliberately read-only:
 
 ```bash
 emuflow combinational-cut characterize \
-  --ir build/phase1/design.emuir.json \
+  --ir build/phase1/design.emuir.sqlite \
   --output build/comb-cut/characterization.json
 emuflow combinational-cut validate \
-  --ir build/phase1/design.emuir.json \
+  --ir build/phase1/design.emuir.sqlite \
   build/comb-cut/characterization.json
 ```
 
@@ -1279,7 +1279,7 @@ provisional semantic contract:
 
 ```bash
 emuflow phase3 \
-  --ir build/phase1/design.emuir.json \
+  --ir build/phase1/design.emuir.sqlite \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --provider greedy \
   --cut-mode static-exact-combinational \
@@ -1487,7 +1487,7 @@ their final Phase 7/7C evidence.
 
 ```bash
 emuflow phase6 \
-  --ir build/phase1/design.emuir.json \
+  --ir build/phase1/design.emuir.sqlite \
   --assignment build/phase3-exact/assignment.json \
   --schedule build/phase5-exact/schedule.json \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
@@ -3223,6 +3223,17 @@ Managed staging keeps atomic temporary-file replacement but defers per-file
 Production Yosys frontends use quiet batch invocation and retain only a bounded
 error tail. Verbose synthesis output is an explicit diagnostic mode, never a
 multi-gigabyte stream in the normal Phase 1 hot path.
+
+Phase 1 publishes its canonical graph as `design.emuir.sqlite`, not as a
+monolithic EmuIR JSON document. The indexed v1 store normalizes ports,
+instances, resources, nets, aliases, and endpoints into deterministic rows;
+only small irregular per-cell dictionaries remain canonical JSON row values.
+Consumers open the sealed database read-only, and legacy `.json` EmuIR files
+remain importable only as explicit input fixtures. This removes repeated
+object keys and whole-document JSON parsing at the Phase 1 boundary. The raw
+Yosys interchange is still transient scratch while the direct streaming
+Yosys-to-indexed-graph exporter is completed; it is not the durable Phase 1
+consumer contract.
 
 The managed Phase 1--7 implementation applies that rule at each concrete
 boundary. Phase 1 owns the synthesized EmuIR and performs resource and clock
@@ -5368,7 +5379,7 @@ emuflow pin-plan chimew-build \
   --out build/chimew/phase6-adapter
 
 emuflow phase6 \
-  --ir build/phase1/design.emuir.json \
+  --ir build/phase1/design.emuir.sqlite \
   --assignment build/phase3/assignment.json \
   --schedule build/phase5/schedule.json \
   --platform platforms/hardware/board.json \

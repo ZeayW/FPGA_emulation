@@ -42,6 +42,7 @@ from .chimew_refinement import (
 from .chimew_rudy import CHIMEW_RUDY_INPUT_PROVIDER, CHIMEW_RUDY_INPUT_SCHEMA
 from .errors import ValidationError
 from .io import read_json, write_json
+from .ir import EmuIR
 from .platform import Platform
 
 
@@ -1038,7 +1039,7 @@ def materialize_academic_chimew_inputs(
 
     if not 2 <= region_count <= 31:
         raise ValidationError("academic Chimew region count must be in [2, 31]")
-    ir = read_json(ir_path)
+    ir = EmuIR.load(ir_path).value
     source_schedule = read_json(schedule_path)
     explicit_ratios = [
         "tdm_ratio" in entry for entry in source_schedule.get("entries", [])

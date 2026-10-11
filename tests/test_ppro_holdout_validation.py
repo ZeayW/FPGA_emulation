@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from emuflow.benchmark import timing_io_sha256
 from emuflow.errors import ValidationError
+from emuflow.ir import EmuIR
 from emuflow.platform import Platform
 from emuflow.ppro_blackbox_application import benchmark_rtl_identity
 from emuflow.ppro_calibration_cli import main
@@ -619,8 +620,8 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 "nets": [],
                 "clocks": [{"id": "clk"}],
             }
-            emuir_path = flow / "frontend/phase1/design.emuir.json"
-            emuir_path.write_text(json.dumps(emuir), encoding="utf-8")
+            emuir_path = flow / "frontend/phase1/design.emuir.sqlite"
+            EmuIR(emuir).save(emuir_path)
             phase3 = {"validation": {"resources_by_fpga": {
                 "F0": {"lut": 50, "ff": 20}, "F1": {"lut": 40, "ff": 30}
             }}}
@@ -708,7 +709,7 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 },
                 "artifacts": {
                     "platform": {"path": "frontend/phase1/platform.normalized.json", "sha256": sha(platform_path)},
-                    "emuir": {"path": "frontend/phase1/design.emuir.json", "sha256": sha(emuir_path)},
+                    "emuir": {"path": "frontend/phase1/design.emuir.sqlite", "sha256": sha(emuir_path)},
                     **{
                         name: {"path": path.relative_to(flow).as_posix(), "sha256": sha(path)}
                         for name, path in paths.items()

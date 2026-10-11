@@ -302,7 +302,7 @@ def _common_source_record(shared_root: Path) -> Dict[str, Any]:
     if not timing_report_path.is_file() and not partition_report_path.is_file():
         shared_report = _managed_shared_report(shared_root)
         paths = {
-            "emuir_sha256": "frontend/phase1/design.emuir.json",
+            "emuir_sha256": "frontend/phase1/design.emuir.sqlite",
             "timing_path_database_sha256": "timing/path-database.json",
             "partition_weights_sha256": "timing/partition-net-weights.json",
         }
@@ -351,7 +351,7 @@ def _common_source_record(shared_root: Path) -> Dict[str, Any]:
             raise ValidationError(f"Static Exact QoR {name} report is invalid")
     source = {
         "emuir_sha256": _sha256(
-            _require(shared_root, "frontend/phase1/design.emuir.json")
+            _require(shared_root, "frontend/phase1/design.emuir.sqlite")
         ),
         "timing_path_database_sha256": _sha256(
             _require(shared_root, "timing/path-database.json")

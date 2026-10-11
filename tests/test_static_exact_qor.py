@@ -152,7 +152,7 @@ class StaticExactQorTest(unittest.TestCase):
             for directory in (shared, lookahead, phase6, phase7):
                 directory.mkdir(parents=True)
             for relative, value in (
-                ("frontend/phase1/design.emuir.json", common_emuir),
+                ("frontend/phase1/design.emuir.sqlite", common_emuir),
                 ("timing/path-database.json", common_paths),
                 ("timing/partition-net-weights.json", common_weights),
                 ("partition/assignment.json", {"label": label}),
@@ -163,7 +163,7 @@ class StaticExactQorTest(unittest.TestCase):
             timing_report = {
                 "status": "pass",
                 "frontend_emuir_sha256": _sha256(
-                    shared / "frontend/phase1/design.emuir.json"
+                    shared / "frontend/phase1/design.emuir.sqlite"
                 ),
                 "path_database_sha256": _sha256(
                     shared / "timing/path-database.json"
@@ -354,7 +354,7 @@ class StaticExactQorTest(unittest.TestCase):
                 (shared / "timing/experiment-timing-report.json").unlink()
                 artifacts = {}
                 for relative in (
-                    "frontend/phase1/design.emuir.json",
+                    "frontend/phase1/design.emuir.sqlite",
                     "timing/path-database.json",
                     "timing/partition-net-weights.json",
                     "partition/assignment.json",
