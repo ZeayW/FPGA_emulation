@@ -161,6 +161,30 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             path.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "certificate is invalid"):
                 validate_openparf_native_metrics(path)
+            self.assertEqual(
+                validate_openparf_native_metrics(
+                    path, allow_detailed_legalization_handoff=True
+                ),
+                value,
+            )
+
+    def test_infeasible_handoff_rejects_false_restored_feasible_claim(self):
+        value = {
+            "schema": OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
+            "status": "fail",
+            "stop_reason": "maximum-iterations-infeasible",
+            "iterations": 100,
+            "restored_best_feasible": True,
+            "best_feasible_hpwl": None,
+            "final_legal_hpwl": 11.0,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "metrics.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "cannot claim"):
+                validate_openparf_native_metrics(
+                    path, allow_detailed_legalization_handoff=True
+                )
 
 
 if __name__ == "__main__":

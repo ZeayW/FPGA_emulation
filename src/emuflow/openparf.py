@@ -168,6 +168,7 @@ def run_openparf(
     log_path: Optional[Path] = None,
     install_root: Optional[Path] = None,
     python_executable: Optional[Path] = None,
+    allow_detailed_legalization_handoff: bool = False,
 ) -> Path:
     """Run OpenPARF built from this repository and return its .pl output."""
     config_path = config_path.resolve()
@@ -284,7 +285,12 @@ def run_openparf(
         )
 
         try:
-            validate_openparf_native_metrics(native_metrics_path(placement))
+            validate_openparf_native_metrics(
+                native_metrics_path(placement),
+                allow_detailed_legalization_handoff=(
+                    allow_detailed_legalization_handoff
+                ),
+            )
         except RuntimeError as error:
             raise EmuFlowError(str(error)) from error
     return placement.resolve()

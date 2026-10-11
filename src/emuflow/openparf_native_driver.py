@@ -244,7 +244,9 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
     )
 
 
-def validate_openparf_native_metrics(path: Path) -> dict[str, Any]:
+def validate_openparf_native_metrics(
+    path: Path, *, allow_detailed_legalization_handoff: bool = False
+) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -252,14 +254,26 @@ def validate_openparf_native_metrics(path: Path) -> dict[str, Any]:
     if (
         not isinstance(value, dict)
         or value.get("schema") != OPENPARF_NATIVE_CONVERGENCE_SCHEMA
-        or value.get("status") != "pass"
     ):
         raise RuntimeError("OpenPARF native convergence certificate is invalid")
     stop_reason = value.get("stop_reason")
+    globally_feasible = value.get("status") == "pass" and stop_reason in {
+        "feasible-hpwl-patience",
+        "maximum-iterations-feasible",
+        "empty-active-subspace",
+    }
+    detailed_legalization_handoff = (
+        allow_detailed_legalization_handoff
+        and value.get("status") == "fail"
+        and stop_reason == "maximum-iterations-infeasible"
+    )
+    if not globally_feasible and not detailed_legalization_handoff:
+        raise RuntimeError("OpenPARF native convergence certificate is invalid")
     if stop_reason not in {
         "feasible-hpwl-patience",
         "maximum-iterations-feasible",
         "empty-active-subspace",
+        "maximum-iterations-infeasible",
     }:
         raise RuntimeError("OpenPARF native placement did not converge")
     if stop_reason in {
@@ -275,6 +289,10 @@ def validate_openparf_native_metrics(path: Path) -> dict[str, Any]:
             not isinstance(number, (int, float)) or not math.isfinite(float(number))
         ):
             raise RuntimeError(f"OpenPARF native metric {key} is invalid")
+    if detailed_legalization_handoff and value.get("restored_best_feasible"):
+        raise RuntimeError(
+            "OpenPARF infeasible handoff cannot claim a restored feasible iterate"
+        )
     return value
 
 

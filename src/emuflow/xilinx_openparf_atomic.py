@@ -4078,6 +4078,10 @@ def run_xilinx_openparf_atomic_qualification(
         log_path=output_dir / "openparf.log",
         install_root=openparf_install,
         python_executable=openparf_python,
+        # Density feasibility belongs to analytical global placement.  The
+        # production authority is the exact post-DL site/BEL/macro validator
+        # below, so a bounded GP result may proceed to native legalization.
+        allow_detailed_legalization_handoff=True,
     )
     ff_control_legalization = legalize_xilinx_openparf_ff_control_sets(
         placement, output_dir / "name_map.json", mapped_path,
@@ -4105,7 +4109,10 @@ def run_xilinx_openparf_atomic_qualification(
                 "bytes": convergence_path.stat().st_size,
                 "sha256": _sha256(convergence_path),
             },
-            "metrics": validate_openparf_native_metrics(convergence_path),
+            "metrics": validate_openparf_native_metrics(
+                convergence_path,
+                allow_detailed_legalization_handoff=True,
+            ),
         }
         certificate["native_convergence"] = convergence
         serialized_certificate["native_convergence"] = convergence
@@ -4168,6 +4175,7 @@ def run_xilinx_openparf_hardblock_qualification(
         log_path=output_dir / "openparf.log",
         install_root=openparf_install,
         python_executable=openparf_python,
+        allow_detailed_legalization_handoff=True,
     )
     ff_control_legalization = legalize_xilinx_openparf_ff_control_sets(
         placement, output_dir / "name_map.json", mapped_path,
@@ -4192,7 +4200,10 @@ def run_xilinx_openparf_hardblock_qualification(
                 "bytes": convergence_path.stat().st_size,
                 "sha256": _sha256(convergence_path),
             },
-            "metrics": validate_openparf_native_metrics(convergence_path),
+            "metrics": validate_openparf_native_metrics(
+                convergence_path,
+                allow_detailed_legalization_handoff=True,
+            ),
         }
         certificate["native_convergence"] = convergence
         serialized_certificate["native_convergence"] = convergence
