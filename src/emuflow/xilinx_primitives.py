@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import copy
+import json
+import sqlite3
 from collections import Counter, defaultdict
+from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -33,6 +36,90 @@ XILINX_NORMALIZATION_INPUT_CELLS = {
     "INV",
     *XILINX_NEGEDGE_FF_ALIASES,
 }
+
+
+class _IndexedCellMapping(MutableMapping[str, Dict[str, Any]]):
+    """Dictionary-like view over indexed Yosys cell records.
+
+    The normalizer needs random access only for carry cells and otherwise walks
+    one cell at a time. Keeping those records in SQLite prevents a mapped
+    design with millions of cells from becoming one graph-sized Python object.
+    """
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def __getitem__(self, key: str) -> Dict[str, Any]:
+        row = self._connection.execute(
+            "SELECT record_json FROM staging_instances WHERE id = ?", (key,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        value = json.loads(row[0])
+        if not isinstance(value, dict):
+            raise ValidationError(f"mapped cell {key!r} is invalid")
+        return value
+
+    def __setitem__(self, key: str, value: Dict[str, Any]) -> None:
+        if not isinstance(value, dict):
+            raise ValidationError(f"mapped cell {key!r} is invalid")
+        cell_type = value.get("type")
+        if not isinstance(cell_type, str) or not cell_type:
+            raise ValidationError(f"mapped cell {key!r} has no type")
+        resources = classify_primitive_resources(cell_type)
+        self._connection.execute(
+            """
+            INSERT OR REPLACE INTO staging_instances
+                (id, type, ff, bram, record_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                key,
+                cell_type,
+                resources.ff,
+                resources.bram,
+                json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            ),
+        )
+
+    def __delitem__(self, key: str) -> None:
+        cursor = self._connection.execute(
+            "DELETE FROM staging_instances WHERE id = ?", (key,)
+        )
+        if cursor.rowcount == 0:
+            raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        rows = self._connection.execute(
+            "SELECT id FROM staging_instances ORDER BY id"
+        )
+        for row in rows:
+            yield str(row[0])
+
+    def __len__(self) -> int:
+        row = self._connection.execute(
+            "SELECT COUNT(*) FROM staging_instances"
+        ).fetchone()
+        return int(row[0])
+
+    def items(self) -> Iterator[Tuple[str, Dict[str, Any]]]:  # type: ignore[override]
+        rows = self._connection.execute(
+            "SELECT id, record_json FROM staging_instances ORDER BY id"
+        )
+        for row in rows:
+            value = json.loads(row[1])
+            if not isinstance(value, dict):
+                raise ValidationError(f"mapped cell {row[0]!r} is invalid")
+            yield str(row[0]), value
+
+    def values(self) -> Iterator[Dict[str, Any]]:  # type: ignore[override]
+        for _, value in self.items():
+            yield value
 
 
 def _sha256(path: Path) -> str:
@@ -146,10 +233,11 @@ def _carry_input(
 
 def normalize_xilinx_mapped_json(
     input_path: Path,
-    output_path: Path,
+    output_path: Optional[Path],
     *,
     top: Optional[str] = None,
     library_path: Path = DEFAULT_XILINX_PRIMITIVE_LIBRARY,
+    _source_value: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Lower Yosys synthesis macros into the Route A physical namespace.
 
@@ -167,7 +255,7 @@ def normalize_xilinx_mapped_json(
     deterministic constant LUT1 cells instead of weakening site legality.
     """
 
-    source = read_json(input_path)
+    source = read_json(input_path) if _source_value is None else _source_value
     modules = source.get("modules") if isinstance(source, dict) else None
     if not isinstance(modules, dict) or not modules:
         raise ValidationError("mapped Yosys JSON contains no modules")
@@ -195,7 +283,7 @@ def normalize_xilinx_mapped_json(
     normalized = source
     module = normalized["modules"][selected_top]
     cells = module.get("cells")
-    if not isinstance(cells, dict):
+    if not isinstance(cells, MutableMapping):
         raise ValidationError("mapped Yosys JSON cells are invalid")
     _, library = load_xilinx_primitive_library(library_path)
     final_cells = set(library["cells"])
@@ -307,6 +395,7 @@ def normalize_xilinx_mapped_json(
         return list(value)
 
     negedge_ff_count = 0
+    negedge_updates: Dict[str, Any] = {}
     for name, cell in cells.items():
         normalized_type = XILINX_NEGEDGE_FF_ALIASES.get(cell.get("type"))
         if normalized_type is None:
@@ -327,7 +416,9 @@ def normalize_xilinx_mapped_json(
             cell["attributes"] = attributes
         attributes["emuflow_normalized"] = "yosys-negedge-ff-alias-v1"
         cell["type"] = normalized_type
+        negedge_updates[name] = cell
         negedge_ff_count += 1
+    cells.update(negedge_updates)
 
     carry_by_ci: Dict[Any, List[str]] = {}
     for name in carry_names:
@@ -582,19 +673,33 @@ def normalize_xilinx_mapped_json(
     # appended in a deterministic traversal.  Re-sorting a multi-million-cell
     # dictionary would create another giant key array without adding semantic
     # stability.
-    write_json(output_path, normalized, compact=True, sort_keys=False)
-    audit = audit_xilinx_mapped_json(
-        output_path,
-        top=selected_top,
-        library_path=library_path,
-        source=normalized,
-    )
+    if output_path is not None:
+        write_json(output_path, normalized, compact=True, sort_keys=False)
+        output_sha256: Optional[str] = _sha256(output_path)
+        audit = audit_xilinx_mapped_json(
+            output_path,
+            top=selected_top,
+            library_path=library_path,
+            source=normalized,
+        )
+        representation = "yosys-json"
+    else:
+        output_sha256 = None
+        audit = audit_xilinx_mapped_json(
+            input_path,
+            top=selected_top,
+            library_path=library_path,
+            source=normalized,
+            hash_path=False,
+        )
+        representation = "indexed-cell-records"
     return {
         "status": "pass",
         "schema": "emuflow.xilinx-primitive-normalization/v1",
         "top": selected_top,
-        "input_sha256": _sha256(input_path),
-        "output_sha256": _sha256(output_path),
+        "input_sha256": _sha256(input_path) if input_path.is_file() else None,
+        "output_sha256": output_sha256,
+        "output_representation": representation,
         "carry4_input_cells": len(carry_names),
         "carry8_paired_cells": paired,
         "carry8_single_cells": single,
@@ -614,6 +719,7 @@ def audit_xilinx_mapped_json(
     top: Optional[str] = None,
     library_path: Path = DEFAULT_XILINX_PRIMITIVE_LIBRARY,
     source: Optional[Mapping[str, Any]] = None,
+    hash_path: bool = True,
 ) -> Dict[str, Any]:
     """Reject every mapped cell outside the declared Route A namespace."""
     source = read_json(path) if source is None else source
@@ -640,7 +746,7 @@ def audit_xilinx_mapped_json(
         selected_top = marked[0]
         module = modules[selected_top]
     cells = module.get("cells")
-    if not isinstance(cells, dict):
+    if not isinstance(cells, Mapping):
         raise ValidationError("mapped Yosys JSON cells are invalid")
 
     _, library = load_xilinx_primitive_library(library_path)
@@ -694,6 +800,44 @@ def audit_xilinx_mapped_json(
         "resource_totals": resources.to_dict(include_zeros=False),
         "unknown_cell_types": {},
         "external_macros": {},
-        "mapped_json_sha256": _sha256(path),
+        "mapped_json_sha256": _sha256(path) if hash_path else None,
+        "mapped_representation": (
+            "yosys-json" if hash_path else "indexed-cell-records"
+        ),
         "primitive_library_sha256": _sha256(library_path),
     }
+
+
+def normalize_xilinx_indexed_staging(
+    connection: sqlite3.Connection,
+    raw_ports: Mapping[str, Any],
+    input_path: Path,
+    top: str,
+    *,
+    library_path: Path = DEFAULT_XILINX_PRIMITIVE_LIBRARY,
+) -> Dict[str, Any]:
+    """Normalize one streamed Xilinx module directly in indexed staging.
+
+    Only per-cell records and the comparatively tiny top-port table enter
+    Python memory. The complete mapped graph is never reconstructed or emitted
+    as a normalized JSON document.
+    """
+
+    cells = _IndexedCellMapping(connection)
+    source: Mapping[str, Any] = {
+        "modules": {
+            top: {
+                "ports": dict(raw_ports),
+                "cells": cells,
+            }
+        }
+    }
+    report = normalize_xilinx_mapped_json(
+        input_path,
+        None,
+        top=top,
+        library_path=library_path,
+        _source_value=source,
+    )
+    connection.commit()
+    return report

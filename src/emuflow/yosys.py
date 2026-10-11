@@ -6,9 +6,22 @@ import re
 import sqlite3
 import tempfile
 from collections import defaultdict
+from contextlib import nullcontext
 from itertools import groupby
 from pathlib import Path
-from typing import Any, DefaultDict, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
+from typing import (
+    Any,
+    Callable,
+    DefaultDict,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    TextIO,
+    Tuple,
+)
 
 from .errors import ImportError
 from .emuir_storage import write_emuir_sqlite
@@ -412,18 +425,23 @@ def _stream_yosys_module_records(
     *,
     on_cell: Any,
     on_netname: Any,
+    source_stream: Optional[TextIO] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Stream one flattened Yosys module as bounded leaf records."""
 
-    stream = (
-        gzip.open(path, "rt", encoding="utf-8")
-        if path.suffix == ".gz"
-        else path.open("r", encoding="utf-8")
+    stream_context = (
+        nullcontext(source_stream)
+        if source_stream is not None
+        else (
+            gzip.open(path, "rt", encoding="utf-8")
+            if path.suffix == ".gz"
+            else path.open("r", encoding="utf-8")
+        )
     )
     creator = "unknown"
     ports: Dict[str, Any] = {}
     found_top = False
-    with stream:
+    with stream_context as stream:
         reader = StreamingJSONObjectReader(stream)
         for root_key in reader.object_keys():
             if root_key == "creator":
@@ -481,7 +499,14 @@ def import_yosys_json_indexed(
     clocks: Iterable[str] = (),
     *,
     _source_value: Optional[Mapping[str, Any]] = None,
-) -> None:
+    _source_stream: Optional[TextIO] = None,
+    staging_transform: Optional[
+        Callable[
+            [sqlite3.Connection, Mapping[str, Any], Path, str],
+            Dict[str, Any],
+        ]
+    ] = None,
+) -> Optional[Dict[str, Any]]:
     """Import Yosys JSON directly into the indexed EmuIR representation.
 
     Unlike :func:`import_yosys_json`, this production importer never builds a
@@ -496,6 +521,7 @@ def import_yosys_json_indexed(
     creator = "unknown"
     top_name = top
     raw_ports: Dict[str, Any] = {}
+    transform_report: Optional[Dict[str, Any]] = None
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -600,6 +626,7 @@ def import_yosys_json_indexed(
                 top,
                 on_cell=stage_cell_record,
                 on_netname=stage_netname_record,
+                source_stream=_source_stream,
             )
             top_name = top
         else:
@@ -637,6 +664,13 @@ def import_yosys_json_indexed(
 
         if top_name is None:
             raise ImportError(f"{path}: unable to determine top module")
+        if staging_transform is not None:
+            transform_report = staging_transform(
+                connection,
+                raw_ports,
+                path,
+                top_name,
+            )
         explicit_clocks = set(clocks)
         clock_ports = {
             name
@@ -929,3 +963,4 @@ def import_yosys_json_indexed(
         if connection is not None:
             connection.close()
         staging_path.unlink(missing_ok=True)
+    return transform_report

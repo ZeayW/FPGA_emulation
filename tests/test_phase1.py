@@ -1,16 +1,70 @@
 import json
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
 
 from emuflow.ir import EmuIR
 from emuflow.phase1 import run_phase1
+from emuflow.xilinx_primitives import normalize_xilinx_indexed_staging
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class Phase1Test(unittest.TestCase):
+    def test_xilinx_stream_normalizes_without_graph_json_artifact(self) -> None:
+        value = {
+            "creator": "stream-test",
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2]},
+                        "y": {"direction": "output", "bits": [3]},
+                    },
+                    "netnames": {
+                        "a": {"bits": [2]},
+                        "y": {"bits": [3]},
+                    },
+                    "cells": {
+                        "inv": {
+                            "type": "INV",
+                            "port_directions": {
+                                "I": "input", "O": "output",
+                            },
+                            "connections": {"I": [2], "O": [3]},
+                        }
+                    },
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            report = run_phase1(
+                yosys_json=Path("<yosys-stdout>"),
+                platform_path=(
+                    ROOT / "platforms/virtual/xcvu3p_2fpga_p2p.json"
+                ),
+                output_dir=output,
+                top="top",
+                indexed_staging_transform=normalize_xilinx_indexed_staging,
+                yosys_stream=StringIO(json.dumps(value)),
+            )
+            ir = EmuIR.load(output / "design.emuir.sqlite").value
+            large_json = [
+                path
+                for path in output.iterdir()
+                if path.suffix == ".json" and path.stat().st_size > 10000
+            ]
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(
+            report["indexed_staging_transform"]["output_representation"],
+            "indexed-cell-records",
+        )
+        self.assertEqual(ir["instances"][0]["type"], "LUT1")
+        self.assertEqual(large_json, [])
+
     def test_pipeline_writes_valid_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)

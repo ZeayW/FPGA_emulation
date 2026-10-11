@@ -361,10 +361,13 @@ requirements, not optional micro-optimizations.
 - A complete synthesized netlist, EmuIR graph, placement, route population, or
   timing-path population must never be introduced as a new monolithic JSON
   production intermediate.  Stream producer records directly into the
-  indexed/sharded owner.  A legacy tool-emitted JSON stream may exist only as
-  bounded-lifetime scratch while its direct adapter is being removed; it must
-  not be copied, retained, hashed repeatedly, or exposed as a downstream
-  checkpoint.
+  indexed/sharded owner.  When an external tool can emit only JSON, its
+  production adapter must consume that stream through a pipe with bounded
+  buffering and backpressure; writing the complete document to a temporary
+  file is not an acceptable production-stage boundary.  Legacy JSON files are
+  permitted only as explicit user-supplied inputs or isolated qualification
+  fixtures.  They must not be copied, retained, hashed repeatedly, or exposed
+  as downstream checkpoints.
 - Do not force a downstream stage to parse a large artifact merely to read a
   small summary.  Publish a compact manifest/index for frequent queries and
   load or expand the full payload only at the stage that consumes it.  Never

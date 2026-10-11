@@ -65,7 +65,10 @@ from .sta import (
     derive_partition_net_weights,
     project_sta_path_database,
 )
-from .synthesis import run_generic_yosys, run_xilinx_ultrascaleplus_yosys
+from .synthesis import (
+    run_generic_yosys,
+    run_xilinx_ultrascaleplus_yosys_stream,
+)
 from .vivado_backend import run_vivado_timing_path_database
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_architecture import ARCHITECTURE_TIMING_DB_SCHEMA
@@ -74,6 +77,7 @@ from .xilinx_preplacement_timing import XILINX_PREPLACEMENT_TIMING_SCHEMA
 from .xilinx_primitives import (
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     audit_xilinx_mapped_json,
+    normalize_xilinx_indexed_staging,
 )
 
 
@@ -1502,6 +1506,7 @@ def run_multi_fpga_flow(
     define_list = list(defines)
     frontend_root = output_dir / "frontend"
     frontend_root.mkdir(parents=True, exist_ok=True)
+    phase1_root = frontend_root / "phase1"
     synthesized_json = frontend_root / (
         "synthesized.json.gz"
         if (
@@ -1511,6 +1516,9 @@ def run_multi_fpga_flow(
         else "synthesized.json"
     )
     synthesis_mode: str
+    indexed_staging_transform = None
+    frontend_report: Optional[Dict[str, Any]] = None
+    synthesized_json_sha256: Optional[str] = None
     if yosys_json is not None:
         if source_list:
             raise EmuFlowError(
@@ -1575,39 +1583,60 @@ def run_multi_fpga_flow(
             normalization_report = None
             synthesis_mode = "generic-lut6-ff"
         elif mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
-            synthesis_report = run_xilinx_ultrascaleplus_yosys(
-                source_list,
-                top,
-                synthesized_json,
-                executable=yosys,
-                log_path=frontend_root / "yosys.log",
-                include_dirs=include_dir_list,
-                defines=define_list,
+            indexed_staging_transform = normalize_xilinx_indexed_staging
+            synthesis_report, frontend_report = (
+                run_xilinx_ultrascaleplus_yosys_stream(
+                    source_list,
+                    top,
+                    lambda stream: run_phase1(
+                        Path("<yosys-stdout>"),
+                        platform_path,
+                        phase1_root,
+                        top=top,
+                        clocks=clocks,
+                        indexed_staging_transform=(
+                            normalize_xilinx_indexed_staging
+                        ),
+                        yosys_stream=stream,
+                    ),
+                    executable=yosys,
+                    log_path=frontend_root / "yosys.log",
+                    include_dirs=include_dir_list,
+                    defines=define_list,
+                )
             )
             normalization_report = None
             synthesis_mode = "xilinx-ultrascaleplus-open"
         else:
             raise ValidationError("frontend mapping profile is invalid")
 
-    # Yosys JSON is a transient interchange stream, never a downstream
-    # checkpoint.  Seal its bytes once, import the canonical indexed EmuIR,
-    # and remove the duplicated graph even when Phase 1 rejects the design.
-    synthesized_json_sha256 = _sha256(synthesized_json)
-    phase1_root = frontend_root / "phase1"
-    try:
-        frontend_report = run_phase1(
-            synthesized_json,
-            platform_path,
-            phase1_root,
-            top=top,
-            clocks=clocks,
-        )
-    finally:
-        synthesized_json.unlink(missing_ok=True)
+    # Non-Xilinx frontends still use a transient interchange file. The Xilinx
+    # production path has already piped Yosys stdout directly into indexed
+    # Phase 1 above and therefore never materializes a graph JSON artifact.
+    if frontend_report is None:
+        synthesized_json_sha256 = _sha256(synthesized_json)
+        try:
+            frontend_report = run_phase1(
+                synthesized_json,
+                platform_path,
+                phase1_root,
+                top=top,
+                clocks=clocks,
+                indexed_staging_transform=indexed_staging_transform,
+            )
+        finally:
+            synthesized_json.unlink(missing_ok=True)
     if frontend_report["status"] != "pass":
         raise EmuFlowError(
             "multi-FPGA frontend failed capacity or clock-topology checks"
         )
+    if indexed_staging_transform is not None:
+        indexed_normalization = frontend_report["indexed_staging_transform"]
+        synthesis_report = {
+            **synthesis_report,
+            "normalization": indexed_normalization,
+            "primitive_audit": indexed_normalization["primitive_audit"],
+        }
     frontend_report = {
         **frontend_report,
         "synthesis": {
@@ -1625,8 +1654,16 @@ def run_multi_fpga_flow(
             "sources": [str(path) for path in source_list],
             "include_dirs": [str(path) for path in include_dir_list],
             "defines": define_list,
-            "yosys_json_sha256": synthesized_json_sha256,
-            "interchange_retention": "deleted-after-phase1-import",
+            **(
+                {"yosys_json_sha256": synthesized_json_sha256}
+                if synthesized_json_sha256 is not None
+                else {}
+            ),
+            "interchange_retention": (
+                "never-materialized-stream"
+                if synthesis_mode == "xilinx-ultrascaleplus-open"
+                else "deleted-after-phase1-import"
+            ),
             **(
                 {"tool_report": synthesis_report}
                 if yosys_json is None

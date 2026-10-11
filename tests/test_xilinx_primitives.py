@@ -4,12 +4,15 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
+from emuflow.ir import EmuIR
 from emuflow.xilinx_primitives import (
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     audit_xilinx_mapped_json,
     load_xilinx_primitive_library,
+    normalize_xilinx_indexed_staging,
     normalize_xilinx_mapped_json,
 )
+from emuflow.yosys import import_yosys_json_indexed
 
 
 def _cell(cell_type: str) -> dict:
@@ -21,6 +24,70 @@ def _cell(cell_type: str) -> dict:
 
 
 class XilinxPrimitiveContractTest(unittest.TestCase):
+    def test_indexed_normalization_matches_json_normalization(self) -> None:
+        value = {
+            "creator": "test",
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2]},
+                        "y": {"direction": "output", "bits": [16]},
+                    },
+                    "netnames": {
+                        "a": {"bits": [2]},
+                        "y": {"bits": [16]},
+                    },
+                    "cells": {
+                        "carry": {
+                            "type": "CARRY4",
+                            "port_directions": {
+                                "CI": "input", "CYINIT": "input",
+                                "DI": "input", "S": "input",
+                                "CO": "output", "O": "output",
+                            },
+                            "connections": {
+                                "CI": [2], "CYINIT": ["0"],
+                                "DI": [4, 5, 6, 7],
+                                "S": [8, 9, 10, 11],
+                                "CO": [12, 13, 14, 15],
+                                "O": [16, 17, 18, 19],
+                            },
+                        },
+                        "inv": {
+                            "type": "INV",
+                            "port_directions": {
+                                "I": "input", "O": "output",
+                            },
+                            "connections": {"I": [19], "O": [20]},
+                        },
+                    },
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "raw.json"
+            normalized = root / "normalized.json"
+            legacy_sqlite = root / "legacy.emuir.sqlite"
+            indexed_sqlite = root / "indexed.emuir.sqlite"
+            source.write_text(json.dumps(value), encoding="utf-8")
+            normalize_xilinx_mapped_json(source, normalized, top="top")
+            import_yosys_json_indexed(normalized, legacy_sqlite, top="top")
+            report = import_yosys_json_indexed(
+                source,
+                indexed_sqlite,
+                top="top",
+                staging_transform=normalize_xilinx_indexed_staging,
+            )
+            legacy = EmuIR.load(legacy_sqlite).value
+            indexed = EmuIR.load(indexed_sqlite).value
+        legacy["design"]["source"] = indexed["design"]["source"]
+        self.assertEqual(legacy, indexed)
+        self.assertEqual(report["output_representation"], "indexed-cell-records")
+        self.assertIsNone(report["output_sha256"])
+        self.assertEqual(report["primitive_audit"]["instances"], 10)
+
     def test_checked_in_library_is_self_consistent(self) -> None:
         _, report = load_xilinx_primitive_library()
         self.assertEqual(report["status"], "pass")

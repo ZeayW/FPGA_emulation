@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import gzip
+import io
 import os
 import re
 import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, Optional, TextIO, Tuple, TypeVar
 
 from .errors import EmuFlowError
 from .native_tools import resolve_native_executable
@@ -35,6 +36,7 @@ YOSYS_INCLUDE_DIR = re.compile(r"^[A-Za-z0-9_./:+-]+$")
 LOGIC_ONLY_MAP = (
     Path(__file__).resolve().parents[2] / "scripts" / "yosys" / "logic_only_map.v"
 )
+_T = TypeVar("_T")
 
 
 def _xilinx_mapping_strategy_options(strategy: str) -> list[str]:
@@ -331,18 +333,21 @@ def _run_yosys_streaming_gzip(
             )
             if process.stdout is None:  # pragma: no cover - guaranteed by PIPE
                 raise AssertionError("Yosys stdout pipe was not created")
-            with temporary.open("wb") as raw:
-                with gzip.GzipFile(
-                    filename="",
-                    mode="wb",
-                    compresslevel=1,
-                    fileobj=raw,
-                    mtime=0,
-                ) as compressed:
-                    for chunk in iter(lambda: process.stdout.read(1024 * 1024), b""):
-                        compressed.write(chunk)
-                raw.flush()
-                os.fsync(raw.fileno())
+            with process.stdout:
+                with temporary.open("wb") as raw:
+                    with gzip.GzipFile(
+                        filename="",
+                        mode="wb",
+                        compresslevel=1,
+                        fileobj=raw,
+                        mtime=0,
+                    ) as compressed:
+                        for chunk in iter(
+                            lambda: process.stdout.read(1024 * 1024), b""
+                        ):
+                            compressed.write(chunk)
+                    raw.flush()
+                    os.fsync(raw.fileno())
             return_code = process.wait()
         diagnostic_bytes = diagnostic.read_bytes()
         maximum = 2 * 1024 * 1024
@@ -525,6 +530,93 @@ def run_yosys(
             "Yosys reported success but did not create expected mapped "
             f"Verilog: {verilog_output}"
         )
+
+
+def run_xilinx_ultrascaleplus_yosys_stream(
+    sources: Iterable[Path],
+    top: str,
+    consumer: Callable[[TextIO], _T],
+    *,
+    executable: Optional[str] = None,
+    log_path: Optional[Path] = None,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
+    mapping_strategy: str = DEFAULT_XILINX_MAPPING_STRATEGY,
+) -> Tuple[Dict[str, Any], _T]:
+    """Pipe mapped Xilinx JSON into a bounded consumer without an artifact."""
+
+    source_list = list(sources)
+    for source in source_list:
+        if not source.is_file():
+            raise EmuFlowError(f"RTL source does not exist: {source}")
+    include_list = list(include_dirs)
+    for include_dir in include_list:
+        if not include_dir.is_dir():
+            raise EmuFlowError(
+                f"Verilog include directory does not exist: {include_dir}"
+            )
+    define_list = list(defines)
+    command = resolve_native_executable("yosys", executable)
+    script = build_yosys_script(
+        source_list,
+        top,
+        Path("<stdout>"),
+        "xcup",
+        "native",
+        include_dirs=include_list,
+        defines=define_list,
+        mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+        mapping_strategy=mapping_strategy,
+        stream_json=True,
+    )
+    diagnostic_parent = (
+        log_path.parent if log_path is not None else source_list[0].parent
+    )
+    diagnostic_parent.mkdir(parents=True, exist_ok=True)
+    diagnostic = diagnostic_parent / f".yosys-stderr-{uuid.uuid4().hex}.tmp"
+    process: Optional[subprocess.Popen[bytes]] = None
+    try:
+        with diagnostic.open("wb") as errors:
+            process = subprocess.Popen(
+                [command, "-q", "-p", script],
+                stdout=subprocess.PIPE,
+                stderr=errors,
+            )
+            if process.stdout is None:  # pragma: no cover - guaranteed by PIPE
+                raise AssertionError("Yosys stdout pipe was not created")
+            with io.TextIOWrapper(process.stdout, encoding="utf-8") as stream:
+                result = consumer(stream)
+            return_code = process.wait()
+        diagnostic_bytes = diagnostic.read_bytes()
+        diagnostic_text = diagnostic_bytes[-2 * 1024 * 1024 :].decode(
+            "utf-8", errors="replace"
+        )
+        if log_path is not None:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(diagnostic_text, encoding="utf-8")
+        if return_code != 0:
+            tail = "\n".join(diagnostic_text.splitlines()[-20:])
+            raise EmuFlowError(
+                "Xilinx Yosys synthesis failed with exit code "
+                f"{return_code}\n{tail}"
+            )
+        return (
+            {
+                "status": "pass",
+                "provider": "yosys-synth-xilinx",
+                "family": "xcup",
+                "policy": "native",
+                "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+                "mapping_strategy": mapping_strategy,
+                "interchange": "stdout-to-indexed-phase1",
+            },
+            result,
+        )
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        diagnostic.unlink(missing_ok=True)
 
 
 def run_xilinx_ultrascaleplus_yosys(

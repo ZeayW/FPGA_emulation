@@ -145,6 +145,11 @@ An optional Vivado provider implements the same timing and physical-result
 contracts for a concrete Xilinx part. Vivado is proprietary, is not bundled,
 and is never required by the default open path.
 
+The production Xilinx frontend uses a direct Yosys-stdout-to-indexed-EmuIR
+pipeline. Complete synthesized graphs are not stored as JSON intermediates;
+only compact reports and canonical `design.emuir.sqlite` cross the Phase 1
+boundary.
+
 The next platform-modeling increment is specified in the
 [PPro black-box platform calibration plan](docs/PPRO_BLACKBOX_PLATFORM_CALIBRATION_PLAN.md).
 It combines public S2C/AMD specifications with controlled observations from
@@ -5655,18 +5660,19 @@ path.  Its Yosys backend writes signal-bit identifiers directly instead of
 retaining a string for every bit, omits only automatically generated hidden
 net names and `src` location attributes, and retains all user-visible names,
 cell parameters, preservation attributes, port directions, and connections.
-For the Xilinx profile, the backend JSON stream is written directly to a
-deterministic level-1 gzip artifact; it is never first materialized as a
-multi-gigabyte uncompressed checkpoint.  Normalization reads that compressed
-scratch artifact and removes it after producing the normalized
-`synthesized.json.gz`.  Generic and VTR profiles keep their existing explicit
-formats and are not selected by this Xilinx path.
-The Xilinx normalizer then mutates that owned document in place, emits it
-without a multi-million-key re-sort, and audits the same in-memory object
-instead of deep-copying and re-reading it.  These are representation-only
-changes: primitive inventory, connectivity, resource accounting, and the
-physical naming contract remain authoritative and are covered by the same
-fail-closed audit.
+For the Xilinx profile, production Yosys JSON is never stored as a frontend
+artifact, compressed or otherwise.  Yosys stdout is connected directly to the
+Phase 1 importer with OS-pipe backpressure.  The importer decodes one top-port,
+cell, or net-name record at a time into a temporary indexed SQLite transaction;
+the Xilinx primitive normalizer transforms those indexed cell records in place
+and Phase 1 publishes only canonical `design.emuir.sqlite`.  The transaction is
+removed on success or failure.  There is no raw or normalized
+`synthesized.json`, no graph-sized Python dictionary, and no repeated JSON hash
+in this production path.  Explicit user-supplied JSON and standalone
+normalizer qualification commands remain supported as import/test surfaces,
+not as internal Phase 1--7 checkpoints.  Primitive inventory, connectivity,
+resource accounting, and the physical naming contract remain authoritative and
+are covered by the same fail-closed audit.
 Distributed RAM and SRL inference are lowered in this first packer profile.
 Every final mapped cell must belong to the checked-in
 `xilinx-ultrascaleplus-open-v1.primitives.json` namespace; unknown cells,
@@ -6381,3 +6387,18 @@ units remain **unknown**, not estimated from bit-slice atoms or total cells.
 Historical summaries without resource measurements also remain unknown.
 BoardDB-relative loading does not certify physical-device capacity equivalence;
 do not shrink an academic BoardDB and describe it as a smaller physical device.
+
+## Phase 1 direct-stream indexed frontend
+
+The Route A production frontend now connects Yosys stdout directly to the
+indexed Phase 1 importer. Primitive lowering and fail-closed namespace/resource
+audit operate over per-cell SQLite records, after which the temporary
+transaction is removed. The retained frontend contains canonical indexed
+EmuIR plus compact reports; it contains neither raw nor normalized whole-graph
+JSON. Standalone JSON normalization remains an explicit qualification/import
+surface and is not called by the complete Phase 1--7 flow.
+
+The direct indexed normalizer is regression-checked against the legacy JSON
+normalizer for logical EmuIR equality, including CARRY4-to-CARRY8 lowering,
+carry route-through helpers, and INV lowering. Stream orchestration tests also
+assert that no mapped JSON artifact is created.

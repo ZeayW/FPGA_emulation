@@ -1,4 +1,5 @@
 import subprocess
+import json
 import tempfile
 import textwrap
 import unittest
@@ -15,11 +16,51 @@ from emuflow.synthesis import (
     build_yosys_script,
     run_generic_yosys,
     run_yosys,
+    run_xilinx_ultrascaleplus_yosys_stream,
 )
 from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 class SynthesisTest(unittest.TestCase):
+    def test_xilinx_json_can_pipe_directly_to_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "design.v"
+            source.write_text("module design; endmodule\n", encoding="utf-8")
+            executable = root / "fake-yosys"
+            executable.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import json
+                    import sys
+                    sys.stderr.write("diagnostic tail\\n")
+                    json.dump({"modules": {"design": {"cells": {}}}}, sys.stdout)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            log = root / "yosys.log"
+
+            report, consumed = run_xilinx_ultrascaleplus_yosys_stream(
+                [source],
+                "design",
+                json.load,
+                executable=str(executable),
+                log_path=log,
+            )
+
+            self.assertEqual(
+                consumed,
+                {"modules": {"design": {"cells": {}}}},
+            )
+            self.assertEqual(report["interchange"], "stdout-to-indexed-phase1")
+            self.assertEqual(log.read_text(encoding="utf-8"), "diagnostic tail\n")
+            self.assertEqual(
+                [path for path in root.iterdir() if "mapped" in path.name], []
+            )
+
     def test_xilinx_json_can_stream_directly_to_gzip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

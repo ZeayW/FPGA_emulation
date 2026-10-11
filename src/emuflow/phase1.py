@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, Optional, TextIO
 
 from .emuir_storage import open_emuir_sqlite_read_only
 from .io import write_json
@@ -205,15 +205,19 @@ def run_phase1(
     top: Optional[str] = None,
     clocks: Iterable[str] = (),
     require_no_fabric_clock: bool = False,
+    indexed_staging_transform: Optional[Callable[..., Dict[str, Any]]] = None,
+    yosys_stream: Optional[TextIO] = None,
 ) -> Dict[str, Any]:
     platform = Platform.load(platform_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     ir_path = output_dir / "design.emuir.sqlite"
-    import_yosys_json_indexed(
+    transform_report = import_yosys_json_indexed(
         yosys_json,
         ir_path,
         top=top,
         clocks=clocks,
+        staging_transform=indexed_staging_transform,
+        _source_stream=yosys_stream,
     )
     design_name, warnings, totals, cut_classes = indexed_phase1_facts(ir_path)
 
@@ -269,6 +273,11 @@ def run_phase1(
         "clock_topology": clock_topology,
         "require_no_fabric_clock": require_no_fabric_clock,
         "warnings": warnings,
+        **(
+            {"indexed_staging_transform": transform_report}
+            if transform_report is not None
+            else {}
+        ),
         "artifacts": {
             "emuir": "design.emuir.sqlite",
             "platform": "platform.normalized.json",
