@@ -148,7 +148,10 @@ and is never required by the default open path.
 The production Xilinx frontend uses a direct Yosys-stdout-to-indexed-EmuIR
 pipeline. Complete synthesized graphs are not stored as JSON intermediates;
 only compact reports and canonical `design.emuir.sqlite` cross the Phase 1
-boundary.
+boundary. This applies equally to the one-shot Phase 1--7 driver and the
+canonical experiment/checkpoint entry point: generated Yosys JSON is neither a
+checkpoint artifact nor retained evidence. Explicit user-supplied JSON remains
+an import surface, not an internally generated production representation.
 
 The next platform-modeling increment is specified in the
 [PPro black-box platform calibration plan](docs/PPRO_BLACKBOX_PLATFORM_CALIBRATION_PLAN.md).

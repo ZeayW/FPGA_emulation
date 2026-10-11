@@ -47,17 +47,21 @@ from .sta import (
     project_sta_path_database_value,
     validate_sta_path_database_value,
 )
-from .synthesis import run_generic_yosys, run_xilinx_ultrascaleplus_yosys
+from .synthesis import (
+    run_generic_yosys,
+    run_xilinx_ultrascaleplus_yosys_stream,
+)
 from .tdm import TDM_BASELINE_PROVIDER, is_sampled_virtual_wire_schedule
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_netlist import normalize_vtr_hard_block_json
 from .xilinx_primitives import (
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     audit_xilinx_mapped_json,
+    normalize_xilinx_indexed_staging,
 )
 
 
-EXPERIMENT_FRONTEND_SCHEMA = "emuflow.experiment-frontend-checkpoint/v1"
+EXPERIMENT_FRONTEND_SCHEMA = "emuflow.experiment-frontend-checkpoint/v2"
 EXPERIMENT_TIMING_SCHEMA = "emuflow.experiment-timing-checkpoint/v1"
 EXPERIMENT_PARTITION_SCHEMA = "emuflow.experiment-partition-checkpoint/v1"
 EXPERIMENT_CUT_TIMING_SCHEMA = "emuflow.experiment-cut-timing-checkpoint/v5"
@@ -204,6 +208,8 @@ def run_frontend_checkpoint(
     )
     synthesis_report: Dict[str, Any] | None = None
     normalization_report: Dict[str, Any] | None = None
+    phase1: Dict[str, Any] | None = None
+    interchange_retention = "deleted-after-phase1-import"
     if yosys_json is not None:
         if sources:
             raise EmuFlowError("frontend checkpoint accepts RTL or Yosys JSON, not both")
@@ -259,26 +265,51 @@ def run_frontend_checkpoint(
             )
             mode = "generic-lut6-ff"
         elif mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
-            synthesis_report = run_xilinx_ultrascaleplus_yosys(
+            synthesis_report, phase1 = run_xilinx_ultrascaleplus_yosys_stream(
                 sources,
                 top,
-                synthesized,
+                lambda stream: run_phase1(
+                    Path("<yosys-stdout>"),
+                    platform_path,
+                    output_dir / "phase1",
+                    top=top,
+                    clocks=clocks,
+                    require_no_fabric_clock=require_no_fabric_clock,
+                    indexed_staging_transform=normalize_xilinx_indexed_staging,
+                    yosys_stream=stream,
+                ),
                 executable=yosys,
                 log_path=output_dir / "yosys.log",
             )
             mode = "xilinx-ultrascaleplus-open"
+            interchange_retention = "never-materialized-stream"
         else:
             raise ValidationError("frontend mapping profile is invalid")
-    phase1 = run_phase1(
-        synthesized,
-        platform_path,
-        output_dir / "phase1",
-        top=top,
-        clocks=clocks,
-        require_no_fabric_clock=require_no_fabric_clock,
-    )
+    if phase1 is None:
+        try:
+            phase1 = run_phase1(
+                synthesized,
+                platform_path,
+                output_dir / "phase1",
+                top=top,
+                clocks=clocks,
+                require_no_fabric_clock=require_no_fabric_clock,
+            )
+        finally:
+            # Yosys JSON is an interchange stream, never a Phase 1 checkpoint.
+            # An explicitly supplied JSON remains available exactly once under
+            # sources/ as a declared source input; generated JSON is discarded.
+            synthesized.unlink(missing_ok=True)
+            (output_dir / "vtr-hard-block-atoms.json").unlink(missing_ok=True)
     if phase1.get("status") != "pass":
         raise ValidationError(f"frontend Phase 1 failed: {phase1.get('status')}")
+    if interchange_retention == "never-materialized-stream":
+        indexed_normalization = phase1["indexed_staging_transform"]
+        synthesis_report = {
+            **(synthesis_report or {}),
+            "normalization": indexed_normalization,
+            "primitive_audit": indexed_normalization["primitive_audit"],
+        }
     report = {
         "schema": EXPERIMENT_FRONTEND_SCHEMA,
         "status": "pass",
@@ -290,7 +321,7 @@ def run_frontend_checkpoint(
         "clocks": sorted(set(clocks)),
         "require_no_fabric_clock": require_no_fabric_clock,
         "source_artifacts": source_records,
-        "synthesized_artifact": synthesized.name,
+        "interchange_retention": interchange_retention,
         "phase1": phase1,
         **({"synthesis": synthesis_report} if synthesis_report is not None else {}),
         **(
@@ -308,7 +339,6 @@ def run_frontend_checkpoint(
                     record["original_path"]: record["sha256"]
                     for record in source_records
                 },
-                "synthesized_sha256": _sha256(synthesized),
                 "emuir_sha256": _sha256(output_dir / "phase1/design.emuir.sqlite"),
                 "platform_sha256": _sha256(platform_path.resolve()),
                 "phase1_report_sha256": _sha256(
@@ -336,10 +366,20 @@ def validate_frontend_checkpoint(
             raise ValidationError("frontend managed-validation contract is invalid")
     elif report.get("validation_mode") is not None:
         raise ValidationError("frontend checkpoint requires managed validation")
-    synthesized_name = report.get("synthesized_artifact")
-    if synthesized_name not in {"synthesized.json", "synthesized.json.gz"}:
-        raise ValidationError("frontend synthesized artifact is invalid")
-    synthesized = _require(root, synthesized_name)
+    if report.get("interchange_retention") not in {
+        "never-materialized-stream",
+        "deleted-after-phase1-import",
+    }:
+        raise ValidationError("frontend interchange-retention contract is invalid")
+    for forbidden in (
+        "synthesized.json",
+        "synthesized.json.gz",
+        "vtr-hard-block-atoms.json",
+    ):
+        if (root / forbidden).exists():
+            raise ValidationError(
+                "frontend checkpoint retained forbidden graph JSON: " + forbidden
+            )
     ir_path = _require(root, "phase1/design.emuir.sqlite")
     phase1_path = _require(root, "phase1/phase1_report.json")
     normalized_platform = _require(root, "phase1/platform.normalized.json")
@@ -376,8 +416,6 @@ def validate_frontend_checkpoint(
             for record in source_records
         }:
             raise ValidationError("frontend source provenance is inconsistent")
-        if report.get("synthesized_sha256") != _sha256(synthesized):
-            raise ValidationError("frontend synthesized JSON seal is broken")
         if report.get("emuir_sha256") != _sha256(ir_path):
             raise ValidationError("frontend EmuIR seal is broken")
         if report.get("phase1_report_sha256") != _sha256(phase1_path):

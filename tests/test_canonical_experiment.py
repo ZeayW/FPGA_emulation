@@ -202,6 +202,10 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "vtr-hard-blocks",
             )
             self.assertEqual(
+                {artifact["path"] for artifact in nodes["frontend"]["artifacts"]},
+                {"sources", "phase1", "experiment-frontend-report.json"},
+            )
+            self.assertEqual(
                 nodes["frontend"]["command_identity"][0],
                 "{input:tool.emuflow}",
             )

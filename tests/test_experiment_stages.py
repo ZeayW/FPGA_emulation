@@ -33,6 +33,7 @@ from emuflow.experiment_upstream import (
 from emuflow.io import read_json, write_json
 from emuflow.pin_planning import SIGNAL_POSITION_HINTS_SCHEMA
 from emuflow.runtime import QOR_REPORT_SCHEMA
+from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 class ExperimentStagesTest(unittest.TestCase):
@@ -407,11 +408,60 @@ class ExperimentStagesTest(unittest.TestCase):
                 (output / report["source_artifacts"][0]["artifact"]).is_file()
             )
             self.assertEqual(
+                report["interchange_retention"],
+                "deleted-after-phase1-import",
+            )
+            self.assertFalse((output / "synthesized.json").exists())
+            self.assertFalse((output / "synthesized.json.gz").exists())
+            self.assertEqual(
                 validate_frontend_checkpoint(output, platform)["status"], "pass"
             )
             (output / "phase1/design.emuir.sqlite").write_bytes(b"corrupt")
             with self.assertRaisesRegex(Exception, "EmuIR seal"):
                 validate_frontend_checkpoint(output, platform)
+
+    def test_xilinx_frontend_checkpoint_streams_without_graph_json(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        platform = repository / "platforms/virtual/xcvu3p_2fpga_p2p.json"
+        mapped = repository / "examples/yosys/counter.json"
+
+        def stream_yosys(sources, top, consumer, **kwargs):
+            del sources, top, kwargs
+            with mapped.open("r", encoding="utf-8") as stream:
+                phase1 = consumer(stream)
+            return (
+                {
+                    "status": "pass",
+                    "provider": "test-yosys",
+                    "interchange": "stdout-to-indexed-phase1",
+                },
+                phase1,
+            )
+
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "emuflow.experiment_upstream.run_xilinx_ultrascaleplus_yosys_stream",
+            side_effect=stream_yosys,
+        ):
+            output = Path(temporary) / "frontend"
+            report = run_frontend_checkpoint(
+                platform,
+                output,
+                sources=[repository / "examples/rtl/counter.v"],
+                top="counter",
+                clocks=["clk"],
+                mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            )
+            self.assertEqual(
+                report["interchange_retention"],
+                "never-materialized-stream",
+            )
+            self.assertFalse((output / "synthesized.json").exists())
+            self.assertFalse((output / "synthesized.json.gz").exists())
+            self.assertTrue((output / "phase1/design.emuir.sqlite").is_file())
+            self.assertEqual(
+                validate_frontend_checkpoint(output, platform)["status"],
+                "pass",
+            )
 
     def test_checkpoint_runner_accepts_precreated_empty_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
