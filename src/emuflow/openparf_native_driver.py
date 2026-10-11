@@ -120,22 +120,23 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
         engine._emuflow_best_feasible_position = None
 
     maximum_iterations = int(engine.params.max_global_place_iters)
-    if iteration >= maximum_iterations:
-        _restore_best_feasible(engine, state)
-        state["stop_reason"] = (
-            "maximum-iterations-feasible"
-            if state["restored_best_feasible"]
-            else "maximum-iterations-infeasible"
-        )
-        return True
+    at_iteration_limit = iteration >= maximum_iterations
     if not _has_active_area_type(engine):
         _restore_best_feasible(engine, state)
         state["stop_reason"] = "empty-active-subspace"
         return True
-    if not _area_adjustment_is_finished(engine):
+    if not _area_adjustment_is_finished(engine) and not at_iteration_limit:
         return False
     if not _active_overflow_is_feasible(engine, current):
         state["consecutive_feasible_samples"] = 0
+        if at_iteration_limit:
+            _restore_best_feasible(engine, state)
+            state["stop_reason"] = (
+                "maximum-iterations-feasible"
+                if state["restored_best_feasible"]
+                else "maximum-iterations-infeasible"
+            )
+            return True
         return False
 
     hpwl = _weighted_hpwl(engine, current)
@@ -158,6 +159,15 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
         engine._emuflow_best_feasible_position = (
             engine.data_cls.pos[0].data.clone()
         )
+
+    # The iteration-limit sample is a real optimization result.  Record and
+    # restore it before deciding whether bounded placement succeeded; checking
+    # the limit before the current density metric incorrectly rejected runs
+    # whose first feasible point occurred exactly at the final iteration.
+    if at_iteration_limit:
+        _restore_best_feasible(engine, state)
+        state["stop_reason"] = "maximum-iterations-feasible"
+        return True
 
     best_iteration = int(state["best_feasible_iteration"])
     minimum_feasible_iterations = int(

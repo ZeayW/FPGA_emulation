@@ -98,6 +98,24 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             "maximum-iterations-feasible",
         )
 
+    def test_first_feasible_sample_at_iteration_limit_is_accepted(self):
+        engine = _engine(patience=100, minimum=100)
+        engine.data_cls.pos[0].data.fill_(7.0)
+        self.assertFalse(stable_native_stop_condition(
+            engine, [_metric(99, [2, 2], overflow=(0.2, 0.2, 0.9))]
+        ))
+        engine.data_cls.pos[0].data.fill_(9.0)
+        self.assertTrue(stable_native_stop_condition(
+            engine, [_metric(100, [3, 3], overflow=(0.1, 0.09, 0.9))]
+        ))
+        self.assertTrue(torch.equal(
+            engine.data_cls.pos[0], torch.full((1, 2), 9.0, dtype=torch.float64)
+        ))
+        state = engine._emuflow_stable_convergence
+        self.assertEqual(state["first_feasible_iteration"], 100)
+        self.assertEqual(state["best_feasible_iteration"], 100)
+        self.assertEqual(state["stop_reason"], "maximum-iterations-feasible")
+
     def test_validates_compact_native_certificate(self):
         value = {
             "schema": OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
