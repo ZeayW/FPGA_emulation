@@ -272,6 +272,62 @@ class XilinxPrimitiveContractTest(unittest.TestCase):
             sum(cell["type"] == "LUT6_2" for cell in cells.values()), 8
         )
 
+    def test_carry8_shared_output_exit_is_legalized_with_exact_xor(self) -> None:
+        value = {
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "co1": {"direction": "output", "bits": [13]},
+                        "o0": {"direction": "output", "bits": [16]},
+                        "o1": {"direction": "output", "bits": [17]},
+                    },
+                    "cells": {
+                        "carry": {
+                            "type": "CARRY4",
+                            "port_directions": {
+                                "CI": "input", "CYINIT": "input",
+                                "DI": "input", "S": "input",
+                                "CO": "output", "O": "output",
+                            },
+                            "connections": {
+                                "CI": [2], "CYINIT": ["0"],
+                                "DI": [4, 5, 6, 7],
+                                "S": [8, 9, 10, 11],
+                                "CO": [12, 13, 14, 15],
+                                "O": [16, 17, 18, 19],
+                            },
+                        }
+                    },
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "raw.json"
+            output = Path(temporary) / "normalized.json"
+            source.write_text(json.dumps(value), encoding="utf-8")
+            report = normalize_xilinx_mapped_json(source, output, top="top")
+            normalized = json.loads(output.read_text(encoding="utf-8"))
+        cells = normalized["modules"]["top"]["cells"]
+        carry = cells["carry"]
+        self.assertEqual(report["carry_output_legalizer_lut_cells"], 2)
+        self.assertNotEqual(carry["connections"]["O"][0], 16)
+        self.assertNotEqual(carry["connections"]["O"][1], 17)
+        self.assertEqual(carry["connections"]["CO"][:2], [12, 13])
+        first = cells["carry$carry_o_legalizer_0"]
+        second = cells["carry$carry_o_legalizer_1"]
+        self.assertEqual(first["parameters"]["INIT"], "0110")
+        self.assertEqual(first["connections"], {
+            "I0": [8], "I1": [2], "O": [16],
+        })
+        self.assertEqual(second["connections"], {
+            "I0": [9], "I1": [12], "O": [17],
+        })
+        self.assertEqual(
+            first["attributes"]["emuflow_normalized"],
+            "carry8-shared-exit-xor-v1",
+        )
+
     def test_unused_carry_output_is_materialized_as_dead_carry8_nets(self) -> None:
         value = {
             "modules": {

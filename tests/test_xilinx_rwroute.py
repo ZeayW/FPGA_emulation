@@ -569,6 +569,56 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertEqual(report["routable_nets"], 0)
         self.assertIn("EXCLUDED\tn1\tintra_site", text)
 
+    def test_exporter_rejects_two_routed_carry8_outputs_on_one_site_exit(self):
+        mapped = {
+            "modules": {"top": {"cells": {
+                "carry": {
+                    "type": "CARRY8",
+                    "port_directions": {"CO": "output", "O": "output"},
+                    "connections": {
+                        "CO": ["x", 10, "x", "x", "x", "x", "x", "x"],
+                        "O": ["x", 11, "x", "x", "x", "x", "x", "x"],
+                    },
+                },
+                "co_sink": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [10]},
+                },
+                "o_sink": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [11]},
+                },
+            }}}
+        }
+        assignments = [
+            {"instance": "carry", "cell_type": "CARRY8", "bel": "CARRY8"},
+            {"instance": "co_sink", "cell_type": "FDRE", "bel": "AFF"},
+            {"instance": "o_sink", "cell_type": "FDRE", "bel": "BFF"},
+        ]
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+            "clusters": [{"assignments": assignments}],
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
+                {"instance": "carry", "bel": "CARRY8", "site": "SLICE_X0Y0"},
+                {"instance": "co_sink", "bel": "AFF", "site": "SLICE_X0Y1"},
+                {"instance": "o_sink", "bel": "BFF", "site": "SLICE_X0Y2"},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / name for name in (
+                "mapped.json", "packed.json", "placement.json"
+            )]
+            for path, value in zip(paths, (mapped, packed, placement)):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "CARRY8 shared site exit is multiply driven"
+            ):
+                export_rwroute_input(*paths, root / "route.tsv")
+
     def test_exporter_qualifies_driverless_boundary_clock(self):
         mapped = {
             "modules": {"top": {"cells": {

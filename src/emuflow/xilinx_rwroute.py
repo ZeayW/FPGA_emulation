@@ -495,6 +495,7 @@ def export_rwroute_input(
 
     included = 0
     excluded = 0
+    carry_exit_owners: Dict[Tuple[str, int], Tuple[str, str]] = {}
     for bit in sorted(endpoints):
         values = endpoints[bit]
         drivers = [value for value in values if value[2] == "driver"]
@@ -522,6 +523,22 @@ def export_rwroute_input(
             lines.append(f"EXCLUDED\t{net_name}\tintra_site")
             excluded += 1
             continue
+        driver_cell, driver_pin, _driver_role = drivers[0]
+        if cells[driver_cell].get("type") == "CARRY8":
+            match = re.fullmatch(r"(CO|O)\[(\d+)\]", driver_pin)
+            if match is not None and int(match.group(2)) < 7:
+                exit_key = (driver_cell, int(match.group(2)))
+                previous = carry_exit_owners.setdefault(
+                    exit_key, (match.group(1), net_name)
+                )
+                if previous[0] != match.group(1):
+                    raise ValidationError(
+                        "CARRY8 shared site exit is multiply driven: "
+                        f"{driver_cell!r} bit {exit_key[1]} routes both "
+                        f"{previous[0]} ({previous[1]}) and "
+                        f"{match.group(1)} ({net_name}); normalize the "
+                        "observable O prefix before physical routing"
+                    )
         kind = "clock" if boundary_clock else "signal"
         lines.append(f"NET\t{net_name}\t{kind}")
         for name, pin, role in [drivers[0], *sinks]:

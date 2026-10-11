@@ -5,6 +5,7 @@ from pathlib import Path
 
 from emuflow.equivalence import _MappedModel
 from emuflow.errors import ValidationError
+from emuflow.xilinx_primitives import normalize_xilinx_mapped_json
 from emuflow.yosys import import_yosys_json
 
 
@@ -186,6 +187,73 @@ class XilinxEquivalencePrimitiveTest(unittest.TestCase):
                 self.assertEqual(
                     self._output_value(outputs, "o", 8), expected_o
                 )
+
+    def test_normalized_shared_carry_outputs_remain_exact(self):
+        ports = {
+            "ci": {"direction": "input", "bits": [2]},
+            "di": {"direction": "input", "bits": list(range(3, 7))},
+            "s": {"direction": "input", "bits": list(range(7, 11))},
+            "co": {"direction": "output", "bits": list(range(11, 15))},
+            "o": {"direction": "output", "bits": list(range(15, 19))},
+        }
+        raw = {
+            "modules": {"top": {
+                "attributes": {"top": "1"},
+                "ports": ports,
+                "netnames": {
+                    name: {"bits": definition["bits"]}
+                    for name, definition in ports.items()
+                },
+                "cells": {"carry": {
+                    "type": "CARRY4", "parameters": {}, "attributes": {},
+                    "port_directions": {
+                        "CI": "input", "CYINIT": "input", "DI": "input",
+                        "S": "input", "CO": "output", "O": "output",
+                    },
+                    "connections": {
+                        "CI": [2], "CYINIT": ["0"],
+                        "DI": list(range(3, 7)),
+                        "S": list(range(7, 11)),
+                        "CO": list(range(11, 15)),
+                        "O": list(range(15, 19)),
+                    },
+                }},
+            }}
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "raw.json"
+            normalized = Path(temporary) / "normalized.json"
+            source.write_text(json.dumps(raw), encoding="utf-8")
+            report = normalize_xilinx_mapped_json(source, normalized, top="top")
+            model = _MappedModel(
+                import_yosys_json(normalized, top="top", clocks=[])
+            )
+        self.assertEqual(report["carry_output_legalizer_lut_cells"], 4)
+        for ci in (0, 1):
+            for data in range(16):
+                for select in range(16):
+                    inputs = {("ci", 0): ci}
+                    inputs.update(self._input_values("di", 4, data))
+                    inputs.update(self._input_values("s", 4, select))
+                    _values, _next_state, outputs = model.evaluate(
+                        model.initial_state(), 0, 1, input_values=inputs
+                    )
+                    carry = ci
+                    expected_co = 0
+                    expected_o = 0
+                    for bit in range(4):
+                        expected_o |= (((select >> bit) & 1) ^ carry) << bit
+                        carry = (
+                            carry if (select >> bit) & 1
+                            else (data >> bit) & 1
+                        )
+                        expected_co |= carry << bit
+                    self.assertEqual(
+                        self._output_value(outputs, "co", 4), expected_co
+                    )
+                    self.assertEqual(
+                        self._output_value(outputs, "o", 4), expected_o
+                    )
 
     def test_dsp48e2_matches_yosys_combinational_signed_multiply(self):
         a_bits = list(range(2, 32))

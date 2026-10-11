@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -215,23 +215,76 @@ def normalize_xilinx_mapped_json(
             + ", ".join(repr(value) for value in unknown)
         )
 
+    carry_names = sorted(
+        name for name, cell in cells.items() if cell.get("type") == "CARRY4"
+    )
+    carry_output_nets = {
+        bit
+        for name in carry_names
+        for port in ("CO", "O")
+        for bit in (
+            cells[name].get("connections", {}).get(port, [])
+            if isinstance(cells[name].get("connections"), dict) else []
+        )
+        if isinstance(bit, int) and not isinstance(bit, bool)
+    }
+    net_consumers: Dict[Any, List[Tuple[str, str, int]]] = defaultdict(list)
     max_net = 1
-    for cell in cells.values():
+    for consumer_name, cell in cells.items():
         if not isinstance(cell, dict):
             raise ValidationError("mapped Yosys JSON cell is invalid")
         connections = cell.get("connections")
         if not isinstance(connections, dict):
             raise ValidationError("mapped Yosys JSON cell connections are invalid")
-        for bits in connections.values():
+        directions = cell.get("port_directions")
+        if not isinstance(directions, dict):
+            raise ValidationError(
+                f"mapped cell {consumer_name!r} has invalid pin metadata"
+            )
+        for port, bits in connections.items():
             if isinstance(bits, list):
-                for bit in bits:
+                for bit_index, bit in enumerate(bits):
                     if isinstance(bit, int):
                         max_net = max(max_net, bit)
+                    if (
+                        isinstance(bit, int)
+                        and not isinstance(bit, bool)
+                        and bit in carry_output_nets
+                        and directions.get(port) in {"input", "inout"}
+                    ):
+                        net_consumers[bit].append(
+                            (consumer_name, str(port), bit_index)
+                        )
 
     def allocate_net() -> int:
         nonlocal max_net
         max_net += 1
         return max_net
+
+    # CARRY8 exposes O[i] and CO[i] through the same general-fabric site exit
+    # for bits 0..6.  The primitive may use both values internally, but both
+    # cannot independently leave the slice through that one pin.  Record the
+    # real consumers before replacing any CARRY4 cells so the normalizer can
+    # legalize only output pairs that are simultaneously observable.  A module
+    # output is a consumer from the cell's perspective.
+    module_ports = module.get("ports", {})
+    if module_ports is not None and not isinstance(module_ports, dict):
+        raise ValidationError("mapped Yosys JSON ports are invalid")
+    for port, definition in (module_ports or {}).items():
+        if not isinstance(definition, dict):
+            raise ValidationError(f"mapped top port {port!r} is invalid")
+        if definition.get("direction") not in {"output", "inout"}:
+            continue
+        bits = definition.get("bits")
+        if not isinstance(bits, list):
+            raise ValidationError(f"mapped top port {port!r} bits are invalid")
+        for bit_index, bit in enumerate(bits):
+            if (
+                isinstance(bit, int)
+                and not isinstance(bit, bool)
+                and bit in carry_output_nets
+            ):
+                net_consumers[bit].append(("$top", str(port), bit_index))
 
     def output_connection(
         cell: Mapping[str, Any], port: str, width: int, instance: str
@@ -276,9 +329,6 @@ def normalize_xilinx_mapped_json(
         cell["type"] = normalized_type
         negedge_ff_count += 1
 
-    carry_names = sorted(
-        name for name, cell in cells.items() if cell.get("type") == "CARRY4"
-    )
     carry_by_ci: Dict[Any, List[str]] = {}
     for name in carry_names:
         ci = _connection(cells[name], "CI", 1, name)[0]
@@ -291,6 +341,7 @@ def normalize_xilinx_mapped_json(
     paired = 0
     single = 0
     helpers: Dict[str, Any] = {}
+    carry_output_legalizers = 0
     for name in carry_names:
         if name in removed:
             continue
@@ -324,6 +375,12 @@ def normalize_xilinx_mapped_json(
             paired += 1
         else:
             single += 1
+        effective_ci = _carry_input(
+            first,
+            name,
+            allocate_net=allocate_net,
+            helper_cells=helpers,
+        )
         replacement[name] = {
             "hide_name": first.get("hide_name", 0),
             "type": "CARRY8",
@@ -345,14 +402,7 @@ def normalize_xilinx_mapped_json(
                 "O": "output",
             },
             "connections": {
-                "CI": [
-                    _carry_input(
-                        first,
-                        name,
-                        allocate_net=allocate_net,
-                        helper_cells=helpers,
-                    )
-                ],
+                "CI": [effective_ci],
                 "CI_TOP": ["0"],
                 "DI": di,
                 "S": s,
@@ -360,6 +410,61 @@ def normalize_xilinx_mapped_json(
                 "O": o,
             },
         }
+
+        # O[i] and CO[i] share one fabric exit for CARRY8 bits 0..6.  When both
+        # values have non-cascade consumers, keep CO on the hard carry and
+        # reconstruct the observable O prefix with exact XOR LUTs.  Rewriting
+        # the complete prefix is necessary because O[i] depends on CO[i-1]; it
+        # also prevents the newly exposed carry-in from colliding with O[i-1].
+        # Bit 7 is excluded because CARRY8 has the dedicated COUT exit in
+        # addition to HMUX.
+        ignored_cascade = (
+            {(second_name, "CI", 0)} if second_name is not None else set()
+        )
+
+        def externally_used(signal: Any) -> bool:
+            return any(
+                endpoint not in ignored_cascade
+                for endpoint in net_consumers.get(signal, ())
+            )
+
+        conflicts = [
+            bit_index for bit_index in range(7)
+            if externally_used(co[bit_index]) and externally_used(o[bit_index])
+        ]
+        if conflicts:
+            legalize_through = max(conflicts)
+            for bit_index in range(legalize_through + 1):
+                original_o = o[bit_index]
+                replacement[name]["connections"]["O"][bit_index] = allocate_net()
+                if not externally_used(original_o):
+                    continue
+                if bit_index == 0:
+                    carry_in = effective_ci
+                elif bit_index == 4 and carry_type == "DUAL_CY4":
+                    carry_in = "0"
+                else:
+                    carry_in = co[bit_index - 1]
+                helper_name = f"{name}$carry_o_legalizer_{bit_index}"
+                helpers[helper_name] = {
+                    "hide_name": 1,
+                    "type": "LUT2",
+                    "parameters": {"INIT": "0110"},
+                    "attributes": {
+                        "emuflow_normalized": "carry8-shared-exit-xor-v1",
+                        "emuflow_carry_owner": name,
+                        "emuflow_carry_bit": str(bit_index),
+                    },
+                    "port_directions": {
+                        "I0": "input", "I1": "input", "O": "output",
+                    },
+                    "connections": {
+                        "I0": [s[bit_index]],
+                        "I1": [carry_in],
+                        "O": [original_o],
+                    },
+                }
+                carry_output_legalizers += 1
 
         # UltraScale+ exposes CARRY8 DI[i] through the corresponding LUT O5
         # and S[i] through O6; neither is an inter-site sink pin.  A LUT6_2
@@ -496,6 +601,7 @@ def normalize_xilinx_mapped_json(
         "inv_lowered_cells": inv_count,
         "negedge_ff_normalized_cells": negedge_ff_count,
         "mux_constant_lut_cells": mux_constant_lut_count,
+        "carry_output_legalizer_lut_cells": carry_output_legalizers,
         "carry_route_through_lut6_2_cells": 8 * (paired + single),
         "helper_lut_cells": len(helpers),
         "primitive_audit": audit,
