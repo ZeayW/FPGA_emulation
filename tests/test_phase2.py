@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from emuflow.architecture import ArchitectureDB, compatible_cells_for_bel
 from emuflow.errors import ImportError, ValidationError
 from emuflow.ir import EmuIR
 from emuflow.openparf import (
+    _openparf_environment,
     _lut_size,
     openparf_instance_names,
     resolve_openparf_install,
@@ -26,6 +28,43 @@ IR_FIXTURE = ROOT / "examples/yosys/counter.json"
 
 
 class ArchitectureDBTest(unittest.TestCase):
+    def test_openparf_environment_selects_the_child_torch_abi(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            installation = root / "openparf-install"
+            installation.mkdir()
+            python = root / "child" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.write_text("", encoding="utf-8")
+            child_torch = (
+                root / "child" / "lib" / "python3.8"
+                / "site-packages" / "torch" / "lib"
+            )
+            child_torch.mkdir(parents=True)
+            foreign_torch = (
+                root / "coordinator" / "lib" / "python3.10"
+                / "site-packages" / "torch" / "lib"
+            )
+            foreign_torch.mkdir(parents=True)
+            preserved = root / "native-libraries"
+            with mock.patch.dict(
+                "os.environ",
+                {"LD_LIBRARY_PATH": os.pathsep.join((
+                    str(foreign_torch), str(preserved),
+                ))},
+                clear=False,
+            ):
+                environment = _openparf_environment(
+                    installation, python
+                )
+
+        paths = environment["LD_LIBRARY_PATH"].split(os.pathsep)
+        self.assertEqual(paths[:2], [
+            str(root / "child" / "lib"), str(child_torch),
+        ])
+        self.assertNotIn(str(foreign_torch), paths)
+        self.assertIn(str(preserved), paths)
+
     def test_openparf_runtime_preflight_rejects_broken_python(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

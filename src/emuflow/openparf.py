@@ -65,12 +65,52 @@ def resolve_openparf_install(
     )
 
 
-def _openparf_environment(installation: Path) -> Dict[str, str]:
+def _openparf_environment(
+    installation: Path,
+    python_executable: Optional[Path] = None,
+) -> Dict[str, str]:
     environment = os.environ.copy()
     python_path = str(installation)
     if environment.get("PYTHONPATH"):
         python_path += os.pathsep + environment["PYTHONPATH"]
     environment["PYTHONPATH"] = python_path
+    if python_executable is not None:
+        # OpenPARF is a compiled PyTorch extension and must load the Torch ABI
+        # belonging to the interpreter used when it was built.  A coordinator
+        # may itself run from a different Conda environment, whose inherited
+        # LD_LIBRARY_PATH would otherwise win before the child interpreter's
+        # own environment and load an incompatible libtorch_python.so.
+        python_prefix = python_executable.expanduser().absolute().parent.parent
+        prefix_lib = python_prefix / "lib"
+        torch_libs = sorted(
+            path for path in prefix_lib.glob(
+                "python*/site-packages/torch/lib"
+            ) if path.is_dir()
+        )
+        if torch_libs:
+            inherited = [
+                item for item in environment.get(
+                    "LD_LIBRARY_PATH", ""
+                ).split(os.pathsep) if item
+            ]
+
+            def is_foreign_torch_library(item: str) -> bool:
+                path = Path(item)
+                return (
+                    path.name == "lib"
+                    and path.parent.name == "torch"
+                    and "site-packages" in path.parts
+                    and not any(path == own for own in torch_libs)
+                )
+
+            paths = [str(prefix_lib), *(str(path) for path in torch_libs)]
+            paths.extend(
+                item for item in inherited
+                if not is_foreign_torch_library(item)
+            )
+            environment["LD_LIBRARY_PATH"] = os.pathsep.join(
+                dict.fromkeys(paths)
+            )
     return environment
 
 
@@ -103,7 +143,7 @@ def validate_openparf_runtime(
             text=True,
             check=False,
             timeout=120,
-            env=_openparf_environment(installation),
+            env=_openparf_environment(installation, python),
         )
     except subprocess.TimeoutExpired as error:
         raise EmuFlowError(
@@ -167,7 +207,7 @@ def run_openparf(
     console_log_path = log_path.with_name(
         f"{log_path.stem}.console{log_path.suffix}"
     )
-    environment = _openparf_environment(installation)
+    environment = _openparf_environment(installation, python)
     continuous_guidance = config.get("emuflow_continuous_global_guidance", False)
     if not isinstance(continuous_guidance, bool):
         raise EmuFlowError(
