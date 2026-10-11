@@ -2010,7 +2010,12 @@ def probe_xilinx_openparf_atomic_eligibility(
     }
 
 
-def _render_library(cells: Mapping[str, Any], atoms: Sequence[Mapping[str, str]]) -> str:
+def _render_library(
+    cells: Mapping[str, Any],
+    atoms: Sequence[Mapping[str, str]],
+    *,
+    platform_mux_types: Sequence[str] = (),
+) -> str:
     ports_by_type: Dict[str, Dict[str, str]] = defaultdict(dict)
     for atom in atoms:
         cell_type = atom["cell_type"]
@@ -2021,6 +2026,14 @@ def _render_library(cells: Mapping[str, Any], atoms: Sequence[Mapping[str, str]]
                 raise ValidationError(
                     f"primitive {cell_type!r} has inconsistent pin direction"
                 )
+    # The patched OpenPARF Bookshelf reader uses the complete F7/F8/F9 model
+    # hierarchy to select its UltraScale grammar.  Declare unused upper mux
+    # levels as zero-instance library models; they do not create nodes, nets,
+    # fillers, or placement demand.
+    for cell_type in platform_mux_types:
+        ports_by_type.setdefault(cell_type, {}).update({
+            "I0": "input", "I1": "input", "S": "input", "O": "output",
+        })
     blocks = []
     for cell_type, ports in sorted(ports_by_type.items()):
         lines = [f"CELL {cell_type}"]
@@ -2406,12 +2419,16 @@ def _render_site_geometry(
 def _render_sites(
     device_static: Mapping[str, Any],
     atoms: Sequence[Mapping[str, str]],
+    *,
+    platform_mux_types: Sequence[str] = (),
 ) -> str:
     """Add partition-specific model declarations to shared device geometry."""
 
     models_by_resource: Dict[str, set[str]] = defaultdict(set)
     for atom in atoms:
         models_by_resource[atom["resource"]].add(atom["cell_type"])
+    for cell_type in platform_mux_types:
+        models_by_resource[_MUX_RESOURCES[cell_type]].add(cell_type)
     resources = "".join(
         f"  {resource} {' '.join(sorted(models))}\n"
         for resource, models in sorted(
@@ -2669,10 +2686,18 @@ def export_xilinx_openparf_atomic(
         atom["cell_type"] for atom in atoms
         if atom["cell_type"] in _HARD_RESOURCES
     })
-    mux = sorted({
+    demanded_mux = {
         atom["cell_type"] for atom in atoms
         if atom["cell_type"] in _MUX_RESOURCES
-    })
+    }
+    # OpenPARF identifies the UltraScale Bookshelf grammar from the complete
+    # slice-mux resource hierarchy.  Emitting only the mux levels present in a
+    # particular mapped design makes (for example) an F7/F8-only design look
+    # like a legacy architecture; the parser then rejects the following
+    # SUPERLOGICREGIONS section.  Device geometry is a platform property, so
+    # once any native slice mux is used retain F7/F8/F9 capacity regardless of
+    # whether the design happens to instantiate the top level.
+    mux = sorted(_MUX_RESOURCES if demanded_mux else ())
     has_carry8 = any(atom["cell_type"] == "CARRY8" for atom in atoms)
     device_static = _device_static_geometry(
         architecture, hard, mux, require_carry8=has_carry8, native=native,
@@ -2699,12 +2724,12 @@ def export_xilinx_openparf_atomic(
     names = {
         atom["instance"]: f"a{index}" for index, atom in enumerate(atoms)
     }
-    library = _render_library(cells, atoms)
+    library = _render_library(cells, atoms, platform_mux_types=mux)
     nets, net_count, dropped_single_endpoint_nets = _render_nets(
         cells, atoms, names
     )
     coordinate_system = device_static["coordinate_system"]
-    site_text = _render_sites(device_static, atoms)
+    site_text = _render_sites(device_static, atoms, platform_mux_types=mux)
     output_dir.mkdir(parents=True, exist_ok=True)
     files = {
         "design.nodes": "".join(

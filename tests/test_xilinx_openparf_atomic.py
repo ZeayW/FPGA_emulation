@@ -1708,17 +1708,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 ],
                 "cascade_chains": [],
             }), encoding="utf-8")
-            architecture_value = json.loads(architecture.read_text(encoding="utf-8"))
-            architecture_value["site_templates"]["SLICEL"]["bels"].extend([
-                {
-                    "name": bel, "type": "F7MUX", "z": index,
-                    "compatible_cells": ["MUXF7"], "placement_mode": "SLICEL",
-                }
-                for index, bel in enumerate(
-                    ("F7MUX_AB", "F7MUX_CD", "F7MUX_EF", "F7MUX_GH")
-                )
-            ])
-            architecture.write_text(json.dumps(architecture_value), encoding="utf-8")
+            _add_mux_bels(architecture, {"MUXF7", "MUXF8", "MUXF9"})
             output = root / "output"
             manifest = export_xilinx_openparf_atomic(
                 mapped, packed, architecture, output
@@ -1818,13 +1808,15 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 pack_xilinx_sites(mapped, packed, top="top")
                 _add_mux_bels(
                     architecture,
-                    {cell["type"] for cell in cells.values()
-                     if cell["type"].startswith("MUXF")},
+                    {"MUXF7", "MUXF8", "MUXF9"},
                 )
                 output = case / "output"
                 export_xilinx_openparf_atomic(
                     mapped, packed, architecture, output
                 )
+                sites = (output / "design.scl").read_text(encoding="utf-8")
+                self.assertIn("  MUXF9 1", sites)
+                self.assertIn("  MUXF9 MUXF9", sites)
                 contract = json.loads(
                     (output / "physical-macro-groups.json").read_text(
                         encoding="utf-8"
