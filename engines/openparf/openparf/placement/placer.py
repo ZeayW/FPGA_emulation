@@ -2018,7 +2018,7 @@ class Placer(nn.Module):
                 inst_ids = torch.unique(torch.cat((
                     self.data_cls.chain_cla_ids.bs,
                     self.data_cls.chain_lut_ids.bs,
-                ))).cpu()
+                ))).to(dtype=torch.long, device="cpu")
                 fixed_mask = torch.zeros(
                     self.data_cls.inst_locs_xyz.shape[0],
                     dtype=torch.uint8,
@@ -2028,7 +2028,9 @@ class Placer(nn.Module):
                 fixed_mask[inst_ids] = 1
                 self.op_cls.ism_dp_op.fixed_mask = fixed_mask
             if self.op_cls.typed_hardblock_legalization_op is not None:
-                typed_ids = self.op_cls.typed_hardblock_legalization_op.inst_ids.cpu()
+                typed_ids = self.op_cls.typed_hardblock_legalization_op.inst_ids.to(
+                    dtype=torch.long, device="cpu"
+                )
                 if not hasattr(self.op_cls.ism_dp_op, "fixed_mask"):
                     raise RuntimeError("ISM detailed placer has no fixed-mask contract")
                 fixed_mask = self.op_cls.ism_dp_op.fixed_mask

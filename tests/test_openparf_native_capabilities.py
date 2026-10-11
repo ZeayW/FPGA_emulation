@@ -404,6 +404,15 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
         self.assertIn("self.data_cls.chain_cla_ids.bs", carry_mask)
         self.assertIn("self.data_cls.chain_lut_ids.bs", carry_mask)
         self.assertIn(
+            '))).to(dtype=torch.long, device="cpu")',
+            carry_mask.split("fixed_mask[inst_ids] = 1", 1)[0],
+        )
+        self.assertIn(
+            "typed_hardblock_legalization_op.inst_ids.to(\n"
+            "                    dtype=torch.long, device=\"cpu\"",
+            placer,
+        )
+        self.assertIn(
             "pos_xyz = self.data_cls.inst_locs_xyz.to(",
             placer,
         )

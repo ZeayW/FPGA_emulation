@@ -302,6 +302,7 @@ def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
             "self.params.carry_chain_legalization_flag",
             "self.data_cls.chain_cla_ids.bs",
             "self.data_cls.chain_lut_ids.bs",
+            '))).to(dtype=torch.long, device="cpu")',
             "fixed_mask[inst_ids] = 1",
             "self.op_cls.ism_dp_op.fixed_mask = fixed_mask",
         ))
@@ -394,6 +395,7 @@ def audit_pinned_openparf_carry_path(source_root: Path) -> Dict[str, Any]:
                     "if self.params.carry_chain_legalization_flag:",
                     "self.data_cls.chain_cla_ids.bs",
                     "self.data_cls.chain_lut_ids.bs",
+                    '))).to(dtype=torch.long, device="cpu")',
                     "pos_xyz = self.data_cls.inst_locs_xyz.to(",
                     "fixed_mask[inst_ids] = 1",
                     "self.op_cls.ism_dp_op.fixed_mask = fixed_mask",
