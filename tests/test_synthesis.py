@@ -183,9 +183,9 @@ class SynthesisTest(unittest.TestCase):
 
     def test_route_a_mapping_strategies_are_explicit(self) -> None:
         cases = {
-            DEFAULT_XILINX_MAPPING_STRATEGY: (),
+            "hierarchical-classic-v1": (),
             "flatten-classic-v1": ("-flatten",),
-            "hierarchical-abc9-v1": ("-abc9",),
+            DEFAULT_XILINX_MAPPING_STRATEGY: ("-abc9",),
             "flatten-abc9-v1": ("-flatten", "-abc9"),
         }
         for strategy, expected in cases.items():

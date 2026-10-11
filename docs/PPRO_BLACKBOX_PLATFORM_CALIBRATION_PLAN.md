@@ -851,6 +851,13 @@ the checked NVDLA contract is synthesized with hierarchical/flattened classic
 ABC and ABC9 strategies, only compact primitive statistics are retained, and
 the calibrated capacity is not edited to manufacture feasibility. Any
 selected strategy must pass a small physical regression before NVDLA is rerun.
+The bounded comparison selected `hierarchical-abc9-v1`. It completed in
+8,342.55 seconds with 2,726,938 raw LUT primitives and an estimated 2,948,912
+normalized LUT units after the existing CARRY4/INV lowering, below the
+unchanged 3,268,608-unit four-FPGA 20% budget. The two flattened alternatives
+were still running after three hours at roughly 27 GB RSS and were terminated
+as inferior runtime candidates. This selection changes only the open mapper;
+it does not alter any fitted platform parameter.
 
 Gate: the promotion criteria above, including a complete Phase 1--7 run and
 global WNS/TNS.  A Phase 3/4/5 or PPro-only comparison is not completion.

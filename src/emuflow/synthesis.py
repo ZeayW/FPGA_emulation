@@ -21,9 +21,10 @@ from .xilinx_primitives import (
 
 VALID_XILINX_FAMILIES = {"xcup", "xcu", "xc7"}
 VALID_SYNTHESIS_POLICIES = {"native", "logic-only"}
-DEFAULT_XILINX_MAPPING_STRATEGY = "hierarchical-classic-v1"
+DEFAULT_XILINX_MAPPING_STRATEGY = "hierarchical-abc9-v1"
 VALID_XILINX_MAPPING_STRATEGIES = {
     DEFAULT_XILINX_MAPPING_STRATEGY,
+    "hierarchical-classic-v1",
     "flatten-classic-v1",
     "hierarchical-abc9-v1",
     "flatten-abc9-v1",

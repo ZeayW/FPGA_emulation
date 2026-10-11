@@ -971,6 +971,13 @@ does not write or retain a multi-GiB mapped netlist. A strategy may become the
 production default only after a small physical regression and the complete
 large Phase 1--7 gate pass. Resource pressure is never hidden by changing a
 calibrated BoardDB or its utilization limit.
+The NVDLA qualification selected `hierarchical-abc9-v1`: it completed in
+8,342.55 seconds, used about 2.95 million normalized LUT units, and fit the
+unchanged four-FPGA 20% budget of 3.269 million LUT units. Both flattened
+alternatives exceeded three hours and about 27 GB RSS without completing, so
+they were terminated and rejected. The selected strategy is the checked
+UltraScale+ frontend default, subject to the same primitive audit and physical
+acceptance as the earlier classic mapper.
 
 Earlier sealed AES and PicoRV32 Phase 1--7 results used the VTR physical
 surrogate. Their historical WNS/TNS values remain diagnostic records, but they
