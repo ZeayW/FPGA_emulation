@@ -1,4 +1,5 @@
 import hashlib
+import gzip
 import sqlite3
 import tempfile
 import unittest
@@ -6,7 +7,7 @@ from pathlib import Path
 
 from emuflow.emuir_storage import is_emuir_sqlite
 from emuflow.ir import EmuIR
-from emuflow.yosys import import_yosys_json
+from emuflow.yosys import import_yosys_json, import_yosys_json_indexed
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +50,35 @@ class EmuIRStorageTest(unittest.TestCase):
             artifact = Path(temporary_directory) / "design.emuir.json"
             with self.assertRaisesRegex(ValueError, "indexed"):
                 self.ir.save(artifact)
+
+    def test_indexed_yosys_import_matches_legacy_logical_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = Path(temporary_directory) / "design.emuir.sqlite"
+            import_yosys_json_indexed(
+                ROOT / "examples/yosys/counter.json",
+                artifact,
+                top="counter",
+                clocks=["clk"],
+            )
+            self.assertEqual(EmuIR.load(artifact).to_dict(), self.ir.to_dict())
+
+    def test_indexed_yosys_import_streams_gzip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "counter.json.gz"
+            with gzip.open(source, "wb", compresslevel=1) as stream:
+                stream.write((ROOT / "examples/yosys/counter.json").read_bytes())
+            artifact = root / "design.emuir.sqlite"
+            import_yosys_json_indexed(
+                source,
+                artifact,
+                top="counter",
+                clocks=["clk"],
+            )
+            expected = import_yosys_json(
+                source, top="counter", clocks=["clk"]
+            )
+            self.assertEqual(EmuIR.load(artifact).to_dict(), expected.to_dict())
 
 
 if __name__ == "__main__":

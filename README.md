@@ -3230,10 +3230,16 @@ instances, resources, nets, aliases, and endpoints into deterministic rows;
 only small irregular per-cell dictionaries remain canonical JSON row values.
 Consumers open the sealed database read-only, and legacy `.json` EmuIR files
 remain importable only as explicit input fixtures. This removes repeated
-object keys and whole-document JSON parsing at the Phase 1 boundary. The raw
-Yosys interchange is still transient scratch while the direct streaming
-Yosys-to-indexed-graph exporter is completed; it is not the durable Phase 1
-consumer contract.
+object keys and whole-document JSON parsing at the Phase 1 boundary. With an
+explicit top module, the production importer walks Yosys JSON/GZip as bounded
+port, cell, and net-name leaves, stages endpoint/name relations in SQLite, and
+writes the canonical indexed graph record by record. Phase 1 resource,
+cut-class, and clock-topology summaries query that index directly; neither a
+second graph-sized Python tree nor a monolithic EmuIR JSON is created. The
+normalized Yosys stream is still transient scratch. The remaining frontend
+scalability step is to move Xilinx pre-normalization onto the same indexed
+record path and pipe the Yosys producer directly, eliminating that scratch
+file and the pre-normalizer's whole-document load as well.
 
 The managed Phase 1--7 implementation applies that rule at each concrete
 boundary. Phase 1 owns the synthesized EmuIR and performs resource and clock

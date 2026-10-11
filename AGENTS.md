@@ -358,6 +358,13 @@ requirements, not optional micro-optimizations.
   data can reconstruct the same logical document.  Storage envelopes must
   preserve the logical schema, validate bounded decompression and exact row
   counts, and round-trip deterministically.
+- A complete synthesized netlist, EmuIR graph, placement, route population, or
+  timing-path population must never be introduced as a new monolithic JSON
+  production intermediate.  Stream producer records directly into the
+  indexed/sharded owner.  A legacy tool-emitted JSON stream may exist only as
+  bounded-lifetime scratch while its direct adapter is being removed; it must
+  not be copied, retained, hashed repeatedly, or exposed as a downstream
+  checkpoint.
 - Do not force a downstream stage to parse a large artifact merely to read a
   small summary.  Publish a compact manifest/index for frequent queries and
   load or expand the full payload only at the stage that consumes it.  Never

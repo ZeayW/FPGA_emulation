@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import json
+import gzip
 import re
+import sqlite3
+import tempfile
 from collections import defaultdict
+from itertools import groupby
 from pathlib import Path
-from typing import Any, DefaultDict, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, DefaultDict, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
 
 from .errors import ImportError
+from .emuir_storage import write_emuir_sqlite
 from .io import read_json
 from .ir import EMUIR_SCHEMA, EmuIR
 from .resources import ResourceVector, classify_primitive_resources
+from .streaming_json import StreamingJSONObjectReader
 
 
 _CLOCK_NAME = re.compile(r"(^|[_/])(clk|clock)([_/]|$)", re.IGNORECASE)
@@ -356,3 +363,569 @@ def import_yosys_json(
         "warnings": sorted(set(warnings)),
     }
     return EmuIR(emuir)
+
+
+def _indexed_endpoint_groups(
+    connection: sqlite3.Connection,
+) -> Iterator[Tuple[int, List[sqlite3.Row]]]:
+    rows = connection.execute(
+        """
+        SELECT e.yosys_bit, e.role, e.seq, e.instance_id, e.port,
+               e.endpoint_bit, i.type AS instance_type,
+               i.ff AS instance_ff, i.bram AS instance_bram
+          FROM staging_endpoints AS e
+          LEFT JOIN staging_instances AS i ON i.id = e.instance_id
+         ORDER BY e.yosys_bit, e.role, e.seq
+        """
+    )
+    for bit, grouped in groupby(rows, key=lambda row: row["yosys_bit"]):
+        yield int(bit), list(grouped)
+
+
+def _indexed_name_groups(
+    connection: sqlite3.Connection,
+) -> Iterator[Tuple[int, List[sqlite3.Row]]]:
+    rows = connection.execute(
+        """
+        SELECT yosys_bit, hidden, name_length, name, bus_index, bus_width
+          FROM staging_names
+         ORDER BY yosys_bit, hidden, name_length, name, bus_index, bus_width
+        """
+    )
+    for bit, grouped in groupby(rows, key=lambda row: row["yosys_bit"]):
+        yield int(bit), list(grouped)
+
+
+def _advance_name_group(
+    iterator: Iterator[Tuple[int, List[sqlite3.Row]]],
+    current: Optional[Tuple[int, List[sqlite3.Row]]],
+    bit: int,
+) -> Optional[Tuple[int, List[sqlite3.Row]]]:
+    while current is not None and current[0] < bit:
+        current = next(iterator, None)
+    return current
+
+
+def _stream_yosys_module_records(
+    path: Path,
+    top: str,
+    *,
+    on_cell: Any,
+    on_netname: Any,
+) -> Tuple[str, Dict[str, Any]]:
+    """Stream one flattened Yosys module as bounded leaf records."""
+
+    stream = (
+        gzip.open(path, "rt", encoding="utf-8")
+        if path.suffix == ".gz"
+        else path.open("r", encoding="utf-8")
+    )
+    creator = "unknown"
+    ports: Dict[str, Any] = {}
+    found_top = False
+    with stream:
+        reader = StreamingJSONObjectReader(stream)
+        for root_key in reader.object_keys():
+            if root_key == "creator":
+                value = reader.read_value()
+                creator = value if isinstance(value, str) else "unknown"
+            elif root_key == "modules":
+                for module_name in reader.object_keys():
+                    if module_name != top:
+                        reader.skip_value()
+                        continue
+                    if found_top:
+                        raise ImportError(
+                            f"{path}: duplicate Yosys top module {top!r}"
+                        )
+                    found_top = True
+                    for module_key in reader.object_keys():
+                        if module_key == "ports":
+                            for name in reader.object_keys():
+                                value = reader.read_value()
+                                if not isinstance(value, dict):
+                                    raise ImportError(
+                                        f"port {name!r}: expected an object"
+                                    )
+                                ports[name] = value
+                        elif module_key == "cells":
+                            for name in reader.object_keys():
+                                value = reader.read_value()
+                                if not isinstance(value, dict):
+                                    raise ImportError(
+                                        f"cell {name!r}: expected an object"
+                                    )
+                                on_cell(name, value)
+                        elif module_key == "netnames":
+                            for name in reader.object_keys():
+                                value = reader.read_value()
+                                if not isinstance(value, dict):
+                                    raise ImportError(
+                                        f"net {name!r}: expected an object"
+                                    )
+                                on_netname(name, value)
+                        else:
+                            reader.skip_value()
+            else:
+                reader.skip_value()
+        reader.finish()
+    if not found_top:
+        raise ImportError(f"{path}: missing Yosys top module {top!r}")
+    return creator, ports
+
+
+def import_yosys_json_indexed(
+    path: Path,
+    output: Path,
+    top: Optional[str] = None,
+    clocks: Iterable[str] = (),
+    *,
+    _source_value: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Import Yosys JSON directly into the indexed EmuIR representation.
+
+    Unlike :func:`import_yosys_json`, this production importer never builds a
+    second, graph-sized Python ``instances``/``nets`` tree.  With an explicit
+    top module, leaf records are decoded directly from the input stream;
+    endpoints and name aliases are staged as normalized SQLite rows and the
+    canonical EmuIR database is then written one record at a time.
+    """
+
+    warnings: List[str] = []
+    ports: List[Dict[str, Any]] = []
+    creator = "unknown"
+    top_name = top
+    raw_ports: Dict[str, Any] = {}
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{output.name}.yosys-index-",
+        suffix=".sqlite",
+        dir=output.parent,
+        delete=False,
+    ) as staging_stream:
+        staging_path = Path(staging_stream.name)
+    staging_path.unlink(missing_ok=True)
+    connection: Optional[sqlite3.Connection] = None
+    try:
+        connection = sqlite3.connect(staging_path)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=OFF")
+        connection.execute("PRAGMA synchronous=OFF")
+        connection.execute("PRAGMA temp_store=FILE")
+        connection.executescript(
+            """
+            CREATE TABLE staging_endpoints (
+                yosys_bit INTEGER NOT NULL,
+                role INTEGER NOT NULL,
+                seq INTEGER NOT NULL,
+                instance_id TEXT,
+                port TEXT NOT NULL,
+                endpoint_bit INTEGER NOT NULL,
+                PRIMARY KEY (yosys_bit, role, seq)
+            ) WITHOUT ROWID;
+            CREATE TABLE staging_instances (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                ff INTEGER NOT NULL,
+                bram INTEGER NOT NULL,
+                record_json TEXT NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE staging_names (
+                yosys_bit INTEGER NOT NULL,
+                hidden INTEGER NOT NULL,
+                name_length INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                bus_index INTEGER NOT NULL,
+                bus_width INTEGER NOT NULL,
+                PRIMARY KEY (
+                    yosys_bit, hidden, name_length, name, bus_index, bus_width
+                )
+            ) WITHOUT ROWID;
+            CREATE TABLE staging_nets (
+                seq INTEGER PRIMARY KEY,
+                yosys_bit INTEGER NOT NULL UNIQUE,
+                id TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                bus_index INTEGER NOT NULL,
+                fanout INTEGER NOT NULL,
+                cut_class TEXT NOT NULL,
+                aliases_json TEXT NOT NULL
+            );
+            """
+        )
+
+        def stage_cell_record(cell_name: str, raw_cell: Mapping[str, Any]) -> None:
+            cell_type = raw_cell.get("type")
+            if not isinstance(cell_type, str) or not cell_type:
+                raise ImportError(f"cell {cell_name!r}: missing type")
+            if cell_type in _NON_HARDWARE_CELL_TYPES:
+                return
+            resources = classify_primitive_resources(cell_type)
+            connection.execute(
+                "INSERT INTO staging_instances VALUES (?, ?, ?, ?, ?)",
+                (
+                    cell_name,
+                    cell_type,
+                    resources.ff,
+                    resources.bram,
+                    json.dumps(
+                        raw_cell,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                ),
+            )
+
+        def stage_netname_record(
+            net_name: str, raw_net: Mapping[str, Any]
+        ) -> None:
+            bits = raw_net.get("bits", [])
+            if not isinstance(bits, list):
+                return
+            hidden = int(bool(raw_net.get("hide_name", 0)))
+            connection.executemany(
+                "INSERT OR IGNORE INTO staging_names VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    (bit, hidden, len(net_name), net_name, bus_index, len(bits))
+                    for bus_index, bit in enumerate(bits)
+                    if isinstance(bit, int)
+                ),
+            )
+
+        if _source_value is None and top is not None:
+            creator, raw_ports = _stream_yosys_module_records(
+                path,
+                top,
+                on_cell=stage_cell_record,
+                on_netname=stage_netname_record,
+            )
+            top_name = top
+        else:
+            source = read_json(path) if _source_value is None else _source_value
+            modules = source.get("modules")
+            if not isinstance(modules, dict):
+                raise ImportError(f"{path}: missing Yosys 'modules' object")
+            selected_top, module = _select_top_module(modules, top)
+            top_name = selected_top
+            creator_value = source.get("creator", "unknown")
+            creator = creator_value if isinstance(creator_value, str) else "unknown"
+            raw_ports_value = module.get("ports", {})
+            raw_cells = module.get("cells", {})
+            raw_netnames = module.get("netnames", {})
+            if not isinstance(raw_ports_value, dict):
+                raise ImportError(
+                    f"{path}: module {top_name!r} ports must be an object"
+                )
+            if not isinstance(raw_cells, dict):
+                raise ImportError(
+                    f"{path}: module {top_name!r} cells must be an object"
+                )
+            if not isinstance(raw_netnames, dict):
+                raise ImportError(
+                    f"{path}: module {top_name!r} netnames must be an object"
+                )
+            raw_ports = raw_ports_value
+            for cell_name, raw_cell in sorted(raw_cells.items()):
+                if not isinstance(raw_cell, dict):
+                    raise ImportError(f"cell {cell_name!r}: expected an object")
+                stage_cell_record(cell_name, raw_cell)
+            for net_name, raw_net in sorted(raw_netnames.items()):
+                if isinstance(raw_net, dict):
+                    stage_netname_record(net_name, raw_net)
+
+        if top_name is None:
+            raise ImportError(f"{path}: unable to determine top module")
+        explicit_clocks = set(clocks)
+        clock_ports = {
+            name
+            for name in raw_ports
+            if name in explicit_clocks or _CLOCK_NAME.search(name)
+        }
+        reset_ports = {name for name in raw_ports if _RESET_NAME.search(name)}
+        endpoint_sequence = 0
+        endpoint_buffer: List[Tuple[int, int, int, Optional[str], str, int]] = []
+
+        def flush_endpoints() -> None:
+            if not endpoint_buffer:
+                return
+            connection.executemany(
+                "INSERT INTO staging_endpoints VALUES (?, ?, ?, ?, ?, ?)",
+                endpoint_buffer,
+            )
+            endpoint_buffer.clear()
+
+        def stage_endpoint(
+            bit: int,
+            role: int,
+            instance: Optional[str],
+            port: str,
+            endpoint_bit: int,
+        ) -> None:
+            nonlocal endpoint_sequence
+            endpoint_buffer.append(
+                (bit, role, endpoint_sequence, instance, port, endpoint_bit)
+            )
+            endpoint_sequence += 1
+            if len(endpoint_buffer) >= 16384:
+                flush_endpoints()
+
+        for port_name, raw_port in sorted(raw_ports.items()):
+            if not isinstance(raw_port, dict):
+                raise ImportError(f"port {port_name!r}: expected an object")
+            direction = raw_port.get("direction", "unknown")
+            bits = raw_port.get("bits", [])
+            if not isinstance(bits, list) or not bits:
+                raise ImportError(
+                    f"port {port_name!r}: expected a non-empty bits array"
+                )
+            constants = [
+                {"bit": bit_index, "value": bit.lower()}
+                for bit_index, bit in enumerate(bits)
+                if isinstance(bit, str)
+            ]
+            if constants and direction not in {"output", "inout"}:
+                raise ImportError(
+                    f"port {port_name!r}: input bits cannot be constants"
+                )
+            ports.append(
+                {
+                    "id": port_name,
+                    "name": port_name,
+                    "direction": direction,
+                    "width": len(bits),
+                    "clock": port_name in clock_ports,
+                    "reset": port_name in reset_ports,
+                    "constant_connections": constants,
+                }
+            )
+            for bit_index, bit in enumerate(bits):
+                if not isinstance(bit, int):
+                    continue
+                for role_name in _roles(direction, is_top_port=True):
+                    stage_endpoint(
+                        bit,
+                        0 if role_name == "driver" else 1,
+                        None,
+                        port_name,
+                        bit_index,
+                    )
+
+        for staged_cell in connection.execute(
+            "SELECT id, record_json FROM staging_instances ORDER BY id"
+        ):
+            cell_name = staged_cell["id"]
+            raw_cell = json.loads(staged_cell["record_json"])
+            directions = raw_cell.get("port_directions", {})
+            connections = raw_cell.get("connections", {})
+            if not isinstance(directions, dict):
+                directions = {}
+            if not isinstance(connections, dict):
+                raise ImportError(f"cell {cell_name!r}: connections must be an object")
+            for port_name, bits in sorted(connections.items()):
+                if not isinstance(bits, list):
+                    raise ImportError(
+                        f"cell {cell_name!r} port {port_name!r}: bits must be an array"
+                    )
+                direction = directions.get(port_name, "unknown")
+                if direction == "unknown":
+                    warnings.append(
+                        f"cell {cell_name!r} port {port_name!r} has unknown direction"
+                    )
+                for bit_index, bit in enumerate(bits):
+                    if not isinstance(bit, int):
+                        continue
+                    for role_name in _roles(direction, is_top_port=False):
+                        stage_endpoint(
+                            bit,
+                            0 if role_name == "driver" else 1,
+                            cell_name,
+                            port_name,
+                            bit_index,
+                        )
+
+        flush_endpoints()
+        connection.commit()
+
+        name_iterator = _indexed_name_groups(connection)
+        current_names = next(name_iterator, None)
+        net_sequence = 0
+        for bit, endpoint_rows in _indexed_endpoint_groups(connection):
+            current_names = _advance_name_group(
+                name_iterator, current_names, bit
+            )
+            names = (
+                current_names[1]
+                if current_names is not None and current_names[0] == bit
+                else []
+            )
+            if names:
+                first = names[0]
+                name = str(first["name"])
+                bus_index = int(first["bus_index"])
+                bus_width = int(first["bus_width"])
+                canonical = name if bus_width == 1 else f"{name}[{bus_index}]"
+                aliases = sorted({str(row["name"]) for row in names})
+            else:
+                canonical = f"$bit_{bit}"
+                aliases = []
+                bus_index = 0
+            net_id = canonical
+            try:
+                connection.execute(
+                    "INSERT INTO staging_nets VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (net_sequence, bit, net_id, canonical, bus_index, 0, "", "[]"),
+                )
+            except sqlite3.IntegrityError:
+                net_id = f"{canonical}#{bit}"
+                connection.execute(
+                    "INSERT INTO staging_nets VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (net_sequence, bit, net_id, canonical, bus_index, 0, "", "[]"),
+                )
+            drivers = [row for row in endpoint_rows if row["role"] == 0]
+            sinks = [row for row in endpoint_rows if row["role"] == 1]
+            if any(alias in clock_ports for alias in aliases) or canonical in clock_ports:
+                cut_class = "clock"
+            elif any(alias in reset_ports for alias in aliases) or canonical in reset_ports:
+                cut_class = "reset"
+            elif len(drivers) > 1:
+                cut_class = "multi_driver"
+                warnings.append(f"net {net_id!r} has {len(drivers)} drivers")
+            elif not drivers:
+                cut_class = "undriven"
+            elif drivers[0]["instance_id"] is None:
+                cut_class = "primary_input"
+            elif bool(drivers[0]["instance_ff"]) or bool(drivers[0]["instance_bram"]):
+                cut_class = "register_output"
+            elif sinks and all(
+                row["instance_id"] is not None
+                and _is_transport_safe_sequential_input(
+                    str(row["instance_type"]), str(row["port"])
+                )
+                for row in sinks
+            ):
+                cut_class = "register_input"
+            else:
+                cut_class = "combinational"
+            connection.execute(
+                """
+                UPDATE staging_nets
+                   SET fanout = ?, cut_class = ?, aliases_json = ?
+                 WHERE seq = ?
+                """,
+                (
+                    len(sinks),
+                    cut_class,
+                    json.dumps(
+                        aliases,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    net_sequence,
+                ),
+            )
+            net_sequence += 1
+        connection.commit()
+
+        def instances() -> Iterator[Dict[str, Any]]:
+            for staged_cell in connection.execute(
+                "SELECT id, type, record_json FROM staging_instances ORDER BY id"
+            ):
+                cell_name = staged_cell["id"]
+                cell_type = staged_cell["type"]
+                raw_cell = json.loads(staged_cell["record_json"])
+                resources = classify_primitive_resources(str(cell_type))
+                parameters = raw_cell.get("parameters", {})
+                attributes = raw_cell.get("attributes", {})
+                constants = []
+                connections = raw_cell.get("connections", {})
+                if isinstance(connections, dict):
+                    for port_name, bits in sorted(connections.items()):
+                        if not isinstance(bits, list):
+                            continue
+                        for bit_index, bit in enumerate(bits):
+                            if isinstance(bit, str):
+                                constants.append(
+                                    {
+                                        "port": port_name,
+                                        "bit": bit_index,
+                                        "value": bit.lower(),
+                                    }
+                                )
+                yield {
+                    "id": cell_name,
+                    "name": cell_name,
+                    "type": cell_type,
+                    "resources": resources.to_dict(),
+                    "parameters": parameters if isinstance(parameters, dict) else {},
+                    "attributes": attributes if isinstance(attributes, dict) else {},
+                    "constant_connections": constants,
+                }
+
+        def nets() -> Iterator[Dict[str, Any]]:
+            endpoints = _indexed_endpoint_groups(connection)
+            current_endpoints = next(endpoints, None)
+            for row in connection.execute(
+                "SELECT * FROM staging_nets ORDER BY seq"
+            ):
+                bit = int(row["yosys_bit"])
+                while current_endpoints is not None and current_endpoints[0] < bit:
+                    current_endpoints = next(endpoints, None)
+                endpoint_rows = (
+                    current_endpoints[1]
+                    if current_endpoints is not None and current_endpoints[0] == bit
+                    else []
+                )
+
+                def records(role: int) -> List[Dict[str, Any]]:
+                    return [
+                        {
+                            "instance": endpoint["instance_id"],
+                            "port": endpoint["port"],
+                            "bit": endpoint["endpoint_bit"],
+                        }
+                        for endpoint in endpoint_rows
+                        if endpoint["role"] == role
+                    ]
+
+                yield {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "yosys_bit": bit,
+                    "bus_index": row["bus_index"],
+                    "aliases": json.loads(row["aliases_json"]),
+                    "drivers": records(0),
+                    "sinks": records(1),
+                    "fanout": row["fanout"],
+                    "cut_class": row["cut_class"],
+                }
+
+        value = {
+            "schema": EMUIR_SCHEMA,
+            "design": {
+                "name": top_name,
+                "top": top_name,
+                "source_format": "yosys-json",
+                "source": str(path),
+                "creator": creator,
+            },
+            "ports": ports,
+            "instances": instances(),
+            "nets": nets(),
+            "clocks": [
+                {
+                    "id": port_name,
+                    "name": port_name,
+                    "source_port": port_name,
+                    "period_ns": None,
+                }
+                for port_name in sorted(clock_ports)
+            ],
+            "warnings": sorted(set(warnings)),
+        }
+        write_emuir_sqlite(output, value)
+    finally:
+        if connection is not None:
+            connection.close()
+        staging_path.unlink(missing_ok=True)

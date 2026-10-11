@@ -45,14 +45,34 @@ def _extras(record: Mapping[str, Any], owned: Iterable[str]) -> str:
     return _json({key: value for key, value in record.items() if key not in excluded})
 
 
-def _connect_read_only(path: Path) -> sqlite3.Connection:
+def open_emuir_sqlite_read_only(path: Path) -> sqlite3.Connection:
+    """Open and validate a sealed indexed EmuIR artifact without journals."""
+
+    if not is_emuir_sqlite(path):
+        raise ValueError(f"{path}: not an EmuIR SQLite artifact")
     # ``immutable=1`` prevents journal creation beside a sealed artifact and
     # is safe because EmuFlow never mutates a published EmuIR store in place.
     connection = sqlite3.connect(
         f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
     )
     connection.row_factory = sqlite3.Row
-    return connection
+    try:
+        application_id = connection.execute("PRAGMA application_id").fetchone()[0]
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if (
+            application_id != EMUIR_SQLITE_APPLICATION_ID
+            or version != EMUIR_SQLITE_USER_VERSION
+        ):
+            raise ValueError(f"{path}: unsupported EmuIR SQLite header")
+        storage_schema = connection.execute(
+            "SELECT value FROM metadata WHERE key = 'storage_schema'"
+        ).fetchone()
+        if storage_schema is None or storage_schema[0] != EMUIR_STORAGE_SCHEMA:
+            raise ValueError(f"{path}: unsupported EmuIR storage schema")
+        return connection
+    except BaseException:
+        connection.close()
+        raise
 
 
 def is_emuir_sqlite(path: Path) -> bool:
@@ -75,7 +95,10 @@ def write_emuir_sqlite(path: Path, value: Mapping[str, Any]) -> None:
         connection = sqlite3.connect(temporary)
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
-        connection.execute("PRAGMA temp_store=MEMORY")
+        # Large graphs must not turn SQLite sorting/index scratch into another
+        # multi-GiB RSS spike.  The artifact itself remains one transaction;
+        # temporary B-trees use disk-backed scratch.
+        connection.execute("PRAGMA temp_store=FILE")
         connection.execute("PRAGMA page_size=4096")
         connection.execute(f"PRAGMA application_id={EMUIR_SQLITE_APPLICATION_ID}")
         connection.execute(f"PRAGMA user_version={EMUIR_SQLITE_USER_VERSION}")
@@ -310,23 +333,12 @@ def write_emuir_sqlite(path: Path, value: Mapping[str, Any]) -> None:
 def read_emuir_sqlite(path: Path) -> Dict[str, Any]:
     """Read an indexed EmuIR store into the existing logical Python schema."""
 
-    if not is_emuir_sqlite(path):
-        raise ValueError(f"{path}: not an EmuIR SQLite artifact")
-    connection = _connect_read_only(path)
+    connection = open_emuir_sqlite_read_only(path)
     try:
-        application_id = connection.execute("PRAGMA application_id").fetchone()[0]
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if (
-            application_id != EMUIR_SQLITE_APPLICATION_ID
-            or version != EMUIR_SQLITE_USER_VERSION
-        ):
-            raise ValueError(f"{path}: unsupported EmuIR SQLite header")
         metadata = {
             row["key"]: row["value"]
             for row in connection.execute("SELECT key, value FROM metadata")
         }
-        if metadata.get("storage_schema") != EMUIR_STORAGE_SCHEMA:
-            raise ValueError(f"{path}: unsupported EmuIR storage schema")
 
         port_constants: Dict[int, list[Dict[str, Any]]] = {}
         for row in connection.execute(
