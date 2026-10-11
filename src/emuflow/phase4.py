@@ -250,8 +250,6 @@ def run_phase4(
     if exact_mode:
         report["cut_mode"] = "static-exact-combinational"
         report["qualification"] = "route-contract-propagation-pass"
-    if timing_paths is not None and not managed_storage:
-        report["artifacts"]["timing_paths"] = "timing_paths.normalized.json"
     # Seal the execution contract for every native provider.  The experiment
     # checkpoint validator must be able to distinguish a deterministic
     # single-worker exact-cut route from a differently configured run even
@@ -289,8 +287,6 @@ def run_phase4(
                     "physical_feedback.normalized.json"
                 )
     write_json(output_dir / "route_constraints.normalized.json", constraints)
-    if timing_paths is not None and not managed_storage:
-        write_json(output_dir / "timing_paths.normalized.json", timing_paths)
     if tdm_feedback is not None and not managed_storage:
         write_json(
             output_dir / "tdm_feedback.normalized.json", tdm_feedback

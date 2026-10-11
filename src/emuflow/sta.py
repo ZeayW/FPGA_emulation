@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional
@@ -25,10 +26,14 @@ VIVADO_STA_TSV_HEADER = (
 VIVADO_CUT_NET_MAP_HEADER = "vivado_net_hex\tcut_net_hex"
 STA_PATH_DATABASE_SCHEMA = "emuflow.sta-path-database/v1"
 STA_PATH_DATABASE_STREAM_SCHEMA = "emuflow.sta-path-database/v2"
+STA_PATH_DATABASE_INDEX_SCHEMA = "emuflow.sta-path-database/v3"
 STA_PATH_DATABASE_PAYLOAD_FORMAT_V1 = "jsonl-object/v1"
 STA_PATH_DATABASE_PAYLOAD_FORMAT_V2 = "jsonl-sta-path-raw/v2"
 STA_PATH_DATABASE_PAYLOAD_FORMAT = "jsonl-sta-path-row/v3"
+STA_PATH_DATABASE_SQLITE_FORMAT = "sqlite-sta-path/v1"
 PARTITION_NET_WEIGHTS_SCHEMA = "emuflow.partition-net-weights/v1"
+PARTITION_NET_WEIGHTS_INDEX_SCHEMA = "emuflow.partition-net-weights/v2"
+PARTITION_NET_WEIGHTS_SQLITE_FORMAT = "sqlite-net-weights/v1"
 STA_PATH_DATABASE_PROVIDERS = {
     "opensta-fpga-path-database-v1",
     "vivado-get-timing-path-database-v1",
@@ -65,6 +70,7 @@ def _sta_path_payload(
             STA_PATH_DATABASE_PAYLOAD_FORMAT_V1,
             STA_PATH_DATABASE_PAYLOAD_FORMAT_V2,
             STA_PATH_DATABASE_PAYLOAD_FORMAT,
+            STA_PATH_DATABASE_SQLITE_FORMAT,
         }
         or not isinstance(relative, str)
         or not relative
@@ -81,6 +87,41 @@ def _sta_path_payload(
     if not path.is_file():
         raise ValidationError("STA path database payload is missing")
     return path, digest, records, str(descriptor["format"])
+
+
+def sta_path_database_payload_path(
+    manifest_path: Path,
+    manifest: Optional[Mapping[str, Any]] = None,
+) -> Optional[Path]:
+    """Return the external path payload owned by a TimingPathDB manifest.
+
+    Legacy v1 fixtures own their small inline population and therefore have
+    no sidecar.  Production v2/v3 manifests must retain their sealed payload
+    whenever the manifest is copied, archived, or published.
+    """
+
+    value = read_json(manifest_path) if manifest is None else manifest
+    if value.get("schema") == STA_PATH_DATABASE_SCHEMA:
+        return None
+    if value.get("schema") not in {
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA,
+    }:
+        raise ValidationError("STA path database schema is invalid")
+    return _sta_path_payload(manifest_path, value)[0]
+
+
+def _open_sqlite_read_only(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(
+        f"file:{path.resolve().as_posix()}?mode=ro", uri=True
+    )
+    connection.execute("PRAGMA query_only = ON")
+    return connection
+
+
+def _verify_file_digest(path: Path, expected: str, context: str) -> None:
+    if _file_sha256(path) != expected:
+        raise ValidationError(f"{context} digest disagrees")
 
 
 def _sta_path_endpoint_row(endpoint: Mapping[str, Any]) -> list[Any]:
@@ -158,9 +199,12 @@ def _sta_path_record_from_row(value: Any, index: int) -> Dict[str, Any]:
 
 
 def iter_sta_path_database_paths(
-    path: Path, value: Mapping[str, Any]
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    verify_payload: bool = True,
 ) -> Iterator[Mapping[str, Any]]:
-    """Iterate a legacy inline or v2 streamed TimingPathDB exactly once."""
+    """Iterate an inline, legacy JSONL, or indexed TimingPathDB once."""
 
     schema = value.get("schema")
     if schema == STA_PATH_DATABASE_SCHEMA:
@@ -169,7 +213,10 @@ def iter_sta_path_database_paths(
             raise ValidationError("STA path database paths are invalid")
         yield from records
         return
-    if schema != STA_PATH_DATABASE_STREAM_SCHEMA:
+    if schema not in {
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA,
+    }:
         raise ValidationError("STA path database schema is invalid")
     payload_path, expected_digest, expected_records, payload_format = _sta_path_payload(
         path, value
@@ -179,9 +226,91 @@ def iter_sta_path_database_paths(
         if payload_format in {
             STA_PATH_DATABASE_PAYLOAD_FORMAT_V2,
             STA_PATH_DATABASE_PAYLOAD_FORMAT,
+            STA_PATH_DATABASE_SQLITE_FORMAT,
         }
         else None
     )
+    if payload_format == STA_PATH_DATABASE_SQLITE_FORMAT:
+        if schema != STA_PATH_DATABASE_INDEX_SCHEMA:
+            raise ValidationError("STA path database payload/schema mismatch")
+        if verify_payload:
+            _verify_file_digest(
+                payload_path,
+                expected_digest,
+                "STA path database payload",
+            )
+        connection = _open_sqlite_read_only(payload_path)
+        try:
+            if verify_payload:
+                integrity = connection.execute("PRAGMA quick_check").fetchone()
+                if integrity != ("ok",):
+                    raise ValidationError(
+                        "STA path database SQLite integrity failed"
+                    )
+            cursor = connection.execute(
+                """
+                SELECT p.ordinal, p.path_id, p.clock_domain,
+                       p.clock_period_ns, p.slack_ns, p.fixed_delay_ns,
+                       p.start_object, p.start_instance, p.start_port,
+                       p.start_bit, p.end_object, p.end_instance,
+                       p.end_port, p.end_bit, n.net_ordinal, n.net_id
+                FROM paths AS p
+                JOIN path_nets AS n ON n.path_ordinal = p.ordinal
+                ORDER BY p.ordinal, n.net_ordinal
+                """
+            )
+            current_ordinal: Optional[int] = None
+            record: Optional[Dict[str, Any]] = None
+            count = 0
+            for row in cursor:
+                ordinal = int(row[0])
+                if current_ordinal != ordinal:
+                    if record is not None:
+                        count += 1
+                        yield record
+                    current_ordinal = ordinal
+                    record = {
+                        "id": row[1],
+                        "clock_domain": row[2],
+                        "clock_period_ns": float(row[3]),
+                        "slack_ns": float(row[4]),
+                        "fixed_delay_ns": float(row[5]),
+                        "path_nets": [],
+                    }
+                    if row[6] is not None:
+                        record["startpoint"] = {
+                            "object": row[6],
+                            "instance": row[7],
+                            "port": row[8],
+                            "bit": int(row[9]),
+                        }
+                        record["endpoint"] = {
+                            "object": row[10],
+                            "instance": row[11],
+                            "port": row[12],
+                            "bit": int(row[13]),
+                        }
+                    record["normalized_slack"] = _normalized_slack(
+                        float(row[3]), float(row[4]), normalization
+                    )
+                if record is None or int(row[14]) != len(record["path_nets"]):
+                    raise ValidationError(
+                        "STA path database SQLite net ordering is invalid"
+                    )
+                record["path_nets"].append(row[15])
+            if record is not None:
+                count += 1
+                yield record
+            if count != expected_records:
+                raise ValidationError("STA path database payload count disagrees")
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "STA path database SQLite payload is invalid"
+            ) from error
+        finally:
+            connection.close()
+        return
+
     digest = hashlib.sha256()
     count = 0
     with payload_path.open("rb") as stream:
@@ -220,7 +349,7 @@ def iter_sta_path_database_paths(
             yield record
     if count != expected_records:
         raise ValidationError("STA path database payload count disagrees")
-    if digest.hexdigest() != expected_digest:
+    if verify_payload and digest.hexdigest() != expected_digest:
         raise ValidationError("STA path database payload digest disagrees")
 
 
@@ -239,6 +368,37 @@ def sta_path_database_qor(
         "tns_ns": math.fsum(item for item in slacks if item < 0.0),
         "failing_endpoints": sum(item < 0.0 for item in slacks),
         "timed_endpoints": len(slacks),
+    }
+
+
+def load_sta_path_database(
+    database_path: Path, *, verify_payload: bool = True
+) -> Dict[str, Any]:
+    """Load a TimingPathDB for an algorithm that intrinsically needs all paths.
+
+    Indexed storage remains authoritative on disk. This explicit adapter is
+    for algorithms whose optimization state is inherently whole-population;
+    it must never be written back as a graph-scale JSON checkpoint.
+    """
+
+    manifest = read_json(database_path)
+    if manifest.get("schema") == STA_PATH_DATABASE_SCHEMA:
+        return manifest
+    if manifest.get("schema") not in {
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA,
+    }:
+        raise ValidationError("STA path database schema is invalid")
+    return {
+        **manifest,
+        "schema": STA_PATH_DATABASE_SCHEMA,
+        "paths": list(
+            iter_sta_path_database_paths(
+                database_path,
+                manifest,
+                verify_payload=verify_payload,
+            )
+        ),
     }
 
 
@@ -813,12 +973,11 @@ def import_sta_path_database_tsv_streaming(
     source: Optional[Mapping[str, Any]] = None,
     _ir: Optional[EmuIR] = None,
 ) -> Dict[str, Any]:
-    """Convert an STA TSV to a small manifest plus a sealed JSONL stream.
+    """Convert an STA TSV to a small manifest plus an indexed SQLite payload.
 
-    One pass validates identities, derives global normalization, and emits raw
-    records atomically.  Readers derive ``normalized_slack`` lazily from the
-    sealed manifest.  At no point is the path population materialized as one
-    Python list or JSON document.
+    One pass validates identities, derives global normalization, and writes
+    normalized relational rows atomically. At no point is the path population
+    materialized as a Python list, JSONL stream, or monolithic JSON document.
     """
 
     if provider not in STA_PATH_DATABASE_PROVIDERS:
@@ -838,7 +997,7 @@ def import_sta_path_database_tsv_streaming(
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload_path = output_path.with_name(output_path.name + ".paths.jsonl")
+    payload_path = output_path.with_name(output_path.name + ".paths.sqlite")
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=payload_path.name + ".",
         suffix=".tmp",
@@ -846,7 +1005,6 @@ def import_sta_path_database_tsv_streaming(
     )
     os.close(descriptor)
     temporary_path = Path(temporary_name)
-    payload_digest = hashlib.sha256()
     path_ids: set[str] = set()
     path_nets_union: set[str] = set()
     positive_scale_value: Optional[float] = None
@@ -856,11 +1014,42 @@ def import_sta_path_database_tsv_streaming(
     structured = 0
     negative_slacks: list[float] = []
     worst_slack: Optional[float] = None
+    connection: Optional[sqlite3.Connection] = None
     try:
-        with (
-            input_path.open("r", encoding="utf-8") as source_stream,
-            temporary_path.open("wb") as output_stream,
-        ):
+        connection = sqlite3.connect(temporary_path)
+        connection.executescript(
+            """
+            PRAGMA journal_mode = OFF;
+            PRAGMA synchronous = OFF;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA user_version = 1;
+            CREATE TABLE paths (
+                ordinal INTEGER PRIMARY KEY,
+                path_id TEXT NOT NULL UNIQUE,
+                clock_domain TEXT NOT NULL,
+                clock_period_ns REAL NOT NULL,
+                slack_ns REAL NOT NULL,
+                fixed_delay_ns REAL NOT NULL,
+                start_object TEXT,
+                start_instance TEXT,
+                start_port TEXT,
+                start_bit INTEGER,
+                end_object TEXT,
+                end_instance TEXT,
+                end_port TEXT,
+                end_bit INTEGER
+            );
+            CREATE TABLE path_nets (
+                path_ordinal INTEGER NOT NULL,
+                net_ordinal INTEGER NOT NULL,
+                net_id TEXT NOT NULL,
+                PRIMARY KEY (path_ordinal, net_ordinal),
+                FOREIGN KEY (path_ordinal) REFERENCES paths(ordinal)
+            );
+            CREATE INDEX path_nets_net_id ON path_nets(net_id);
+            """
+        )
+        with input_path.open("r", encoding="utf-8") as source_stream:
             header = source_stream.readline().rstrip("\r\n")
             if header != STA_PATH_DATABASE_TSV_HEADER:
                 raise ValidationError("STA path database TSV: invalid header")
@@ -906,23 +1095,55 @@ def import_sta_path_database_tsv_streaming(
                 structured += int(
                     "startpoint" in record and "endpoint" in record
                 )
-                encoded = (
-                    json.dumps(
-                        _sta_path_record_row(record),
-                        separators=(",", ":"),
+                startpoint = record.get("startpoint")
+                endpoint = record.get("endpoint")
+                connection.execute(
+                    """
+                    INSERT INTO paths VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
-                    .encode("utf-8")
-                    + b"\n"
+                    """,
+                    (
+                        count,
+                        path_id,
+                        record["clock_domain"],
+                        period,
+                        slack,
+                        float(record["fixed_delay_ns"]),
+                        startpoint.get("object") if startpoint else None,
+                        startpoint.get("instance") if startpoint else None,
+                        startpoint.get("port") if startpoint else None,
+                        startpoint.get("bit") if startpoint else None,
+                        endpoint.get("object") if endpoint else None,
+                        endpoint.get("instance") if endpoint else None,
+                        endpoint.get("port") if endpoint else None,
+                        endpoint.get("bit") if endpoint else None,
+                    ),
                 )
-                output_stream.write(encoded)
-                payload_digest.update(encoded)
+                connection.executemany(
+                    "INSERT INTO path_nets VALUES (?, ?, ?)",
+                    (
+                        (count, net_ordinal, net_id)
+                        for net_ordinal, net_id in enumerate(
+                            record["path_nets"]
+                        )
+                    ),
+                )
                 count += 1
         if count == 0:
             raise ValidationError(
                 "STA path database TSV contains no mapped timing paths"
             )
+        connection.commit()
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()
+        if integrity != ("ok",):
+            raise ValidationError("STA path database SQLite integrity failed")
+        connection.close()
+        connection = None
         os.replace(temporary_path, payload_path)
     finally:
+        if connection is not None:
+            connection.close()
         temporary_path.unlink(missing_ok=True)
     positive_scale = (
         1.0
@@ -947,7 +1168,7 @@ def import_sta_path_database_tsv_streaming(
         "timed_endpoints": count,
     }
     artifact = {
-        "schema": STA_PATH_DATABASE_STREAM_SCHEMA,
+        "schema": STA_PATH_DATABASE_INDEX_SCHEMA,
         "design": ir.value["design"]["name"],
         "source": source_value,
         "normalization": normalization,
@@ -959,9 +1180,9 @@ def import_sta_path_database_tsv_streaming(
         },
         "payloads": {
             "paths": {
-                "format": STA_PATH_DATABASE_PAYLOAD_FORMAT,
+                "format": STA_PATH_DATABASE_SQLITE_FORMAT,
                 "path": payload_path.name,
-                "sha256": payload_digest.hexdigest(),
+                "sha256": _file_sha256(payload_path),
                 "records": count,
             }
         },
@@ -983,7 +1204,10 @@ def _validate_sta_path_database_stream(
     database: Mapping[str, Any],
     ir: EmuIR,
 ) -> Dict[str, Any]:
-    if database.get("schema") != STA_PATH_DATABASE_STREAM_SCHEMA:
+    if database.get("schema") not in {
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA,
+    }:
         raise ValidationError("STA path database schema is invalid")
     if database.get("design") != ir.value["design"]["name"]:
         raise ValidationError("STA path database design does not match EmuIR")
@@ -1279,7 +1503,10 @@ def validate_sta_path_database(
 ) -> Dict[str, Any]:
     database = read_json(database_path)
     ir = EmuIR.load(ir_path)
-    if database.get("schema") == STA_PATH_DATABASE_STREAM_SCHEMA:
+    if database.get("schema") in {
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA,
+    }:
         return _validate_sta_path_database_stream(
             database_path, database, ir
         )
@@ -1293,7 +1520,10 @@ def validate_sta_path_database_path_value(
 ) -> Dict[str, Any]:
     """Validate an already-loaded manifest against an already-loaded IR."""
 
-    if database.get("schema") == STA_PATH_DATABASE_STREAM_SCHEMA:
+    if database.get("schema") in {
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA,
+    }:
         return _validate_sta_path_database_stream(
             database_path, database, ir
         )
@@ -1307,6 +1537,7 @@ def derive_partition_net_weights(
     *,
     criticality_scale: float = 9.0,
     criticality_exponent: float = 2.0,
+    input_already_validated: bool = False,
 ) -> Dict[str, Any]:
     """Project path criticality onto hyperedges before partitioning.
 
@@ -1314,16 +1545,160 @@ def derive_partition_net_weights(
     all extracted paths containing the net. The power-law edge weight is the
     standard timing-driven partitioning form ``1 + scale * criticality^p``.
     """
-    database = read_json(database_path)
     ir = EmuIR.load(ir_path)
-    return derive_partition_net_weights_value(
-        database,
-        ir,
-        output_path,
-        source_path_database=str(database_path),
-        criticality_scale=criticality_scale,
-        criticality_exponent=criticality_exponent,
+    database = read_json(database_path)
+    if input_already_validated:
+        summary = database.get("summary")
+        if not isinstance(summary, Mapping):
+            raise ValidationError(
+                "validated STA path database summary is missing"
+            )
+        checked = {"paths": int(summary["paths"])}
+    else:
+        checked = validate_sta_path_database_path_value(
+            database_path, database, ir
+        )
+    for name, value in (
+        ("criticality_scale", criticality_scale),
+        ("criticality_exponent", criticality_exponent),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValidationError(f"{name} must be positive")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload_path = output_path.with_name(output_path.name + ".weights.sqlite")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=payload_path.name + ".",
+        suffix=".tmp",
+        dir=output_path.parent,
     )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    connection: Optional[sqlite3.Connection] = None
+    try:
+        connection = sqlite3.connect(temporary_path)
+        connection.executescript(
+            """
+            PRAGMA journal_mode = OFF;
+            PRAGMA synchronous = OFF;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA user_version = 1;
+            CREATE TABLE net_weights (
+                net_id TEXT PRIMARY KEY,
+                criticality REAL NOT NULL,
+                path_count INTEGER NOT NULL,
+                weight REAL NOT NULL
+            );
+            """
+        )
+        for path in iter_sta_path_database_paths(
+            database_path, database, verify_payload=False
+        ):
+            criticality = max(
+                0.0,
+                min(
+                    1.0,
+                    1.0
+                    - float(path["slack_ns"])
+                    / float(path["clock_period_ns"]),
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO net_weights(net_id, criticality, path_count, weight)
+                VALUES (?, ?, 1, 1.0)
+                ON CONFLICT(net_id) DO UPDATE SET
+                    criticality = MAX(criticality, excluded.criticality),
+                    path_count = path_count + 1
+                """,
+                ((net, criticality) for net in path["path_nets"]),
+            )
+        connection.create_function(
+            "emuflow_weight",
+            1,
+            lambda criticality: 1.0
+            + float(criticality_scale)
+            * float(criticality) ** float(criticality_exponent),
+            deterministic=True,
+        )
+        connection.execute(
+            "UPDATE net_weights SET weight = emuflow_weight(criticality)"
+        )
+        connection.commit()
+        summary_row = connection.execute(
+            """
+            SELECT COUNT(*),
+                   SUM(CASE WHEN criticality > 0.0 THEN 1 ELSE 0 END),
+                   MIN(CASE WHEN criticality > 0.0 THEN weight END),
+                   MAX(CASE WHEN criticality > 0.0 THEN weight END)
+            FROM net_weights
+            """
+        ).fetchone()
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()
+        if integrity != ("ok",):
+            raise ValidationError("partition net weights SQLite integrity failed")
+        connection.close()
+        connection = None
+        os.replace(temporary_path, payload_path)
+    finally:
+        if connection is not None:
+            connection.close()
+        temporary_path.unlink(missing_ok=True)
+
+    timed_nets = int(summary_row[0] or 0)
+    weighted_nets = int(summary_row[1] or 0)
+    minimum_weight = float(summary_row[2] or 1.0)
+    maximum_weight = float(summary_row[3] or 1.0)
+    artifact = {
+        "schema": PARTITION_NET_WEIGHTS_INDEX_SCHEMA,
+        "design": database["design"],
+        "source": {
+            "provider": "sta-max-criticality-power-law-v2-indexed",
+            # Bind the logical artifact identity, not a producer-local staging
+            # directory. The payload and manifest digests provide the content
+            # seal; embedding an absolute cache/run path would make identical
+            # checkpoints differ across machines.
+            "path_database": database_path.name,
+            "path_database_provider": database["source"]["provider"],
+        },
+        "parameters": {
+            "criticality_scale": float(criticality_scale),
+            "criticality_exponent": float(criticality_exponent),
+            "criticality_definition": "clamp(1-slack/period,0,1)",
+            "path_reduction": "maximum",
+        },
+        "summary": {
+            "paths": checked["paths"],
+            "timed_nets": timed_nets,
+            "weighted_nets": weighted_nets,
+            "minimum_weight": minimum_weight,
+            "maximum_weight": maximum_weight,
+        },
+        "payloads": {
+            "weights": {
+                "format": PARTITION_NET_WEIGHTS_SQLITE_FORMAT,
+                "path": payload_path.name,
+                "sha256": _file_sha256(payload_path),
+                "records": timed_nets,
+            }
+        },
+    }
+    write_json(output_path, artifact, compact=True)
+    return {
+        "status": "pass",
+        "design": database["design"],
+        "paths": checked["paths"],
+        "timed_nets": timed_nets,
+        "weighted_nets": weighted_nets,
+        "minimum_weight": minimum_weight,
+        "maximum_weight": maximum_weight,
+        "output": str(output_path),
+    }
 
 
 def derive_partition_net_weights_value(
@@ -1418,10 +1793,213 @@ def derive_partition_net_weights_value(
     }
 
 
+def iter_partition_net_weight_records(
+    manifest_path: Path,
+    manifest: Optional[Mapping[str, Any]] = None,
+    *,
+    verify_payload: bool = True,
+) -> Iterator[tuple[str, float, int, float]]:
+    """Yield indexed net-weight rows without expanding a graph-scale JSON."""
+
+    value = read_json(manifest_path) if manifest is None else manifest
+    if value.get("schema") != PARTITION_NET_WEIGHTS_INDEX_SCHEMA:
+        raise ValidationError("partition net weights schema is invalid")
+    payloads = value.get("payloads")
+    descriptor = (
+        payloads.get("weights") if isinstance(payloads, Mapping) else None
+    )
+    if not isinstance(descriptor, Mapping):
+        raise ValidationError("partition net weights payload is invalid")
+    relative = descriptor.get("path")
+    expected_digest = descriptor.get("sha256")
+    expected_records = descriptor.get("records")
+    if (
+        descriptor.get("format") != PARTITION_NET_WEIGHTS_SQLITE_FORMAT
+        or not isinstance(relative, str)
+        or not relative
+        or Path(relative).is_absolute()
+        or Path(relative).name != relative
+        or not isinstance(expected_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None
+        or isinstance(expected_records, bool)
+        or not isinstance(expected_records, int)
+        or expected_records < 0
+    ):
+        raise ValidationError("partition net weights payload is invalid")
+    payload_path = manifest_path.parent / relative
+    if not payload_path.is_file():
+        raise ValidationError("partition net weights payload is missing")
+    if verify_payload:
+        _verify_file_digest(
+            payload_path,
+            expected_digest,
+            "partition net weights payload",
+        )
+    connection = _open_sqlite_read_only(payload_path)
+    count = 0
+    try:
+        if verify_payload:
+            integrity = connection.execute("PRAGMA quick_check").fetchone()
+            if integrity != ("ok",):
+                raise ValidationError(
+                    "partition net weights SQLite integrity failed"
+                )
+        for row in connection.execute(
+            """
+            SELECT net_id, criticality, path_count, weight
+            FROM net_weights ORDER BY net_id
+            """
+        ):
+            count += 1
+            yield str(row[0]), float(row[1]), int(row[2]), float(row[3])
+    except sqlite3.DatabaseError as error:
+        raise ValidationError(
+            "partition net weights SQLite payload is invalid"
+        ) from error
+    finally:
+        connection.close()
+    if count != expected_records:
+        raise ValidationError("partition net weights payload count disagrees")
+
+
+def partition_net_weights_payload_path(
+    manifest_path: Path,
+    manifest: Optional[Mapping[str, Any]] = None,
+) -> Optional[Path]:
+    """Return the indexed weight payload owned by a weights manifest."""
+
+    value = read_json(manifest_path) if manifest is None else manifest
+    if value.get("schema") == PARTITION_NET_WEIGHTS_SCHEMA:
+        return None
+    if value.get("schema") != PARTITION_NET_WEIGHTS_INDEX_SCHEMA:
+        raise ValidationError("partition net weights schema is invalid")
+    payloads = value.get("payloads")
+    descriptor = (
+        payloads.get("weights") if isinstance(payloads, Mapping) else None
+    )
+    relative = descriptor.get("path") if isinstance(descriptor, Mapping) else None
+    if (
+        not isinstance(relative, str)
+        or not relative
+        or Path(relative).is_absolute()
+        or Path(relative).name != relative
+    ):
+        raise ValidationError("partition net weights payload is invalid")
+    payload_path = manifest_path.parent / relative
+    if not payload_path.is_file():
+        raise ValidationError("partition net weights payload is missing")
+    return payload_path
+
+
+def load_partition_net_weights_indexed(path: Path) -> Dict[str, float]:
+    result: Dict[str, float] = {}
+    for net_id, criticality, path_count, weight in (
+        iter_partition_net_weight_records(path)
+    ):
+        if (
+            not net_id
+            or not math.isfinite(criticality)
+            or criticality < 0.0
+            or criticality > 1.0
+            or path_count <= 0
+            or not math.isfinite(weight)
+            or weight <= 0.0
+        ):
+            raise ValidationError("partition net weights row is invalid")
+        if criticality > 0.0:
+            result[net_id] = weight
+    return result
+
+
+def validate_partition_net_weights(
+    weights_path: Path,
+    database_path: Path,
+    ir_path: Path,
+) -> Dict[str, Any]:
+    """Independently reconstruct an indexed weight population."""
+
+    weights = read_json(weights_path)
+    if weights.get("schema") != PARTITION_NET_WEIGHTS_INDEX_SCHEMA:
+        raise ValidationError("partition net weights schema is invalid")
+    database = read_json(database_path)
+    ir = EmuIR.load(ir_path)
+    checked = validate_sta_path_database_path_value(database_path, database, ir)
+    parameters = weights.get("parameters")
+    if not isinstance(parameters, Mapping):
+        raise ValidationError("partition net weights parameters are invalid")
+    scale = float(parameters.get("criticality_scale"))
+    exponent = float(parameters.get("criticality_exponent"))
+    actual = {
+        net: (criticality, path_count, weight)
+        for net, criticality, path_count, weight in (
+            iter_partition_net_weight_records(weights_path, weights)
+        )
+    }
+    expected: Dict[str, tuple[float, int]] = {}
+    for path in iter_sta_path_database_paths(
+        database_path, database, verify_payload=False
+    ):
+        criticality = max(
+            0.0,
+            min(
+                1.0,
+                1.0
+                - float(path["slack_ns"])
+                / float(path["clock_period_ns"]),
+            ),
+        )
+        for net in path["path_nets"]:
+            previous = expected.get(net, (0.0, 0))
+            expected[net] = (
+                max(previous[0], criticality),
+                previous[1] + 1,
+            )
+    if set(actual) != set(expected):
+        raise ValidationError("partition net weights coverage is invalid")
+    for net, (criticality, path_count) in expected.items():
+        actual_criticality, actual_count, actual_weight = actual[net]
+        expected_weight = 1.0 + scale * criticality**exponent
+        if (
+            abs(actual_criticality - criticality) > 1.0e-12
+            or actual_count != path_count
+            or abs(actual_weight - expected_weight) > 1.0e-12
+        ):
+            raise ValidationError(
+                f"partition net weight reconstruction failed for {net!r}"
+            )
+    summary = weights.get("summary")
+    expected_summary = {
+        "paths": checked["paths"],
+        "timed_nets": len(expected),
+        "weighted_nets": sum(value[0] > 0.0 for value in expected.values()),
+        "minimum_weight": min(
+            (
+                1.0 + scale * value[0] ** exponent
+                for value in expected.values()
+                if value[0] > 0.0
+            ),
+            default=1.0,
+        ),
+        "maximum_weight": max(
+            (
+                1.0 + scale * value[0] ** exponent
+                for value in expected.values()
+                if value[0] > 0.0
+            ),
+            default=1.0,
+        ),
+    }
+    if summary != expected_summary:
+        raise ValidationError("partition net weights summary disagrees")
+    return {"status": "pass", **expected_summary}
+
+
 def project_sta_path_database(
     database_path: Path,
     assignment_path: Path,
     output_path: Path,
+    *,
+    input_already_validated: bool = False,
 ) -> Dict[str, Any]:
     database = read_json(database_path)
     assignment = read_json(assignment_path)
@@ -1430,6 +2008,8 @@ def project_sta_path_database(
         assignment,
         source_input_sha256=_file_sha256(database_path),
         output_path=str(output_path),
+        database_path=database_path,
+        verify_payload=not input_already_validated,
     )
     write_json(output_path, artifact)
     return summary
@@ -1441,6 +2021,8 @@ def project_sta_path_database_value(
     *,
     source_input_sha256: str,
     output_path: str | None = None,
+    database_path: Optional[Path] = None,
+    verify_payload: bool = True,
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """Project one loaded TimingPathDB onto one loaded assignment.
 
@@ -1451,7 +2033,11 @@ def project_sta_path_database_value(
 
     if re.fullmatch(r"[0-9a-f]{64}", source_input_sha256) is None:
         raise ValidationError("STA path projection input digest is invalid")
-    if database.get("schema") != STA_PATH_DATABASE_SCHEMA:
+    if database.get("schema") not in {
+        STA_PATH_DATABASE_SCHEMA,
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA,
+    }:
         raise ValidationError("STA path database schema is invalid")
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError(
@@ -1549,13 +2135,27 @@ def project_sta_path_database_value(
         return [item["net"] for item in transitions], transitions
 
     paths = []
-    database_records = []
+    positive_scale_value: Optional[float] = None
+    most_negative_value: Optional[float] = None
+    max_period = 0.0
     covered_cut_nets = set()
     path_ids = set()
-    raw_paths = database.get("paths")
-    if not isinstance(raw_paths, list) or not raw_paths:
-        raise ValidationError("STA path database paths are invalid")
-    for index, path in enumerate(raw_paths):
+    if database.get("schema") == STA_PATH_DATABASE_SCHEMA:
+        raw_paths = database.get("paths")
+        if not isinstance(raw_paths, list) or not raw_paths:
+            raise ValidationError("STA path database paths are invalid")
+        path_records: Iterator[Mapping[str, Any]] = iter(raw_paths)
+    else:
+        if database_path is None:
+            raise ValidationError(
+                "indexed STA projection requires its manifest path"
+            )
+        path_records = iter_sta_path_database_paths(
+            database_path, database, verify_payload=verify_payload
+        )
+    database_path_count = 0
+    for index, path in enumerate(path_records):
+        database_path_count += 1
         if not isinstance(path, dict):
             raise ValidationError(
                 f"STA path database paths[{index}] is invalid"
@@ -1619,12 +2219,21 @@ def project_sta_path_database_value(
                 f"STA path database paths[{index}].normalized_slack "
                 "is invalid"
             )
-        database_records.append(
-            {
-                "clock_period_ns": float(clock_period),
-                "slack_ns": float(slack),
-            }
-        )
+        numeric_period = float(clock_period)
+        numeric_slack = float(slack)
+        max_period = max(max_period, numeric_period)
+        if numeric_slack >= 0.0:
+            positive_scale_value = (
+                numeric_slack
+                if positive_scale_value is None
+                else max(positive_scale_value, numeric_slack)
+            )
+        else:
+            most_negative_value = (
+                numeric_slack
+                if most_negative_value is None
+                else min(most_negative_value, numeric_slack)
+            )
         candidates = [net for net in path_nets if net in cut_nets]
         projected, transitions = path_transitions(path, candidates)
         if not projected:
@@ -1651,7 +2260,19 @@ def project_sta_path_database_value(
         raise ValidationError(
             "STA path database has no path crossing this partition"
         )
-    expected_normalization = _database_normalization(database_records)
+    expected_normalization = {
+        "positive_slack_scale_ns": (
+            1.0
+            if positive_scale_value in {None, 0.0}
+            else float(positive_scale_value)
+        ),
+        "negative_slack_scale_ns": abs(
+            -1.0
+            if most_negative_value is None
+            else float(most_negative_value)
+        ),
+        "max_clock_period_ns": max_period,
+    }
     if any(
         abs(expected_normalization[key] - normalization[key]) > 1.0e-12
         for key in expected_normalization
@@ -1676,7 +2297,7 @@ def project_sta_path_database_value(
     return artifact, {
         "status": "pass",
         "design": assignment["design"],
-        "database_paths": len(raw_paths),
+        "database_paths": database_path_count,
         "projected_paths": len(paths),
         "compressed_paths": len(artifact["paths"]),
         "cut_nets": len(cut_nets),

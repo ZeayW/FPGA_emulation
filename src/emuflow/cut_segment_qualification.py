@@ -12,7 +12,7 @@ endpoint-exact delay remains a mandatory Phase 7 qualification gate.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 from .errors import ValidationError
 from .io import read_json
@@ -23,7 +23,10 @@ from .opensta import (
     classify_through_net_timing_endpoints,
     load_timing_model,
 )
-from .sta import validate_sta_path_database_value
+from .sta import (
+    iter_sta_path_database_paths,
+    validate_sta_path_database_path_value,
+)
 
 
 CUT_SEGMENT_QUALIFICATION_SCHEMA = (
@@ -109,19 +112,24 @@ def build_cut_segment_qualification(
     *,
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
+    input_already_validated: bool = False,
 ) -> Dict[str, Any]:
     """Build deterministic pre-route cut qualification without STA guessing."""
 
     ir = EmuIR.load(ir_path)
     assignment = read_json(assignment_path)
     database = read_json(path_database_path)
-    validate_sta_path_database_value(database, ir)
+    if not input_already_validated:
+        validate_sta_path_database_path_value(path_database_path, database, ir)
     return build_cut_segment_qualification_value(
         ir,
         assignment,
         database,
         timing_model_path=timing_model_path,
         architecture_timing_db_path=architecture_timing_db_path,
+        path_records=iter_sta_path_database_paths(
+            path_database_path, database, verify_payload=False
+        ),
     )
 
 
@@ -132,6 +140,7 @@ def build_cut_segment_qualification_value(
     *,
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
+    path_records: Optional[Iterable[Mapping[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build qualification from one validated in-memory input set."""
 
@@ -148,7 +157,12 @@ def build_cut_segment_qualification_value(
         ir, model, cut_nets, instance_cell_types
     )
     member_ids: Dict[str, list[str]] = {net: [] for net in cut_nets}
-    for path in database.get("paths", []):
+    records_source = (
+        path_records
+        if path_records is not None
+        else database.get("paths", [])
+    )
+    for path in records_source:
         if not isinstance(path, dict) or not isinstance(path.get("path_nets"), list):
             raise ValidationError(
                 "cut-segment qualification original path record is invalid"
@@ -232,13 +246,16 @@ def validate_cut_segment_qualification(
     ir = EmuIR.load(ir_path)
     assignment = read_json(assignment_path)
     database = read_json(path_database_path)
-    validate_sta_path_database_value(database, ir)
+    validate_sta_path_database_path_value(path_database_path, database, ir)
     expected = build_cut_segment_qualification_value(
         ir,
         assignment,
         database,
         timing_model_path=timing_model_path,
         architecture_timing_db_path=architecture_timing_db_path,
+        path_records=iter_sta_path_database_paths(
+            path_database_path, database, verify_payload=False
+        ),
     )
     if dict(artifact) != expected:
         raise ValidationError(

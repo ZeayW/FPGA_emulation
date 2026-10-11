@@ -23,6 +23,7 @@ from .resources import ResourceVector
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
     STA_PATH_DATABASE_STREAM_SCHEMA,
+    STA_PATH_DATABASE_INDEX_SCHEMA,
     sta_path_database_qor,
 )
 from .xilinx_timing import (
@@ -395,6 +396,7 @@ def _qor_path(path: Path) -> Dict[str, Any]:
     if database.get("schema") in {
         STA_PATH_DATABASE_SCHEMA,
         STA_PATH_DATABASE_STREAM_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA,
     }:
         return sta_path_database_qor(path, database)
     # Preserve the minimal schema-less fixture accepted by historical tests.

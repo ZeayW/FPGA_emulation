@@ -435,7 +435,12 @@ def compile_partition_qualification_spec(
         ],
         [
             _artifact("path-database.json", "consumer-checkpoint"),
+            _artifact("path-database.json.paths.sqlite", "consumer-checkpoint"),
             _artifact("partition-net-weights.json", "consumer-checkpoint"),
+            _artifact(
+                "partition-net-weights.json.weights.sqlite",
+                "consumer-checkpoint",
+            ),
             _artifact("experiment-timing-report.json", "evidence-critical"),
         ],
         inputs=(

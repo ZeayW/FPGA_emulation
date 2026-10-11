@@ -6175,18 +6175,24 @@ OpenSTA coverage still checks every mapped and generated cell type against the
 timing model, but the run summary does not duplicate the complete generated
 route-delay type set.  It records only the deterministic set cardinality and
 SHA-256 seal; the timing model remains the canonical owner of the names.
-The RapidWright physical OpenSTA tail likewise emits TimingPathDB v2 as a
-small manifest plus a sealed path JSONL stream.  New payloads use fixed-order
-row arrays instead of repeating object and endpoint keys for every path; the
-reader retains the earlier object-stream formats only for validation of
-historical artifacts.  TSV import derives global normalization while writing
-the compact rows in one pass; readers reconstruct the logical path object and
-derive normalized slack lazily from the sealed manifest, and validation and
-QoR recomputation stream the payload.  The upstream logical
-TimingPathDB retains readable v1 compatibility for partition/routing consumers,
-while new physical path evidence no longer creates or reparses a 100+ MiB JSON
-tree.
-On the frozen real-DLA `fpga1` routed-timing input (115,706 timed endpoints),
+Logical and RapidWright-physical OpenSTA paths now use TimingPathDB v3: a
+small JSON manifest seals a normalized SQLite payload with separate `paths`
+and ordered `path_nets` tables.  The production flow no longer serializes the
+path population as either one giant JSON document or a graph-sized JSONL
+stream.  TSV import validates and inserts rows in one pass; indexed readers
+reconstruct logical records lazily and derive normalized slack from the small
+manifest.  The reader retains v1 inline JSON and v2 JSONL only for explicit
+historical inputs and qualification fixtures.  Timing-driven partition
+weights use the same rule: v2 is a small manifest plus one indexed SQLite row
+per net, rather than three duplicate JSON maps for criticality, path count,
+and weight.  TritonPart, MFSPart, PATRON, cross-stage timing, cut
+qualification, local-path extraction, and physical timing consume these
+interfaces without creating a persistent expanded JSON checkpoint.
+Phase 4 also no longer writes a second `timing_paths.normalized.json` copy;
+the compressed timing view embedded in the canonical route artifact is its
+single owner.
+For historical context, the superseded v2 JSONL prototype was measured on the
+frozen real-DLA `fpga1` routed-timing input (115,706 timed endpoints):
 the compact-row producer completed in 10:40.42 with a 102,347,409-byte path
 stream.  The former monolithic path database required 152,272,744 bytes and
 10:41.33 on the same input.  Independent streamed validation of the new result

@@ -22,6 +22,10 @@ from .partition import (
 )
 from .platform import Platform
 from .resources import RESOURCE_FIELDS
+from .sta import (
+    PARTITION_NET_WEIGHTS_INDEX_SCHEMA,
+    load_partition_net_weights_indexed,
+)
 
 
 TRITONPART_INPUT_SCHEMA = "emuflow.tritonpart-input/v1"
@@ -34,6 +38,8 @@ def load_partition_net_weights(path: Optional[Path]) -> Dict[str, float]:
     if path is None:
         return {}
     value = read_json(path)
+    if value.get("schema") == PARTITION_NET_WEIGHTS_INDEX_SCHEMA:
+        return load_partition_net_weights_indexed(path)
     if value.get("schema") != PARTITION_NET_WEIGHTS_SCHEMA:
         raise ValidationError(
             "net weights schema: expected "

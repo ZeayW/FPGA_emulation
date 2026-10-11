@@ -43,8 +43,13 @@ from .platform import Platform
 from .routing import load_route_constraints, semantic_contract_for_routes
 from .sta import (
     derive_partition_net_weights,
-    derive_partition_net_weights_value,
+    iter_sta_path_database_paths,
+    partition_net_weights_payload_path,
     project_sta_path_database_value,
+    sta_path_database_payload_path,
+    validate_partition_net_weights,
+    validate_sta_path_database,
+    validate_sta_path_database_path_value,
     validate_sta_path_database_value,
 )
 from .synthesis import (
@@ -84,7 +89,11 @@ _SHARED_REQUIRED_ARTIFACTS = {
     "timing/cut-timing-paths.json",
     "timing/cut-segment-qualification.json",
 }
-_SHARED_OPTIONAL_ARTIFACTS = {"tdm/ratio_plan.json"}
+_SHARED_OPTIONAL_ARTIFACTS = {
+    "tdm/ratio_plan.json",
+    "timing/path-database.json.paths.sqlite",
+    "timing/partition-net-weights.json.weights.sqlite",
+}
 MANAGED_DAG_VALIDATION_MODE = "managed-independent-publish-v1"
 
 
@@ -477,30 +486,17 @@ def run_timing_checkpoint(
         executable=opensta,
         max_paths=max_paths,
         log_path=output_dir / "opensta.log",
-        validate_output=not managed_dag_node,
+        validate_output=True,
+        _stream_output=True,
     )
-    if managed_dag_node:
-        database_value = read_json(database)
-        ir = EmuIR.load(ir_path)
-        checked = validate_sta_path_database_value(database_value, ir)
-        sta["checker"] = checked
-        weights = derive_partition_net_weights_value(
-            database_value,
-            ir,
-            output_dir / "partition-net-weights.json",
-            source_path_database=database.name,
-            criticality_scale=criticality_scale,
-            criticality_exponent=criticality_exponent,
-            input_already_validated=True,
-        )
-    else:
-        weights = derive_partition_net_weights(
-            database,
-            ir_path,
-            output_dir / "partition-net-weights.json",
-            criticality_scale=criticality_scale,
-            criticality_exponent=criticality_exponent,
-        )
+    weights = derive_partition_net_weights(
+        database,
+        ir_path,
+        output_dir / "partition-net-weights.json",
+        criticality_scale=criticality_scale,
+        criticality_exponent=criticality_exponent,
+        input_already_validated=True,
+    )
     report = {
         "schema": EXPERIMENT_TIMING_SCHEMA,
         "status": "pass",
@@ -559,34 +555,15 @@ def validate_timing_checkpoint(
             raise ValidationError("timing path database seal is broken")
         if report.get("partition_net_weights_sha256") != _sha256(weights_path):
             raise ValidationError("timing partition weights seal is broken")
-    database = read_json(database_path)
-    ir = EmuIR.load(ir_path)
-    checked = validate_sta_path_database_value(database, ir)
-    weights = read_json(weights_path)
-    scale = float(report["criticality_scale"])
-    exponent = float(report["criticality_exponent"])
-    expected_criticality: Dict[str, float] = {}
-    expected_counts: Dict[str, int] = {}
-    for path in database["paths"]:
-        criticality = max(0.0, min(1.0, 1.0 - path["slack_ns"] / path["clock_period_ns"]))
-        for net in path["path_nets"]:
-            expected_criticality[net] = max(expected_criticality.get(net, 0.0), criticality)
-            expected_counts[net] = expected_counts.get(net, 0) + 1
-    if weights.get("criticality") != dict(sorted(expected_criticality.items())):
-        raise ValidationError("timing partition criticality reconstruction failed")
-    if weights.get("path_count") != dict(sorted(expected_counts.items())):
-        raise ValidationError("timing partition path counts are invalid")
-    expected_weights = {
-        net: 1.0 + scale * criticality**exponent
-        for net, criticality in sorted(expected_criticality.items())
-        if criticality > 0.0
+    checked = validate_sta_path_database(database_path, ir_path)
+    weights_checked = validate_partition_net_weights(
+        weights_path, database_path, ir_path
+    )
+    return {
+        "status": "pass",
+        "paths": checked["paths"],
+        "weighted_nets": weights_checked["weighted_nets"],
     }
-    actual_weights = weights.get("weights")
-    if not isinstance(actual_weights, dict) or set(actual_weights) != set(expected_weights):
-        raise ValidationError("timing partition weight coverage is invalid")
-    if any(not _float_equal(actual_weights[net], value) for net, value in expected_weights.items()):
-        raise ValidationError("timing partition weight reconstruction failed")
-    return {"status": "pass", "paths": checked["paths"], "weighted_nets": len(expected_weights)}
 
 
 def run_partition_checkpoint(
@@ -656,6 +633,11 @@ def run_cut_timing_checkpoint(
         database,
         timing_model_path=timing_model_path,
         architecture_timing_db_path=architecture_timing_db_path,
+        path_records=iter_sta_path_database_paths(
+            complete_database,
+            database,
+            verify_payload=managed_dag_node,
+        ),
     )
     qualification_path = output_dir / "cut-segment-qualification.json"
     write_json(qualification_path, qualification)
@@ -672,6 +654,8 @@ def run_cut_timing_checkpoint(
             if managed_dag_node
             else str(output_dir / "cut-timing-paths.json")
         ),
+        database_path=complete_database,
+        verify_payload=managed_dag_node,
     )
     write_json(output_dir / "cut-timing-paths.json", projected_artifact)
     report = {
@@ -775,13 +759,18 @@ def validate_cut_timing_checkpoint(
     qualification = read_json(qualification_path)
     ir = EmuIR.load(ir_path)
     database = read_json(complete_database)
-    database_validation = validate_sta_path_database_value(database, ir)
+    database_validation = validate_sta_path_database_path_value(
+        complete_database, database, ir
+    )
     expected_qualification = build_cut_segment_qualification_value(
         ir,
         assignment,
         database,
         timing_model_path=timing_model_path,
         architecture_timing_db_path=architecture_timing_db_path,
+        path_records=iter_sta_path_database_paths(
+            complete_database, database, verify_payload=False
+        ),
     )
     if qualification != expected_qualification:
         raise ValidationError(
@@ -810,6 +799,7 @@ def validate_cut_timing_checkpoint(
         assignment,
         source_input_sha256=database_sha256,
         output_path=None if managed_dag_node else str(projected),
+        database_path=complete_database,
     )
     if read_json(projected) != expected_projection:
         raise ValidationError("cut-timing projection reconstruction failed")
@@ -1242,6 +1232,19 @@ def materialize_shared_phase1_5(
             "cut-timing",
         ),
     }
+    path_payload = sta_path_database_payload_path(
+        timing_root / "path-database.json"
+    )
+    if path_payload is not None:
+        mapping[f"timing/{path_payload.name}"] = (path_payload, "timing")
+    weights_payload = partition_net_weights_payload_path(
+        timing_root / "partition-net-weights.json"
+    )
+    if weights_payload is not None:
+        mapping[f"timing/{weights_payload.name}"] = (
+            weights_payload,
+            "timing",
+        )
     ratio_plan = tdm_root / "ratio_plan.json"
     if ratio_plan.is_file():
         mapping["tdm/ratio_plan.json"] = (ratio_plan, "tdm")

@@ -19,7 +19,7 @@ from .mfspart_refine import (
     refine_mfspart_hierarchy,
     refine_mfspart_level,
 )
-from .sta import STA_PATH_DATABASE_SCHEMA
+from .sta import STA_PATH_DATABASE_SCHEMA, load_sta_path_database
 from .partition import (
     CUT_MODE_STATIC_EXACT,
     build_partition_assignment,
@@ -72,7 +72,7 @@ def _timing_path_groups(
     *,
     include_hash_evidence: bool = True,
 ) -> tuple[list[dict[str, Any]], list[list[int]], Dict[str, Any]]:
-    database = read_json(database_path)
+    database = load_sta_path_database(database_path)
     if (
         database.get("schema") != STA_PATH_DATABASE_SCHEMA
         or database.get("design") != ir.value["design"]["name"]

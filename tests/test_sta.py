@@ -9,6 +9,7 @@ from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.sta import (
+    PARTITION_NET_WEIGHTS_INDEX_SCHEMA,
     PARTITION_NET_WEIGHTS_SCHEMA,
     STA_PATH_DATABASE_TSV_HEADER,
     STA_PATH_DATABASE_SCHEMA,
@@ -19,6 +20,7 @@ from emuflow.sta import (
     import_sta_path_database_tsv,
     import_vivado_path_database_tsv,
     import_vivado_sta_tsv,
+    load_partition_net_weights_indexed,
     project_sta_path_database,
     write_vivado_cut_net_map,
     write_vivado_net_map,
@@ -469,6 +471,7 @@ class StaAdapterTest(unittest.TestCase):
                 criticality_exponent=2.0,
             )
             weights = json.loads(weights_path.read_text(encoding="utf-8"))
+            indexed_weights = load_partition_net_weights_indexed(weights_path)
             database = json.loads(
                 database_path.read_text(encoding="utf-8")
             )
@@ -519,13 +522,13 @@ class StaAdapterTest(unittest.TestCase):
             )
         self.assertEqual(imported["paths"], 3)
         self.assertEqual(
-            weights["schema"], PARTITION_NET_WEIGHTS_SCHEMA
+            weights["schema"], PARTITION_NET_WEIGHTS_INDEX_SCHEMA
         )
         self.assertEqual(weights_report["weighted_nets"], 3)
-        self.assertEqual(weights["weights"][net_ids[0]], 10.0)
-        self.assertEqual(weights["weights"][net_ids[1]], 10.0)
+        self.assertEqual(indexed_weights[net_ids[0]], 10.0)
+        self.assertEqual(indexed_weights[net_ids[1]], 10.0)
         self.assertAlmostEqual(
-            weights["weights"][net_ids[2]], 7.890625
+            indexed_weights[net_ids[2]], 7.890625
         )
         self.assertEqual(report_a["projected_paths"], 1)
         self.assertEqual(report_b["projected_paths"], 1)

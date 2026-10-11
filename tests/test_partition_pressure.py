@@ -44,6 +44,11 @@ from emuflow.phase3 import (
 from emuflow.platform import Platform
 from emuflow.io import read_json, write_json
 from emuflow.routing import normalize_route_constraints
+from emuflow.opensta import OPENSTA_PROVIDER
+from emuflow.sta import (
+    STA_PATH_DATABASE_TSV_HEADER,
+    import_sta_path_database_tsv_streaming,
+)
 from tests.test_phase5 import _link, _platform_value
 from tests.native_build import patron_refiner
 
@@ -253,6 +258,66 @@ class PartitionPressureTest(unittest.TestCase):
             self.timing,
             self.route_constraints,
         )
+
+    def test_model_consumes_indexed_timing_database_without_json_paths(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            tsv_path = root / "paths.tsv"
+            database_path = root / "paths.json"
+            write_json(ir_path, self.ir.value)
+            rows = [STA_PATH_DATABASE_TSV_HEADER]
+            for index, path in enumerate(self.timing["paths"]):
+                path_id = (
+                    f"{path['startpoint']['instance']}/"
+                    f"{path['startpoint']['port']}->"
+                    f"{path['endpoint']['instance']}/"
+                    f"{path['endpoint']['port']}#{index:08d}"
+                )
+                rows.append(
+                    "\t".join(
+                        (
+                            path_id.encode().hex(),
+                            path["clock_domain"].encode().hex(),
+                            str(path["clock_period_ns"]),
+                            str(path["slack_ns"]),
+                            str(path["fixed_delay_ns"]),
+                            ",".join(
+                                net.encode().hex()
+                                for net in path["path_nets"]
+                            ),
+                        )
+                    )
+                )
+            tsv_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            import_sta_path_database_tsv_streaming(
+                tsv_path,
+                ir_path,
+                database_path,
+                provider=OPENSTA_PROVIDER,
+            )
+            manifest = read_json(database_path)
+            self.assertNotIn("paths", manifest)
+            model = build_partition_pressure_model(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                manifest,
+                self.route_constraints,
+                independent_validation=True,
+                timing_database_path=database_path,
+            )
+            self.assertEqual(len(model["paths"]), 2)
+            self.assertEqual(
+                {item["path"] for item in model["paths"]},
+                {
+                    "u0/O->u1/I#00000000",
+                    "u2/O->u3/I#00000001",
+                },
+            )
 
     def test_frozen_assignment_rebase_reuses_identical_clusters(self) -> None:
         with patch(

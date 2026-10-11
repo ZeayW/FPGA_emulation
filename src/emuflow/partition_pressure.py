@@ -43,7 +43,11 @@ from .routing import (
     normalize_route_constraints,
     route_link_delay_ns,
 )
-from .sta import _normalized_slack, _validate_database_normalization
+from .sta import (
+    _normalized_slack,
+    _validate_database_normalization,
+    iter_sta_path_database_paths,
+)
 
 
 PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v6"
@@ -369,6 +373,7 @@ def _reconstruct_partition_pressure_model(
     route_constraints: Mapping[str, Any],
     *,
     include_source_seals: bool = True,
+    timing_database_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
 
     if timing_database.get("design") != ir.value["design"]["name"]:
@@ -384,7 +389,16 @@ def _reconstruct_partition_pressure_model(
     }
     paths = []
     seen_paths = set()
-    for index, raw in enumerate(timing_database.get("paths", [])):
+    timing_records = (
+        iter_sta_path_database_paths(
+            timing_database_path,
+            timing_database,
+            verify_payload=False,
+        )
+        if timing_database_path is not None
+        else timing_database.get("paths", [])
+    )
+    for index, raw in enumerate(timing_records):
         if not isinstance(raw, dict):
             raise ValidationError(
                 f"partition pressure timing path {index} is invalid"
@@ -550,6 +564,7 @@ def build_partition_pressure_model(
     route_constraints: Mapping[str, Any],
     *,
     independent_validation: bool = True,
+    timing_database_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Build the immutable source-bound reference model."""
 
@@ -561,6 +576,7 @@ def build_partition_pressure_model(
         timing_database,
         route_constraints,
         include_source_seals=independent_validation,
+        timing_database_path=timing_database_path,
     )
     if independent_validation:
         validate_partition_pressure_model(
@@ -571,6 +587,7 @@ def build_partition_pressure_model(
             timing_database,
             route_constraints,
             model,
+            timing_database_path=timing_database_path,
         )
     return model
 
@@ -583,6 +600,8 @@ def validate_partition_pressure_model(
     timing_database: Mapping[str, Any],
     route_constraints: Mapping[str, Any],
     model: Mapping[str, Any],
+    *,
+    timing_database_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     if model.get("schema") != PARTITION_PRESSURE_MODEL_SCHEMA:
         raise ValidationError("partition pressure model schema is invalid")
@@ -594,6 +613,7 @@ def validate_partition_pressure_model(
         constraints,
         timing_database,
         route_constraints,
+        timing_database_path=timing_database_path,
     )
     if model != expected:
         raise ValidationError("partition pressure model reconstruction mismatch")
@@ -1318,6 +1338,7 @@ def run_partition_pressure_reference(
         constraints,
         timing,
         route_constraints,
+        timing_database_path=timing_database_path,
     )
     final, trace = refine_partition_pressure_exhaustive(
         ir,
@@ -2271,6 +2292,8 @@ def validate_partition_pressure_native_bundle(
     native_trace: Mapping[str, Any],
     physical_feedback: Optional[Mapping[str, Any]] = None,
     physical_feedback_scale: float = 0.0,
+    *,
+    timing_database_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Validate a production PATRON bundle without rerunning its heuristic.
 
@@ -2289,6 +2312,7 @@ def validate_partition_pressure_native_bundle(
         timing_database,
         route_constraints,
         model,
+        timing_database_path=timing_database_path,
     )
     trace_schema = native_trace.get("schema")
     if (

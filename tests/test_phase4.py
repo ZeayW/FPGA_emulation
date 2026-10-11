@@ -978,11 +978,9 @@ class Phase4Test(unittest.TestCase):
                 assignment, platform, routes, normalized
             )
             self.assertEqual(checked["status"], "pass")
-            normalized_reload = load_sta_paths(
-                root / "phase4" / "timing_paths.normalized.json",
-                routes["demands"],
+            self.assertFalse(
+                (root / "phase4" / "timing_paths.normalized.json").exists()
             )
-            self.assertEqual(normalized_reload, normalized)
             corrupted = copy.deepcopy(routes)
             corrupted["routes"][0]["predicted_max_delay_ns"] += 0.25
             with self.assertRaisesRegex(

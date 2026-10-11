@@ -40,7 +40,7 @@ from .mfspart_refine import (
 from .phase3 import run_phase3, validate_phase3
 from .platform import Platform
 from .routing import load_route_constraints
-from .sta import STA_PATH_DATABASE_SCHEMA
+from .sta import STA_PATH_DATABASE_SCHEMA, load_sta_path_database
 
 
 def _rebuild_timing_path_objective(
@@ -52,7 +52,7 @@ def _rebuild_timing_path_objective(
 
     ir = EmuIR.load(ir_path)
     clusters = read_json(clusters_path)
-    database = read_json(database_path)
+    database = load_sta_path_database(database_path)
     if (
         database.get("schema") != STA_PATH_DATABASE_SCHEMA
         or database.get("design") != ir.value["design"]["name"]
@@ -1093,6 +1093,9 @@ def validate_partition_checkpoint(
             patron_trace,
             physical_feedback,
             actual_feedback_scale,
+            timing_database_path=_require(
+                timing_root, "path-database.json"
+            ),
         )
         if physical_feedback_validation is not None:
             algorithm_validation["physical_feedback"] = (

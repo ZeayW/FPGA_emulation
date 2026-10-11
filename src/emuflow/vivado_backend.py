@@ -22,7 +22,7 @@ from .physical_backend import (
 )
 from .placement import _vivado_mapped_name
 from .sta import (
-    import_vivado_path_database_tsv,
+    import_sta_path_database_tsv_streaming,
     validate_sta_path_database,
     write_vivado_net_map,
 )
@@ -484,8 +484,11 @@ def run_vivado_timing_path_database(
         raise ValidationError(
             "Vivado timing produced no mapped register-to-register paths"
         )
-    import_report = import_vivado_path_database_tsv(
-        timing_tsv, ir_path, output_path
+    import_report = import_sta_path_database_tsv_streaming(
+        timing_tsv,
+        ir_path,
+        output_path,
+        provider="vivado-get-timing-path-database-v1",
     )
     validation = validate_sta_path_database(output_path, ir_path)
     report = {
@@ -641,8 +644,11 @@ def run_vivado_partition_backend(
         if line
     ]
     if timing_rows:
-        timing_database_report = import_vivado_path_database_tsv(
-            timing_tsv, ir_path, timing_database
+        timing_database_report = import_sta_path_database_tsv_streaming(
+            timing_tsv,
+            ir_path,
+            timing_database,
+            provider="vivado-get-timing-path-database-v1",
         )
         timing_database_validation = validate_sta_path_database(
             timing_database, ir_path
@@ -721,6 +727,7 @@ def run_vivado_partition_backend(
         "mapped_cells.tsv",
         "routed_mapped_cells.tsv",
         *(("timing-path-database.json",) if timing_rows else ()),
+        *(("timing-path-database.json.paths.sqlite",) if timing_rows else ()),
         *(("boundary-timing.json",) if boundary_timing_report else ()),
         *(("logic-segment-timing.json",) if logic_timing_report else ()),
     )

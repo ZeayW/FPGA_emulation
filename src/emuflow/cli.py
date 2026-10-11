@@ -3126,7 +3126,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--net-weights",
         type=Path,
-        help="optional emuflow.partition-net-weights/v1 JSON",
+        help="optional emuflow.partition-net-weights/v2 indexed manifest",
     )
     phase3.add_argument(
         "--tritonpart-timeout-seconds",

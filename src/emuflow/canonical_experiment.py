@@ -951,7 +951,7 @@ def compile_canonical_experiment_spec(
     node(
         "timing", "timing", ["frontend"], timing_command,
         [executable, "experiment-stage", "timing-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--managed-dag-node"],
-        [_artifact("path-database.json", "consumer-checkpoint"), _artifact("partition-net-weights.json", "consumer-checkpoint"), _artifact("experiment-timing-report.json", "evidence-critical")],
+        [_artifact("path-database.json", "consumer-checkpoint"), _artifact("path-database.json.paths.sqlite", "consumer-checkpoint"), _artifact("partition-net-weights.json", "consumer-checkpoint"), _artifact("partition-net-weights.json.weights.sqlite", "consumer-checkpoint"), _artifact("experiment-timing-report.json", "evidence-critical")],
         inputs=("timing_model", "architecture_timing_db", "tool.emuflow", "tool.opensta"),
         configuration={"clock_periods": periods, "max_paths": 200000, "criticality_scale": 9.0, "criticality_exponent": 2.0},
         peak_gib=16, retained_gib=4,

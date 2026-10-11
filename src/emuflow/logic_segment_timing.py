@@ -21,6 +21,7 @@ from .platform import Platform
 from .routing import system_route_timing_paths
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
+    load_sta_path_database,
     sta_object_index,
     sta_path_endpoints,
 )
@@ -612,7 +613,7 @@ def prepare_logic_segment_query_inputs(
     """Parse and index global query inputs exactly once per physical run."""
     original_ir = EmuIR.load(original_ir_path)
     assignment = read_json(assignment_path)
-    path_database = read_json(path_database_path)
+    path_database = load_sta_path_database(path_database_path)
     routes = read_json(routes_path)
     schedule = read_json(schedule_path)
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:

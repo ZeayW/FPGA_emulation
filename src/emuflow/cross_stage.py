@@ -57,6 +57,7 @@ from .sta import (
     STA_PATH_DATABASE_SCHEMA,
     _normalized_slack,
     _validate_database_normalization,
+    load_sta_path_database,
     project_sta_path_database,
 )
 from .tdm import validate_tdm_schedule
@@ -782,7 +783,7 @@ def evaluate_cross_stage_candidate(
         "platform": platform_path,
     }
     candidate = build_cross_stage_candidate(
-        read_json(database_path),
+        load_sta_path_database(database_path),
         read_json(assignment_path),
         read_json(routes_path),
         read_json(schedule_path),
@@ -812,7 +813,7 @@ def validate_cross_stage_candidate(
         "platform": platform_path,
     }
     expected = build_cross_stage_candidate(
-        read_json(database_path),
+        load_sta_path_database(database_path),
         read_json(assignment_path),
         read_json(routes_path),
         read_json(schedule_path),
@@ -1101,7 +1102,7 @@ def run_cross_stage_optimization(
     output_dir.mkdir(parents=True, exist_ok=True)
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
-    database = read_json(database_path)
+    database = load_sta_path_database(database_path)
     if database.get("schema") != STA_PATH_DATABASE_SCHEMA:
         raise ValidationError("cross-stage STA path database is invalid")
     if database.get("design") != ir.value["design"]["name"]:

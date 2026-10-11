@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 import stat
 import tempfile
 import unittest
@@ -109,25 +110,29 @@ class OpenStaProviderTest(unittest.TestCase):
             self.assertNotIn("paths", manifest)
             self.assertEqual(
                 manifest["payloads"]["paths"]["format"],
-                "jsonl-sta-path-row/v3",
+                "sqlite-sta-path/v1",
             )
             self.assertEqual(records[0]["id"], path_id)
             self.assertIn("startpoint", records[0])
             self.assertIn("endpoint", records[0])
             payload = output.parent / manifest["payloads"]["paths"]["path"]
-            raw_record = json.loads(payload.read_text(encoding="utf-8"))
-            self.assertIsInstance(raw_record, list)
-            self.assertEqual(raw_record[:2], [path_id, "clk"])
-            self.assertEqual(len(raw_record), 8)
+            connection = sqlite3.connect(payload)
+            try:
+                raw_record = connection.execute(
+                    "SELECT path_id, clock_domain FROM paths"
+                ).fetchone()
+            finally:
+                connection.close()
+            self.assertEqual(raw_record, (path_id, "clk"))
             self.assertIn("normalized_slack", records[0])
             self.assertEqual(checked["paths"], 1)
             self.assertEqual(qor["wns_ns"], -0.5)
             with payload.open("ab") as stream:
-                stream.write(b"{}\n")
-            with self.assertRaisesRegex(Exception, "record 1 is invalid"):
+                stream.write(b"corrupt")
+            with self.assertRaisesRegex(Exception, "digest disagrees"):
                 list(iter_sta_path_database_paths(output, manifest))
 
-    def test_streamed_path_rows_avoid_repeated_object_keys(self) -> None:
+    def test_indexed_paths_are_relational_not_json_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ir_path = root / "ir.json"
@@ -154,21 +159,22 @@ class OpenStaProviderTest(unittest.TestCase):
             )
             manifest = json.loads(output.read_text(encoding="utf-8"))
             payload = output.parent / manifest["payloads"]["paths"]["path"]
-            records = list(iter_sta_path_database_paths(output, manifest))
-            object_encoded = b"".join(
-                json.dumps(
-                    {
-                        key: value
-                        for key, value in record.items()
-                        if key != "normalized_slack"
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-                + b"\n"
-                for record in records
-            )
-            self.assertLess(payload.stat().st_size, len(object_encoded) * 0.7)
+            self.assertEqual(payload.suffix, ".sqlite")
+            self.assertEqual(payload.read_bytes()[:16], b"SQLite format 3\x00")
+            connection = sqlite3.connect(payload)
+            try:
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM paths").fetchone(),
+                    (1000,),
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM path_nets"
+                    ).fetchone(),
+                    (1000,),
+                )
+            finally:
+                connection.close()
 
     def test_streamed_path_reader_accepts_previous_raw_v2_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -618,7 +624,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
             )
             manifest = json.loads(output_path.read_text(encoding="utf-8"))
             checked = validate_sta_path_database(output_path, ir_path)
-        self.assertEqual(manifest["schema"], "emuflow.sta-path-database/v2")
+            self.assertEqual(manifest["schema"], "emuflow.sta-path-database/v3")
         self.assertNotIn("paths", manifest)
         self.assertEqual(report["path_qor"]["wns_ns"], -0.25)
         self.assertEqual(report["timing_io"]["output_ports"], 1)

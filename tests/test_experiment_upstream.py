@@ -68,6 +68,14 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 ),
                 mock.patch("emuflow.experiment_upstream._link_or_copy"),
                 mock.patch(
+                    "emuflow.experiment_upstream.sta_path_database_payload_path",
+                    return_value=None,
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.partition_net_weights_payload_path",
+                    return_value=None,
+                ),
+                mock.patch(
                     "emuflow.experiment_upstream._sha256", return_value="0" * 64
                 ),
                 mock.patch("emuflow.experiment_upstream.write_json"),
@@ -163,7 +171,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
             self.assertFalse(any("sha256" in key for key in route_report))
             self.assertFalse(any("sha256" in key for key in tdm_report))
 
-    def test_managed_timing_loads_and_validates_database_once(self) -> None:
+    def test_timing_uses_indexed_database_without_reloading_population(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             frontend = root / "frontend"
@@ -171,17 +179,15 @@ class ExperimentUpstreamTest(unittest.TestCase):
             ir_path = frontend / "phase1/design.emuir.sqlite"
             ir_path.parent.mkdir(parents=True)
             ir_path.write_text("{}", encoding="utf-8")
-            database_value = {"schema": "emuflow.sta-paths/v1", "paths": []}
-            ir_value = object()
-
             def run_opensta(_ir, database, **kwargs):
-                self.assertFalse(kwargs["validate_output"])
+                self.assertTrue(kwargs["validate_output"])
+                self.assertTrue(kwargs["_stream_output"])
                 database.write_text("{}", encoding="utf-8")
                 return {"status": "pass"}
 
             def derive(database, ir, output_path, **kwargs):
-                self.assertIs(database, database_value)
-                self.assertIs(ir, ir_value)
+                self.assertEqual(database, (output / "path-database.json").resolve())
+                self.assertEqual(ir, ir_path.resolve())
                 self.assertTrue(kwargs["input_already_validated"])
                 output_path.write_text("{}", encoding="utf-8")
                 return {"status": "pass"}
@@ -192,19 +198,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     side_effect=run_opensta,
                 ),
                 mock.patch(
-                    "emuflow.experiment_upstream.read_json",
-                    return_value=database_value,
-                ) as read,
-                mock.patch(
-                    "emuflow.experiment_upstream.EmuIR.load",
-                    return_value=ir_value,
-                ) as load_ir,
-                mock.patch(
-                    "emuflow.experiment_upstream.validate_sta_path_database_value",
-                    return_value={"status": "pass", "paths": 0},
-                ) as validate,
-                mock.patch(
-                    "emuflow.experiment_upstream.derive_partition_net_weights_value",
+                    "emuflow.experiment_upstream.derive_partition_net_weights",
                     side_effect=derive,
                 ),
             ):
@@ -217,9 +211,6 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     managed_dag_node=True,
                 )
 
-            read.assert_called_once_with(output.resolve() / "path-database.json")
-            load_ir.assert_called_once_with(ir_path.resolve())
-            validate.assert_called_once_with(database_value, ir_value)
             self.assertEqual(report["validation_mode"], MANAGED_DAG_VALIDATION_MODE)
 
     def test_managed_shared_materialization_performs_no_hash_or_deep_replay(
@@ -240,7 +231,12 @@ class ExperimentUpstreamTest(unittest.TestCase):
             }
             files = {
                 "frontend": ("phase1/design.emuir.sqlite", "phase1/phase1_report.json"),
-                "timing": ("path-database.json", "partition-net-weights.json"),
+                "timing": (
+                    "path-database.json",
+                    "path-database.json.paths.sqlite",
+                    "partition-net-weights.json",
+                    "partition-net-weights.json.weights.sqlite",
+                ),
                 "partition": ("clusters.json", "assignment.json", "phase3_report.json"),
                 "cut-timing": (
                     "cut-timing-paths.json",
@@ -258,6 +254,40 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     path = roots[stage] / relative
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(f"{stage}:{relative}\n", encoding="utf-8")
+            (roots["timing"] / "path-database.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.sta-path-database/v3",
+                        "payloads": {
+                            "paths": {
+                                "format": "sqlite-sta-path/v1",
+                                "path": "path-database.json.paths.sqlite",
+                                "sha256": "0" * 64,
+                                "records": 1,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (roots["timing"] / "partition-net-weights.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.partition-net-weights/v2",
+                        "payloads": {
+                            "weights": {
+                                "format": "sqlite-net-weights/v1",
+                                "path": (
+                                    "partition-net-weights.json.weights.sqlite"
+                                ),
+                                "sha256": "0" * 64,
+                                "records": 1,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             def managed(_root, *, expected_stage):
                 stage_key = (

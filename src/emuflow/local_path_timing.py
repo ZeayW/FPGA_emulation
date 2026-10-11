@@ -22,6 +22,7 @@ from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .routing import system_route_timing_paths
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
+    load_sta_path_database,
     sta_object_index,
     sta_path_endpoints,
     validate_sta_path_database_value,
@@ -383,7 +384,7 @@ def prepare_vpr_local_path_query_inputs(
     """Validate, hash and index global local-path inputs once per run."""
     original_ir = original_ir or EmuIR.load(original_ir_path)
     assignment = assignment or read_json(assignment_path)
-    database = database or read_json(path_database_path)
+    database = database or load_sta_path_database(path_database_path)
     routes = routes or read_json(routes_path)
     validate_sta_path_database_value(database, original_ir)
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:

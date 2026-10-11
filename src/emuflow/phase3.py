@@ -658,6 +658,7 @@ def run_phase3(
             timing_database,
             route_constraints,
             independent_validation=retain_diagnostics,
+            timing_database_path=timing_database_path,
         )
         patron_physical_feedback = None
         patron_physical_feedback_validation = None
@@ -736,6 +737,7 @@ def run_phase3(
                 patron_trace,
                 patron_physical_feedback,
                 patron_physical_feedback_scale,
+                timing_database_path=timing_database_path,
             )
         else:
             initial_validation = validate_partition_artifacts_online(

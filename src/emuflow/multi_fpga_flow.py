@@ -63,7 +63,9 @@ from .timing_routing import (
 )
 from .sta import (
     derive_partition_net_weights,
+    partition_net_weights_payload_path,
     project_sta_path_database,
+    sta_path_database_payload_path,
 )
 from .synthesis import (
     run_generic_yosys,
@@ -1697,6 +1699,7 @@ def run_multi_fpga_flow(
                 executable=opensta,
                 max_paths=sta_max_paths,
                 log_path=timing_root / "opensta.log",
+                _stream_output=True,
             )
             timing_mode = "opensta-preplacement"
         else:
@@ -1723,6 +1726,7 @@ def run_multi_fpga_flow(
                 net_weights_path,
                 criticality_scale=timing_criticality_scale,
                 criticality_exponent=timing_criticality_exponent,
+                input_already_validated=True,
             )
         timing_report = {
             "status": "pass",
@@ -1736,6 +1740,17 @@ def run_multi_fpga_flow(
                 else {}
             ),
         }
+
+    path_database_payload = (
+        sta_path_database_payload_path(path_database_path)
+        if internal_timing_database
+        else None
+    )
+    net_weights_payload = (
+        partition_net_weights_payload_path(net_weights_path)
+        if net_weights_path.is_file()
+        else None
+    )
 
     effective_route_constraints = route_constraints
     link_timing_report = None
@@ -1911,6 +1926,7 @@ def run_multi_fpga_flow(
             path_database_path,
             timing_model_path=timing_model,
             architecture_timing_db_path=architecture_timing_db,
+            input_already_validated=True,
         )
         write_json(cut_segment_qualification_path, cut_qualification)
         timing_report["cut_segment_qualification"] = cut_qualification
@@ -1924,6 +1940,7 @@ def run_multi_fpga_flow(
                 path_database_path,
                 assignment_path,
                 projected_timing_paths,
+                input_already_validated=True,
             )
         else:
             # A legal single-FPGA partition has no interconnect timing problem.
@@ -2687,6 +2704,19 @@ def run_multi_fpga_flow(
                     },
                     **(
                         {
+                            "timing_path_database_payload": {
+                                "path": str(
+                                    Path("timing")
+                                    / path_database_payload.name
+                                ),
+                                "sha256": _sha256(path_database_payload),
+                            }
+                        }
+                        if path_database_payload is not None
+                        else {}
+                    ),
+                    **(
+                        {
                             "cut_segment_qualification": {
                                 "path": "timing/cut-segment-qualification.json",
                                 "sha256": _sha256(cut_segment_qualification_path),
@@ -2703,6 +2733,19 @@ def run_multi_fpga_flow(
                             }
                         }
                         if net_weights_path.is_file()
+                        else {}
+                    ),
+                    **(
+                        {
+                            "partition_net_weights_payload": {
+                                "path": str(
+                                    Path("timing")
+                                    / net_weights_payload.name
+                                ),
+                                "sha256": _sha256(net_weights_payload),
+                            }
+                        }
+                        if net_weights_payload is not None
                         else {}
                     ),
                     **(

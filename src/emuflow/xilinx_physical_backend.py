@@ -11,6 +11,7 @@ from .architecture import ArchitectureDB
 from .errors import ValidationError
 from .io import file_sha256, read_json, write_json
 from .physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA
+from .sta import iter_sta_path_database_paths
 from .xilinx_netlist import emit_xilinx_mapped_json
 from .xilinx_openparf import run_xilinx_openparf_guidance
 from .xilinx_openparf_atomic import (
@@ -380,7 +381,9 @@ def _run_rapidwright_routed_backend_tail(
     opensta_database = read_json(path_database_path)
     critical_path_ns = max(
         (float(path.get("fixed_delay_ns", 0.0))
-         for path in opensta_database.get("paths", [])),
+         for path in iter_sta_path_database_paths(
+             path_database_path, opensta_database
+         )),
         default=0.0,
     )
     opensta_summary = read_json(opensta_summary_path)
