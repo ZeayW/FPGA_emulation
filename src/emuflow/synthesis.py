@@ -718,6 +718,7 @@ def run_xilinx_mapping_statistics(
     include_dirs: Iterable[Path] = (),
     defines: Iterable[str] = (),
     mapping_strategy: str = DEFAULT_XILINX_MAPPING_STRATEGY,
+    profile_passes: bool = False,
 ) -> Dict[str, Any]:
     """Run one bounded mapping qualification and return compact statistics."""
 
@@ -744,7 +745,10 @@ def run_xilinx_mapping_statistics(
         mapping_strategy=mapping_strategy,
     )
     started = time.monotonic()
-    completed = run_with_bounded_output([command, "-q", "-p", script])
+    # Qualification only: headers plus the native detailed timing footer.
+    # Do not enable verbose full logs or diagnostic netlist dumps.
+    flags = ["-v", "2", "-t", "-d"] if profile_passes else ["-q"]
+    completed = run_with_bounded_output([command, *flags, "-p", script])
     elapsed_seconds = time.monotonic() - started
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -766,6 +770,19 @@ def run_xilinx_mapping_statistics(
         statistics.get("modules"), dict
     ):
         raise EmuFlowError("Yosys mapping statistics are malformed")
+    pass_timings = []
+    if profile_passes:
+        for match in re.finditer(
+            r"^\s*(\d+)%\s+(\d+) calls\s+([0-9.]+) sec\s+(\S+)\s*$",
+            completed.stdout,
+            re.MULTILINE,
+        ):
+            pass_timings.append({
+                "pass": match[4], "calls": int(match[2]),
+                "seconds": float(match[3]), "percent": int(match[1]),
+            })
+        if not pass_timings:
+            raise EmuFlowError("Yosys did not emit the requested detailed pass timings")
     return {
         "status": "pass",
         "schema": "emuflow.xilinx-mapping-qualification/v1",
@@ -773,5 +790,6 @@ def run_xilinx_mapping_statistics(
         "mapping_strategy": mapping_strategy,
         "top": top,
         "elapsed_seconds": elapsed_seconds,
+        **({"pass_timings": pass_timings} if profile_passes else {}),
         "statistics": statistics,
     }

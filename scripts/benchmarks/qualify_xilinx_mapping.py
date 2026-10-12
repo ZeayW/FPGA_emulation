@@ -40,6 +40,7 @@ def qualify(
     *,
     yosys: Optional[str],
     strategy: str,
+    profile_passes: bool = False,
 ) -> dict[str, Any]:
     benchmark = BenchmarkRun.load(benchmark_run)
     synthesis = benchmark.value["synthesis"]
@@ -61,6 +62,7 @@ def qualify(
         include_dirs=benchmark.resolve_include_dirs(source_root),
         defines=synthesis.get("defines", []),
         mapping_strategy=strategy,
+        profile_passes=profile_passes,
     )
     top_statistics = _top_statistics(
         report.pop("statistics"), benchmark.value["top"]
@@ -85,6 +87,8 @@ def main() -> int:
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--yosys")
+    parser.add_argument("--profile-passes", action="store_true",
+                        help="Record native Yosys per-pass timings with bounded diagnostics")
     parser.add_argument(
         "--strategy",
         choices=sorted(VALID_XILINX_MAPPING_STRATEGIES),
@@ -97,6 +101,7 @@ def main() -> int:
         args.output,
         yosys=args.yosys,
         strategy=args.strategy,
+        profile_passes=args.profile_passes,
     )
     print(
         json.dumps(

@@ -984,6 +984,12 @@ does not write or retain a multi-GiB mapped netlist. A strategy may become the
 production default only after a small physical regression and the complete
 large Phase 1--7 gate pass. Resource pressure is never hidden by changing a
 calibrated BoardDB or its utilization limit.
+The qualification command accepts `--profile-passes` to retain Yosys' native
+per-pass timing table alongside primitive counts. It uses timestamped headers
+and a bounded diagnostic tail, without enabling full verbose logs or writing
+mapped graph JSON. The timing table includes qualification-only flatten/stat
+overhead; compare mapper passes separately from those interchange diagnostics.
+This instrumentation is opt-in and does not change production mapping defaults.
 The NVDLA qualification selected `hierarchical-abc9-v1`: it completed in
 8,342.55 seconds, used about 2.95 million normalized LUT units, and fit the
 unchanged four-FPGA 20% budget of 3.269 million LUT units. Both flattened

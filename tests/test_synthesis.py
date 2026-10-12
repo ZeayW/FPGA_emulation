@@ -17,11 +17,40 @@ from emuflow.synthesis import (
     run_generic_yosys,
     run_yosys,
     run_xilinx_ultrascaleplus_yosys_stream,
+    run_xilinx_mapping_statistics,
 )
 from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 class SynthesisTest(unittest.TestCase):
+    def test_mapping_profile_requires_native_pass_measurements(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "design.v"
+            source.write_text("module design; endmodule\n")
+            output = root / "stats.json"
+            footer = "Time spent:\n  80%  2 calls 12.500 sec abc9_exe\n  20%  5 calls 3.125 sec opt\n"
+
+            def complete(command):
+                self.assertEqual(command[1:5], ["-v", "2", "-t", "-d"])
+                output.write_text('{"modules":{"design":{}}}')
+                return subprocess.CompletedProcess(command, 0, stdout=footer)
+
+            with patch("emuflow.synthesis.resolve_native_executable", return_value="yosys"), patch(
+                "emuflow.synthesis.run_with_bounded_output", side_effect=complete
+            ):
+                report = run_xilinx_mapping_statistics(
+                    [source], "design", output, profile_passes=True
+                )
+                self.assertEqual(report["pass_timings"][0], {
+                    "pass": "abc9_exe", "calls": 2, "seconds": 12.5, "percent": 80
+                })
+                footer = "No timing footer\n"
+                with self.assertRaisesRegex(EmuFlowError, "did not emit"):
+                    run_xilinx_mapping_statistics(
+                        [source], "design", output, profile_passes=True
+                    )
+
     def test_xilinx_json_can_pipe_directly_to_consumer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
