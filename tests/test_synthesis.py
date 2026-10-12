@@ -32,7 +32,8 @@ class SynthesisTest(unittest.TestCase):
             footer = "Time spent:\n  80%  2 calls 12.500 sec abc9_exe\n  20%  5 calls 3.125 sec opt\n"
 
             def complete(command):
-                self.assertEqual(command[1:5], ["-v", "2", "-t", "-d"])
+                self.assertEqual(command[1:4], ["-v", "2", "-d"])
+                self.assertNotIn("-t", command[1:-1])
                 output.write_text('{"modules":{"design":{}}}')
                 return subprocess.CompletedProcess(command, 0, stdout=footer)
 

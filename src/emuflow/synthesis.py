@@ -747,7 +747,8 @@ def run_xilinx_mapping_statistics(
     started = time.monotonic()
     # Qualification only: headers plus the native detailed timing footer.
     # Do not enable verbose full logs or diagnostic netlist dumps.
-    flags = ["-v", "2", "-t", "-d"] if profile_passes else ["-q"]
+    # -t prefixes tee's stat JSON too, corrupting the statistics protocol.
+    flags = ["-v", "2", "-d"] if profile_passes else ["-q"]
     completed = run_with_bounded_output([command, *flags, "-p", script])
     elapsed_seconds = time.monotonic() - started
     if log_path is not None:

@@ -985,7 +985,7 @@ production default only after a small physical regression and the complete
 large Phase 1--7 gate pass. Resource pressure is never hidden by changing a
 calibrated BoardDB or its utilization limit.
 The qualification command accepts `--profile-passes` to retain Yosys' native
-per-pass timing table alongside primitive counts. It uses timestamped headers
+per-pass timing table alongside primitive counts. It uses stage headers
 and a bounded diagnostic tail, without enabling full verbose logs or writing
 mapped graph JSON. The timing table includes qualification-only flatten/stat
 overhead; compare mapper passes separately from those interchange diagnostics.
