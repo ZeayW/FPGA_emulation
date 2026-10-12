@@ -995,13 +995,39 @@ and a bounded diagnostic tail, without enabling full verbose logs or writing
 mapped graph JSON. The timing table includes qualification-only flatten/stat
 overhead; compare mapper passes separately from those interchange diagnostics.
 This instrumentation is opt-in and does not change production mapping defaults.
-The NVDLA qualification selected `hierarchical-abc9-v1`: it completed in
+The earlier NVDLA qualification selected `hierarchical-abc9-v1`: it completed in
 8,342.55 seconds, used about 2.95 million normalized LUT units, and fit the
 unchanged four-FPGA 20% budget of 3.269 million LUT units. Both flattened
 alternatives exceeded three hours and about 27 GB RSS without completing, so
 they were terminated and rejected. The selected strategy is the checked
 UltraScale+ frontend default, subject to the same primitive audit and physical
 acceptance as the earlier classic mapper.
+
+A subsequent same-input, native-pass-profiled full `NV_nvdla` comparison
+completed both hierarchical alternatives: classic ABC took 6,954.54 seconds
+and ABC9 took 6,584.57 seconds. Subtracting the qualification-only flatten/stat
+pass totals gives **estimates**, not separate production measurements, of
+6,358.68 and 6,307.13 seconds. Thus ABC9 is not a substantial runtime fix:
+`opt_dff`, cleanup, and mapping all contribute materially. Classic's largest
+pass totals were `opt_dff` 1,712.41 s, `opt_clean` 899.61 s, and `abc` 860.13 s;
+ABC9's were `abc9_exe` 1,297.23 s, `opt_dff` 1,105.93 s, and `clean` 848.43 s.
+These are Yosys' accumulated per-pass timings, not per-invocation wall times.
+The respective raw LUT counts were 3,293,647 and 2,726,938; both retained
+913,642 FFs, 467 DSP48E2s, 805 RAMB18E2s, and 165 RAMB36E2s. Matching hard-block
+counts argues against wholesale RAM/DSP expansion, but does not prove identical
+mapping of every individual memory. ABC9's conservative normalized LUT upper
+bound of 3,502,423 fits the aggregate four-device 30% and 35% LUT budgets;
+per-device cluster feasibility, transport overhead, and full physical closure
+remain separate gates. Neither mapper qualification nor an aggregate resource
+bound constitutes a completed Phase 1--7 holdout.
+
+The pinned Yosys mapper also warns that `synth_xilinx -abc9` uses XC7 timing
+for the `xcup` family. This is a mapping-objective proxy, not an XCVU19P timing
+certificate. The primitive contract remains UltraScale+, and the independent
+RapidWright physical model and final whole-design OpenSTA analysis remain
+mandatory timing authorities. Streaming the mapped hierarchy into indexed
+storage adds import/expansion work after native synthesis; report that cost
+separately rather than attributing the entire Phase 1 duration to ABC.
 
 Earlier sealed AES and PicoRV32 Phase 1--7 results used the VTR physical
 surrogate. Their historical WNS/TNS values remain diagnostic records, but they
