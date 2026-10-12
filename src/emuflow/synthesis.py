@@ -5,6 +5,7 @@ import gzip
 import io
 import os
 import re
+import signal
 import subprocess
 import time
 import uuid
@@ -584,8 +585,20 @@ def run_xilinx_ultrascaleplus_yosys_stream(
             )
             if process.stdout is None:  # pragma: no cover - guaranteed by PIPE
                 raise AssertionError("Yosys stdout pipe was not created")
+            consumer_error: Optional[Exception] = None
+            unset = object()
+            result: Any = unset
             with io.TextIOWrapper(process.stdout, encoding="utf-8") as stream:
-                result = consumer(stream)
+                try:
+                    result = consumer(stream)
+                except Exception as error:
+                    # Always reap Yosys and retain its diagnostic before
+                    # propagating a consumer failure.  In particular, an
+                    # empty/truncated JSON stream is frequently the symptom
+                    # of a producer crash; deleting stderr here used to hide
+                    # the actual exit code and make a large remote run
+                    # impossible to diagnose.
+                    consumer_error = error
             return_code = process.wait()
         diagnostic_bytes = diagnostic.read_bytes()
         diagnostic_text = diagnostic_bytes[-2 * 1024 * 1024 :].decode(
@@ -595,11 +608,21 @@ def run_xilinx_ultrascaleplus_yosys_stream(
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_path.write_text(diagnostic_text, encoding="utf-8")
         if return_code != 0:
+            # A consumer is allowed to reject a valid stream before reading
+            # it completely. Closing the pipe can then terminate Yosys with
+            # SIGPIPE; that is a consequence of the consumer failure rather
+            # than an independent synthesis error.
+            if consumer_error is not None and return_code == -signal.SIGPIPE:
+                raise consumer_error
             tail = "\n".join(diagnostic_text.splitlines()[-20:])
             raise EmuFlowError(
                 "Xilinx Yosys synthesis failed with exit code "
                 f"{return_code}\n{tail}"
-            )
+            ) from consumer_error
+        if consumer_error is not None:
+            raise consumer_error
+        if result is unset:  # pragma: no cover - consumer always returns/raises
+            raise AssertionError("Xilinx Yosys consumer returned no result")
         return (
             {
                 "status": "pass",

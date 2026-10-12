@@ -61,6 +61,82 @@ class SynthesisTest(unittest.TestCase):
                 [path for path in root.iterdir() if "mapped" in path.name], []
             )
 
+    def test_xilinx_stream_preserves_yosys_failure_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "design.v"
+            source.write_text("module design; endmodule\n", encoding="utf-8")
+            executable = root / "fake-yosys"
+            executable.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import sys
+                    sys.stderr.write("producer failed after mapping\\n")
+                    raise SystemExit(7)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            log = root / "yosys.log"
+
+            with self.assertRaisesRegex(
+                EmuFlowError,
+                "Xilinx Yosys synthesis failed with exit code 7",
+            ) as raised:
+                run_xilinx_ultrascaleplus_yosys_stream(
+                    [source],
+                    "design",
+                    json.load,
+                    executable=str(executable),
+                    log_path=log,
+                )
+
+            self.assertIn("producer failed after mapping", str(raised.exception))
+            self.assertEqual(
+                log.read_text(encoding="utf-8"),
+                "producer failed after mapping\n",
+            )
+            self.assertEqual(
+                [path for path in root.iterdir() if path.name.startswith(".yosys-")],
+                [],
+            )
+
+    def test_xilinx_stream_preserves_consumer_failure_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "design.v"
+            source.write_text("module design; endmodule\n", encoding="utf-8")
+            executable = root / "fake-yosys"
+            executable.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import sys
+                    sys.stderr.write("producer completed\\n")
+                    sys.stdout.write("not-json")
+                    """
+                ),
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            log = root / "yosys.log"
+
+            with self.assertRaises(json.JSONDecodeError):
+                run_xilinx_ultrascaleplus_yosys_stream(
+                    [source],
+                    "design",
+                    json.load,
+                    executable=str(executable),
+                    log_path=log,
+                )
+
+            self.assertEqual(
+                log.read_text(encoding="utf-8"),
+                "producer completed\n",
+            )
+
     def test_xilinx_json_can_stream_directly_to_gzip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
