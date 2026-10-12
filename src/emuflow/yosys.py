@@ -640,7 +640,7 @@ def _expand_staged_yosys_hierarchy(
     *,
     stage_cell: Callable[[str, Mapping[str, Any]], None],
     stage_netname: Callable[[str, Mapping[str, Any]], None],
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[int, Any]]:
     """Expand mapped hierarchy directly into the flat indexed staging tables."""
 
     module_attributes = {
@@ -662,6 +662,59 @@ def _expand_staged_yosys_hierarchy(
     next_global_bit = 2
     expanded_module_instances = 0
     maximum_depth = 0
+    alias_parents: Dict[int, int] = {}
+    alias_constants: Dict[int, str] = {}
+
+    def alias_root(bit: int) -> int:
+        parent = alias_parents.get(bit, bit)
+        if parent != bit:
+            parent = alias_root(parent)
+            alias_parents[bit] = parent
+        return parent
+
+    def canonical_bit(bit: Any) -> Any:
+        if not isinstance(bit, int):
+            return bit
+        root = alias_root(bit)
+        return alias_constants.get(root, root)
+
+    def unify_bits(left: Any, right: Any, context: str) -> Any:
+        left = canonical_bit(left)
+        right = canonical_bit(right)
+        if left == right:
+            return left
+        if not isinstance(left, int) and not isinstance(right, int):
+            raise ImportError(
+                f"{context}: incompatible constant bindings {left!r} and {right!r}"
+            )
+        if isinstance(left, int) and not isinstance(right, int):
+            alias_constants[alias_root(left)] = str(right)
+            return right
+        if not isinstance(left, int) and isinstance(right, int):
+            alias_constants[alias_root(right)] = str(left)
+            return left
+        left_root = alias_root(left)
+        right_root = alias_root(right)
+        if left_root == right_root:
+            return canonical_bit(left_root)
+        representative = min(left_root, right_root)
+        absorbed = max(left_root, right_root)
+        left_constant = alias_constants.pop(left_root, None)
+        right_constant = alias_constants.pop(right_root, None)
+        if (
+            left_constant is not None
+            and right_constant is not None
+            and left_constant != right_constant
+        ):
+            raise ImportError(
+                f"{context}: incompatible constant bindings "
+                f"{left_constant!r} and {right_constant!r}"
+            )
+        alias_parents[absorbed] = representative
+        constant = left_constant if left_constant is not None else right_constant
+        if constant is not None:
+            alias_constants[representative] = constant
+        return canonical_bit(representative)
 
     def allocate_global_bit() -> int:
         nonlocal next_global_bit
@@ -698,18 +751,16 @@ def _expand_staged_yosys_hierarchy(
 
         def bind(local_bit: int, global_bit: Any, context: str) -> None:
             previous = local_bits.get(local_bit)
-            if previous is not None and previous != global_bit:
-                raise ImportError(
-                    f"{context}: local bit {local_bit} has conflicting bindings"
-                )
-            local_bits[local_bit] = global_bit
+            if previous is not None:
+                global_bit = unify_bits(previous, global_bit, context)
+            local_bits[local_bit] = canonical_bit(global_bit)
 
         def resolve(bit: Any) -> Any:
             if not isinstance(bit, int):
                 return bit
             if bit not in local_bits:
                 local_bits[bit] = allocate_global_bit()
-            return local_bits[bit]
+            return canonical_bit(local_bits[bit])
 
         ports = module_ports(module_name)
         if bound_ports is not None:
@@ -808,6 +859,18 @@ def _expand_staged_yosys_hierarchy(
         return expanded_ports
 
     top_ports = expand(top, "", None, ())
+    bit_aliases = {
+        bit: canonical_bit(bit)
+        for bit in range(2, next_global_bit)
+        if canonical_bit(bit) != bit
+    }
+    top_ports = {
+        port_name: {
+            **raw_port,
+            "bits": [canonical_bit(bit) for bit in raw_port.get("bits", [])],
+        }
+        for port_name, raw_port in top_ports.items()
+    }
     return top_ports, {
         "schema": "emuflow.yosys-hierarchical-expansion/v1",
         "top": top,
@@ -815,7 +878,8 @@ def _expand_staged_yosys_hierarchy(
         "expanded_module_instances": expanded_module_instances,
         "maximum_hierarchy_depth": maximum_depth,
         "allocated_signal_bits": next_global_bit - 2,
-    }
+        "collapsed_signal_bits": len(bit_aliases),
+    }, bit_aliases
 
 
 def import_yosys_json_indexed(
@@ -850,6 +914,7 @@ def import_yosys_json_indexed(
     raw_ports: Dict[str, Any] = {}
     transform_report: Optional[Dict[str, Any]] = None
     hierarchy_report: Optional[Dict[str, Any]] = None
+    bit_aliases: Dict[int, Any] = {}
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -963,12 +1028,53 @@ def import_yosys_json_indexed(
                 connection,
                 source_stream=_source_stream,
             )
-            raw_ports, hierarchy_report = _expand_staged_yosys_hierarchy(
-                connection,
-                top,
-                stage_cell=stage_cell_record,
-                stage_netname=stage_netname_record,
+            raw_ports, hierarchy_report, bit_aliases = (
+                _expand_staged_yosys_hierarchy(
+                    connection,
+                    top,
+                    stage_cell=stage_cell_record,
+                    stage_netname=stage_netname_record,
+                )
             )
+            if bit_aliases:
+                connection.execute(
+                    "CREATE TEMP TABLE staging_bit_aliases ("
+                    "old_bit INTEGER PRIMARY KEY, canonical_bit INTEGER)"
+                )
+                connection.executemany(
+                    "INSERT INTO staging_bit_aliases VALUES (?, ?)",
+                    (
+                        (old_bit, canonical if isinstance(canonical, int) else None)
+                        for old_bit, canonical in sorted(bit_aliases.items())
+                    ),
+                )
+                connection.executescript(
+                    """
+                    CREATE TABLE staging_names_canonical (
+                        yosys_bit INTEGER NOT NULL,
+                        hidden INTEGER NOT NULL,
+                        name_length INTEGER NOT NULL,
+                        name TEXT NOT NULL,
+                        bus_index INTEGER NOT NULL,
+                        bus_width INTEGER NOT NULL,
+                        PRIMARY KEY (
+                            yosys_bit, hidden, name_length, name,
+                            bus_index, bus_width
+                        )
+                    ) WITHOUT ROWID;
+                    INSERT OR IGNORE INTO staging_names_canonical
+                    SELECT COALESCE(a.canonical_bit, n.yosys_bit),
+                           n.hidden, n.name_length, n.name,
+                           n.bus_index, n.bus_width
+                      FROM staging_names AS n
+                 LEFT JOIN staging_bit_aliases AS a
+                        ON a.old_bit = n.yosys_bit
+                     WHERE a.old_bit IS NULL OR a.canonical_bit IS NOT NULL;
+                    DROP TABLE staging_names;
+                    ALTER TABLE staging_names_canonical RENAME TO staging_names;
+                    DROP TABLE staging_bit_aliases;
+                    """
+                )
             top_name = top
         elif _source_value is None and top is not None:
             creator, raw_ports = _stream_yosys_module_records(
@@ -1057,8 +1163,18 @@ def import_yosys_json_indexed(
             endpoint_bit: int,
         ) -> None:
             nonlocal endpoint_sequence
+            normalized_bit = bit_aliases.get(bit, bit)
+            if not isinstance(normalized_bit, int):
+                return
             endpoint_buffer.append(
-                (bit, role, endpoint_sequence, instance, port, endpoint_bit)
+                (
+                    normalized_bit,
+                    role,
+                    endpoint_sequence,
+                    instance,
+                    port,
+                    endpoint_bit,
+                )
             )
             endpoint_sequence += 1
             if len(endpoint_buffer) >= 16384:

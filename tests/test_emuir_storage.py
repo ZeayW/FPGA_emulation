@@ -192,6 +192,121 @@ class EmuIRStorageTest(unittest.TestCase):
         self.assertEqual(hierarchy["expanded_module_instances"], 3)
         self.assertEqual(hierarchy["maximum_hierarchy_depth"], 1)
 
+    def test_hierarchical_stream_collapses_aliased_child_outputs(self) -> None:
+        primitive = {
+            "type": "LUT1",
+            "parameters": {"INIT": "10"},
+            "port_directions": {"I0": "input", "O": "output"},
+            "connections": {"I0": [2], "O": [3]},
+        }
+        hierarchical = {
+            "creator": "hierarchical-alias-test",
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2]},
+                        "y0": {"direction": "output", "bits": [3]},
+                        "y1": {"direction": "output", "bits": [4]},
+                    },
+                    "cells": {
+                        "producer": {
+                            "type": "aliased_leaf",
+                            "port_directions": {
+                                "a": "input",
+                                "y0": "output",
+                                "y1": "output",
+                            },
+                            "connections": {"a": [2], "y0": [3], "y1": [4]},
+                        },
+                        "consumer": {
+                            **primitive,
+                            "connections": {"I0": [4], "O": [5]},
+                        },
+                    },
+                    "netnames": {
+                        "a": {"bits": [2]},
+                        "y0": {"bits": [3]},
+                        "y1": {"bits": [4]},
+                        "z": {"bits": [5]},
+                    },
+                },
+                "aliased_leaf": {
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2]},
+                        "y0": {"direction": "output", "bits": [3]},
+                        "y1": {"direction": "output", "bits": [3]},
+                    },
+                    "cells": {"driver": primitive},
+                    "netnames": {
+                        "a": {"bits": [2]},
+                        "y": {"bits": [3]},
+                    },
+                },
+                "LUT1": {
+                    "attributes": {"blackbox": "1"},
+                    "ports": {
+                        "I0": {"direction": "input", "bits": [2]},
+                        "O": {"direction": "output", "bits": [3]},
+                    },
+                },
+            },
+        }
+        flattened = {
+            "creator": "hierarchical-alias-test",
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2]},
+                        "y0": {"direction": "output", "bits": [3]},
+                        "y1": {"direction": "output", "bits": [3]},
+                    },
+                    "cells": {
+                        "consumer": {
+                            **primitive,
+                            "connections": {"I0": [3], "O": [5]},
+                        },
+                        "producer.driver": {
+                            **primitive,
+                            "connections": {"I0": [2], "O": [3]},
+                        },
+                    },
+                    "netnames": {
+                        "a": {"bits": [2]},
+                        "y0": {"bits": [3]},
+                        "y1": {"bits": [3]},
+                        "z": {"bits": [5]},
+                        "producer.a": {"bits": [2]},
+                        "producer.y": {"bits": [3]},
+                    },
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            hierarchical_artifact = root / "hierarchical.emuir.sqlite"
+            flattened_artifact = root / "flattened.emuir.sqlite"
+            report = import_yosys_json_indexed(
+                Path("<hierarchical-alias-stream>"),
+                hierarchical_artifact,
+                top="top",
+                _source_stream=io.StringIO(json.dumps(hierarchical)),
+                _expand_hierarchy=True,
+            )
+            import_yosys_json_indexed(
+                Path("<flat-alias-stream>"),
+                flattened_artifact,
+                top="top",
+                _source_stream=io.StringIO(json.dumps(flattened)),
+            )
+            actual = EmuIR.load(hierarchical_artifact).to_dict()
+            expected = EmuIR.load(flattened_artifact).to_dict()
+        actual["design"]["source"] = expected["design"]["source"]
+        self.assertEqual(actual, expected)
+        hierarchy = report["hierarchical_interchange"]
+        self.assertEqual(hierarchy["collapsed_signal_bits"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
