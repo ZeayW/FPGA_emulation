@@ -244,7 +244,13 @@ def build_yosys_script(
         'setattr -set DONT_TOUCH "yes" c:*',
         *(
             [
-                "write_json -no-hidden-netnames -no-source-attributes"
+                # The pinned production Yosys 0.57 backend supports
+                # ``-noscopeinfo`` but not the newer
+                # ``-no-hidden-netnames``/``-no-source-attributes`` flags.
+                # Phase 1 consumes this stream incrementally, so retaining
+                # those fields does not recreate the old graph-sized JSON
+                # artifact or a second in-memory design.
+                "write_json -noscopeinfo"
                 + (
                     ""
                     if stream_json

@@ -294,7 +294,7 @@ class SynthesisTest(unittest.TestCase):
         self.assertIn("; flatten; check;", script)
         self.assertNotIn("; flatten; opt_clean;", script)
         self.assertIn(
-            'write_json -no-hidden-netnames -no-source-attributes '
+            'write_json -noscopeinfo '
             '"build/design.json"',
             script,
         )
@@ -346,7 +346,7 @@ class SynthesisTest(unittest.TestCase):
             stream_json=True,
         )
         self.assertTrue(
-            script.endswith("write_json -no-hidden-netnames -no-source-attributes")
+            script.endswith("write_json -noscopeinfo")
         )
         self.assertNotIn("design.json.gz", script)
 
@@ -365,7 +365,7 @@ class SynthesisTest(unittest.TestCase):
         self.assertIn("; check;", script)
         self.assertTrue(
             script.endswith(
-                "write_json -no-hidden-netnames -no-source-attributes"
+                "write_json -noscopeinfo"
             )
         )
 

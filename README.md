@@ -5664,10 +5664,13 @@ the exact primitive-namespace and resource-accounting audit below. Removing
 these two diagnostic/cleanup traversals therefore does not weaken the
 accepted-netlist gate.
 The same profile also keeps large mapped designs out of a diagnostic JSON hot
-path.  Its Yosys backend writes signal-bit identifiers directly instead of
-retaining a string for every bit, omits only automatically generated hidden
-net names and `src` location attributes, and retains all user-visible names,
-cell parameters, preservation attributes, port directions, and connections.
+path. Its Yosys backend writes signal-bit identifiers directly instead of
+retaining a string for every bit. The pinned production Yosys 0.57 JSON backend
+does not provide the newer hidden-name/source-attribute suppression flags, so
+those diagnostic fields may cross the pipe transiently; they are never stored
+as a JSON artifact or decoded into a second graph-sized Python object. All
+user-visible names, cell parameters, preservation attributes, port directions,
+and connections remain available to the indexed importer.
 For the Xilinx profile, production Yosys JSON is never stored as a frontend
 artifact, compressed or otherwise.  Yosys stdout is connected directly to the
 Phase 1 importer with OS-pipe backpressure.  The importer decodes one top-port,
