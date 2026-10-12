@@ -15,7 +15,7 @@ import os
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping
+from typing import Any, Dict, Iterable, Iterator, Mapping
 
 
 EMUIR_STORAGE_SCHEMA = "emuflow.emuir-sqlite/v1"
@@ -330,6 +330,27 @@ def write_emuir_sqlite(path: Path, value: Mapping[str, Any]) -> None:
         raise
 
 
+class _RowsForOwner:
+    """Merge ordered child rows with their owner using one-row lookahead."""
+
+    def __init__(self, rows: Iterable[sqlite3.Row], owner_column: str):
+        self._rows = iter(rows)
+        self._owner_column = owner_column
+        self._next = next(self._rows, None)
+
+    def take(self, owner: int) -> Iterator[sqlite3.Row]:
+        if self._next is not None and self._next[self._owner_column] < owner:
+            raise ValueError(f"EmuIR SQLite orphaned {self._owner_column} row")
+        while self._next is not None and self._next[self._owner_column] == owner:
+            row = self._next
+            self._next = next(self._rows, None)
+            yield row
+
+    def finish(self) -> None:
+        if self._next is not None:
+            raise ValueError(f"EmuIR SQLite orphaned {self._owner_column} row")
+
+
 def read_emuir_sqlite(path: Path) -> Dict[str, Any]:
     """Read an indexed EmuIR store into the existing logical Python schema."""
 
@@ -340,24 +361,22 @@ def read_emuir_sqlite(path: Path) -> Dict[str, Any]:
             for row in connection.execute("SELECT key, value FROM metadata")
         }
 
-        port_constants: Dict[int, list[Dict[str, Any]]] = {}
-        for row in connection.execute(
+        port_constants = _RowsForOwner(connection.execute(
             "SELECT * FROM port_constants ORDER BY port_seq, ordinal"
-        ):
-            port_constants.setdefault(row["port_seq"], []).append(
-                {
-                    "bit": row["bit"],
-                    "value": row["value"],
-                    **_decode(row["extras_json"], "port constant extras"),
-                }
-            )
+        ), "port_seq")
         ports = []
         for row in connection.execute("SELECT * FROM ports ORDER BY seq"):
             record = {
                 "id": row["id"],
                 "direction": row["direction"],
                 "width": row["width"],
-                "constant_connections": port_constants.get(row["seq"], []),
+                "constant_connections": [
+                    {
+                        "bit": child["bit"], "value": child["value"],
+                        **_decode(child["extras_json"], "port constant extras"),
+                    }
+                    for child in port_constants.take(row["seq"])
+                ],
                 **_decode(row["extras_json"], "port extras"),
             }
             if row["name"] is not None:
@@ -367,33 +386,31 @@ def read_emuir_sqlite(path: Path) -> Dict[str, Any]:
             if row["reset"] is not None:
                 record["reset"] = bool(row["reset"])
             ports.append(record)
+        port_constants.finish()
 
-        resources: Dict[int, Dict[str, int]] = {}
-        for row in connection.execute(
+        resources = _RowsForOwner(connection.execute(
             "SELECT * FROM instance_resources ORDER BY instance_seq, resource"
-        ):
-            resources.setdefault(row["instance_seq"], {})[row["resource"]] = row[
-                "amount"
-            ]
-        constants: Dict[int, list[Dict[str, Any]]] = {}
-        for row in connection.execute(
+        ), "instance_seq")
+        constants = _RowsForOwner(connection.execute(
             "SELECT * FROM instance_constants ORDER BY instance_seq, ordinal"
-        ):
-            constants.setdefault(row["instance_seq"], []).append(
-                {
-                    "port": row["port"],
-                    "bit": row["bit"],
-                    "value": row["value"],
-                    **_decode(row["extras_json"], "instance constant extras"),
-                }
-            )
+        ), "instance_seq")
         instances = []
         for row in connection.execute("SELECT * FROM instances ORDER BY seq"):
             record = {
                 "id": row["id"],
                 "type": row["type"],
-                "resources": resources.get(row["seq"], {}),
-                "constant_connections": constants.get(row["seq"], []),
+                "resources": {
+                    child["resource"]: child["amount"]
+                    for child in resources.take(row["seq"])
+                },
+                "constant_connections": [
+                    {
+                        "port": child["port"], "bit": child["bit"],
+                        "value": child["value"],
+                        **_decode(child["extras_json"], "instance constant extras"),
+                    }
+                    for child in constants.take(row["seq"])
+                ],
                 **_decode(row["extras_json"], "instance extras"),
             }
             if row["name"] is not None:
@@ -407,38 +424,42 @@ def read_emuir_sqlite(path: Path) -> Dict[str, Any]:
                     row["attributes_json"], "instance attributes"
                 )
             instances.append(record)
+        resources.finish()
+        constants.finish()
 
-        aliases: Dict[int, list[str]] = {}
-        for row in connection.execute(
+        aliases = _RowsForOwner(connection.execute(
             "SELECT * FROM net_aliases ORDER BY net_seq, ordinal"
-        ):
-            aliases.setdefault(row["net_seq"], []).append(row["alias"])
-        endpoint_rows: Dict[tuple[int, int], list[Dict[str, Any]]] = {}
-        for row in connection.execute(
+        ), "net_seq")
+        endpoints = _RowsForOwner(connection.execute(
             "SELECT * FROM endpoints ORDER BY net_seq, role, ordinal"
-        ):
-            endpoint_rows.setdefault((row["net_seq"], row["role"]), []).append(
-                {
-                    "instance": row["instance_id"],
-                    "port": row["port"],
-                    "bit": row["bit"],
-                    **_decode(row["extras_json"], "endpoint extras"),
-                }
-            )
+        ), "net_seq")
         nets = []
         for row in connection.execute("SELECT * FROM nets ORDER BY seq"):
+            drivers: list[Dict[str, Any]] = []
+            sinks: list[Dict[str, Any]] = []
+            for child in endpoints.take(row["seq"]):
+                if child["role"] not in (0, 1):
+                    raise ValueError("EmuIR SQLite invalid endpoint role")
+                target = drivers if child["role"] == 0 else sinks
+                target.append({
+                    "instance": child["instance_id"],
+                    "port": child["port"], "bit": child["bit"],
+                    **_decode(child["extras_json"], "endpoint extras"),
+                })
             record = {
                 "id": row["id"],
                 "cut_class": row["cut_class"],
-                "aliases": aliases.get(row["seq"], []),
-                "drivers": endpoint_rows.get((row["seq"], 0), []),
-                "sinks": endpoint_rows.get((row["seq"], 1), []),
+                "aliases": [child["alias"] for child in aliases.take(row["seq"])],
+                "drivers": drivers,
+                "sinks": sinks,
                 **_decode(row["extras_json"], "net extras"),
             }
             for field in ("name", "yosys_bit", "bus_index", "fanout"):
                 if row[field] is not None:
                     record[field] = row[field]
             nets.append(record)
+        aliases.finish()
+        endpoints.finish()
 
         clocks = [
             _decode(row["record_json"], "clock record")

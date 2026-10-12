@@ -4,10 +4,11 @@ import io
 import json
 import sqlite3
 import tempfile
+import tracemalloc
 import unittest
 from pathlib import Path
 
-from emuflow.emuir_storage import is_emuir_sqlite
+from emuflow.emuir_storage import is_emuir_sqlite, read_emuir_sqlite
 from emuflow.ir import EmuIR
 from emuflow.yosys import import_yosys_json, import_yosys_json_indexed
 
@@ -37,6 +38,72 @@ class EmuIRStorageTest(unittest.TestCase):
             self.assertTrue(is_emuir_sqlite(first))
             self.assertEqual(EmuIR.load(first).to_dict(), self.ir.to_dict())
             self.assertEqual(_sha256(first), _sha256(second))
+
+    def test_child_rows_merge_without_whole_graph_side_indexes(self) -> None:
+        value = {
+            "schema": "emuflow.emuir/v1",
+            "design": {"name": "many", "top": "many", "source_format": "test"},
+            "ports": [], "instances": [], "nets": [], "clocks": [], "warnings": [],
+        }
+        for index in range(4000):
+            instance = f"leaf_{index}"
+            value["instances"].append({
+                "id": instance, "name": instance, "type": "LUT1",
+                "resources": {"lut": 1},
+                "constant_connections": [{"port": "I0", "bit": 0, "value": "1", "tag": "constant"}],
+                "parameters": {"INIT": "10"}, "attributes": {"src": "test.v"},
+                "custom": {"index": index},
+            })
+            value["nets"].append({
+                "id": f"n_{index}", "name": f"输出_{index}",
+                "cut_class": "combinational", "fanout": 0,
+                "aliases": [f"alias_{index}"],
+                "drivers": [{"instance": instance, "port": "O", "bit": 0, "tag": "driver"}],
+                "sinks": [], "custom": {"index": index},
+            })
+        ir = EmuIR(value)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = Path(temporary_directory) / "many.emuir.sqlite"
+            ir.save(artifact)
+            tracemalloc.start()
+            try:
+                loaded = read_emuir_sqlite(artifact)
+                retained, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            self.assertEqual(loaded, ir.value)
+            # Measure only the loader, not the separate logical validator.
+            # Old full-population child maps coexist with their output graph
+            # and violate this bound. A cursor merge holds one lookahead row.
+            self.assertLess(peak, retained * 1.05)
+            EmuIR(loaded)
+
+    def test_orphaned_child_rows_fail_closed(self) -> None:
+        statements = (
+            "INSERT INTO port_constants VALUES (999999, 0, 0, '0', '{}')",
+            "INSERT INTO instance_resources VALUES (999999, 'lut', 1)",
+            "INSERT INTO instance_constants VALUES (999999, 0, 'I0', 0, '0', '{}')",
+            "INSERT INTO net_aliases VALUES (999999, 0, 'orphan')",
+            "INSERT INTO endpoints VALUES (999999, 0, 0, NULL, 'clk', 0, '{}')",
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for index, statement in enumerate(statements):
+                with self.subTest(statement=statement):
+                    artifact = Path(temporary_directory) / f"orphan{index}.emuir.sqlite"
+                    self.ir.save(artifact)
+                    with sqlite3.connect(artifact) as connection:
+                        connection.execute(statement)
+                    with self.assertRaisesRegex(ValueError, "orphaned"):
+                        EmuIR.load(artifact)
+
+    def test_invalid_endpoint_role_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = Path(temporary_directory) / "role.emuir.sqlite"
+            self.ir.save(artifact)
+            with sqlite3.connect(artifact) as connection:
+                connection.execute("UPDATE endpoints SET role = 2 WHERE net_seq = 0 AND role = 0")
+            with self.assertRaisesRegex(ValueError, "endpoint role"):
+                EmuIR.load(artifact)
 
     def test_truncation_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

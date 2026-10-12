@@ -1,9 +1,11 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from emuflow.io import write_json
-from emuflow.verilog import emit_mapped_verilog, mapped_verilog
+from emuflow.errors import ValidationError
+from emuflow.verilog import emit_mapped_verilog, mapped_verilog, write_mapped_verilog
 from emuflow.yosys import import_yosys_json
 
 
@@ -11,6 +13,40 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class MappedVerilogTest(unittest.TestCase):
+    def test_stream_failure_does_not_publish_partial_netlist(self) -> None:
+        ir = import_yosys_json(
+            ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"],
+        )
+        ir.value["ports"][0]["direction"] = "unknown"
+        with TemporaryDirectory() as temp:
+            output = Path(temp) / "mapped.v"
+            output.write_bytes(b"previous valid output")
+            with self.assertRaisesRegex(ValidationError, "unknown-direction"):
+                write_mapped_verilog(ir, output)
+            self.assertEqual(output.read_bytes(), b"previous valid output")
+            self.assertEqual(list(Path(temp).iterdir()), [output])
+
+    def test_streamed_writer_preserves_bytes_and_does_not_join_document(self) -> None:
+        ir = import_yosys_json(
+            ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"],
+        )
+        with TemporaryDirectory() as temp:
+            for timing_only in (False, True):
+                options = {
+                    "timing_only": timing_only,
+                    "timing_cell_types": {ir.value["instances"][0]["id"]: "special"},
+                    "allow_bus_pins": not timing_only,
+                    "synthesized_macro_types": {"LUT2"},
+                }
+                expected = mapped_verilog(ir, **options).encode()
+                output = Path(temp) / "mapped.v"
+                with patch(
+                    "emuflow.verilog.mapped_verilog",
+                    side_effect=AssertionError("whole-document string emission"),
+                ):
+                    write_mapped_verilog(ir, output, **options)
+                self.assertEqual(output.read_bytes(), expected)
+
     def test_counter_emits_all_primitives_ports_and_constants(self) -> None:
         ir = import_yosys_json(
             ROOT / "examples" / "yosys" / "counter.json",

@@ -24,7 +24,7 @@ from .sta import (
     validate_sta_path_database_path_value,
     write_emuir_net_map,
 )
-from .verilog import mapped_verilog
+from .verilog import write_mapped_verilog
 from .vtr_architecture import (
     ARCHITECTURE_TIMING_DB_SCHEMA,
     validate_vtr_timing_db,
@@ -1528,13 +1528,10 @@ def run_opensta_path_database(
         # OpenSTA's intentionally small Verilog reader does not accept net
         # declaration keywords on ports, attributes, or instance parameters.
         # Those constructs do not affect static timing connectivity.
-        verilog_path.write_text(
-            mapped_verilog(
-                ir,
-                timing_only=True,
-                timing_cell_types=instance_cell_types,
-            ),
-            encoding="utf-8",
+        write_mapped_verilog(
+            ir, verilog_path,
+            timing_only=True,
+            timing_cell_types=instance_cell_types,
         )
         liberty_path.write_text(
             render_opensta_liberty(model), encoding="utf-8"

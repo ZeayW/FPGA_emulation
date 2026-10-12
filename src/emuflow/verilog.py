@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, Mapping, Optional, Set, Tuple
 
 from .errors import ValidationError
 from .io import write_json
@@ -58,14 +60,14 @@ def _timing_pin_name(
     return port if width == 1 else f"{port}__{bit}"
 
 
-def mapped_verilog(
+def _mapped_verilog_lines(
     ir: EmuIR,
     *,
     timing_only: bool = False,
     timing_cell_types: Optional[Mapping[str, str]] = None,
     allow_bus_pins: bool = False,
     synthesized_macro_types: Optional[Set[str]] = None,
-) -> str:
+) -> Iterator[str]:
     net_wire = {
         net["id"]: f"__emuflow_net_{index}"
         for index, net in enumerate(ir.value["nets"])
@@ -90,7 +92,7 @@ def mapped_verilog(
             constants[(instance_id, *port_bit)] = item["value"]
             pins_by_instance.setdefault(instance_id, set()).add(port_bit)
 
-    lines = [
+    yield from [
         f"module {_identifier(ir.value['design']['top'])}(",
         "  "
         + ",\n  ".join(
@@ -106,13 +108,13 @@ def mapped_verilog(
                 f"cannot emit unknown-direction port {port['id']!r}"
             )
         wire_keyword = "" if timing_only else "wire "
-        lines.append(
+        yield (
             f"  {direction} {wire_keyword}{width}{_identifier(port['id'])};"
         )
-    lines.append("")
+    yield ""
     for wire in net_wire.values():
-        lines.append(f"  wire {wire};")
-    lines.append("")
+        yield f"  wire {wire};"
+    yield ""
 
     for net in ir.value["nets"]:
         wire = net_wire[net["id"]]
@@ -129,7 +131,7 @@ def mapped_verilog(
                     == 1
                     else f"[{endpoint['bit']}]"
                 )
-                lines.append(f"  assign {wire} = {port}{select};")
+                yield f"  assign {wire} = {port}{select};"
         for endpoint in net["sinks"]:
             if endpoint["instance"] is None:
                 port = _identifier(endpoint["port"])
@@ -143,16 +145,16 @@ def mapped_verilog(
                     == 1
                     else f"[{endpoint['bit']}]"
                 )
-                lines.append(f"  assign {port}{select} = {wire};")
+                yield f"  assign {port}{select} = {wire};"
     for port in ir.value["ports"]:
         identifier = _identifier(port["id"])
         for connection in port.get("constant_connections", []):
             select = "" if port["width"] == 1 else f"[{connection['bit']}]"
-            lines.append(
+            yield (
                 f"  assign {identifier}{select} = "
                 f"1'b{connection['value']};"
             )
-    lines.append("")
+    yield ""
 
     for instance in ir.value["instances"]:
         parameters = _emittable_parameters(instance)
@@ -213,12 +215,12 @@ def mapped_verilog(
                 synthesized_macro_types is not None
                 and instance["type"] in synthesized_macro_types
             ):
-                lines.append(
+                yield (
                     '  (* KEEP_HIERARCHY = "yes", '
                     'EMUFLOW_MAPPED = "yes" *)'
                 )
             else:
-                lines.append(
+                yield (
                     '  (* KEEP = "yes", DONT_TOUCH = "yes", '
                     'EMUFLOW_MAPPED = "yes" *)'
                 )
@@ -227,7 +229,7 @@ def mapped_verilog(
             if timing_cell_types is not None
             else instance["type"]
         )
-        lines.extend(
+        yield from (
             [
                 f"  {_identifier(cell_type)}{parameter_text} "
                 f"{_identifier(instance['id'])}(",
@@ -235,8 +237,47 @@ def mapped_verilog(
                 "  );",
             ]
         )
-    lines.extend(["endmodule", ""])
-    return "\n".join(lines)
+    yield from ["endmodule", ""]
+
+
+def mapped_verilog(
+    ir: EmuIR,
+    *,
+    timing_only: bool = False,
+    timing_cell_types: Optional[Mapping[str, str]] = None,
+    allow_bus_pins: bool = False,
+    synthesized_macro_types: Optional[Set[str]] = None,
+) -> str:
+    return "\n".join(_mapped_verilog_lines(
+        ir, timing_only=timing_only, timing_cell_types=timing_cell_types,
+        allow_bus_pins=allow_bus_pins, synthesized_macro_types=synthesized_macro_types,
+    ))
+
+
+def write_mapped_verilog(
+    ir: EmuIR,
+    output_path: Path,
+    *,
+    timing_only: bool = False,
+    timing_cell_types: Optional[Mapping[str, str]] = None,
+    allow_bus_pins: bool = False,
+    synthesized_macro_types: Optional[Set[str]] = None,
+) -> None:
+    """Emit the identical Verilog bytes without a complete line/string copy."""
+
+    temporary = output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            for index, line in enumerate(_mapped_verilog_lines(
+                ir, timing_only=timing_only, timing_cell_types=timing_cell_types,
+                allow_bus_pins=allow_bus_pins, synthesized_macro_types=synthesized_macro_types,
+            )):
+                if index:
+                    stream.write("\n")
+                stream.write(line)
+        os.replace(temporary, output_path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def emit_mapped_verilog(
@@ -246,7 +287,7 @@ def emit_mapped_verilog(
 ) -> Mapping[str, Any]:
     ir = EmuIR.load(ir_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(mapped_verilog(ir), encoding="utf-8")
+    write_mapped_verilog(ir, output_path)
     report = {
         "schema": MAPPED_VERILOG_REPORT_SCHEMA,
         "status": "pass",

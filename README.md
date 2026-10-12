@@ -1001,9 +1001,15 @@ preserving its existing specialization semantics instead of allocating two
 pin sets per mapped instance. OpenSTA's net-map exporter also reuses its
 already validated EmuIR rather than loading the complete graph a second time.
 The full net-ID index is built only for explicit directed through-net queries.
-These remove duplicate working sets; the initial generic EmuIR load and mapped
-Verilog export still materialize the graph, so bounded-memory large-design
-Phase 2 execution is not yet claimed.
+SQLite-to-Python decoding merges ordered resource, constant, alias, and endpoint
+rows into each owning record with one-row cursor lookahead. It does not retain
+whole-population child dictionaries alongside the reconstructed graph. Orphaned
+child rows and invalid endpoint roles fail closed rather than disappearing.
+The generic mapped-Verilog file exporter and OpenSTA emit the same text record by
+record instead of retaining all lines plus a joined document. These remove
+duplicate working sets; the initial generic EmuIR load and Verilog connection
+indexes still materialize the graph, so bounded-memory large-design Phase 2
+execution is not yet claimed.
 The earlier NVDLA qualification selected `hierarchical-abc9-v1`: it completed in
 8,342.55 seconds, used about 2.95 million normalized LUT units, and fit the
 unchanged four-FPGA 20% budget of 3.269 million LUT units. Both flattened
