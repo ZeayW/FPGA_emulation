@@ -1,5 +1,7 @@
 import hashlib
 import gzip
+import io
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -79,6 +81,116 @@ class EmuIRStorageTest(unittest.TestCase):
                 source, top="counter", clocks=["clk"]
             )
             self.assertEqual(EmuIR.load(artifact).to_dict(), expected.to_dict())
+
+    def test_hierarchical_stream_expands_to_flat_indexed_graph(self) -> None:
+        primitive = {
+            "type": "LUT1",
+            "parameters": {"INIT": "10"},
+            "port_directions": {"I0": "input", "O": "output"},
+            "connections": {"I0": [2], "O": [3]},
+        }
+        hierarchical = {
+            "creator": "hierarchical-test",
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2]},
+                        "y": {"direction": "output", "bits": [3]},
+                    },
+                    "cells": {
+                        "u0": {
+                            "type": "leaf",
+                            "port_directions": {
+                                "a": "input", "y": "output",
+                            },
+                            "connections": {"a": [2], "y": [4]},
+                        },
+                        "u1": {
+                            "type": "leaf",
+                            "port_directions": {
+                                "a": "input", "y": "output",
+                            },
+                            "connections": {"a": [4], "y": [3]},
+                        },
+                    },
+                    "netnames": {
+                        "a": {"bits": [2]},
+                        "mid": {"bits": [4]},
+                        "y": {"bits": [3]},
+                    },
+                },
+                "leaf": {
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2]},
+                        "y": {"direction": "output", "bits": [3]},
+                    },
+                    "cells": {"p": primitive},
+                    "netnames": {
+                        "a": {"bits": [2]},
+                        "y": {"bits": [3]},
+                    },
+                },
+                "LUT1": {
+                    "attributes": {"blackbox": "1"},
+                    "ports": {
+                        "I0": {"direction": "input", "bits": [2]},
+                        "O": {"direction": "output", "bits": [3]},
+                    },
+                },
+            },
+        }
+        flattened = {
+            "creator": "hierarchical-test",
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": hierarchical["modules"]["top"]["ports"],
+                    "cells": {
+                        "u0.p": {
+                            **primitive,
+                            "connections": {"I0": [2], "O": [4]},
+                        },
+                        "u1.p": {
+                            **primitive,
+                            "connections": {"I0": [4], "O": [3]},
+                        },
+                    },
+                    "netnames": {
+                        **hierarchical["modules"]["top"]["netnames"],
+                        "u0.a": {"bits": [2]},
+                        "u0.y": {"bits": [4]},
+                        "u1.a": {"bits": [4]},
+                        "u1.y": {"bits": [3]},
+                    },
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            hierarchical_artifact = root / "hierarchical.emuir.sqlite"
+            flattened_artifact = root / "flattened.emuir.sqlite"
+            report = import_yosys_json_indexed(
+                Path("<hierarchical-stream>"),
+                hierarchical_artifact,
+                top="top",
+                _source_stream=io.StringIO(json.dumps(hierarchical)),
+                _expand_hierarchy=True,
+            )
+            import_yosys_json_indexed(
+                Path("<flat-stream>"),
+                flattened_artifact,
+                top="top",
+                _source_stream=io.StringIO(json.dumps(flattened)),
+            )
+            actual = EmuIR.load(hierarchical_artifact).to_dict()
+            expected = EmuIR.load(flattened_artifact).to_dict()
+        actual["design"]["source"] = expected["design"]["source"]
+        self.assertEqual(actual, expected)
+        hierarchy = report["hierarchical_interchange"]
+        self.assertEqual(hierarchy["module_definitions"], 3)
+        self.assertEqual(hierarchy["expanded_module_instances"], 3)
+        self.assertEqual(hierarchy["maximum_hierarchy_depth"], 1)
 
 
 if __name__ == "__main__":

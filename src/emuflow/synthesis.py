@@ -108,6 +108,7 @@ def build_yosys_script(
     mapping_profile: Optional[str] = None,
     mapping_strategy: Optional[str] = None,
     stream_json: bool = False,
+    hierarchical_interchange: bool = False,
 ) -> str:
     source_list = list(sources)
     if not source_list:
@@ -138,6 +139,14 @@ def build_yosys_script(
                 f"{XILINX_ULTRASCALEPLUS_OPEN_PROFILE!r} profile"
             )
         _xilinx_mapping_strategy_options(mapping_strategy)
+    if hierarchical_interchange and not (
+        stream_json
+        and mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+    ):
+        raise EmuFlowError(
+            "hierarchical Yosys interchange requires the streaming "
+            f"{XILINX_ULTRASCALEPLUS_OPEN_PROFILE!r} profile"
+        )
     top_identifier = _yosys_identifier(top)
 
     include_list = list(include_dirs)
@@ -212,10 +221,12 @@ def build_yosys_script(
             if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
             else []
         ),
-        # synth_xilinx preserves hierarchy in some Yosys releases. EmuIR
-        # currently imports one module, so flatten the already mapped
-        # primitives explicitly before writing the interchange JSON.
-        "flatten",
+        # The production Xilinx path preserves mapped module hierarchy and
+        # expands it record-by-record in the indexed Phase 1 importer.  This
+        # avoids constructing a second, fully flattened multi-million-cell
+        # RTLIL design inside Yosys.  File-based/legacy consumers still get
+        # the historical flattened interchange explicitly.
+        *([] if hierarchical_interchange else ["flatten"]),
         *post_mapping,
         *post_flatten_cleanup,
         "check",
@@ -569,6 +580,7 @@ def run_xilinx_ultrascaleplus_yosys_stream(
         mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
         mapping_strategy=mapping_strategy,
         stream_json=True,
+        hierarchical_interchange=True,
     )
     diagnostic_parent = (
         log_path.parent if log_path is not None else source_list[0].parent
@@ -631,7 +643,7 @@ def run_xilinx_ultrascaleplus_yosys_stream(
                 "policy": "native",
                 "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
                 "mapping_strategy": mapping_strategy,
-                "interchange": "stdout-to-indexed-phase1",
+                "interchange": "stdout-hierarchical-to-indexed-phase1",
             },
             result,
         )

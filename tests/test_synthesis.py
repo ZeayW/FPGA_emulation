@@ -55,7 +55,10 @@ class SynthesisTest(unittest.TestCase):
                 consumed,
                 {"modules": {"design": {"cells": {}}}},
             )
-            self.assertEqual(report["interchange"], "stdout-to-indexed-phase1")
+            self.assertEqual(
+                report["interchange"],
+                "stdout-hierarchical-to-indexed-phase1",
+            )
             self.assertEqual(log.read_text(encoding="utf-8"), "diagnostic tail\n")
             self.assertEqual(
                 [path for path in root.iterdir() if "mapped" in path.name], []
@@ -346,6 +349,34 @@ class SynthesisTest(unittest.TestCase):
             script.endswith("write_json -no-hidden-netnames -no-source-attributes")
         )
         self.assertNotIn("design.json.gz", script)
+
+    def test_route_a_production_stream_preserves_mapped_hierarchy(self) -> None:
+        script = build_yosys_script(
+            [Path("rtl/design.v")],
+            top="design",
+            output=Path("<stdout>"),
+            family="xcup",
+            policy="native",
+            mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            stream_json=True,
+            hierarchical_interchange=True,
+        )
+        self.assertNotIn("; flatten;", script)
+        self.assertIn("; check;", script)
+        self.assertTrue(
+            script.endswith(
+                "write_json -no-hidden-netnames -no-source-attributes"
+            )
+        )
+
+    def test_hierarchical_interchange_is_streaming_route_a_only(self) -> None:
+        with self.assertRaisesRegex(EmuFlowError, "hierarchical Yosys"):
+            build_yosys_script(
+                [Path("rtl/design.v")],
+                top="design",
+                output=Path("build/design.json"),
+                hierarchical_interchange=True,
+            )
 
     def test_route_a_profile_rejects_incompatible_family(self) -> None:
         with self.assertRaisesRegex(EmuFlowError, "requires family"):

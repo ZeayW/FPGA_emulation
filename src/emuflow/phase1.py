@@ -207,6 +207,7 @@ def run_phase1(
     require_no_fabric_clock: bool = False,
     indexed_staging_transform: Optional[Callable[..., Dict[str, Any]]] = None,
     yosys_stream: Optional[TextIO] = None,
+    yosys_hierarchical_stream: bool = False,
 ) -> Dict[str, Any]:
     platform = Platform.load(platform_path)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -218,6 +219,7 @@ def run_phase1(
         clocks=clocks,
         staging_transform=indexed_staging_transform,
         _source_stream=yosys_stream,
+        _expand_hierarchy=yosys_hierarchical_stream,
     )
     design_name, warnings, totals, cut_classes = indexed_phase1_facts(ir_path)
 

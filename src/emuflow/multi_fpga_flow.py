@@ -1600,6 +1600,7 @@ def run_multi_fpga_flow(
                             normalize_xilinx_indexed_staging
                         ),
                         yosys_stream=stream,
+                        yosys_hierarchical_stream=True,
                     ),
                     executable=yosys,
                     log_path=frontend_root / "yosys.log",

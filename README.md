@@ -152,6 +152,11 @@ boundary. This applies equally to the one-shot Phase 1--7 driver and the
 canonical experiment/checkpoint entry point: generated Yosys JSON is neither a
 checkpoint artifact nor retained evidence. Explicit user-supplied JSON remains
 an import surface, not an internally generated production representation.
+The production stream also preserves the hierarchy of already mapped modules:
+Phase 1 stages each module definition once and expands repeated instances
+directly into indexed EmuIR records. Yosys therefore does not construct a
+second fully flattened multi-million-cell RTLIL design merely for interchange;
+file-based compatibility imports remain explicitly flattened.
 
 The next platform-modeling increment is specified in the
 [PPro black-box platform calibration plan](docs/PPRO_BLACKBOX_PLATFORM_CALIBRATION_PLAN.md).
