@@ -77,15 +77,17 @@ class HierarchyPortTest(unittest.TestCase):
         self.assertIsInstance(driven[0], int)
         self.assertEqual(driven, cells["u.consumer"]["connections"]["I0"])
 
-    def test_open_input_is_undefined(self):
+    def test_open_input_remains_an_undriven_wire(self):
         for binding in (None, []):
             value = fixture("input", binding)
             leaf = value["modules"]["leaf"]
             leaf["ports"]["dec"]["bits"] = list(range(4, 40))
             leaf["cells"] = {"consumer": {
                 "type": "LUT1", "connections": {"I0": [4], "O": [40]}}}
-            _, cells, _, _ = expand(value)
-            self.assertEqual(cells["u.consumer"]["connections"]["I0"], ["x"])
+            ports, cells, _, _ = expand(value)
+            floating = cells["u.consumer"]["connections"]["I0"][0]
+            self.assertIsInstance(floating, int)
+            self.assertNotEqual(floating, ports["a"]["bits"][0])
 
     def test_nonempty_width_mismatch_is_rejected(self):
         with self.assertRaisesRegex(ImportError, "expected 36 connection bits, got 1"):
@@ -112,7 +114,10 @@ class HierarchyPortTest(unittest.TestCase):
             self.assertEqual(actual["a"]["bits"], actual["y"]["bits"])
             self.assertEqual(expected["a"]["bits"], expected["y"]["bits"])
             self.assertIsInstance(actual["y"]["bits"][0], int)
-            self.assertEqual(actual["z"]["bits"], expected["z"]["bits"])
+            self.assertIsInstance(actual["z"]["bits"][0], int)
+            self.assertIsInstance(expected["z"]["bits"][0], int)
+            self.assertNotEqual(actual["z"]["bits"], actual["a"]["bits"])
+            self.assertNotEqual(expected["z"]["bits"], expected["a"]["bits"])
 
 
 if __name__ == "__main__":

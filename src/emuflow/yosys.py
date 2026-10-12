@@ -773,19 +773,17 @@ def _expand_staged_yosys_hierarchy(
                     )
                 parent_bits = bound_ports.get(port_name)
                 if parent_bits is None or not parent_bits:
-                    # An open output/inout is not a constant-x binding. Its
-                    # internal wire may also feed logic or alias another port.
-                    # Leave it local, just as Yosys flatten does. An open input
-                    # has no driver, and is represented by undefined bits.
+                    # An open port is not a constant-x binding. Its internal
+                    # wire may also feed logic or alias another port. Leave it
+                    # local, just as Yosys flatten does. An open input remains
+                    # an undriven wire rather than a fabricated constant.
                     direction = raw_port.get("direction")
-                    if direction in {"output", "inout"}:
-                        continue
-                    if direction != "input":
+                    if direction not in {"input", "output", "inout"}:
                         raise ImportError(
                             f"module {module_name!r} port {port_name!r}: "
                             f"invalid direction {direction!r}"
                         )
-                    parent_bits = ["x"] * len(local_port_bits)
+                    continue
                 if len(parent_bits) != len(local_port_bits):
                     raise ImportError(
                         f"module {module_name!r} port {port_name!r}: expected "
