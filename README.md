@@ -995,6 +995,15 @@ and a bounded diagnostic tail, without enabling full verbose logs or writing
 mapped graph JSON. The timing table includes qualification-only flatten/stat
 overhead; compare mapper passes separately from those interchange diagnostics.
 This instrumentation is opt-in and does not change production mapping defaults.
+The Xilinx pre-placement timing adapter collects design-derived pin sets only
+for the first instance of each primitive type missing from its base library,
+preserving its existing specialization semantics instead of allocating two
+pin sets per mapped instance. OpenSTA's net-map exporter also reuses its
+already validated EmuIR rather than loading the complete graph a second time.
+The full net-ID index is built only for explicit directed through-net queries.
+These remove duplicate working sets; the initial generic EmuIR load and mapped
+Verilog export still materialize the graph, so bounded-memory large-design
+Phase 2 execution is not yet claimed.
 The earlier NVDLA qualification selected `hierarchical-abc9-v1`: it completed in
 8,342.55 seconds, used about 2.95 million normalized LUT units, and fit the
 unchanged four-FPGA 20% budget of 3.269 million LUT units. Both flattened

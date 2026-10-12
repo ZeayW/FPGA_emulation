@@ -606,23 +606,34 @@ def _arc_max_seconds(arc: Mapping[str, Any]) -> float:
 
 def _instance_pin_sets(
     ir: EmuIR,
+    *,
+    instance_ids: Optional[set[str]] = None,
 ) -> Dict[str, Dict[str, set[tuple[str, int]]]]:
+    if instance_ids is not None and not instance_ids:
+        return {}
     result = {
         instance["id"]: {"inputs": set(), "outputs": set()}
         for instance in ir.value["instances"]
+        if instance_ids is None or instance["id"] in instance_ids
     }
     for net in ir.value["nets"]:
         for endpoint in net["drivers"]:
-            if endpoint["instance"] is not None:
+            if endpoint["instance"] is not None and (
+                instance_ids is None or endpoint["instance"] in result
+            ):
                 result[endpoint["instance"]]["outputs"].add(
                     (endpoint["port"], endpoint["bit"])
                 )
         for endpoint in net["sinks"]:
-            if endpoint["instance"] is not None:
+            if endpoint["instance"] is not None and (
+                instance_ids is None or endpoint["instance"] in result
+            ):
                 result[endpoint["instance"]]["inputs"].add(
                     (endpoint["port"], endpoint["bit"])
                 )
     for instance in ir.value["instances"]:
+        if instance["id"] not in result:
+            continue
         for connection in instance.get("constant_connections", []):
             result[instance["id"]]["inputs"].add(
                 (connection["port"], connection["bit"])
@@ -986,7 +997,16 @@ def build_xilinx_preplacement_opensta_timing_model(
         )
         model["cells"][name]["clock_to_q_ns"] = delays["ff_clock_to_q"]
 
-    pin_sets = _instance_pin_sets(ir)
+    # Cells already present in the library need no design-derived pin sets.
+    # The producer below has always specialized each remaining type from its
+    # first occurrence; collect only those representatives, not every cell.
+    representatives: Dict[str, str] = {}
+    for instance in ir.value["instances"]:
+        if instance["type"] not in model["cells"]:
+            representatives.setdefault(instance["type"], instance["id"])
+    pin_sets = _instance_pin_sets(
+        ir, instance_ids=set(representatives.values())
+    )
     instance_cell_types = {
         instance["id"]: instance["type"]
         for instance in ir.value["instances"]
@@ -1462,9 +1482,11 @@ def run_opensta_path_database(
         or len(through_net_ids) != len(set(through_net_ids))
     ):
         raise ValidationError("OpenSTA through_nets must be unique net IDs")
-    net_index = {
-        net["id"]: index for index, net in enumerate(ir.value["nets"])
-    }
+    net_index = (
+        {net["id"]: index for index, net in enumerate(ir.value["nets"])}
+        if through_net_ids
+        else {}
+    )
     unknown_through_nets = sorted(set(through_net_ids) - set(net_index))
     if unknown_through_nets:
         raise ValidationError(
@@ -1517,7 +1539,7 @@ def run_opensta_path_database(
         liberty_path.write_text(
             render_opensta_liberty(model), encoding="utf-8"
         )
-        write_emuir_net_map(ir_path, net_map_path)
+        write_emuir_net_map(ir_path, net_map_path, _ir=ir)
         if through_net_ids:
             with through_path.open("w", encoding="utf-8") as stream:
                 stream.write("mapped_net_hex\temuir_net_hex\n")

@@ -8,6 +8,7 @@ from emuflow.cut_segment_qualification import (
     build_cut_segment_qualification_value,
 )
 from emuflow.opensta import (
+    _instance_pin_sets,
     build_architecture_opensta_timing_model,
     classify_through_net_timing_endpoints,
     validate_timing_model_coverage,
@@ -114,8 +115,43 @@ CLK ADDR_A[0] 500
             assert report["status"] == "pass"
             mapped = root / "mapped.json"
             _mapped_fixture(mapped)
+            # Many repeated cells must not multiply the pin-set working set.
+            value = json.loads(mapped.read_text(encoding="utf-8"))
+            cells = value["modules"]["top"]["cells"]
+            for index in range(2000):
+                cells[f"repeat_lut_{index}"] = {
+                    "type": "LUT6_2", "parameters": {},
+                    "port_directions": {
+                        "I0": "input", "O5": "output", "O6": "output",
+                    },
+                    "connections": {
+                        "I0": ["1"],
+                        "O5": [11 + index * 2],
+                        "O6": [12 + index * 2],
+                    },
+                }
+                cells[f"known_lut_{index}"] = {
+                    "type": "LUT1", "parameters": {},
+                    "port_directions": {"I0": "input", "O": "output"},
+                    "connections": {"I0": ["0"], "O": [4011 + index]},
+                }
+            mapped.write_text(json.dumps(value), encoding="utf-8")
             ir = import_yosys_json(mapped, top="top", clocks=["clk"])
-            model, types = build_architecture_opensta_timing_model(ir, database)
+            with patch(
+                "emuflow.opensta._instance_pin_sets", wraps=_instance_pin_sets,
+            ) as pin_sets:
+                model, types = build_architecture_opensta_timing_model(ir, database)
+            assert pin_sets.call_args.kwargs["instance_ids"] == {
+                "carry", "lut", "mux", "ram", "dsp",
+            }
+            # Compare all cells/arcs and per-instance types against the old
+            # exhaustive pin collection, not merely aggregate timing scalars.
+            with patch(
+                "emuflow.opensta._instance_pin_sets",
+                side_effect=lambda graph, **kwargs: _instance_pin_sets(graph),
+            ):
+                reference = build_architecture_opensta_timing_model(ir, database)
+            assert (model, types) == reference
         assert validate_timing_model_coverage(ir, model, types)["status"] == "pass"
         assert model["cells"]["CARRY8"]["delay_ns"] > 0.0
         assert model["cells"]["RAMB18E2"]["setup_ns"] > 0.0

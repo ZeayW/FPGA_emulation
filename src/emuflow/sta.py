@@ -743,8 +743,12 @@ def _write_net_map(
     ir_path: Path,
     output_path: Path,
     header: str,
+    *,
+    _ir: Optional[EmuIR] = None,
 ) -> Dict[str, Any]:
-    ir = EmuIR.load(ir_path)
+    # The caller may already own the validated graph. Exporting a two-column
+    # view must not reconstruct a second multi-million-cell Python graph.
+    ir = _ir if _ir is not None else EmuIR.load(ir_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as output:
         output.write(header + "\n")
@@ -764,8 +768,10 @@ def _write_net_map(
 def write_emuir_net_map(
     ir_path: Path,
     output_path: Path,
+    *,
+    _ir: Optional[EmuIR] = None,
 ) -> Dict[str, Any]:
-    return _write_net_map(ir_path, output_path, EMUIR_NET_MAP_HEADER)
+    return _write_net_map(ir_path, output_path, EMUIR_NET_MAP_HEADER, _ir=_ir)
 
 
 def write_vivado_net_map(

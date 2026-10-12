@@ -22,6 +22,7 @@ from emuflow.sta import (
     import_vivado_sta_tsv,
     load_partition_net_weights_indexed,
     project_sta_path_database,
+    write_emuir_net_map,
     write_vivado_cut_net_map,
     write_vivado_net_map,
 )
@@ -32,6 +33,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StaAdapterTest(unittest.TestCase):
+    def test_net_map_reuses_validated_graph_without_reloading(self) -> None:
+        ir = import_yosys_json(
+            ROOT / "examples" / "yosys" / "counter.json",
+            top="counter", clocks=["clk"],
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "design.emuir.sqlite"
+            ir.save(ir_path)
+            ordinary = root / "ordinary.tsv"
+            reused = root / "reused.tsv"
+            report = write_emuir_net_map(ir_path, ordinary)
+            with patch(
+                "emuflow.sta.EmuIR.load",
+                side_effect=AssertionError("duplicate graph load"),
+            ):
+                reused_report = write_emuir_net_map(ir_path, reused, _ir=ir)
+            self.assertEqual(ordinary.read_bytes(), reused.read_bytes())
+            self.assertEqual(report["nets"], reused_report["nets"])
+            self.assertEqual(report["design"], reused_report["design"])
+
     def test_opensta_escaped_hierarchy_resolves_structured_endpoints(
         self,
     ) -> None:
