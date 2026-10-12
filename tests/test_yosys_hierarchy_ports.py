@@ -112,6 +112,7 @@ class HierarchyPortTest(unittest.TestCase):
             self.assertEqual(actual["a"]["bits"], actual["y"]["bits"])
             self.assertEqual(expected["a"]["bits"], expected["y"]["bits"])
             self.assertIsInstance(actual["y"]["bits"][0], int)
+            self.assertEqual(actual["z"]["bits"], expected["z"]["bits"])
 
 
 if __name__ == "__main__":
