@@ -157,6 +157,11 @@ Phase 1 stages each module definition once and expands repeated instances
 directly into indexed EmuIR records. Yosys therefore does not construct a
 second fully flattened multi-million-cell RTLIL design merely for interchange;
 file-based compatibility imports remain explicitly flattened.
+Hierarchy expansion accepts missing or empty connections on unused module
+outputs without tying their internal nets to undefined constants; those nets
+retain any internal consumers or aliases to connected ports. Open inputs are
+undefined, while nonempty width mismatches still fail closed. A native Yosys
+flatten comparison qualifies these port-binding semantics on a small fixture.
 
 The next platform-modeling increment is specified in the
 [PPro black-box platform calibration plan](docs/PPRO_BLACKBOX_PLATFORM_CALIBRATION_PLAN.md).
