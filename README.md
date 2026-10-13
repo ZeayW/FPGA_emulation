@@ -280,8 +280,8 @@ needs the transfer component with the wait separated consistently.
 
 The counts below describe the calibration record at research snapshot
 [afccf846](https://github.com/ZeayW/FPGA_emulation/tree/afccf846c33340f23f8c4d78a3d62976c74ce4a5).
-This documentation revision does not add experiments or repair that
-implementation.
+The table is the historical record. New acquisition results are recorded
+separately below; the revised model has not been integrated into the main flow.
 
 | Existing evidence | What can be retained | What it does not establish / what must change |
 | --- | --- | --- |
@@ -298,21 +298,71 @@ shared-bank scheduling or cross-FPGA timing. Generic shared bandwidth is not
 equivalent to integer bank allocation. This README corrects the evidence and
 target contract; it does not claim the production changes are complete.
 
+### New single-hop acquisition (2026-10-14)
+
+The revised probes have now run against PPro 2026.1. They independently
+generate forward and reverse data, fix the design clock at 10 ns, and preserve
+same-net crossing increments and each path's own raw TDM column from the
+ordinary system-route reports. Source:
+[v5 pilot](https://github.com/ZeayW/FPGA_emulation/tree/710645eb189ca9463e50221af295dea1154c4c7f)
+and [high-load sweep](https://github.com/ZeayW/FPGA_emulation/tree/41482d9b5429b820c7c27066cae047ff768519fe).
+
+Five acquisition cases passed: two low-load pilots and three TDM load cases.
+All listed high-load paths run from F0 to F2. Reverse reports include the
+specified reverse data width plus one reset signal.
+
+| Forward / reverse data bits | Path mode / raw ratio | Single-hop crossing increment | Local receiver increment |
+| --- | --- | --- | --- |
+| 32 / 0 and 32 / 16 | Independently listed untdm; raw column 2 | 7 ns | 0.10 ns |
+| 128 / 16 | TDM load; path raw ratio 8 | 50 ns | 0.10 ns |
+| 512 / 16 | TDM load; path raw ratio 16 | 55 ns | 0.10 ns |
+| 1024 / 16 | TDM load; path raw ratio 24 | 60 ns | 0.10 ns |
+
+The three TDM conditions support the candidate report model
+`d_cross(r_raw) = 45 + 0.625 * r_raw` ns at raw ratios 8, 16 and 24. The local
+term is not fitted. Untdm is a separate 7 ns branch; raw 2 must not be inserted
+into the TDM line or silently relabelled as a physical ratio. These are PPro
+system-route estimates for this configuration and clock, not board measurements.
+Each report contains at most ten related critical paths, so this is three fit
+executions rather than thirty independent samples. The two pilots expose
+opposite timing directions in their respective top-ten reports, not both
+directions in each run.
+
+The bank report also prevents two incorrect capacity inferences. At 512/16,
+two active banks have different maxima (8 and 16), so a global maximum cannot
+be assigned to every path. The same bank's `channelNum` changes from 6 to 23
+across loads, so it is not an identified fixed channel count per bank. Active
+bank counts do not establish total inventory `B` or fixed `q`. The net report
+lists untdm nets only in these cases; exact TDM net-to-bank binding is not yet
+available. Capacity and the Phase 5 integer bank allocation remain unfinished.
+
+A detached serial batch containing seven further cases was started: three
+constant-total bidirectional loads (128/896, 512/512 and 896/128), plus four
+independent holdouts covering new widths, reverse direction and another FPGA
+pair. The formula and report-error criterion were frozen before reading these
+results. SSH access to the remote gateway subsequently timed out; their
+terminal results and errors are pending retrieval, not claimed as passing.
+The three fit cases are preserved as inspected compact evidence, with original
+normalized observations still pending local transfer. Temporary raw projects
+must be removed after retrieval, validation and confirmation that the process
+has stopped. An observer timeout does not authorize restarting the experiment.
+
 ### What needs to be redone, in priority order
 
 1. **Correct the model and extraction.** Keep RapidWright resource totals;
    represent the shared bank pool and its directional restrictions; preserve
    path identity, actual per-hop ratio, TX/RX boundaries, and local/crossing
-   timing segments. Review available original reports before launching new
-   runs. Reuse a single-hop observation only if those facts can be recovered;
-   aggregate maxima alone are insufficient.
+   timing segments. The v5 acquisition now preserves the required path
+   segments. Historical raw projects were cleaned, so their compact aggregate
+   maxima cannot recover the missing segments and are not new fit samples.
 2. **Fill the measurement gaps.** Obtain bank parameters from platform
    configuration where available. Run simultaneous asymmetric bidirectional
    traffic, varying the two loads independently, and check allocation in
    whole-bank increments. For delay, hold an adjacent FPGA pair/direction and
    timing boundaries fixed, scan load to obtain actual TDM ratios, and collect
-   independent holdouts. Re-run old cases only where the necessary report
-   details are unavailable; supplement missing ratios and operating conditions.
+   independent holdouts. Retrieve and check the seven newly launched cases
+   before expanding the matrix; supplement only missing ratios and operating
+   conditions.
 3. **Validate the integrated flow.** Exercise the new bank allocation with
    Phase 5's ratios and concrete slots. Use multi-hop and multicast cases to
    test delay composition, then complete genuine cross-FPGA application
