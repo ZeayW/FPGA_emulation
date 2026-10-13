@@ -1041,6 +1041,14 @@ budget, so large per-cell RAM initialization values cannot fill an unbounded
 Python dictionary. Existing legacy/VTR and directed-query qualification routes
 are unchanged. The required integer-owner adjacency index is built once after
 bulk pin insertion, rather than updated randomly for each incoming pin.
+Escaped Yosys instance names no longer trigger indexed owner/pin reconstruction
+for every emitted pin. Possible doubled-owner collisions are checked by one
+indexed join, with pin inventories read only for actual candidate pairs;
+reported endpoint resolution and ambiguity rejection remain enabled.
+Static Exact's current single-virtual-clock limitation is now rejected before
+synthesis when multiple DUT clocks are explicitly declared. The two-clock
+NVDLA run did not complete Phase 3 and is not full-flow evidence; a legal clock
+execution contract is still required before its Phase 1–7 acceptance.
 The [lean phase-handoff contract](docs/LEAN_PHASE_HANDOFFS.md) separates consumer
 data from diagnostic evidence. EmuIR and timing/weight producers and iterators
 no longer run implicit SQLite `integrity_check` or `quick_check`: these are

@@ -443,6 +443,21 @@ requirements, not optional micro-optimizations.
 
 ## End-to-end acceptance is mandatory
 
+- Large-design frontend or phase-handoff performance work must converge on the
+  requested real design completing Phase 1--7. Compression, conversion,
+  read/write microbenchmarks and small-design regressions are intermediate
+  diagnostics, not the acceptance endpoint. Report actual per-phase and total
+  runtime plus final whole-design timing; do not promise a runtime improvement
+  from file-size or RSS reduction alone.
+- Reuse a completed mapped input when the user explicitly requests a debugging
+  continuation. Do not rerun synthesis solely to test or repair a downstream
+  interface, and do not let diagnostic comparison arms indefinitely displace
+  the requested complete flow.
+- Check declared execution-envelope limits (including unsupported DUT clock
+  configurations) before launching synthesis. Never delete a clock, silently
+  merge domains or relabel a restricted-mode result as a general multi-clock
+  validation in order to make a full-flow gate pass.
+
 - A Phase 6 algorithm, provider, optimization, or default-selection change is
   not complete when only Phase 6 artifacts or proxy metrics have passed.  The
   required acceptance endpoint is the completed physical Phase 7 flow.

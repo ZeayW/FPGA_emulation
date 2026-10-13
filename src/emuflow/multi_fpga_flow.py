@@ -1379,6 +1379,13 @@ def run_multi_fpga_flow(
     if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
         raise EmuFlowError("unsupported combinational cut mode")
     exact_cut_mode = cut_mode == CUT_MODE_STATIC_EXACT
+    clocks = tuple(clocks)
+    if exact_cut_mode and len(set(clocks)) > 1:
+        raise EmuFlowError(
+            "static exact combinational cuts require exactly one virtual DUT clock; "
+            "multiple declared clocks are unsupported by the current runtime "
+            "(rejected before synthesis)"
+        )
     if (
         partition_provider == "patron"
         and patron_algorithm_version == 14

@@ -39,6 +39,10 @@ rehashing or reconstructing it. Final evidence is sealed once at completion.
 
 ## Implementation status
 
+The acceptance endpoint for this performance work is the requested real design
+finishing Phase 1--7 with measured stage/total runtime and final global timing.
+Storage and adapter measurements alone do not qualify that endpoint.
+
 - Removed automatic engine audits from EmuIR publication, timing-path and
   partition-weight publication, and timing-path/weight iteration.
 - Timing-weight derivation no longer loads EmuIR when its path input has already
@@ -57,6 +61,12 @@ rehashing or reconstructing it. Final evidence is sealed once at completion.
   global pin map or global endpoint-object dictionary. This is not a change to
   library delays, clocks or STA algorithms. Legacy, VTR specialization and
   directed-through-net qualification retain their existing reader route.
+- Escaped instance names no longer reconstruct all pins through indexed
+  endpoint lookups once per emitted pin. An indexed owner-alias join identifies
+  possible collisions; only candidate pairs need pin inventories. Small
+  top-level and escaped-pin checks plus reported endpoint validation retain
+  ambiguity rejection. A repeated escaped-name regression bounds SQL query
+  count and compares emitted bytes against the reference writer.
 - `python -m emuflow.handoff_qualification` measures `repack`, `scan`,
   `export` and actual-engine `timing` in separate processes. Explicit repack
   supports either storage version, with the old writer's engine audits removed.

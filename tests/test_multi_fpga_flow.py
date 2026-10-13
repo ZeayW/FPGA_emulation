@@ -55,6 +55,22 @@ FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
+    def test_multiple_static_exact_clocks_reject_before_synthesis_or_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "flow"
+            with patch("emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as mapper:
+                with self.assertRaisesRegex(EmuFlowError, "rejected before synthesis"):
+                    run_multi_fpga_flow(
+                        platform_path=PLATFORM, output_dir=output,
+                        sources=[ROOT / "examples/rtl/counter.v"], top="counter",
+                        clocks=["dla_core_clk", "dla_csb_clk"],
+                        clock_periods={"dla_core_clk": 10, "dla_csb_clk": 10},
+                        mapping_profile="xilinx-ultrascaleplus-open-v1",
+                        cut_mode="static-exact-combinational", partition_provider="greedy",
+                    )
+                mapper.assert_not_called()
+            self.assertFalse(output.exists())
+
     def test_native_xilinx_mapper_selection_reaches_streaming_frontend(self):
         for strategy in (None, "hierarchical-classic-v1", "hierarchical-abc9-v1"):
             with self.subTest(strategy=strategy), tempfile.TemporaryDirectory() as tmp:
