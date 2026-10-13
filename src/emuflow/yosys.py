@@ -50,6 +50,30 @@ _VTR_RAM_INPUTS = {
 _NON_HARDWARE_CELL_TYPES = {"$scopeinfo"}
 
 
+def _resolve_clock_ports(
+    raw_ports: Mapping[str, Any], clocks: Iterable[str]
+) -> set[str]:
+    """Return the authoritative DUT clock ports for a Yosys module.
+
+    A benchmark-provided clock contract is authoritative.  Falling back to
+    name inference when that contract is present can misclassify clock-gating
+    controls such as ``global_clk_ovr_on`` as independent clock domains.
+    Name inference is retained only for ad-hoc imports that provide no clock
+    contract at all.
+    """
+
+    explicit = set(clocks)
+    if explicit:
+        unknown = sorted(explicit.difference(raw_ports))
+        if unknown:
+            raise ImportError(
+                "explicit clock ports are absent from the top module: "
+                + ", ".join(repr(name) for name in unknown)
+            )
+        return explicit
+    return {name for name in raw_ports if _CLOCK_NAME.search(name)}
+
+
 def _is_transport_safe_sequential_input(
     cell_type: str,
     port: str,
@@ -152,10 +176,7 @@ def import_yosys_json(
     if not isinstance(raw_netnames, dict):
         raise ImportError(f"{path}: module {top_name!r} netnames must be an object")
 
-    explicit_clocks = set(clocks)
-    clock_ports = {
-        name for name in raw_ports if name in explicit_clocks or _CLOCK_NAME.search(name)
-    }
+    clock_ports = _resolve_clock_ports(raw_ports, clocks)
     reset_ports = {name for name in raw_ports if _RESET_NAME.search(name)}
 
     ports: List[Dict[str, Any]] = []
@@ -1146,12 +1167,7 @@ def import_yosys_json_indexed(
             transform_report = {
                 "hierarchical_interchange": hierarchy_report,
             }
-        explicit_clocks = set(clocks)
-        clock_ports = {
-            name
-            for name in raw_ports
-            if name in explicit_clocks or _CLOCK_NAME.search(name)
-        }
+        clock_ports = _resolve_clock_ports(raw_ports, clocks)
         reset_ports = {name for name in raw_ports if _RESET_NAME.search(name)}
         endpoint_sequence = 0
         endpoint_buffer: List[Tuple[int, int, int, Optional[str], str, int]] = []
