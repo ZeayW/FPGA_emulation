@@ -6,9 +6,21 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
-from .emuir_compact import compact_instances, compact_metadata, compact_nets
+from .emuir_compact import _decode, compact_metadata, compact_nets
 from .emuir_storage import open_emuir_sqlite_read_only
 from .errors import ValidationError
+
+
+def _timing_instances(connection):
+    """Do not decode resources, attributes or LUT/RAM INIT data for STA."""
+    for row in connection.execute("""SELECT c.id,c.type,
+        CASE WHEN c.type IN ('FDCE','FDPE','FDRE','FDSE') THEN p.value END AS parameters_json,
+        k.value AS constants_json FROM cell_records c
+        LEFT JOIN payloads p ON p.seq=c.parameters_seq
+        LEFT JOIN payloads k ON k.seq=c.constants_seq ORDER BY c.seq"""):
+        yield {"id": row["id"], "type": row["type"],
+               "parameters": {} if row["parameters_json"] is None else _decode(row["parameters_json"], "parameters"),
+               "constant_connections": _decode(row["constants_json"], "constants")}
 
 
 class _Rows:
@@ -144,7 +156,7 @@ class IndexedTimingView:
                 isinstance(n, bool) or not isinstance(n, int) or n < 0 for n in self.counts.values()
             ):
                 raise ValueError("invalid compact EmuIR record counts")
-            self.value["instances"] = _Rows(self, "cell_records", compact_instances)
+            self.value["instances"] = _Rows(self, "cell_records", _timing_instances)
             self.value["nets"] = _Rows(self, "net_records", compact_nets)
             self.net_ids = _Ids(self, "net_records")
             self.instance_ids = _Ids(self, "cell_records")

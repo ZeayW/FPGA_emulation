@@ -1033,7 +1033,9 @@ be read or streamed into v2 without synthesis. Production streamed Xilinx
 OpenSTA extraction from v2 now merges instance-owned pin rows into Verilog
 directly instead of rebuilding a whole Python graph and global connection
 dictionary. Timing-library specialization keeps the same first-occurrence
-semantics; path endpoints are resolved through bounded lookup caches. Existing
+semantics; its instance projection reads only identity/type, clock-inversion
+parameters and constant pin connections, not resource vectors, attributes or
+LUT/RAM initialization data. Path endpoints use bounded lookup caches. Existing
 legacy/VTR and directed-query qualification routes are unchanged.
 The [lean phase-handoff contract](docs/LEAN_PHASE_HANDOFFS.md) separates consumer
 data from diagnostic evidence. EmuIR and timing/weight producers and iterators
