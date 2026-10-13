@@ -1010,6 +1010,13 @@ record instead of retaining all lines plus a joined document. These remove
 duplicate working sets; the initial generic EmuIR load and Verilog connection
 indexes still materialize the graph, so bounded-memory large-design Phase 2
 execution is not yet claimed.
+One-shot compilation validates supplied BoardLinkTimingDB and TransportCostDB
+against the selected BoardDB before synthesis, tool launch, or output creation.
+A derived utilization-stress platform must carry matching platform identities
+and unchanged link contracts in its timing/cost inputs; pairing a renamed
+BoardDB with the original calibrated profile fails immediately. The small
+validated link-timing object is reused later rather than loaded again. Derived
+stress runs remain separate from nominal calibrated-platform promotion evidence.
 The earlier NVDLA qualification selected `hierarchical-abc9-v1`: it completed in
 8,342.55 seconds, used about 2.95 million normalized LUT units, and fit the
 unchanged four-FPGA 20% budget of 3.269 million LUT units. Both flattened

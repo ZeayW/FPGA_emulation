@@ -793,6 +793,78 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     )
             self.assertFalse(root.exists())
 
+    def test_board_link_preflight_rejects_mismatches_before_frontend(self) -> None:
+        platform = Platform.load(PLATFORM)
+        for mismatch in ("platform", "coverage", "clock"):
+            with self.subTest(mismatch=mismatch), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                database = build_board_link_timing_model(platform)
+                if mismatch == "platform":
+                    database["platform"] += "-stress"
+                elif mismatch == "coverage":
+                    database["links"].pop()
+                else:
+                    database["links"][0]["fabric_clock_mhz"] += 1.0
+                path = root / "board-link-timing.json"
+                write_json(path, database)
+                output = root / "flow"
+                with patch("emuflow.multi_fpga_flow.run_generic_yosys") as synthesis, patch(
+                    "emuflow.multi_fpga_flow.check_opensta_engine_version"
+                ) as engine_check:
+                    with self.assertRaisesRegex(ValidationError, "board link timing"):
+                        run_multi_fpga_flow(
+                            platform_path=PLATFORM,
+                            output_dir=output,
+                            sources=[ROOT / "examples/rtl/counter.v"],
+                            top="counter",
+                            mapping_profile="generic-soft",
+                            partition_provider="greedy",
+                            cut_mode="sequential-only",
+                            timing_driven=False,
+                            clock_periods={"clk": 10.0},
+                            board_link_timing_db=path,
+                        )
+                synthesis.assert_not_called()
+                engine_check.assert_not_called()
+                self.assertFalse(output.exists())
+
+    def test_transport_cost_preflight_rejects_wrong_platform_before_frontend(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            features = list(BASE_FEATURE_NAMES) + [
+                f"frame_slots_{slots}" for slots in FRAME_SLOTS[1:]
+            ]
+            path = root / "transport-cost.json"
+            write_json(path, {
+                "schema": "emuflow.transport-cost/v2",
+                "platform": Platform.load(PLATFORM).name + "-stress",
+                "profile": "nominal",
+                "model": OPEN_TRANSPORT_MODEL,
+                "feature_names": features,
+                "resources": {"lut": {name: 1.0 for name in features}},
+                "provenance": {"class": OPEN_TRANSPORT_PROVENANCE, "fit_sha256": "1" * 64},
+            })
+            output = root / "flow"
+            with patch("emuflow.multi_fpga_flow.run_generic_yosys") as synthesis, patch(
+                "emuflow.multi_fpga_flow.check_opensta_engine_version"
+            ) as engine_check:
+                with self.assertRaisesRegex(ValidationError, "transport cost platform disagrees"):
+                    run_multi_fpga_flow(
+                        platform_path=PLATFORM,
+                        output_dir=output,
+                        sources=[ROOT / "examples/rtl/counter.v"],
+                        top="counter",
+                        mapping_profile="generic-soft",
+                        partition_provider="greedy",
+                        cut_mode="sequential-only",
+                        timing_driven=False,
+                        clock_periods={"clk": 10.0},
+                        transport_cost_db=path,
+                    )
+            synthesis.assert_not_called()
+            engine_check.assert_not_called()
+            self.assertFalse(output.exists())
+
     def test_opensta_version_preflight_precedes_frontend(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "multi"

@@ -53,6 +53,7 @@ from .combinational_cut import (
 from .mfspart_refine import DEFAULT_TIMING_PATH_BETA
 from .native_tools import resolve_native_executable
 from .platform import Platform
+from .ppro_calibrated_platform import validate_transport_cost_database
 from .runtime import validate_virtual_runtime
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
 from .tdm import TDM_BASELINE_PROVIDER
@@ -1474,6 +1475,24 @@ def run_multi_fpga_flow(
             "--serial-bsp-vivado or --serial-bsp-yosys"
         )
 
+    # These small board contracts can be checked without a synthesized graph.
+    # Reject a renamed stress platform paired with the original timing/cost
+    # databases before spending hours on synthesis and timing extraction.
+    checked_link_timing = None
+    checked_link_timing_validation = None
+    if board_link_timing_db is not None or transport_cost_db is not None:
+        board_contract_platform = Platform.load(platform_path)
+        if board_link_timing_db is not None:
+            checked_link_timing = read_json(board_link_timing_db.resolve())
+            checked_link_timing_validation = validate_board_link_timing(
+                checked_link_timing, board_contract_platform
+            )
+        if transport_cost_db is not None:
+            validate_transport_cost_database(
+                read_json(transport_cost_db.resolve()),
+                expected_platform=board_contract_platform.name,
+            )
+
     # Phase 7 runs after every board-independent stage, so validating its
     # interpreter inside the physical-flow helper is much too late for a
     # one-shot Phase 1--7 invocation.  Reject an unusable OpenPARF/PyTorch
@@ -1759,8 +1778,8 @@ def run_multi_fpga_flow(
     effective_route_constraints_path = None
     if board_link_timing_db is not None:
         platform = Platform.load(platform_path)
-        database = read_json(board_link_timing_db.resolve())
-        validation = validate_board_link_timing(database, platform)
+        database = checked_link_timing
+        validation = checked_link_timing_validation
         link_delays, projection = directed_route_link_delays(
             database, platform
         )
