@@ -216,7 +216,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "observation": str(binding.output_path.relative_to(root)),
                 "bank_row_count": len(bank_rows),
                 "observed_bank_tdm_ratios": ratios,
-                "timing_path_count": len(details.get("timing_paths", [])),
+                "timing_path_count": len(details.get("route_timing_paths", [])),
+                "post_partition_timing_path_count": len(details.get("timing_paths", [])),
                 "identification": details.get("identification", {}),
             }
             write_json(case_root / "case-summary.json", case_summary, compact=True)

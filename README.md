@@ -208,8 +208,14 @@ mock runs have the distinct `ppro-blackbox-communication-probe-v5-mock` identity
 The existing aggregate Stage 4 fitters are historical v3 consumers, not validators
 for the revised bank or single-hop model. Start with real acquisition pilots,
 verify path-specific report extraction, then repeat asymmetric bidirectional
-loads and single-hop TDM levels with independent holdouts. New real results
-remain pending until their terminal observations exist.
+loads and single-hop TDM levels with independent holdouts. The first two real
+v5 pilots at source `710645eb189ca9463e50221af295dea1154c4c7f` passed acquisition:
+the net reports preserve 32/0 and 32/16 directional data bits. Each case reports
+ten same-net crossings at 7.00 ns, followed by a 0.10 ns local receiver segment.
+The independent net table labels these as `untdm`, while the path's raw TDM
+column is 2; those facts are preserved separately. Their bank tables are empty.
+These are low-load observations, not a bank inventory or a fitted `d(r)`.
+Higher-load TDM acquisition and independent holdouts remain pending.
 
 `scripts/ppro_bank_singlehop_campaign.py` runs the fresh, serial acquisition
 campaign. `--mode pilot` fixes F0 to F2 at 32/0 and 32/16 forward/reverse data
@@ -219,6 +225,8 @@ observations. Both modes require explicit installation, opaque platform,
 four-FPGA alias/placement mappings and a new result directory. Existing result
 directories are rejected rather than restarted. The driver records the exact
 source commit, source-bundle revision, driver hash and process identity.
+Its `timing_path_count` counts routed timing paths; the separate
+`post_partition_timing_path_count` covers optional backend SSTA paths.
 
 PPro selects the actual TDM ratios. `--required-observed-tdm-ratios` checks
 coverage in the reported bank rows; it neither forces TDM nor associates a

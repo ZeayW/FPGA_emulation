@@ -42,6 +42,7 @@ class PProBankSinglehopCampaignTest(unittest.TestCase):
                 "calibration_details": {
                     "bank_rows": [{"maximum_tdm_ratio": 8}],
                     "timing_paths": [],
+                    "route_timing_paths": [{"id": "route-path0"}],
                     "identification": {"single_hop_delay": "not_identifiable"},
                 },
             },
@@ -69,6 +70,8 @@ class PProBankSinglehopCampaignTest(unittest.TestCase):
                 self.assertEqual(summary["status"], "completed")
                 self.assertEqual(summary["calibration_status"], "observations-only-not-a-fitted-platform")
                 self.assertEqual(summary["cases"][1]["observed_bank_tdm_ratios"], [8])
+                self.assertEqual(summary["cases"][1]["timing_path_count"], 1)
+                self.assertEqual(summary["cases"][1]["post_partition_timing_path_count"], 0)
                 self.assertTrue((args.result_root / "w32-rw0-r0" / "case-summary.json").is_file())
                 self.assertTrue((args.result_root / "w32-rw0-r0" / "bundle" / "communication_probe.v").is_file())
                 with self.assertRaisesRegex(ValidationError, "already exists"):
