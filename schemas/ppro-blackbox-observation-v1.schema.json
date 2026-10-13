@@ -17,65 +17,155 @@
     "derived"
   ],
   "properties": {
-    "schema": {"const": "emuflow.ppro-blackbox-observation/v1"},
+    "schema": {
+      "const": "emuflow.ppro-blackbox-observation/v1"
+    },
     "identity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "campaign_id", "case_id", "role", "public_prior_id", "configuration_id"],
+      "required": [
+        "id",
+        "campaign_id",
+        "case_id",
+        "role",
+        "public_prior_id",
+        "configuration_id"
+      ],
       "properties": {
-        "id": {"$ref": "#/$defs/id"},
-        "campaign_id": {"$ref": "#/$defs/id"},
-        "case_id": {"$ref": "#/$defs/id"},
-        "role": {"enum": ["fit", "holdout"]},
-        "public_prior_id": {"$ref": "#/$defs/id"},
-        "configuration_id": {"$ref": "#/$defs/id"}
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "campaign_id": {
+          "$ref": "#/$defs/id"
+        },
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "role": {
+          "enum": [
+            "fit",
+            "holdout"
+          ]
+        },
+        "public_prior_id": {
+          "$ref": "#/$defs/id"
+        },
+        "configuration_id": {
+          "$ref": "#/$defs/id"
+        }
       }
     },
     "tool": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "release", "runner_revision"],
+      "required": [
+        "name",
+        "release",
+        "runner_revision"
+      ],
       "properties": {
-        "name": {"type": "string", "minLength": 1},
-        "release": {"type": "string", "minLength": 1},
-        "runner_revision": {"$ref": "#/$defs/sha256"}
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "release": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runner_revision": {
+          "$ref": "#/$defs/sha256"
+        }
       }
     },
     "workload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["generator_id", "generator_revision", "rtl_sha256", "parameters_sha256", "top_module"],
+      "required": [
+        "generator_id",
+        "generator_revision",
+        "rtl_sha256",
+        "parameters_sha256",
+        "top_module"
+      ],
       "properties": {
-        "generator_id": {"$ref": "#/$defs/id"},
-        "generator_revision": {"$ref": "#/$defs/sha256"},
-        "rtl_sha256": {"$ref": "#/$defs/sha256"},
-        "parameters_sha256": {"$ref": "#/$defs/sha256"},
-        "top_module": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}
+        "generator_id": {
+          "$ref": "#/$defs/id"
+        },
+        "generator_revision": {
+          "$ref": "#/$defs/sha256"
+        },
+        "rtl_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "parameters_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "top_module": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        }
       }
     },
     "experiment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "control_mode", "documented_actions", "constraints_sha256"],
+      "required": [
+        "kind",
+        "control_mode",
+        "documented_actions",
+        "constraints_sha256"
+      ],
       "properties": {
         "kind": {
-          "enum": ["reproducibility", "resource_capacity", "topology_reachability", "payload_capacity", "latency", "transport_cost", "application_holdout"]
+          "enum": [
+            "reproducibility",
+            "resource_capacity",
+            "topology_reachability",
+            "payload_capacity",
+            "latency",
+            "transport_cost",
+            "application_holdout"
+          ]
         },
-        "control_mode": {"enum": ["fixed_assignment", "fixed_communication", "free_optimization", "none"]},
+        "control_mode": {
+          "enum": [
+            "fixed_assignment",
+            "fixed_communication",
+            "free_optimization",
+            "none"
+          ]
+        },
         "documented_actions": {
           "type": "array",
           "uniqueItems": true,
-          "items": {"enum": ["partition_constraint", "net_route_constraint", "tdm_ratio_constraint", "random_seed"]}
+          "items": {
+            "enum": [
+              "partition_constraint",
+              "net_route_constraint",
+              "tdm_ratio_constraint",
+              "random_seed"
+            ]
+          }
         },
-        "constraints_sha256": {"$ref": "#/$defs/sha256"}
+        "constraints_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
       }
     },
     "execution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["seed", "outcome", "failure_code", "runtime_seconds"],
+      "required": [
+        "seed",
+        "outcome",
+        "failure_code",
+        "runtime_seconds"
+      ],
       "properties": {
-        "seed": {"type": "integer", "minimum": 0},
+        "seed": {
+          "type": "integer",
+          "minimum": 0
+        },
         "outcome": {
           "enum": [
             "pass",
@@ -89,37 +179,81 @@
             "report_parse_failure"
           ]
         },
-        "failure_code": {"type": ["string", "null"]},
-        "runtime_seconds": {"type": ["number", "null"], "minimum": 0}
+        "failure_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
       }
     },
     "reports": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["resource_summary", "partition_summary", "route_summary", "system_timing"],
+      "required": [
+        "resource_summary",
+        "partition_summary",
+        "route_summary",
+        "system_timing"
+      ],
       "properties": {
-        "resource_summary": {"type": "boolean"},
-        "partition_summary": {"type": "boolean"},
-        "route_summary": {"type": "boolean"},
-        "system_timing": {"type": "boolean"}
+        "resource_summary": {
+          "type": "boolean"
+        },
+        "partition_summary": {
+          "type": "boolean"
+        },
+        "route_summary": {
+          "type": "boolean"
+        },
+        "system_timing": {
+          "type": "boolean"
+        }
       }
     },
     "metrics": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["design", "resource_demand", "fpga_utilization", "assignments", "routes", "communication", "timing"],
+      "required": [
+        "design",
+        "resource_demand",
+        "fpga_utilization",
+        "assignments",
+        "routes",
+        "communication",
+        "timing"
+      ],
       "properties": {
-        "design": {"$ref": "#/$defs/metricMap"},
-        "resource_demand": {"$ref": "#/$defs/metricMap"},
+        "design": {
+          "$ref": "#/$defs/metricMap"
+        },
+        "resource_demand": {
+          "$ref": "#/$defs/metricMap"
+        },
         "fpga_utilization": {
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["fpga", "resources"],
+            "required": [
+              "fpga",
+              "resources"
+            ],
             "properties": {
-              "fpga": {"type": "string", "pattern": "^F[0-9]+$"},
-              "resources": {"$ref": "#/$defs/utilizationMap"}
+              "fpga": {
+                "type": "string",
+                "pattern": "^F[0-9]+$"
+              },
+              "resources": {
+                "$ref": "#/$defs/utilizationMap"
+              }
             }
           }
         },
@@ -128,10 +262,19 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["partition", "fpga"],
+            "required": [
+              "partition",
+              "fpga"
+            ],
             "properties": {
-              "partition": {"type": "string", "pattern": "^P[0-9]+$"},
-              "fpga": {"type": "string", "pattern": "^F[0-9]+$"}
+              "partition": {
+                "type": "string",
+                "pattern": "^P[0-9]+$"
+              },
+              "fpga": {
+                "type": "string",
+                "pattern": "^F[0-9]+$"
+              }
             }
           }
         },
@@ -140,35 +283,302 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "source", "sinks", "effective_hops", "signal_count"],
+            "required": [
+              "id",
+              "source",
+              "sinks",
+              "effective_hops",
+              "signal_count"
+            ],
             "properties": {
-              "id": {"$ref": "#/$defs/id"},
-              "source": {"type": "string", "pattern": "^F[0-9]+$"},
-              "sinks": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^F[0-9]+$"}},
-              "effective_hops": {"type": "integer", "minimum": 1},
-              "signal_count": {"type": "integer", "minimum": 1}
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "source": {
+                "type": "string",
+                "pattern": "^F[0-9]+$"
+              },
+              "sinks": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^F[0-9]+$"
+                }
+              },
+              "effective_hops": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "signal_count": {
+                "type": "integer",
+                "minimum": 1
+              }
             }
           }
         },
-        "communication": {"$ref": "#/$defs/metricMap"},
-        "timing": {"$ref": "#/$defs/metricMap"}
+        "communication": {
+          "$ref": "#/$defs/metricMap"
+        },
+        "timing": {
+          "$ref": "#/$defs/metricMap"
+        },
+        "calibration_details": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "bank_rows",
+            "timing_paths",
+            "identification"
+          ],
+          "properties": {
+            "schema": {
+              "const": "emuflow.ppro-calibration-details/v1"
+            },
+            "bank_rows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "bank_pair_id",
+                  "local_fpga",
+                  "peer_fpga",
+                  "direction",
+                  "reported_channel_count",
+                  "maximum_tdm_ratio",
+                  "reported_line_rate"
+                ],
+                "properties": {
+                  "bank_pair_id": {
+                    "type": "string",
+                    "pattern": "^bank-[0-9a-f]{64}$"
+                  },
+                  "local_fpga": {
+                    "type": "string",
+                    "pattern": "^F[0-9]+$"
+                  },
+                  "peer_fpga": {
+                    "type": "string",
+                    "pattern": "^F[0-9]+$"
+                  },
+                  "direction": {
+                    "enum": [
+                      "input",
+                      "output"
+                    ]
+                  },
+                  "reported_channel_count": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "maximum_tdm_ratio": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "reported_line_rate": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            "timing_paths": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "constrained",
+                  "reported_cross_fpga_count",
+                  "arrival_ns",
+                  "startpoint_token",
+                  "endpoint_token",
+                  "points",
+                  "crossings"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^(setup|hold|unspecified)-path[0-9]+$"
+                  },
+                  "constrained": {
+                    "type": "boolean"
+                  },
+                  "reported_cross_fpga_count": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "arrival_ns": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "startpoint_token": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^pin-[0-9a-f]{64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "endpoint_token": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^pin-[0-9a-f]{64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "points": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "id",
+                        "pin_token",
+                        "fpga",
+                        "increment_ns",
+                        "cumulative_ns",
+                        "reported_tdm_ratio",
+                        "kind",
+                        "descriptor"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^point[0-9]+$"
+                        },
+                        "pin_token": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^pin-[0-9a-f]{64}$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "fpga": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^F[0-9]+$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "increment_ns": {
+                          "type": "number"
+                        },
+                        "cumulative_ns": {
+                          "type": "number"
+                        },
+                        "reported_tdm_ratio": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "kind": {
+                          "enum": [
+                            "pin",
+                            "other"
+                          ]
+                        },
+                        "descriptor": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        }
+                      }
+                    }
+                  },
+                  "crossings": {
+                    "type": "array",
+                    "maxItems": 0
+                  }
+                }
+              }
+            },
+            "identification": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "bank_inventory",
+                "single_hop_delay",
+                "reasons"
+              ],
+              "properties": {
+                "bank_inventory": {
+                  "const": "not_identifiable"
+                },
+                "single_hop_delay": {
+                  "const": "not_identifiable"
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$"
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["class"],
+      "required": [
+        "class"
+      ],
       "properties": {
-        "class": {"const": "black_box_observation"},
-        "note": {"type": "string", "minLength": 1}
+        "class": {
+          "const": "black_box_observation"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "derived": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fit_eligible", "reason"],
+      "required": [
+        "fit_eligible",
+        "reason"
+      ],
       "properties": {
-        "fit_eligible": {"type": "boolean"},
+        "fit_eligible": {
+          "type": "boolean"
+        },
         "reason": {
           "enum": [
             "controlled-evaluated-observation",
@@ -181,17 +591,34 @@
     }
   },
   "$defs": {
-    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
-    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "metricMap": {
       "type": "object",
-      "propertyNames": {"pattern": "^[a-z0-9][a-z0-9._-]*$"},
-      "additionalProperties": {"type": "number", "minimum": 0}
+      "propertyNames": {
+        "pattern": "^[a-z0-9][a-z0-9._-]*$"
+      },
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0
+      }
     },
     "utilizationMap": {
       "type": "object",
-      "propertyNames": {"pattern": "^[a-z0-9][a-z0-9._-]*$"},
-      "additionalProperties": {"type": "number", "minimum": 0, "maximum": 1}
+      "propertyNames": {
+        "pattern": "^[a-z0-9][a-z0-9._-]*$"
+      },
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      }
     }
   }
 }

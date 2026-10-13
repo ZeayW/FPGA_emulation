@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from emuflow.errors import ValidationError
+from emuflow.ppro_blackbox_details import parse_calibration_details, validate_calibration_details
 from emuflow.ppro_blackbox_ppro_adapter import parse_ppro_2026_ordinary_reports
 
 
@@ -218,6 +220,105 @@ class PProBlackboxPProAdapterTest(unittest.TestCase):
         self.assertEqual(
             metrics["timing"]["sr0_worst_cross_fpga_delay_ns"], 51.66
         )
+
+    def test_bank_records_preserve_direction_and_reciprocal_identity(self):
+        details = parse_calibration_details(ROUTE_REPORT, "", {"F11": "F0", "F33": "F1"})
+        rows = details["bank_rows"]
+        self.assertEqual(len(rows), 3)
+        reciprocal = [row for row in rows if row["reported_channel_count"] == 5]
+        self.assertEqual(len(reciprocal), 2)
+        self.assertEqual(reciprocal[0]["bank_pair_id"], reciprocal[1]["bank_pair_id"])
+        self.assertEqual({row["direction"] for row in reciprocal}, {"input", "output"})
+        self.assertEqual({row["maximum_tdm_ratio"] for row in rows}, {8, 16})
+        self.assertEqual(details["identification"]["bank_inventory"], "not_identifiable")
+        self.assertNotIn("bank_capacity", repr(details))
+        self.assertNotIn("703", repr(details["bank_rows"][0].get("local_bank", "")))
+
+    def test_paths_preserve_arrival_identity_without_global_ratio_substitution(self):
+        details = parse_calibration_details(ROUTE_REPORT, MIXED_POST_PARTITION_SSTA_REPORT, {"F11": "F0", "F33": "F1"})
+        paths = details["timing_paths"]
+        self.assertEqual([path["id"] for path in paths], ["setup-path1", "setup-path2"])
+        self.assertEqual([path["arrival_ns"] for path in paths], [6.96, 8.25])
+        self.assertEqual([path["constrained"] for path in paths], [False, True])
+        self.assertTrue(all(path["crossings"] == [] for path in paths))
+        self.assertTrue(all(point["reported_tdm_ratio"] is None for path in paths for point in path["points"]))
+        self.assertEqual(paths[1]["points"][1]["increment_ns"], 8.25)
+        self.assertIn("unmapped-timing-fpga-label", details["identification"]["reasons"])
+        self.assertNotIn("FPGA_1", repr(details))
+        self.assertNotIn("FPGA_4", repr(details))
+
+    def test_timing_fpga_prefix_is_not_assumed_to_be_route_fpga_id(self):
+        details = parse_calibration_details("", SIGNED_SLACK_SUMMARY_SSTA_REPORT, {"F1": "F0", "F4": "F1"})
+        path = details["timing_paths"][0]
+        self.assertEqual(path["arrival_ns"], 51.66)
+        self.assertEqual(len(path["points"]), 2)
+        self.assertTrue(all(point["fpga"] is None for point in path["points"]))
+        self.assertNotEqual(path["points"][0]["pin_token"], path["points"][1]["pin_token"])
+
+    def test_missing_segment_and_arrival_are_unavailable_not_zero(self):
+        text = SIGNED_SLACK_SUMMARY_SSTA_REPORT.split("           51.660   data arrival time")[0]
+        details = parse_calibration_details("", text, {"F1": "F0", "F4": "F1"})
+        self.assertIsNone(details["timing_paths"][0]["arrival_ns"])
+        self.assertEqual(details["timing_paths"][0]["crossings"], [])
+        self.assertEqual(details["identification"]["single_hop_delay"], "not_identifiable")
+
+    def test_details_do_not_promote_normalized_whole_path_delay(self):
+        details = parse_calibration_details("", TIMING_REPORT, {"F11": "F0", "F33": "F1"})
+        self.assertEqual(details["timing_paths"], [])
+        self.assertIn("no-path-specific-timing", details["identification"]["reasons"])
+
+    def test_point_identity_and_unqualified_crossing_claims_fail_closed(self):
+        original = parse_calibration_details(ROUTE_REPORT, SIGNED_SLACK_SUMMARY_SSTA_REPORT, {"F11": "F0", "F33": "F1"})
+        for mutation in ("token", "crossing", "identified", "nan", "negative-arrival"):
+            with self.subTest(mutation=mutation):
+                details = deepcopy(original)
+                path = details["timing_paths"][0]
+                if mutation == "token":
+                    path["points"][0]["descriptor"] = "other/pin"
+                elif mutation == "crossing":
+                    path["crossings"] = [{"delay_ns": 7.2, "tdm_ratio": 16}]
+                elif mutation == "identified":
+                    details["identification"]["single_hop_delay"] = "identified"
+                elif mutation == "nan":
+                    path["points"][0]["increment_ns"] = float("nan")
+                else:
+                    path["arrival_ns"] = -1.0
+                with self.assertRaises(ValidationError):
+                    validate_calibration_details(details)
+
+    def test_setup_and_hold_path_names_are_separate(self):
+        text = "## Setup ##\n" + SIGNED_SLACK_SUMMARY_SSTA_REPORT
+        text += "\n## Hold ##\n" + SIGNED_SLACK_SUMMARY_SSTA_REPORT
+        details = parse_calibration_details("", text, {"F1": "F0", "F4": "F1"})
+        self.assertEqual({path["id"] for path in details["timing_paths"]}, {"setup-path1", "hold-path1"})
+
+    def test_duplicate_path_and_bank_records_are_rejected(self):
+        with self.assertRaisesRegex(ValidationError, "repeated path"):
+            parse_calibration_details("", SIGNED_SLACK_SUMMARY_SSTA_REPORT * 2, {"F1": "F0", "F4": "F1"})
+        row = "| F11 | F33 | 703 | 703 | INPUT | 1 | 1600 | 5 | 8 |\n"
+        with self.assertRaisesRegex(ValidationError, "duplicate"):
+            parse_calibration_details(ROUTE_REPORT.replace("2.5 fpga", row + "2.5 fpga"), "", {"F11": "F0", "F33": "F1"})
+
+    def test_only_explicit_path_point_ratio_is_retained(self):
+        text = SIGNED_SLACK_SUMMARY_SSTA_REPORT.replace("FPGA_4/u1/d (S2C_DFFRS)", "F33/u1/d (S2C_DFFRS) TDM ratio: 8")
+        details = parse_calibration_details(ROUTE_REPORT, text, {"F11": "F0", "F33": "F1"})
+        point = details["timing_paths"][0]["points"][1]
+        self.assertEqual(point["reported_tdm_ratio"], 8)
+        self.assertEqual(point["fpga"], "F1")
+        self.assertEqual(details["timing_paths"][0]["crossings"], [])
+
+    def test_bank_identity_stays_stable_when_direction_changes(self):
+        aliases = {"F11": "F0", "F33": "F1"}
+        left = parse_calibration_details(ROUTE_REPORT, "", aliases)["bank_rows"]
+        switched = ROUTE_REPORT.replace("INPUT", "SWAP").replace("OUTPUT", "INPUT").replace("SWAP", "OUTPUT")
+        right = parse_calibration_details(switched, "", aliases)["bank_rows"]
+        self.assertEqual([row["bank_pair_id"] for row in left], [row["bank_pair_id"] for row in right])
+        self.assertTrue(all(a["direction"] != b["direction"] for a, b in zip(left, right)))
+
+    def test_unsupported_bank_columns_are_not_silently_reinterpreted(self):
+        changed = ROUTE_REPORT.replace("channelNum", "physical_capacity")
+        with self.assertRaisesRegex(ValidationError, "unsupported"):
+            parse_calibration_details(changed, "", {"F11": "F0", "F33": "F1"})
 
 
 if __name__ == "__main__":

@@ -1,5 +1,22 @@
 # PPro black-box platform calibration plan
 
+## Current scope correction (2026-10-14)
+
+The historical aggregate results below remain an experiment record, not a
+qualified bank-capacity or single-hop-delay model. Resource totals come from
+RapidWright. The configured 75% limit is not a fitted capacity. Each FPGA pair
+has a shared integer bank pool; directional bank allocation belongs in Phase 5.
+Only same-path single-hop crossing delay versus actual TDM ratio is calibrated.
+Local delays come from the backend/STA, and scheduled waiting is counted once.
+
+New communication probes use v4, independent forward/reverse widths and an
+explicit compile-time clock, followed by timing-budgeted route, generated RTL
+and post-partition SSTA. First verify acquisition on small real pilots. Preserve
+normalized bank-row and path-segment observations before scratch cleanup, then
+run repeated asymmetric directional loads and single-hop ratios with independent
+holdouts. Do not pool v3 observations with the new experiment contract or use
+the old aggregate fit/7.2 ns projection as a new qualification result.
+
 ## Objective
 
 Build an open, behavior-equivalent academic multi-FPGA platform model from two

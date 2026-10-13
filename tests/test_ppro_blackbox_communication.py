@@ -27,7 +27,7 @@ class PProBlackboxCommunicationTest(unittest.TestCase):
                 fit_widths=[32, 64],
                 holdout_widths=[48],
                 flow_counts=[1, 2],
-                bidirectional=False,
+                reverse_width=0,
                 repeats=2,
                 campaign_id="transport-matrix",
                 public_prior_id="prior-v1",
@@ -70,7 +70,7 @@ class PProBlackboxCommunicationTest(unittest.TestCase):
                 fit_widths=[32],
                 holdout_widths=[48],
                 flow_counts=[1],
-                bidirectional=False,
+                reverse_width=0,
                 repeats=2,
                 campaign_id="transport-fanout",
                 public_prior_id="prior-v1",
@@ -103,7 +103,7 @@ class PProBlackboxCommunicationTest(unittest.TestCase):
                     fit_widths=[32],
                     holdout_widths=[32],
                     flow_counts=[1],
-                    bidirectional=False,
+                    reverse_width=0,
                     repeats=2,
                     campaign_id="bad",
                     public_prior_id="prior-v1",
@@ -121,7 +121,7 @@ class PProBlackboxCommunicationTest(unittest.TestCase):
             "sink_indices": [1, 2],
             "width": 64,
             "flow_count": 2,
-            "bidirectional": True,
+            "reverse_width": 64,
             "local_baseline": False,
             "forced_tdm_ratio": 4,
             "repeat": 0,
@@ -152,6 +152,92 @@ class PProBlackboxCommunicationTest(unittest.TestCase):
             self.assertEqual(
                 bundle.run_spec["experiment"]["control_mode"], "fixed_assignment"
             )
+
+    def test_asymmetric_widths_change_reverse_paths_and_identity(self):
+        with tempfile.TemporaryDirectory() as raw:
+            values = self.kwargs()
+            values.update(width=32, reverse_width=16, flow_count=2, sink_indices=[2])
+            first = generate_communication_probe_bundle(Path(raw) / "first", **values)
+            values["reverse_width"] = 8
+            second = generate_communication_probe_bundle(Path(raw) / "second", **values)
+            metrics = first.run_spec["workload"]["design_metrics"]
+            self.assertEqual(metrics["forward_data_bits"], 64)
+            self.assertEqual(metrics["reverse_data_bits_per_sink"], 32)
+            rtl = first.rtl_path.read_text()
+            self.assertIn("output reg [63:0] payload", rtl)
+            self.assertIn("output reg [31:0] return_payload", rtl)
+            self.assertIn("received_payload <= payload;", rtl)
+            self.assertIn("received_return <= return_payload;", rtl)
+            self.assertIn(".return_payload(return_payload_0)", rtl)
+            self.assertIn(".return_payload({return_payload_0})", rtl)
+            self.assertIn("~payload[63]", rtl)
+            self.assertIn("~return_payload[31]", rtl)
+            self.assertNotIn("payload ^ return_payload", rtl)
+            self.assertNotEqual(first.run_spec["identity"]["id"], second.run_spec["identity"]["id"])
+            for key in ("rtl_sha256", "parameters_sha256"):
+                self.assertNotEqual(first.run_spec["workload"][key], second.run_spec["workload"][key])
+            self.assertNotEqual(metrics["pairing_token"], second.run_spec["workload"]["design_metrics"]["pairing_token"])
+            constraints = read_json(first.constraints_path)
+            self.assertEqual(constraints["assignments"], [
+                {"partition": "P0", "target": "F0"},
+                {"partition": "P1", "target": "F2"},
+            ])
+
+    def test_omitted_reverse_width_is_zero_and_one_bit_toggles(self):
+        with tempfile.TemporaryDirectory() as raw:
+            values = self.kwargs()
+            values.pop("reverse_width")
+            values.update(width=1, flow_count=1, sink_indices=[2])
+            bundle = generate_communication_probe_bundle(Path(raw), **values)
+            metrics = bundle.run_spec["workload"]["design_metrics"]
+            self.assertEqual(metrics["reverse_data_bits_per_sink"], 0)
+            self.assertEqual(metrics["bidirectional"], 0)
+            self.assertEqual(bundle.run_spec["workload"]["generator_id"], "ppro-blackbox-communication-probe-v4")
+            rtl = bundle.rtl_path.read_text()
+            self.assertIn("payload <= ~payload;", rtl)
+            self.assertIn("received_payload <= payload;", rtl)
+            self.assertNotIn("return_payload", rtl)
+            self.assertNotIn("[-1:", rtl)
+
+    def test_multicast_return_streams_are_individually_captured(self):
+        with tempfile.TemporaryDirectory() as raw:
+            values = self.kwargs()
+            values.update(width=1, flow_count=1, reverse_width=1)
+            bundle = generate_communication_probe_bundle(Path(raw), **values)
+            rtl = bundle.rtl_path.read_text()
+            self.assertIn("input wire [1:0] return_payload", rtl)
+            self.assertIn(".return_payload({return_payload_1, return_payload_0})", rtl)
+            self.assertIn(".digest(digest[0])", rtl)
+            self.assertIn(".digest(digest[1])", rtl)
+            self.assertIn(".digest(digest[2])", rtl)
+            self.assertIn("return_payload <= ~return_payload;", rtl)
+
+    def test_clock_constraint_is_sealed_and_changes_identity(self):
+        with tempfile.TemporaryDirectory() as raw:
+            values = self.kwargs()
+            first = generate_communication_probe_bundle(Path(raw) / "first", **values)
+            values["clock_period_ns"] = 12.5
+            second = generate_communication_probe_bundle(Path(raw) / "second", **values)
+            self.assertEqual(read_json(second.constraints_path)["timing_clocks"], [
+                {"port": "clk", "period_ns": 12.5}
+            ])
+            self.assertEqual(second.run_spec["workload"]["design_metrics"]["clock_period_ns"], 12.5)
+            self.assertNotEqual(first.run_spec["identity"]["id"], second.run_spec["identity"]["id"])
+            self.assertNotEqual(first.run_spec["experiment"]["constraints_sha256"], second.run_spec["experiment"]["constraints_sha256"])
+            self.assertNotEqual(first.run_spec["workload"]["parameters_sha256"], second.run_spec["workload"]["parameters_sha256"])
+
+    def test_invalid_reverse_width_and_clock_fail_before_writing(self):
+        with tempfile.TemporaryDirectory() as raw:
+            for field, candidates in (("reverse_width", [-1, True, 1.5]),
+                                      ("clock_period_ns", [0, -1, True, float("nan"), float("inf")])):
+                for value in candidates:
+                    with self.subTest(field=field, value=value):
+                        values = self.kwargs()
+                        values[field] = value
+                        target = Path(raw) / "not-written"
+                        with self.assertRaisesRegex(ValidationError, field):
+                            generate_communication_probe_bundle(target, **values)
+                        self.assertFalse(target.exists())
 
     def test_zero_tdm_does_not_claim_constraint(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -185,7 +271,7 @@ class PProBlackboxCommunicationTest(unittest.TestCase):
                 sink_indices=[0],
                 local_baseline=True,
                 forced_tdm_ratio=0,
-                bidirectional=False,
+                reverse_width=0,
             )
             bundle = generate_communication_probe_bundle(Path(raw), **values)
             self.assertEqual(bundle.run_spec["experiment"]["control_mode"], "fixed_assignment")

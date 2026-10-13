@@ -15,6 +15,7 @@ from typing import Any, Dict, Mapping, Sequence
 from urllib.parse import urlparse
 
 from .errors import ValidationError
+from .ppro_blackbox_details import validate_calibration_details
 
 
 PUBLIC_PRIOR_SCHEMA = "emuflow.ppro-public-platform-prior/v1"
@@ -634,7 +635,7 @@ def validate_blackbox_observation(value: Mapping[str, Any]) -> Dict[str, Any]:
     _strict_keys(
         metrics,
         {"design", "resource_demand", "fpga_utilization", "assignments", "routes", "communication", "timing"},
-        set(),
+        {"calibration_details"},
         "observation.metrics",
     )
     design = _normalized_metric_map(metrics["design"], "observation.metrics.design")
@@ -715,6 +716,11 @@ def validate_blackbox_observation(value: Mapping[str, Any]) -> Dict[str, Any]:
         "communication": communication,
         "timing": timing,
     }
+
+    if "calibration_details" in metrics:
+        normalized_metrics["calibration_details"] = validate_calibration_details(
+            metrics["calibration_details"]
+        )
 
     provenance = _provenance(
         root["provenance"],

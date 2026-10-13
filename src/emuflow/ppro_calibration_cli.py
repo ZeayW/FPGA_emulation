@@ -160,7 +160,11 @@ def _parser() -> argparse.ArgumentParser:
     communication.add_argument("--sink-indices", nargs="+", type=int, required=True)
     communication.add_argument("--width", type=int, required=True)
     communication.add_argument("--flow-count", type=int, default=1)
-    communication.add_argument("--bidirectional", action="store_true")
+    communication.add_argument(
+        "--reverse-width", type=int, default=0,
+        help="return data bits per flow per sink; 0 disables reverse data",
+    )
+    communication.add_argument("--clock-period-ns", type=float, default=10.0)
     communication.add_argument("--local-baseline", action="store_true")
     communication.add_argument("--forced-tdm-ratio", type=int, default=0)
     communication.add_argument("--repeat", type=int, default=0)
@@ -177,7 +181,11 @@ def _parser() -> argparse.ArgumentParser:
     communication_matrix.add_argument("--fit-widths", nargs="+", type=int, required=True)
     communication_matrix.add_argument("--holdout-widths", nargs="+", type=int, required=True)
     communication_matrix.add_argument("--flow-counts", nargs="+", type=int, required=True)
-    communication_matrix.add_argument("--bidirectional", action="store_true")
+    communication_matrix.add_argument(
+        "--reverse-width", type=int, default=0,
+        help="return data bits per flow per sink; 0 disables reverse data",
+    )
+    communication_matrix.add_argument("--clock-period-ns", type=float, default=10.0)
     communication_matrix.add_argument("--repeats", type=int, default=2)
 
     application = commands.add_parser("generate-application-holdout")
@@ -366,7 +374,8 @@ def _dispatch(args: argparse.Namespace) -> Any:
             sink_indices=args.sink_indices,
             width=args.width,
             flow_count=args.flow_count,
-            bidirectional=args.bidirectional,
+            reverse_width=args.reverse_width,
+            clock_period_ns=args.clock_period_ns,
             local_baseline=args.local_baseline,
             forced_tdm_ratio=args.forced_tdm_ratio,
             repeat=args.repeat,
@@ -390,7 +399,8 @@ def _dispatch(args: argparse.Namespace) -> Any:
             fit_widths=args.fit_widths,
             holdout_widths=args.holdout_widths,
             flow_counts=args.flow_counts,
-            bidirectional=args.bidirectional,
+            reverse_width=args.reverse_width,
+            clock_period_ns=args.clock_period_ns,
             repeats=args.repeats,
             campaign_id=args.campaign_id,
             public_prior_id=args.public_prior_id,

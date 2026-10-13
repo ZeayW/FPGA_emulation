@@ -325,6 +325,10 @@ def render_ppro_runtime_binding(
     if spec["adapter"]["profile"] != PPRO_2026_REPORT_PROFILE:
         raise ValidationError("PPro runtime renderer requires the real ordinary-report profile")
     experiment_kind = spec["experiment"]["kind"]
+    timed_communication = (
+        spec["workload"]["generator_id"] == "ppro-blackbox-communication-probe-v4"
+    )
+    requires_timing = experiment_kind == "application_holdout" or timed_communication
     requires_context = (
         experiment_kind == "application_holdout"
         or spec["workload"]["generator_id"] == "ppro-blackbox-connected-smoke-v3"
@@ -389,7 +393,7 @@ def render_ppro_runtime_binding(
         config.logical_targets,
         ppro_constraints,
     )
-    if experiment_kind == "application_holdout":
+    if requires_timing:
         render_ppro_timing_sdc(
             config.documented_constraints.resolve(),
             timing_sdc,
@@ -413,9 +417,10 @@ def render_ppro_runtime_binding(
     # perform timing budgeting and then materialize the partitioned RTL before
     # invoking post-partition SSTA.  Benchmark clocks were already bound at
     # compile time through the generated compile config above.
-    # Keep calibration microbenchmarks on their original route mode so this
-    # qualification-only change cannot silently alter fitted parameters.
-    if experiment_kind == "application_holdout":
+    # The v4 communication contract explicitly binds a clock and acquires
+    # post-partition timing. Historical probe contracts retain their original
+    # route mode; their measurements cannot be mixed with this new contract.
+    if requires_timing:
         system_route_commands = (
             "run_system_route -timing_budget",
             f"run_gen_rtl -max_process_num {config.max_processes}",
@@ -443,7 +448,7 @@ def render_ppro_runtime_binding(
             + (
                 " -config "
                 + _tcl_word(str(compile_config), "PPro compile config")
-                if experiment_kind == "application_holdout"
+                if requires_timing
                 else ""
             ),
             "run_pre_partition -stf "

@@ -216,7 +216,7 @@ class PProBlackboxConstraintsTest(unittest.TestCase):
                     sink_indices=[1],
                     width=64,
                     flow_count=1,
-                    bidirectional=False,
+                    reverse_width=0,
                     local_baseline=False,
                     forced_tdm_ratio=0,
                     repeat=0,

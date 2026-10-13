@@ -122,6 +122,25 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             self.assertNotIn(str(config.platform_reference), repr(spec))
             self.assertNotIn("MB1.F1", repr(spec))
 
+    def test_v4_communication_binds_clock_and_requests_segment_timing(self):
+        with tempfile.TemporaryDirectory() as raw:
+            spec, filelist, config = self._fixture(Path(raw))
+            spec["workload"]["generator_id"] = "ppro-blackbox-communication-probe-v4"
+            constraints = json.loads(config.documented_constraints.read_text())
+            constraints["timing_clocks"] = [{"port": "clk", "period_ns": 10.0}]
+            config.documented_constraints.write_text(json.dumps(constraints))
+            spec["experiment"]["constraints_sha256"] = hashlib.sha256(
+                json.dumps(constraints, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            render_ppro_runtime_binding(spec, source_filelist=filelist, config=config)
+            script = (config.case_dir / ".run-ppro.tcl").read_text()
+            self.assertIn("run_system_route -timing_budget", script)
+            self.assertIn("run_gen_rtl -max_process_num 4", script)
+            self.assertIn("run_ssta -post_partition -state gr0", script)
+            self.assertIn(" -config {", script.split("run_pre_partition")[0])
+            sdc = (config.case_dir / ".timing.sdc").read_text()
+            self.assertIn("create_clock -name {clk} -period 10.000000000", sdc)
+
     def test_renderer_rejects_mock_profile_and_filelist_options(self):
         with tempfile.TemporaryDirectory() as raw:
             spec, filelist, config = self._fixture(Path(raw))

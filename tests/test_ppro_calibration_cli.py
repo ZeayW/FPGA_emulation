@@ -74,6 +74,25 @@ class PProCalibrationCliTest(unittest.TestCase):
             Path("/data/zywang/emuflow"),
         )
 
+    def test_generate_independent_direction_widths(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "asymmetric"
+            with redirect_stdout(StringIO()):
+                code = main([
+                    "generate-communication-probe", "--out", str(root),
+                    "--campaign-id", "bank-v4", "--configuration-id", "lx2-m2",
+                    "--tool-release", "2026.1", "--runner-revision", RUNNER_REVISION,
+                    "--kind", "latency", "--fpga-count", "4", "--source-index", "0",
+                    "--sink-indices", "2", "--width", "32", "--reverse-width", "16",
+                    "--clock-period-ns", "12.5", "--role", "fit",
+                ])
+            self.assertEqual(code, 0)
+            spec = json.loads((root / "run-spec.json").read_text())
+            metrics = spec["workload"]["design_metrics"]
+            self.assertEqual(metrics["forward_data_bits"], 32)
+            self.assertEqual(metrics["reverse_data_bits_per_sink"], 16)
+            self.assertEqual(metrics["clock_period_ns"], 12.5)
+
     def test_free_partition_runtime_can_omit_logical_targets(self):
         args = _parser().parse_args(
             [

@@ -173,6 +173,37 @@ is a provenance-labelled behavior-equivalent academic BoardDB,
 BoardLinkTimingDB, and TransportCostDB validated first on microbenchmarks and
 then blindly on naturally connected AES, CPU, Koios, and NVDLA workloads.
 
+### Calibration scope correction and new acquisition contract
+
+Resource totals come from the matching RapidWright provider, with own system
+logic and explicit headroom accounted separately. The historical 75% limit
+was configured, not fitted. Inter-FPGA capacity is a fixed shared pool of
+communication banks for each FPGA pair: integer directional allocations sum
+to at most the total bank count. Bank count, channels per bank and direction
+restrictions must be established before qualifying that model. Only the
+single-hop crossing delay `d(r)` is fitted; local path segments come from the
+same implementation's backend/STA, and TDM waiting must be counted once.
+
+The 28 topology observations remain effective-connectivity evidence. The
+96 width runs (88 selected observations) preserve observed TDM transitions,
+not fixed per-direction capacity or a maximum crossing width. The old 34-fit /
+22-holdout delay regression preserves aggregate report reproduction only;
+its hop/sink coefficients and projected 7.2 ns/link are not qualified single-hop
+timing. Resource probes check units and the configured limit. The 19-fit /
+6-holdout open transport result applies only to that EmuFlow RTL implementation.
+
+The current communication generator is `ppro-blackbox-communication-probe-v4`.
+`--width` and `--reverse-width` independently set forward and reverse bits per
+flow (reverse defaults to zero). `--clock-period-ns` defaults to an explicitly
+sealed 10 ns. The v4 runtime supplies this SDC at compile time, requests timing
+budgeting, generates partitioned RTL and runs post-partition SSTA. This changes
+the experiment contract; old v3 observations must not be mixed with v4 results.
+The existing aggregate Stage 4 fitters are historical v3 consumers, not validators
+for the revised bank or single-hop model. Start with real acquisition pilots,
+verify path-specific report extraction, then repeat asymmetric bidirectional
+loads and single-hop TDM levels with independent holdouts. New real results
+remain pending until their terminal observations exist.
+
 Stage 1 of that increment is implemented as a strict publication boundary:
 
 - [`lx2-public-prior-v1.json`](calibration/ppro_blackbox/priors/lx2-public-prior-v1.json)
@@ -357,22 +388,12 @@ respectively.  Two provider-container attempts that could not acquire a
 license remain separately classified as infrastructure failures and were not
 included in the fit.
 
-The resulting `emuflow.ppro-calibrated-capacity/v2` artifact passes every
-resolved holdout with zero excluded observations.  At the declared 75% limit
-it records effective per-FPGA capacities of 3,064,500 public XCVU19P LUTs,
-6,129,000 FFs, 1,618 36-Kib-class BRAM blocks, 2,880 DSP48s, and 240 URAM288s.
-The LUT/FF values are public-total projections checked by ordinary-report
-normalization; the BRAM/DSP/URAM values are the conservative points selected
-from their measured pass/infeasible brackets.  Application holdouts and
-end-to-end promotion remain pending, so these results qualify the capacity
-contract but do not yet constitute a released full-flow platform result.
-The final capacity artifact does not attempt to rediscover public XCVU19P
-totals by elaborating millions of LUTs or FFs. It computes effective capacity
-from the validated public device total and the documented 75% user constraint,
-then requires repeated fit and withheld ordinary-report probes to agree with
-that resource-unit normalization within one displayed percentage point. The
-hard-resource pass/fail intervals independently must bracket the same
-public-total × limit prediction. Any missing axis or disagreement fails closed.
+The historical `emuflow.ppro-calibrated-capacity/v2` artifact checks public
+resource totals multiplied by the configured 75% limit against PPro report
+units and hard-resource acceptance/rejection brackets. These checks do not
+calibrate device totals or establish EmuFlow's usable capacity. Device totals
+are supplied by the exact RapidWright provider; available budget accounts for
+EmuFlow's own system logic and declared engineering headroom.
 
 The authorized four-FPGA topology campaign at source commit
 `ff55af4cef1024f1a1285660e35bcd643dd21953` completed 28/28 evaluated
@@ -384,14 +405,14 @@ stable two-hop paths.  Both holdout pairs reproduced their fitted reachability
 and hop count.  This identifies effective routing topology only; it does not
 claim connector, cable, package-pin, or shared-capacity identity.
 
-Stage 4 now has the corresponding controlled communication probe and
+The historical Stage 4 implementation contains the controlled communication probe and
 dependency-free fitters for the ratio-one/TDM payload boundary, aggregate latency, and
 paired transport resource cost. Nominal/aggressive/conservative timing and
 cost terms come from deterministic bootstrap bounds. These are framework
 capabilities only until real PPro observations and withheld points satisfy the
 documented gates. Real probes currently derive TDM transitions from width and
 traffic pressure; a nonzero forced-TDM request fails closed until a documented
-PPro user constraint is available.  The producer and all Stage 4 fitters are
+PPro user constraint is available.  The historical producer and aggregate Stage 4 fitters are
 version-locked to `ppro-blackbox-communication-probe-v3`; observations from
 the superseded v1/v2 fixtures cannot silently enter a current fit. The v3
 contract gives every same-RTL local/cross transport pair an explicit opaque
@@ -411,22 +432,21 @@ signatures, zero excluded observations, and 16/16 matching holdout checks.
 `F0->F2`, `F0->F3`, `F1->F3`, and `F2->F1` have a conservative observed
 ratio-one width of 64 bits; `F1->F2`, `F2->F0`, `F3->F0`, and `F3->F1` have
 128 bits.  The next observed TDM level is ratio 8 for every direction.  These
-are effective black-box payload classes, not claims about physical lane count
-or line rate.
+are passed ratio-one lower bounds under single-direction test conditions.
+They do not identify a shared bank inventory or a fixed directional capacity;
+all scanned widths succeeded, so no final capacity upper bound was measured.
 
-The authorized latency campaign now contains 56/56 passing compact
-observations: 34 fit points and 22 independent holdouts spanning direct,
-multicast, and two-hop traffic.  A separate width/flow shape was added only as
-a ratio-16 holdout; it reproduced ratio 16 and 55.2 ns in both repeats.  The
-final v2 fit has zero excluded observations, about `3.17e-10 ns` fit RMSE, and
-about `7.85e-11` maximum holdout relative error.  Its nominal black-box terms
-are `0.2 ns` endpoint intercept, `7 ns` per hop, `0 ns` observable concurrent-
-flow increment, `0.1 ns` per extra multicast sink, `43 ns` for ratio 8, and
-`48 ns` for ratio 16.  These categorical TDM terms describe observed PPro
-timing states; they are not claims about internal serializer implementation.
-Normal campaign cleanup removed every generated bundle and raw project; the
-two added holdouts retain only 4.6 KiB of observation JSON.  Transport-cost
-black-box observations have also completed, but do not identify the cost.
+The historical latency campaign contains 56 evaluated compact observations:
+34 fit and 22 holdout points over direct, multicast and two-hop traffic.
+The old near-zero residual describes aggregate report reproduction. Its
+maximum TDM ratio and maximum arrival need not refer to the same path, and
+no local/crossing decomposition was retained. Therefore its fitted intercept,
+hop/sink terms, ratio increments and 7.2 ns/link projection are withdrawn as
+single-hop calibration evidence. Original reports may supply reusable samples
+only if same-path ratios, TX/RX boundaries and local/crossing segments can be
+recovered. Otherwise those points must be acquired again with the v4 contract.
+Historical campaign cleanup removed raw projects, so compact maxima alone
+cannot be repaired into missing path segments.
 
 The transport campaign completed 64/64 PPro runs, forming 16 paired fit and
 16 paired holdout points with identical RTL in each local/cross pair.  Every
@@ -484,8 +504,8 @@ passing independent holdouts.  The legacy PPro paired-difference fit remains
 negative diagnostic evidence and cannot be silently promoted.
 
 Stage 5 now deterministically materializes and independently validates the
-three final profile databases plus a provenance/hash manifest.  The first real
-four-FPGA calibrated family has passed this gate: each aggressive, nominal,
+three final profile databases plus a provenance/hash manifest.  The historical
+four-FPGA profile passed this structural artifact gate only: each aggressive, nominal,
 and conservative profile contains one BoardDB, one BoardLinkTimingDB, and one
 TransportCostDB; each profile has four logical FPGAs, eight directed effective
 links, eight directed timing entries, and 40 characterized transport-cost
@@ -499,9 +519,9 @@ Every generated profile is now physically bound to the source-sealed
 RapidWright XCVU19P provider: the BoardDB carries the exact
 `xcvu19p-fsva3824-2-e` part and provider resource inventory, while the manifest
 requires `xilinx-ultrascaleplus-open-v1`, the `rapidwright` backend, and the
-`openparf-native` placer. PPro remains the black-box authority for fitted
-platform utilization, topology, payload/TDM, and board-delay behavior;
-RapidWright is the device-level implementation authority. A VTR-mapped or
+`openparf-native` placer. RapidWright supplies the device resource inventory. PPro observations support
+effective topology and test-condition-specific behavior; shared-bank capacity
+and single-hop delay still require the revised acquisition and validation. A VTR-mapped or
 `physical-backend=open` run is therefore not a calibrated-platform holdout and
 is rejected by the result assembler.
 
@@ -509,9 +529,9 @@ This is a behavior-equivalent academic platform model, not a released hardware
 signoff platform. Generation fails closed if any fit excluded an observation,
 lacks a resolved independent holdout, has an unidentifiable coefficient,
 exceeds 15% latency/transport holdout error, or mismatches
-reachability/TDM holdouts.  Timing remains a characterized upper-bound model,
-and fabric clock remains a declared sensitivity assumption until separately
-identifiable.  Blind application validation and complete Phase 1--7 OpenSTA
+reachability/TDM holdouts.  The historical timing projection is not a qualified upper bound.
+Fabric clock remains a declared sensitivity assumption until separately
+identified, and bank/delay model qualification remains pending.  Blind application validation and complete Phase 1--7 OpenSTA
 global WNS/TNS are still mandatory before promotion.
 
 BoardDB FPGA count describes the installed calibrated configuration; it does
@@ -610,9 +630,10 @@ that stops before complete Phase 7 or omits authoritative global WNS/TNS.
 
 Every generated platform manifest records parameter-level provenance. Device
 capacity starts from public-spec evidence and is normalized to the exact
-source-sealed RapidWright XCVU19P resource inventory; effective utilization, topology, payload,
-and delay are black-box fitted; transport cost is characterized from the open
-production transport RTL. Fabric clock and simultaneous reverse-direction
+source-sealed RapidWright XCVU19P resource inventory. The legacy manifest labels
+utilization and aggregate capacity/delay projections as fitted, but that label
+does not establish shared-bank or single-hop behavior. Utilization is configured;
+transport cost is characterized from the open production transport RTL. Fabric clock and simultaneous reverse-direction
 capacity sharing remain explicit research assumptions. In particular,
 each BoardDB exports both the native Xilinx inventory (`bram18k`, `dsp48`) and
 the provider-neutral planning aliases (`bram=bram36k`,

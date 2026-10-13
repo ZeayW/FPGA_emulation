@@ -15,6 +15,8 @@ RUNNER_SOURCE_BUNDLE_SCHEMA = "emuflow.ppro-runner-source-bundle/v1"
 RUNNER_SOURCE_MEMBERS = (
     "io.py",
     "ppro_blackbox_calibration.py",
+    "ppro_blackbox_details.py",
+    "ppro_blackbox_communication.py",
     "ppro_blackbox_campaign.py",
     "ppro_blackbox_constraints.py",
     "ppro_blackbox_ppro_adapter.py",

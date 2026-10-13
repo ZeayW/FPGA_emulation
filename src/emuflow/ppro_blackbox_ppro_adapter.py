@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping
 
 from .errors import ValidationError
+from .ppro_blackbox_details import parse_calibration_details
 
 
 PPRO_2026_REPORT_PROFILE = "ppro-2026-ordinary-reports-v1"
@@ -358,10 +359,12 @@ def parse_ppro_2026_ordinary_reports(
     )
     routes = []
     communication: Dict[str, float] = {}
+    route_text = ""
     if report_paths["route_summary"].is_file():
         route_text = _read_text(report_paths["route_summary"])
         routes, communication = _parse_route_report(route_text, aliases)
     timing: Dict[str, float] = {}
+    timing_text = ""
     if report_paths["system_timing"].is_file():
         timing_text = _read_text(report_paths["system_timing"])
         timing = _parse_timing_report(timing_text)
@@ -373,4 +376,5 @@ def parse_ppro_2026_ordinary_reports(
         "routes": routes,
         "communication": communication,
         "timing": timing,
+        "calibration_details": parse_calibration_details(route_text, timing_text, aliases),
     }
