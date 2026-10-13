@@ -204,6 +204,25 @@ verify path-specific report extraction, then repeat asymmetric bidirectional
 loads and single-hop TDM levels with independent holdouts. New real results
 remain pending until their terminal observations exist.
 
+`scripts/ppro_bank_singlehop_campaign.py` runs the fresh, serial acquisition
+campaign. `--mode pilot` fixes F0 to F2 at 32/0 and 32/16 forward/reverse data
+bits with a 10 ns clock. `--mode matrix --widths ... --reverse-widths ...`
+sweeps independent loads; `--role holdout` creates separately labelled test
+observations. Both modes require explicit installation, opaque platform,
+four-FPGA alias/placement mappings and a new result directory. Existing result
+directories are rejected rather than restarted. The driver records the exact
+source commit, source-bundle revision, driver hash and process identity.
+
+PPro selects the actual TDM ratios. `--required-observed-tdm-ratios` checks
+coverage in the reported bank rows; it neither forces TDM nor associates a
+bank-wide maximum with a timing path. A completed acquisition is not a fitted
+or qualified platform. Pilot raw projects remain temporary inspection data;
+matrix runs clean them after normalization unless `--keep-raw-project` is
+explicitly requested for active investigation. After inspection, retain only
+compact terminal evidence. The container needs the existing licensed input
+available through PPro's `s2c_LICENSE`; a controller-only variable or an
+unmounted host file is insufficient.
+
 Stage 1 of that increment is implemented as a strict publication boundary:
 
 - [`lx2-public-prior-v1.json`](calibration/ppro_blackbox/priors/lx2-public-prior-v1.json)
