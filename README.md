@@ -12,6 +12,9 @@ Device resources and the inter-FPGA platform model are separate: a virtual
 BoardDB is an academic model, not a deployable board or evidence of hardware
 signoff. See [backend selection](#configuration-and-limits) for the explicit CLI
 options for the research route and alternative backends.
+The [PPro calibration review](#ppro-calibration-scope-and-status) separates
+retained observations from the bank-capacity and single-hop timing work still
+required; the existing research profile is not a qualified board model.
 
 ## Flow
 
@@ -146,6 +149,12 @@ also records when upstream values become available and when downstream
 transmissions consume them. Those runtime bindings are EmuFlow integration
 work, distinct from the cited ratio-optimization algorithms.
 
+For the PPro platform under review, Phase 5 must also choose how many whole
+communication banks serve each direction of an FPGA pair, jointly with TDM
+ratios and slots. This bank-granular allocation is pending; existing generic
+shared-capacity rules do not establish support for it. See the
+[platform contract below](#ppro-calibration-scope-and-status).
+
 ### Phase 6: pin planning, netlist splitting, and transport
 
 The **baseline** consumes the Phase 5 lane/slot assignment directly. The
@@ -224,6 +233,91 @@ points are mapped in [Algorithms and providers](docs/ALGORITHMS.md#implementatio
   [Official publication page](https://www.rapidwright.io/docs/Papers.html).
 - **RWRoute: An Open-source Timing-driven Router for Commercial FPGAs** —
   [Author manuscript](https://www.rapidwright.io/docs/_downloads/3858e01e500602e00f7d5dda065b19ec/RWRoute_final_submitted.pdf).
+
+## PPro calibration: scope and status
+
+PPro reports are useful observations of a particular compiler/platform
+configuration. They do not by themselves identify physical channel capacity
+or establish a deployable board timing model. The corrected contract separates
+three quantities:
+
+| Quantity | Source or model | Remaining work |
+| --- | --- | --- |
+| Intra-FPGA resource capacity | The matching RapidWright device/provider inventory supplies LUT, FF, BRAM, DSP, and URAM totals. Transport/system logic consumes those resources; any additional headroom is an explicit configuration. | Keep device identity and resource units consistent. The previous 75% limit was configured, not a PPro measurement or proof that PPro reserves the other 25%. |
+| Inter-FPGA channel capacity | Each FPGA pair has a fixed total number of communication banks and a declared channel count per bank. Phase 5 chooses the integer allocation of banks between directions. | Confirm bank counts, channel counts, and direction restrictions; implement and validate bank allocation jointly with TDM and slot assignment. |
+| Inter-FPGA delay | Fit only the single-hop crossing delay `d(r)` as a function of the observed TDM ratio `r`, with direction, clock, protocol, and timing endpoints held explicit. Intra-FPGA segments come from the physical backend/STA. | Recover path-specific crossing measurements, then validate multi-hop composition and application paths. |
+
+For a pair A/B with `B` banks and `q` usable channels per bank:
+
+```text
+b_AB, b_BA are nonnegative integers
+b_AB + b_BA <= B              (equal when every bank is assigned)
+C_AB = q * b_AB; C_BA = q * b_BA
+```
+
+These are communication banks on the FPGA-pair link, not an assertion about
+the device's native I/O-bank structure. For illustration only, ten banks of
+twenty channels permit 4/6 or 7/3 directional allocations; those numbers are
+not measured PPro platform parameters. Separate fixed capacities for A-to-B
+and B-to-A cannot represent this exchange of whole banks.
+
+The delay decomposition is:
+
+```text
+path delay = reported intra-FPGA segments + sum of single-hop d_i(r_i)
+```
+
+Each crossing measurement must identify its TX/RX boundary and actual ratio
+on the same path. Extract the crossing segment directly, or subtract local
+segments from that same run/path with the same timing reference. A different
+EmuFlow implementation's local delay cannot be subtracted from a PPro path.
+Start with a table of measured delay at each observed ratio; fit a curve only
+if the observations support it. If `d(r)` includes TDM waiting, do not add that
+wait again. A consumer that explicitly propagates scheduled TX events instead
+needs the transfer component with the wait separated consistently.
+
+### What the existing experiments establish
+
+The counts below describe the calibration record at research snapshot
+[afccf846](https://github.com/ZeayW/FPGA_emulation/tree/afccf846c33340f23f8c4d78a3d62976c74ce4a5).
+This documentation revision does not add experiments or repair that
+implementation.
+
+| Existing evidence | What can be retained | What it does not establish / what must change |
+| --- | --- | --- |
+| Topology: 28 probes covering all 12 ordered FPGA pairs | Reported reachability and full-data routes support an effective bidirectional K2,2 topology in the tested configuration. | This does not identify physical connectors or shared-bank capacity. |
+| Single-direction width/TDM scans: 96 runs, 88 selected observations, 16 holdout class checks | Keep observed widths, routes, and ratios. The 64/128-bit values are passed TDM=1 lower bounds under those test conditions. | All scanned cases succeeded: there is no measured maximum crossing width. The 16 checks distinguish TDM=1 from TDM>1, not exact ratio prediction. Bidirectional bank sharing and allocation remain unmeasured. |
+| Resource-report/limit checks | Keep report-unit normalization and acceptance/rejection checks against the configured utilization limit. | These do not calibrate device totals or EmuFlow's usable capacity. RapidWright supplies totals; own logic occupancy and declared headroom determine the budget. |
+| Aggregate delay: 34 fit and 22 holdout observations | Keep the report observations and any recoverable path details. The old fit reproduced aggregate report values in this sample set. | Withdraw the general per-hop timing claim. The extracted maximum ratio and maximum delay need not belong to the same path; no local/crossing decomposition was preserved. The old hop/sink/ratio regression and its projected 7.2 ns per-link value are not qualified link timing. |
+| EmuFlow transport RTL cost: 19 fit and 6 holdout cases | Retain as characterization of EmuFlow's own tested communication RTL. | It does not measure PPro's private transport implementation. That cost was not identifiable from the ordinary PPro reports. |
+
+The audited research profile still projects the width observations into fixed
+`per_direction` capacities and projects an aggregate timing fit into link
+delay. Those projections must be replaced before the profile can qualify
+shared-bank scheduling or cross-FPGA timing. Generic shared bandwidth is not
+equivalent to integer bank allocation. This README corrects the evidence and
+target contract; it does not claim the production changes are complete.
+
+### What needs to be redone, in priority order
+
+1. **Correct the model and extraction.** Keep RapidWright resource totals;
+   represent the shared bank pool and its directional restrictions; preserve
+   path identity, actual per-hop ratio, TX/RX boundaries, and local/crossing
+   timing segments. Review available original reports before launching new
+   runs. Reuse a single-hop observation only if those facts can be recovered;
+   aggregate maxima alone are insufficient.
+2. **Fill the measurement gaps.** Obtain bank parameters from platform
+   configuration where available. Run simultaneous asymmetric bidirectional
+   traffic, varying the two loads independently, and check allocation in
+   whole-bank increments. For delay, hold an adjacent FPGA pair/direction and
+   timing boundaries fixed, scan load to obtain actual TDM ratios, and collect
+   independent holdouts. Re-run old cases only where the necessary report
+   details are unavailable; supplement missing ratios and operating conditions.
+3. **Validate the integrated flow.** Exercise the new bank allocation with
+   Phase 5's ratios and concrete slots. Use multi-hop and multicast cases to
+   test delay composition, then complete genuine cross-FPGA application
+   holdouts through physical implementation and global STA. Single-FPGA runs
+   remain local implementation evidence and cannot validate this board model.
 
 ## Build
 
