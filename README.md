@@ -223,7 +223,9 @@ source commit, source-bundle revision, driver hash and process identity.
 PPro selects the actual TDM ratios. `--required-observed-tdm-ratios` checks
 coverage in the reported bank rows; it neither forces TDM nor associates a
 bank-wide maximum with a timing path. A completed acquisition is not a fitted
-or qualified platform. Pilot raw projects remain temporary inspection data;
+or qualified platform. Any unrecognized section in the per-net TDM report
+marks capture as partial, including sections with non-table content; later
+recognized rows do not erase that limitation. Pilot raw projects remain temporary inspection data;
 matrix runs clean them and their generated input bundles after validated
 terminal observations unless `--keep-raw-project` is
 explicitly requested for active investigation. After inspection, retain only

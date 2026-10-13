@@ -387,6 +387,21 @@ class PProBlackboxPProAdapterTest(unittest.TestCase):
         self.assertEqual(details["net_tdm_capture_status"], "partial")
         self.assertEqual(len(details["net_tdm_rows"]), 33)
 
+    def test_unknown_section_before_untdm_stays_partial_without_pipe_rows(self):
+        for unknown_section in (
+            "0. tdm report\nP0.return_payload[0] F2 F1 ratio 8\n",
+            "0.tdm report\nP0.return_payload[0] F2 F1 ratio 8\n",
+            "0. tdm report\n",
+        ):
+            with self.subTest(section=unknown_section):
+                details = self._route_details(nets=unknown_section + SYSTEM_ROUTE_NET_TDM_REPORT)
+                self.assertEqual(details["net_tdm_capture_status"], "partial")
+                self.assertEqual(len(details["net_tdm_rows"]), 33)
+                crossing = details["route_timing_paths"][0]["crossings"][0]
+                self.assertEqual(crossing["transport_kind"], "untdm")
+                self.assertEqual(crossing["net_name"], "P0.payload[0]")
+        self.assertEqual(self._route_details()["net_tdm_capture_status"], "complete")
+
     def test_crossing_requires_same_pin_and_explicit_ratio(self):
         for text in (
             SYSTEM_ROUTE_TIMING_REPORT.replace("2          P0.payload[0]_buf/Z", "2          other_net_buf/Z"),

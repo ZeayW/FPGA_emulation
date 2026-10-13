@@ -55,10 +55,15 @@ def _parse_net_tdm(text: str, aliases: Mapping[str, str]) -> tuple[list[dict[str
     rows = []
     for line in text.splitlines():
         stripped = line.strip()
-        title = re.fullmatch(r"[0-9]+\.\s+(.+?)\s+report", stripped, re.I)
+        title = re.fullmatch(r"[0-9]+\.\s*(.+?)\s+report", stripped, re.I)
         if title:
             section = title.group(1).lower()
             header_seen = False
+            # Unknown sections may use non-table text or an empty/new table
+            # format. A later recognized untdm table must not turn an omitted
+            # section into a claim that the whole net report was captured.
+            if section not in {"untdm", "tdm_set"}:
+                complete = False
             continue
         if not (stripped.startswith("|") and stripped.endswith("|")):
             continue
