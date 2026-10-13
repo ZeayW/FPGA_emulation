@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterable, Iterator, Mapping
 
 
 EMUIR_STORAGE_SCHEMA = "emuflow.emuir-sqlite/v1"
+EMUIR_COMPACT_STORAGE_SCHEMA = "emuflow.emuir-sqlite/v2"
 EMUIR_STORAGE_SUFFIX = ".emuir.sqlite"
 EMUIR_SQLITE_APPLICATION_ID = 0x454D5549  # ASCII "EMUI"
 EMUIR_SQLITE_USER_VERSION = 1
@@ -61,14 +62,16 @@ def open_emuir_sqlite_read_only(path: Path) -> sqlite3.Connection:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         if (
             application_id != EMUIR_SQLITE_APPLICATION_ID
-            or version != EMUIR_SQLITE_USER_VERSION
+            or version not in {EMUIR_SQLITE_USER_VERSION, 2}
         ):
             raise ValueError(f"{path}: unsupported EmuIR SQLite header")
         storage_schema = connection.execute(
             "SELECT value FROM metadata WHERE key = 'storage_schema'"
         ).fetchone()
-        if storage_schema is None or storage_schema[0] != EMUIR_STORAGE_SCHEMA:
+        if storage_schema is None or storage_schema[0] not in {EMUIR_STORAGE_SCHEMA, EMUIR_COMPACT_STORAGE_SCHEMA}:
             raise ValueError(f"{path}: unsupported EmuIR storage schema")
+        if (version == 2) != (storage_schema[0] == EMUIR_COMPACT_STORAGE_SCHEMA):
+            raise ValueError(f"{path}: inconsistent EmuIR storage version")
         return connection
     except BaseException:
         connection.close()
@@ -86,6 +89,12 @@ def is_emuir_sqlite(path: Path) -> bool:
 
 
 def write_emuir_sqlite(path: Path, value: Mapping[str, Any]) -> None:
+    """Write the current compact store; preserve the logical v1 graph schema."""
+    from .emuir_compact import write_compact_emuir
+    write_compact_emuir(path, value)
+
+
+def _write_emuir_sqlite_v1(path: Path, value: Mapping[str, Any]) -> None:
     """Atomically write one logical EmuIR document as normalized rows."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -353,6 +362,10 @@ class _RowsForOwner:
 
 def read_emuir_sqlite(path: Path) -> Dict[str, Any]:
     """Read an indexed EmuIR store into the existing logical Python schema."""
+
+    from .emuir_compact import read_compact_emuir, is_compact_emuir
+    if is_compact_emuir(path):
+        return read_compact_emuir(path)
 
     connection = open_emuir_sqlite_read_only(path)
     try:

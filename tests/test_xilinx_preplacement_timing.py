@@ -152,6 +152,20 @@ CLK ADDR_A[0] 500
             ):
                 reference = build_architecture_opensta_timing_model(ir, database)
             assert (model, types) == reference
+            from emuflow.indexed_timing import IndexedTimingView
+            from emuflow.verilog import mapped_verilog, write_mapped_verilog
+            compact = root / "design.emuir.sqlite"
+            ir.save(compact)
+            view = IndexedTimingView(compact)
+            try:
+                compact_model, compact_types = build_architecture_opensta_timing_model(view, database)
+                assert compact_model == model
+                assert dict(compact_types) == types
+                streamed = root / "streamed.v"
+                write_mapped_verilog(view, streamed, timing_only=True, timing_cell_types=compact_types)
+                assert streamed.read_text() == mapped_verilog(ir, timing_only=True, timing_cell_types=types)
+            finally:
+                view.close()
         assert validate_timing_model_coverage(ir, model, types)["status"] == "pass"
         assert model["cells"]["CARRY8"]["delay_ns"] > 0.0
         assert model["cells"]["RAMB18E2"]["setup_ns"] > 0.0

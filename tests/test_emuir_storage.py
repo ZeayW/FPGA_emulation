@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.emuir_storage import is_emuir_sqlite, read_emuir_sqlite, write_emuir_sqlite
+from emuflow.emuir_storage import is_emuir_sqlite, read_emuir_sqlite, write_emuir_sqlite, _write_emuir_sqlite_v1
 from emuflow.ir import EmuIR
 from emuflow.yosys import import_yosys_json, import_yosys_json_indexed
 
@@ -127,7 +127,7 @@ class EmuIRStorageTest(unittest.TestCase):
             for index, statement in enumerate(statements):
                 with self.subTest(statement=statement):
                     artifact = Path(temporary_directory) / f"orphan{index}.emuir.sqlite"
-                    self.ir.save(artifact)
+                    _write_emuir_sqlite_v1(artifact, self.ir.value)
                     with sqlite3.connect(artifact) as connection:
                         connection.execute(statement)
                     with self.assertRaisesRegex(ValueError, "orphaned"):
@@ -136,7 +136,7 @@ class EmuIRStorageTest(unittest.TestCase):
     def test_invalid_endpoint_role_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = Path(temporary_directory) / "role.emuir.sqlite"
-            self.ir.save(artifact)
+            _write_emuir_sqlite_v1(artifact, self.ir.value)
             with sqlite3.connect(artifact) as connection:
                 connection.execute("UPDATE endpoints SET role = 2 WHERE net_seq = 0 AND role = 0")
             with self.assertRaisesRegex(ValueError, "endpoint role"):

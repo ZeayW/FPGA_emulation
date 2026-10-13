@@ -426,6 +426,8 @@ def _scalar_pin(port: str, bit: int, pins: set[tuple[str, int]]) -> str:
 
 def sta_object_index(ir: EmuIR) -> Dict[str, Dict[str, Any]]:
     """Map provider object names to stable EmuIR endpoint identities."""
+    if hasattr(ir, "object_index"):
+        return ir.object_index
     pins = _instance_pin_inventory(ir)
     canonical: Dict[str, Dict[str, Any]] = {}
     for instance in ir.value["instances"]:
@@ -746,10 +748,13 @@ def _write_net_map(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as output:
         output.write(header + "\n")
-        for index, net in enumerate(ir.value["nets"]):
+        net_rows = ir.net_rows() if hasattr(ir, "net_rows") else (
+            (index, net["id"]) for index, net in enumerate(ir.value["nets"])
+        )
+        for index, net_id in net_rows:
             output.write(
                 f"{_hex_encode(f'__emuflow_net_{index}')}\t"
-                f"{_hex_encode(net['id'])}\n"
+                f"{_hex_encode(net_id)}\n"
             )
     return {
         "status": "pass",
@@ -882,7 +887,7 @@ def import_sta_path_database_tsv(
     # TSV import.  The private arguments deliberately stay out of the public
     # CLI contract; ordinary standalone callers retain the path-based load.
     ir = _ir if _ir is not None else EmuIR.load(ir_path)
-    known_nets = {net["id"] for net in ir.value["nets"]}
+    known_nets = ir.net_ids if hasattr(ir, "net_ids") else {net["id"] for net in ir.value["nets"]}
     object_index = sta_object_index(ir)
     instances_by_id = (
         {item["id"]: item for item in ir.value["instances"]}
@@ -983,7 +988,7 @@ def import_sta_path_database_tsv_streaming(
     if provider not in STA_PATH_DATABASE_PROVIDERS:
         raise ValidationError("STA path database provider is invalid")
     ir = _ir if _ir is not None else EmuIR.load(ir_path)
-    known_nets = {net["id"] for net in ir.value["nets"]}
+    known_nets = ir.net_ids if hasattr(ir, "net_ids") else {net["id"] for net in ir.value["nets"]}
     object_index = sta_object_index(ir)
     instances_by_id = (
         {item["id"]: item for item in ir.value["instances"]}
@@ -1217,8 +1222,8 @@ def _validate_sta_path_database_stream(
     normalization = _validate_database_normalization(
         database.get("normalization")
     )
-    known_nets = {net["id"] for net in ir.value["nets"]}
-    known_instances = {instance["id"] for instance in ir.value["instances"]}
+    known_nets = ir.net_ids if hasattr(ir, "net_ids") else {net["id"] for net in ir.value["nets"]}
+    known_instances = ir.instance_ids if hasattr(ir, "instance_ids") else {instance["id"] for instance in ir.value["instances"]}
     path_ids: set[str] = set()
     clock_domains: set[str] = set()
     path_nets_union: set[str] = set()

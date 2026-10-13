@@ -1025,9 +1025,16 @@ whole-population child dictionaries alongside the reconstructed graph. Orphaned
 child rows and invalid endpoint roles fail closed rather than disappearing.
 The generic mapped-Verilog file exporter and OpenSTA emit the same text record by
 record instead of retaining all lines plus a joined document. These remove
-duplicate working sets; the initial generic EmuIR load and Verilog connection
-indexes still materialize the graph, so bounded-memory large-design Phase 2
-execution is not yet claimed.
+duplicate working sets. New EmuIR producers now write compact SQLite storage v2
+with integer endpoint owners/pin names, independently pooled resource vectors,
+parameters, attributes and constants, and no second copy of an equal ID/name.
+The logical graph schema remains unchanged; immutable v1 artifacts can still
+be read or streamed into v2 without synthesis. Production streamed Xilinx
+OpenSTA extraction from v2 now merges instance-owned pin rows into Verilog
+directly instead of rebuilding a whole Python graph and global connection
+dictionary. Timing-library specialization keeps the same first-occurrence
+semantics; path endpoints are resolved through bounded lookup caches. Existing
+legacy/VTR and directed-query qualification routes are unchanged.
 The [lean phase-handoff contract](docs/LEAN_PHASE_HANDOFFS.md) separates consumer
 data from diagnostic evidence. EmuIR and timing/weight producers and iterators
 no longer run implicit SQLite `integrity_check` or `quick_check`: these are
@@ -1035,9 +1042,13 @@ optional offline storage-engine diagnostics, not circuit semantic gates. This
 deliberately removes automatic exhaustive database storage auditing; unique-key
 insertion, atomic publication and circuit/identity/coverage checks remain.
 Partition-weight derivation also avoids loading the whole EmuIR when the timing
-stage has already validated its input. These changes do not yet eliminate the
-main OpenSTA exporter's whole-graph working set; NVDLA downstream runtime remains
-to be measured. An explicitly requested debugging continuation can read a
+stage has already validated its input. Small regression tests compare logical
+graphs, exact timing Verilog/net-map/Liberty data, endpoint identities and path
+results. `python -m emuflow.handoff_qualification` provides separate-process
+storage/read/export measurements; **NVDLA storage, runtime, peak RSS and actual
+OpenSTA-result A/B measurements remain pending**. Temporary Yosys normalization
+staging still precedes compact publication; do not claim a zero-copy frontend.
+An explicitly requested debugging continuation can read a
 completed Phase 1 artifact directly without rerunning synthesis or creating a
 persistent cache. Producer-owned temporary files are not completed artifacts.
 One-shot compilation validates supplied BoardLinkTimingDB and TransportCostDB

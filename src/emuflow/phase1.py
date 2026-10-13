@@ -168,16 +168,16 @@ def indexed_phase1_facts(
         }
         design = json.loads(metadata["design_json"])
         warnings = json.loads(metadata["warnings_json"])
+        resource_query = """SELECT resource, SUM(amount) AS amount
+                            FROM instance_resources GROUP BY resource"""
+        if connection.execute("PRAGMA user_version").fetchone()[0] == 2:
+            resource_query = """SELECT r.key AS resource,SUM(r.value*g.amount) AS amount
+                FROM (SELECT resources_seq,COUNT(*) AS amount FROM cell_records GROUP BY resources_seq) g
+                JOIN payloads p ON p.seq=g.resources_seq,json_each(p.value) r GROUP BY r.key"""
         totals = ResourceVector.from_mapping(
             {
                 row["resource"]: row["amount"]
-                for row in connection.execute(
-                    """
-                    SELECT resource, SUM(amount) AS amount
-                      FROM instance_resources
-                     GROUP BY resource
-                    """
-                )
+                for row in connection.execute(resource_query)
             },
             context="indexed EmuIR resource totals",
         )

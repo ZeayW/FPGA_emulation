@@ -976,6 +976,12 @@ def build_xilinx_preplacement_opensta_timing_model(
 ) -> tuple[Dict[str, Any], Dict[str, str]]:
     """Build design-specialized cells from pinned RapidWright delay bounds."""
 
+    if hasattr(ir, "representative_graph"):
+        model, _ = build_xilinx_preplacement_opensta_timing_model(
+            ir.representative_graph(), timing_db_path, output_path
+        )
+        return model, ir.timing_types()
+
     timing_db = read_json(timing_db_path)
     validate_xilinx_preplacement_timing_db(timing_db)
     delays = {
@@ -1135,7 +1141,7 @@ def validate_timing_model_coverage(
     model: Mapping[str, Any],
     instance_cell_types: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
-    used = sorted({
+    used = ir.used_timing_types(instance_cell_types) if hasattr(ir, "used_timing_types") else sorted({
         (
             instance_cell_types.get(instance["id"], instance["type"])
             if instance_cell_types is not None
@@ -1449,7 +1455,7 @@ def parse_clock_definitions(values: Iterable[str]) -> Dict[str, float]:
     return clocks
 
 
-def run_opensta_path_database(
+def _run_opensta_path_database(
     ir_path: Path,
     output_path: Path,
     clocks: Optional[Mapping[str, float]] = None,
@@ -1464,6 +1470,7 @@ def run_opensta_path_database(
     validate_output: bool = True,
     _return_database: bool = False,
     _stream_output: bool = False,
+    _ir=None,
 ) -> Dict[str, Any]:
     if max_paths <= 0:
         raise ValidationError("OpenSTA max_paths must be positive")
@@ -1471,7 +1478,7 @@ def run_opensta_path_database(
         raise ValidationError(
             "streamed OpenSTA output cannot return an inline database"
         )
-    ir = EmuIR.load(ir_path)
+    ir = _ir if _ir is not None else EmuIR.load(ir_path)
     through_net_ids = list(through_nets or [])
     if _stream_output and through_net_ids:
         raise ValidationError(
@@ -1744,3 +1751,36 @@ def run_opensta_path_database(
     if _return_database:
         result["_database"] = database
     return result
+
+
+def run_opensta_path_database(
+    ir_path: Path, output_path: Path,
+    clocks: Optional[Mapping[str, float]] = None,
+    timing_io: Optional[Mapping[str, Any]] = None,
+    timing_model_path: Path = DEFAULT_TIMING_MODEL,
+    architecture_timing_db_path: Optional[Path] = None,
+    executable: Optional[str] = None, max_paths: int = 200000,
+    log_path: Optional[Path] = None, through_nets: Optional[Sequence[str]] = None,
+    through_coverage_path: Optional[Path] = None, validate_output: bool = True,
+    _return_database: bool = False, _stream_output: bool = False,
+) -> Dict[str, Any]:
+    """Use compact streaming input for production Xilinx timing extraction."""
+    from .emuir_storage import is_emuir_sqlite
+    from .emuir_compact import is_compact_emuir
+    from .indexed_timing import IndexedTimingView
+    use_index = (_stream_output and not through_nets and is_emuir_sqlite(ir_path)
+                 and is_compact_emuir(ir_path)
+                 and (architecture_timing_db_path is None or
+                      read_json(architecture_timing_db_path).get("schema") == XILINX_PREPLACEMENT_TIMING_SCHEMA))
+    view = IndexedTimingView(ir_path) if use_index else None
+    try:
+        return _run_opensta_path_database(
+            ir_path, output_path, clocks=clocks, timing_io=timing_io,
+            timing_model_path=timing_model_path, architecture_timing_db_path=architecture_timing_db_path,
+            executable=executable, max_paths=max_paths, log_path=log_path, through_nets=through_nets,
+            through_coverage_path=through_coverage_path, validate_output=validate_output,
+            _return_database=_return_database, _stream_output=_stream_output, _ir=view,
+        )
+    finally:
+        if view is not None:
+            view.close()

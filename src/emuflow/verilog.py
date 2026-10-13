@@ -68,6 +68,9 @@ def _mapped_verilog_lines(
     allow_bus_pins: bool = False,
     synthesized_macro_types: Optional[Set[str]] = None,
 ) -> Iterator[str]:
+    if timing_only and hasattr(ir, "timing_verilog_lines"):
+        yield from ir.timing_verilog_lines(timing_cell_types)
+        return
     net_wire = {
         net["id"]: f"__emuflow_net_{index}"
         for index, net in enumerate(ir.value["nets"])

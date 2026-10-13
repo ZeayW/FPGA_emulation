@@ -44,10 +44,28 @@ rehashing or reconstructing it. Final evidence is sealed once at completion.
 - Timing-weight derivation no longer loads EmuIR when its path input has already
   been semantically validated by the calling timing stage.
 - Existing ordered-row decoding and direct Yosys stream import remain.
-- **Pending:** the main OpenSTA exporter still materializes the EmuIR graph and
-  connection indexes. Indexed/streamed timing consumption and elimination of
-  unnecessary staging-to-owner rewrites require separate scale measurements;
-  do not describe the whole Phase 1→2 interface as bounded-memory yet.
+- New producers write physical storage v2: integer instance references in
+  endpoints, integer pin-name references, independently pooled resource vectors,
+  parameters, attributes, constants and extras. Equal ID/name fields are stored
+  once. Explicit zero resources and original logical fields remain unchanged.
+  Logical schema stays `emuflow.emuir/v1`; immutable storage-v1 inputs remain
+  readable. Read-only SQL views do not duplicate stored records.
+- Production streamed Xilinx OpenSTA extraction from v2 uses a read-only indexed
+  view, merges integer-owner pin rows one instance at a time, specializes the
+  timing library from the same first-occurrence representatives and resolves
+  path endpoint identities lazily. It does not construct a full Python EmuIR,
+  global pin map or global endpoint-object dictionary. This is not a change to
+  library delays, clocks or STA algorithms. Legacy, VTR specialization and
+  directed-through-net qualification retain their existing reader route.
+- `python -m emuflow.handoff_qualification` measures `repack`, `scan` and
+  `export` in separate processes. It records bytes, elapsed/CPU time, peak RSS,
+  process I/O and explicit qualification-only logical/STA-input identities.
+  Existing v1 outputs can be converted without synthesis or a whole-graph load.
+- **Pending:** NVDLA storage/RSS/I/O and actual OpenSTA-result A/B measurements.
+  Small regression equality and a repeated-structure size/RSS guard are not
+  substitutes for that requested large-design gate. Yosys normalization still
+  needs temporary staging before the compact owner is published; this remaining
+  conversion must be measured rather than labelled zero-copy.
 
 ## Testing from existing Phase 1
 
