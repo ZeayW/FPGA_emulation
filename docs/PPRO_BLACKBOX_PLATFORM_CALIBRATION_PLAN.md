@@ -14,11 +14,19 @@ explicit compile-time clock, followed by timing-budgeted system routing. Its
 ordinary `sr0_time` and `sr0_tdm` reports are separately hashed and normalized.
 The first v4 pilot completed routing but post-partition SSTA crashed while
 writing its report; that separate backend stage is not a v5 prerequisite.
-First verify acquisition on small real pilots. Preserve
-normalized bank-row and path-segment observations before scratch cleanup, then
-run repeated asymmetric directional loads and single-hop ratios with independent
-holdouts. Do not pool v3 observations with the new experiment contract or use
-the old aggregate fit/7.2 ns projection as a new qualification result.
+The two small real pilots and three higher-load cases passed acquisition.
+The higher-load cases directly report raw path ratios 8, 16 and 24 with
+single-hop increments 50, 55 and 60 ns. Their candidate report-level model is
+`d_cross(r_raw) = 45 + 0.625 * r_raw` ns, while independently identified untdm
+paths remain a separate 7 ns branch. Each local receiver segment is 0.10 ns
+and is excluded from fitting. These are PPro system-route estimates at a
+10 ns design clock, not physical measurements. Independent holdouts and
+asymmetric constant-total-load cases have been launched; verification is
+pending. Follow the current acquisition and result boundaries in README.
+Preserve normalized bank-row and path-segment observations before scratch
+cleanup. Do not pool v3 observations with the new experiment contract or use
+the old aggregate fit/7.2 ns projection as a new qualification result. Active
+bank rows do not establish fixed total inventory or channels per bank.
 
 ## Objective
 

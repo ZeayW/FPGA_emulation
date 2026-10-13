@@ -214,8 +214,49 @@ the net reports preserve 32/0 and 32/16 directional data bits. Each case reports
 ten same-net crossings at 7.00 ns, followed by a 0.10 ns local receiver segment.
 The independent net table labels these as `untdm`, while the path's raw TDM
 column is 2; those facts are preserved separately. Their bank tables are empty.
-These are low-load observations, not a bank inventory or a fitted `d(r)`.
-Higher-load TDM acquisition and independent holdouts remain pending.
+These are low-load observations, not a bank inventory.
+
+The first higher-load v5 sweep at source
+`41482d9b5429b820c7c27066cae047ff768519fe` completed 3/3 cases. Forward and
+reverse data widths are independently generated, and the reverse ordinary
+report also contains one reset signal. Each delay below is the crossing
+increment from a single reported path and uses that same crossing's raw TDM
+column, not the run-wide maximum:
+
+| Forward / reverse data bits | Forward TDM / untdm nets | Active forward TDM banks | Path raw ratio | Crossing delay |
+| --- | --- | --- | --- | --- |
+| 128 / 16 | 48 / 80 | 1, reporting 6 used channels | 8 | 50 ns |
+| 512 / 16 | 512 / 0 | 2, reporting 23 channels each, bank maxima 8 and 16 | 16 | 55 ns |
+| 1024 / 16 | 1024 / 0 | 2, reporting 23 channels each, bank maxima 24 | 24 | 60 ns |
+
+The three load conditions give the report-level candidate
+`d_cross(r_raw) = 45 + 0.625 * r_raw` ns at raw ratios 8, 16 and 24. The
+reported local receiver segment is separately 0.10 ns; it is not fitted.
+`untdm` remains a separate 7 ns branch even though its raw path column is 2.
+No conversion of that raw encoding into a physical TDM ratio is asserted.
+The candidate describes PPro 2026.1 system-route estimates for the tested
+configuration and 10 ns design clock, not hardware measurements. There are
+three fit executions, not thirty independent samples: each report exposes at
+most ten related critical paths. Independent width, direction and FPGA-pair
+holdouts were launched with the candidate frozen; their results remain
+pending retrieval and validation. That detached batch comprises three
+constant-total bidirectional cases (128/896, 512/512, 896/128) and four
+independent holdouts (new widths, reverse direction, another FPGA pair).
+The gateway subsequently became unreachable over SSH. Five earlier cases
+are confirmed; the seven later cases are not claimed as passing or failing.
+The normalized high-load observations were inspected remotely and hashed,
+but their local transfer and final scratch cleanup remain pending. Do not
+restart this batch because the observer lost its connection.
+
+The same bank reports `channelNum=6` and `23` in different cases. This field
+is a run-level reported allocation, not an identified fixed bank capacity.
+Reciprocal endpoint rows count as one bank. Neither the active-bank count
+nor the largest passing width establishes total inventory `B`, channels per
+bank `q`, or a capacity upper bound. The `sr0_tdm` report lists untdm nets only
+in these cases: complete file capture does not mean all design nets were
+classified. TDM paths preserve their own ratio and crossing delay, but their
+specific net-to-bank binding remains unavailable. The revised model is not
+yet integrated into the generated platform or Phase 5 scheduler.
 
 `scripts/ppro_bank_singlehop_campaign.py` runs the fresh, serial acquisition
 campaign. `--mode pilot` fixes F0 to F2 at 32/0 and 32/16 forward/reverse data
