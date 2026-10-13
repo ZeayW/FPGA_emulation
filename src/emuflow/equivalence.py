@@ -337,28 +337,47 @@ class _MappedModel:
             for (port, bit), net in self.top_input_net.items()
             if bit == 0 and port in self.declared_clock_ids
         }
-        # Build the clock-root graph from clock-classified nets only.  Using
-        # every data sink here duplicates the complete mapped netlist and is
-        # prohibitively expensive for the large designs for which this
-        # checker exists.  The importer propagates ``cut_class == clock``
-        # through clock buffers/gates, so a single pass over that small cone
-        # is both sufficient and bounded by the clock network rather than by
-        # the whole design.
-        clock_net_ids = {
-            net["id"]
-            for net in ir.value["nets"]
-            if net.get("cut_class") == "clock"
-        }
-        combinational_driver = {
-            net: instance_id
-            for instance_id, nets in self.combinational_output_nets.items()
-            for net in nets
-            if net in clock_net_ids
-        }
-        input_nets_by_instance: Dict[str, Set[str]] = defaultdict(set)
-        for (owner, _port, _bit_index), input_net in self.input_net.items():
-            if input_net in clock_net_ids:
-                input_nets_by_instance[owner].add(input_net)
+        # Trace clock pins through their actual combinational source cone.
+        # Only root clock nets themselves are classified as ``clock`` by the
+        # importer; a legal LUT clock gate therefore has a combinational
+        # output net.  Building a second index for every combinational input
+        # would duplicate much of a large mapped design, so enumerate the
+        # bounded input pins of each reached LUT/MUX on demand instead.
+        def clock_source_inputs(instance_id: str) -> Tuple[str, ...]:
+            instance = self.instances[instance_id]
+            cell_type = instance["type"]
+            keys: List[Tuple[str, int]] = []
+            if cell_type.startswith("LUT") and cell_type[3:].isdigit():
+                keys.extend(
+                    (f"I{index}", 0)
+                    for index in range(int(cell_type[3:]))
+                )
+            elif cell_type in {"$lut", "$_LUT_"}:
+                width = _parameter_int(instance, "WIDTH")
+                keys.extend(("A", index) for index in range(width))
+            elif _is_muxf_type(cell_type):
+                # The select input controls which clock source propagates but
+                # is not itself a clock source.
+                keys.extend((("I0", 0), ("I1", 0)))
+            else:
+                raise ValidationError(
+                    "unsupported combinational primitive in a clock source "
+                    f"cone: {instance_id!r} ({cell_type})"
+                )
+            return tuple(
+                sorted(
+                    {
+                        net
+                        for port, bit_index in keys
+                        if (
+                            net := self.input_net.get(
+                                (instance_id, port, bit_index)
+                            )
+                        )
+                        is not None
+                    }
+                )
+            )
         clock_root_cache: Dict[str, frozenset[str]] = {}
         visiting: Set[str] = set()
 
@@ -374,10 +393,10 @@ class _MappedModel:
                 result = frozenset({top_clock_nets[net]})
             else:
                 visiting.add(net)
-                driver = combinational_driver.get(net)
+                driver = driver_by_net.get(net)
                 roots: Set[str] = set()
                 if driver is not None:
-                    for input_net in input_nets_by_instance[driver]:
+                    for input_net in clock_source_inputs(driver):
                         roots.update(clock_roots(input_net))
                 visiting.remove(net)
                 result = frozenset(roots)

@@ -514,6 +514,89 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
         )
         self.assertEqual(state, {"q_fast": 1, "q_slow": 1})
 
+    def test_mapped_model_traces_lut_gated_clock_to_declared_root(self):
+        model = _MappedModel(
+            EmuIR(
+                {
+                    "schema": "emuflow.emuir/v1",
+                    "design": {
+                        "name": "gated_clock",
+                        "top": "gated_clock",
+                        "source_format": "test",
+                    },
+                    "ports": [
+                        {"id": "clk", "direction": "input", "width": 1},
+                        {"id": "enable", "direction": "input", "width": 1},
+                        {"id": "d", "direction": "input", "width": 1},
+                        {"id": "q", "direction": "output", "width": 1},
+                    ],
+                    "instances": [
+                        {
+                            "id": "clock_gate",
+                            "type": "LUT2",
+                            "parameters": {"INIT": "1000"},
+                            "resources": {"lut": 1},
+                        },
+                        {
+                            "id": "register",
+                            "type": "FDRE",
+                            "resources": {"ff": 1},
+                            "constant_connections": [
+                                {"port": "CE", "bit": 0, "value": "1"},
+                                {"port": "R", "bit": 0, "value": "0"},
+                            ],
+                        },
+                    ],
+                    "nets": [
+                        {
+                            "id": "clk_net",
+                            "cut_class": "clock",
+                            "drivers": [_endpoint(None, "clk")],
+                            "sinks": [_endpoint("clock_gate", "I0")],
+                        },
+                        {
+                            "id": "enable_net",
+                            "cut_class": "primary_input",
+                            "drivers": [_endpoint(None, "enable")],
+                            "sinks": [_endpoint("clock_gate", "I1")],
+                        },
+                        {
+                            "id": "gated_clk_net",
+                            "cut_class": "combinational",
+                            "drivers": [_endpoint("clock_gate", "O")],
+                            "sinks": [_endpoint("register", "C")],
+                        },
+                        {
+                            "id": "d_net",
+                            "cut_class": "register_input",
+                            "drivers": [_endpoint(None, "d")],
+                            "sinks": [_endpoint("register", "D")],
+                        },
+                        {
+                            "id": "q_net",
+                            "cut_class": "register_output",
+                            "drivers": [_endpoint("register", "Q")],
+                            "sinks": [_endpoint(None, "q")],
+                        },
+                    ],
+                    "clocks": [
+                        {
+                            "id": "clk",
+                            "name": "clk",
+                            "source_port": "clk",
+                            "period_ns": None,
+                        }
+                    ],
+                    "warnings": [],
+                }
+            )
+        )
+
+        model.validate_clock_domains({"clk": 10.0})
+        self.assertEqual(
+            model.sequential_clock_roots["register"], frozenset({"clk"})
+        )
+
     def test_sparse_graph_membership_is_not_quadratic(self):
         class CountingString(str):
             comparisons = 0
