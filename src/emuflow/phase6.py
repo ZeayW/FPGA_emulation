@@ -26,7 +26,10 @@ from .ppro_calibrated_platform import (
     predict_transport_resources,
     validate_transport_cost_database,
 )
-from .runtime import virtual_runtime_controller_to_systemverilog
+from .runtime import (
+    build_virtual_runtime,
+    virtual_runtime_controller_to_systemverilog,
+)
 
 
 PHASE6_REPORT_SCHEMA = "emuflow.phase6-report/v1"
@@ -39,6 +42,7 @@ def _static_exact_equivalence_evidence(
     *,
     cycles: int,
     seed: int,
+    clock_periods: Optional[Mapping[str, float]],
 ) -> Dict[str, Any]:
     random_traces = [
         simulate_static_exact_partition_equivalence(
@@ -47,6 +51,7 @@ def _static_exact_equivalence_evidence(
             schedule,
             cycles=cycles,
             seed=seed + offset,
+            clock_periods=clock_periods,
         )
         for offset in range(3)
     ]
@@ -58,6 +63,7 @@ def _static_exact_equivalence_evidence(
             assignment,
             schedule,
             max_variables=12,
+            clock_periods=clock_periods,
         )
     except ValidationError as error:
         message = str(error)
@@ -173,8 +179,24 @@ def run_phase6(
     electrical_binding_path: Optional[Path] = None,
     transport_cost_path: Optional[Path] = None,
     managed_storage: bool = False,
+    clock_periods: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
+    declared_clocks = [item["id"] for item in ir.value.get("clocks", [])]
+    if clock_periods is None:
+        if len(declared_clocks) != 1:
+            raise ValidationError(
+                "multi-clock Phase 6 requires an explicit period for every "
+                "declared DUT clock"
+            )
+        # A single domain has no relative-rate ambiguity. Its absolute target
+        # period remains owned by TimingPathDB; the runtime calendar needs only
+        # one tick, so a unit period is an exact standalone Phase 6 contract.
+        clock_periods = {declared_clocks[0]: 1.0}
+    elif set(clock_periods) != set(declared_clocks):
+        raise ValidationError(
+            "Phase 6 clock periods must exactly cover declared EmuIR clocks"
+        )
     assignment = read_json(assignment_path)
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
@@ -225,6 +247,11 @@ def run_phase6(
     artifacts = build_split_artifacts(
         ir, assignment, schedule, platform, pin_plan
     )
+    runtime = build_virtual_runtime(schedule, platform, clock_periods)
+    artifacts["manifest"]["clock_periods"] = {
+        clock: float(record["target_period_ns"])
+        for clock, record in runtime["virtual_dut_clocks"].items()
+    }
     validation = validate_split_artifacts(
         ir,
         assignment,
@@ -253,6 +280,7 @@ def run_phase6(
             schedule,
             cycles=equivalence_cycles,
             seed=equivalence_seed,
+            clock_periods=artifacts["manifest"]["clock_periods"],
         )
     else:
         equivalence = simulate_partition_equivalence(
@@ -294,7 +322,7 @@ def run_phase6(
     if transport_cost is not None:
         write_json(output_dir / "transport-cost.json", transport_cost, compact=True)
     (output_dir / "virtual_runtime_controller.sv").write_text(
-        virtual_runtime_controller_to_systemverilog(),
+        virtual_runtime_controller_to_systemverilog(runtime),
         encoding="utf-8",
     )
     for item in artifacts["manifest"]["fpgas"]:
@@ -345,6 +373,9 @@ def run_phase6(
         "design": ir.value["design"]["name"],
         "platform": platform.name,
         "provider": artifacts["manifest"]["provider"],
+        "virtual_runtime_provider": runtime["provider"],
+        "virtual_dut_clocks": sorted(runtime["virtual_dut_clocks"]),
+        "clock_contract_ref": "manifest.json#/clock_periods",
         "validation": validation,
         "equivalence": equivalence,
         "board_binding": artifacts["manifest"]["board_binding"],
@@ -460,6 +491,10 @@ def validate_phase6(
         )
     artifacts["manifest"].pop("electrical_binding", None)
     artifacts["manifest"].pop("transport_cost", None)
+    clock_periods = artifacts["manifest"].pop("clock_periods", None)
+    if not isinstance(clock_periods, dict) or not clock_periods:
+        raise ValidationError("Phase 6 manifest lacks DUT clock periods")
+    build_virtual_runtime(schedule, platform, clock_periods)
     validation = validate_split_artifacts(
         ir,
         assignment,
@@ -490,6 +525,7 @@ def validate_phase6(
                 schedule,
                 cycles=16,
                 seed=20260727,
+                clock_periods=clock_periods,
             )
         )
     return validation

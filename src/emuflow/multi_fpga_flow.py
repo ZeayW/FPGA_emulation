@@ -1104,8 +1104,14 @@ def validate_multi_fpga_flow_bundle(
             flow_root, Path("runtime/runtime_contract.json"), "runtime contract"
         )
     )
+    split_manifest = read_json(manifest_path)
+    clock_periods = split_manifest.get("clock_periods")
+    if not isinstance(clock_periods, dict) or not clock_periods:
+        raise ValidationError(
+            "split manifest lacks the DUT clock-period contract"
+        )
     runtime_validation = validate_virtual_runtime(
-        runtime_contract, read_json(schedule_path), platform
+        runtime_contract, read_json(schedule_path), platform, clock_periods
     )
     if runtime_validation != report["runtime"].get("validation"):
         raise ValidationError("independent runtime replay disagrees")
@@ -1380,12 +1386,6 @@ def run_multi_fpga_flow(
         raise EmuFlowError("unsupported combinational cut mode")
     exact_cut_mode = cut_mode == CUT_MODE_STATIC_EXACT
     clocks = tuple(clocks)
-    if exact_cut_mode and len(set(clocks)) > 1:
-        raise EmuFlowError(
-            "static exact combinational cuts require exactly one virtual DUT clock; "
-            "multiple declared clocks are unsupported by the current runtime "
-            "(rejected before synthesis)"
-        )
     if (
         partition_provider == "patron"
         and patron_algorithm_version == 14
@@ -2257,6 +2257,7 @@ def run_multi_fpga_flow(
             equivalence_cycles=equivalence_cycles,
             equivalence_seed=equivalence_seed,
             transport_cost_path=transport_cost_db,
+            clock_periods=clock_periods,
         )
         baseline_phase6_seconds = time.monotonic() - baseline_phase6_started
         baseline_physical_started = time.monotonic()
@@ -2363,6 +2364,7 @@ def run_multi_fpga_flow(
             position_hints_path=adapter_root / "position_hints.json",
             electrical_binding_path=adapter_root / "electrical_binding.json",
             transport_cost_path=transport_cost_db,
+            clock_periods=clock_periods,
         )
         chimew_phase6_seconds = time.monotonic() - chimew_phase6_started
         phase6_comparison = {
@@ -2408,6 +2410,7 @@ def run_multi_fpga_flow(
             equivalence_cycles=equivalence_cycles,
             equivalence_seed=equivalence_seed,
             transport_cost_path=transport_cost_db,
+            clock_periods=clock_periods,
         )
 
     physical_report = None

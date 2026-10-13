@@ -1045,10 +1045,15 @@ Escaped Yosys instance names no longer trigger indexed owner/pin reconstruction
 for every emitted pin. Possible doubled-owner collisions are checked by one
 indexed join, with pin inventories read only for actual candidate pairs;
 reported endpoint resolution and ambiguity rejection remain enabled.
-Static Exact's current single-virtual-clock limitation is now rejected before
-synthesis when multiple DUT clocks are explicitly declared. The two-clock
-NVDLA run did not complete Phase 3 and is not full-flow evidence; a legal clock
-execution contract is still required before its Phase 1–7 acceptance.
+Multiple declared DUT root clocks retain their identities and rational relative
+rates through Phase 6 and Phase 7. Phase 6 seals an exact finite event calendar
+in the split manifest; each completed transport frame advances only the clock
+domains named by that event. The generated runtime controller therefore emits
+one enable bit per original root clock instead of merging them into a synthetic
+single clock. Equivalence replay, physical constraints, and global timing all
+consume the same sealed clock-period contract. Sequential elements whose clock
+cone is unbound or contains multiple root clocks fail closed rather than being
+assigned an arbitrary domain.
 The [lean phase-handoff contract](docs/LEAN_PHASE_HANDOFFS.md) separates consumer
 data from diagnostic evidence. EmuIR and timing/weight producers and iterators
 no longer run implicit SQLite `integrity_check` or `quick_check`: these are
@@ -1373,14 +1378,19 @@ checkers between stages. This makes it possible to:
 
 ## Current scope
 
-The current semantic model supports a single virtual DUT clock, synchronous
-reset, deterministic static communication schedules, and lockstep execution
-with a global frame barrier. The safe default restricts partition cuts to
+The current semantic model supports one or more explicitly declared root
+clocks with exact rational relative rates, synchronous reset, deterministic
+static communication schedules, and lockstep execution with a global frame
+barrier. One complete transport frame is the atomic timebase event; the event
+calendar controls which original clock domains advance after that frame. The
+safe default restricts partition cuts to
 sequential boundaries; combinational loops and hard macros remain atomic. An
 opt-in static-exact V1 path can release a conservative mapped-LUT subset only
 after binding its dependency schedule, macro-cycle equivalence, and routed
-segment deadlines. It rejects zero-clock, multi-clock, generated-clock, and
-general CDC designs before releasing exact cuts. Without that opt-in contract,
+segment deadlines. It rejects zero-clock, generated-clock, ambiguous-clock,
+and general CDC designs before releasing exact cuts; independent declared root
+clocks are supported, while a sequential primitive driven by more than one
+root remains outside the contract. Without that opt-in contract,
 a large combinational connected component remains one indivisible partition
 vertex. The reports expose any balance relaxation needed to place such a
 vertex; a run with relaxed balance is a legal capacity/topology result, not
@@ -1624,6 +1634,7 @@ emuflow phase6 \
   --ir build/phase1/design.emuir.sqlite \
   --assignment build/phase3-exact/assignment.json \
   --schedule build/phase5-exact/schedule.json \
+  --clock-period clk=10 \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --out build/phase6-exact
 ```
@@ -1652,7 +1663,7 @@ Phase 3--7 acceptance sequence are specified in
 [Static exact combinational-cut mode](docs/STATIC_EXACT_COMBINATIONAL_CUT.md).
 The production default is sequential-only plus PATRON v6. Generalized Static
 Exact v2 plus PATRON v14 is selected explicitly and remains fail-closed outside
-its declared single-clock, synchronous-reset, deterministic-schedule envelope.
+its declared root-clock, synchronous-reset, deterministic-schedule envelope.
 The legacy Static Exact policies have been removed.
 Static-exact physical evidence preserves each reached state-capture input pin
 and bit through lowering; a VTR query rejects an endpoint that is absent from

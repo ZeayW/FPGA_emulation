@@ -270,6 +270,7 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch):
     for name, value in {"schedule": f.schedule, "platform": f.platform.to_dict(),
                         "physical": f._physical_summary(), "routes": f.routes, **f.reports}.items():
         write_json(tmp_path / f"{name}.json", value)
+    write_json(tmp_path / "manifest.json", {"clock_periods": {"clk": 20.0}})
     write_json(tmp_path / "cross_layer_timing.json",
                build_cross_layer_timing_contract(f.routes, f.schedule))
     def forbidden(*args, **kwargs):
@@ -314,14 +315,27 @@ def test_standalone_report_preserves_event_gate_without_comparison(late, monkeyp
         rows[0]["slack_ns"] = -1.0
     metadata = {"paths": {"p": {"path_scope": "cross-fpga", "physical_logic_segments_cone_bound": True}},
                 "source_binding": None, "compressed_representative_paths": 1}
-    report = sta.build_opensta_timing({"virtual_dut_clock": {"nominal_period_ns": 100}}, metadata, rows)
+    report = sta.build_opensta_timing(
+        {
+            "virtual_dut_clocks": {"clk": {"nominal_period_ns": 100}},
+            "virtual_dut_clock": {"nominal_period_ns": 100},
+        },
+        metadata,
+        rows,
+    )
     assert report["status"] == ("fail" if late else "pass")
     assert report["global_opensta"]["event_failures"] == int(late)
     assert report["path_exactness"]["cone_bound_logic_paths"] == 1
     assert report["target_clock"]["tns_bound_ns"] == -13.5
     with pytest.raises(ValidationError):
-        sta.build_opensta_timing({"virtual_dut_clock": {"nominal_period_ns": 100}}, metadata,
-                                [r for r in rows if r["role"] != "runtime"])
+        sta.build_opensta_timing(
+            {
+                "virtual_dut_clocks": {"clk": {"nominal_period_ns": 100}},
+                "virtual_dut_clock": {"nominal_period_ns": 100},
+            },
+            metadata,
+            [r for r in rows if r["role"] != "runtime"],
+        )
 
 
 def test_engine_defaults_are_uniform_and_python_is_explicit():

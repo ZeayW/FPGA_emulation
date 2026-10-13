@@ -24,6 +24,21 @@ from .tdm import reconstruct_tdm_schedule_timing_paths
 SYSTEM_TIMING_SCHEMA = "emuflow.system-timing/v2"
 
 
+def _runtime_clock_period_ns(
+    runtime: Mapping[str, Any], clock_domain: Optional[str]
+) -> float:
+    clocks = runtime.get("virtual_dut_clocks")
+    if not isinstance(clocks, Mapping) or not clocks:
+        raise ValidationError("system timing runtime lacks DUT clock domains")
+    if clock_domain in clocks:
+        return float(clocks[clock_domain]["nominal_period_ns"])
+    if len(clocks) == 1:
+        return float(next(iter(clocks.values()))["nominal_period_ns"])
+    raise ValidationError(
+        f"system timing clock domain {clock_domain!r} is not declared"
+    )
+
+
 def _finite_number(value: Any, context: str) -> float:
     if (
         isinstance(value, bool)
@@ -383,7 +398,7 @@ def _fixed_slot_transport_path_delay(
 
 def _local_path_database(
     physical_summary: Mapping[str, Any],
-    virtual_period: float,
+    runtime: Mapping[str, Any],
     routes_artifact_sha256: str | None,
 ) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     raw = physical_summary.get("local_path_timing")
@@ -411,6 +426,9 @@ def _local_path_database(
             ids.add(path_id)
             delay = float(item["delay_ns"])
             period = float(item["clock_period_ns"])
+            virtual_period = _runtime_clock_period_ns(
+                runtime, item.get("clock_domain")
+            )
             required_time = float(item.get("required_time_ns", period))
             measurement = item.get(
                 "measurement", "endpoint-longest-path-fallback"
@@ -587,10 +605,6 @@ def build_system_timing(
         raise ValidationError(
             "system timing physical delay database does not cover BoardDB"
         )
-    virtual_period = _finite_number(
-        runtime["virtual_dut_clock"]["nominal_period_ns"],
-        "runtime virtual period",
-    )
     cross_paths = []
     discontinuous_paths = 0
     exact_logic_paths = 0
@@ -751,6 +765,9 @@ def build_system_timing(
                 )
             transport_model = "board-link-timing-db"
         target_period = record["clock_period_ns"]
+        virtual_period = _runtime_clock_period_ns(
+            runtime, record.get("clock_domain")
+        )
         target_required_time = record.get("required_time_ns", target_period)
         required_time_adjustment = target_period - target_required_time
         runtime_required_time = virtual_period - required_time_adjustment
@@ -894,7 +911,7 @@ def build_system_timing(
         discontinuous_paths += (discontinuities > 0) * len(member_ids)
 
     local_paths, original_source = _local_path_database(
-        physical_summary, virtual_period, routes_artifact_sha256
+        physical_summary, runtime, routes_artifact_sha256
     )
     system_paths = sorted(
         [*local_paths, *cross_paths], key=lambda item: item["path"]

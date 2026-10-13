@@ -428,7 +428,14 @@ def characterize_open_transport_case(
     work_root.mkdir(parents=True, exist_ok=True)
     platform, transport, features = _build_case(case)
     transport_rtl = transport_to_systemverilog(transport, platform)
-    runtime_rtl = virtual_runtime_controller_to_systemverilog()
+    runtime_rtl = virtual_runtime_controller_to_systemverilog(
+        {
+            "virtual_dut_clocks": {"clk": {"period_ticks": 1}},
+            "virtual_timebase": {
+                "events": [{"offset_ticks": 1, "clocks": ["clk"]}]
+            },
+        }
+    )
     started = time.monotonic()
     temporary = Path(tempfile.mkdtemp(prefix=f"{case['id']}.", dir=work_root))
     try:

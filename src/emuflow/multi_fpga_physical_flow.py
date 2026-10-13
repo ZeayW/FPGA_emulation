@@ -253,58 +253,80 @@ def _write_vpr_runtime_sdc(
     eblif_report: Mapping[str, Any],
     *,
     fabric_period_ns: float,
-    dut_period_ns: float,
+    dut_periods_ns: Mapping[str, float],
     cross_period_ns: float,
     dut_clock_required: bool = True,
 ) -> Dict[str, Any]:
     """Write VPR constraints matching the provider-neutral runtime contract."""
     for name, value in (
         ("fabric_period_ns", fabric_period_ns),
-        ("dut_period_ns", dut_period_ns),
         ("cross_period_ns", cross_period_ns),
     ):
         if not math.isfinite(value) or value <= 0.0:
             raise ValidationError(f"{name} must be finite and positive")
+    if not isinstance(dut_periods_ns, Mapping) or not dut_periods_ns:
+        raise ValidationError("dut_periods_ns must declare every DUT clock")
+    for clock, value in dut_periods_ns.items():
+        if (
+            not isinstance(clock, str)
+            or not clock
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValidationError("dut_periods_ns contains an invalid clock")
     # The virtual DUT period can be much longer than a physical FPGA clock.
     # VPR cannot represent those long SDC values (its parser scales to signed
     # 32-bit picoseconds), while the physical implementation only needs a
     # non-binding local relation between fabric and DUT clocks. Preserve the
     # original slack after capping the DUT period, rather than silently
     # changing the relation to a zero-slack constraint.
-    vpr_dut_period_ns = min(dut_period_ns, _VPR_SDC_MAX_TIME_NS)
-    dut_to_cross_slack_ns = max(0.0, dut_period_ns - cross_period_ns)
-    vpr_cross_period_ns = min(
-        cross_period_ns,
-        max(0.0, vpr_dut_period_ns - dut_to_cross_slack_ns),
-    )
-    # set_max_delay 0 is legal SDC but would make the implementation
-    # artificially infeasible. Retain a positive, bounded relation instead.
-    vpr_cross_period_ns = max(vpr_cross_period_ns, 1.0e-6)
     clock_nets = eblif_report.get("clock_nets")
     if not isinstance(clock_nets, dict) or not clock_nets:
         raise ValidationError("VTR eBLIF report has no physical clock nets")
     fabric_net = clock_nets.get("fabric_clk")
     if not isinstance(fabric_net, str) or not fabric_net:
         raise ValidationError("VTR eBLIF report has no fabric clock net")
-    dut_nets = sorted(
-        {
-            net
-            for clock_id, net in clock_nets.items()
-            if clock_id not in {"fabric_clk", "virtual_clock_enable"}
-            and isinstance(net, str)
-            and net
-        }
-    )
+    dut_nets = {
+        clock_id: net
+        for clock_id, net in sorted(clock_nets.items())
+        if clock_id not in {"fabric_clk", "virtual_clock_enable"}
+        and isinstance(net, str)
+        and net
+    }
     if not dut_nets and dut_clock_required:
         raise ValidationError("VTR eBLIF report has no DUT clock net")
+    unknown_clocks = sorted(set(dut_nets) - set(dut_periods_ns))
+    if unknown_clocks:
+        raise ValidationError(
+            "VTR eBLIF report contains undeclared DUT clocks: "
+            + ", ".join(unknown_clocks)
+        )
     lines = [
         "# EmuFlow endpoint-complete Phase 7 timing contract.",
         f"create_clock -name emuflow_fabric_clk -period {fabric_period_ns:.9f} [get_ports {{{fabric_net}}}]",
     ]
     dut_clocks = []
-    for index, net in enumerate(dut_nets):
+    effective_periods = {}
+    effective_cross_periods = {}
+    for index, (clock_id, net) in enumerate(dut_nets.items()):
+        dut_period_ns = float(dut_periods_ns[clock_id])
+        vpr_dut_period_ns = min(dut_period_ns, _VPR_SDC_MAX_TIME_NS)
+        dut_to_cross_slack_ns = max(0.0, dut_period_ns - cross_period_ns)
+        vpr_cross_period_ns = min(
+            cross_period_ns,
+            max(0.0, vpr_dut_period_ns - dut_to_cross_slack_ns),
+        )
+        # set_max_delay 0 is legal SDC but would make the implementation
+        # artificially infeasible. Retain a positive, bounded relation instead.
+        vpr_cross_period_ns = max(vpr_cross_period_ns, 1.0e-6)
         clock_name = f"emuflow_dut_clk_{index}"
-        dut_clocks.append(clock_name)
+        dut_clocks.append(
+            {"clock_id": clock_id, "constraint": clock_name, "net": net}
+        )
+        effective_periods[clock_id] = vpr_dut_period_ns
+        effective_cross_periods[clock_id] = vpr_cross_period_ns
         lines.append(
             f"create_clock -name {clock_name} -period {vpr_dut_period_ns:.9f} [get_ports {{{net}}}]"
         )
@@ -326,17 +348,18 @@ def _write_vpr_runtime_sdc(
         "dut_clock_present": bool(dut_clocks),
         "requested_periods_ns": {
             "fabric": fabric_period_ns,
-            "dut": dut_period_ns,
+            "dut": dict(sorted(dut_periods_ns.items())),
             "cross": cross_period_ns,
         },
         "effective_vpr_periods_ns": {
             "fabric": fabric_period_ns,
-            "dut": vpr_dut_period_ns,
-            "cross": vpr_cross_period_ns,
+            "dut": effective_periods,
+            "cross": effective_cross_periods,
         },
-        "vpr_sdc_time_capped": (
-            vpr_dut_period_ns != dut_period_ns
-            or vpr_cross_period_ns != cross_period_ns
+        "vpr_sdc_time_capped": any(
+            effective_periods[clock] != float(dut_periods_ns[clock])
+            or effective_cross_periods[clock] != cross_period_ns
+            for clock in dut_nets
         ),
     }
 
@@ -750,7 +773,12 @@ def run_multi_fpga_physical_flow(
         raise ValidationError(
             "physical Chimew anchors require position hints with electrical binding"
         )
-    runtime = build_virtual_runtime(schedule, platform)
+    clock_periods = manifest.get("clock_periods")
+    if not isinstance(clock_periods, dict) or not clock_periods:
+        raise ValidationError(
+            "split manifest lacks the Phase 6 DUT clock-period contract"
+        )
+    runtime = build_virtual_runtime(schedule, platform, clock_periods)
     backend_descriptor = physical_backend_descriptor(backend)
     validate_physical_backend_descriptor(backend_descriptor)
     expected_fpgas = [fpga.id for fpga in platform.fpgas]
@@ -962,6 +990,10 @@ def run_multi_fpga_physical_flow(
         )
         fabric_period = runtime["fabric_clock"]["period_ns"]
         dut_period = runtime["virtual_dut_clock"]["nominal_period_ns"]
+        dut_periods = {
+            clock: float(record["nominal_period_ns"])
+            for clock, record in runtime["virtual_dut_clocks"].items()
+        }
         cross_period = runtime["timing_model"]["fabric_to_dut_max_delay_ns"]
         if not _partition_has_physical_work(netlist, transport):
             # Do not synthesize the shared controller or invoke a placer for an
@@ -1245,7 +1277,7 @@ def run_multi_fpga_physical_flow(
                 runtime_sdc,
                 eblif_report,
                 fabric_period_ns=fabric_period,
-                dut_period_ns=dut_period,
+                dut_periods_ns=dut_periods,
                 cross_period_ns=cross_period,
                 dut_clock_required=_partition_declares_dut_clock(netlist),
             )

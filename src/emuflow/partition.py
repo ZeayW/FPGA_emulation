@@ -672,11 +672,6 @@ def build_clusters(
     released_combinational_nets: Set[str] = set()
     candidate_index = None
     if cut_mode == CUT_MODE_STATIC_EXACT:
-        if len(ir.value["clocks"]) != 1:
-            raise ValidationError(
-                "static exact combinational cuts require exactly one "
-                "virtual DUT clock"
-            )
         if static_exact_candidate_policy not in STATIC_EXACT_CANDIDATE_POLICIES:
             raise ValidationError("unknown static exact candidate policy")
         if (

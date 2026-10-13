@@ -120,12 +120,19 @@ def _chain_ir():
             "drivers": [_endpoint("l2", "O")],
             "sinks": [_endpoint("q1", "D")],
         },
+        {
+            "id": "clk_net",
+            "name": "clk_net",
+            "cut_class": "clock",
+            "drivers": [_endpoint(None, "clk")],
+            "sinks": [_endpoint("q0", "C"), _endpoint("q1", "C")],
+        },
     ]
     return EmuIR(
         {
             "schema": "emuflow.emuir/v1",
             "design": {"name": "cut_chain", "top": "cut_chain", "source_format": "test"},
-            "ports": [],
+            "ports": [{"id": "clk", "direction": "input", "width": 1}],
             "instances": instances,
             "nets": nets,
             "clocks": [
@@ -411,6 +418,101 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
         self.assertEqual(len(evaluations), width)
         self.assertIn(f"net_{width - 1:04d}", values)
         self.assertEqual(outputs, {"output[0]": values[f"net_{width - 1:04d}"]})
+
+    def test_mapped_model_advances_only_active_root_clock_domain(self):
+        instances = [
+            {
+                "id": register,
+                "type": "FDRE",
+                "resources": {"ff": 1},
+                "constant_connections": [
+                    {"port": "CE", "bit": 0, "value": "1"},
+                    {"port": "R", "bit": 0, "value": "0"},
+                ],
+            }
+            for register in ("q_fast", "q_slow")
+        ]
+        nets = []
+        for suffix in ("fast", "slow"):
+            nets.extend(
+                [
+                    {
+                        "id": f"clk_{suffix}_net",
+                        "name": f"clk_{suffix}_net",
+                        "cut_class": "clock",
+                        "drivers": [_endpoint(None, f"clk_{suffix}")],
+                        "sinks": [_endpoint(f"q_{suffix}", "C")],
+                    },
+                    {
+                        "id": f"d_{suffix}_net",
+                        "name": f"d_{suffix}_net",
+                        "cut_class": "register_input",
+                        "drivers": [_endpoint(None, f"d_{suffix}")],
+                        "sinks": [_endpoint(f"q_{suffix}", "D")],
+                    },
+                    {
+                        "id": f"q_{suffix}_net",
+                        "name": f"q_{suffix}_net",
+                        "cut_class": "register_output",
+                        "drivers": [_endpoint(f"q_{suffix}", "Q")],
+                        "sinks": [_endpoint(None, f"out_{suffix}")],
+                    },
+                ]
+            )
+        model = _MappedModel(
+            EmuIR(
+                {
+                    "schema": "emuflow.emuir/v1",
+                    "design": {
+                        "name": "two_clock_registers",
+                        "top": "two_clock_registers",
+                        "source_format": "test",
+                    },
+                    "ports": [
+                        {"id": f"clk_{suffix}", "direction": "input", "width": 1}
+                        for suffix in ("fast", "slow")
+                    ]
+                    + [
+                        {"id": f"d_{suffix}", "direction": "input", "width": 1}
+                        for suffix in ("fast", "slow")
+                    ]
+                    + [
+                        {"id": f"out_{suffix}", "direction": "output", "width": 1}
+                        for suffix in ("fast", "slow")
+                    ],
+                    "instances": instances,
+                    "nets": nets,
+                    "clocks": [
+                        {
+                            "id": f"clk_{suffix}",
+                            "name": f"clk_{suffix}",
+                            "source_port": f"clk_{suffix}",
+                            "period_ns": period,
+                        }
+                        for suffix, period in (("fast", 10.0), ("slow", 20.0))
+                    ],
+                    "warnings": [],
+                }
+            )
+        )
+        model.validate_clock_domains({"clk_fast": 10.0, "clk_slow": 20.0})
+        state = model.initial_state()
+        _, state, _ = model.evaluate(
+            state,
+            cycle=0,
+            seed=1,
+            input_values={("d_fast", 0): 1, ("d_slow", 0): 1},
+            active_clocks={"clk_fast"},
+        )
+        self.assertEqual(state, {"q_fast": 1, "q_slow": 0})
+        _, state, _ = model.evaluate(
+            state,
+            cycle=1,
+            seed=1,
+            input_values={("d_fast", 0): 0, ("d_slow", 0): 1},
+            active_clocks={"clk_slow"},
+        )
+        self.assertEqual(state, {"q_fast": 1, "q_slow": 1})
 
     def test_sparse_graph_membership_is_not_quadratic(self):
         class CountingString(str):
@@ -802,30 +904,25 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             "characterization_source_sha256", clusters["policy"]
         )
 
-    def test_exact_mode_rejects_zero_or_multiple_virtual_clocks(self):
-        for clocks in (
-            [],
-            [
-                *self.ir.value["clocks"],
-                {
-                    "id": "aux_clk",
-                    "name": "aux_clk",
-                    "source_port": "aux_clk",
-                    "period_ns": None,
-                },
-            ],
-        ):
-            with self.subTest(clock_count=len(clocks)):
-                value = copy.deepcopy(self.ir.value)
-                value["clocks"] = clocks
-                with self.assertRaisesRegex(
-                    ValidationError, "exactly one virtual DUT clock"
-                ):
-                    build_clusters(
-                        EmuIR(value),
-                        self.constraints,
-                        cut_mode=CUT_MODE_STATIC_EXACT,
-                    )
+    def test_exact_mode_accepts_multiple_virtual_clocks(self):
+        value = copy.deepcopy(self.ir.value)
+        value["clocks"] = [
+            *self.ir.value["clocks"],
+            {
+                "id": "aux_clk",
+                "name": "aux_clk",
+                "source_port": "aux_clk",
+                "period_ns": None,
+            },
+        ]
+        clusters = build_clusters(
+            EmuIR(value),
+            self.constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+        )
+        self.assertEqual(
+            clusters["policy"]["cut_mode"], CUT_MODE_STATIC_EXACT
+        )
 
     def test_depth_one_cut_has_independently_validated_contract(self):
         safe = build_clusters(self.ir, self.constraints)

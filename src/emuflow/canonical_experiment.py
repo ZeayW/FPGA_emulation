@@ -565,10 +565,6 @@ def compile_canonical_experiment_spec(
         )
     if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
         raise ValidationError("canonical experiment cut_mode is invalid")
-    if cut_mode == CUT_MODE_STATIC_EXACT and len(clocks) != 1:
-        raise ValidationError(
-            "canonical static exact cut requires exactly one virtual DUT clock"
-        )
     contract = _canonical_case_contract(
         repository_root,
         case_id,
@@ -1349,12 +1345,17 @@ def compile_canonical_experiment_spec(
         inputs=("platform", "tool.emuflow"), configuration={"materialization": "same-filesystem-hardlink-or-copy"}, peak_gib=2, retained_gib=1,
     )
 
-    baseline_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline", "--managed-storage", "--managed-dag-node", "--out", "{output_dir}"]
+    phase6_clock_arguments = [
+        argument
+        for clock, period in sorted(periods.items())
+        for argument in ("--clock-period", f"{clock}={period:.17g}")
+    ]
+    baseline_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline", *phase6_clock_arguments, "--managed-storage", "--managed-dag-node", "--out", "{output_dir}"]
     node(
         "phase6-baseline", "phase6", ["shared-phase1-5"], baseline_command,
         [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline", "--managed-dag-node"],
         [_artifact("split", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical")],
-        inputs=("platform", "tool.emuflow"), configuration={"provider": "baseline", "equivalence_cycles": 1}, peak_gib=12, retained_gib=4, provider="baseline",
+        inputs=("platform", "tool.emuflow"), configuration={"provider": "baseline", "equivalence_cycles": 1, "clock_periods": periods}, peak_gib=12, retained_gib=4, provider="baseline",
     )
     lookahead_command = [
         executable, "experiment-stage", "lookahead-run", "--shared", "{dependency:shared-phase1-5}",
@@ -1385,7 +1386,7 @@ def compile_canonical_experiment_spec(
             if provider == "placement-aware"
             else [_artifact("chimew-pipeline", "consumer-checkpoint")]
         )
-        phase6_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider, "--managed-storage", "--managed-dag-node"]
+        phase6_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider, *phase6_clock_arguments, "--managed-storage", "--managed-dag-node"]
         phase6_inputs = ["platform", "tool.emuflow"]
         if provider == "placement-aware":
             phase6_command.extend(("--pin-planner", str(tools["pin_planner"])))
@@ -1409,6 +1410,7 @@ def compile_canonical_experiment_spec(
             configuration={
                 "provider": provider,
                 "equivalence_cycles": 1,
+                "clock_periods": periods,
                 "phase6_candidate_peak_gib": phase6_candidate_peak_gib,
             },
             peak_gib=phase6_candidate_peak_gib,

@@ -263,31 +263,35 @@ def vivado_runtime_xdc(
     ir = EmuIR.load(ir_path)
     ports = {item["id"] for item in ir.value["ports"]}
     timing = runtime["timing_model"]
-    dut_port = timing["dut_clock_port"]
+    dut_ports = timing["dut_clock_ports"]
     fabric_port = timing["fabric_clock_port"]
     if fabric_port not in ports:
         raise ValidationError(
             "Vivado physical partition lacks required clock ports: "
             + fabric_port
         )
-    dut_period = runtime["virtual_dut_clock"]["nominal_period_ns"]
     fabric_period = runtime["fabric_clock"]["period_ns"]
     cross_delay = timing["fabric_to_dut_max_delay_ns"]
     lines = ["# EmuFlow provider-neutral runtime timing contract."]
-    if dut_port in ports:
-        lines.append(
-            f"create_clock -name emuflow_dut_clk -period {dut_period:.9f} "
-            f"[get_ports {{{dut_port}}}]"
-        )
     lines.append(
         f"create_clock -name emuflow_fabric_clk -period "
         f"{fabric_period:.9f} [get_ports {{{fabric_port}}}]"
     )
-    if dut_port in ports:
-        lines.append(
-            f"set_max_delay -datapath_only {cross_delay:.9f} "
-            "-from [get_clocks {emuflow_fabric_clk}] "
-            "-to [get_clocks {emuflow_dut_clk}]"
+    for index, dut_port in enumerate(dut_ports):
+        if dut_port not in ports:
+            continue
+        dut_period = runtime["virtual_dut_clocks"][dut_port][
+            "nominal_period_ns"
+        ]
+        clock_name = f"emuflow_dut_clk_{index}"
+        lines.extend(
+            [
+                f"create_clock -name {clock_name} -period {dut_period:.9f} "
+                f"[get_ports {{{dut_port}}}]",
+                f"set_max_delay -datapath_only {cross_delay:.9f} "
+                "-from [get_clocks {emuflow_fabric_clk}] "
+                f"-to [get_clocks {{{clock_name}}}]",
+            ]
         )
     lines.append("")
     return "\n".join(lines)

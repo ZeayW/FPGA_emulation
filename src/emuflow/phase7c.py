@@ -82,8 +82,18 @@ def run_phase7c(
         raise ValidationError("Python timing cannot accept OpenSTA options")
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
-    runtime = build_virtual_runtime(schedule, platform)
-    validation = validate_virtual_runtime(runtime, schedule, platform)
+    phase6_report = read_json(phase6_report_path)
+    manifest_path = phase6_report_path.parent / "manifest.json"
+    manifest = read_json(manifest_path)
+    clock_periods = manifest.get("clock_periods")
+    if not isinstance(clock_periods, dict) or not clock_periods:
+        raise ValidationError(
+            "Phase 7C requires the Phase 6 DUT clock-period contract"
+        )
+    runtime = build_virtual_runtime(schedule, platform, clock_periods)
+    validation = validate_virtual_runtime(
+        runtime, schedule, platform, clock_periods
+    )
     physical_summary = (
         read_json(physical_summary_path)
         if physical_summary_path is not None
@@ -118,7 +128,6 @@ def run_phase7c(
         _sha256(routes_path) if routes_path is not None else None
     )
     phase5_report = read_json(phase5_report_path)
-    phase6_report = read_json(phase6_report_path)
     cross_layer_contract = None
     physical_binding = None
     physical_binding_validation = None
@@ -207,7 +216,7 @@ def run_phase7c(
             physical_binding,
         )
     (output_dir / "virtual_runtime_controller.sv").write_text(
-        virtual_runtime_controller_to_systemverilog(),
+        virtual_runtime_controller_to_systemverilog(runtime),
         encoding="utf-8",
     )
     (output_dir / "virtual_runtime_controller_tb.sv").write_text(

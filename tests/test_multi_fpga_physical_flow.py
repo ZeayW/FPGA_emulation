@@ -292,7 +292,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     }
                 },
                 fabric_period_ns=20.0,
-                dut_period_ns=200.0,
+                dut_periods_ns={"dut_clk": 200.0},
                 cross_period_ns=180.0,
                 dut_clock_required=False,
             )
@@ -342,14 +342,23 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     }
                 },
                 fabric_period_ns=20.0,
-                dut_period_ns=2_238_160.0,
+                dut_periods_ns={"dut_clk": 2_238_160.0},
                 cross_period_ns=2_237_980.0,
             )
 
-            self.assertEqual(report["requested_periods_ns"]["dut"], 2_238_160.0)
+            self.assertEqual(
+                report["requested_periods_ns"]["dut"],
+                {"dut_clk": 2_238_160.0},
+            )
             self.assertEqual(report["requested_periods_ns"]["cross"], 2_237_980.0)
-            self.assertEqual(report["effective_vpr_periods_ns"]["dut"], 2_000_000.0)
-            self.assertEqual(report["effective_vpr_periods_ns"]["cross"], 1_999_820.0)
+            self.assertEqual(
+                report["effective_vpr_periods_ns"]["dut"],
+                {"dut_clk": 2_000_000.0},
+            )
+            self.assertEqual(
+                report["effective_vpr_periods_ns"]["cross"],
+                {"dut_clk": 1_999_820.0},
+            )
             self.assertTrue(report["vpr_sdc_time_capped"])
             self.assertEqual(report["sha256"], _sha256(path))
             self.assertEqual(
@@ -365,6 +374,39 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 "set_max_delay 1999820.000000000 -from "
                 "[get_clocks {emuflow_dut_clk_0}] -to "
                 "[get_clocks {emuflow_fabric_clk}]\n",
+            )
+
+    def test_runtime_sdc_preserves_each_dut_clock_period(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "runtime.sdc"
+            report = _write_vpr_runtime_sdc(
+                path,
+                {
+                    "clock_nets": {
+                        "fabric_clk": "fabric_clock_net",
+                        "core_clk": "core_clock_net",
+                        "csb_clk": "csb_clock_net",
+                    }
+                },
+                fabric_period_ns=20.0,
+                dut_periods_ns={"core_clk": 200.0, "csb_clk": 400.0},
+                cross_period_ns=180.0,
+            )
+
+            self.assertEqual(
+                report["effective_vpr_periods_ns"]["dut"],
+                {"core_clk": 200.0, "csb_clk": 400.0},
+            )
+            text = path.read_text(encoding="utf-8")
+            self.assertIn(
+                "create_clock -name emuflow_dut_clk_0 -period 200.000000000 "
+                "[get_ports {core_clock_net}]",
+                text,
+            )
+            self.assertIn(
+                "create_clock -name emuflow_dut_clk_1 -period 400.000000000 "
+                "[get_ports {csb_clock_net}]",
+                text,
             )
 
     def test_chimew_fixed_io_targets_allow_only_intragroup_tdm_sharing(self):
@@ -412,6 +454,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 "platform": "academic_vtr_2fpga_p2p",
                 "provider": "test",
                 "board_binding": {"status": "virtual"},
+                "clock_periods": {"clk": 10.0},
                 "fpgas": [],
                 "lane_map": "lane_map.json",
                 "runtime_controller_rtl": "virtual_runtime_controller.sv",
@@ -465,6 +508,9 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 "design": "design",
                 "fabric_clock": {"period_ns": 4.0},
                 "virtual_dut_clock": {"nominal_period_ns": 128.0},
+                "virtual_dut_clocks": {
+                    "clk": {"nominal_period_ns": 128.0}
+                },
                 "timing_model": {"fabric_to_dut_max_delay_ns": 8.0},
             }
 
@@ -783,6 +829,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 split / "manifest.json",
                 {
                     "schema": "emuflow.split-manifest/v1",
+                    "clock_periods": {"clk": 10.0},
                     "fpgas": [{"fpga": "fpga0"}, {"fpga": "fpga1"}],
                 },
             )

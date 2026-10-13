@@ -1408,12 +1408,21 @@ def serial_integration_shell_rtl(
     source_count = max(1, len(transport["source_signals"]))
     shadow_count = max(1, len(transport["shadow_signals"]))
     slot_bits = max(1, (transport["frame_slots"] - 1).bit_length())
+    virtual_clock_order = transport.get("virtual_clock_order", ["clk"])
+    if (
+        not isinstance(virtual_clock_order, list)
+        or not virtual_clock_order
+        or any(not isinstance(clock, str) or not clock for clock in virtual_clock_order)
+        or len(set(virtual_clock_order)) != len(virtual_clock_order)
+    ):
+        raise ValidationError("transport virtual clock order is invalid")
+    virtual_clock_count = len(virtual_clock_order)
     ports = [
         "  input  wire fabric_clk",
         "  input  wire reset",
         f"  input  wire [{source_count - 1}:0] source_values",
         f"  output wire [{shadow_count - 1}:0] shadow_values",
-        "  output wire virtual_clock_enable",
+        f"  output wire [{virtual_clock_count - 1}:0] virtual_clock_enable",
         f"  output wire [{slot_bits - 1}:0] slot_debug",
         "  output wire links_ready_debug",
     ]

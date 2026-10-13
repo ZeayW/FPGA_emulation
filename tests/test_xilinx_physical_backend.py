@@ -243,6 +243,9 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
     def test_physical_clocks_only_include_emuir_clocks(self):
         runtime = {
             "fabric_clock": {"period_ns": 4.0},
+            "virtual_dut_clocks": {
+                "clk": {"nominal_period_ns": 40.0}
+            },
             "virtual_dut_clock": {"nominal_period_ns": 40.0},
         }
         self.assertEqual(

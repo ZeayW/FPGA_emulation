@@ -183,9 +183,13 @@ def _physical_clock_periods(
         if name == "fabric_clk":
             clocks[name] = float(runtime["fabric_clock"]["period_ns"])
         else:
-            clocks[name] = float(
-                runtime["virtual_dut_clock"]["nominal_period_ns"]
-            )
+            domains = runtime.get("virtual_dut_clocks", {})
+            if name not in domains:
+                raise ValidationError(
+                    f"physical DUT clock {name!r} is absent from the runtime "
+                    "clock contract"
+                )
+            clocks[name] = float(domains[name]["nominal_period_ns"])
     return clocks
 
 
@@ -432,6 +436,12 @@ def _run_rapidwright_routed_backend_tail(
         },
         "clocks": {
             "fabric_period_ns": float(runtime["fabric_clock"]["period_ns"]),
+            "dut_periods_ns": {
+                clock: float(record["nominal_period_ns"])
+                for clock, record in sorted(
+                    runtime["virtual_dut_clocks"].items()
+                )
+            },
             "dut_period_ns": float(
                 runtime["virtual_dut_clock"]["nominal_period_ns"]
             ),

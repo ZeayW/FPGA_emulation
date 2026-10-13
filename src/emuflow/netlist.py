@@ -462,6 +462,10 @@ def build_split_artifacts(
             "platform": platform.name,
             "fpga": fpga_id,
             "frame_slots": schedule["metrics"]["frame_slots"],
+            "virtual_clock_order": sorted(
+                item["id"] for item in ir.value.get("clocks", [])
+            )
+            or ["clk"],
             "source_signals": [
                 {"index": index, "signal": signal}
                 for index, signal in enumerate(source_signals)
@@ -596,13 +600,22 @@ def transport_to_systemverilog(
             for endpoint in transport["endpoints"]
         }
     )
+    virtual_clock_order = transport.get("virtual_clock_order", ["clk"])
+    if (
+        not isinstance(virtual_clock_order, list)
+        or not virtual_clock_order
+        or any(not isinstance(clock, str) or not clock for clock in virtual_clock_order)
+        or len(set(virtual_clock_order)) != len(virtual_clock_order)
+    ):
+        raise ValidationError("transport virtual clock order is invalid")
+    virtual_clock_count = len(virtual_clock_order)
     ports = [
         "  input  logic fabric_clk",
         "  input  logic reset",
         "  input  logic links_ready",
         "  input  logic [SOURCE_COUNT-1:0] source_values",
         "  output logic [SHADOW_COUNT-1:0] shadow_values",
-        "  output logic virtual_clock_enable",
+        f"  output logic [{virtual_clock_count - 1}:0] virtual_clock_enable",
         "  output logic [SLOT_BITS-1:0] slot_debug",
     ]
     kinds_by_group: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
@@ -662,6 +675,7 @@ def transport_to_systemverilog(
         "    .reset(reset),",
         "    .links_ready(links_ready),",
         "    .virtual_clock_enable(virtual_clock_enable),",
+        "    .event_index_debug(),",
         "    .slot(slot)",
         "  );",
         "  assign slot_debug = slot;",

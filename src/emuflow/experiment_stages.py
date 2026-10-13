@@ -1130,6 +1130,7 @@ def run_phase6_checkpoint(
     chimew_assigner: str | None = None,
     managed_storage: bool = False,
     managed_dag_node: bool = False,
+    clock_periods: Mapping[str, float] | None = None,
 ) -> Dict[str, Any]:
     session = _ValidationSession()
     if provider not in _PROVIDERS:
@@ -1261,6 +1262,7 @@ def run_phase6_checkpoint(
         position_hints_path=position_hints_path,
         electrical_binding_path=electrical_binding_path,
         managed_storage=managed_storage,
+        clock_periods=clock_periods,
     )
     report = {
         "schema": EXPERIMENT_PHASE6_SCHEMA,

@@ -94,9 +94,10 @@ def _ir():
 
 RUNTIME = {
     "fabric_clock": {"period_ns": 4.0},
+    "virtual_dut_clocks": {"clk": {"nominal_period_ns": 100.0}},
     "virtual_dut_clock": {"nominal_period_ns": 100.0},
     "timing_model": {
-        "dut_clock_port": "clk",
+        "dut_clock_ports": ["clk"],
         "fabric_clock_port": "fabric_clk",
         "fabric_to_dut_max_delay_ns": 8.0,
     },
@@ -271,7 +272,7 @@ class VivadoBackendTest(unittest.TestCase):
             path = Path(temporary) / "ir.json"
             write_json(path, _ir().to_dict())
             xdc = vivado_runtime_xdc(path, RUNTIME)
-        self.assertIn("emuflow_dut_clk -period 100.000000000", xdc)
+        self.assertIn("emuflow_dut_clk_0 -period 100.000000000", xdc)
         self.assertIn("emuflow_fabric_clk -period 4.000000000", xdc)
         self.assertIn("set_max_delay -datapath_only 8.000000000", xdc)
         self.assertIn("100.000000000 [get_ports {clk}]", xdc)

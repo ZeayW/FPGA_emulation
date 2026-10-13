@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import math
+from fractions import Fraction
+from functools import reduce
+from math import gcd
 from typing import Any, Dict, Mapping, Optional, Sequence
 
 from .errors import ValidationError
@@ -9,33 +12,77 @@ from .system_timing import build_system_timing
 from .tdm import RUNTIME_BARRIER_SLOTS, TDM_SCHEDULE_SCHEMA
 
 
-VIRTUAL_RUNTIME_SCHEMA = "emuflow.virtual-runtime/v1"
+VIRTUAL_RUNTIME_SCHEMA = "emuflow.virtual-runtime/v2"
 PHYSICAL_SUMMARY_SCHEMA = "emuflow.phase7b-physical-summary/v1"
 QOR_REPORT_SCHEMA = "emuflow.qor-report/v4"
 
 
-def virtual_runtime_controller_to_systemverilog() -> str:
-    return """module emuflow_virtual_runtime_controller #(
+def virtual_runtime_controller_to_systemverilog(
+    runtime: Mapping[str, Any],
+) -> str:
+    """Emit the runtime-specific multi-clock frame controller.
+
+    The transport frame remains the atomic communication barrier.  At each
+    successful frame release, the controller emits the subset of original DUT
+    root-clock enables described by the finite event calendar.  Clock identity
+    and relative rate therefore survive partitioning; no root clocks are
+    silently merged.
+    """
+
+    clock_order = sorted(runtime["virtual_dut_clocks"])
+    events = runtime["virtual_timebase"]["events"]
+    clock_index = {clock: index for index, clock in enumerate(clock_order)}
+    masks = []
+    for event in events:
+        mask = 0
+        for clock in event["clocks"]:
+            mask |= 1 << clock_index[clock]
+        masks.append(mask)
+    clock_count = len(clock_order)
+    event_count = len(masks)
+    event_bits = max(1, (event_count - 1).bit_length())
+    case_lines = "\n".join(
+        f"      {index}: virtual_clock_enable = {clock_count}'h{mask:x};"
+        for index, mask in enumerate(masks)
+    )
+    clock_comments = "\n".join(
+        f"  // virtual_clock_enable[{index}] = {clock}"
+        for index, clock in enumerate(clock_order)
+    )
+    return f"""module emuflow_virtual_runtime_controller #(
   parameter integer FRAME_SLOTS = 32,
   parameter integer SLOT_BITS = 5
 ) (
   input  logic fabric_clk,
   input  logic reset,
   input  logic links_ready,
-  output logic virtual_clock_enable,
+  output logic [{clock_count - 1}:0] virtual_clock_enable,
+  output logic [{event_bits - 1}:0] event_index_debug,
   output logic [SLOT_BITS-1:0] slot
 );
+  localparam integer CLOCK_COUNT = {clock_count};
+  localparam integer EVENT_COUNT = {event_count};
   logic started;
+  logic [{event_bits - 1}:0] event_index;
+
+{clock_comments}
 
   always_comb begin
-    virtual_clock_enable =
-      !reset && started && links_ready && (slot == FRAME_SLOTS - 1);
+    virtual_clock_enable = '0;
+    if (!reset && started && links_ready && (slot == FRAME_SLOTS - 1)) begin
+      case (event_index)
+{case_lines}
+        default: virtual_clock_enable = '0;
+      endcase
+    end
+    event_index_debug = event_index;
   end
 
   always_ff @(posedge fabric_clk) begin
     if (reset) begin
       slot <= '0;
       started <= 1'b0;
+      event_index <= '0;
     end else if (!started) begin
       // No TDM work may execute before the distributed startup barrier.
       // The first complete frame begins only after global readiness.
@@ -47,6 +94,10 @@ def virtual_runtime_controller_to_systemverilog() -> str:
       if (slot == FRAME_SLOTS - 1) begin
         if (links_ready) begin
           slot <= '0;
+          if (event_index == EVENT_COUNT - 1)
+            event_index <= '0;
+          else
+            event_index <= event_index + 1'b1;
         end
       end else begin
         slot <= slot + 1'b1;
@@ -74,9 +125,112 @@ def _common_fabric_clock_mhz(platform: Platform) -> float:
     return reference
 
 
+def _lcm(left: int, right: int) -> int:
+    return abs(left * right) // gcd(left, right)
+
+
+def build_virtual_clock_contract(
+    clock_periods: Optional[Mapping[str, float]],
+    frame_period_ns: float,
+) -> Dict[str, Any]:
+    """Build a finite, exact root-clock event calendar.
+
+    One complete transport frame advances the original DUT time by one
+    ``timebase_period_ns`` quantum.  A root clock receives one complete pulse
+    only on the frames listed in ``events``.  This preserves relative clock
+    rates instead of silently collapsing every declared clock into one edge.
+
+    The public compile path always supplies the declared clock periods.  The
+    synthetic single ``clk`` default is retained only for low-level callers
+    that construct a schedule directly in unit tests.
+    """
+
+    periods = dict(clock_periods or {"clk": 1.0})
+    if not periods:
+        raise ValidationError("virtual runtime requires at least one DUT clock")
+    normalized: Dict[str, Fraction] = {}
+    for clock, raw_period in sorted(periods.items()):
+        if (
+            not isinstance(clock, str)
+            or not clock
+            or isinstance(raw_period, bool)
+            or not isinstance(raw_period, (int, float))
+            or not math.isfinite(float(raw_period))
+            or float(raw_period) <= 0.0
+        ):
+            raise ValidationError("virtual runtime DUT clock periods are invalid")
+        normalized[clock] = Fraction(str(float(raw_period)))
+    denominator = reduce(_lcm, (item.denominator for item in normalized.values()))
+    period_units = {
+        clock: int(period * denominator)
+        for clock, period in normalized.items()
+    }
+    quantum_units = reduce(gcd, period_units.values())
+    period_ticks = {
+        clock: units // quantum_units for clock, units in period_units.items()
+    }
+    calendar_ticks = reduce(_lcm, period_ticks.values())
+    if calendar_ticks > 4096:
+        raise ValidationError(
+            "virtual runtime multi-clock event calendar exceeds 4096 ticks"
+        )
+    events = [
+        {
+            "offset_ticks": tick,
+            "clocks": [
+                clock
+                for clock, ticks in sorted(period_ticks.items())
+                if tick % ticks == 0
+            ],
+        }
+        for tick in range(1, calendar_ticks + 1)
+        if any(tick % ticks == 0 for ticks in period_ticks.values())
+    ]
+    quantum = Fraction(quantum_units, denominator)
+    clocks = {
+        clock: {
+            "target_period_ns": float(normalized[clock]),
+            "period_ticks": period_ticks[clock],
+            "nominal_period_ns": period_ticks[clock] * frame_period_ns,
+            "nominal_frequency_mhz": (
+                1000.0 / (period_ticks[clock] * frame_period_ns)
+            ),
+            "phase_ticks": 0,
+            "edge": "complete-pulse-per-calendar-event",
+        }
+        for clock in sorted(normalized)
+    }
+    fastest_period = min(item["nominal_period_ns"] for item in clocks.values())
+    return {
+        "timebase_period_ns": float(quantum),
+        "calendar_ticks": calendar_ticks,
+        "events": events,
+        "clocks": clocks,
+        "fastest_nominal_period_ns": fastest_period,
+    }
+
+
+def runtime_clock_period_ns(
+    runtime: Mapping[str, Any], clock_domain: Optional[str]
+) -> float:
+    """Return the virtualized period for one original DUT clock domain."""
+
+    clocks = runtime.get("virtual_dut_clocks")
+    if not isinstance(clocks, Mapping) or not clocks:
+        raise ValidationError("virtual runtime lacks DUT clock domains")
+    if clock_domain in clocks:
+        return float(clocks[clock_domain]["nominal_period_ns"])
+    if len(clocks) == 1:
+        return float(next(iter(clocks.values()))["nominal_period_ns"])
+    raise ValidationError(
+        f"timing path clock domain {clock_domain!r} is not a declared DUT clock"
+    )
+
+
 def build_virtual_runtime(
     schedule: Mapping[str, Any],
     platform: Platform,
+    clock_periods: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
     if schedule.get("schema") != TDM_SCHEDULE_SCHEMA:
         raise ValidationError(
@@ -123,15 +277,22 @@ def build_virtual_runtime(
     release_slot = frame_slots - RUNTIME_BARRIER_SLOTS
     shadow_settle_slots = release_slot - completion_slot
     nominal_virtual_period_ns = frame_slots * fabric_period_ns
+    clock_contract = build_virtual_clock_contract(
+        clock_periods, nominal_virtual_period_ns
+    )
+    virtual_clocks = clock_contract["clocks"]
+    fastest_virtual_period = clock_contract["fastest_nominal_period_ns"]
     return {
         "schema": VIRTUAL_RUNTIME_SCHEMA,
         "design": schedule.get("design"),
         "platform": platform.name,
-        "provider": "lockstep-pausible-clock-barrier-v1",
+        "provider": "multi-clock-pausible-calendar-barrier-v2",
         "semantic_envelope": {
-            "virtual_dut_clocks": 1,
+            "virtual_dut_clocks": len(virtual_clocks),
             "reset_model": "synchronous-fabric-controller",
-            "clock_progression": "one-dut-edge-after-each-complete-frame",
+            "clock_progression": (
+                "per-domain-edge-calendar-after-complete-frame"
+            ),
         },
         "fabric_clock": {
             "frequency_mhz": fabric_clock_mhz,
@@ -145,9 +306,18 @@ def build_virtual_runtime(
             "shadow_settle_slots": shadow_settle_slots,
             "shadow_settle_ns": shadow_settle_slots * fabric_period_ns,
         },
-        "virtual_dut_clock": {
+        "virtual_timebase": {
+            "target_period_ns": clock_contract["timebase_period_ns"],
             "nominal_frequency_mhz": 1000.0 / nominal_virtual_period_ns,
             "nominal_period_ns": nominal_virtual_period_ns,
+            "calendar_ticks": clock_contract["calendar_ticks"],
+            "events": clock_contract["events"],
+        },
+        "virtual_dut_clocks": virtual_clocks,
+        "virtual_dut_clock": {
+            "scope": "fastest-domain-derived-summary",
+            "nominal_frequency_mhz": 1000.0 / fastest_virtual_period,
+            "nominal_period_ns": fastest_virtual_period,
             "enable_pulse_fabric_cycles": 1,
             "enable_assertion_phase": (
                 "during-release-slot-before-dut-edge"
@@ -170,7 +340,7 @@ def build_virtual_runtime(
             ],
         },
         "timing_model": {
-            "dut_clock_port": "clk",
+            "dut_clock_ports": sorted(virtual_clocks),
             "fabric_clock_port": "fabric_clk",
             "fabric_to_dut_max_delay_ns": (
                 shadow_settle_slots * fabric_period_ns
@@ -191,8 +361,9 @@ def validate_virtual_runtime(
     runtime: Mapping[str, Any],
     schedule: Mapping[str, Any],
     platform: Platform,
+    clock_periods: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
-    expected = build_virtual_runtime(schedule, platform)
+    expected = build_virtual_runtime(schedule, platform, clock_periods)
     if runtime != expected:
         raise ValidationError(
             "virtual runtime contract does not match schedule and BoardDB"
@@ -206,6 +377,8 @@ def validate_virtual_runtime(
         "barrier_release_slot": frame["barrier_release_slot"],
         "shadow_settle_slots": frame["shadow_settle_slots"],
         "shadow_settle_ns": frame["shadow_settle_ns"],
+        "virtual_dut_clocks": len(expected["virtual_dut_clocks"]),
+        "clock_event_count": len(expected["virtual_timebase"]["events"]),
         "nominal_virtual_frequency_mhz": expected["virtual_dut_clock"][
             "nominal_frequency_mhz"
         ],
@@ -265,30 +438,42 @@ def estimate_runtime_timing(
 
 def runtime_timing_xdc(runtime: Mapping[str, Any]) -> str:
     fabric = runtime["fabric_clock"]
-    dut = runtime["virtual_dut_clock"]
     timing = runtime["timing_model"]
-    return "\n".join(
+    lines = [
+        "# EmuFlow board-independent pausible multi-clock timing contract.",
+        "# Original root-clock identities and relative rates are preserved.",
+        f"create_clock -name emuflow_fabric_clk "
+        f"-period {fabric['period_ns']:.9f} "
+        f"[get_ports {{{timing['fabric_clock_port']}}}]",
+    ]
+    for index, clock in enumerate(timing["dut_clock_ports"]):
+        record = runtime["virtual_dut_clocks"][clock]
+        clock_name = f"emuflow_dut_clk_{index}"
+        lines.extend(
+            [
+                f"create_clock -name {clock_name} "
+                f"-period {record['nominal_period_ns']:.9f} "
+                f"[get_ports {{{clock}}}]",
+                f"set_max_delay -datapath_only "
+                f"{timing['fabric_to_dut_max_delay_ns']:.9f} "
+                "-from [get_clocks {emuflow_fabric_clk}] "
+                f"-to [get_clocks {{{clock_name}}}]",
+                f"# {clock}: target_period_ns="
+                f"{record['target_period_ns']:.9f} period_ticks="
+                f"{record['period_ticks']}",
+            ]
+        )
+    lines.extend(
         [
-            "# EmuFlow board-independent pausible-clock timing contract.",
-            "# The DUT clock is constrained separately by the implementation",
-            "# harness. This XDC adds the fabric clock and the protocol-backed",
-            "# fabric-shadow to virtual-DUT stable-data window.",
-            f"create_clock -name emuflow_fabric_clk "
-            f"-period {fabric['period_ns']:.9f} "
-            f"[get_ports {{{timing['fabric_clock_port']}}}]",
-            f"set_max_delay -datapath_only "
-            f"{timing['fabric_to_dut_max_delay_ns']:.9f} "
-            "-from [get_clocks {emuflow_fabric_clk}] "
-            "-to [get_clocks {emuflow_dut_clk}]",
             "",
             "# Board-specific input/output delays, package pins, IOSTANDARD,",
             "# source-synchronous forwarding, and link training are intentionally",
             "# absent until a hardware BSP is selected.",
             "# physical_link_io_delay_status=requires-hardware-bsp",
-            f"# nominal_virtual_dut_period_ns={dut['nominal_period_ns']:.9f}",
             "",
         ]
     )
+    return "\n".join(lines)
 
 
 def runtime_controller_testbench(
@@ -300,12 +485,27 @@ def runtime_controller_testbench(
         raise ValueError("runtime controller testbench requires at least 3 frames")
     frame_slots = runtime["frame"]["slots"]
     slot_bits = max(1, (frame_slots - 1).bit_length())
+    clock_order = sorted(runtime["virtual_dut_clocks"])
+    clock_count = len(clock_order)
+    events = runtime["virtual_timebase"]["events"]
+    event_count = len(events)
+    event_bits = max(1, (event_count - 1).bit_length())
+    clock_index = {clock: index for index, clock in enumerate(clock_order)}
+    masks = []
+    for event in events:
+        mask = 0
+        for clock in event["clocks"]:
+            mask |= 1 << clock_index[clock]
+        masks.append(mask)
     lines = [
         "`timescale 1ns/1ps",
         "module virtual_runtime_controller_tb;",
         f"  localparam integer FRAME_SLOTS = {frame_slots};",
         f"  localparam integer SLOT_BITS = {slot_bits};",
         f"  localparam integer TARGET_FRAMES = {frames};",
+        f"  localparam integer CLOCK_COUNT = {clock_count};",
+        f"  localparam integer EVENT_COUNT = {event_count};",
+        f"  localparam integer EVENT_BITS = {event_bits};",
         "  logic fabric_clk = 1'b0;",
         "  logic reset = 1'b1;",
         "  logic links_ready = 1'b0;",
@@ -313,7 +513,8 @@ def runtime_controller_testbench(
     for index, fpga_id in enumerate(fpga_ids):
         lines.extend(
             [
-                f"  logic virtual_clock_enable_{index};",
+                f"  logic [CLOCK_COUNT-1:0] virtual_clock_enable_{index};",
+                f"  logic [EVENT_BITS-1:0] event_index_{index};",
                 f"  logic [SLOT_BITS-1:0] slot_{index};",
                 "  emuflow_virtual_runtime_controller #(",
                 "    .FRAME_SLOTS(FRAME_SLOTS), .SLOT_BITS(SLOT_BITS)",
@@ -321,6 +522,7 @@ def runtime_controller_testbench(
                 "    .fabric_clk(fabric_clk), .reset(reset),",
                 "    .links_ready(links_ready),",
                 f"    .virtual_clock_enable(virtual_clock_enable_{index}),",
+                f"    .event_index_debug(event_index_{index}),",
                 f"    .slot(slot_{index})",
                 "  );",
                 f"  // FPGA instance {fpga_id}",
@@ -332,21 +534,39 @@ def runtime_controller_testbench(
             "  integer pulses = 0;",
             "  integer stalled_cycles = 0;",
             "  integer previous_slot;",
+            "  integer previous_event;",
+            "  function automatic [CLOCK_COUNT-1:0] expected_mask;",
+            "    input integer event_index;",
+            "    begin",
+            "      case (event_index)",
+        ]
+    )
+    for index, mask in enumerate(masks):
+        lines.append(
+            f"        {index}: expected_mask = {clock_count}'h{mask:x};"
+        )
+    lines.extend(
+        [
+            "        default: expected_mask = '0;",
+            "      endcase",
+            "    end",
+            "  endfunction",
             "  initial begin",
             "    repeat (3) @(posedge fabric_clk);",
             "    #1 reset = 1'b0;",
             "    repeat (3) begin",
             "      @(posedge fabric_clk); #1;",
-            "      if (slot_0 !== 0 || virtual_clock_enable_0)",
+            "      if (slot_0 !== 0 || virtual_clock_enable_0 !== '0)",
             '        $fatal(1, "controller advanced before global ready");',
             "    end",
             "    @(negedge fabric_clk); links_ready = 1'b1;",
             "    @(posedge fabric_clk); #1;",
-            "    if (slot_0 !== 0 || virtual_clock_enable_0)",
+            "    if (slot_0 !== 0 || virtual_clock_enable_0 !== '0)",
             '      $fatal(1, "startup barrier did not begin at slot zero");',
             "    while (pulses < TARGET_FRAMES) begin",
             "      @(negedge fabric_clk);",
             "      previous_slot = slot_0;",
+            "      previous_event = event_index_0;",
             "      if (pulses == 2 && previous_slot == FRAME_SLOTS - 1 &&",
             "          stalled_cycles < 3) begin",
             "        links_ready = 1'b0;",
@@ -355,9 +575,9 @@ def runtime_controller_testbench(
             "      end",
             "      #1;",
             "      if (previous_slot == FRAME_SLOTS - 1 && links_ready) begin",
-            "        if (!virtual_clock_enable_0)",
-            '          $fatal(1, "clock enable was not asserted before release");',
-            "      end else if (virtual_clock_enable_0) begin",
+            "        if (virtual_clock_enable_0 !== expected_mask(previous_event))",
+            '          $fatal(1, "clock-event mask mismatch before release");',
+            "      end else if (virtual_clock_enable_0 !== '0) begin",
             '        $fatal(1, "clock enable asserted outside release window");',
             "      end",
             "      @(posedge fabric_clk); #1;",
@@ -367,8 +587,8 @@ def runtime_controller_testbench(
         lines.extend(
             [
                 f"      if (slot_{index} !== slot_0 ||",
-                f"          virtual_clock_enable_{index} !== "
-                "virtual_clock_enable_0)",
+                f"          virtual_clock_enable_{index} !== virtual_clock_enable_0 ||",
+                f"          event_index_{index} !== event_index_0)",
                 f'        $fatal(1, "controller {index} lost lockstep");',
             ]
         )
@@ -376,19 +596,23 @@ def runtime_controller_testbench(
         [
             "      if (!links_ready && previous_slot == FRAME_SLOTS - 1) begin",
             "        stalled_cycles = stalled_cycles + 1;",
-            "        if (slot_0 !== FRAME_SLOTS - 1 || virtual_clock_enable_0)",
+            "        if (slot_0 !== FRAME_SLOTS - 1 ||",
+            "            virtual_clock_enable_0 !== '0 ||",
+            "            event_index_0 !== previous_event)",
             '          $fatal(1, "barrier did not hold at release slot");',
             "      end else if (previous_slot == FRAME_SLOTS - 1) begin",
-            "        if (slot_0 !== 0 || virtual_clock_enable_0)",
+            "        if (slot_0 !== 0 || virtual_clock_enable_0 !== '0)",
             '          $fatal(1, "illegal state after frame release");',
+            "        if (event_index_0 !==",
+            "            ((previous_event == EVENT_COUNT - 1) ? 0 : previous_event + 1))",
+            '          $fatal(1, "illegal multi-clock event progression");',
             "        pulses = pulses + 1;",
             "      end else begin",
             "        if (slot_0 !== previous_slot + 1)",
             '          $fatal(1, "illegal slot progression");',
             "      end",
-            "      if (virtual_clock_enable_0 !==",
-            "          (!reset && links_ready && slot_0 == FRAME_SLOTS - 1))",
-            '        $fatal(1, "clock enable does not match release window");',
+            "      if (virtual_clock_enable_0 !== '0)",
+            '        $fatal(1, "clock enable remained asserted after edge");',
             "    end",
             "    if (stalled_cycles != 3)",
             '      $fatal(1, "stall coverage mismatch");',

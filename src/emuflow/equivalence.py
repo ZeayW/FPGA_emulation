@@ -329,6 +329,106 @@ class _MappedModel:
             instance_id: index
             for index, instance_id in enumerate(self.combinational_order)
         }
+        self.declared_clock_ids = frozenset(
+            item["id"] for item in ir.value.get("clocks", [])
+        )
+        top_clock_nets = {
+            net: port
+            for (port, bit), net in self.top_input_net.items()
+            if bit == 0 and port in self.declared_clock_ids
+        }
+        # Build the clock-root graph from clock-classified nets only.  Using
+        # every data sink here duplicates the complete mapped netlist and is
+        # prohibitively expensive for the large designs for which this
+        # checker exists.  The importer propagates ``cut_class == clock``
+        # through clock buffers/gates, so a single pass over that small cone
+        # is both sufficient and bounded by the clock network rather than by
+        # the whole design.
+        clock_net_ids = {
+            net["id"]
+            for net in ir.value["nets"]
+            if net.get("cut_class") == "clock"
+        }
+        combinational_driver = {
+            net: instance_id
+            for instance_id, nets in self.combinational_output_nets.items()
+            for net in nets
+            if net in clock_net_ids
+        }
+        input_nets_by_instance: Dict[str, Set[str]] = defaultdict(set)
+        for (owner, _port, _bit_index), input_net in self.input_net.items():
+            if input_net in clock_net_ids:
+                input_nets_by_instance[owner].add(input_net)
+        clock_root_cache: Dict[str, frozenset[str]] = {}
+        visiting: Set[str] = set()
+
+        def clock_roots(net: str) -> frozenset[str]:
+            cached = clock_root_cache.get(net)
+            if cached is not None:
+                return cached
+            if net in visiting:
+                raise ValidationError(
+                    f"clock dependency graph contains a cycle at {net!r}"
+                )
+            if net in top_clock_nets:
+                result = frozenset({top_clock_nets[net]})
+            else:
+                visiting.add(net)
+                driver = combinational_driver.get(net)
+                roots: Set[str] = set()
+                if driver is not None:
+                    for input_net in input_nets_by_instance[driver]:
+                        roots.update(clock_roots(input_net))
+                visiting.remove(net)
+                result = frozenset(roots)
+            clock_root_cache[net] = result
+            return result
+
+        self.sequential_clock_roots: Dict[str, frozenset[str]] = {}
+        for instance_id in [*self.ff_ids, *self.ram_ids]:
+            instance = self.instances[instance_id]
+            if instance["type"] in {"RAMB18E2", "RAMB36E2"}:
+                ports = ("CLKARDCLK", "CLKBWRCLK")
+            elif instance["type"] == "VTR_DP_RAM":
+                ports = ("clk1", "clk2", "clk")
+            elif instance["type"] == "VTR_SP_RAM":
+                ports = ("clk",)
+            else:
+                ports = ("C",)
+            roots: Set[str] = set()
+            for port in ports:
+                net = self.input_net.get((instance_id, port, 0))
+                if net is not None:
+                    roots.update(clock_roots(net))
+            self.sequential_clock_roots[instance_id] = frozenset(roots)
+
+    def validate_clock_domains(self, clock_periods: Mapping[str, float]) -> None:
+        declared = set(self.declared_clock_ids)
+        if set(clock_periods) != declared:
+            raise ValidationError(
+                "equivalence clock-period contract does not exactly cover "
+                "declared EmuIR clocks"
+            )
+        unbound = sorted(
+            instance_id
+            for instance_id, roots in self.sequential_clock_roots.items()
+            if not roots
+        )
+        ambiguous = sorted(
+            instance_id
+            for instance_id, roots in self.sequential_clock_roots.items()
+            if len(roots) > 1
+        )
+        if unbound:
+            raise ValidationError(
+                "sequential instances lack a declared root clock: "
+                f"{unbound[:8]}"
+            )
+        if ambiguous:
+            raise ValidationError(
+                "sequential clock logic depends on multiple root clocks: "
+                f"{ambiguous[:8]}"
+            )
 
     def _evaluate_dsp48e2(
         self,
@@ -992,11 +1092,14 @@ class _MappedModel:
         seed: int,
         overrides: Optional[Mapping[Tuple[str, str], int]] = None,
         input_values: Optional[Mapping[Tuple[str, int], int]] = None,
+        active_clocks: Optional[Set[str]] = None,
     ) -> Tuple[Dict[str, int], Dict[str, Any], Dict[str, int]]:
         values: Dict[str, int] = {}
         for (port, bit), net in self.top_input_net.items():
             if input_values is not None and (port, bit) in input_values:
                 values[net] = _bit(input_values[(port, bit)])
+            elif port in self.declared_clock_ids:
+                values[net] = 0
             else:
                 values[net] = _stimulus(seed, cycle, port, bit)
         for instance_id in self.ff_ids:
@@ -1045,6 +1148,7 @@ class _MappedModel:
             values,
             state,
             overrides,
+            active_clocks=active_clocks,
         )
         return values, next_state, outputs
 
@@ -1053,6 +1157,7 @@ class _MappedModel:
         values: Mapping[str, int],
         state: Mapping[str, Any],
         overrides: Optional[Mapping[Tuple[str, str], int]] = None,
+        active_clocks: Optional[Set[str]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, int]]:
         """Extract the synchronous boundary from settled net values.
 
@@ -1065,6 +1170,10 @@ class _MappedModel:
         for instance_id in self.ff_ids:
             instance = self.instances[instance_id]
             current = state[instance_id]
+            roots = self.sequential_clock_roots[instance_id]
+            if active_clocks is not None and roots.isdisjoint(active_clocks):
+                next_state[instance_id] = current
+                continue
             data = self._pin(
                 values, instance_id, "D", current, overrides
             )
@@ -1120,6 +1229,10 @@ class _MappedModel:
         for instance_id in self.ram_ids:
             instance = self.instances[instance_id]
             ram_state = state[instance_id]
+            roots = self.sequential_clock_roots[instance_id]
+            if active_clocks is not None and roots.isdisjoint(active_clocks):
+                next_state[instance_id] = ram_state
+                continue
             if instance["type"] in {"RAMB18E2", "RAMB36E2"}:
                 next_state[instance_id] = self._xilinx_ram_next_state(
                     values, instance_id, ram_state, overrides
@@ -1754,12 +1867,14 @@ def _simulate_static_exact_macro_step(
     input_values: Optional[Mapping[Tuple[str, int], int]] = None,
     *,
     full_replay_source_values: bool = False,
+    active_clocks: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     reference_values, reference_next, reference_outputs = model.evaluate(
         state,
         cycle,
         seed,
         input_values=input_values,
+        active_clocks=active_clocks,
     )
     shadows = dict(shadow_values)
     incremental_values = (
@@ -1934,6 +2049,7 @@ def _simulate_static_exact_macro_step(
             seed,
             overrides=final_overrides,
             input_values=input_values,
+            active_clocks=active_clocks,
         )
         partition_full_evaluations = 1
         initialization_full_evaluations = 0
@@ -1943,6 +2059,7 @@ def _simulate_static_exact_macro_step(
                 incremental_values.values,
                 state,
                 incremental_values.overrides,
+                active_clocks=active_clocks,
             )
         )
         partition_full_evaluations = 0
@@ -1995,11 +2112,24 @@ def simulate_static_exact_partition_equivalence(
     schedule: Mapping[str, Any],
     cycles: int = 16,
     seed: int = 20260727,
+    clock_periods: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
     """Random-trace exact-cut equivalence with slot-accurate local TX values."""
     if isinstance(cycles, bool) or not isinstance(cycles, int) or cycles <= 0:
         raise ValidationError("equivalence cycles must be positive")
     model = _MappedModel(ir)
+    enforce_clock_contract = clock_periods is not None
+    if clock_periods is None:
+        clock_periods = {
+            item["id"]: 1.0 for item in ir.value.get("clocks", [])
+        }
+    if enforce_clock_contract:
+        model.validate_clock_domains(clock_periods)
+    from .runtime import build_virtual_clock_contract
+
+    clock_events = build_virtual_clock_contract(
+        clock_periods, 1.0
+    )["events"]
     context = _static_exact_equivalence_context(ir, assignment, schedule)
     state = model.initial_state()
     shadow_values: Dict[Tuple[str, str], int] = {}
@@ -2017,60 +2147,75 @@ def simulate_static_exact_partition_equivalence(
     shadow_pin_updates = 0
     compared_outputs = 0
     compared_state_bits = 0
+    macro_events = 0
+    domain_edges = {clock: 0 for clock in sorted(clock_periods)}
     # Start after the deterministic reset stimulus interval. Shadow validity
     # is still empty, so the first post-reset frame proves it consumes only
     # current-frame arrivals rather than reset/stale implementation state.
-    for macro_cycle in range(cycles):
-        stimulus_cycle = macro_cycle + 3
-        result = _simulate_static_exact_macro_step(
-            model,
-            context,
-            state,
-            stimulus_cycle,
-            seed,
-            shadow_values,
-        )
-        state = result["next_state"]
-        shadow_values = result["shadow_values"]
-        tx_samples += len(result["tx_samples"])
-        source_ready_checks += result["source_ready_checks"]
-        relay_ready_checks += result["relay_ready_checks"]
-        capture_checks += result["capture_checks"]
-        uninitialized_shadow_reads += result["uninitialized_shadow_reads"]
-        source_full_evaluations += result["source_full_evaluations"]
-        reference_full_evaluations += result[
-            "reference_full_evaluations"
-        ]
-        initialization_full_evaluations += result[
-            "initialization_full_evaluations"
-        ]
-        partition_full_evaluations += result[
-            "partition_full_evaluations"
-        ]
-        incremental_cell_evaluations += result[
-            "incremental_cell_evaluations"
-        ]
-        shadow_pin_updates += result["shadow_pin_updates"]
-        compared_outputs += len(result["outputs"])
-        compared_state_bits += model.state_bit_count()
-        trace.update(
-            json.dumps(
-                {
-                    "cycle": macro_cycle,
-                    "next_state": result["next_state"],
-                    "outputs": result["outputs"],
-                    "tx_samples": result["tx_samples"],
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        )
+    for calendar_cycle in range(cycles):
+        for event_index, event in enumerate(clock_events):
+            event_clocks = set(event["clocks"])
+            active_clocks = (
+                event_clocks if enforce_clock_contract else None
+            )
+            result = _simulate_static_exact_macro_step(
+                model,
+                context,
+                state,
+                macro_events + 3,
+                seed,
+                shadow_values,
+                active_clocks=active_clocks,
+            )
+            state = result["next_state"]
+            shadow_values = result["shadow_values"]
+            macro_events += 1
+            for clock in event_clocks:
+                domain_edges[clock] += 1
+            tx_samples += len(result["tx_samples"])
+            source_ready_checks += result["source_ready_checks"]
+            relay_ready_checks += result["relay_ready_checks"]
+            capture_checks += result["capture_checks"]
+            uninitialized_shadow_reads += result["uninitialized_shadow_reads"]
+            source_full_evaluations += result["source_full_evaluations"]
+            reference_full_evaluations += result[
+                "reference_full_evaluations"
+            ]
+            initialization_full_evaluations += result[
+                "initialization_full_evaluations"
+            ]
+            partition_full_evaluations += result[
+                "partition_full_evaluations"
+            ]
+            incremental_cell_evaluations += result[
+                "incremental_cell_evaluations"
+            ]
+            shadow_pin_updates += result["shadow_pin_updates"]
+            compared_outputs += len(result["outputs"])
+            compared_state_bits += model.state_bit_count()
+            trace.update(
+                json.dumps(
+                    {
+                        "calendar_cycle": calendar_cycle,
+                        "event_index": event_index,
+                        "active_clocks": sorted(event_clocks),
+                        "next_state": result["next_state"],
+                        "outputs": result["outputs"],
+                        "tx_samples": result["tx_samples"],
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
     return {
         "status": "pass",
         "provider": "static-exact-event-driven-macro-cycle-model-v1",
         "evidence_type": "random-simulation",
         "qualification": "randomized-trace-validation-not-proof",
         "cycles": cycles,
+        "macro_events": macro_events,
+        "clock_event_calendar": clock_events,
+        "domain_edges": domain_edges,
         "seed": seed,
         "primitive_instances": len(model.instances),
         "flip_flops": len(model.ff_ids),
@@ -2105,6 +2250,7 @@ def exhaustively_verify_static_exact_partition_equivalence(
     schedule: Mapping[str, Any],
     *,
     max_variables: int = 12,
+    clock_periods: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
     """Exhaust every FF state and non-clock primary input for a small model."""
     if (
@@ -2114,6 +2260,18 @@ def exhaustively_verify_static_exact_partition_equivalence(
     ):
         raise ValidationError("exhaustive max_variables must be positive")
     model = _MappedModel(ir)
+    enforce_clock_contract = clock_periods is not None
+    if clock_periods is None:
+        clock_periods = {
+            item["id"]: 1.0 for item in ir.value.get("clocks", [])
+        }
+    if enforce_clock_contract:
+        model.validate_clock_domains(clock_periods)
+    from .runtime import build_virtual_clock_contract
+
+    clock_events = build_virtual_clock_contract(
+        clock_periods, 1.0
+    )["events"]
     if model.ram_ids:
         raise ValidationError(
             "exhaustive static exact proof does not support memory state"
@@ -2127,7 +2285,7 @@ def exhaustively_verify_static_exact_partition_equivalence(
     input_keys = sorted(
         key
         for key in model.top_input_net
-        if key[0].lower() not in {"clk", "clock"}
+        if key[0] not in model.declared_clock_ids
         and key not in reset_values
     )
     variables = len(model.ff_ids) + len(input_keys)
@@ -2160,73 +2318,84 @@ def exhaustively_verify_static_exact_partition_equivalence(
             for index, key in enumerate(input_keys)
         }
         input_values.update(reset_values)
-        result = _simulate_static_exact_macro_step(
-            model,
-            context,
-            state,
-            0,
-            0,
-            {},
-            input_values=input_values,
-        )
-        full_replay = _simulate_static_exact_macro_step(
-            model,
-            context,
-            state,
-            0,
-            0,
-            {},
-            input_values=input_values,
-            full_replay_source_values=True,
-        )
-        for field in (
-            "next_state",
-            "outputs",
-            "shadow_values",
-            "tx_samples",
-            "source_ready_checks",
-            "relay_ready_checks",
-            "capture_checks",
-        ):
-            if result[field] != full_replay[field]:
-                raise ValidationError(
-                    "incremental static exact event model disagrees with "
-                    f"full-replay oracle for vector {vector} field {field!r}"
-                )
-        full_replay_cross_checks += 1
-        source_full_evaluations += result["source_full_evaluations"]
-        reference_full_evaluations += result[
-            "reference_full_evaluations"
-        ]
-        initialization_full_evaluations += result[
-            "initialization_full_evaluations"
-        ]
-        partition_full_evaluations += result[
-            "partition_full_evaluations"
-        ]
-        incremental_cell_evaluations += result[
-            "incremental_cell_evaluations"
-        ]
-        shadow_pin_updates += result["shadow_pin_updates"]
-        source_ready_checks += result["source_ready_checks"]
-        relay_ready_checks += result["relay_ready_checks"]
-        capture_checks += result["capture_checks"]
-        tx_samples += len(result["tx_samples"])
-        trace.update(
-            json.dumps(
-                {
-                    "state": state,
-                    "inputs": {
-                        f"{port}[{bit}]": value
-                        for (port, bit), value in input_values.items()
+        for event_index, event in enumerate(clock_events):
+            event_clocks = set(event["clocks"])
+            active_clocks = (
+                event_clocks if enforce_clock_contract else None
+            )
+            result = _simulate_static_exact_macro_step(
+                model,
+                context,
+                state,
+                event_index,
+                0,
+                {},
+                input_values=input_values,
+                active_clocks=active_clocks,
+            )
+            full_replay = _simulate_static_exact_macro_step(
+                model,
+                context,
+                state,
+                event_index,
+                0,
+                {},
+                input_values=input_values,
+                full_replay_source_values=True,
+                active_clocks=active_clocks,
+            )
+            for field in (
+                "next_state",
+                "outputs",
+                "shadow_values",
+                "tx_samples",
+                "source_ready_checks",
+                "relay_ready_checks",
+                "capture_checks",
+            ):
+                if result[field] != full_replay[field]:
+                    raise ValidationError(
+                        "incremental static exact event model disagrees with "
+                        f"full-replay oracle for vector {vector} event "
+                        f"{event_index} field {field!r}"
+                    )
+            full_replay_cross_checks += 1
+            source_full_evaluations += result["source_full_evaluations"]
+            reference_full_evaluations += result[
+                "reference_full_evaluations"
+            ]
+            initialization_full_evaluations += result[
+                "initialization_full_evaluations"
+            ]
+            partition_full_evaluations += result[
+                "partition_full_evaluations"
+            ]
+            incremental_cell_evaluations += result[
+                "incremental_cell_evaluations"
+            ]
+            shadow_pin_updates += result["shadow_pin_updates"]
+            source_ready_checks += result["source_ready_checks"]
+            relay_ready_checks += result["relay_ready_checks"]
+            capture_checks += result["capture_checks"]
+            tx_samples += len(result["tx_samples"])
+            trace.update(
+                json.dumps(
+                    {
+                        "state": state,
+                        "inputs": {
+                            f"{port}[{bit}]": value
+                            for (port, bit), value in input_values.items()
+                        },
+                        "event_index": event_index,
+                        "active_clocks": sorted(event_clocks),
+                        "next_state": result["next_state"],
+                        "outputs": result["outputs"],
                     },
-                    "next_state": result["next_state"],
-                    "outputs": result["outputs"],
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        )
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            state = result["next_state"]
     return {
         "status": "pass",
         "provider": "static-exact-exhaustive-macro-step-v1",
@@ -2242,6 +2411,7 @@ def exhaustively_verify_static_exact_partition_equivalence(
         ],
         "variables": variables,
         "cases": cases,
+        "clock_event_calendar": clock_events,
         "source_ready_checks": source_ready_checks,
         "relay_ready_checks": relay_ready_checks,
         "capture_checks": capture_checks,

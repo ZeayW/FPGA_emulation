@@ -240,9 +240,12 @@ for name in ('synthesized.dcp', 'placed.dcp', 'routed.dcp',
                 flow / "runtime/runtime_contract.json",
                 {
                     "timing_model": {
-                        "dut_clock_port": "dut_clk",
+                        "dut_clock_ports": ["dut_clk"],
                         "fabric_clock_port": "fabric_clk",
                         "fabric_to_dut_max_delay_ns": 20.0,
+                    },
+                    "virtual_dut_clocks": {
+                        "dut_clk": {"nominal_period_ns": 128.0}
                     },
                     "virtual_dut_clock": {"nominal_period_ns": 128.0},
                     "fabric_clock": {"period_ns": 20.0},

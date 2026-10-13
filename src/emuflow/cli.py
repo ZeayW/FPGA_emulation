@@ -1031,6 +1031,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase6_run.add_argument("--equivalence-cycles", type=int, default=1)
     phase6_run.add_argument("--equivalence-seed", type=int, default=20260727)
+    phase6_run.add_argument(
+        "--clock-period",
+        action="append",
+        default=[],
+        metavar="CLOCK=PERIOD_NS",
+        help="required for multi-clock Phase 6; repeat once per DUT clock",
+    )
     phase6_run.add_argument("--pin-planner")
     phase6_run.add_argument("--chimew-grouper")
     phase6_run.add_argument("--chimew-refiner")
@@ -3959,6 +3966,13 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6.add_argument("--transport-cost-db", type=Path)
     phase6.add_argument("--equivalence-cycles", type=int, default=1)
     phase6.add_argument("--equivalence-seed", type=int, default=20260727)
+    phase6.add_argument(
+        "--clock-period",
+        action="append",
+        default=[],
+        metavar="CLOCK=PERIOD_NS",
+        help="required for multi-clock Phase 6; repeat once per DUT clock",
+    )
 
     phase6b = subparsers.add_parser(
         "phase6b",
@@ -4485,6 +4499,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                     chimew_assigner=args.chimew_assigner,
                     managed_storage=args.managed_storage,
                     managed_dag_node=args.managed_dag_node,
+                    clock_periods=(
+                        parse_clock_definitions(args.clock_period)
+                        if args.clock_period
+                        else None
+                    ),
                 )
         elif args.experiment_stage_command == "phase6-validate":
             report = validate_phase6_checkpoint(
@@ -6445,6 +6464,11 @@ def _dispatch(args: argparse.Namespace) -> int:
             transport_cost_path=args.transport_cost_db,
             equivalence_cycles=args.equivalence_cycles,
             equivalence_seed=args.equivalence_seed,
+            clock_periods=(
+                parse_clock_definitions(args.clock_period)
+                if args.clock_period
+                else None
+            ),
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

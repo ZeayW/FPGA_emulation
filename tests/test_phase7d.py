@@ -129,12 +129,21 @@ class Phase7DTest(unittest.TestCase):
             },
         }
         runtime = {
-            "schema": "emuflow.virtual-runtime/v1",
+            "schema": "emuflow.virtual-runtime/v2",
             "design": "dut",
             "platform": platform.name,
             "semantic_envelope": {"virtual_dut_clocks": 1},
             "frame": {"slots": 8, "completion_slot": 2},
-            "virtual_dut_clock": {"nominal_frequency_mhz": 31.25},
+            "virtual_dut_clock": {
+                "nominal_frequency_mhz": 31.25,
+                "nominal_period_ns": 32.0,
+            },
+            "virtual_dut_clocks": {
+                "clk": {
+                    "nominal_frequency_mhz": 31.25,
+                    "nominal_period_ns": 32.0,
+                }
+            },
             "fabric_clock": {"period_ns": 4.0},
             "board_binding": {"status": "virtual"},
         }

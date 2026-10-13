@@ -367,11 +367,12 @@ the Python event propagator or consume its per-path numerical results.
     uncertainty = float(physical.get("static_exact_clock_uncertainty_ns", 0.0))
     if uncertainty < 0 or not math.isfinite(uncertainty):
         raise ValidationError("invalid global STA uncertainty")
-    virtual = float(runtime["virtual_dut_clock"]["nominal_period_ns"])
+    from .runtime import runtime_clock_period_ns
     result = []
     path_metadata = {}
     representatives = 0
     for record in reconstruct_tdm_schedule_timing_paths(routes, platform, schedule):
+        virtual = runtime_clock_period_ns(runtime, record.get("clock_domain"))
         representatives += 1
         by_demand = {}
         for hop in record["scheduled_hops"]:
@@ -446,6 +447,9 @@ the Python event propagator or consume its per-path numerical results.
                 "physical_logic_segments_cone_bound": path.get("measurement") != "explicit-routed-path-chain",
             }
             required = float(path.get("required_time_ns", path["clock_period_ns"]))
+            virtual = runtime_clock_period_ns(
+                runtime, path.get("clock_domain")
+            )
             for role, deadline in (("target", required),
                                    ("runtime", virtual-(path["clock_period_ns"]-required))):
                 result.append(EventCheck(path["id"], role, "capture", 0.0,
@@ -519,8 +523,17 @@ def build_opensta_timing(runtime, metadata, measurements):
         timing[f"{role}_clock"] = {"closure_gate": role=="runtime", "worst_path": worst["path"],
             "worst_slack_bound_ns": min(slacks), "tns_bound_ns": tns,
             "total_negative_slack_bound_ns": tns, "negative_slack_paths": metrics[role]["negative_paths"]}
-    period = runtime["virtual_dut_clock"]["nominal_period_ns"]
-    timing["runtime_clock"].update(period_ns=period, frequency_mhz=1000.0/period)
+    clock_periods = {
+        clock: float(record["nominal_period_ns"])
+        for clock, record in runtime["virtual_dut_clocks"].items()
+    }
+    period = min(clock_periods.values())
+    timing["runtime_clock"].update(
+        period_ns=period,
+        frequency_mhz=1000.0 / period,
+        period_scope="fastest-domain-summary",
+        clock_periods_ns=clock_periods,
+    )
     maximum = timing["summary"]["maximum_system_delay_bound_ns"]
     timing["runtime_clock"].update(minimum_safe_period_bound_ns=maximum,
         maximum_safe_frequency_bound_mhz=1000.0/maximum if maximum > 0 else None)

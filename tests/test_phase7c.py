@@ -283,7 +283,7 @@ class Phase7CTest(unittest.TestCase):
 
     def test_controller_and_timing_artifacts_encode_contract(self):
         runtime = build_virtual_runtime(self.schedule, self.platform)
-        rtl = virtual_runtime_controller_to_systemverilog()
+        rtl = virtual_runtime_controller_to_systemverilog(runtime)
         tb = runtime_controller_testbench(
             runtime, ["fpga0", "fpga1"], frames=12
         )
@@ -294,6 +294,35 @@ class Phase7CTest(unittest.TestCase):
         self.assertIn("-period 4.000000000", xdc)
         self.assertIn("100.000000000", xdc)
         self.assertIn("requires-hardware-bsp", xdc)
+
+    def test_runtime_preserves_two_clock_rates_and_identities(self):
+        runtime = build_virtual_runtime(
+            self.schedule,
+            self.platform,
+            {"dla_core_clk": 10.0, "dla_csb_clk": 20.0},
+        )
+        self.assertEqual(
+            runtime["virtual_timebase"]["events"],
+            [
+                {"offset_ticks": 1, "clocks": ["dla_core_clk"]},
+                {
+                    "offset_ticks": 2,
+                    "clocks": ["dla_core_clk", "dla_csb_clk"],
+                },
+            ],
+        )
+        self.assertEqual(
+            runtime["virtual_dut_clocks"]["dla_csb_clk"]["period_ticks"],
+            2,
+        )
+        rtl = virtual_runtime_controller_to_systemverilog(runtime)
+        self.assertIn("virtual_clock_enable[0] = dla_core_clk", rtl)
+        self.assertIn("virtual_clock_enable[1] = dla_csb_clk", rtl)
+        self.assertIn("2'h1", rtl)
+        self.assertIn("2'h3", rtl)
+        xdc = runtime_timing_xdc(runtime)
+        self.assertIn("[get_ports {dla_core_clk}]", xdc)
+        self.assertIn("[get_ports {dla_csb_clk}]", xdc)
 
     def test_physical_summary_and_qor_are_strictly_checked(self):
         runtime = build_virtual_runtime(self.schedule, self.platform)
@@ -1054,6 +1083,10 @@ class Phase7CTest(unittest.TestCase):
             }.items():
                 paths[name] = root / f"{name}.json"
                 paths[name].write_text(json.dumps(value), encoding="utf-8")
+            (root / "manifest.json").write_text(
+                json.dumps({"clock_periods": {"clk": 20.0}}),
+                encoding="utf-8",
+            )
             from emuflow.cross_layer_timing import build_cross_layer_timing_contract
 
             (root / "cross_layer_timing.json").write_text(
@@ -1168,6 +1201,10 @@ class Phase7CTest(unittest.TestCase):
             }.items():
                 paths[name] = root / f"{name}.json"
                 paths[name].write_text(json.dumps(value), encoding="utf-8")
+            (root / "manifest.json").write_text(
+                json.dumps({"clock_periods": {"clk": 20.0}}),
+                encoding="utf-8",
+            )
             from emuflow.cross_layer_timing import build_cross_layer_timing_contract
 
             (root / "cross_layer_timing.json").write_text(

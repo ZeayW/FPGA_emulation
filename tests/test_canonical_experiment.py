@@ -1079,7 +1079,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                         config_path, REPOSITORY, root / "spec.json"
                     )
 
-    def test_static_exact_mode_rejects_multiple_virtual_clocks(self) -> None:
+    def test_static_exact_multiclock_is_checked_by_case_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_path = self._config(root)
@@ -1093,7 +1093,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             config_path.write_text(json.dumps(config), encoding="utf-8")
             with self.assertRaisesRegex(
-                ValidationError, "exactly one virtual DUT clock"
+                ValidationError, "top/clocks do not match the matrix run spec"
             ):
                 compile_canonical_experiment_spec(
                     config_path, REPOSITORY, root / "spec.json"
