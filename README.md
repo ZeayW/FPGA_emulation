@@ -1051,7 +1051,14 @@ Partition-weight derivation also avoids loading the whole EmuIR when the timing
 stage has already validated its input. Small regression tests compare logical
 graphs, exact timing Verilog/net-map/Liberty data, endpoint identities and path
 results. `python -m emuflow.handoff_qualification` provides separate-process
-storage/read/export measurements; **NVDLA storage, runtime, peak RSS and actual
+storage/read/export and real OpenSTA measurements. The explicit qualification
+command can write either storage version (`repack --storage-version 1|2`),
+separates identity-sealing time from operation time, and reports parent and
+child peak RSS separately (these are not a simultaneous process-tree total).
+Its `timing` operation accepts the same clocks, timing I/O, model and engine
+for paired runs, sealing every canonical output path as well as reporting QoR
+and path-limit status. A reached path limit is not full-population evidence.
+**NVDLA storage, runtime, peak RSS and actual
 OpenSTA-result A/B measurements remain pending**. Temporary Yosys normalization
 staging still precedes compact publication; do not claim a zero-copy frontend.
 An explicitly requested debugging continuation can read a

@@ -57,9 +57,14 @@ rehashing or reconstructing it. Final evidence is sealed once at completion.
   global pin map or global endpoint-object dictionary. This is not a change to
   library delays, clocks or STA algorithms. Legacy, VTR specialization and
   directed-through-net qualification retain their existing reader route.
-- `python -m emuflow.handoff_qualification` measures `repack`, `scan` and
-  `export` in separate processes. It records bytes, elapsed/CPU time, peak RSS,
+- `python -m emuflow.handoff_qualification` measures `repack`, `scan`,
+  `export` and actual-engine `timing` in separate processes. Explicit repack
+  supports either storage version, with the old writer's engine audits removed.
+  It records bytes, elapsed/CPU time, separate parent/child peak RSS,
   process I/O and explicit qualification-only logical/STA-input identities.
+  Identity-sealing time is reported separately from operation time. Timing runs
+  seal canonical per-path records as well as reporting QoR and truncation status;
+  a truncated population cannot prove whole-design timing equality.
   Existing v1 outputs can be converted without synthesis or a whole-graph load.
 - **Pending:** NVDLA storage/RSS/I/O and actual OpenSTA-result A/B measurements.
   Small regression equality and a repeated-structure size/RSS guard are not
