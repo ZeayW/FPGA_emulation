@@ -17,7 +17,7 @@ options for the research route and alternative backends.
 
 | Phase | Responsibility | Algorithms and tools |
 | --- | --- | --- |
-| 1 | Synthesize and map RTL; preserve connectivity, primitive parameters, and resource demand in EmuIR | Yosys and ABC; mapping profiles for VTR hard blocks, generic soft logic, and Xilinx UltraScale+ |
+| 1 | Synthesize and map RTL; preserve connectivity, primitive parameters, and resource demand in EmuIR | Yosys; mapping profiles for VTR hard blocks, generic soft logic, and Xilinx UltraScale+ |
 | 2 | Extract timing paths and derive optimization weights | OpenSTA; optional Vivado timing provider |
 | 3 | Cluster and partition against resource and topology constraints | PATRON refinement with a TritonPart initializer; explicit TritonPart, RePart, MFSPart, and greedy alternatives |
 | 4 | Route cross-FPGA multicast communication | Native C++ system router with topology, congestion, and timing costs |
@@ -42,12 +42,12 @@ that EmuFlow reproduces that paper's complete experimental setup or results.
 
 ### Phase 1: RTL synthesis and technology mapping
 
-[Yosys](https://github.com/YosysHQ/yosys) elaborates RTL, lowers processes and
-memories, and maps the design to the selected primitive library.
-[ABC](https://github.com/YosysHQ/abc) supplies logic optimization and technology
-mapping through the Yosys flow. The mapping profile determines whether RAM,
-DSP, carry, and LUT structures are represented by architecture-specific hard
-blocks or soft logic. These choices must agree with the physical backend.
+EmuFlow invokes [Yosys](https://github.com/YosysHQ/yosys) to run the RTL
+synthesis flow: RTL elaboration, process and memory lowering, logic
+optimization, LUT mapping, and mapping to supported device primitives.
+The mapping profile determines whether RAM, DSP, and carry structures use
+architecture-specific hard blocks or soft logic. These choices must agree
+with the physical backend.
 
 EmuFlow's contribution is the frontend integration and EmuIR representation:
 stable cell/net identities, connectivity, primitive parameters, and resource
@@ -340,7 +340,7 @@ docs/         architecture, usage, and validation documentation
 EmuFlow's first-party code is licensed under [Apache-2.0](LICENSE).
 Included upstream components retain their own licenses and notices.
 
-The source inventory includes [Yosys/ABC](https://github.com/YosysHQ/yosys),
+The source inventory includes [Yosys](https://github.com/YosysHQ/yosys),
 [OpenROAD/TritonPart](https://github.com/The-OpenROAD-Project/OpenROAD),
 [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA),
 [RePart](https://github.com/Welement-zyf/RePart),
