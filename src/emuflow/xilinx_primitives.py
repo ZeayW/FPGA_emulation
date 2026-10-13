@@ -48,6 +48,45 @@ class _IndexedCellMapping(MutableMapping[str, Dict[str, Any]]):
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
+        self._type_index_ready = False
+
+    def _ensure_type_index(self) -> None:
+        if not self._type_index_ready:
+            # The canonical type column already belongs to each staging row.
+            # Index it once instead of decoding every LUT/FF for each rare
+            # primitive rewrite. This index is ephemeral scratch.
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS staging_instances_type "
+                "ON staging_instances(type)"
+            )
+            self._type_index_ready = True
+
+    def cell_types(self) -> set[str]:
+        self._ensure_type_index()
+        return {
+            str(row[0]) for row in self._connection.execute(
+                "SELECT DISTINCT type FROM staging_instances"
+            )
+        }
+
+    def items_of_types(
+        self, cell_types: set[str],
+    ) -> Iterator[Tuple[str, Dict[str, Any]]]:
+        if not cell_types:
+            return
+        self._ensure_type_index()
+        placeholders = ",".join("?" for _ in cell_types)
+        rows = self._connection.execute(
+            "SELECT id, record_json FROM staging_instances "
+            "INDEXED BY staging_instances_type "
+            f"WHERE type IN ({placeholders}) ORDER BY id",
+            tuple(sorted(cell_types)),
+        )
+        for row in rows:
+            value = json.loads(row[1])
+            if not isinstance(value, dict):
+                raise ValidationError(f"mapped cell {row[0]!r} is invalid")
+            yield str(row[0]), value
 
     def __getitem__(self, key: str) -> Dict[str, Any]:
         row = self._connection.execute(
@@ -120,6 +159,17 @@ class _IndexedCellMapping(MutableMapping[str, Dict[str, Any]]):
     def values(self) -> Iterator[Dict[str, Any]]:  # type: ignore[override]
         for _, value in self.items():
             yield value
+
+
+def _items_of_types(
+    cells: MutableMapping[str, Dict[str, Any]], cell_types: set[str],
+) -> Iterator[Tuple[str, Dict[str, Any]]]:
+    if isinstance(cells, _IndexedCellMapping):
+        yield from cells.items_of_types(cell_types)
+    else:
+        for name, cell in cells.items():
+            if cell.get("type") in cell_types:
+                yield name, cell
 
 
 def _sha256(path: Path) -> str:
@@ -287,14 +337,17 @@ def normalize_xilinx_mapped_json(
         raise ValidationError("mapped Yosys JSON cells are invalid")
     _, library = load_xilinx_primitive_library(library_path)
     final_cells = set(library["cells"])
-    unknown = sorted(
-        {
+    input_types = (
+        cells.cell_types()
+        if isinstance(cells, _IndexedCellMapping)
+        else {
             cell.get("type")
             for cell in cells.values()
             if isinstance(cell, dict)
-            and cell.get("type") not in final_cells
-            and cell.get("type") not in XILINX_NORMALIZATION_INPUT_CELLS
-        },
+        }
+    )
+    unknown = sorted(
+        input_types - final_cells - XILINX_NORMALIZATION_INPUT_CELLS,
         key=str,
     )
     if unknown:
@@ -303,19 +356,18 @@ def normalize_xilinx_mapped_json(
             + ", ".join(repr(value) for value in unknown)
         )
 
-    carry_names = sorted(
-        name for name, cell in cells.items() if cell.get("type") == "CARRY4"
-    )
-    carry_output_nets = {
-        bit
-        for name in carry_names
-        for port in ("CO", "O")
-        for bit in (
-            cells[name].get("connections", {}).get(port, [])
-            if isinstance(cells[name].get("connections"), dict) else []
-        )
-        if isinstance(bit, int) and not isinstance(bit, bool)
-    }
+    carry_names = []
+    carry_output_nets = set()
+    for name, cell in _items_of_types(cells, {"CARRY4"}):
+        carry_names.append(name)
+        connections = cell.get("connections")
+        if isinstance(connections, dict):
+            carry_output_nets.update(
+                bit for port in ("CO", "O")
+                for bit in connections.get(port, [])
+                if isinstance(bit, int) and not isinstance(bit, bool)
+            )
+    carry_names.sort()
     net_consumers: Dict[Any, List[Tuple[str, str, int]]] = defaultdict(list)
     max_net = 1
     for consumer_name, cell in cells.items():
@@ -396,7 +448,7 @@ def normalize_xilinx_mapped_json(
 
     negedge_ff_count = 0
     negedge_updates: Dict[str, Any] = {}
-    for name, cell in cells.items():
+    for name, cell in _items_of_types(cells, set(XILINX_NEGEDGE_FF_ALIASES)):
         normalized_type = XILINX_NEGEDGE_FF_ALIASES.get(cell.get("type"))
         if normalized_type is None:
             continue
@@ -595,7 +647,7 @@ def normalize_xilinx_mapped_json(
 
     inv_count = 0
     inv_names: List[str] = []
-    for name, cell in cells.items():
+    for name, cell in _items_of_types(cells, {"INV"}):
         if cell.get("type") != "INV":
             continue
         inv_names.append(name)
@@ -627,7 +679,7 @@ def normalize_xilinx_mapped_json(
         inv_count += 1
 
     mux_constant_lut_count = 0
-    for name, cell in cells.items():
+    for name, cell in _items_of_types(cells, {"MUXF7"}):
         if cell.get("type") != "MUXF7":
             continue
         connections = cell.get("connections")
@@ -753,7 +805,6 @@ def audit_xilinx_mapped_json(
     contracts = library["cells"]
     inventory: Counter[str] = Counter()
     hard_blocks: Counter[str] = Counter()
-    totals = []
     for instance, raw_cell in cells.items():
         if not isinstance(raw_cell, dict):
             raise ValidationError(f"mapped cell {instance!r} is invalid")
@@ -783,12 +834,18 @@ def audit_xilinx_mapped_json(
         inventory[cell_type] += 1
         if contract["hard_block"]:
             hard_blocks[cell_type] += 1
-        totals.append(
-            ResourceVector.from_mapping(
-                contract["resources"], f"primitive {cell_type!r} resources"
-            )
+    # Requirements are constant per primitive type. Do not retain one
+    # identical ResourceVector object for every mapped cell.
+    resources = ResourceVector.sum(
+        ResourceVector.from_mapping(
+            {
+                field: value * count
+                for field, value in contracts[cell_type]["resources"].items()
+            },
+            f"primitive {cell_type!r} resources",
         )
-    resources = ResourceVector.sum(totals)
+        for cell_type, count in inventory.items()
+    )
     return {
         "status": "pass",
         "schema": "emuflow.xilinx-primitive-audit/v1",

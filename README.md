@@ -1003,6 +1003,16 @@ not change the benchmark's source, mapping profile, clocks, or hard-block policy
 it is rejected for non-Xilinx profiles and supplied mapped netlists. The chosen
 strategy is recorded by the synthesis report. Qualification pass timings and
 aggregate capacity bounds alone do not prove a legal per-FPGA implementation.
+The indexed Xilinx primitive normalizer uses the staging table's canonical
+type column and an ephemeral type index for carry, inverted-clock FF, INV,
+and MUXF7 rewrites. It no longer decodes the entire LUT/FF population for each
+type-specific rewrite. Complete net-consumer discovery and the final primitive
+audit remain mandatory; resource totals are summed from per-type counts rather
+than retaining one resource-vector object per cell. Regression tests compare
+the normalized records and audit totals with the JSON qualification path and
+guard the number of full-record scans. This is an interchange optimization,
+not a mapping-policy or hardware-capacity change; large-flow speedup remains
+subject to measured end-to-end validation.
 The Xilinx pre-placement timing adapter collects design-derived pin sets only
 for the first instance of each primitive type missing from its base library,
 preserving its existing specialization semantics instead of allocating two

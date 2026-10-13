@@ -1,7 +1,10 @@
+import copy
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
@@ -11,7 +14,9 @@ from emuflow.xilinx_primitives import (
     load_xilinx_primitive_library,
     normalize_xilinx_indexed_staging,
     normalize_xilinx_mapped_json,
+    _IndexedCellMapping,
 )
+from emuflow.resources import ResourceVector, classify_primitive_resources
 from emuflow.yosys import import_yosys_json_indexed
 
 
@@ -24,6 +29,99 @@ def _cell(cell_type: str) -> dict:
 
 
 class XilinxPrimitiveContractTest(unittest.TestCase):
+    def test_indexed_rewrites_do_not_rescan_all_cells_per_type(self) -> None:
+        class CountingMapping(_IndexedCellMapping):
+            full_scans = 0
+
+            def items(self):
+                self.full_scans += 1
+                yield from super().items()
+
+        cells = {f"lut{i:05d}": _cell("LUT6") for i in range(4096)}
+        cells["inv"] = _cell("INV")
+        cells["ff"] = _cell("FDRE_1")
+        cells["ram"] = _cell("RAMB36E2")
+        cells["dsp"] = _cell("DSP48E2")
+        cells["carry"] = {
+            "type": "CARRY4",
+            "port_directions": {
+                "CI": "input", "CYINIT": "input", "DI": "input",
+                "S": "input", "CO": "output", "O": "output",
+            },
+            "connections": {
+                "CI": ["0"], "CYINIT": ["0"], "DI": [2, 3, 4, 5],
+                "S": [6, 7, 8, 9], "CO": [10, 11, 12, 13],
+                "O": [14, 15, 16, 17],
+            },
+        }
+        cells["mux"] = {
+            "type": "MUXF7",
+            "port_directions": {
+                "I0": "input", "I1": "input", "S": "input", "O": "output",
+            },
+            "connections": {"I0": ["0"], "I1": ["1"], "S": [2], "O": [18]},
+        }
+        source = {"modules": {"top": {"ports": {}, "cells": copy.deepcopy(cells)}}}
+        path = Path("streamed-native-input.json")
+        expected = normalize_xilinx_mapped_json(
+            path, None, top="top", _source_value=source,
+        )
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute(
+                "CREATE TABLE staging_instances (id TEXT PRIMARY KEY, "
+                "type TEXT NOT NULL, ff INTEGER, bram INTEGER, "
+                "record_json TEXT NOT NULL) WITHOUT ROWID"
+            )
+            for name, cell in cells.items():
+                resources = classify_primitive_resources(cell["type"])
+                connection.execute(
+                    "INSERT INTO staging_instances VALUES (?, ?, ?, ?, ?)",
+                    (name, cell["type"], resources.ff, resources.bram,
+                     json.dumps(cell)),
+                )
+            mapped = CountingMapping(connection)
+            actual = normalize_xilinx_mapped_json(
+                path, None, top="top",
+                _source_value={"modules": {"top": {"ports": {}, "cells": mapped}}},
+            )
+            self.assertEqual(actual, expected)
+            # One scan establishes net consumers/max bit; one audits the final
+            # primitives. Type-specific rewrites never decode every LUT/FF.
+            self.assertEqual(mapped.full_scans, 2)
+            self.assertEqual(dict(mapped.items()), source["modules"]["top"]["cells"])
+            plans = list(connection.execute(
+                "EXPLAIN QUERY PLAN SELECT id, record_json FROM staging_instances "
+                "WHERE type = ? ORDER BY id", ("INV",),
+            ))
+            self.assertTrue(any("staging_instances_type" in row[3] for row in plans))
+            mapped["bad"] = _cell("$add")
+            with self.assertRaisesRegex(ValidationError, "unsupported pre-normalization"):
+                normalize_xilinx_mapped_json(
+                    path, None, top="top",
+                    _source_value={"modules": {"top": {"ports": {}, "cells": mapped}}},
+                )
+
+    def test_resource_audit_aggregates_per_type_not_per_cell(self) -> None:
+        cells = {f"lut{i}": _cell("LUT6") for i in range(4096)}
+        cells.update({"ram": _cell("RAMB36E2"), "dsp": _cell("DSP48E2")})
+        counts = []
+        original_sum = ResourceVector.sum
+
+        def count_vectors(vectors):
+            values = list(vectors)
+            counts.append(len(values))
+            return original_sum(values)
+
+        with mock.patch.object(ResourceVector, "sum", side_effect=count_vectors):
+            report = audit_xilinx_mapped_json(
+                Path("streamed-native-input.json"), top="top", hash_path=False,
+                source={"modules": {"top": {"cells": cells}}},
+            )
+        self.assertEqual(counts, [3])
+        self.assertEqual(report["instances"], 4098)
+        self.assertEqual(report["resource_totals"],
+                         {"lut": 4096, "bram18k": 2, "dsp48": 1})
+
     def test_indexed_normalization_matches_json_normalization(self) -> None:
         value = {
             "creator": "test",
