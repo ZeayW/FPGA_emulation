@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import uuid
 from collections import OrderedDict
 from pathlib import Path
@@ -35,7 +36,6 @@ CREATE TABLE endpoint_records(
  net_seq INTEGER NOT NULL, role INTEGER NOT NULL, ordinal INTEGER NOT NULL,
  instance_seq INTEGER, port_seq INTEGER NOT NULL, bit INTEGER NOT NULL,
  extras_seq INTEGER NOT NULL, PRIMARY KEY(net_seq,role,ordinal)) WITHOUT ROWID;
-CREATE INDEX endpoint_owner ON endpoint_records(instance_seq,port_seq,bit);
 CREATE TABLE alias_records(net_seq INTEGER NOT NULL, ordinal INTEGER NOT NULL,
  alias TEXT NOT NULL, PRIMARY KEY(net_seq,ordinal)) WITHOUT ROWID;
 CREATE TABLE port_records(seq INTEGER PRIMARY KEY, record_json TEXT NOT NULL);
@@ -66,6 +66,7 @@ class _Intern:
     def __init__(self, connection, table, column):
         self.connection, self.table, self.column = connection, table, column
         self.cache = OrderedDict()
+        self.cache_bytes = 0
 
     def __call__(self, value):
         if value in self.cache:
@@ -81,8 +82,10 @@ class _Intern:
         else:
             row_id = row[0]
         self.cache[value] = row_id
-        if len(self.cache) > 8192:
-            self.cache.popitem(last=False)
+        self.cache_bytes += sys.getsizeof(value) + 128
+        while len(self.cache) > 8192 or self.cache_bytes > 32 * 1024 * 1024:
+            removed, _ = self.cache.popitem(last=False)
+            self.cache_bytes -= sys.getsizeof(removed) + 128
         return row_id
 
 
@@ -161,6 +164,9 @@ def write_compact_emuir(path: Path, value: Mapping[str, Any]) -> None:
             (seq, _json(record)) for seq, record in enumerate(value.get("clocks", []))
         ))
         c.execute("INSERT INTO metadata VALUES (?,?)", ("record_counts_json", _json(counts)))
+        # Build the required reverse adjacency once from compact integer rows,
+        # rather than randomly updating its B-tree on every pin insertion.
+        c.execute("CREATE INDEX endpoint_owner ON endpoint_records(instance_seq,port_seq,bit)")
         c.commit()
         c.close()
         with temporary.open("rb") as stream:
