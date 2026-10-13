@@ -324,6 +324,30 @@ class Phase7CTest(unittest.TestCase):
         self.assertIn("[get_ports {dla_core_clk}]", xdc)
         self.assertIn("[get_ports {dla_csb_clk}]", xdc)
 
+    def test_runtime_preserves_empty_timebase_ticks(self):
+        runtime = build_virtual_runtime(
+            self.schedule,
+            self.platform,
+            {"clock_20ns": 20.0, "clock_30ns": 30.0},
+        )
+        self.assertEqual(
+            runtime["virtual_timebase"]["events"],
+            [
+                {"offset_ticks": 1, "clocks": []},
+                {"offset_ticks": 2, "clocks": ["clock_20ns"]},
+                {"offset_ticks": 3, "clocks": ["clock_30ns"]},
+                {"offset_ticks": 4, "clocks": ["clock_20ns"]},
+                {"offset_ticks": 5, "clocks": []},
+                {
+                    "offset_ticks": 6,
+                    "clocks": ["clock_20ns", "clock_30ns"],
+                },
+            ],
+        )
+        self.assertEqual(runtime["virtual_timebase"]["calendar_ticks"], 6)
+        rtl = virtual_runtime_controller_to_systemverilog(runtime)
+        self.assertIn("2'h0", rtl)
+
     def test_physical_summary_and_qor_are_strictly_checked(self):
         runtime = build_virtual_runtime(self.schedule, self.platform)
         physical = self._physical_summary()

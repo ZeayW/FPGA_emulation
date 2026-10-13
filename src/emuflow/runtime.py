@@ -174,6 +174,10 @@ def build_virtual_clock_contract(
         raise ValidationError(
             "virtual runtime multi-clock event calendar exceeds 4096 ticks"
         )
+    # Keep every timebase tick, including ticks on which no root clock has an
+    # edge.  A complete transport frame advances time by exactly one quantum;
+    # dropping an empty tick would compress elapsed time for relatively-prime
+    # periods such as 20 ns and 30 ns (their 10 ns tick 1 has no edge).
     events = [
         {
             "offset_ticks": tick,
@@ -184,7 +188,6 @@ def build_virtual_clock_contract(
             ],
         }
         for tick in range(1, calendar_ticks + 1)
-        if any(tick % ticks == 0 for ticks in period_ticks.values())
     ]
     quantum = Fraction(quantum_units, denominator)
     clocks = {
