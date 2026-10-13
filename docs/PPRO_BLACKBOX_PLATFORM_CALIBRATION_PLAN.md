@@ -9,9 +9,12 @@ has a shared integer bank pool; directional bank allocation belongs in Phase 5.
 Only same-path single-hop crossing delay versus actual TDM ratio is calibrated.
 Local delays come from the backend/STA, and scheduled waiting is counted once.
 
-New communication probes use v4, independent forward/reverse widths and an
-explicit compile-time clock, followed by timing-budgeted route, generated RTL
-and post-partition SSTA. First verify acquisition on small real pilots. Preserve
+New communication probes use v5, independent forward/reverse widths and an
+explicit compile-time clock, followed by timing-budgeted system routing. Its
+ordinary `sr0_time` and `sr0_tdm` reports are separately hashed and normalized.
+The first v4 pilot completed routing but post-partition SSTA crashed while
+writing its report; that separate backend stage is not a v5 prerequisite.
+First verify acquisition on small real pilots. Preserve
 normalized bank-row and path-segment observations before scratch cleanup, then
 run repeated asymmetric directional loads and single-hop ratios with independent
 holdouts. Do not pool v3 observations with the new experiment contract or use

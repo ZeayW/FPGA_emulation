@@ -141,6 +141,29 @@ class PProBlackboxRuntimeTest(unittest.TestCase):
             sdc = (config.case_dir / ".timing.sdc").read_text()
             self.assertIn("create_clock -name {clk} -period 10.000000000", sdc)
 
+    def test_v5_route_calibration_does_not_depend_on_post_partition_ssta(self):
+        with tempfile.TemporaryDirectory() as raw:
+            spec, filelist, config = self._fixture(Path(raw))
+            spec["workload"]["generator_id"] = "ppro-blackbox-communication-probe-v5"
+            spec["adapter"]["expected_reports"] = [
+                "partition_summary", "resource_summary", "route_summary",
+                "route_timing", "net_tdm",
+            ]
+            constraints = json.loads(config.documented_constraints.read_text())
+            constraints["timing_clocks"] = [{"port": "clk", "period_ns": 10.0}]
+            config.documented_constraints.write_text(json.dumps(constraints))
+            spec["experiment"]["constraints_sha256"] = hashlib.sha256(
+                json.dumps(constraints, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            binding = render_ppro_runtime_binding(spec, source_filelist=filelist, config=config)
+            script = (config.case_dir / ".run-ppro.tcl").read_text()
+            self.assertIn("run_system_route -timing_budget", script)
+            self.assertNotIn("run_gen_rtl", script)
+            self.assertNotIn("run_ssta", script)
+            self.assertIn(" -config {", script.split("run_pre_partition")[0])
+            self.assertEqual(binding.report_paths["route_timing"].name, "sr0_time.rpt")
+            self.assertEqual(binding.report_paths["net_tdm"].name, "sr0_tdm.rpt")
+
     def test_renderer_rejects_mock_profile_and_filelist_options(self):
         with tempfile.TemporaryDirectory() as raw:
             spec, filelist, config = self._fixture(Path(raw))

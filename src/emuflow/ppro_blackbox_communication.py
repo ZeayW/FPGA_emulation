@@ -11,6 +11,7 @@ from typing import Any, Dict, Sequence
 
 from .errors import ValidationError
 from .io import write_json
+from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
 from .ppro_blackbox_runner import (
     MOCK_REPORT_PROFILE,
     RUN_SPEC_SCHEMA,
@@ -20,13 +21,13 @@ from .ppro_blackbox_runner import (
 
 
 COMMUNICATION_KINDS = {"payload_capacity", "latency", "transport_cost"}
-_GENERATOR_ID = "ppro-blackbox-communication-probe-v4"
-_GENERATOR_REVISION = hashlib.sha256(_GENERATOR_ID.encode("utf-8")).hexdigest()
+_GENERATOR_ID = "ppro-blackbox-communication-probe-v5"
 _EXPECTED_REPORTS = [
     "partition_summary",
     "resource_summary",
     "route_summary",
-    "system_timing",
+    "route_timing",
+    "net_tdm",
 ]
 
 
@@ -176,13 +177,14 @@ def generate_communication_probe_bundle(
     tool_release: str,
     runner_revision: str,
     seed: int,
-    adapter_profile: str = MOCK_REPORT_PROFILE,
+    adapter_profile: str = PPRO_2026_REPORT_PROFILE,
     pairing_token: int | None = None,
 ) -> CommunicationProbeBundle:
     if kind not in COMMUNICATION_KINDS:
         raise ValidationError(f"communication kind must be one of {sorted(COMMUNICATION_KINDS)}")
     if adapter_profile not in SUPPORTED_REPORT_PROFILES:
         raise ValidationError("communication adapter profile is unsupported")
+    generator_id = _GENERATOR_ID + ("-mock" if adapter_profile == MOCK_REPORT_PROFILE else "")
     if adapter_profile != MOCK_REPORT_PROFILE and forced_tdm_ratio:
         raise ValidationError(
             "real PPro forced-TDM probes require a documented provider constraint syntax"
@@ -257,7 +259,7 @@ def generate_communication_probe_bundle(
         "clock_period_ns": float(clock_period_ns),
         "flow_count": flow_count,
         "fpga_count": fpga_count,
-        "generator": _GENERATOR_ID,
+        "generator": generator_id,
         "local_baseline": local_baseline,
         "sink_indices": list(sinks),
         "source_index": source_index,
@@ -303,8 +305,8 @@ def generate_communication_probe_bundle(
             "runner_revision": runner_revision,
         },
         "workload": {
-            "generator_id": _GENERATOR_ID,
-            "generator_revision": _GENERATOR_REVISION,
+            "generator_id": generator_id,
+            "generator_revision": hashlib.sha256(generator_id.encode("utf-8")).hexdigest(),
             "rtl_sha256": _sha256(rtl.encode("utf-8")),
             "parameters_sha256": _sha256(_canonical(parameters)),
             "top_module": "ppro_blackbox_communication_probe",
@@ -337,6 +339,8 @@ def generate_communication_probe_bundle(
             "profile": adapter_profile,
             "expected_reports": (
                 _EXPECTED_REPORTS
+                if adapter_profile == PPRO_2026_REPORT_PROFILE
+                else ["partition_summary", "resource_summary", "route_summary", "system_timing"]
                 if kind == "latency"
                 else ["partition_summary", "resource_summary", "route_summary"]
                 if kind == "payload_capacity"
@@ -376,7 +380,7 @@ def generate_communication_matrix(
     tool_release: str,
     runner_revision: str,
     seed_base: int,
-    adapter_profile: str = MOCK_REPORT_PROFILE,
+    adapter_profile: str = PPRO_2026_REPORT_PROFILE,
 ) -> list[CommunicationProbeBundle]:
     """Generate a bounded fit/holdout matrix with paired transport baselines."""
 

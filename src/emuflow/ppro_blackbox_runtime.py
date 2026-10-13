@@ -325,7 +325,8 @@ def render_ppro_runtime_binding(
     if spec["adapter"]["profile"] != PPRO_2026_REPORT_PROFILE:
         raise ValidationError("PPro runtime renderer requires the real ordinary-report profile")
     experiment_kind = spec["experiment"]["kind"]
-    timed_communication = (
+    route_calibration = spec["workload"]["generator_id"] == "ppro-blackbox-communication-probe-v5"
+    timed_communication = route_calibration or (
         spec["workload"]["generator_id"] == "ppro-blackbox-communication-probe-v4"
     )
     requires_timing = experiment_kind == "application_holdout" or timed_communication
@@ -420,7 +421,12 @@ def render_ppro_runtime_binding(
     # The v4 communication contract explicitly binds a clock and acquires
     # post-partition timing. Historical probe contracts retain their original
     # route mode; their measurements cannot be mixed with this new contract.
-    if requires_timing:
+    if route_calibration:
+        # V5 calibrates reported single-hop transport from the completed
+        # system-route timing/net-TDM reports. Post-partition SSTA is a
+        # separate backend check and is not a prerequisite for these facts.
+        system_route_commands = ("run_system_route -timing_budget",)
+    elif requires_timing:
         system_route_commands = (
             "run_system_route -timing_budget",
             f"run_gen_rtl -max_process_num {config.max_processes}",
@@ -506,6 +512,10 @@ def render_ppro_runtime_binding(
             # this ordinary report name.  ``gr0_time.rpt`` is not emitted by
             # the installed release, even when ``run_ssta`` succeeds.
             "system_timing": report_dir / "gr0_ssta_post_part.rpt",
+            **({
+                "route_timing": report_dir / "sr0_time.rpt",
+                "net_tdm": report_dir / "sr0_tdm.rpt",
+            } if route_calibration else {}),
         },
         output_path=output_path,
         environment={

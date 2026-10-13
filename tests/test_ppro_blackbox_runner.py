@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -18,6 +19,7 @@ from emuflow.ppro_blackbox_runner import (
     validate_runtime_binding,
 )
 from emuflow.ppro_blackbox_provenance import runner_source_bundle
+from emuflow.ppro_blackbox_details import parse_calibration_details
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,6 +107,92 @@ def capacity_spec(identifier: str = "capacity-run"):
 
 
 class PProBlackboxRunnerTest(unittest.TestCase):
+    def test_v5_run_spec_requires_exact_route_timing_report_contract(self):
+        spec = run_spec()
+        spec["workload"]["generator_id"] = "ppro-blackbox-communication-probe-v5"
+        spec["adapter"]["profile"] = "ppro-2026-ordinary-reports-v1"
+        with self.assertRaisesRegex(ValidationError, "report set"):
+            validate_run_spec(spec)
+        spec["adapter"]["expected_reports"] = [
+            "resource_summary", "partition_summary", "route_summary", "route_timing", "net_tdm",
+        ]
+        self.assertNotIn("system_timing", validate_run_spec(spec)["adapter"]["expected_reports"])
+        for version in ("v3", "v4", "v5-mock"):
+            old = copy.deepcopy(spec)
+            old["workload"]["generator_id"] = f"ppro-blackbox-communication-probe-{version}"
+            with self.assertRaisesRegex(ValidationError, "report set"):
+                validate_run_spec(old)
+            old["adapter"]["expected_reports"] = run_spec()["adapter"]["expected_reports"]
+            validate_run_spec(old)
+
+    def test_optional_runtime_reports_are_real_profile_only_and_base_map_stays_required(self):
+        with tempfile.TemporaryDirectory() as raw:
+            value = binding(Path(raw) / "case")
+            paths = {**value.report_paths, "route_timing": value.case_dir / "sr0.time",
+                     "net_tdm": value.case_dir / "sr0.net_tdm"}
+            extra = replace(value, report_paths=paths)
+            with self.assertRaisesRegex(ValidationError, "allowlisted report"):
+                validate_runtime_binding(extra)
+            real = replace(extra, fpga_aliases={"F1": "F0", "F2": "F1"})
+            validate_runtime_binding(real, profile="ppro-2026-ordinary-reports-v1")
+            del paths["system_timing"]
+            with self.assertRaisesRegex(ValidationError, "allowlisted report"):
+                validate_runtime_binding(real, profile="ppro-2026-ordinary-reports-v1")
+
+    def test_v5_pass_preserves_route_timing_roles_with_no_ssta_report(self):
+        from tests.test_ppro_blackbox_calibration import ROUTE_TIMING
+
+        fixture = json.loads((ROOT / "tests/fixtures/ppro_blackbox/latency-pass-observation-v1.json").read_text())
+        fixture["metrics"]["calibration_details"] = parse_calibration_details(
+            "", "", {"F1": "F0", "F2": "F1"}, route_timing_text=ROUTE_TIMING,
+            report_sha256={"route_timing": "a" * 64, "net_tdm": "b" * 64},
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            case = Path(raw) / "case"
+            case.mkdir()
+            spec = run_spec()
+            spec["workload"]["generator_id"] = "ppro-blackbox-communication-probe-v5"
+            spec["adapter"] = {
+                "profile": "ppro-2026-ordinary-reports-v1",
+                "expected_reports": ["resource_summary", "partition_summary", "route_summary", "route_timing", "net_tdm"],
+            }
+            paths = {**binding(case).report_paths, "route_timing": case / "sr0.time",
+                     "net_tdm": case / "sr0.net_tdm"}
+            for name, path in paths.items():
+                if name != "system_timing":
+                    path.write_text("adapter fixture\n")
+            value = replace(binding(case), command=("true",), report_paths=paths,
+                            fpga_aliases={"F1": "F0", "F2": "F1"})
+            with mock.patch("emuflow.ppro_blackbox_runner.parse_ppro_2026_ordinary_reports",
+                            return_value=fixture["metrics"]):
+                result = execute_blackbox_case(spec, value)
+            self.assertEqual(result["execution"]["outcome"], "pass")
+            self.assertFalse(result["reports"]["system_timing"])
+            self.assertTrue(result["reports"]["route_timing"])
+            self.assertTrue(result["reports"]["net_tdm"])
+            self.assertTrue(value.output_path.is_file())
+            self.assertTrue(all(not path.exists() for path in paths.values()))
+
+    def test_normalization_failure_is_written_as_terminal_report_parse_failure(self):
+        from emuflow.ppro_blackbox_runner import parse_mock_ordinary_reports
+
+        def empty_timing(paths, metrics):
+            result = parse_mock_ordinary_reports(paths, metrics)
+            result["timing"] = {}
+            return result
+
+        with tempfile.TemporaryDirectory() as raw:
+            case = Path(raw) / "case"
+            with mock.patch("emuflow.ppro_blackbox_runner.parse_mock_ordinary_reports",
+                            side_effect=empty_timing):
+                result = execute_blackbox_case(run_spec(), binding(case))
+            self.assertEqual(result["execution"]["outcome"], "report_parse_failure")
+            self.assertEqual(result["execution"]["failure_code"], "ordinary-report-invalid")
+            self.assertFalse(result["derived"]["fit_eligible"])
+            self.assertFalse(any(result["reports"].values()))
+            self.assertTrue((case / "observation.json").is_file())
+            self.assertTrue(all(not path.exists() for path in binding(case).report_paths.values()))
+
     def test_execution_rejects_stale_runner_revision_before_launch(self):
         with tempfile.TemporaryDirectory() as raw:
             spec = run_spec("stale-runtime")

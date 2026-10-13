@@ -17,7 +17,8 @@ from typing import Any, Mapping
 from .errors import ValidationError
 
 
-DETAILS_SCHEMA = "emuflow.ppro-calibration-details/v1"
+DETAILS_SCHEMA = "emuflow.ppro-calibration-details/v2"
+_LEGACY_SCHEMA = "emuflow.ppro-calibration-details/v1"
 _FPGA = re.compile(r"^F[0-9]+$")
 _SUMMARY = re.compile(
     r"^(Path[0-9]+)\s+(.+?)\s{2,}([0-9]+)\s+"
@@ -33,6 +34,161 @@ _BANK_HEADER = [
     "FPGAID", "targetFPGAID", "BankID", "targetBankID", "dir",
     "eringDevID", "lineRate", "channelNum", "maxRatio",
 ]
+_REPORT_ROLES = {"resource_summary", "partition_summary", "route_summary", "system_timing", "route_timing", "net_tdm"}
+_ROUTE_POINT = re.compile(rf"^\s*({_NUMBER})\s+({_NUMBER})\s+FPGA_([0-9]+)\s+(?:([0-9]+)\s+)?(.+?)\s*$")
+_ROUTE_ARRIVAL = re.compile(rf"^\s*({_NUMBER})\s+data arrival time\s+\(\s*normalized delay\s+({_NUMBER})\s*\)\s*$", re.I)
+
+
+def _safe_label(value: Any, context: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 256 or any(c in value for c in "\n\r\x00") or value.startswith(("/", "~")) or re.search(r"(?:^|\s)[A-Za-z]:[\\/]", value):
+        raise ValidationError(f"{context}: invalid compact label")
+    return value
+
+
+def _parse_net_tdm(text: str, aliases: Mapping[str, str]) -> tuple[list[dict[str, Any]], str]:
+    """Parse only the observed ordinary untdm table; unknown tables stay partial."""
+    if not text.strip():
+        return [], "unavailable"
+    section = ""
+    header_seen = False
+    complete = True
+    rows = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        title = re.fullmatch(r"[0-9]+\.\s+(.+?)\s+report", stripped, re.I)
+        if title:
+            section = title.group(1).lower()
+            header_seen = False
+            continue
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            continue
+        cells = [cell.strip() for cell in stripped[1:-1].split("|")]
+        if section == "untdm" and cells == ["net name", "FPGA Pair", "is clock"]:
+            header_seen = True
+            continue
+        if section == "tdm_set":
+            # This is a user constraint table, not an observed routing table.
+            continue
+        if not cells or all(not cell or re.fullmatch(r"[-+]+", cell) for cell in cells):
+            continue
+        if section != "untdm" or not header_seen:
+            complete = False
+            continue
+        if len(cells) != 3:
+            raise ValidationError("PPro net TDM report: unsupported untdm columns")
+        pair = re.fullmatch(r"\(\s*(F[0-9]+)\s*,\s*(F[0-9]+)\s*\)", cells[1])
+        if pair is None or cells[2] not in {"0", "1"}:
+            raise ValidationError("PPro net TDM report: invalid pair or clock flag")
+        net_name, _ = _descriptor(cells[0], aliases)
+        rows.append({
+            "net_token": _token("net", net_name), "net_name": net_name,
+            "source_fpga": _logical(pair.group(1), aliases),
+            "sink_fpga": _logical(pair.group(2), aliases),
+            "transport_kind": "untdm", "is_clock": cells[2] == "1",
+        })
+    return rows, "complete" if complete and header_seen else "partial"
+
+
+def _route_endpoint(value: str, aliases: Mapping[str, str]) -> str:
+    match = re.fullmatch(r"FPGA_([0-9]+)_ins/(.+)", value.strip())
+    if match:
+        return _logical(match.group(1), aliases) + "/" + _safe_label(match.group(2), "route endpoint")
+    sanitized, _ = _descriptor(value, aliases)
+    return sanitized
+
+
+def _route_crossings(points: list[dict[str, Any]], nets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    crossings = []
+    unbound = 0
+    for previous, point in zip(points, points[1:]):
+        if previous["fpga"] == point["fpga"]:
+            continue
+        if previous["pin_token"] != point["pin_token"] or point["reported_tdm_ratio"] is None:
+            unbound += 1
+            continue
+        delay = point["cumulative_ns"] - previous["cumulative_ns"]
+        if delay < 0 or not math.isclose(delay, point["increment_ns"], abs_tol=0.011):
+            raise ValidationError("PPro route timing: crossing increment/cumulative disagreement")
+        pin_name = point["descriptor"].split(" (", 1)[0]
+        candidates = {pin_name}
+        # The observed system-router BUF_X1 repeats the exact data net on
+        # each Die as '<net>_buf/Z'. No generic suffix/prefix fuzzy matching.
+        if point["descriptor"].endswith(" (BUF_X1)") and pin_name.endswith("_buf/Z"):
+            candidates.add(pin_name[:-len("_buf/Z")])
+        matches = [net for net in nets if net["net_name"] in candidates
+                   and net["source_fpga"] == previous["fpga"]
+                   and net["sink_fpga"] == point["fpga"]]
+        bound = matches[0] if len(matches) == 1 else None
+        crossings.append({
+            "source_fpga": previous["fpga"], "sink_fpga": point["fpga"],
+            "source_point_id": previous["id"], "sink_point_id": point["id"],
+            "pin_token": point["pin_token"],
+            "reported_tdm_ratio": point["reported_tdm_ratio"],
+            "delay_ns": point["increment_ns"],
+            "net_token": bound["net_token"] if bound else None,
+            "net_name": bound["net_name"] if bound else None,
+            "transport_kind": bound["transport_kind"] if bound else "unbound",
+        })
+    return crossings, unbound
+
+
+def _parse_route_timing(text: str, aliases: Mapping[str, str], nets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int | None]:
+    limit_match = re.search(r"Critical Path Report \(Top ([0-9]+) records will be listed at most", text)
+    limit = int(limit_match.group(1)) if limit_match else None
+    paths: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    endpoint_kind: str | None = None
+    table_header = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        start = re.fullmatch(r"Startpoint\s*:\s*(.+)", stripped)
+        if start:
+            current = {"id": f"route-path{len(paths)}", "startpoint_token": _token("pin", _route_endpoint(start.group(1), aliases)),
+                       "endpoint_token": None, "source_clock": None, "sink_clock": None,
+                       "arrival_ns": None, "normalized_delay_ns": None,
+                       "points": [], "crossings": [], "unbound_crossing_count": 0}
+            paths.append(current)
+            endpoint_kind = "source_clock"
+            table_header = False
+            continue
+        if current is None or current["arrival_ns"] is not None:
+            continue
+        end = re.fullmatch(r"Endpoint\s*:\s*(.+)", stripped)
+        if end:
+            current["endpoint_token"] = _token("pin", _route_endpoint(end.group(1), aliases))
+            endpoint_kind = "sink_clock"
+            continue
+        clock = re.fullmatch(r"\(clocked by (.+)\)", stripped)
+        if clock and endpoint_kind:
+            current[endpoint_kind] = _safe_label(clock.group(1), "route clock")
+            continue
+        if stripped.split() == ["Delay(ns)", "Time(ns)", "Die", "TDM_ratio", "pin_name"]:
+            table_header = True
+            continue
+        arrival = _ROUTE_ARRIVAL.fullmatch(line)
+        if arrival:
+            current["arrival_ns"] = _number(float(arrival.group(1)), "route arrival")
+            current["normalized_delay_ns"] = _number(float(arrival.group(2)), "route normalized delay")
+            continue
+        point = _ROUTE_POINT.fullmatch(line)
+        if point:
+            if not table_header:
+                raise ValidationError("PPro route timing: unverified point columns")
+            descriptor, _ = _descriptor(point.group(5), aliases)
+            current["points"].append({
+                "id": f"point{len(current['points'])}", "pin_token": _token("pin", descriptor),
+                "descriptor": descriptor, "fpga": _logical(point.group(3), aliases),
+                "increment_ns": _number(float(point.group(1)), "route increment", nonnegative=False),
+                "cumulative_ns": _number(float(point.group(2)), "route cumulative", nonnegative=False),
+                "reported_tdm_ratio": int(point.group(4)) if point.group(4) else None, "kind": "pin",
+            })
+        elif table_header and _POINT.match(line):
+            raise ValidationError("PPro route timing: unsupported numeric point row")
+    for path in paths:
+        path["crossings"], path["unbound_crossing_count"] = _route_crossings(path["points"], nets)
+    if paths and limit is None:
+        raise ValidationError("PPro route timing: missing report coverage limit")
+    return paths, limit
 
 
 def _token(prefix: str, value: str) -> str:
@@ -222,15 +378,20 @@ def _parse_paths(text: str, aliases: Mapping[str, str]) -> list[dict[str, Any]]:
 
 
 def parse_calibration_details(
-    route_text: str, timing_text: str, aliases: Mapping[str, str]
+    route_text: str, timing_text: str, aliases: Mapping[str, str], *,
+    route_timing_text: str = "", net_tdm_text: str = "",
+    report_sha256: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Extract evidence without claiming bank inventory or segment timing."""
     banks = _parse_banks(route_text, aliases)
     paths = _parse_paths(timing_text, aliases)
-    reasons = ["bank-inventory-not-reported", "crossing-boundary-and-ratio-not-bound"]
+    nets, net_status = _parse_net_tdm(net_tdm_text, aliases)
+    route_paths, path_limit = _parse_route_timing(route_timing_text, aliases, nets)
+    bound_route_segments = any(path["crossings"] for path in route_paths)
+    reasons = ["bank-inventory-not-reported", "tdm-ratio-semantics-unvalidated" if bound_route_segments else "crossing-boundary-and-ratio-not-bound"]
     if not banks:
         reasons.append("no-bank-allocation-rows")
-    if not paths:
+    if not paths and not route_paths:
         reasons.append("no-path-specific-timing")
     if any(point["fpga"] is None and "unmapped-" in point["descriptor"]
            for path in paths for point in path["points"]):
@@ -239,6 +400,11 @@ def parse_calibration_details(
         "schema": DETAILS_SCHEMA,
         "bank_rows": banks,
         "timing_paths": paths,
+        "route_timing_paths": route_paths,
+        "net_tdm_rows": nets,
+        "net_tdm_capture_status": net_status,
+        "route_timing_path_limit": path_limit,
+        "report_sha256": dict(report_sha256 or {}),
         "identification": {
             "bank_inventory": "not_identifiable",
             "single_hop_delay": "not_identifiable",
@@ -249,8 +415,12 @@ def parse_calibration_details(
 
 def validate_calibration_details(value: Any) -> dict[str, Any]:
     """Validate the observation-only contract; no inferred fit eligibility."""
-    root = _keys(value, {"schema", "bank_rows", "timing_paths", "identification"}, "calibration details")
-    if root["schema"] != DETAILS_SCHEMA:
+    legacy = isinstance(value, Mapping) and value.get("schema") == _LEGACY_SCHEMA
+    fields = {"schema", "bank_rows", "timing_paths", "identification"}
+    if not legacy:
+        fields |= {"route_timing_paths", "net_tdm_rows", "net_tdm_capture_status", "route_timing_path_limit", "report_sha256"}
+    root = _keys(value, fields, "calibration details")
+    if root["schema"] not in {DETAILS_SCHEMA, _LEGACY_SCHEMA}:
         raise ValidationError("calibration details: unsupported schema")
     banks = []
     bank_seen: set[tuple[str, str, str]] = set()
@@ -311,9 +481,73 @@ def validate_calibration_details(value: Any) -> dict[str, Any]:
     if any(identification[key] != "not_identifiable" for key in ("bank_inventory", "single_hop_delay")):
         raise ValidationError("calibration details: report facts cannot assert identified models")
     reasons = _list(identification["reasons"], "identification reasons")
-    allowed = {"bank-inventory-not-reported", "crossing-boundary-and-ratio-not-bound", "no-bank-allocation-rows", "no-path-specific-timing", "unmapped-timing-fpga-label"}
+    allowed = {"bank-inventory-not-reported", "crossing-boundary-and-ratio-not-bound", "tdm-ratio-semantics-unvalidated", "no-bank-allocation-rows", "no-path-specific-timing", "unmapped-timing-fpga-label"}
     if not reasons or any(not isinstance(reason, str) or reason not in allowed for reason in reasons) or len(set(reasons)) != len(reasons):
         raise ValidationError("calibration details: invalid identification reason")
-    if not {"bank-inventory-not-reported", "crossing-boundary-and-ratio-not-bound"} <= set(reasons):
+    if "bank-inventory-not-reported" not in reasons or not {"crossing-boundary-and-ratio-not-bound", "tdm-ratio-semantics-unvalidated"}.intersection(reasons):
         raise ValidationError("calibration details: missing unidentifiability reasons")
-    return {"schema": DETAILS_SCHEMA, "bank_rows": banks, "timing_paths": paths, "identification": dict(identification)}
+    result = {"schema": root["schema"], "bank_rows": banks, "timing_paths": paths, "identification": dict(identification)}
+    if legacy:
+        return result
+    hashes = root["report_sha256"]
+    if not isinstance(hashes, Mapping) or not set(hashes) <= _REPORT_ROLES or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes.values()):
+        raise ValidationError("calibration details: invalid ordinary report hashes")
+    status = root["net_tdm_capture_status"]
+    if status not in {"unavailable", "complete", "partial"}:
+        raise ValidationError("calibration details: invalid net TDM capture status")
+    nets = []
+    net_seen = set()
+    for raw in _list(root["net_tdm_rows"], "net TDM rows"):
+        net = _keys(raw, {"net_token", "net_name", "source_fpga", "sink_fpga", "transport_kind", "is_clock"}, "net TDM row")
+        name = _safe_label(net["net_name"], "net name")
+        if net["net_token"] != _token("net", name):
+            raise ValidationError("net TDM row: token/name mismatch")
+        if any(not isinstance(net[field], str) or not _FPGA.fullmatch(net[field]) for field in ("source_fpga", "sink_fpga")) or net["source_fpga"] == net["sink_fpga"]:
+            raise ValidationError("net TDM row: invalid FPGA endpoints")
+        if net["transport_kind"] not in {"untdm", "tdm"} or type(net["is_clock"]) is not bool:
+            raise ValidationError("net TDM row: invalid transport kind or clock flag")
+        key = (net["net_token"], net["source_fpga"], net["sink_fpga"])
+        if key in net_seen:
+            raise ValidationError("net TDM row: duplicate directed net")
+        net_seen.add(key)
+        nets.append(dict(net))
+    if nets and status == "unavailable":
+        raise ValidationError("net TDM rows contradict unavailable report")
+    path_limit = root["route_timing_path_limit"]
+    if path_limit is not None and _integer(path_limit, "route path limit") < 1:
+        raise ValidationError("route timing: path limit must be positive")
+    route_paths = []
+    for index, raw in enumerate(_list(root["route_timing_paths"], "route timing paths")):
+        path = _keys(raw, {"id", "startpoint_token", "endpoint_token", "source_clock", "sink_clock", "arrival_ns", "normalized_delay_ns", "points", "crossings", "unbound_crossing_count"}, "route timing path")
+        if path["id"] != f"route-path{index}":
+            raise ValidationError("route timing path: invalid ordered identity")
+        # Apply the same point/endpoint/finite-value checks used for legacy
+        # SSTA points without interpreting its aggregate path delay.
+        checked = validate_calibration_details({
+            "schema": _LEGACY_SCHEMA, "bank_rows": [], "identification": dict(identification),
+            "timing_paths": [{"id": "unspecified-path0", "constrained": False,
+                              "reported_cross_fpga_count": 0, "arrival_ns": path["arrival_ns"],
+                              "startpoint_token": path["startpoint_token"], "endpoint_token": path["endpoint_token"],
+                              "points": path["points"], "crossings": []}],
+        })["timing_paths"][0]
+        if any(point["fpga"] is None for point in checked["points"]):
+            raise ValidationError("route timing path: missing logical Die identity")
+        crossings, unbound = _route_crossings(checked["points"], nets)
+        for crossing in _list(path["crossings"], "route crossings"):
+            if not isinstance(crossing, Mapping):
+                raise ValidationError("route crossing: expected an object")
+            _number(crossing.get("delay_ns"), "crossing delay")
+            _integer(crossing.get("reported_tdm_ratio"), "crossing reported ratio")
+        if path["crossings"] != crossings or _integer(path["unbound_crossing_count"], "unbound crossing count") != unbound:
+            raise ValidationError("route timing path: crossing identity/delay/net binding mismatch")
+        for field in ("source_clock", "sink_clock"):
+            if path[field] is not None:
+                _safe_label(path[field], "route clock")
+        normalized = None if path["normalized_delay_ns"] is None else _number(path["normalized_delay_ns"], "normalized route delay")
+        route_paths.append({**path, "arrival_ns": checked["arrival_ns"], "points": checked["points"], "normalized_delay_ns": normalized})
+    if route_paths and (path_limit is None or len(route_paths) > path_limit):
+        raise ValidationError("route timing: reported path coverage limit violated")
+    result.update({"report_sha256": dict(hashes), "net_tdm_rows": nets,
+                   "net_tdm_capture_status": status, "route_timing_paths": route_paths,
+                   "route_timing_path_limit": path_limit})
+    return result

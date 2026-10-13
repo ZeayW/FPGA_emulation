@@ -80,9 +80,9 @@
         "expected_reports": {
           "type": "array",
           "minItems": 2,
-          "maxItems": 4,
+          "maxItems": 6,
           "uniqueItems": true,
-          "items": {"enum": ["resource_summary", "partition_summary", "route_summary", "system_timing"]}
+          "items": {"enum": ["resource_summary", "partition_summary", "route_summary", "system_timing", "route_timing", "net_tdm"]}
         }
       }
     }

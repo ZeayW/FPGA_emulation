@@ -116,6 +116,7 @@ class PProBlackboxCommunicationTest(unittest.TestCase):
     def kwargs(self):
         return {
             "kind": "latency",
+            "adapter_profile": "mock-ordinary-reports-v1",
             "fpga_count": 4,
             "source_index": 0,
             "sink_indices": [1, 2],
@@ -192,7 +193,7 @@ class PProBlackboxCommunicationTest(unittest.TestCase):
             metrics = bundle.run_spec["workload"]["design_metrics"]
             self.assertEqual(metrics["reverse_data_bits_per_sink"], 0)
             self.assertEqual(metrics["bidirectional"], 0)
-            self.assertEqual(bundle.run_spec["workload"]["generator_id"], "ppro-blackbox-communication-probe-v4")
+            self.assertEqual(bundle.run_spec["workload"]["generator_id"], "ppro-blackbox-communication-probe-v5-mock")
             rtl = bundle.rtl_path.read_text()
             self.assertIn("payload <= ~payload;", rtl)
             self.assertIn("received_payload <= payload;", rtl)

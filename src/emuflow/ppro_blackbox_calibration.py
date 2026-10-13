@@ -73,6 +73,9 @@ REPORT_NAMES = {
     "route_summary",
     "system_timing",
 }
+OPTIONAL_REPORT_NAMES = {"route_timing", "net_tdm"}
+ROUTE_TIMING_GENERATOR_ID = "ppro-blackbox-communication-probe-v5"
+ROUTE_TIMING_REPORT_NAMES = (REPORT_NAMES - {"system_timing"}) | OPTIONAL_REPORT_NAMES
 RESOURCE_NAMES = {
     "clb_lut",
     "clb_ff",
@@ -627,9 +630,11 @@ def validate_blackbox_observation(value: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValidationError("observation.execution.runtime_seconds: evaluated run requires runtime")
 
     reports = _mapping(root["reports"], "observation.reports")
-    if set(reports) != REPORT_NAMES or any(type(value) is not bool for value in reports.values()):
+    if (not REPORT_NAMES <= set(reports)
+            or not set(reports) <= REPORT_NAMES | OPTIONAL_REPORT_NAMES
+            or any(type(value) is not bool for value in reports.values())):
         raise ValidationError("observation.reports: expected exact boolean report-presence map")
-    normalized_reports = {name: reports[name] for name in sorted(REPORT_NAMES)}
+    normalized_reports = {name: reports[name] for name in sorted(reports)}
 
     metrics = _mapping(root["metrics"], "observation.metrics")
     _strict_keys(
@@ -757,11 +762,23 @@ def validate_blackbox_observation(value: Mapping[str, Any]) -> Dict[str, Any]:
             raise ValidationError("observation: passing run lacks mandatory normal reports")
         if not design or not resource_demand:
             raise ValidationError("observation: passing run lacks compact design/resource metrics")
-        if kind in {"topology_reachability", "payload_capacity", "latency"}:
+        route_timing_contract = normalized_workload["generator_id"] == ROUTE_TIMING_GENERATOR_ID
+        if route_timing_contract:
+            details = normalized_metrics.get("calibration_details", {})
+            if not OPTIONAL_REPORT_NAMES <= set(details.get("report_sha256", {})):
+                raise ValidationError("observation: v5 lacks route timing report identities")
+            if not any(path["arrival_ns"] is not None and path["points"]
+                       for path in details.get("route_timing_paths", [])):
+                raise ValidationError("observation: v5 lacks route timing path evidence")
+        if kind in {"topology_reachability", "payload_capacity", "latency"} or route_timing_contract:
             if not normalized_reports["route_summary"] or not normalized_metrics["routes"]:
                 raise ValidationError("observation: communication experiment lacks route evidence")
-        if kind == "latency":
-            if not normalized_reports["system_timing"] or "sr0_worst_cross_fpga_delay_ns" not in timing:
+        if kind == "latency" or route_timing_contract:
+            timing_reports_present = (
+                all(normalized_reports.get(name, False) for name in ROUTE_TIMING_REPORT_NAMES)
+                if route_timing_contract else normalized_reports["system_timing"]
+            )
+            if not timing_reports_present or "sr0_worst_cross_fpga_delay_ns" not in timing:
                 raise ValidationError("observation: latency experiment lacks sr0 timing evidence")
         if kind == "application_holdout":
             if not assignments:

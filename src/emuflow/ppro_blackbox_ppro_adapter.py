@@ -9,6 +9,7 @@ STF, BoardDB, pin map, timing table, or other internal platform file is read.
 from __future__ import annotations
 
 import math
+import hashlib
 import re
 from collections import defaultdict, deque
 from pathlib import Path
@@ -25,6 +26,7 @@ _REPORTS = {
     "route_summary",
     "system_timing",
 }
+_OPTIONAL_REPORTS = {"route_timing", "net_tdm"}
 _LOGICAL_FPGA = re.compile(r"^F[0-9]+$")
 _NORMALIZED_DELAY = re.compile(
     r"normalized\s+delay\s+([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE
@@ -342,7 +344,7 @@ def parse_ppro_2026_ordinary_reports(
     fpga_aliases: Mapping[str, str],
 ) -> Dict[str, Any]:
     """Return vendor-neutral compact metrics from explicitly selected reports."""
-    if set(report_paths) != _REPORTS:
+    if not _REPORTS <= set(report_paths) or not set(report_paths) <= _REPORTS | _OPTIONAL_REPORTS:
         raise ValidationError("PPro report adapter received an incomplete allowlist")
     aliases = _aliases(fpga_aliases)
     partition_text = _read_text(report_paths["partition_summary"])
@@ -368,6 +370,23 @@ def parse_ppro_2026_ordinary_reports(
     if report_paths["system_timing"].is_file():
         timing_text = _read_text(report_paths["system_timing"])
         timing = _parse_timing_report(timing_text)
+    route_timing_text = ""
+    net_tdm_text = ""
+    if "route_timing" in report_paths and report_paths["route_timing"].is_file():
+        route_timing_text = _read_text(report_paths["route_timing"])
+        # This report explicitly belongs to system routing. Retain the legacy
+        # sr0 aggregate from that report while keeping gr0 details separately.
+        timing = _parse_timing_report(route_timing_text)
+    if "net_tdm" in report_paths and report_paths["net_tdm"].is_file():
+        net_tdm_text = _read_text(report_paths["net_tdm"])
+    report_hashes = {}
+    hash_by_path: Dict[Path, str] = {}
+    for role, path in report_paths.items():
+        if path.is_file():
+            resolved = path.resolve()
+            if resolved not in hash_by_path:
+                hash_by_path[resolved] = hashlib.sha256(path.read_bytes()).hexdigest()
+            report_hashes[role] = hash_by_path[resolved]
     return {
         "design": dict(design_metrics),
         "resource_demand": resource_demand,
@@ -376,5 +395,8 @@ def parse_ppro_2026_ordinary_reports(
         "routes": routes,
         "communication": communication,
         "timing": timing,
-        "calibration_details": parse_calibration_details(route_text, timing_text, aliases),
+        "calibration_details": parse_calibration_details(
+            route_text, timing_text, aliases, route_timing_text=route_timing_text,
+            net_tdm_text=net_tdm_text, report_sha256=report_hashes,
+        ),
     }

@@ -215,6 +215,12 @@
         },
         "system_timing": {
           "type": "boolean"
+        },
+        "route_timing": {
+          "type": "boolean"
+        },
+        "net_tdm": {
+          "type": "boolean"
         }
       }
     },
@@ -325,230 +331,766 @@
           "$ref": "#/$defs/metricMap"
         },
         "calibration_details": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "schema",
-            "bank_rows",
-            "timing_paths",
-            "identification"
-          ],
-          "properties": {
-            "schema": {
-              "const": "emuflow.ppro-calibration-details/v1"
-            },
-            "bank_rows": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "bank_pair_id",
-                  "local_fpga",
-                  "peer_fpga",
-                  "direction",
-                  "reported_channel_count",
-                  "maximum_tdm_ratio",
-                  "reported_line_rate"
-                ],
-                "properties": {
-                  "bank_pair_id": {
-                    "type": "string",
-                    "pattern": "^bank-[0-9a-f]{64}$"
-                  },
-                  "local_fpga": {
-                    "type": "string",
-                    "pattern": "^F[0-9]+$"
-                  },
-                  "peer_fpga": {
-                    "type": "string",
-                    "pattern": "^F[0-9]+$"
-                  },
-                  "direction": {
-                    "enum": [
-                      "input",
-                      "output"
-                    ]
-                  },
-                  "reported_channel_count": {
-                    "type": "integer",
-                    "minimum": 0
-                  },
-                  "maximum_tdm_ratio": {
-                    "type": "integer",
-                    "minimum": 0
-                  },
-                  "reported_line_rate": {
-                    "type": "number",
-                    "minimum": 0
-                  }
-                }
-              }
-            },
-            "timing_paths": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "id",
-                  "constrained",
-                  "reported_cross_fpga_count",
-                  "arrival_ns",
-                  "startpoint_token",
-                  "endpoint_token",
-                  "points",
-                  "crossings"
-                ],
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "pattern": "^(setup|hold|unspecified)-path[0-9]+$"
-                  },
-                  "constrained": {
-                    "type": "boolean"
-                  },
-                  "reported_cross_fpga_count": {
-                    "type": "integer",
-                    "minimum": 0
-                  },
-                  "arrival_ns": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "startpoint_token": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^pin-[0-9a-f]{64}$"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "endpoint_token": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^pin-[0-9a-f]{64}$"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "points": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "id",
-                        "pin_token",
-                        "fpga",
-                        "increment_ns",
-                        "cumulative_ns",
-                        "reported_tdm_ratio",
-                        "kind",
-                        "descriptor"
-                      ],
-                      "properties": {
-                        "id": {
-                          "type": "string",
-                          "pattern": "^point[0-9]+$"
-                        },
-                        "pin_token": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "pattern": "^pin-[0-9a-f]{64}$"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "fpga": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "pattern": "^F[0-9]+$"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "increment_ns": {
-                          "type": "number"
-                        },
-                        "cumulative_ns": {
-                          "type": "number"
-                        },
-                        "reported_tdm_ratio": {
-                          "anyOf": [
-                            {
-                              "type": "integer",
-                              "minimum": 0
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "kind": {
-                          "enum": [
-                            "pin",
-                            "other"
-                          ]
-                        },
-                        "descriptor": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 256
-                        }
-                      }
-                    }
-                  },
-                  "crossings": {
-                    "type": "array",
-                    "maxItems": 0
-                  }
-                }
-              }
-            },
-            "identification": {
+          "oneOf": [
+            {
               "type": "object",
               "additionalProperties": false,
               "required": [
-                "bank_inventory",
-                "single_hop_delay",
-                "reasons"
+                "schema",
+                "bank_rows",
+                "timing_paths",
+                "identification"
               ],
               "properties": {
-                "bank_inventory": {
-                  "const": "not_identifiable"
+                "schema": {
+                  "const": "emuflow.ppro-calibration-details/v1"
                 },
-                "single_hop_delay": {
-                  "const": "not_identifiable"
-                },
-                "reasons": {
+                "bank_rows": {
                   "type": "array",
                   "items": {
-                    "type": "string",
-                    "pattern": "^[a-z][a-z0-9-]*$"
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "bank_pair_id",
+                      "local_fpga",
+                      "peer_fpga",
+                      "direction",
+                      "reported_channel_count",
+                      "maximum_tdm_ratio",
+                      "reported_line_rate"
+                    ],
+                    "properties": {
+                      "bank_pair_id": {
+                        "type": "string",
+                        "pattern": "^bank-[0-9a-f]{64}$"
+                      },
+                      "local_fpga": {
+                        "type": "string",
+                        "pattern": "^F[0-9]+$"
+                      },
+                      "peer_fpga": {
+                        "type": "string",
+                        "pattern": "^F[0-9]+$"
+                      },
+                      "direction": {
+                        "enum": [
+                          "input",
+                          "output"
+                        ]
+                      },
+                      "reported_channel_count": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "maximum_tdm_ratio": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "reported_line_rate": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                },
+                "timing_paths": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "id",
+                      "constrained",
+                      "reported_cross_fpga_count",
+                      "arrival_ns",
+                      "startpoint_token",
+                      "endpoint_token",
+                      "points",
+                      "crossings"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^(setup|hold|unspecified)-path[0-9]+$"
+                      },
+                      "constrained": {
+                        "type": "boolean"
+                      },
+                      "reported_cross_fpga_count": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "arrival_ns": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "startpoint_token": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^pin-[0-9a-f]{64}$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "endpoint_token": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^pin-[0-9a-f]{64}$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "points": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "id",
+                            "pin_token",
+                            "fpga",
+                            "increment_ns",
+                            "cumulative_ns",
+                            "reported_tdm_ratio",
+                            "kind",
+                            "descriptor"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "pattern": "^point[0-9]+$"
+                            },
+                            "pin_token": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^pin-[0-9a-f]{64}$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "fpga": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^F[0-9]+$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "increment_ns": {
+                              "type": "number"
+                            },
+                            "cumulative_ns": {
+                              "type": "number"
+                            },
+                            "reported_tdm_ratio": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "kind": {
+                              "enum": [
+                                "pin",
+                                "other"
+                              ]
+                            },
+                            "descriptor": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            }
+                          }
+                        }
+                      },
+                      "crossings": {
+                        "type": "array",
+                        "maxItems": 0
+                      }
+                    }
+                  }
+                },
+                "identification": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "bank_inventory",
+                    "single_hop_delay",
+                    "reasons"
+                  ],
+                  "properties": {
+                    "bank_inventory": {
+                      "const": "not_identifiable"
+                    },
+                    "single_hop_delay": {
+                      "const": "not_identifiable"
+                    },
+                    "reasons": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]*$"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema",
+                "bank_rows",
+                "timing_paths",
+                "identification",
+                "route_timing_paths",
+                "net_tdm_rows",
+                "net_tdm_capture_status",
+                "route_timing_path_limit",
+                "report_sha256"
+              ],
+              "properties": {
+                "schema": {
+                  "const": "emuflow.ppro-calibration-details/v2"
+                },
+                "bank_rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "bank_pair_id",
+                      "local_fpga",
+                      "peer_fpga",
+                      "direction",
+                      "reported_channel_count",
+                      "maximum_tdm_ratio",
+                      "reported_line_rate"
+                    ],
+                    "properties": {
+                      "bank_pair_id": {
+                        "type": "string",
+                        "pattern": "^bank-[0-9a-f]{64}$"
+                      },
+                      "local_fpga": {
+                        "type": "string",
+                        "pattern": "^F[0-9]+$"
+                      },
+                      "peer_fpga": {
+                        "type": "string",
+                        "pattern": "^F[0-9]+$"
+                      },
+                      "direction": {
+                        "enum": [
+                          "input",
+                          "output"
+                        ]
+                      },
+                      "reported_channel_count": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "maximum_tdm_ratio": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "reported_line_rate": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                },
+                "timing_paths": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "id",
+                      "constrained",
+                      "reported_cross_fpga_count",
+                      "arrival_ns",
+                      "startpoint_token",
+                      "endpoint_token",
+                      "points",
+                      "crossings"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^(setup|hold|unspecified)-path[0-9]+$"
+                      },
+                      "constrained": {
+                        "type": "boolean"
+                      },
+                      "reported_cross_fpga_count": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "arrival_ns": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "startpoint_token": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^pin-[0-9a-f]{64}$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "endpoint_token": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^pin-[0-9a-f]{64}$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "points": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "id",
+                            "pin_token",
+                            "fpga",
+                            "increment_ns",
+                            "cumulative_ns",
+                            "reported_tdm_ratio",
+                            "kind",
+                            "descriptor"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "pattern": "^point[0-9]+$"
+                            },
+                            "pin_token": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^pin-[0-9a-f]{64}$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "fpga": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^F[0-9]+$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "increment_ns": {
+                              "type": "number"
+                            },
+                            "cumulative_ns": {
+                              "type": "number"
+                            },
+                            "reported_tdm_ratio": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "kind": {
+                              "enum": [
+                                "pin",
+                                "other"
+                              ]
+                            },
+                            "descriptor": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            }
+                          }
+                        }
+                      },
+                      "crossings": {
+                        "type": "array",
+                        "maxItems": 0
+                      }
+                    }
+                  }
+                },
+                "identification": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "bank_inventory",
+                    "single_hop_delay",
+                    "reasons"
+                  ],
+                  "properties": {
+                    "bank_inventory": {
+                      "const": "not_identifiable"
+                    },
+                    "single_hop_delay": {
+                      "const": "not_identifiable"
+                    },
+                    "reasons": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]*$"
+                      }
+                    }
+                  }
+                },
+                "route_timing_paths": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "id",
+                      "startpoint_token",
+                      "endpoint_token",
+                      "source_clock",
+                      "sink_clock",
+                      "arrival_ns",
+                      "normalized_delay_ns",
+                      "points",
+                      "crossings",
+                      "unbound_crossing_count"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^route-path[0-9]+$"
+                      },
+                      "startpoint_token": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "pattern": "^pin-[0-9a-f]{64}$"
+                      },
+                      "endpoint_token": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "pattern": "^pin-[0-9a-f]{64}$"
+                      },
+                      "source_clock": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "sink_clock": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "arrival_ns": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      },
+                      "normalized_delay_ns": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      },
+                      "points": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "id",
+                            "pin_token",
+                            "fpga",
+                            "increment_ns",
+                            "cumulative_ns",
+                            "reported_tdm_ratio",
+                            "kind",
+                            "descriptor"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "pattern": "^point[0-9]+$"
+                            },
+                            "pin_token": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^pin-[0-9a-f]{64}$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "fpga": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^F[0-9]+$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "increment_ns": {
+                              "type": "number"
+                            },
+                            "cumulative_ns": {
+                              "type": "number"
+                            },
+                            "reported_tdm_ratio": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "kind": {
+                              "enum": [
+                                "pin",
+                                "other"
+                              ]
+                            },
+                            "descriptor": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            }
+                          }
+                        }
+                      },
+                      "crossings": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "source_fpga",
+                            "sink_fpga",
+                            "source_point_id",
+                            "sink_point_id",
+                            "pin_token",
+                            "reported_tdm_ratio",
+                            "delay_ns",
+                            "net_token",
+                            "net_name",
+                            "transport_kind"
+                          ],
+                          "properties": {
+                            "source_fpga": {
+                              "type": "string",
+                              "pattern": "^F[0-9]+$"
+                            },
+                            "sink_fpga": {
+                              "type": "string",
+                              "pattern": "^F[0-9]+$"
+                            },
+                            "source_point_id": {
+                              "type": "string",
+                              "pattern": "^point[0-9]+$"
+                            },
+                            "sink_point_id": {
+                              "type": "string",
+                              "pattern": "^point[0-9]+$"
+                            },
+                            "pin_token": {
+                              "type": "string",
+                              "pattern": "^pin-[0-9a-f]{64}$"
+                            },
+                            "reported_tdm_ratio": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
+                              "minimum": 0
+                            },
+                            "delay_ns": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "net_token": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "pattern": "^net-[0-9a-f]{64}$"
+                            },
+                            "net_name": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "transport_kind": {
+                              "enum": [
+                                "untdm",
+                                "tdm",
+                                "unbound"
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      "unbound_crossing_count": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                },
+                "net_tdm_rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "net_token",
+                      "net_name",
+                      "source_fpga",
+                      "sink_fpga",
+                      "transport_kind",
+                      "is_clock"
+                    ],
+                    "properties": {
+                      "net_token": {
+                        "type": "string",
+                        "pattern": "^net-[0-9a-f]{64}$"
+                      },
+                      "net_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "source_fpga": {
+                        "type": "string",
+                        "pattern": "^F[0-9]+$"
+                      },
+                      "sink_fpga": {
+                        "type": "string",
+                        "pattern": "^F[0-9]+$"
+                      },
+                      "transport_kind": {
+                        "enum": [
+                          "untdm",
+                          "tdm"
+                        ]
+                      },
+                      "is_clock": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                },
+                "net_tdm_capture_status": {
+                  "enum": [
+                    "complete",
+                    "partial",
+                    "unavailable"
+                  ]
+                },
+                "route_timing_path_limit": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                },
+                "report_sha256": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "resource_summary": {
+                      "$ref": "#/$defs/sha256"
+                    },
+                    "partition_summary": {
+                      "$ref": "#/$defs/sha256"
+                    },
+                    "route_summary": {
+                      "$ref": "#/$defs/sha256"
+                    },
+                    "system_timing": {
+                      "$ref": "#/$defs/sha256"
+                    },
+                    "route_timing": {
+                      "$ref": "#/$defs/sha256"
+                    },
+                    "net_tdm": {
+                      "$ref": "#/$defs/sha256"
+                    }
                   }
                 }
               }
             }
-          }
+          ]
         }
       }
     },

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import hashlib
 from copy import deepcopy
 from pathlib import Path
 
@@ -97,6 +98,32 @@ Path Type: max
   10.000   10.000   data required time
           -51.660   data arrival time
           -41.660   slack (VIOLATED)
+"""
+
+# Minimal ordinary-report grammar observed in the fresh 32-bit, single-hop
+# pilot. This is a parser fixture, not a substitute for a sealed tool run.
+SYSTEM_ROUTE_TIMING_REPORT = """
+Critical Path Report (Top 10 records will be listed at most, sorting by 'normalized delay' in descending order)
+Startpoint: FPGA_1_ins/P0/payload_reg/i1/q
+            (clocked by clk)
+Endpoint  : FPGA_2_ins/P1/received_payload_reg/i1/d
+            (clocked by clk)
+Delay(ns) Time(ns) Die                                      TDM_ratio  pin_name
+     0.00     0.00 FPGA_1                                              P0/payload_reg/i1/q/CK (DFF_X1)
+     0.00     0.00 FPGA_1                                              P0/payload_reg/i1/q/Q (DFF_X1)
+     0.00     0.00 FPGA_1                                              P0.payload[0]_buf/Z (BUF_X1)
+     7.00     7.00 FPGA_2                                   2          P0.payload[0]_buf/Z (BUF_X1)
+     0.10     7.10 FPGA_2                                              P1/received_payload_reg/i1/d/D (DFF_X1)
+              7.10 data arrival time     ( normalized delay  7.10      )
+"""
+
+SYSTEM_ROUTE_NET_TDM_REPORT = """
+1. tdm_set report
+| port name | src FPGA | dst FPGA | untdm/tdm |
+2. untdm report
+| net name | FPGA Pair | is clock |
+""" + "\n".join(f"| P0.payload[{bit}] | (F1,F2) | 0 |" for bit in range(32)) + """
+| reset_n_pio_0.o | (F2,F1) | 0 |
 """
 
 
@@ -319,6 +346,96 @@ class PProBlackboxPProAdapterTest(unittest.TestCase):
         changed = ROUTE_REPORT.replace("channelNum", "physical_capacity")
         with self.assertRaisesRegex(ValidationError, "unsupported"):
             parse_calibration_details(changed, "", {"F11": "F0", "F33": "F1"})
+
+    def _route_details(self, timing=SYSTEM_ROUTE_TIMING_REPORT, nets=SYSTEM_ROUTE_NET_TDM_REPORT):
+        return parse_calibration_details("", "", {"F1": "F0", "F2": "F1"},
+            route_timing_text=timing, net_tdm_text=nets,
+            report_sha256={"route_timing": hashlib.sha256(timing.encode()).hexdigest(), "net_tdm": hashlib.sha256(nets.encode()).hexdigest()})
+
+    def test_real_route_grammar_binds_one_crossing_and_preserves_ratio_encoding(self):
+        details = self._route_details()
+        self.assertEqual(details["schema"], "emuflow.ppro-calibration-details/v2")
+        self.assertEqual(details["route_timing_path_limit"], 10)
+        self.assertEqual(details["net_tdm_capture_status"], "complete")
+        self.assertEqual(len(details["net_tdm_rows"]), 33)
+        path = details["route_timing_paths"][0]
+        self.assertEqual(path["source_clock"], "clk")
+        self.assertEqual(path["sink_clock"], "clk")
+        self.assertEqual(path["arrival_ns"], 7.1)
+        self.assertEqual(path["points"][-1]["increment_ns"], 0.1)
+        self.assertEqual(path["unbound_crossing_count"], 0)
+        self.assertEqual(len(path["crossings"]), 1)
+        crossing = path["crossings"][0]
+        self.assertEqual(crossing["delay_ns"], 7.0)
+        self.assertEqual(crossing["reported_tdm_ratio"], 2)
+        self.assertEqual(crossing["transport_kind"], "untdm")
+        self.assertEqual(crossing["net_name"], "P0.payload[0]")
+        self.assertEqual((crossing["source_fpga"], crossing["sink_fpga"]), ("F0", "F1"))
+        self.assertNotIn("FPGA_", repr(details))
+
+    def test_unknown_net_or_wrong_direction_does_not_inherit_untdm_status(self):
+        for nets in ("", SYSTEM_ROUTE_NET_TDM_REPORT.replace("(F1,F2)", "(F2,F1)")):
+            with self.subTest(nets=bool(nets)):
+                crossing = self._route_details(nets=nets)["route_timing_paths"][0]["crossings"][0]
+                self.assertEqual(crossing["transport_kind"], "unbound")
+                self.assertIsNone(crossing["net_token"])
+                self.assertEqual(crossing["reported_tdm_ratio"], 2)
+
+    def test_unknown_net_table_is_partial_and_not_guessed_as_tdm(self):
+        nets = SYSTEM_ROUTE_NET_TDM_REPORT + "\n3. new_transport report\n| opaque field | unknown value |\n"
+        details = self._route_details(nets=nets)
+        self.assertEqual(details["net_tdm_capture_status"], "partial")
+        self.assertEqual(len(details["net_tdm_rows"]), 33)
+
+    def test_crossing_requires_same_pin_and_explicit_ratio(self):
+        for text in (
+            SYSTEM_ROUTE_TIMING_REPORT.replace("2          P0.payload[0]_buf/Z", "2          other_net_buf/Z"),
+            SYSTEM_ROUTE_TIMING_REPORT.replace("2          P0.payload[0]_buf/Z", "           P0.payload[0]_buf/Z"),
+        ):
+            path = self._route_details(timing=text)["route_timing_paths"][0]
+            self.assertEqual(path["crossings"], [])
+            self.assertEqual(path["unbound_crossing_count"], 1)
+
+    def test_route_report_columns_and_time_arithmetic_fail_closed(self):
+        for text in (
+            SYSTEM_ROUTE_TIMING_REPORT.replace("TDM_ratio", "unknown_column"),
+            SYSTEM_ROUTE_TIMING_REPORT.replace("7.00     7.00", "7.00     8.00"),
+            SYSTEM_ROUTE_TIMING_REPORT.replace("7.00     7.00 FPGA_2", "7.00     7.00 UNKNOWN_2"),
+        ):
+            with self.assertRaises(ValidationError):
+                self._route_details(timing=text)
+
+    def test_route_crossing_validator_rebuilds_binding_from_points(self):
+        for field, value in (("delay_ns", 7.1), ("reported_tdm_ratio", 1), ("sink_point_id", "point4"), ("transport_kind", "tdm")):
+            with self.subTest(field=field):
+                details = self._route_details()
+                details["route_timing_paths"][0]["crossings"][0][field] = value
+                with self.assertRaisesRegex(ValidationError, "binding mismatch"):
+                    validate_calibration_details(details)
+
+    def test_legacy_details_remain_readable(self):
+        details = self._route_details()
+        legacy = {key: details[key] for key in ("schema", "bank_rows", "timing_paths", "identification")}
+        legacy["schema"] = "emuflow.ppro-calibration-details/v1"
+        self.assertEqual(validate_calibration_details(legacy)["schema"], legacy["schema"])
+
+    def test_allowlisted_route_reports_have_byte_hashes_and_replace_aggregate_source(self):
+        with tempfile.TemporaryDirectory() as raw:
+            reports = self._reports(Path(raw))
+            reports["system_timing"].unlink()
+            reports["system_timing"] = Path(raw) / "gr0_ssta_post_part.rpt"
+            reports["route_timing"] = Path(raw) / "sr0_time.rpt"
+            reports["net_tdm"] = Path(raw) / "sr0_tdm.rpt"
+            route_bytes = SYSTEM_ROUTE_TIMING_REPORT.replace("FPGA_1", "FPGA_11").replace("FPGA_2", "FPGA_33").replace("\n", "\r\n").encode()
+            reports["route_timing"].write_bytes(route_bytes)
+            reports["net_tdm"].write_text(SYSTEM_ROUTE_NET_TDM_REPORT.replace("F1", "F11").replace("F2", "F33"))
+            metrics = parse_ppro_2026_ordinary_reports(reports, {"instances": 1234}, {"F11": "F0", "F33": "F1"})
+        self.assertEqual(metrics["timing"]["sr0_worst_cross_fpga_delay_ns"], 7.1)
+        details = metrics["calibration_details"]
+        self.assertEqual(details["report_sha256"]["route_timing"], hashlib.sha256(route_bytes).hexdigest())
+        self.assertNotIn("system_timing", details["report_sha256"])
+        self.assertEqual(details["timing_paths"], [])
+        self.assertEqual(details["route_timing_paths"][0]["crossings"][0]["delay_ns"], 7.0)
 
 
 if __name__ == "__main__":

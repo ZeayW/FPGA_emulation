@@ -70,6 +70,7 @@ class PProBankSinglehopCampaignTest(unittest.TestCase):
                 self.assertEqual(summary["calibration_status"], "observations-only-not-a-fitted-platform")
                 self.assertEqual(summary["cases"][1]["observed_bank_tdm_ratios"], [8])
                 self.assertTrue((args.result_root / "w32-rw0-r0" / "case-summary.json").is_file())
+                self.assertTrue((args.result_root / "w32-rw0-r0" / "bundle" / "communication_probe.v").is_file())
                 with self.assertRaisesRegex(ValidationError, "already exists"):
                     driver.run(args)
                 self.assertEqual(execute.call_count, 2)
@@ -90,6 +91,8 @@ class PProBankSinglehopCampaignTest(unittest.TestCase):
                                 for call in execute.call_args_list))
             self.assertTrue(all(call.args[1].cleanup_raw_reports for call in execute.call_args_list))
             self.assertEqual(summary["raw_project_policy"], "remove-after-observation")
+            self.assertEqual(list(args.result_root.glob("*/bundle")), [])
+            self.assertEqual(len(list(args.result_root.glob("*/case-summary.json"))), 8)
 
     def test_matrix_can_explicitly_retain_raw_project(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -101,6 +104,30 @@ class PProBankSinglehopCampaignTest(unittest.TestCase):
                     summary = driver.run(args)
             self.assertFalse(execute.call_args.args[1].cleanup_raw_reports)
             self.assertEqual(summary["raw_project_policy"], "retain-for-active-inspection")
+            self.assertTrue((args.result_root / "w32-rw16-r0" / "bundle" / "communication_probe.v").is_file())
+
+    def test_matrix_removes_bundle_after_validated_failure_observation(self):
+        with tempfile.TemporaryDirectory() as raw:
+            args = self._arguments(Path(raw), "--mode", "matrix", "--widths", "32", "64",
+                                   "--reverse-widths", "0")
+            with mock.patch.object(driver, "execute_blackbox_case", side_effect=
+                                   lambda spec, binding: self._observation(spec, binding, "tool_failure")):
+                with redirect_stdout(StringIO()):
+                    summary = driver.run(args)
+            self.assertEqual(summary["status"], "failed")
+            self.assertFalse((args.result_root / "w32-rw0-r0" / "bundle").exists())
+            self.assertTrue((args.result_root / "w32-rw0-r0" / "case-summary.json").is_file())
+            self.assertFalse((args.result_root / "w64-rw0-r0").exists())
+
+    def test_matrix_preserves_bundle_until_execution_returns_validated_observation(self):
+        with tempfile.TemporaryDirectory() as raw:
+            args = self._arguments(Path(raw), "--mode", "matrix", "--widths", "32",
+                                   "--reverse-widths", "0")
+            with mock.patch.object(driver, "execute_blackbox_case",
+                                   side_effect=ValidationError("incomplete observation")):
+                with self.assertRaisesRegex(ValidationError, "incomplete observation"):
+                    driver.run(args)
+            self.assertTrue((args.result_root / "w32-rw0-r0" / "bundle" / "communication_probe.v").is_file())
 
     def test_detached_checkout_does_not_require_git_executable(self):
         with tempfile.TemporaryDirectory() as raw:

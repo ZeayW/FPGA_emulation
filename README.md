@@ -192,12 +192,19 @@ its hop/sink coefficients and projected 7.2 ns/link are not qualified single-hop
 timing. Resource probes check units and the configured limit. The 19-fit /
 6-holdout open transport result applies only to that EmuFlow RTL implementation.
 
-The current communication generator is `ppro-blackbox-communication-probe-v4`.
+The current communication generator is `ppro-blackbox-communication-probe-v5`.
 `--width` and `--reverse-width` independently set forward and reverse bits per
 flow (reverse defaults to zero). `--clock-period-ns` defaults to an explicitly
-sealed 10 ns. The v4 runtime supplies this SDC at compile time, requests timing
-budgeting, generates partitioned RTL and runs post-partition SSTA. This changes
-the experiment contract; old v3 observations must not be mixed with v4 results.
+sealed 10 ns. The v5 runtime supplies this SDC at compile time and requests
+timing-budgeted system routing. It seals `sr0_time.rpt` and `sr0_tdm.rpt` as
+separate allowlisted report inputs, preserving same-net crossing increments,
+raw per-path TDM values and independently reported net transport classes.
+Post-partition SSTA is a separate backend check: the first real v4 pilot
+completed system routing but that SSTA crashed while producing an empty report.
+The v5 acquisition does not invoke or depend on that later stage. Old v3/v4
+observations must not be pooled with the v5 experiment contract.
+Python and CLI defaults both select the real PPro profile; explicitly selected
+mock runs have the distinct `ppro-blackbox-communication-probe-v5-mock` identity.
 The existing aggregate Stage 4 fitters are historical v3 consumers, not validators
 for the revised bank or single-hop model. Start with real acquisition pilots,
 verify path-specific report extraction, then repeat asymmetric bidirectional
@@ -217,7 +224,8 @@ PPro selects the actual TDM ratios. `--required-observed-tdm-ratios` checks
 coverage in the reported bank rows; it neither forces TDM nor associates a
 bank-wide maximum with a timing path. A completed acquisition is not a fitted
 or qualified platform. Pilot raw projects remain temporary inspection data;
-matrix runs clean them after normalization unless `--keep-raw-project` is
+matrix runs clean them and their generated input bundles after validated
+terminal observations unless `--keep-raw-project` is
 explicitly requested for active investigation. After inspection, retain only
 compact terminal evidence. The container needs the existing licensed input
 available through PPro's `s2c_LICENSE`; a controller-only variable or an
@@ -463,7 +471,7 @@ no local/crossing decomposition was retained. Therefore its fitted intercept,
 hop/sink terms, ratio increments and 7.2 ns/link projection are withdrawn as
 single-hop calibration evidence. Original reports may supply reusable samples
 only if same-path ratios, TX/RX boundaries and local/crossing segments can be
-recovered. Otherwise those points must be acquired again with the v4 contract.
+recovered. Otherwise those points must be acquired again with the v5 contract.
 Historical campaign cleanup removed raw projects, so compact maxima alone
 cannot be repaired into missing path segments.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run fresh, serial v4 PPro communication probes; retain raw pilot evidence.
+"""Run fresh, serial v5 PPro communication probes; retain raw pilot evidence.
 
 This driver collects observations, not a fitted platform. PPro selects the TDM
 ratios. Raw projects remain scratch for the active parser investigation and
@@ -24,6 +24,7 @@ from typing import Any
 
 from emuflow.errors import ValidationError
 from emuflow.io import write_json
+from emuflow.ppro_blackbox_campaign import _cleanup_generated_bundle
 from emuflow.ppro_blackbox_communication import generate_communication_probe_bundle
 from emuflow.ppro_blackbox_constraints import parse_logical_targets
 from emuflow.ppro_blackbox_provenance import current_runner_revision
@@ -220,6 +221,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             }
             write_json(case_root / "case-summary.json", case_summary, compact=True)
             summary["cases"].append(case_summary)
+            if not keep_raw:
+                # execute_blackbox_case returns only after the tool has ended
+                # and its compact observation has passed validation. Preserve
+                # the terminal summary before removing replay-only probe RTL,
+                # filelists, parameters, constraints, and the duplicate spec.
+                # The shared cleanup rejects unexpected files and symlinks.
+                _cleanup_generated_bundle(bundle.root)
             write_json(summary_path, summary, compact=True)
             print(json.dumps({"case": case_summary}, separators=(",", ":")), flush=True)
             if case_summary["outcome"] != "pass":

@@ -21,7 +21,12 @@ from typing import Any, Dict, Mapping, Sequence
 
 from .errors import ValidationError
 from .io import write_json
-from .ppro_blackbox_calibration import validate_blackbox_observation
+from .ppro_blackbox_calibration import (
+    OPTIONAL_REPORT_NAMES,
+    ROUTE_TIMING_GENERATOR_ID,
+    ROUTE_TIMING_REPORT_NAMES,
+    validate_blackbox_observation,
+)
 from .ppro_blackbox_ppro_adapter import (
     PPRO_2026_REPORT_PROFILE,
     parse_ppro_2026_ordinary_reports,
@@ -40,7 +45,9 @@ _REPORTS = {
 }
 
 
-def _required_reports(kind: str) -> set[str]:
+def _required_reports(kind: str, generator_id: str) -> set[str]:
+    if generator_id == ROUTE_TIMING_GENERATOR_ID:
+        return set(ROUTE_TIMING_REPORT_NAMES)
     required = {"resource_summary", "partition_summary"}
     if kind in {"topology_reachability", "payload_capacity", "latency"}:
         required.add("route_summary")
@@ -285,7 +292,9 @@ def validate_run_spec(value: Mapping[str, Any]) -> Dict[str, Any]:
     if not isinstance(expected_reports, list):
         raise ValidationError("run spec.adapter.expected_reports: expected an array")
     expected = sorted(_string(item, "run spec.adapter.expected_reports") for item in expected_reports)
-    required_reports = _required_reports(normalized_experiment["kind"])
+    required_reports = _required_reports(
+        normalized_experiment["kind"], normalized_workload["generator_id"]
+    )
     if set(expected) != required_reports or len(expected) != len(set(expected)):
         raise ValidationError(
             "run spec.adapter.expected_reports: report set does not match experiment kind"
@@ -309,7 +318,10 @@ def validate_run_spec(value: Mapping[str, Any]) -> Dict[str, Any]:
 def validate_runtime_binding(binding: RuntimeBinding, *, profile: str = MOCK_REPORT_PROFILE) -> None:
     if not binding.command or any(not isinstance(item, str) or not item for item in binding.command):
         raise ValidationError("runtime binding command must be a non-empty argv tuple")
-    if set(binding.report_paths) != _REPORTS:
+    allowed_reports = _REPORTS | (
+        OPTIONAL_REPORT_NAMES if profile == PPRO_2026_REPORT_PROFILE else set()
+    )
+    if not _REPORTS <= set(binding.report_paths) or not set(binding.report_paths) <= allowed_reports:
         raise ValidationError("runtime binding must name each allowlisted report exactly once")
     if binding.timeout_seconds <= 0:
         raise ValidationError("runtime binding timeout must be positive")
@@ -625,6 +637,8 @@ def execute_blackbox_case(
     spec = validate_run_spec(raw_spec)
     require_current_runner_revision(spec["tool"]["runner_revision"])
     validate_runtime_binding(binding, profile=spec["adapter"]["profile"])
+    if not set(spec["adapter"]["expected_reports"]) <= set(binding.report_paths):
+        raise ValidationError("runtime binding lacks a report required by the run spec")
     binding.case_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = binding.case_dir / ".runner-stdout.log"
     stderr_path = binding.case_dir / ".runner-stderr.log"
@@ -737,7 +751,18 @@ def execute_blackbox_case(
                     "provenance": {"class": "black_box_observation"},
                     "derived": {"fit_eligible": fit_eligible, "reason": reason},
                 }
-    normalized = validate_blackbox_observation(observation)
+    try:
+        normalized = validate_blackbox_observation(observation)
+    except ValidationError:
+        if observation["execution"]["outcome"] != "pass":
+            raise
+        # Parsing a report without throwing is not sufficient evidence of a
+        # complete timing observation. Preserve a terminal failure when the
+        # purported success fails semantic normalization (e.g. an empty SSTA
+        # report), rather than escaping before writing the compact record.
+        normalized = validate_blackbox_observation(_failure_observation(
+            spec, "report_parse_failure", "ordinary-report-invalid", runtime_seconds
+        ))
     try:
         try:
             write_json(binding.output_path, normalized, compact=True)
