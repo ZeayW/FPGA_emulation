@@ -71,8 +71,8 @@ greedy site search. Alternative placer adapters are research interfaces, not
 evidence that an unsupported native optimizer can implement the design.
 
 VTR is an alternative academic backend. Vivado is an optional proprietary
-physical backend and is not bundled. Research-route selection currently
-requires explicit CLI options; see [backend selection](../README.md#configuration-and-limits).
+physical backend and is not bundled. CLI and Python API defaults select
+RapidWright with Xilinx mapping; see [backend selection](../README.md#configuration-and-limits).
 
 ## Source and attribution
 

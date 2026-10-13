@@ -289,6 +289,7 @@ class VtrNetlistTest(unittest.TestCase):
                 timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 frame_slots=32,
                 equivalence_cycles=4,
+                mapping_profile="vtr-hard-blocks",
             )
             equivalence = report["stages"]["split"]["equivalence"]
             self.assertEqual(report["status"], "pass")

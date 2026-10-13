@@ -11,7 +11,7 @@ alternative academic backend, and Vivado is an optional proprietary backend.
 Device resources and the inter-FPGA platform model are separate: a virtual
 BoardDB is an academic model, not a deployable board or evidence of hardware
 signoff. See [backend selection](#configuration-and-limits) for the explicit CLI
-options required to select the research route.
+options for the research route and alternative backends.
 
 ## Flow
 
@@ -259,19 +259,21 @@ and requires compatible architecture, timing, and backend inputs. Consult
 
 ## Configuration and limits
 
-The default research route is RapidWright. Select
-`--physical-backend rapidwright --mapping-profile xilinx-ultrascaleplus-open-v1`
-and supply the matching device/provider, architecture, timing, and runtime
+The CLI and Python API default to `rapidwright` with
+`xilinx-ultrascaleplus-open-v1` mapping. Supply the matching
+device/provider, architecture, timing, and runtime
 inputs described in the [user guide](docs/USER_GUIDE.md#physical-implementation).
 Add `--physical` to execute placement and routing.
 
-**CLI selection caveat:** the current command-line parser still selects `open`
-and `vtr-hard-blocks` when these two options are omitted. Set both explicitly
-for RapidWright research runs; a bare invocation does not select that route.
+To use the alternative VTR route, explicitly select
+`--physical-backend open --mapping-profile vtr-hard-blocks`. Standalone
+`multi-fpga physical` also defaults to RapidWright; use `--backend open` for VTR.
+Missing RapidWright inputs do not trigger an automatic VTR fallback.
 
 Other CLI defaults are timing-driven PATRON partitioning, `sequential-only`
 cuts, baseline Phase 6, and OpenSTA global physical timing. Generalized Static
-Exact combinational cuts and Chimew are explicit options.
+Exact combinational cuts and Chimew are explicit options. The integrated Chimew
+lookahead path currently requires the explicit VTR backend/profile combination.
 
 - State the period of every analyzed clock explicitly.
 - Mapping profiles must match the physical device model; generic soft mapping

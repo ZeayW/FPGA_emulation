@@ -105,13 +105,13 @@ Append `--physical` to compilation when a complete physical run is required.
 Backend-specific architecture, timing, and constraints must be supplied
 consistently.
 
-The default research route is RapidWright. The current CLI parser still defaults
-to `open` with `vtr-hard-blocks` mapping, so select the research backend and its
-mapping profile explicitly.
+The CLI and Python API default to RapidWright with
+`xilinx-ultrascaleplus-open-v1` mapping, including the standalone physical and
+frontend-stage entry points. Backend selection never silently falls back to VTR.
 
-- `--physical-backend rapidwright`: Xilinx device facts and RWRoute with the
-  native OpenPARF placer. Set
-  `--mapping-profile xilinx-ultrascaleplus-open-v1`. Supply the compatible provider/device, native
+- `--physical-backend rapidwright`: the default; Xilinx device facts and RWRoute
+  with the native OpenPARF placer and `xilinx-ultrascaleplus-open-v1` mapping.
+  Supply the compatible provider/device, native
   constraints, architecture/timing data, and runtime paths listed by
   `multi-fpga compile --help`. This path has external RapidWright API/device
   licensing conditions; it is not the fully open VTR route.
@@ -123,6 +123,10 @@ mapping profile explicitly.
   `--physical-openparf-python`.
 - `--physical-backend vivado`: optional proprietary device implementation.
   It requires the matching Vivado installation, device support, and licenses.
+
+Standalone `multi-fpga physical` uses `--backend` for the same selection and
+also defaults to RapidWright. The integrated Chimew lookahead path currently
+requires explicit `--physical-backend open --mapping-profile vtr-hard-blocks`.
 
 Global physical STA uses OpenSTA by default. `--global-sta-executable` overrides
 the executable; `--global-timing-engine python` explicitly selects the separate

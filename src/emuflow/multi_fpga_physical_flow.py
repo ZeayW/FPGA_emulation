@@ -513,7 +513,7 @@ def run_multi_fpga_physical_flow(
     schedule_path: Path,
     output_dir: Path,
     *,
-    backend: str = "open",
+    backend: str = "rapidwright",
     architecture: Optional[Path] = None,
     architecture_id: str = VTR_HARD_BLOCK_PROFILE,
     yosys: Optional[str] = None,

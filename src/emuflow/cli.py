@@ -618,7 +618,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "generic-soft",
             "xilinx-ultrascaleplus-open-v1",
         ),
-        default="vtr-hard-blocks",
+        default=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     )
     frontend_run.add_argument("--allow-fabric-clock", action="store_true")
     frontend_run.add_argument("--managed-dag-node", action="store_true")
@@ -1894,9 +1894,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "generic-soft",
             "xilinx-ultrascaleplus-open-v1",
         ),
-        default="vtr-hard-blocks",
+        default=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
         help=(
-            "RTL mapping profile; vtr-hard-blocks preserves public VTR "
+            "RTL mapping profile (default: xilinx-ultrascaleplus-open-v1); "
+            "vtr-hard-blocks preserves public VTR "
             "multiplier/RAM blocks, while xilinx-ultrascaleplus-open-v1 "
             "uses the fail-closed Route A primitive namespace"
         ),
@@ -2188,8 +2189,8 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--physical-backend",
         choices=("open", "rapidwright", "vivado"),
-        default="open",
-        help="select the provider behind the common physical/timing contract",
+        default="rapidwright",
+        help="physical/timing provider (default: rapidwright)",
     )
     multi_fpga_compile.add_argument("--physical-architecture", type=Path)
     multi_fpga_compile.add_argument(
@@ -2317,7 +2318,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     multi_fpga_physical.add_argument(
-        "--backend", choices=("open", "rapidwright", "vivado"), default="open"
+        "--backend", choices=("open", "rapidwright", "vivado"), default="rapidwright"
     )
     multi_fpga_physical.add_argument("--architecture", type=Path)
     multi_fpga_physical.add_argument(
