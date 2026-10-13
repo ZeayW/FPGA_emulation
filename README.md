@@ -5,10 +5,13 @@ synchronous RTL into per-FPGA netlists and a statically scheduled communication
 fabric, with explicit interfaces between synthesis, partitioning, system
 routing, TDM assignment, physical implementation, and global timing analysis.
 
-The default research backend uses a public VTR academic FPGA model. Optional
-RapidWright and Vivado backends support Xilinx device integration. A virtual
-platform is an academic model, not a deployable board or evidence of hardware
-signoff.
+The default research route uses **RapidWright device resources, native OpenPARF
+placement, and RWRoute routing** for supported Xilinx FPGAs. VTR/VPR remains an
+alternative academic backend, and Vivado is an optional proprietary backend.
+Device resources and the inter-FPGA platform model are separate: a virtual
+BoardDB is an academic model, not a deployable board or evidence of hardware
+signoff. See [backend selection](#configuration-and-limits) for the explicit CLI
+options required to select the research route.
 
 ## Flow
 
@@ -20,7 +23,7 @@ signoff.
 | 4 | Route cross-FPGA multicast communication | Native C++ system router with topology, congestion, and timing costs |
 | 5 | Assign TDM ratios, lanes, and slots to routed communication | Lagrangian ratio optimization, discrete legalization, and slot refinement; concrete event binding for supported combinational cuts |
 | 6 | Plan pins/lanes, split the netlist, and generate transport RTL | Baseline pin planning; optional Chimew provider; static transport, shadow registers, and frame-barrier synchronization |
-| 7 | Implement each FPGA and analyze whole-design timing | VPR/OpenPARF, RapidWright/OpenPARF, or Vivado physical backends; OpenSTA global timing |
+| 7 | Implement each FPGA and analyze whole-design timing | RapidWright/OpenPARF/RWRoute research route; alternative VPR/OpenPARF or Vivado backends; OpenSTA global timing |
 
 Each stage has versioned artifacts and independent structural, legality,
 coverage, or equivalence checks. Passing an intermediate stage does not
@@ -146,8 +149,8 @@ The physical backends share a result contract but use different device models:
 
 | Backend | Device model and physical algorithms | Upstream foundation |
 | --- | --- | --- |
-| Open academic | VTR architecture XML; VPR architecture-aware packing, routing-resource graph and detailed routing; OpenPARF analytical placement, legalization and detailed placement, with VPR placement available as a baseline | [VTR/VPR](https://docs.verilogtorouting.org/en/latest/vpr/), [OpenPARF](https://github.com/PKU-IDEA/OpenPARF) |
-| RapidWright | Supported Xilinx device resources and site/BEL connectivity; EmuFlow device/netlist adapters; native OpenPARF placement and validated site/BEL binding; RWRoute detailed routing | [RapidWright](https://github.com/Xilinx/RapidWright), [FPGA Interchange](https://github.com/chipsalliance/fpga-interchange-schema), [RWRoute](https://www.rapidwright.io/docs/RWRoute_timing_driven_routing.html) |
+| RapidWright (default research route) | Supported Xilinx device resources and site/BEL connectivity; EmuFlow device/netlist adapters; native OpenPARF placement and validated site/BEL binding; RWRoute detailed routing | [RapidWright](https://github.com/Xilinx/RapidWright), [FPGA Interchange](https://github.com/chipsalliance/fpga-interchange-schema), [RWRoute](https://www.rapidwright.io/docs/RWRoute_timing_driven_routing.html) |
+| VTR (alternative academic route) | VTR architecture XML; VPR architecture-aware packing, routing-resource graph and detailed routing; OpenPARF analytical placement, legalization and detailed placement, with VPR placement available as a baseline | [VTR/VPR](https://docs.verilogtorouting.org/en/latest/vpr/), [OpenPARF](https://github.com/PKU-IDEA/OpenPARF) |
 | Vivado | Vendor synthesis/implementation integration and physical reports for supported inputs | Optional proprietary backend |
 
 OpenPARF's heterogeneous placement framework and RapidWright/RWRoute's device
@@ -222,7 +225,9 @@ For dependency-prefix configuration and partial development builds, see the
 
 ## Quick start
 
-Use the CLI produced by the root build:
+Use the CLI produced by the root build. This small frontend/transport example
+explicitly selects the alternative VTR profile; it is not a RapidWright
+physical-flow example:
 
 ```bash
 export PATH="$PWD/build/native/install/bin:$PATH"
@@ -235,6 +240,8 @@ emuflow multi-fpga compile examples/rtl/counter.v \
   --top counter \
   --clock clk \
   --clock-period clk=10 \
+  --mapping-profile vtr-hard-blocks \
+  --physical-backend open \
   --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
   --out build/counter-multi-fpga
 
@@ -252,11 +259,19 @@ and requires compatible architecture, timing, and backend inputs. Consult
 
 ## Configuration and limits
 
-The default CLI configuration uses `vtr-hard-blocks` mapping, timing-driven
-PATRON partitioning, `sequential-only` cuts, baseline Phase 6, and the
-`open` physical backend when physical execution is requested. Generalized
-Static Exact combinational cuts and Chimew are explicit options. Global
-physical timing defaults to OpenSTA.
+The default research route is RapidWright. Select
+`--physical-backend rapidwright --mapping-profile xilinx-ultrascaleplus-open-v1`
+and supply the matching device/provider, architecture, timing, and runtime
+inputs described in the [user guide](docs/USER_GUIDE.md#physical-implementation).
+Add `--physical` to execute placement and routing.
+
+**CLI selection caveat:** the current command-line parser still selects `open`
+and `vtr-hard-blocks` when these two options are omitted. Set both explicitly
+for RapidWright research runs; a bare invocation does not select that route.
+
+Other CLI defaults are timing-driven PATRON partitioning, `sequential-only`
+cuts, baseline Phase 6, and OpenSTA global physical timing. Generalized Static
+Exact combinational cuts and Chimew are explicit options.
 
 - State the period of every analyzed clock explicitly.
 - Mapping profiles must match the physical device model; generic soft mapping
@@ -270,8 +285,8 @@ physical timing defaults to OpenSTA.
 - Bitstream generation and board bring-up require a supported concrete device,
   board support package, clock/reset configuration, and transport interface.
 - RapidWright device/API dependencies have their own licensing conditions.
-  Vivado is proprietary and is not bundled or required by the default VTR
-  research path.
+  Vivado is proprietary and is not bundled. The alternative VTR backend does
+  not require Vivado.
 - WNS/TNS are scoped to the declared source TimingPathDB population.
   Original-path TNS sums negative slack per original path, not once per
   unique register endpoint. Per-FPGA metrics are separate diagnostics.

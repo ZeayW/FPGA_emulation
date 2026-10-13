@@ -63,14 +63,16 @@ establish a timing improvement.
 VPR supplies the open academic packing/routing model; OpenPARF supplies
 analytical placement, legalization, and detailed placement.
 
-For supported Xilinx device inputs, the RapidWright route uses native
+The default research route is RapidWright. For supported Xilinx device inputs,
+it uses native
 OpenPARF placement, independently validates the site/BEL result, and passes it
 to RWRoute. Device adapters do not replace native placement by a hidden
 greedy site search. Alternative placer adapters are research interfaces, not
 evidence that an unsupported native optimizer can implement the design.
 
-Vivado is an optional proprietary physical backend. It is neither bundled nor
-required by the default VTR route.
+VTR is an alternative academic backend. Vivado is an optional proprietary
+physical backend and is not bundled. Research-route selection currently
+requires explicit CLI options; see [backend selection](../README.md#configuration-and-limits).
 
 ## Source and attribution
 

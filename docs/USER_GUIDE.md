@@ -105,16 +105,22 @@ Append `--physical` to compilation when a complete physical run is required.
 Backend-specific architecture, timing, and constraints must be supplied
 consistently.
 
-- `--physical-backend open`: VTR/VPR packing and routing with OpenPARF
-  placement. Fetch the public architecture using `arch fetch-default-vtr`,
-  bind it with `--physical-architecture`, and configure the compiled OpenPARF
-  installation/interpreter using `--physical-openparf-install` and
-  `--physical-openparf-python`.
+The default research route is RapidWright. The current CLI parser still defaults
+to `open` with `vtr-hard-blocks` mapping, so select the research backend and its
+mapping profile explicitly.
+
 - `--physical-backend rapidwright`: Xilinx device facts and RWRoute with the
-  native OpenPARF placer. Supply the compatible provider/device, native
+  native OpenPARF placer. Set
+  `--mapping-profile xilinx-ultrascaleplus-open-v1`. Supply the compatible provider/device, native
   constraints, architecture/timing data, and runtime paths listed by
   `multi-fpga compile --help`. This path has external RapidWright API/device
   licensing conditions; it is not the fully open VTR route.
+- `--physical-backend open`: alternative VTR/VPR packing and routing with
+  OpenPARF placement and `--mapping-profile vtr-hard-blocks`. Fetch the public
+  architecture using `arch fetch-default-vtr`, bind it with
+  `--physical-architecture`, and configure the compiled OpenPARF
+  installation/interpreter using `--physical-openparf-install` and
+  `--physical-openparf-python`.
 - `--physical-backend vivado`: optional proprietary device implementation.
   It requires the matching Vivado installation, device support, and licenses.
 
