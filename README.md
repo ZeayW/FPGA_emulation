@@ -162,6 +162,10 @@ outputs without tying their internal nets to undefined constants; those nets
 retain any internal consumers or aliases to connected ports. Open inputs remain
 undriven wires, while nonempty width mismatches still fail closed. A native Yosys
 flatten comparison qualifies these port-binding semantics on a small fixture.
+Phase 3 preserves the same four-state contract: an undriven wire has no source
+FPGA and is never materialized as a transport cut. Each consuming split
+partition retains the wire as open/`x`; the flow does not invent a sender or
+silently coerce the value to zero or one.
 
 The next platform-modeling increment is specified in the
 [PPro black-box platform calibration plan](docs/PPRO_BLACKBOX_PLATFORM_CALIBRATION_PLAN.md).

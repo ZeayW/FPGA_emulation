@@ -1526,6 +1526,13 @@ def compute_cut_nets(
             if len(instance_fpgas) > 1:
                 global_nets += 1
             continue
+        # An undriven wire has no value-producing FPGA.  The splitter keeps
+        # such a wire open in every partition that consumes it, preserving
+        # the original four-state ``x`` semantics.  Treating its sinks as a
+        # remote cut would invent a transport source and later make the exact
+        # semantic contract demand a nonexistent source FPGA.
+        if not driver_fpgas and net["cut_class"] == "undriven":
+            continue
         if not driver_fpgas and net["cut_class"] == "primary_input":
             if len(sink_fpgas) > 1:
                 replicated_primary_inputs += 1

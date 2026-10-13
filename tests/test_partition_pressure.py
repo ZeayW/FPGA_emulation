@@ -14,6 +14,7 @@ from emuflow.partition import (
     CUT_MODE_STATIC_EXACT,
     build_clusters,
     build_partition_assignment,
+    compute_cut_nets,
     normalize_partition_constraints,
 )
 from emuflow.combinational_cut import (
@@ -170,6 +171,41 @@ def _capacity_release_ir(instances: int = 300) -> EmuIR:
 
 
 class PartitionPressureTest(unittest.TestCase):
+    def test_undriven_wire_is_not_materialized_as_transport(self) -> None:
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "undriven_transport",
+                    "top": "undriven_transport",
+                    "source_format": "fixture",
+                },
+                "ports": [],
+                "instances": [
+                    {
+                        "id": "sink",
+                        "type": "LUT1",
+                        "resources": {"lut": 1},
+                    }
+                ],
+                "nets": [
+                    {
+                        "id": "open_wire",
+                        "cut_class": "undriven",
+                        "drivers": [],
+                        "sinks": [_endpoint("sink", "I")],
+                    }
+                ],
+                "clocks": [],
+                "warnings": [],
+            }
+        )
+
+        cuts, metrics = compute_cut_nets(ir, {"sink": "fpga2"})
+
+        self.assertEqual(cuts, [])
+        self.assertEqual(metrics["cut_nets"], 0)
+
     def setUp(self) -> None:
         self.ir = _ir()
         self.platform = Platform.from_dict(
