@@ -241,12 +241,6 @@ def iter_sta_path_database_paths(
             )
         connection = _open_sqlite_read_only(payload_path)
         try:
-            if verify_payload:
-                integrity = connection.execute("PRAGMA quick_check").fetchone()
-                if integrity != ("ok",):
-                    raise ValidationError(
-                        "STA path database SQLite integrity failed"
-                    )
             cursor = connection.execute(
                 """
                 SELECT p.ordinal, p.path_id, p.clock_domain,
@@ -1141,9 +1135,6 @@ def import_sta_path_database_tsv_streaming(
                 "STA path database TSV contains no mapped timing paths"
             )
         connection.commit()
-        integrity = connection.execute("PRAGMA integrity_check").fetchone()
-        if integrity != ("ok",):
-            raise ValidationError("STA path database SQLite integrity failed")
         connection.close()
         connection = None
         os.replace(temporary_path, payload_path)
@@ -1551,7 +1542,6 @@ def derive_partition_net_weights(
     all extracted paths containing the net. The power-law edge weight is the
     standard timing-driven partitioning form ``1 + scale * criticality^p``.
     """
-    ir = EmuIR.load(ir_path)
     database = read_json(database_path)
     if input_already_validated:
         summary = database.get("summary")
@@ -1561,6 +1551,7 @@ def derive_partition_net_weights(
             )
         checked = {"paths": int(summary["paths"])}
     else:
+        ir = EmuIR.load(ir_path)
         checked = validate_sta_path_database_path_value(
             database_path, database, ir
         )
@@ -1645,9 +1636,6 @@ def derive_partition_net_weights(
             FROM net_weights
             """
         ).fetchone()
-        integrity = connection.execute("PRAGMA integrity_check").fetchone()
-        if integrity != ("ok",):
-            raise ValidationError("partition net weights SQLite integrity failed")
         connection.close()
         connection = None
         os.replace(temporary_path, payload_path)
@@ -1844,12 +1832,6 @@ def iter_partition_net_weight_records(
     connection = _open_sqlite_read_only(payload_path)
     count = 0
     try:
-        if verify_payload:
-            integrity = connection.execute("PRAGMA quick_check").fetchone()
-            if integrity != ("ok",):
-                raise ValidationError(
-                    "partition net weights SQLite integrity failed"
-                )
         for row in connection.execute(
             """
             SELECT net_id, criticality, path_count, weight

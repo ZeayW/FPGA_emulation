@@ -7,8 +7,9 @@ import tempfile
 import tracemalloc
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from emuflow.emuir_storage import is_emuir_sqlite, read_emuir_sqlite
+from emuflow.emuir_storage import is_emuir_sqlite, read_emuir_sqlite, write_emuir_sqlite
 from emuflow.ir import EmuIR
 from emuflow.yosys import import_yosys_json, import_yosys_json_indexed
 
@@ -38,6 +39,42 @@ class EmuIRStorageTest(unittest.TestCase):
             self.assertTrue(is_emuir_sqlite(first))
             self.assertEqual(EmuIR.load(first).to_dict(), self.ir.to_dict())
             self.assertEqual(_sha256(first), _sha256(second))
+
+    def test_publication_does_not_run_storage_engine_audits(self) -> None:
+        connect = sqlite3.connect
+
+        def without_audits(*args, **kwargs):
+            connection = connect(*args, **kwargs)
+            connection.set_authorizer(
+                lambda action, name, *unused: sqlite3.SQLITE_DENY
+                if action == sqlite3.SQLITE_PRAGMA
+                and name.lower() in {"integrity_check", "quick_check"}
+                else sqlite3.SQLITE_OK
+            )
+            return connection
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = Path(temporary_directory) / "design.emuir.sqlite"
+            with patch("emuflow.emuir_storage.sqlite3.connect", without_audits):
+                self.ir.save(artifact)
+                self.assertEqual(EmuIR.load(artifact).to_dict(), self.ir.to_dict())
+            # An explicit offline engine audit remains possible, but is not
+            # invoked by a producer/consumer or needed for logical round-trip.
+            with connect(artifact) as connection:
+                self.assertEqual(connection.execute("PRAGMA integrity_check").fetchall(), [("ok",)])
+
+    def test_duplicate_keys_reject_publication_and_preserve_previous_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = root / "design.emuir.sqlite"
+            self.ir.save(artifact)
+            original = artifact.read_bytes()
+            invalid = self.ir.to_dict()
+            invalid["instances"] = [*invalid["instances"], invalid["instances"][0]]
+            with self.assertRaises(sqlite3.IntegrityError):
+                write_emuir_sqlite(artifact, invalid)
+            self.assertEqual(artifact.read_bytes(), original)
+            self.assertEqual(list(root.glob(".*.tmp")), [])
 
     def test_child_rows_merge_without_whole_graph_side_indexes(self) -> None:
         value = {

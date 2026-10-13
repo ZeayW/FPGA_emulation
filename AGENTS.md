@@ -98,6 +98,22 @@ These requirements apply to all work in this repository.
 
 ## Only permitted experiment lifecycle: ephemeral intermediates
 
+An explicit user request to continue a debugging test from an existing Phase
+1 output authorizes direct, read-only use of that completed output within the
+current investigation. Do not rerun synthesis merely to test a downstream
+adapter. Check the publication boundary and required source/mapping/clock
+identity once; never promote a producer-owned temporary database to a completed
+phase or modify it while its producer is live. This is not authorization to
+reintroduce a persistent checkpoint DAG or long-term intermediate retention.
+
+Phase handoffs must not run SQLite `integrity_check` or `quick_check` implicitly.
+These audit database-engine storage, not circuit semantics; use them only for
+explicit offline corruption diagnosis. Keep key constraints on insertion,
+atomic publication, consumer-required schema/identity/row-count checks, and
+electrical/timing/equivalence/legality checks. A small summary must not trigger
+whole-graph loading. Reuse an already validated in-process object rather than
+reloading it solely to validate it again.
+
 This is the only permitted lifecycle for validation and QoR experiments. Do
 not introduce a persistent checkpoint/cache exception to avoid rerunning a
 phase, even when a run is expensive or an earlier result appears reusable.

@@ -1028,6 +1028,18 @@ record instead of retaining all lines plus a joined document. These remove
 duplicate working sets; the initial generic EmuIR load and Verilog connection
 indexes still materialize the graph, so bounded-memory large-design Phase 2
 execution is not yet claimed.
+The [lean phase-handoff contract](docs/LEAN_PHASE_HANDOFFS.md) separates consumer
+data from diagnostic evidence. EmuIR and timing/weight producers and iterators
+no longer run implicit SQLite `integrity_check` or `quick_check`: these are
+optional offline storage-engine diagnostics, not circuit semantic gates. This
+deliberately removes automatic exhaustive database storage auditing; unique-key
+insertion, atomic publication and circuit/identity/coverage checks remain.
+Partition-weight derivation also avoids loading the whole EmuIR when the timing
+stage has already validated its input. These changes do not yet eliminate the
+main OpenSTA exporter's whole-graph working set; NVDLA downstream runtime remains
+to be measured. An explicitly requested debugging continuation can read a
+completed Phase 1 artifact directly without rerunning synthesis or creating a
+persistent cache. Producer-owned temporary files are not completed artifacts.
 One-shot compilation validates supplied BoardLinkTimingDB and TransportCostDB
 against the selected BoardDB before synthesis, tool launch, or output creation.
 A derived utilization-stress platform must carry matching platform identities

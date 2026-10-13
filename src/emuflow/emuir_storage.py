@@ -315,9 +315,9 @@ def write_emuir_sqlite(path: Path, value: Mapping[str, Any]) -> None:
             ((seq, _json(record)) for seq, record in enumerate(value.get("clocks", []))),
         )
         connection.commit()
-        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
-        if integrity != "ok":
-            raise ValueError(f"EmuIR SQLite integrity check failed: {integrity}")
+        # SQLite enforces keys while inserting. Do not reread every table and
+        # index here: storage-engine audits are explicit offline diagnostics,
+        # not a prerequisite for handing a newly written graph to a consumer.
         connection.close()
         connection = None
         with temporary.open("rb") as stream:
