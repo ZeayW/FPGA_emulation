@@ -19,7 +19,7 @@ options for the research route and alternative backends.
 | --- | --- | --- |
 | 1 | Synthesize and map RTL; preserve connectivity, primitive parameters, and resource demand in EmuIR | Yosys; mapping profiles for VTR hard blocks, generic soft logic, and Xilinx UltraScale+ |
 | 2 | Extract timing paths and derive optimization weights | OpenSTA; optional Vivado timing provider |
-| 3 | Cluster and partition against resource and topology constraints | PATRON refinement with a TritonPart initializer; explicit TritonPart, RePart, MFSPart, and greedy alternatives |
+| 3 | Cluster and partition against resource and topology constraints | TritonPart initial partitioning → PATRON post-processing; standalone TritonPart, RePart, MFSPart, and greedy alternatives |
 | 4 | Route cross-FPGA multicast communication | Native C++ system router with topology, congestion, and timing costs |
 | 5 | Assign TDM ratios, lanes, and slots to routed communication | Lagrangian ratio optimization, discrete legalization, and slot refinement; concrete event binding for supported combinational cuts |
 | 6 | Plan pins/lanes, split the netlist, and generate transport RTL | Baseline pin planning; optional Chimew provider; static transport, shadow registers, and frame-barrier synchronization |
@@ -65,22 +65,46 @@ and TDM optimization. A Vivado adapter is available for supported vendor flows.
 This is pre-physical timing: inter-FPGA route, TDM events, and routed FPGA delays
 are resolved later. Phase 7 performs the final global analysis.
 
-### Phase 3: multi-resource hypergraph partitioning
+### Phase 3: initial partitioning and post-processing
 
+The default sequence is **TritonPart initial partitioning → PATRON
+post-processing**, operating on the same atomic-cluster hypergraph.
 [TritonPart in OpenROAD](https://openroad.readthedocs.io/en/latest/main/src/par/README.html)
-provides multilevel hypergraph partitioning: coarsening, initial partitioning,
-and uncoarsening with refinement. Multiple vertex weights represent resources
-such as LUTs, registers, memories, and DSPs. Its timing-aware formulation also
-accounts for critical paths and repeated partition crossings; see the
-[TritonPart project and publication](https://github.com/ABKGroup/TritonPart).
+produces the resource-balanced initial partition through multilevel
+coarsening, initial partitioning, and uncoarsening with refinement. Multiple
+vertex weights represent LUTs, registers, memories, and DSPs. EmuFlow checks
+and repairs configured hop constraints before handing the initial assignment
+to PATRON. See the [TritonPart project and publication](https://github.com/ABKGroup/TritonPart).
 
-The default **PATRON** provider is an EmuFlow extension initialized by
-TritonPart on the same cluster graph. Its native direct K-way refinement
-evaluates predicted path slack, directed communication load/TDM pressure,
-partition transitions, and cut cost while preserving resource, fixed-placement,
-reachability, and hop constraints. Incremental updates and bounded paired moves
-extend the single-cluster move neighborhood. PATRON is our algorithm name,
-not an upstream partitioner or a claim to reproduce one particular paper.
+**PATRON is EmuFlow's communication-aware post-processing algorithm.** Its
+native C++ local search starts from that assignment and considers single
+atomic-cluster moves and bounded paired moves, including moving another
+cluster out of the destination or moving two connected clusters together.
+Candidates must preserve resource limits, fixed placements, board
+reachability, and hop constraints.
+
+For each candidate partition, PATRON incrementally updates the affected
+communication-route estimates and directed link loads, estimates TDM ratios
+from those loads and link capacities, and recomputes communication delay on
+affected timing paths. The core estimate is
+`predicted path slack = Phase 2 path slack − estimated communication delay`.
+Thus, changing a partition changes the communication estimate used to score
+it; this is more than optimizing a fixed set of net weights.
+
+Default PATRON v6 accepts feasible improvements in lexicographic order:
+maximize the worst normalized predicted slack, then improve the sum of
+negative normalized predicted slacks toward zero; then minimize the number
+of negative-slack paths, maximum estimated TDM ratio, maximum link-capacity
+domain load, path snaking (revisits to an already visited partition), bit-hops,
+and cut bits, in that order. Slacks use the TimingPathDB clock-normalization
+policy. These are partition-search proxies, not final physical WNS/TNS.
+
+PATRON post-processes the initial solution rather than restarting a complete
+multilevel partitioning flow. Its default v6 route and TDM estimates do not
+invoke or feed back actual Phase 4 routing, Phase 5 schedules, or Phase 7
+physical results. Any claim of final timing improvement therefore requires a
+separate complete-flow comparison. PATRON is the project's algorithm name,
+not a claim to reproduce one particular paper.
 
 Explicit alternatives include upstream **RePart**, with an optional
 logic-replication route ([RePart paper](#selected-research-references)), and
@@ -270,9 +294,10 @@ To use the alternative VTR route, explicitly select
 `multi-fpga physical` also defaults to RapidWright; use `--backend open` for VTR.
 Missing RapidWright inputs do not trigger an automatic VTR fallback.
 
-Other CLI defaults are timing-driven PATRON partitioning, `sequential-only`
-cuts, baseline Phase 6, and OpenSTA global physical timing. Generalized Static
-Exact combinational cuts and Chimew are explicit options. The integrated Chimew
+Other CLI defaults are TritonPart initial partitioning followed by
+timing-driven PATRON post-processing, `sequential-only` cuts, baseline Phase 6,
+and OpenSTA global physical timing. Generalized Static Exact combinational
+cuts and Chimew are explicit options. The integrated Chimew
 lookahead path currently requires the explicit VTR backend/profile combination.
 
 - State the period of every analyzed clock explicitly.
