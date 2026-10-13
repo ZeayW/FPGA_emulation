@@ -55,6 +55,63 @@ FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
+    def test_native_xilinx_mapper_selection_reaches_streaming_frontend(self):
+        for strategy in (None, "hierarchical-classic-v1", "hierarchical-abc9-v1"):
+            with self.subTest(strategy=strategy), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                timing = root / "timing.json"
+                write_json(timing, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
+                with (
+                    patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value=str(FAKE_OPENSTA)),
+                    patch("emuflow.multi_fpga_flow.check_opensta_engine_version"),
+                    patch("emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream",
+                          side_effect=RuntimeError("reached mapper")) as frontend,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "reached mapper"):
+                        run_multi_fpga_flow(
+                            platform_path=PLATFORM, output_dir=root / "flow",
+                            sources=[ROOT / "examples/rtl/counter.v"], top="counter",
+                            mapping_profile="xilinx-ultrascaleplus-open-v1",
+                            xilinx_mapping_strategy=strategy,
+                            architecture_timing_db=timing, clock_periods={"clk": 10},
+                            partition_provider="greedy",
+                        )
+                    self.assertEqual(frontend.call_args.kwargs["mapping_strategy"],
+                                     strategy or "hierarchical-abc9-v1")
+
+    def test_mapper_override_rejects_invalid_context_before_frontend(self):
+        for profile, supplied, strategy, message in (
+            ("generic-soft", None, "hierarchical-classic-v1", "requires native Xilinx"),
+            ("xilinx-ultrascaleplus-open-v1", ROOT / "examples/yosys/counter.json",
+             "hierarchical-abc9-v1", "requires native Xilinx"),
+            ("xilinx-ultrascaleplus-open-v1", None, "unknown", "unsupported Xilinx"),
+        ):
+            with self.subTest(profile=profile, supplied=supplied, strategy=strategy):
+                with tempfile.TemporaryDirectory() as tmp:
+                    out = Path(tmp) / "flow"
+                    with self.assertRaisesRegex(EmuFlowError, message):
+                        run_multi_fpga_flow(
+                            platform_path=PLATFORM, output_dir=out,
+                            mapping_profile=profile, yosys_json=supplied,
+                            xilinx_mapping_strategy=strategy,
+                        )
+                    self.assertFalse(out.exists())
+
+    def test_checked_benchmark_can_select_mapper_without_overriding_rtl(self):
+        for strategy in ("hierarchical-classic-v1", "hierarchical-abc9-v1"):
+            args = _build_parser().parse_args([
+                "multi-fpga", "compile", "--benchmark-run",
+                str(ROOT / "benchmarks/runs/picorv32_l2.json"), "--source-root",
+                str(ROOT / "third_party/rtl/picorv32"), "--platform", "platform.json",
+                "--xilinx-mapping-strategy", strategy, "--out", "unused",
+            ])
+            with patch("emuflow.cli.run_multi_fpga_flow") as run, patch("emuflow.cli._print_json"):
+                run.return_value = {"status": "pass"}
+                self.assertEqual(_dispatch(args), 0)
+                self.assertEqual(run.call_args.kwargs["xilinx_mapping_strategy"], strategy)
+                self.assertEqual(run.call_args.kwargs["top"], "picorv32")
+                self.assertEqual(run.call_args.kwargs["clock_periods"], {"clk": 10.0})
+
     def test_partition_engine_is_resolved_before_flow_execution(self) -> None:
         with patch(
             "emuflow.multi_fpga_flow.resolve_native_executable",

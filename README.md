@@ -995,6 +995,14 @@ and a bounded diagnostic tail, without enabling full verbose logs or writing
 mapped graph JSON. The timing table includes qualification-only flatten/stat
 overhead; compare mapper passes separately from those interchange diagnostics.
 This instrumentation is opt-in and does not change production mapping defaults.
+The one-shot `multi-fpga compile` command also accepts an explicit
+`--xilinx-mapping-strategy hierarchical-classic-v1` or
+`hierarchical-abc9-v1` for controlled native RTL comparisons through partitioning
+and physical implementation. Omission keeps hierarchical ABC9. This option does
+not change the benchmark's source, mapping profile, clocks, or hard-block policy;
+it is rejected for non-Xilinx profiles and supplied mapped netlists. The chosen
+strategy is recorded by the synthesis report. Qualification pass timings and
+aggregate capacity bounds alone do not prove a legal per-FPGA implementation.
 The Xilinx pre-placement timing adapter collects design-derived pin sets only
 for the first instance of each primitive type missing from its base library,
 preserving its existing specialization semantics instead of allocating two

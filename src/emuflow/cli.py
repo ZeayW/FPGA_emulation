@@ -285,6 +285,7 @@ from .runtime_sync import (
 from .synthesis import (
     VALID_SYNTHESIS_POLICIES,
     VALID_XILINX_FAMILIES,
+    VALID_XILINX_MAPPING_STRATEGIES,
     run_yosys,
     run_xilinx_ultrascaleplus_yosys,
 )
@@ -1943,6 +1944,11 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     multi_fpga_compile.add_argument("--partition-constraints", type=Path)
+    multi_fpga_compile.add_argument(
+        "--xilinx-mapping-strategy",
+        choices=sorted(VALID_XILINX_MAPPING_STRATEGIES),
+        help="Explicit native Xilinx mapper A/B selection; defaults to hierarchical ABC9",
+    )
     multi_fpga_compile.add_argument(
         "--partition-provider",
         choices=(
@@ -5768,6 +5774,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             yosys_json=args.yosys_json,
             yosys=args.yosys,
             mapping_profile=mapping_profile,
+            xilinx_mapping_strategy=args.xilinx_mapping_strategy,
             partition_constraints=args.partition_constraints,
             partition_provider=args.partition_provider,
             seed=args.seed,

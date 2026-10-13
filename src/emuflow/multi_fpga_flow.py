@@ -69,6 +69,8 @@ from .sta import (
     sta_path_database_payload_path,
 )
 from .synthesis import (
+    DEFAULT_XILINX_MAPPING_STRATEGY,
+    VALID_XILINX_MAPPING_STRATEGIES,
     run_generic_yosys,
     run_xilinx_ultrascaleplus_yosys_stream,
 )
@@ -1232,6 +1234,7 @@ def run_multi_fpga_flow(
     yosys_json: Optional[Path] = None,
     yosys: Optional[str] = None,
     mapping_profile: str = "vtr-hard-blocks",
+    xilinx_mapping_strategy: Optional[str] = None,
     partition_constraints: Optional[Path] = None,
     partition_provider: str = "patron",
     seed: int = 0,
@@ -1351,6 +1354,13 @@ def run_multi_fpga_flow(
             f"{mapping_profile!r}; expected one of "
             f"{', '.join(MULTI_FPGA_MAPPING_PROFILES)}"
         )
+    if xilinx_mapping_strategy is not None:
+        if xilinx_mapping_strategy not in VALID_XILINX_MAPPING_STRATEGIES:
+            raise EmuFlowError("unsupported Xilinx mapping strategy")
+        if mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE or yosys_json is not None:
+            raise EmuFlowError(
+                "Xilinx mapping strategy requires native Xilinx RTL synthesis"
+            )
     if (
         physical
         and physical_backend == "rapidwright"
@@ -1625,6 +1635,9 @@ def run_multi_fpga_flow(
                     log_path=frontend_root / "yosys.log",
                     include_dirs=include_dir_list,
                     defines=define_list,
+                    mapping_strategy=(
+                        xilinx_mapping_strategy or DEFAULT_XILINX_MAPPING_STRATEGY
+                    ),
                 )
             )
             normalization_report = None
