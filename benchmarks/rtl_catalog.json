@@ -1,6 +1,16 @@
 {
   "schema": "emuflow.rtl-catalog/v1",
-  "updated": "2026-07-25",
+  "updated": "2026-10-13",
+  "collections": [
+    {
+      "id": "large-rtl-20260906",
+      "archive_filename": "opensource_large_rtl_designs.zip",
+      "archive_sha256": "86789c5b3a1a4a996868c50f4b2bfcf6c36b0a8f91a7c4e4d9003c33c915a34b",
+      "root_directory": "opensource_large_rtl_yosys_expanded_20260906",
+      "source_form": "external-generated-rtl-package",
+      "redistributed": false
+    }
+  ],
   "designs": [
     {
       "id": "serv",
@@ -191,6 +201,433 @@
       ],
       "flow_readiness": "final-stress-only",
       "notes": "Final frontend, hierarchy, memory, partition-capacity, and runtime stress test. NV_nvdla is the genuine connected top over the five upstream synthesis partitions. ASIC SRAM wrappers are represented as interface-accurate black boxes for the FPGA scale screen; their proprietary DFT implementation is not expanded into LUTs. The nvdlav1 branch is deliberately pinned and its custom license must be preserved."
+    },
+    {
+      "id": "vortex_64core",
+      "name": "Vortex 64-core",
+      "repository": "https://github.com/vortexgpgpu/vortex.git",
+      "revision": "bba80f8de208f867a173b587998ed5be9cefd1b4",
+      "license": "Apache-2.0; Solderpad-0.51 for dependencies",
+      "language": "Verilog (preprocessed and sv2v-lowered)",
+      "tops": [
+        "Vortex"
+      ],
+      "sparse_paths": [
+        "/LICENSE",
+        "/hw",
+        "/third_party"
+      ],
+      "scale": "very-large",
+      "upstream_size": "Official 4-cluster x 16-core GPGPU configuration with L2 enabled",
+      "priority": 9,
+      "validation_tier": "L7",
+      "feature_tags": [
+        "connected",
+        "upstream-native-configuration",
+        "hierarchy",
+        "memory",
+        "single-clock"
+      ],
+      "flow_readiness": "source-candidate-unqualified",
+      "package": {
+        "collection": "large-rtl-20260906",
+        "directory": "vortex_64core",
+        "filelist": "rtl.f",
+        "filelist_sha256": "c96affe4699c92ca982f51f28f3ec243339fad081633a4b0003c04359db3300d",
+        "primary_rtl": "rtl/vortex_64core.v",
+        "primary_rtl_sha256": "4fc82c00bbd769f933e0eba16dc5bfa0dd4f9666261f4f548b88a59c52396d9d",
+        "core_count": 64
+      },
+      "clock_profile": {
+        "classification": "single-root",
+        "root_ports": [
+          "clk"
+        ],
+        "basis": "delivered-source-inspection",
+        "elaborated_clock_audit": "pending"
+      },
+      "qualification": {
+        "native_xilinx_mapping": "not_qualified",
+        "full_phase1_7": "not_qualified"
+      },
+      "notes": "Single-clock source candidate. Native Xilinx mapping, primitive coverage, capacity, and complete Phase 1-7 qualification are pending; core count is not a mapped LUT count. Fetch retrieves the pinned upstream repository, not necessarily the generated RTL package; use the collection's ordered file list for the delivered input."
+    },
+    {
+      "id": "blackparrot_16core",
+      "name": "BlackParrot 16-core",
+      "repository": "https://github.com/black-parrot/black-parrot.git",
+      "revision": "f91010f654a5dfd00f83dbe25dbda482218d540b",
+      "license": "BSD-3-Clause with dependency-specific licenses",
+      "language": "Verilog (sv2v-lowered)",
+      "tops": [
+        "wrapper"
+      ],
+      "sparse_paths": [
+        "/LICENSE",
+        "/README.md",
+        "/bp_top",
+        "/bp_common",
+        "/bp_be",
+        "/bp_fe",
+        "/bp_me",
+        "/external"
+      ],
+      "scale": "very-large",
+      "upstream_size": "Official e_bp_multicore_16_cfg coherent SoC tethered wrapper",
+      "priority": 10,
+      "validation_tier": "L7",
+      "feature_tags": [
+        "connected",
+        "upstream-native-configuration",
+        "hierarchy",
+        "memory",
+        "generated-clock"
+      ],
+      "flow_readiness": "source-candidate-unqualified",
+      "package": {
+        "collection": "large-rtl-20260906",
+        "directory": "blackparrot_16core",
+        "filelist": "rtl.f",
+        "filelist_sha256": "dfa8c1e0c092002af7549f07408e70818ea8acc6da78602d2b2e5f909df7aa9b",
+        "primary_rtl": "rtl/blackparrot_16core.v",
+        "primary_rtl_sha256": "43bc3f06f08ec70d5223ff116dc3094ded5ff1476ac0f76d88958cf5d56b802a",
+        "core_count": 16
+      },
+      "clock_profile": {
+        "classification": "single-root-with-generated-clocks",
+        "root_ports": [
+          "clk_i"
+        ],
+        "basis": "delivered-source-inspection",
+        "elaborated_clock_audit": "pending"
+      },
+      "qualification": {
+        "native_xilinx_mapping": "not_qualified",
+        "full_phase1_7": "not_qualified"
+      },
+      "notes": "Only one external root does not make this a strict single-clock workload: the RTC uses counter-generated clocks and a software-controlled clock mux. Generated-clock and CDC semantics require qualification. Fetch retrieves the pinned upstream repository, not necessarily the generated RTL package; use the collection's ordered file list for the delivered input."
+    },
+    {
+      "id": "opdb_chip_10x10",
+      "name": "OPDB chip 10x10",
+      "repository": "https://github.com/PrincetonUniversity/OPDB.git",
+      "revision": "a80e536ba29779faed68e32d4a202f6b7a93bc9b",
+      "license": "BSD-3-Clause; GPL-2.0 for OpenSPARC T1",
+      "language": "Verilog",
+      "tops": [
+        "chip"
+      ],
+      "sparse_paths": [
+        "/README.md",
+        "/LICENSE*",
+        "/modules/chip/X_10__Y_10__NETWORK_2dmesh__L1D_8192_4__L1I_16384_4__L15_8192_4__L2_65536_4"
+      ],
+      "scale": "very-large",
+      "upstream_size": "Official 10x10 mesh with 100 tiles; L1D=8192/4, L1I=16384/4, L1.5=8192/4, L2=65536/4",
+      "priority": 11,
+      "validation_tier": "L7",
+      "feature_tags": [
+        "connected",
+        "upstream-native-configuration",
+        "hierarchy",
+        "memory",
+        "multi-clock"
+      ],
+      "flow_readiness": "source-candidate-unqualified",
+      "package": {
+        "collection": "large-rtl-20260906",
+        "directory": "opdb_chip_10x10",
+        "filelist": "rtl.f",
+        "filelist_sha256": "52bfe2280c02ca2e919e64aef2829721f4ef3473cc131303061ba73a52496c91",
+        "primary_rtl": "rtl/chip.pickle.v",
+        "primary_rtl_sha256": "651b6482205e5222b6f68dcb92f3c524b148e7d54d100c471f53e18fc4f24e7a",
+        "tile_count": 100
+      },
+      "clock_profile": {
+        "classification": "multiple-root-clocks",
+        "root_ports": [
+          "core_ref_clk",
+          "io_clk",
+          "jtag_clk"
+        ],
+        "basis": "delivered-source-inspection",
+        "elaborated_clock_audit": "pending"
+      },
+      "qualification": {
+        "native_xilinx_mapping": "not_qualified",
+        "full_phase1_7": "not_qualified"
+      },
+      "notes": "Architecture-native connected manycore mesh, not a replicated-core harness. Full chip includes core, IO, JTAG clocks and asynchronous FIFOs; prior parser/hierarchy-start records do not qualify synthesis or Phase 1-7. Fetch retrieves the pinned upstream repository, not necessarily the generated RTL package; use the collection's ordered file list for the delivered input."
+    },
+    {
+      "id": "opdb_chip_15x15",
+      "name": "OPDB chip 15x15",
+      "repository": "https://github.com/PrincetonUniversity/OPDB.git",
+      "revision": "a80e536ba29779faed68e32d4a202f6b7a93bc9b",
+      "license": "BSD-3-Clause; GPL-2.0 for OpenSPARC T1",
+      "language": "Verilog",
+      "tops": [
+        "chip"
+      ],
+      "sparse_paths": [
+        "/README.md",
+        "/LICENSE*",
+        "/modules/chip/X_15__Y_15__NETWORK_2dmesh__L1D_8192_4__L1I_16384_4__L15_8192_4__L2_65536_4"
+      ],
+      "scale": "very-large",
+      "upstream_size": "Official 15x15 mesh with 225 tiles; L1D=8192/4, L1I=16384/4, L1.5=8192/4, L2=65536/4",
+      "priority": 12,
+      "validation_tier": "L7",
+      "feature_tags": [
+        "connected",
+        "upstream-native-configuration",
+        "hierarchy",
+        "memory",
+        "multi-clock"
+      ],
+      "flow_readiness": "source-candidate-unqualified",
+      "package": {
+        "collection": "large-rtl-20260906",
+        "directory": "opdb_chip_15x15",
+        "filelist": "rtl.f",
+        "filelist_sha256": "52bfe2280c02ca2e919e64aef2829721f4ef3473cc131303061ba73a52496c91",
+        "primary_rtl": "rtl/chip.pickle.v",
+        "primary_rtl_sha256": "6b6c02d67f47e50784c01055281b33ddd64813bfb314607078d784ebc956c47a",
+        "tile_count": 225
+      },
+      "clock_profile": {
+        "classification": "multiple-root-clocks",
+        "root_ports": [
+          "core_ref_clk",
+          "io_clk",
+          "jtag_clk"
+        ],
+        "basis": "delivered-source-inspection",
+        "elaborated_clock_audit": "pending"
+      },
+      "qualification": {
+        "native_xilinx_mapping": "not_qualified",
+        "full_phase1_7": "not_qualified"
+      },
+      "notes": "Architecture-native connected manycore mesh, not a replicated-core harness. Full chip includes core, IO, JTAG clocks and asynchronous FIFOs; prior parser/hierarchy-start records do not qualify synthesis or Phase 1-7. Fetch retrieves the pinned upstream repository, not necessarily the generated RTL package; use the collection's ordered file list for the delivered input."
+    },
+    {
+      "id": "opdb_chip_20x20",
+      "name": "OPDB chip 20x20",
+      "repository": "https://github.com/PrincetonUniversity/OPDB.git",
+      "revision": "a80e536ba29779faed68e32d4a202f6b7a93bc9b",
+      "license": "BSD-3-Clause; GPL-2.0 for OpenSPARC T1",
+      "language": "Verilog",
+      "tops": [
+        "chip"
+      ],
+      "sparse_paths": [
+        "/README.md",
+        "/LICENSE*",
+        "/modules/chip/X_20__Y_20__NETWORK_2dmesh__L1D_8192_4__L1I_16384_4__L15_8192_4__L2_65536_4"
+      ],
+      "scale": "very-large",
+      "upstream_size": "Official 20x20 mesh with 400 tiles; L1D=8192/4, L1I=16384/4, L1.5=8192/4, L2=65536/4",
+      "priority": 13,
+      "validation_tier": "L7",
+      "feature_tags": [
+        "connected",
+        "upstream-native-configuration",
+        "hierarchy",
+        "memory",
+        "multi-clock"
+      ],
+      "flow_readiness": "source-candidate-unqualified",
+      "package": {
+        "collection": "large-rtl-20260906",
+        "directory": "opdb_chip_20x20",
+        "filelist": "rtl.f",
+        "filelist_sha256": "52bfe2280c02ca2e919e64aef2829721f4ef3473cc131303061ba73a52496c91",
+        "primary_rtl": "rtl/chip.pickle.v",
+        "primary_rtl_sha256": "a7211a061296f75701df749cb389c60275f3f7bee427ebdadff5bab2f3ffbe60",
+        "tile_count": 400
+      },
+      "clock_profile": {
+        "classification": "multiple-root-clocks",
+        "root_ports": [
+          "core_ref_clk",
+          "io_clk",
+          "jtag_clk"
+        ],
+        "basis": "delivered-source-inspection",
+        "elaborated_clock_audit": "pending"
+      },
+      "qualification": {
+        "native_xilinx_mapping": "not_qualified",
+        "full_phase1_7": "not_qualified"
+      },
+      "notes": "Architecture-native connected manycore mesh, not a replicated-core harness. Full chip includes core, IO, JTAG clocks and asynchronous FIFOs; prior parser/hierarchy-start records do not qualify synthesis or Phase 1-7. Fetch retrieves the pinned upstream repository, not necessarily the generated RTL package; use the collection's ordered file list for the delivered input."
+    },
+    {
+      "id": "occamy_432core_full",
+      "name": "Occamy full 432-core SoC",
+      "repository": "https://github.com/pulp-platform/occamy.git",
+      "revision": "d5d0d8320bb633c36319e5477006d4c17cf0e448",
+      "license": "Solderpad-0.51 with dependency-specific licenses",
+      "language": "Verilog (sv2v-lowered)",
+      "tops": [
+        "occamy_top"
+      ],
+      "sparse_paths": [
+        "/LICENSE*",
+        "/README.md",
+        "/hw",
+        "/util",
+        "/Bender.yml"
+      ],
+      "scale": "very-large",
+      "upstream_size": "Upstream full 432-core manycore SoC configuration",
+      "priority": 14,
+      "validation_tier": "L7",
+      "feature_tags": [
+        "connected",
+        "upstream-native-configuration",
+        "hierarchy",
+        "memory",
+        "multi-clock"
+      ],
+      "flow_readiness": "source-candidate-unqualified",
+      "package": {
+        "collection": "large-rtl-20260906",
+        "directory": "occamy_432core_full",
+        "filelist": "rtl.f",
+        "filelist_sha256": "b0b8db9b9e358f3cae8804b0343454cf000693b37f40b7f63d0ed9d070be6706",
+        "primary_rtl": "rtl/occamy_top.v",
+        "primary_rtl_sha256": "08bb93d3aa65cb6a5fcadcc861b690b6179a8ccd764e695d7ec546f65000eba4",
+        "core_count": 432
+      },
+      "clock_profile": {
+        "classification": "multiple-root-clocks",
+        "root_ports": [
+          "clk_i",
+          "clk_periph_i",
+          "jtag_tck_i"
+        ],
+        "basis": "delivered-source-inspection",
+        "elaborated_clock_audit": "pending"
+      },
+      "qualification": {
+        "native_xilinx_mapping": "not_qualified",
+        "full_phase1_7": "not_qualified"
+      },
+      "notes": "Core, peripheral, and JTAG clock inputs plus an RTC signal. The delivered package excludes simulator-only trace finalizers; target memory/macro mapping and multi-clock semantics remain unqualified. Fetch retrieves the pinned upstream repository, not necessarily the generated RTL package; use the collection's ordered file list for the delivered input."
+    },
+    {
+      "id": "chipyard_sonicboom_megaboom",
+      "name": "Chipyard SonicBOOM MegaBoomV3",
+      "repository": "https://github.com/ucb-bar/chipyard.git",
+      "revision": "69eba860a352343e4ac6b6df0f3638a79a86ec78",
+      "license": "BSD-3-Clause; MIT for Lambdalib",
+      "language": "Verilog (sv2v-lowered)",
+      "tops": [
+        "sonicboom_DigitalTop"
+      ],
+      "sparse_paths": [
+        "/LICENSE*",
+        "/README.md",
+        "/generators",
+        "/scripts",
+        "/build.sbt",
+        "/.gitmodules"
+      ],
+      "scale": "very-large",
+      "upstream_size": "Chipyard 1.13.0 MegaBoomV3Config; one RV64GC 4-wide out-of-order core plus system integration",
+      "priority": 15,
+      "validation_tier": "L7",
+      "feature_tags": [
+        "connected",
+        "upstream-native-configuration",
+        "hierarchy",
+        "memory",
+        "multi-clock"
+      ],
+      "flow_readiness": "source-candidate-unqualified",
+      "package": {
+        "collection": "large-rtl-20260906",
+        "directory": "chipyard_sonicboom_megaboom",
+        "filelist": "rtl.f",
+        "filelist_sha256": "540a9ceaf4b567c83deb81ebc55825f763e509376748f54b7cbdee0f717b8166",
+        "primary_rtl": "rtl/sonicboom.v",
+        "primary_rtl_sha256": "bada6447168ab6931daaeb91c520cbe0ff0a141cfd32740b86d1a2b88a830f9b",
+        "core_count": 1,
+        "release": "1.13.0",
+        "lambdalib_revision": "534f0beb599c1a572ab95255962472c961426b43"
+      },
+      "clock_profile": {
+        "classification": "multiple-root-clocks",
+        "root_ports": [
+          "auto_chipyard_prcictrl_domain_reset_setter_clock_in_member_allClocks_uncore_clock",
+          "debug_clock",
+          "debug_systemjtag_jtag_TCK",
+          "serial_tl_0_clock_in"
+        ],
+        "basis": "delivered-source-inspection",
+        "elaborated_clock_audit": "pending"
+      },
+      "qualification": {
+        "native_xilinx_mapping": "not_qualified",
+        "full_phase1_7": "not_qualified"
+      },
+      "notes": "The delivered package includes Lambdalib RAM implementations and six ordered RTL files. Preserve main, debug, JTAG, and serial-TL clock inputs; generator checkout is not the lowered delivery. Fetch retrieves the pinned upstream repository, not necessarily the generated RTL package; use the collection's ordered file list for the delivered input."
+    },
+    {
+      "id": "xiangshan_kunminghu_release_25022801",
+      "name": "XiangShan Kunminghu release 2025022801",
+      "repository": "https://github.com/OpenXiangShan/XiangShan.git",
+      "revision": "66e9b546ea57a4656baa594dde0b6303939f832b",
+      "license": "MulanPSL-2.0; MIT and dependency-specific notices",
+      "language": "SystemVerilog and Verilog",
+      "tops": [
+        "XSTop"
+      ],
+      "sparse_paths": [
+        "/LICENSE*",
+        "/README.md",
+        "/src",
+        "/build.sc"
+      ],
+      "scale": "very-large",
+      "upstream_size": "Official single-core Kunminghu XSTop release; 1813 ordered source files, 1840 packaged RTL files",
+      "priority": 16,
+      "validation_tier": "L7",
+      "feature_tags": [
+        "connected",
+        "upstream-native-configuration",
+        "hierarchy",
+        "memory",
+        "multi-clock"
+      ],
+      "flow_readiness": "source-candidate-unqualified",
+      "package": {
+        "collection": "large-rtl-20260906",
+        "directory": "xiangshan_kunminghu_release_25022801",
+        "filelist": "rtl.f",
+        "filelist_sha256": "8ddd526447194bf4c7f3860a4b8ffbb1e8b32d83fa4c820b41f4e3c023be1630",
+        "primary_rtl": "rtl/XSTop.sv",
+        "primary_rtl_sha256": "436c9ecb7c27d09b93d20ddfaaf610022a4090be28ec89f9fa2eaef807439a71",
+        "core_count": 1,
+        "release_repository": "https://github.com/XS-MLVP/UnityChipXiangShanRTLs",
+        "release": "2025022801"
+      },
+      "clock_profile": {
+        "classification": "multiple-root-clocks",
+        "root_ports": [
+          "io_clock",
+          "io_systemjtag_jtag_TCK"
+        ],
+        "basis": "delivered-source-inspection",
+        "elaborated_clock_audit": "pending"
+      },
+      "qualification": {
+        "native_xilinx_mapping": "not_qualified",
+        "full_phase1_7": "not_qualified"
+      },
+      "notes": "The RTL release is published by XS-MLVP/UnityChipXiangShanRTLs (release 2025022801), generated from this pinned XiangShan source revision. The supplied package lowers assignment patterns in 25 files; main/JTAG clocks and RTC input require separate classification. Complete frontend parsing is not qualified. Fetch retrieves the pinned upstream repository, not necessarily the generated RTL package; use the collection's ordered file list for the delivered input."
     }
   ]
 }

@@ -306,6 +306,15 @@ workloads with platform configurations; the
 [contest matrix](benchmarks/contest_validation_matrix.json) separately covers
 communication-algorithm inputs.
 
+The catalog also registers eight large generated-RTL candidates: OPDB chip
+10x10/15x15/20x20, Occamy 432-core, Vortex 64-core, BlackParrot 16-core,
+Chipyard SonicBOOM MegaBoomV3, and XiangShan Kunminghu. Entries distinguish
+pinned upstream generator sources from the externally supplied RTL package,
+record package/file-list identities and clock profiles, and remain explicitly
+unqualified for native mapping and complete Phase 1–7. Only Vortex is currently
+classified as a strict single-root-clock source candidate; BlackParrot contains
+internally generated and dynamically selected clocks.
+
 See [benchmark usage](docs/RTL_BENCHMARKS.md). Raw logs, experiment histories,
 machine-specific paths, and temporary results are not project documentation.
 
