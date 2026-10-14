@@ -60,7 +60,6 @@ from .sta import (
     _normalized_slack,
     _validate_database_normalization,
     iter_sta_path_database_paths,
-    load_sta_path_database,
     project_sta_path_database,
 )
 from .tdm import validate_tdm_schedule
@@ -1138,8 +1137,12 @@ def run_cross_stage_optimization(
     output_dir.mkdir(parents=True, exist_ok=True)
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
-    database = load_sta_path_database(database_path)
-    if database.get("schema") != STA_PATH_DATABASE_SCHEMA:
+    database = read_json(database_path)
+    if database.get("schema") not in {
+        STA_PATH_DATABASE_SCHEMA,
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA,
+    }:
         raise ValidationError("cross-stage STA path database is invalid")
     if database.get("design") != ir.value["design"]["name"]:
         raise ValidationError(

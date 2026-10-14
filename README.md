@@ -6421,6 +6421,12 @@ per net, rather than three duplicate JSON maps for criticality, path count,
 and weight.  TritonPart, MFSPart, PATRON, cross-stage timing, cut
 qualification, local-path extraction, and physical timing consume these
 interfaces without creating a persistent expanded JSON checkpoint.
+Cross-stage orchestration reads only the bounded TimingPathDB manifest for
+schema/design identity and streams the population only while scoring a
+candidate.  Calibrated-platform holdout assembly likewise reads only compact
+EmuIR design/clock metadata instead of reconstructing the complete circuit to
+check two control-plane fields.  These control paths must not turn an indexed
+artifact back into a graph-sized Python object.
 Phase 4 also no longer writes a second `timing_paths.normalized.json` copy;
 the compressed timing view embedded in the canonical route artifact is its
 single owner.

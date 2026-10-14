@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from .benchmark import timing_io_sha256
+from .emuir_compact import is_compact_emuir, source_metadata
+from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from .errors import ValidationError
 from .io import read_json
 from .ir import EmuIR
@@ -594,9 +596,17 @@ def assemble_holdout_result(
         raise ValidationError(
             "flow frontend compilation context disagrees with benchmark contract"
         )
-    ir = EmuIR.load(root / artifacts["emuir"]["path"])
-    if ir.value["design"]["top"] != identity["top_module"] or sorted(
-        clock["id"] for clock in ir.value["clocks"]
+    ir_path = root / artifacts["emuir"]["path"]
+    if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path):
+        connection = open_emuir_sqlite_read_only(ir_path)
+        try:
+            ir_control = source_metadata(connection)
+        finally:
+            connection.close()
+    else:
+        ir_control = EmuIR.load(ir_path).value
+    if ir_control["design"]["top"] != identity["top_module"] or sorted(
+        clock["id"] for clock in ir_control["clocks"]
     ) != sorted(identity["clocks"]):
         raise ValidationError("flow EmuIR top or clocks disagree with benchmark contract")
     # The complete TimingPathDB can contain hundreds of thousands of paths.
