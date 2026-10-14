@@ -88,6 +88,8 @@ CREATE TABLE net_segments(
   source_kind TEXT NOT NULL,
   PRIMARY KEY(part_index,source_net_seq)
 ) WITHOUT ROWID;
+CREATE INDEX net_segments_source
+  ON net_segments(source_net_seq,part_index);
 CREATE TABLE endpoint_segments(
   part_index INTEGER NOT NULL,
   source_net_seq INTEGER NOT NULL,
@@ -633,43 +635,9 @@ def write_split_netlists_sqlite(
             FROM assignment.copies cp
             """
         )
-        connection.execute(
-            """
-            INSERT INTO net_segments
-            SELECT DISTINCT cp.part_index,n.seq,
-                   CASE
-                     WHEN EXISTS(
-                       SELECT 1 FROM assignment.cut_sinks cs
-                       WHERE cs.net_id=n.id
-                         AND cs.sink_part_index=cp.part_index
-                     ) THEN 'transport_shadow'
-                     WHEN EXISTS(
-                       SELECT 1
-                       FROM src.endpoint_records de
-                       JOIN assignment.copies dc
-                         ON dc.source_instance_seq=de.instance_seq
-                       WHERE de.net_seq=n.seq AND de.role=0
-                         AND dc.part_index=cp.part_index
-                         AND dc.is_replica=1
-                     ) THEN 'logic_replica'
-                     ELSE 'original'
-                   END
-            FROM src.endpoint_records e
-            JOIN assignment.copies cp
-              ON cp.source_instance_seq=e.instance_seq
-            JOIN src.net_records n ON n.seq=e.net_seq
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO source_nets
-            SELECT n.seq,n.id,n.name,n.flags,n.cut_class
-            FROM src.net_records n
-            WHERE EXISTS(
-              SELECT 1 FROM net_segments s WHERE s.source_net_seq=n.seq
-            )
-            """
-        )
+        # Materialize endpoint ownership once.  Derive the much smaller set of
+        # touched (partition, net) pairs from that ordered output rather than
+        # running correlated source-graph queries once per endpoint.
         connection.execute(
             """
             INSERT INTO endpoint_segments
@@ -678,6 +646,62 @@ def write_split_netlists_sqlite(
             FROM src.endpoint_records e
             JOIN assignment.copies cp
               ON cp.source_instance_seq=e.instance_seq
+            """
+        )
+        connection.execute(
+            """
+            CREATE TEMP TABLE replica_net_parts(
+              part_index INTEGER NOT NULL,
+              source_net_seq INTEGER NOT NULL,
+              PRIMARY KEY(part_index,source_net_seq)
+            ) WITHOUT ROWID
+            """
+        )
+        has_replicas = connection.execute(
+            "SELECT 1 FROM assignment.copies WHERE is_replica=1 LIMIT 1"
+        ).fetchone()
+        if has_replicas is not None:
+            connection.execute(
+                """
+                INSERT INTO replica_net_parts
+                SELECT DISTINCT cp.part_index,e.net_seq
+                FROM assignment.copies cp
+                JOIN src.endpoint_records e INDEXED BY endpoint_owner
+                  ON e.instance_seq=cp.source_instance_seq
+                WHERE cp.is_replica=1 AND e.role=0
+                """
+            )
+        connection.execute(
+            """
+            INSERT INTO net_segments
+            SELECT t.part_index,t.source_net_seq,
+                   CASE
+                     WHEN cs.net_id IS NOT NULL THEN 'transport_shadow'
+                     WHEN rp.source_net_seq IS NOT NULL THEN 'logic_replica'
+                     ELSE 'original'
+                   END
+            FROM (
+              SELECT part_index,source_net_seq
+              FROM endpoint_segments
+              GROUP BY part_index,source_net_seq
+            ) t
+            JOIN src.net_records n ON n.seq=t.source_net_seq
+            LEFT JOIN assignment.cut_sinks cs
+              ON cs.net_id=n.id AND cs.sink_part_index=t.part_index
+            LEFT JOIN replica_net_parts rp
+              ON rp.part_index=t.part_index
+             AND rp.source_net_seq=t.source_net_seq
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO source_nets
+            SELECT n.seq,n.id,n.name,n.flags,n.cut_class
+            FROM (
+              SELECT source_net_seq FROM net_segments
+              GROUP BY source_net_seq
+            ) t
+            JOIN src.net_records n ON n.seq=t.source_net_seq
             """
         )
         connection.execute(
@@ -773,6 +797,7 @@ def write_split_netlists_sqlite(
             "INSERT INTO exact_logic_segments "
             "SELECT * FROM assignment.exact_logic_segments"
         )
+        connection.execute("DROP TABLE replica_net_parts")
         connection.execute("DROP TABLE incoming")
         connection.commit()
         summary = validate_split_netlists_sqlite(
