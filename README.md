@@ -3447,7 +3447,11 @@ compact integer-keyed instance/copy/partition relation. Phase 6 attaches that
 index and the canonical `design.emuir.sqlite` to SQLite, performs set-oriented
 instance/net/endpoint splitting without reconstructing the circuit in Python,
 and publishes one `split-netlists.sqlite` plus bounded per-FPGA transport and
-anchor manifests. Its constructive certificate checks copy cardinality,
+anchor manifests. Split-netlist storage v2 keeps each source instance, source
+net, pin name, and JSON payload once; partition copies and endpoint segments
+refer to those dictionaries by integer ID. It does not repeat cell payloads or
+pin/endpoint strings for every FPGA copy. Its constructive certificate checks
+copy cardinality,
 net-segment materialization, endpoint ownership, and scheduled shadow-driver
 invariants without rerunning the same multi-gigabyte source joins. Exhaustive
 or trace-based behavioral replay remains enabled for small qualification

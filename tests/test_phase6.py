@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -243,6 +244,31 @@ class Phase6Test(unittest.TestCase):
                 clocks=self.ir.value["clocks"],
             )
             self.assertEqual(proof["status"], "pass")
+            with sqlite3.connect(split_path) as connection:
+                self.assertEqual(
+                    connection.execute("PRAGMA user_version").fetchone()[0],
+                    2,
+                )
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                self.assertIn("source_instances", tables)
+                self.assertIn("instance_copies", tables)
+                self.assertIn("endpoint_segments", tables)
+                self.assertNotIn("instances", tables)
+                self.assertNotIn("endpoints", tables)
+                copy_columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(instance_copies)"
+                    )
+                }
+                self.assertNotIn("resources_json", copy_columns)
+                self.assertNotIn("parameters_json", copy_columns)
+                self.assertNotIn("extras_json", copy_columns)
             self.assertEqual(control["lane_map"], old["lane_map"])
             for fpga in ("fpga0", "fpga1"):
                 self.assertEqual(

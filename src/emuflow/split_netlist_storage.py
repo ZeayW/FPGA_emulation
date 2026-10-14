@@ -32,9 +32,9 @@ from .platform import Platform
 from .tdm import TDM_SCHEDULE_SCHEMA, is_sampled_virtual_wire_schedule
 
 
-SPLIT_NETLIST_STORAGE_SCHEMA = "emuflow.split-netlists-sqlite/v1"
+SPLIT_NETLIST_STORAGE_SCHEMA = "emuflow.split-netlists-sqlite/v2"
 SPLIT_NETLIST_APPLICATION_ID = 0x454D5553  # ASCII "EMUS"
-SPLIT_NETLIST_USER_VERSION = 1
+SPLIT_NETLIST_USER_VERSION = 2
 
 
 DDL = """
@@ -46,52 +46,63 @@ CREATE TABLE parts(
   part_index INTEGER PRIMARY KEY,
   fpga TEXT NOT NULL UNIQUE
 );
-CREATE TABLE instances(
+CREATE TABLE payloads(
+  seq INTEGER PRIMARY KEY,
+  value TEXT NOT NULL UNIQUE
+);
+CREATE TABLE pin_names(
+  seq INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE
+);
+CREATE TABLE source_instances(
+  source_instance_seq INTEGER PRIMARY KEY,
+  original_id TEXT NOT NULL UNIQUE,
+  name TEXT,
+  flags INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  resources_seq INTEGER NOT NULL,
+  parameters_seq INTEGER,
+  attributes_seq INTEGER,
+  constants_seq INTEGER NOT NULL,
+  extras_seq INTEGER NOT NULL
+);
+CREATE TABLE instance_copies(
   part_index INTEGER NOT NULL,
   source_instance_seq INTEGER NOT NULL,
-  original_id TEXT NOT NULL,
-  id TEXT NOT NULL,
-  name TEXT,
-  type TEXT NOT NULL,
-  resources_json TEXT NOT NULL,
-  parameters_json TEXT,
-  attributes_json TEXT,
-  constants_json TEXT NOT NULL,
-  extras_json TEXT NOT NULL,
-  is_replica INTEGER NOT NULL,
-  PRIMARY KEY(part_index,id)
+  copy_id TEXT,
+  is_replica INTEGER NOT NULL CHECK(is_replica IN (0,1)),
+  PRIMARY KEY(part_index,source_instance_seq,is_replica)
 ) WITHOUT ROWID;
-CREATE INDEX instances_source
-  ON instances(source_instance_seq,part_index);
-CREATE TABLE touched_nets(
+CREATE INDEX instance_copies_identity
+  ON instance_copies(part_index,copy_id);
+CREATE TABLE source_nets(
+  source_net_seq INTEGER PRIMARY KEY,
+  original_net TEXT NOT NULL UNIQUE,
+  name TEXT,
+  flags INTEGER NOT NULL,
+  cut_class TEXT NOT NULL
+);
+CREATE TABLE net_segments(
   part_index INTEGER NOT NULL,
   source_net_seq INTEGER NOT NULL,
+  source_kind TEXT NOT NULL,
   PRIMARY KEY(part_index,source_net_seq)
 ) WITHOUT ROWID;
-CREATE TABLE nets(
-  part_index INTEGER NOT NULL,
-  source_net_seq INTEGER NOT NULL,
-  original_net TEXT NOT NULL,
-  name TEXT NOT NULL,
-  cut_class TEXT NOT NULL,
-  source_kind TEXT NOT NULL,
-  PRIMARY KEY(part_index,source_net_seq),
-  UNIQUE(part_index,original_net)
-) WITHOUT ROWID;
-CREATE TABLE endpoints(
+CREATE TABLE endpoint_segments(
   part_index INTEGER NOT NULL,
   source_net_seq INTEGER NOT NULL,
   role INTEGER NOT NULL,
   ordinal INTEGER NOT NULL,
-  instance_id TEXT,
-  port TEXT NOT NULL,
+  source_instance_seq INTEGER,
+  synthetic_instance_id TEXT,
+  port_seq INTEGER NOT NULL,
   bit INTEGER NOT NULL,
-  extras_json TEXT NOT NULL,
+  extras_seq INTEGER NOT NULL,
   synthetic INTEGER NOT NULL CHECK(synthetic IN (0,1)),
   PRIMARY KEY(part_index,source_net_seq,role,ordinal)
 ) WITHOUT ROWID;
-CREATE INDEX endpoints_instance
-  ON endpoints(part_index,instance_id);
+CREATE INDEX endpoint_segments_instance
+  ON endpoint_segments(part_index,source_instance_seq);
 CREATE TABLE ports(
   part_index INTEGER NOT NULL,
   id TEXT NOT NULL,
@@ -592,41 +603,45 @@ def write_split_netlists_sqlite(
         connection.execute(
             "INSERT INTO parts SELECT part_index,fpga FROM assignment.parts"
         )
+        # Preserve the compact EmuIR dictionaries exactly once.  Part-specific
+        # rows below carry integer references instead of repeating JSON and
+        # pin strings for every endpoint or instance copy.
+        connection.execute("INSERT INTO payloads SELECT * FROM src.payloads")
+        connection.execute("INSERT INTO pin_names SELECT * FROM src.pin_names")
+        connection.execute(
+            "INSERT OR IGNORE INTO pin_names(name) VALUES ('shadow_out')"
+        )
         connection.execute(
             """
-            INSERT INTO instances
-            SELECT cp.part_index,c.seq,c.id,cp.copy_id,
-                   CASE WHEN (c.flags & 1) != 0 THEN c.id ELSE c.name END,
-                   c.type,r.value,p.value,a.value,k.value,x.value,cp.is_replica
+            INSERT INTO source_instances
+            SELECT c.seq,c.id,c.name,c.flags,c.type,c.resources_seq,
+                   c.parameters_seq,c.attributes_seq,c.constants_seq,
+                   c.extras_seq
             FROM src.cell_records c
-            JOIN assignment.copies cp ON cp.source_instance_seq=c.seq
-            JOIN src.payloads r ON r.seq=c.resources_seq
-            LEFT JOIN src.payloads p ON p.seq=c.parameters_seq
-            LEFT JOIN src.payloads a ON a.seq=c.attributes_seq
-            JOIN src.payloads k ON k.seq=c.constants_seq
-            JOIN src.payloads x ON x.seq=c.extras_seq
+            WHERE EXISTS(
+              SELECT 1 FROM assignment.copies cp
+              WHERE cp.source_instance_seq=c.seq
+            )
             """
         )
         connection.execute(
             """
-            INSERT INTO touched_nets
-            SELECT DISTINCT cp.part_index,e.net_seq
-            FROM src.endpoint_records e
-            JOIN assignment.copies cp
-              ON cp.source_instance_seq=e.instance_seq
+            INSERT INTO instance_copies
+            SELECT cp.part_index,cp.source_instance_seq,
+                   CASE WHEN cp.is_replica=1 THEN cp.copy_id ELSE NULL END,
+                   cp.is_replica
+            FROM assignment.copies cp
             """
         )
         connection.execute(
             """
-            INSERT INTO nets
-            SELECT t.part_index,n.seq,n.id,
-                   CASE WHEN (n.flags & 1) != 0 THEN n.id ELSE n.name END,
-                   n.cut_class,
+            INSERT INTO net_segments
+            SELECT DISTINCT cp.part_index,n.seq,
                    CASE
                      WHEN EXISTS(
                        SELECT 1 FROM assignment.cut_sinks cs
                        WHERE cs.net_id=n.id
-                         AND cs.sink_part_index=t.part_index
+                         AND cs.sink_part_index=cp.part_index
                      ) THEN 'transport_shadow'
                      WHEN EXISTS(
                        SELECT 1
@@ -634,37 +649,45 @@ def write_split_netlists_sqlite(
                        JOIN assignment.copies dc
                          ON dc.source_instance_seq=de.instance_seq
                        WHERE de.net_seq=n.seq AND de.role=0
-                         AND dc.part_index=t.part_index
+                         AND dc.part_index=cp.part_index
                          AND dc.is_replica=1
                      ) THEN 'logic_replica'
                      ELSE 'original'
                    END
-            FROM touched_nets t
-            JOIN src.net_records n ON n.seq=t.source_net_seq
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO endpoints
-            SELECT cp.part_index,e.net_seq,e.role,e.ordinal,cp.copy_id,
-                   pn.name,e.bit,x.value,0
             FROM src.endpoint_records e
             JOIN assignment.copies cp
               ON cp.source_instance_seq=e.instance_seq
-            JOIN src.pin_names pn ON pn.seq=e.port_seq
-            JOIN src.payloads x ON x.seq=e.extras_seq
+            JOIN src.net_records n ON n.seq=e.net_seq
             """
         )
         connection.execute(
             """
-            INSERT INTO endpoints
-            SELECT t.part_index,e.net_seq,e.role,e.ordinal,NULL,pn.name,
-                   e.bit,x.value,0
-            FROM touched_nets t
+            INSERT INTO source_nets
+            SELECT n.seq,n.id,n.name,n.flags,n.cut_class
+            FROM src.net_records n
+            WHERE EXISTS(
+              SELECT 1 FROM net_segments s WHERE s.source_net_seq=n.seq
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO endpoint_segments
+            SELECT cp.part_index,e.net_seq,e.role,e.ordinal,e.instance_seq,
+                   NULL,e.port_seq,e.bit,e.extras_seq,0
+            FROM src.endpoint_records e
+            JOIN assignment.copies cp
+              ON cp.source_instance_seq=e.instance_seq
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO endpoint_segments
+            SELECT s.part_index,e.net_seq,e.role,e.ordinal,NULL,NULL,
+                   e.port_seq,e.bit,e.extras_seq,0
+            FROM net_segments s
             JOIN src.endpoint_records e
-              ON e.net_seq=t.source_net_seq AND e.instance_seq IS NULL
-            JOIN src.pin_names pn ON pn.seq=e.port_seq
-            JOIN src.payloads x ON x.seq=e.extras_seq
+              ON e.net_seq=s.source_net_seq AND e.instance_seq IS NULL
             """
         )
 
@@ -691,30 +714,33 @@ def write_split_netlists_sqlite(
             )
         connection.execute(
             """
-            INSERT INTO endpoints
+            INSERT INTO endpoint_segments
             SELECT n.part_index,n.source_net_seq,0,
                    COALESCE((
-                     SELECT max(e.ordinal)+1 FROM endpoints e
+                     SELECT max(e.ordinal)+1 FROM endpoint_segments e
                      WHERE e.part_index=n.part_index
                        AND e.source_net_seq=n.source_net_seq AND e.role=0
                    ),0),
-                   '__emuflow_rx_' || i.entry_id,'shadow_out',0,'{}',1
-            FROM nets n
+                   NULL,'__emuflow_rx_' || i.entry_id,
+                   (SELECT seq FROM pin_names WHERE name='shadow_out'),0,
+                   (SELECT seq FROM payloads WHERE value='{}'),1
+            FROM net_segments n
+            JOIN source_nets sn ON sn.source_net_seq=n.source_net_seq
             JOIN assignment.cut_sinks cs
-              ON cs.net_id=n.original_net
+              ON cs.net_id=sn.original_net
              AND cs.sink_part_index=n.part_index
             JOIN incoming i
-              ON i.net_id=n.original_net AND i.part_index=n.part_index
+              ON i.net_id=sn.original_net AND i.part_index=n.part_index
             """
         )
         connection.execute(
             """
             INSERT INTO ports
-            SELECT DISTINCT t.part_index,
+            SELECT DISTINCT s.part_index,
                    json_extract(p.record_json,'$.id'),p.record_json
-            FROM touched_nets t
+            FROM net_segments s
             JOIN src.endpoint_records e
-              ON e.net_seq=t.source_net_seq AND e.instance_seq IS NULL
+              ON e.net_seq=s.source_net_seq AND e.instance_seq IS NULL
             JOIN src.pin_names pn ON pn.seq=e.port_seq
             JOIN src.port_records p
               ON json_extract(p.record_json,'$.id')=pn.name
@@ -723,9 +749,13 @@ def write_split_netlists_sqlite(
         connection.execute(
             """
             INSERT INTO resources
-            SELECT i.part_index,j.key,sum(CAST(j.value AS INTEGER))
-            FROM instances i,json_each(i.resources_json) j
-            GROUP BY i.part_index,j.key
+            SELECT c.part_index,j.key,sum(CAST(j.value AS INTEGER))
+            FROM instance_copies c
+            JOIN source_instances i
+              ON i.source_instance_seq=c.source_instance_seq
+            JOIN payloads p ON p.seq=i.resources_seq,
+                 json_each(p.value) j
+            GROUP BY c.part_index,j.key
             HAVING sum(CAST(j.value AS INTEGER)) != 0
             """
         )
@@ -823,34 +853,41 @@ def validate_split_netlists_sqlite(
             "SELECT count(*) FROM assignment.copies"
         ).fetchone()[0]
         observed_copies = connection.execute(
-            "SELECT count(*) FROM split.instances"
+            "SELECT count(*) FROM split.instance_copies"
         ).fetchone()[0]
         checks = {
             "copy_coverage_errors": abs(expected_copies - observed_copies),
             "net_materialization_errors": connection.execute("""
               SELECT abs(
-                (SELECT count(*) FROM split.touched_nets) -
-                (SELECT count(*) FROM split.nets)
+                (SELECT count(*) FROM split.net_segments) -
+                (SELECT count(*) FROM (
+                   SELECT part_index,source_net_seq
+                   FROM split.endpoint_segments
+                   GROUP BY part_index,source_net_seq
+                ))
               )
             """).fetchone()[0],
             "orphan_endpoint_errors": """
-              SELECT count(*) FROM split.endpoints e
-              LEFT JOIN split.instances i
-                ON i.part_index=e.part_index AND i.id=e.instance_id
-              WHERE e.instance_id IS NOT NULL AND e.synthetic=0 AND i.id IS NULL
+              SELECT count(*) FROM split.endpoint_segments e
+              LEFT JOIN split.instance_copies i
+                ON i.part_index=e.part_index
+               AND i.source_instance_seq=e.source_instance_seq
+              WHERE e.source_instance_seq IS NOT NULL
+                AND e.synthetic=0
+                AND i.source_instance_seq IS NULL
             """,
             "shadow_driver_errors": """
-              SELECT count(*) FROM split.nets n
+              SELECT count(*) FROM split.net_segments n
               WHERE n.source_kind='transport_shadow' AND (
-                SELECT count(*) FROM split.endpoints e
+                SELECT count(*) FROM split.endpoint_segments e
                 WHERE e.part_index=n.part_index
                   AND e.source_net_seq=n.source_net_seq
                   AND e.role=0 AND e.synthetic=1
               ) != 1
             """,
             "unexpected_shadow_errors": """
-              SELECT count(*) FROM split.endpoints e
-              JOIN split.nets n
+              SELECT count(*) FROM split.endpoint_segments e
+              JOIN split.net_segments n
                 ON n.part_index=e.part_index
                AND n.source_net_seq=e.source_net_seq
               WHERE e.synthetic=1 AND n.source_kind!='transport_shadow'
@@ -875,21 +912,21 @@ def validate_split_netlists_sqlite(
             )
         return {
             "status": "pass",
-            "provider": "sqlite-constructive-split-certificate-v1",
+            "provider": "sqlite-constructive-split-certificate-v2",
             "instances": connection.execute(
-                "SELECT count(*) FROM split.instances"
+                "SELECT count(*) FROM split.instance_copies"
             ).fetchone()[0],
             "replica_instances": connection.execute(
-                "SELECT count(*) FROM split.instances WHERE is_replica=1"
+                "SELECT count(*) FROM split.instance_copies WHERE is_replica=1"
             ).fetchone()[0],
             "net_segments": connection.execute(
-                "SELECT count(*) FROM split.nets"
+                "SELECT count(*) FROM split.net_segments"
             ).fetchone()[0],
             "endpoints": connection.execute(
-                "SELECT count(*) FROM split.endpoints"
+                "SELECT count(*) FROM split.endpoint_segments"
             ).fetchone()[0],
             "synthetic_shadow_drivers": connection.execute(
-                "SELECT count(*) FROM split.endpoints WHERE synthetic=1"
+                "SELECT count(*) FROM split.endpoint_segments WHERE synthetic=1"
             ).fetchone()[0],
             "parts": connection.execute(
                 "SELECT count(*) FROM split.parts"
@@ -921,17 +958,39 @@ def read_split_netlist_sqlite(path: Path, fpga: str) -> dict[str, Any]:
         part_index = part["part_index"]
         instances = []
         for row in connection.execute(
-            "SELECT * FROM instances WHERE part_index=? ORDER BY id",
+            """
+            SELECT c.source_instance_seq,c.copy_id,c.is_replica,
+                   i.original_id,i.name,i.flags,i.type,
+                   r.value AS resources_json,
+                   p.value AS parameters_json,
+                   a.value AS attributes_json,
+                   k.value AS constants_json,
+                   x.value AS extras_json
+            FROM instance_copies c
+            JOIN source_instances i
+              ON i.source_instance_seq=c.source_instance_seq
+            JOIN payloads r ON r.seq=i.resources_seq
+            LEFT JOIN payloads p ON p.seq=i.parameters_seq
+            LEFT JOIN payloads a ON a.seq=i.attributes_seq
+            JOIN payloads k ON k.seq=i.constants_seq
+            JOIN payloads x ON x.seq=i.extras_seq
+            WHERE c.part_index=?
+            ORDER BY CASE WHEN c.copy_id IS NOT NULL
+                          THEN c.copy_id ELSE i.original_id END
+            """,
             (part_index,),
         ):
+            instance_id = row["copy_id"] or row["original_id"]
             record = {
-                "id": row["id"],
+                "id": instance_id,
                 "type": row["type"],
                 "resources": json.loads(row["resources_json"]),
                 "constant_connections": json.loads(row["constants_json"]),
                 **json.loads(row["extras_json"]),
             }
-            if row["name"] is not None:
+            if row["flags"] & 1:
+                record["name"] = row["original_id"]
+            elif row["name"] is not None:
                 record["name"] = row["name"]
             if row["parameters_json"] is not None:
                 record["parameters"] = json.loads(row["parameters_json"])
@@ -967,14 +1026,46 @@ def read_split_netlist_sqlite(path: Path, fpga: str) -> dict[str, Any]:
         exact_digest = metadata.get("semantic_contract_sha256")
         nets = []
         for row in connection.execute(
-            "SELECT * FROM nets WHERE part_index=? ORDER BY original_net",
+            """
+            SELECT s.source_net_seq,s.source_kind,n.original_net,
+                   CASE WHEN n.flags & 1 THEN n.original_net ELSE n.name END
+                     AS name,
+                   n.cut_class
+            FROM net_segments s
+            JOIN source_nets n ON n.source_net_seq=s.source_net_seq
+            WHERE s.part_index=?
+            ORDER BY n.original_net
+            """,
             (part_index,),
         ):
             endpoints = list(
                 connection.execute(
-                    "SELECT * FROM endpoints WHERE part_index=? AND "
-                    "source_net_seq=? ORDER BY role,synthetic,"
-                    "(instance_id IS NULL),ordinal",
+                    """
+                    SELECT e.role,e.ordinal,e.bit,e.synthetic,
+                           pn.name AS port,x.value AS extras_json,
+                           CASE
+                             WHEN e.synthetic=1 THEN e.synthetic_instance_id
+                             WHEN e.source_instance_seq IS NULL THEN NULL
+                             ELSE COALESCE(c.copy_id,i.original_id)
+                           END AS instance_id
+                    FROM endpoint_segments e
+                    JOIN pin_names pn ON pn.seq=e.port_seq
+                    JOIN payloads x ON x.seq=e.extras_seq
+                    LEFT JOIN instance_copies c
+                      ON c.part_index=e.part_index
+                     AND c.source_instance_seq=e.source_instance_seq
+                    LEFT JOIN source_instances i
+                      ON i.source_instance_seq=e.source_instance_seq
+                    WHERE e.part_index=? AND e.source_net_seq=?
+                    ORDER BY e.role,e.synthetic,
+                             (CASE
+                                WHEN e.synthetic=1
+                                  THEN e.synthetic_instance_id
+                                WHEN e.source_instance_seq IS NULL THEN NULL
+                                ELSE COALESCE(c.copy_id,i.original_id)
+                              END IS NULL),
+                             e.ordinal
+                    """,
                     (part_index, row["source_net_seq"]),
                 )
             )
