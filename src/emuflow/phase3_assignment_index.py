@@ -305,7 +305,11 @@ def migrate_phase3_assignment_index(
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    connection = sqlite3.connect(temporary)
+    # URI mode is required because the immutable compact EmuIR is attached
+    # below through a ``file:...?mode=ro&immutable=1`` URI.  Without it,
+    # SQLite may interpret the full URI as a literal filename on production
+    # filesystems even though ordinary temporary-path tests still pass.
+    connection = sqlite3.connect(temporary, uri=True)
     try:
         connection.executescript(
             f"""

@@ -550,7 +550,8 @@ def write_split_netlists_sqlite(
     temporary = output_path.with_name(
         f".{output_path.name}.{uuid.uuid4().hex}.tmp"
     )
-    connection = sqlite3.connect(temporary)
+    # The source and assignment databases are attached as immutable file URIs.
+    connection = sqlite3.connect(temporary, uri=True)
     connection.row_factory = sqlite3.Row
     try:
         connection.execute("PRAGMA journal_mode=OFF")
@@ -796,7 +797,8 @@ def validate_split_netlists_sqlite(
     constraints, assignment cardinality, and transport-boundary invariants.
     """
 
-    connection = sqlite3.connect(":memory:")
+    # Keep URI processing enabled for the immutable databases attached below.
+    connection = sqlite3.connect(":memory:", uri=True)
     connection.row_factory = sqlite3.Row
     try:
         connection.execute("ATTACH DATABASE ? AS split", (_sqlite_uri(path),))
