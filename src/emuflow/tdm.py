@@ -883,10 +883,11 @@ def build_tdm_schedule(
         completion = {
             "demand": route["id"],
             "net": route["net"],
-            "transport_round": transport_round,
             "source_ready_slot": source_ready_slot,
             "completion_slot": completion_slot,
         }
+        if exact_contract is None:
+            completion["transport_round"] = transport_round
         if exact_contract is not None:
             sink_arrivals = {
                 sink: arrival_by_node[sink] for sink in sorted(route["sinks"])
@@ -924,12 +925,21 @@ def build_tdm_schedule(
             (domain["utilization"] for domain in domain_schedules),
             default=0.0,
         ),
-        "transport_rounds": len(active_rounds),
-        "round_barriers": max(0, len(active_rounds) - 1),
-        "max_transport_round": max(active_rounds, default=0),
-        "combinational_settle_slots": COMBINATIONAL_SETTLE_SLOTS,
         "collisions": 0,
     }
+    if exact_contract is None:
+        metrics.update(
+            {
+                "transport_rounds": len(active_rounds),
+                "round_barriers": max(0, len(active_rounds) - 1),
+                "max_transport_round": max(active_rounds, default=0),
+                "combinational_settle_slots": COMBINATIONAL_SETTLE_SLOTS,
+            }
+        )
+    else:
+        metrics["transport_ordering_policy"] = (
+            "path-local-dependency-dag-v1"
+        )
     if ratio_plan is not None:
         metrics.update(
             {
@@ -1009,8 +1019,12 @@ def build_tdm_schedule(
                 "net": route["net"],
                 "source": route["source"],
                 "sinks": list(route["sinks"]),
-                "transport_round": route.get("transport_round", 0),
                 "tree_edges": list(route["tree_edges"]),
+                **(
+                    {"transport_round": route.get("transport_round", 0)}
+                    if exact_contract is None
+                    else {}
+                ),
             }
             for route in sorted(raw_routes, key=lambda item: item["id"])
         ],
@@ -1362,7 +1376,7 @@ def validate_tdm_schedule(
             "sinks": list(route["sinks"]),
             "tree_edges": list(route["tree_edges"]),
         }
-        if extended_schedule:
+        if extended_schedule and exact_contract is None:
             record["transport_round"] = route.get("transport_round", 0)
         expected_route_metadata.append(record)
     if schedule.get("routes") != expected_route_metadata:
@@ -1575,12 +1589,9 @@ def validate_tdm_schedule(
             "completion_slot": completion_slot,
         }
         if extended_schedule:
-            completion.update(
-                {
-                    "transport_round": transport_round,
-                    "source_ready_slot": source_ready_slot,
-                }
-            )
+            completion["source_ready_slot"] = source_ready_slot
+            if exact_contract is None:
+                completion["transport_round"] = transport_round
         if exact_contract is not None:
             sink_arrivals = {
                 sink: arrival_by_node[sink] for sink in sorted(route["sinks"])
@@ -1629,7 +1640,7 @@ def validate_tdm_schedule(
         ),
         "collisions": 0,
     }
-    if extended_schedule:
+    if extended_schedule and exact_contract is None:
         expected_metrics.update(
             {
                 "transport_rounds": len(active_rounds),
@@ -1637,6 +1648,10 @@ def validate_tdm_schedule(
                 "max_transport_round": max(active_rounds, default=0),
                 "combinational_settle_slots": COMBINATIONAL_SETTLE_SLOTS,
             }
+        )
+    elif exact_contract is not None:
+        expected_metrics["transport_ordering_policy"] = (
+            "path-local-dependency-dag-v1"
         )
     if exact_contract is not None:
         if (

@@ -390,10 +390,11 @@ def _apply_native_schedule(
         completion_record = {
             "demand": route["id"],
             "net": route["net"],
-            "transport_round": transport_round,
             "source_ready_slot": source_ready,
             "completion_slot": completion,
         }
+        if exact_contract is None:
+            completion_record["transport_round"] = transport_round
         if exact_contract is not None:
             sink_arrivals = {
                 sink: arrival_by_node[sink] for sink in sorted(route["sinks"])

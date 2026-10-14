@@ -1997,8 +1997,25 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             validation["qualification"],
             "dependency-schedule-readiness-pass",
         )
-        self.assertEqual(validation["transport_rounds"], 1)
-        self.assertEqual(validation["round_barriers"], 0)
+        self.assertNotIn("transport_rounds", validation)
+        self.assertNotIn("round_barriers", validation)
+        self.assertNotIn("max_transport_round", validation)
+        self.assertEqual(
+            validation["transport_ordering_policy"],
+            "path-local-dependency-dag-v1",
+        )
+        self.assertTrue(
+            all(
+                "transport_round" not in route
+                for route in schedule["routes"]
+            )
+        )
+        self.assertTrue(
+            all(
+                "transport_round" not in completion
+                for completion in schedule["demand_completions"]
+            )
+        )
         readiness = {
             item["net"]: item
             for item in schedule["schedule_dependency_certificate"][
