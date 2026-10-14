@@ -18,6 +18,7 @@ from .platform import BoardLink, Platform
 
 SYSTEM_ROUTES_SCHEMA = "emuflow.system-routes/v1"
 SYSTEM_ROUTE_CONSTRAINTS_SCHEMA = "emuflow.system-route-constraints/v1"
+RUNTIME_BARRIER_SLOTS = 1
 ArcKey = Tuple[str, str, str]
 
 
@@ -484,6 +485,8 @@ def _capacity_key(
 def build_directed_graph(
     platform: Platform,
     constraints: Mapping[str, Any],
+    *,
+    reserve_arrival_and_commit: bool = False,
 ) -> Tuple[
     Dict[str, List[Dict[str, Any]]],
     Dict[ArcKey, Dict[str, Any]],
@@ -518,6 +521,21 @@ def build_directed_graph(
             arcs[_arc_key(link.id, source, sink)] = arc
             adjacency[source].append(arc)
             if capacity_key not in capacity_records:
+                usable_slots = (
+                    1
+                    if link.id in constraints["sll_links"]
+                    else constraints["frame_slots"]
+                )
+                if (
+                    reserve_arrival_and_commit
+                    and link.id not in constraints["sll_links"]
+                ):
+                    usable_slots -= RUNTIME_BARRIER_SLOTS + link.latency_cycles
+                if usable_slots <= 0:
+                    raise ValidationError(
+                        f"link {link.id!r} has no transmit slot whose data "
+                        "arrives before the frame commit"
+                    )
                 capacity_records[capacity_key] = {
                     "key": capacity_key,
                     "link": link.id,
@@ -531,11 +549,7 @@ def build_directed_graph(
                     ),
                     "capacity_bits": (
                         link.transport_bits_per_cycle_per_direction
-                        * (
-                            1
-                            if link.id in constraints["sll_links"]
-                            else constraints["frame_slots"]
-                        )
+                        * usable_slots
                     ),
                 }
 
@@ -755,9 +769,13 @@ def validate_system_routes(
     expected_demands = demands_from_assignment(assignment, platform)
     if routes_artifact.get("demands") != expected_demands:
         raise ValidationError("routes.demands does not match partition cut nets")
-    semantic_contract_for_routes(assignment, routes_artifact)
+    exact_contract = semantic_contract_for_routes(assignment, routes_artifact)
 
-    adjacency, arcs, capacities = build_directed_graph(platform, constraints)
+    adjacency, arcs, capacities = build_directed_graph(
+        platform,
+        constraints,
+        reserve_arrival_and_commit=exact_contract is not None,
+    )
     del adjacency
     raw_routes = routes_artifact.get("routes")
     if not isinstance(raw_routes, list):

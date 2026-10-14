@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 from .errors import TDMScheduleInfeasibleError, ValidationError
 from .platform import Platform
 from .routing import (
+    RUNTIME_BARRIER_SLOTS,
     SYSTEM_ROUTES_SCHEMA,
     build_directed_graph,
     normalize_route_constraints,
@@ -31,7 +32,6 @@ TDM_ACADEMIC_SCHEDULE_PROVIDER = (
     "lagrangian-kkt-ratio-aware-path-local-search-v2"
 )
 COMBINATIONAL_SETTLE_SLOTS = 1
-RUNTIME_BARRIER_SLOTS = 1
 HopKey = Tuple[str, str, str, str]
 
 

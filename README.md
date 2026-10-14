@@ -1467,6 +1467,13 @@ rule. This avoids copying, reparsing, and repeatedly hashing tens of megabytes
 of identical dependency data in every downstream artifact while preserving
 an independently checkable cross-stage identity.
 
+Phase 4 link capacity is the number of payload bits that can both launch and
+arrive before the frame commit: per-cycle payload width multiplied by the
+frame slots remaining after the link latency and the commit slot. It therefore
+cannot route traffic into late slots that Phase 5 is forbidden to use. Static
+Exact does not subdivide that capacity by a global transport-round barrier;
+its path-local dependency releases are applied by Phase 5.
+
 Those gates are qualified as `route-contract-propagation-pass` and
 `dependency-schedule-readiness-pass`; neither is a functional-equivalence or
 physical-timing claim. Phase 6 now materializes preserved TX/RX boundary

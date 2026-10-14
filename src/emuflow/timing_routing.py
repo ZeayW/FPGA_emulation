@@ -738,8 +738,11 @@ def _prepare_native_model(
     timing_paths: Optional[Mapping[str, Any]],
 ) -> Tuple[List[str], Dict[str, Any]]:
     demands = demands_from_assignment(assignment, platform)
+    exact_dependency_schedule = assignment.get("semantic_contract") is not None
     adjacency, arcs_by_key, capacities = build_directed_graph(
-        platform, constraints
+        platform,
+        constraints,
+        reserve_arrival_and_commit=exact_dependency_schedule,
     )
     physical_nodes = sorted(fpga.id for fpga in platform.fpgas)
     active_rounds = sorted(
@@ -751,7 +754,7 @@ def _prepare_native_model(
     # its physical routing capacity into two synthetic windows would reject
     # legal schedules and bias routing based on a diagnostic label.
     layered_rounds = (
-        assignment.get("semantic_contract") is None
+        not exact_dependency_schedule
         and active_rounds == [0, 1]
     )
     round_boundary = (
@@ -1419,7 +1422,13 @@ def route_system_native(
     # multi-million-demand cases, releasing them before materializing the
     # public route schema avoids retaining two complete demand views.
     model["native_demands"].clear()
-    _, arcs, capacities = build_directed_graph(platform, constraints)
+    _, arcs, capacities = build_directed_graph(
+        platform,
+        constraints,
+        reserve_arrival_and_commit=(
+            assignment.get("semantic_contract") is not None
+        ),
+    )
     routes = []
     usage = {key: 0 for key in capacities}
     round_usage: Dict[Tuple[str, int], int] = defaultdict(int)
@@ -1829,7 +1838,13 @@ def reconstruct_system_route_timing(
     constraints = normalize_route_constraints(
         routes.get("constraints"), platform
     )
-    _, arcs, capacities = build_directed_graph(platform, constraints)
+    _, arcs, capacities = build_directed_graph(
+        platform,
+        constraints,
+        reserve_arrival_and_commit=(
+            assignment.get("semantic_contract") is not None
+        ),
+    )
     link_by_id = {link.id: link for link in platform.links}
 
     ordered_arc_keys = sorted(arcs)
@@ -2351,7 +2366,13 @@ def validate_native_system_routes(
     # Independently reconstruct the route/TDM co-optimization proxy used by
     # the native router.  This is deliberately separate from native output:
     # a corrupt or incorrectly implemented optimizer cannot self-certify.
-    _, arcs, capacities = build_directed_graph(platform, constraints)
+    _, arcs, capacities = build_directed_graph(
+        platform,
+        constraints,
+        reserve_arrival_and_commit=(
+            assignment.get("semantic_contract") is not None
+        ),
+    )
     round_aware = (
         assignment.get("semantic_contract") is None
         and sorted(

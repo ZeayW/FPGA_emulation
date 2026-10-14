@@ -255,6 +255,15 @@ class PlatformTest(unittest.TestCase):
         self.assertEqual(
             capacities["gty:F0->F1"]["capacity_bits"], 768 * 32
         )
+        _, _, scheduled_capacities = build_directed_graph(
+            platform,
+            constraints,
+            reserve_arrival_and_commit=True,
+        )
+        self.assertEqual(
+            scheduled_capacities["gty:F0->F1"]["capacity_bits"],
+            768 * (32 - 1 - 4),
+        )
 
     def test_serial_user_rate_cannot_exceed_line_rate(self) -> None:
         with self.assertRaisesRegex(ValidationError, "exceeds maximum"):

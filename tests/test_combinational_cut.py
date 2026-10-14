@@ -43,6 +43,7 @@ from emuflow.partition import (
 from emuflow.platform import Platform
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.routing import (
+    build_directed_graph,
     demands_from_assignment,
     normalize_route_constraints,
     validate_system_routes,
@@ -920,19 +921,19 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     "max_latency_cycles": 2,
                 }
             )
-        capacity = 32 * frame_slots
+        _, _, capacities = build_directed_graph(
+            self.platform,
+            constraints,
+            reserve_arrival_and_commit=True,
+        )
         link_utilization = []
         for key in sorted(utilization):
-            direction = key.split(":", 1)[1]
             used = utilization[key]
             link_utilization.append(
                 {
-                    "key": key,
-                    "link": "link_0_1",
-                    "direction": direction,
-                    "capacity_bits": capacity,
+                    **capacities[key],
                     "used_bits": used,
-                    "utilization": used / capacity,
+                    "utilization": used / capacities[key]["capacity_bits"],
                 }
             )
         routes = {
@@ -979,6 +980,13 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             executable=str(tlr_router()),
         )
         self.assertNotIn("round_capacity_contract", routes)
+        self.assertEqual(
+            {
+                item["capacity_bits"]
+                for item in routes["link_utilization"]
+            },
+            {32 * (16 - 1 - 2)},
+        )
         checked = validate_system_routes(assignment, self.platform, routes)
         self.assertEqual(checked["status"], "pass")
         hydrated = {
