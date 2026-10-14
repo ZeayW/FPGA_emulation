@@ -106,6 +106,70 @@ class RtlCatalogTest(unittest.TestCase):
             self.assertEqual(stamp["revision"], "a" * 40)
             self.assertEqual(stamp["archive_sha256"], digest)
 
+    def test_large_generated_collection_has_portable_source_identities(self) -> None:
+        catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+        collections = {item["id"]: item for item in catalog["collections"]}
+        collection = collections["large-rtl-20260906"]
+        self.assertFalse(collection["redistributed"])
+        self.assertEqual(collection["source_form"], "external-generated-rtl-package")
+        self.assertRegex(collection["archive_sha256"], r"^[0-9a-f]{64}$")
+        entries = {
+            item["id"]: item
+            for item in catalog["designs"]
+            if item.get("package", {}).get("collection") == collection["id"]
+        }
+        self.assertEqual(set(entries), {
+            "opdb_chip_10x10", "opdb_chip_15x15", "opdb_chip_20x20",
+            "occamy_432core_full", "vortex_64core", "blackparrot_16core",
+            "chipyard_sonicboom_megaboom",
+            "xiangshan_kunminghu_release_25022801",
+        })
+        for identifier, design in entries.items():
+            package = design["package"]
+            self.assertEqual(package["directory"], identifier)
+            for field in ("filelist_sha256", "primary_rtl_sha256"):
+                self.assertRegex(package[field], r"^[0-9a-f]{64}$")
+            for field in ("directory", "filelist", "primary_rtl"):
+                self.assertFalse(Path(package[field]).is_absolute())
+                self.assertNotIn("..", Path(package[field]).parts)
+            self.assertEqual(design["flow_readiness"], "source-candidate-unqualified")
+            self.assertEqual(design["qualification"], {
+                "native_xilinx_mapping": "not_qualified",
+                "full_phase1_7": "not_qualified",
+            })
+            self.assertEqual(
+                design["clock_profile"]["elaborated_clock_audit"], "pending"
+            )
+            self.assertNotIn("clock_periods_ns", design)
+            self.assertNotIn("lut", package)
+
+    def test_large_candidates_do_not_confuse_one_port_with_one_clock(self) -> None:
+        catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+        entries = {item["id"]: item for item in catalog["designs"]}
+        vortex = entries["vortex_64core"]
+        blackparrot = entries["blackparrot_16core"]
+        self.assertEqual(vortex["clock_profile"]["classification"], "single-root")
+        self.assertEqual(vortex["clock_profile"]["root_ports"], ["clk"])
+        self.assertEqual(vortex["package"]["core_count"], 64)
+        self.assertEqual(
+            blackparrot["clock_profile"]["classification"],
+            "single-root-with-generated-clocks",
+        )
+        self.assertNotIn("single-clock", blackparrot["feature_tags"])
+        for size, tiles in (("10x10", 100), ("15x15", 225), ("20x20", 400)):
+            opdb = entries[f"opdb_chip_{size}"]
+            self.assertEqual(opdb["package"]["tile_count"], tiles)
+            self.assertEqual(
+                opdb["clock_profile"]["root_ports"],
+                ["core_ref_clk", "io_clk", "jtag_clk"],
+            )
+        release = entries["xiangshan_kunminghu_release_25022801"]
+        self.assertIn("OpenXiangShan/XiangShan", release["repository"])
+        self.assertIn(
+            "XS-MLVP/UnityChipXiangShanRTLs",
+            release["package"]["release_repository"],
+        )
+
     def test_git_fetch_uses_legacy_compatible_sparse_checkout(self) -> None:
         design = {
             "id": "legacy-git-fixture",
