@@ -29,6 +29,7 @@ class DefaultPlatformTest(unittest.TestCase):
         for count, pairs in expected_pairs.items():
             with self.subTest(fpga_count=count):
                 platform = Platform.load(research_platform_path(count))
+                self.assertEqual(platform.virtual_board_model, "xcvu19p-hp-lvds-cable-v1")
                 self.assertEqual(len(platform.fpgas), count)
                 self.assertEqual({link.endpoints for link in platform.links}, pairs)
                 for link in platform.links:
@@ -124,6 +125,7 @@ class DefaultPlatformTest(unittest.TestCase):
         self.assertEqual(link.capacity_sharing, "per_direction")
         self.assertIsNone(link.bank_count)
         self.assertIsNone(link.tdm_delay_model)
+        self.assertIsNone(Platform.load(args.platform).virtual_board_model)
 
     def test_unsupported_research_platform_size_is_rejected(self):
         for count in (True, 2.0, 1, 3, "4"):

@@ -285,6 +285,7 @@ class Platform:
     links: Tuple[BoardLink, ...]
     clocks: Tuple[BoardClockContract, ...] = ()
     resets: Tuple[BoardResetContract, ...] = ()
+    virtual_board_model: Optional[str] = None
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "Platform":
@@ -304,6 +305,11 @@ class Platform:
         description = metadata.get("description", "")
         if not isinstance(description, str):
             raise ValidationError("platform.description: expected a string")
+        virtual_board_model = metadata.get("virtual_board_model")
+        if virtual_board_model is not None and (
+            virtual_board_model != "xcvu19p-hp-lvds-cable-v1" or kind != "virtual"
+        ):
+            raise ValidationError("platform.virtual_board_model: unsupported virtual board model")
 
         raw_fpgas = value.get("fpgas")
         if not isinstance(raw_fpgas, list) or not raw_fpgas:
@@ -481,6 +487,10 @@ class Platform:
                 for key, number in (("bank_count", bank_count), ("wires_per_bank", wires_per_bank)):
                     if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
                         raise ValidationError(f"links[{index}].{key}: expected a positive integer")
+                if virtual_board_model == "xcvu19p-hp-lvds-cable-v1" and wires_per_bank > 24:
+                    raise ValidationError(
+                        f"links[{index}].wires_per_bank: the XCVU19P HP bank has at most 24 differential pairs"
+                    )
                 if (capacity_sharing != "shared_bidirectional" or mode == "serial"
                         or payload_width != 1 or lanes != bank_count * wires_per_bank):
                     raise ValidationError(
@@ -791,6 +801,7 @@ class Platform:
             links=tuple(links),
             clocks=tuple(sorted(clocks, key=lambda item: item.id)),
             resets=tuple(sorted(resets, key=lambda item: item.id)),
+            virtual_board_model=virtual_board_model,
         )
 
     @classmethod
@@ -813,6 +824,8 @@ class Platform:
                 "clocks": [clock.to_dict() for clock in self.clocks],
                 "resets": [reset.to_dict() for reset in self.resets],
             }
+        if self.virtual_board_model is not None:
+            result["platform"]["virtual_board_model"] = self.virtual_board_model
         return result
 
     def summary(self) -> Dict[str, Any]:

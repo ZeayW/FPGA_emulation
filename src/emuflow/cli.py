@@ -1182,7 +1182,7 @@ def _build_parser() -> argparse.ArgumentParser:
     platform_research.add_argument("--fpga-count", type=int, choices=(2, 4), default=4)
     platform_research.add_argument(
         "--wires-per-bank", type=int, default=DEFAULT_WIRES_PER_BANK,
-        help="effective data wires per HP bank (default: 20)",
+        help="differential data pairs per HP bank (default: 20; two pins per pair)",
     )
     platform_research.add_argument("--output", "-o", type=Path, required=True)
     platform_mps4 = platform_subparsers.add_parser(

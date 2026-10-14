@@ -28,6 +28,9 @@
             "virtual",
             "hardware"
           ]
+        },
+        "virtual_board_model": {
+          "const": "xcvu19p-hp-lvds-cable-v1"
         }
       }
     },

@@ -35,13 +35,13 @@ def materialize_research_platform(
 
     if (isinstance(wires_per_bank, bool) or not isinstance(wires_per_bank, int)
             or wires_per_bank <= 0):
-        raise ValidationError("effective data wires per HP bank must be a positive integer")
+        raise ValidationError("effective differential data pairs per HP bank must be a positive integer")
     value = read_json(research_platform_path(fpga_count))
     if wires_per_bank != DEFAULT_WIRES_PER_BANK:
         value["platform"]["name"] += f"_wires{wires_per_bank}"
         value["platform"]["description"] = value["platform"]["description"].replace(
-            f"{DEFAULT_WIRES_PER_BANK} effective data wires per bank",
-            f"{wires_per_bank} effective data wires per bank",
+            f"{DEFAULT_WIRES_PER_BANK} effective differential data pairs per bank",
+            f"{wires_per_bank} effective differential data pairs per bank",
         )
     for link in value["links"]:
         link["wires_per_bank"] = wires_per_bank

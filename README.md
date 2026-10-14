@@ -14,7 +14,7 @@ signoff. See [backend selection](#configuration-and-limits) for the explicit CLI
 options for the research route and alternative backends.
 The default [inter-FPGA research model](#inter-fpga-research-model) uses six
 cables per connected FPGA pair, three corresponding HP-bank groups per cable,
-and twenty effective data wires per bank,
+twenty differential data pairs per bank,
 and a single-hop delay of `30 + 0.5R` ns at TDM ratio `R`.
 
 ## Flow
@@ -270,9 +270,11 @@ graph LR
 Each direct FPGA pair is connected by **6 cables**. Each cable uses **3 HP I/O
 banks at each endpoint**, paired with the corresponding banks at the other
 FPGA. This gives **18 bank groups per pair**, shared between the two directions.
-Each HP bank supplies **20 effective data wires**, for **360 shared wires per
-pair**. The twenty-wire value is the usable data width configured for this
-model, rather than the device's total pin count per bank.
+Each HP bank supplies **20 differential data pairs** (40 data pins), for
+**360 shared differential channels per FPGA pair**. Each scheduled `wire` is
+one differential channel: two physical conductors carry one bit together.
+Thus each direct FPGA pair has 720 data conductors and uses 720 data pins at
+each endpoint. The 20-pair setting is the usable data width of this model.
 
 The device inventory is **38 HP banks and 4 HD banks per FPGA**. Each FPGA in
 the four-FPGA topology has two direct neighbors, so those links use
@@ -290,16 +292,18 @@ schedule. For each connected pair:
 ```text
 b_AB, b_BA are nonnegative integers
 b_AB + b_BA <= 18
-C_AB = 20 * b_AB wires
-C_BA = 20 * b_BA wires
+C_AB = 20 * b_AB differential channels
+C_BA = 20 * b_BA differential channels
 ```
 
-For example, a 7/11 split gives 140 wires A→B and 220 wires B→A; a 9/9 split
-provides 180 wires in each direction. Idle bank groups may remain unassigned.
+For example, a 7/11 split gives 140 differential channels A→B and 220 B→A;
+a 9/9 split provides 180 differential channels in each direction. Idle bank groups may remain unassigned.
 BoardDB records `cable_count: 6`, `hp_banks_per_cable: 3`, `bank_count: 18`,
 `wires_per_bank: 20`, and `capacity_sharing: "shared_bidirectional"`.
 `data_lanes_per_direction: 360` is the pair's shared pool before directional
-allocation; it does not provide 360 independent wires in both directions.
+allocation; it does not provide 360 independent channels in both directions.
+`wires_per_bank` counts differential pairs for this LVDS virtual-board model;
+P/N conductors are never assigned separate TDM ratios or slots.
 
 The single-hop net delay uses the TDM ratio assigned to that net on that hop:
 
@@ -351,10 +355,79 @@ top=..., clocks=..., clock_periods=...)`; pass `platform_path=...` to override
 the same default. The bundled models are installed with the Python package
 and the CMake CLI, so default selection does not depend on the current working
 directory. `--physical` and the matching backend inputs are still required for
-physical implementation and global physical timing. Physical package-pin
-binding needs a schedule-aware BSP. The existing independent-direction Phase 8A
-requirements exporter rejects shared-bank platforms instead of assigning two
-independent 360-wire pools.
+physical implementation and global physical timing. The bundled virtual-board
+model now emits schedule-aware data-pin bindings as described below. The existing
+independent-direction Phase 8A requirements exporter still rejects shared-bank
+platforms instead of assigning two independent 360-wire pools.
+
+
+### Fixed virtual board wiring
+
+Both bundled XCVU19P presets declare
+`virtual_board_model: xcvu19p-hp-lvds-cable-v1`. The model pairs **real device
+P/N package pins** through **hypothetical fixed cables**, connecting P to P
+and N to N. Each endpoint records its HP bank, vendor differential-pair ID,
+both package pins, pin functions, and IOB sites. RapidWright supplies the
+package-pin/site identity inventory; the AMD package pinout supplies the
+P/N identities ([AMD FSVA3824 pinout, revision 1.3](https://download.amd.com/adaptive-socs-and-fpgas/developer/adaptive-socs-and-fpgas/package-pinout-files/usapackages/xcvu19pfsva3824pkg.txt)). Cable routing and connector data-contact numbering are model
+assumptions, not observations of a commercial board.
+
+The generator reserves configuration-multiplexed bank 65, then sorts link IDs
+and assigns 18 unused HP banks at each endpoint of each link. It selects
+complete vendor differential pairs in numeric pair-ID order, preferring the
+20 non-GC pairs so the four global-clock pairs remain available by default. It never infers differential pairing
+from adjacent package-pin names or IOB coordinates. Single-ended-only pins are
+excluded. Bank group `g` belongs to cable `g // 3`; wire `w` belongs to bank
+group `w // 20` with position `w % 20` at the default width. A cable has 60
+differential data channels and 120 data-contact ordinals at each end.
+
+The four-FPGA model has 24 cables, 1,440 differential channels and 2,880 signal
+conductors. Each FPGA uses 36 distinct HP banks and 1,440 data pins; HP banks 65 and 78
+remain outside the data network. No bank or pin is reused for a different
+neighbor. The two-FPGA model has six cables and 360 differential channels.
+
+There is **one undirected connection per differential channel**. Phase 5
+assigns whole-bank directions for a generated schedule/build; reversing a bank
+swaps transmitter and receiver on its fixed P/N pairs without changing polarity.
+TDM communications in different slots reuse the same pair. P and N share one
+wire index, TDM ratio and slot; they do not double the schedule capacity.
+
+The checked-in [four-FPGA wire table](platforms/virtual/rapidwright_xcvu19p_4fpga_mesh.wires.csv)
+and [two-FPGA wire table](platforms/virtual/rapidwright_xcvu19p_2fpga_p2p.wires.csv)
+list all four package pins of every fixed differential connection. Regenerate
+JSON/CSV tables without compiling a design:
+
+```sh
+python -m emuflow.virtual_board --out build/virtual-board
+# Optional: --platform platforms/virtual/rapidwright_xcvu19p_2fpga_p2p.json
+```
+
+During Phase 6, a declared virtual board automatically produces:
+
+- `split/virtual_board_wiring.json`: the fixed differential connection inventory;
+- `split/virtual_board_binding.json`: each scheduled hop's wire, slot, TDM ratio,
+  logical transport bit, and both endpoints' P/N pin/port identities;
+- `split/<fpga>/virtual_data_pins.xdc`: `PACKAGE_PIN` and `IOSTANDARD LVDS`
+  constraints for both polarities of used channels, with TDM reuse deduplicated;
+- `split/<fpga>/virtual_differential_io.sv`: a standalone data adapter using
+  `OBUFDS` at transmitters and `IBUFDS` at receivers. Its logical buses connect
+  to transport RTL; its P/N ports must be exposed at the physical top level.
+
+The Phase 6 validator checks these files against the device inventory, schedule,
+transport ports and bank direction allocation. It rejects missing or altered
+bindings, polarity swaps, pin collisions, and modified XDC or adapter RTL. The
+logical netlist/anchor artifacts keep their existing board-independent status;
+the separate virtual-board result records the additional differential binding.
+
+The board assumes HP-bank `LVDS` at 1.8 V VCCO and internal 100-ohm receiver
+termination (`IBUFDS.DIFF_TERM=TRUE`), enabled only at the receiving end
+([AMD UG571, LVDS](https://docs.amd.com/api/khub/documents/kFbaUC5HGcXyGNauhgU6Gw/content)). These are design assumptions, not electrical
+signoff. Clock/reset/control pins, power/ground wiring, configuration-pin reuse,
+and a cable product's connector pinout need board-specific constraints. The
+current OOC RapidWright backend does **not yet integrate the data adapter or
+consume its XDC files**. A successful binding therefore does not establish
+I/O placement/routing or a deployable board. Link timing keeps the configured
+per-hop `30 + 0.5R` ns model; switching to differential does not recalibrate it.
 
 ## Build
 

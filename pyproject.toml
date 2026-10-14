@@ -27,7 +27,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-emuflow = ["data/platforms/*.json"]
+emuflow = ["data/platforms/*.json", "data/io/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

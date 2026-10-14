@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/virtual-board-binding-v1.schema.json",
+  "title": "Scheduled transport bits bound to virtual differential P/N pins",
+  "type": "object",
+  "required": [
+    "schema",
+    "platform",
+    "qualification",
+    "status",
+    "integration_status",
+    "physical_backend_status",
+    "board_services_status",
+    "board_sha256",
+    "schedule_sha256",
+    "lane_map_sha256",
+    "entries",
+    "metrics",
+    "io_adapter_status"
+  ],
+  "properties": {
+    "schema": {
+      "const": "emuflow.virtual-board-binding/v1"
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1
+    },
+    "qualification": {
+      "const": "virtual_board_real_device_pins"
+    },
+    "status": {
+      "const": "pass"
+    },
+    "integration_status": {
+      "const": "differential_data_constraints_and_adapter_generated"
+    },
+    "physical_backend_status": {
+      "const": "not_consumed_by_ooc_backend"
+    },
+    "board_services_status": {
+      "const": "clock_reset_and_control_pins_not_bound"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "schedule_entry",
+          "wire_id",
+          "wire",
+          "link",
+          "iostandard",
+          "source",
+          "sink"
+        ],
+        "properties": {
+          "source": {
+            "type": "object",
+            "required": [
+              "fpga",
+              "bank",
+              "pair_id",
+              "p",
+              "n",
+              "logical_port",
+              "logical_port_width"
+            ],
+            "properties": {
+              "fpga": {
+                "type": "string",
+                "minLength": 1
+              },
+              "bank": {
+                "type": "string",
+                "minLength": 1
+              },
+              "pair_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "p": {
+                "type": "object",
+                "required": [
+                  "package_pin",
+                  "site",
+                  "pin_function",
+                  "port"
+                ],
+                "properties": {
+                  "package_pin": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "site": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "pin_function": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "port": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "n": {
+                "type": "object",
+                "required": [
+                  "package_pin",
+                  "site",
+                  "pin_function",
+                  "port"
+                ],
+                "properties": {
+                  "package_pin": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "site": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "pin_function": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "port": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "logical_port": {
+                "type": "string"
+              },
+              "logical_port_width": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "additionalProperties": false
+          },
+          "sink": {
+            "type": "object",
+            "required": [
+              "fpga",
+              "bank",
+              "pair_id",
+              "p",
+              "n",
+              "logical_port",
+              "logical_port_width"
+            ],
+            "properties": {
+              "fpga": {
+                "type": "string",
+                "minLength": 1
+              },
+              "bank": {
+                "type": "string",
+                "minLength": 1
+              },
+              "pair_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "p": {
+                "type": "object",
+                "required": [
+                  "package_pin",
+                  "site",
+                  "pin_function",
+                  "port"
+                ],
+                "properties": {
+                  "package_pin": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "site": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "pin_function": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "port": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "n": {
+                "type": "object",
+                "required": [
+                  "package_pin",
+                  "site",
+                  "pin_function",
+                  "port"
+                ],
+                "properties": {
+                  "package_pin": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "site": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "pin_function": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "port": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "logical_port": {
+                "type": "string"
+              },
+              "logical_port_width": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "additionalProperties": false
+          },
+          "iostandard": {
+            "const": "LVDS"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object"
+    },
+    "io_adapter_status": {
+      "const": "standalone_adapter_requires_top_level_integration"
+    }
+  }
+}
