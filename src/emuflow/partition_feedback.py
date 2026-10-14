@@ -15,12 +15,41 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .platform import Platform
+from .routing import semantic_contract_for_routes
 from .tdm_ratio import validate_tdm_ratio_plan
 from .tritonpart import PARTITION_NET_WEIGHTS_SCHEMA
 
 
 PARTITION_FEEDBACK_PROVIDER = "channel-usage-pair-pressure-v1"
 DAMPED_PARTITION_FEEDBACK_PROVIDER = "proximal-log-space-damping-v1"
+
+
+def _routes_with_phase3_semantics(
+    routes: Mapping[str, Any],
+    assignment: Optional[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """Resolve a compact Phase 4 binding against its Phase 3 owner."""
+
+    if "semantic_contract" in routes:
+        return routes
+    has_schema = "semantic_contract_schema" in routes
+    has_digest = "semantic_contract_sha256" in routes
+    if not has_schema and not has_digest:
+        return routes
+    if has_schema != has_digest:
+        raise ValidationError(
+            "partition feedback route semantic-contract binding is incomplete"
+        )
+    if assignment is None:
+        raise ValidationError(
+            "Static Exact partition feedback requires the Phase 3 assignment"
+        )
+    contract = semantic_contract_for_routes(assignment, routes)
+    if contract is None:
+        raise ValidationError(
+            "Static Exact partition feedback Phase 3 contract is missing"
+        )
+    return {**routes, "semantic_contract": contract}
 
 
 def _canonical_digest(value: Any) -> str:
@@ -176,6 +205,7 @@ def build_partition_feedback(
     ratio_plan: Mapping[str, Any],
     platform: Platform,
     *,
+    assignment: Optional[Mapping[str, Any]] = None,
     executable: Optional[str] = None,
     pair_pressure_weight: float = 1.0,
 ) -> Dict[str, Any]:
@@ -188,8 +218,11 @@ def build_partition_feedback(
         raise ValidationError(
             "partition feedback pair pressure weight must be non-negative"
         )
-    validate_tdm_ratio_plan(routes, platform, ratio_plan)
-    model = _model(routes, ratio_plan, float(pair_pressure_weight))
+    resolved_routes = _routes_with_phase3_semantics(routes, assignment)
+    validate_tdm_ratio_plan(resolved_routes, platform, ratio_plan)
+    model = _model(
+        resolved_routes, ratio_plan, float(pair_pressure_weight)
+    )
     resolved = resolve_native_executable(
         "emuflow_tdm_partition_feedback", executable
     )
@@ -219,7 +252,7 @@ def build_partition_feedback(
     ]
     artifact = {
         "schema": PARTITION_NET_WEIGHTS_SCHEMA,
-        "design": routes.get("design"),
+        "design": resolved_routes.get("design"),
         "platform": platform.name,
         "provider": PARTITION_FEEDBACK_PROVIDER,
         "configuration": {
@@ -243,7 +276,9 @@ def build_partition_feedback(
             ),
         },
     }
-    validate_partition_feedback(routes, ratio_plan, platform, artifact)
+    validate_partition_feedback(
+        resolved_routes, ratio_plan, platform, artifact
+    )
     return artifact
 
 
@@ -252,7 +287,10 @@ def validate_partition_feedback(
     ratio_plan: Mapping[str, Any],
     platform: Platform,
     artifact: Mapping[str, Any],
+    *,
+    assignment: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
+    routes = _routes_with_phase3_semantics(routes, assignment)
     validate_tdm_ratio_plan(routes, platform, ratio_plan)
     if artifact.get("schema") != PARTITION_NET_WEIGHTS_SCHEMA:
         raise ValidationError("partition feedback schema is invalid")
@@ -407,21 +445,32 @@ def run_partition_feedback(
     platform_path: Path,
     output_path: Path,
     *,
+    assignment_path: Optional[Path] = None,
     executable: Optional[str] = None,
     pair_pressure_weight: float = 1.0,
 ) -> Dict[str, Any]:
     routes = read_json(routes_path)
     ratio_plan = read_json(ratio_plan_path)
+    assignment = (
+        read_json(assignment_path) if assignment_path is not None else None
+    )
     platform = Platform.load(platform_path)
     artifact = build_partition_feedback(
         routes,
         ratio_plan,
         platform,
+        assignment=assignment,
         executable=executable,
         pair_pressure_weight=pair_pressure_weight,
     )
     write_json(output_path, artifact)
-    return validate_partition_feedback(routes, ratio_plan, platform, artifact)
+    return validate_partition_feedback(
+        routes,
+        ratio_plan,
+        platform,
+        artifact,
+        assignment=assignment,
+    )
 
 
 def build_damped_partition_feedback(

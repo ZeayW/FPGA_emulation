@@ -1362,6 +1362,7 @@ def run_cross_stage_optimization(
                 incumbent_root / "phase5" / "ratio_plan.json",
                 platform_path,
                 raw_feedback_path,
+                assignment_path=output_dir / incumbent["assignment"],
                 executable=feedback_optimizer,
                 pair_pressure_weight=pair_pressure_weight,
             )
@@ -1987,6 +1988,9 @@ def validate_cross_stage_report(
                 read_json(root / incumbent_record["ratio_plan"]),
                 platform,
                 raw_feedback,
+                assignment=read_json(
+                    root / incumbent_record["assignment"]
+                ),
             )
             if (
                 candidate.get("raw_feedback_validation")

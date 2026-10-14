@@ -3531,6 +3531,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     partition_feedback.add_argument("--routes", type=Path, required=True)
     partition_feedback.add_argument("--ratio-plan", type=Path, required=True)
+    partition_feedback.add_argument(
+        "--assignment",
+        type=Path,
+        help=(
+            "Phase 3 assignment required when routes bind a Static Exact "
+            "semantic contract"
+        ),
+    )
     partition_feedback.add_argument("--platform", type=Path, required=True)
     partition_feedback.add_argument("--output", "-o", type=Path, required=True)
     partition_feedback.add_argument("--optimizer")
@@ -6179,6 +6187,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             ratio_plan_path=args.ratio_plan,
             platform_path=args.platform,
             output_path=args.output,
+            assignment_path=args.assignment,
             executable=args.optimizer,
             pair_pressure_weight=args.pair_pressure_weight,
         )

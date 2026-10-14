@@ -1710,7 +1710,10 @@ release time, hop precedence, per-slot/lane capacity, and frame deadline. This
 avoids delaying a ready dependent cut behind thousands of unrelated transfers.
 The conservative two-window `route-round-capacity/v1` contract is retained
 only for legacy registered-boundary transport, where no exact dependency DAG
-exists.
+exists. Standalone `partition-feedback` runs over Static Exact routes must pass
+`--assignment`; Phase 4 stores only the contract digest, and feedback resolves
+the authoritative contract from Phase 3 rather than duplicating it in every
+route artifact.
 
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
 gate. Its default public VTR mapping preserves multiplier and synchronous
