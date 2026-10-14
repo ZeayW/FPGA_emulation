@@ -1124,9 +1124,133 @@ class Router {
       master_exact_ = true;
       return;
     }
+    // No complete generator column is guaranteed to be capacity legal on a
+    // large instance.  This is especially common when independent transport
+    // rounds use separate, latency-adjusted capacity domains: one generator
+    // may route round 0 well while another is required for round 1.  The
+    // large master used to reject such an instance before it had a chance to
+    // combine columns.  Build a deterministic legal seed from the generated
+    // per-demand columns first, then run the existing objective-improvement
+    // sweeps below.
+    const std::string initial_large_generator =
+        master_selection_.empty() ? std::string{} : master_selection_.front();
     if (!capacity_legal()) {
-      throw std::runtime_error(
-          "large candidate master requires a legal initial solution");
+      using OverloadScore =
+          std::tuple<double, double, long long, int>;
+      const auto overload_score = [&]() {
+        double squared_normalized_excess = 0.0;
+        double maximum_normalized_excess = 0.0;
+        long long total_excess = 0;
+        int overloaded_domains = 0;
+        for (int domain = 0;
+             domain < static_cast<int>(usage_.size()); ++domain) {
+          const long long capacity = capacity_for_domain(domain);
+          if (usage_[domain] <= capacity) {
+            continue;
+          }
+          const long long excess = usage_[domain] - capacity;
+          const double normalized =
+              static_cast<double>(excess) / capacity;
+          squared_normalized_excess += normalized * normalized;
+          maximum_normalized_excess =
+              std::max(maximum_normalized_excess, normalized);
+          total_excess += excess;
+          ++overloaded_domains;
+        }
+        return OverloadScore{
+            squared_normalized_excess,
+            maximum_normalized_excess,
+            total_excess,
+            overloaded_domains};
+      };
+
+      bool seed_found = false;
+      Objective best_seed_objective;
+      std::vector<Route> best_seed_routes;
+      std::vector<long long> best_seed_usage;
+      std::vector<std::string> best_seed_selection;
+      int best_seed_sweeps = 0;
+      for (const Alternative& start : feasible_alternatives) {
+        routes_ = *start.routes;
+        master_selection_.assign(model_.demands.size(), start.generator);
+        std::fill(usage_.begin(), usage_.end(), 0);
+        for (int demand = 0;
+             demand < static_cast<int>(model_.demands.size()); ++demand) {
+          add_usage(routes_[demand], model_.demands[demand].width);
+        }
+        int completed_seed_sweeps = 0;
+        constexpr int kMaximumSeedSweeps = 16;
+        for (int sweep = 0;
+             sweep < kMaximumSeedSweeps && !capacity_legal(); ++sweep) {
+          const OverloadScore before = overload_score();
+          for (int demand : order) {
+            const Route original = routes_[demand];
+            add_usage(original, -model_.demands[demand].width);
+            bool have_choice = false;
+            Route best_route;
+            std::string best_generator;
+            std::tuple<OverloadScore, double, double, long long, int>
+                best_choice;
+            int generator_rank = 0;
+            for (const Alternative& alternative : feasible_alternatives) {
+              const Route& candidate = (*alternative.routes)[demand];
+              routes_[demand] = candidate;
+              add_usage(candidate, model_.demands[demand].width);
+              const auto choice = std::make_tuple(
+                  overload_score(),
+                  demand_tdm_delay(demand),
+                  candidate.max_delay_ns,
+                  static_cast<long long>(candidate.arcs.size()) *
+                      model_.demands[demand].width,
+                  generator_rank);
+              if (!have_choice || choice < best_choice) {
+                have_choice = true;
+                best_choice = choice;
+                best_route = candidate;
+                best_generator = alternative.generator;
+              }
+              add_usage(candidate, -model_.demands[demand].width);
+              ++generator_rank;
+            }
+            if (!have_choice) {
+              throw std::runtime_error(
+                  "large candidate master has no generated column");
+            }
+            routes_[demand] = best_route;
+            master_selection_[demand] = best_generator;
+            add_usage(best_route, model_.demands[demand].width);
+          }
+          ++completed_seed_sweeps;
+          if (overload_score() >= before) {
+            break;
+          }
+        }
+        if (!capacity_legal()) {
+          continue;
+        }
+        const Objective seed_objective = objective();
+        if (!seed_found || better(seed_objective, best_seed_objective)) {
+          seed_found = true;
+          best_seed_objective = seed_objective;
+          best_seed_routes = routes_;
+          best_seed_usage = usage_;
+          best_seed_selection = master_selection_;
+          best_seed_sweeps = completed_seed_sweeps;
+        }
+      }
+      if (!seed_found) {
+        throw std::runtime_error(
+            "large candidate master found no legal mixed-column seed");
+      }
+      routes_ = std::move(best_seed_routes);
+      usage_ = std::move(best_seed_usage);
+      master_selection_ = std::move(best_seed_selection);
+      master_rounds_ += best_seed_sweeps;
+      for (const std::string& generator : master_selection_) {
+        if (generator != initial_large_generator) {
+          ++master_switches_;
+        }
+      }
     }
     Objective global_best = objective();
     const int maximum_rounds = 8;
