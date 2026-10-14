@@ -1702,6 +1702,14 @@ otherwise partitionable design into one combinational atomic component.
 | Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
 | Hardware BSP | In-tree open PCS/runtime-sync RTL plus source-backed Arm MPS4 topology/pin inventory | Phase 6C derives channel/common quad topology and binds the open PCS to source-visible GTY recipes; the optional Vivado gate jointly routes DUT, TDM, PCS, sync, and GT, then feeds routed FPGA logic/boundary timing back into Phase 7C. Real refclk/reset binding, measured board-link/elastic-buffer latency, bitstream, and hardware qualification remain open gates |
 
+For Static Exact designs with both transport rounds, Phase 4 divides each
+physical capacity domain into the two latency-adjusted slot windows selected by
+one global round boundary. The native router therefore cannot return a route
+that fits only in aggregate frame bandwidth but is impossible for Phase 5 to
+schedule. `routes.json` carries a compact `route-round-capacity/v1` contract;
+the standalone Phase 4 validator reconstructs its per-domain/round loads and
+capacities from the route trees, BoardDB, and frame policy.
+
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
 gate. Its default public VTR mapping preserves multiplier and synchronous
 single/dual-port RAM hard blocks while mapping remaining logic to LUT6/FF. It

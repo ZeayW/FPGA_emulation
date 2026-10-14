@@ -127,6 +127,83 @@ class Phase4Test(unittest.TestCase):
         self.assertEqual(checked["demands"], 0)
         self.assertEqual(checked["total_link_bit_hops"], 0)
 
+    def test_native_router_seals_transport_round_capacity(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "round-capacity",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=2, latency=1)],
+            )
+        )
+        assignment = _assignment(
+            platform,
+            [(f"q{index}", "a", ["b"]) for index in range(4)]
+            + [(f"d{index}", "b", ["a"]) for index in range(2)],
+        )
+        for cut in assignment["cut_nets"]:
+            if cut["net"].startswith("d"):
+                cut["cut_class"] = "register_input"
+                cut["transport_round"] = 1
+        constraints = normalize_route_constraints(
+            None, platform, frame_slots=8
+        )
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            executable=str(tlr_router()),
+        )
+        checked = validate_native_system_routes(
+            assignment, platform, routes
+        )
+        contract = routes["round_capacity_contract"]
+        self.assertEqual(contract["source_ready_slot"], 4)
+        self.assertEqual(contract["active_rounds"], [0, 1])
+        self.assertEqual(checked["round_capacity_boundary"], 4)
+        self.assertLessEqual(checked["max_round_capacity_utilization"], 1.0)
+
+        corrupted = copy.deepcopy(routes)
+        corrupted["round_capacity_contract"]["domains"][0][
+            "used_bits"
+        ] += 1
+        with self.assertRaisesRegex(
+            ValidationError, "round_capacity_contract"
+        ):
+            validate_native_system_routes(assignment, platform, corrupted)
+
+        timing = compress_sta_paths(
+            normalize_sta_paths(
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "route_test",
+                    "paths": [
+                        {
+                            "id": f"path-{cut['net']}",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 100.0,
+                            "slack_ns": 90.0,
+                            "fixed_delay_ns": 0.0,
+                            "cut_nets": [cut["net"]],
+                        }
+                        for cut in assignment["cut_nets"]
+                    ],
+                },
+                demands_from_assignment(assignment, platform),
+            )
+        )
+        timing_routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            timing,
+            executable=str(tlr_router()),
+            provider=GLOBAL_CANDIDATE_PROVIDER,
+        )
+        timing_checked = validate_native_system_routes(
+            assignment, platform, timing_routes, timing
+        )
+        self.assertEqual(timing_checked["round_capacity_boundary"], 4)
+
     def test_path_compression_keeps_distinct_required_times(self) -> None:
         normalized = normalize_sta_paths(
             {

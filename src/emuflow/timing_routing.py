@@ -32,6 +32,7 @@ from .routing_candidates import (
     validate_route_candidate_pool,
 )
 from .routing_batches import build_route_refinement_batches
+from .tdm import RUNTIME_BARRIER_SLOTS
 
 
 STA_PATHS_SCHEMA = "emuflow.sta-paths/v1"
@@ -42,6 +43,269 @@ NATIVE_TIMING_EVALUATED_PROVIDER = (
 TLR_PROVIDER = "timing-aware-load-balanced-v1"
 ROUTE_TDM_PROVIDER = "timing-aware-route-tdm-cooptimized-v1"
 GLOBAL_CANDIDATE_PROVIDER = "timing-aware-global-candidate-v1"
+ROUND_CAPACITY_CONTRACT_SCHEMA = "emuflow.route-round-capacity/v1"
+
+
+def _round_available_slots(
+    frame_slots: int,
+    boundary: int,
+    latency_cycles: int,
+    transport_round: int,
+) -> int:
+    if transport_round == 0:
+        return boundary - latency_cycles
+    if transport_round == 1:
+        return (
+            frame_slots
+            - RUNTIME_BARRIER_SLOTS
+            - latency_cycles
+            - boundary
+        )
+    raise ValidationError(
+        "round-aware routing supports transport rounds 0 and 1"
+    )
+
+
+def _reference_round_usage(
+    demands: Sequence[Mapping[str, Any]],
+    adjacency: Mapping[str, Sequence[Mapping[str, Any]]],
+    platform: Platform,
+    constraints: Mapping[str, Any],
+) -> Dict[Tuple[str, int], int]:
+    """Build an uncongested reference load only for boundary ranking."""
+
+    usage: Dict[Tuple[str, int], int] = defaultdict(int)
+    for demand in demands:
+        source = demand["source"]
+        round_id = int(demand.get("transport_round", 0))
+        best: Dict[str, Tuple[float, Tuple[ArcKey, ...]]] = {
+            source: (0.0, ())
+        }
+        queue: List[Tuple[float, Tuple[ArcKey, ...], str]] = [
+            (0.0, (), source)
+        ]
+        while queue:
+            delay, path, node = heapq.heappop(queue)
+            if best.get(node) != (delay, path):
+                continue
+            for arc in adjacency.get(node, []):
+                key = _arc_key(arc["link"], node, arc["to"])
+                candidate = (
+                    delay
+                    + route_link_delay_ns(
+                        platform,
+                        arc["link"],
+                        node,
+                        arc["to"],
+                        constraints,
+                    ),
+                    (*path, key),
+                )
+                if candidate < best.get(arc["to"], (float("inf"), ())):
+                    best[arc["to"]] = candidate
+                    heapq.heappush(
+                        queue, (candidate[0], candidate[1], arc["to"])
+                    )
+        tree_edges = {
+            key for sink in demand["sinks"] for key in best[sink][1]
+        }
+        for key in tree_edges:
+            arc = next(
+                item
+                for item in adjacency[key[1]]
+                if _arc_key(item["link"], item["from"], item["to"])
+                == key
+            )
+            usage[(arc["capacity_key"], round_id)] += int(
+                demand["width_bits"]
+            )
+    return usage
+
+
+def _select_round_boundary(
+    demands: Sequence[Mapping[str, Any]],
+    adjacency: Mapping[str, Sequence[Mapping[str, Any]]],
+    capacities: Mapping[str, Mapping[str, Any]],
+    platform: Platform,
+    constraints: Mapping[str, Any],
+) -> int:
+    active_rounds = sorted(
+        {int(demand.get("transport_round", 0)) for demand in demands}
+    )
+    if active_rounds != [0, 1]:
+        raise ValidationError(
+            "round-aware routing requires transport rounds 0 and 1"
+        )
+    link_by_id = {link.id: link for link in platform.links}
+    frame_slots = int(constraints["frame_slots"])
+    maximum_latency = max(
+        link_by_id[capacity["link"]].latency_cycles
+        for capacity in capacities.values()
+    )
+    first = maximum_latency + 1
+    last = (
+        frame_slots
+        - RUNTIME_BARRIER_SLOTS
+        - maximum_latency
+        - 1
+    )
+    if first > last:
+        raise ValidationError(
+            "round-aware routing has no legal global round boundary"
+        )
+    reference_usage = _reference_round_usage(
+        demands, adjacency, platform, constraints
+    )
+    midpoint = (first + last) / 2.0
+
+    def score(boundary: int) -> Tuple[int, float, float, float, float]:
+        overloaded = 0
+        maximum_excess = 0.0
+        total_excess = 0.0
+        maximum_utilization = 0.0
+        for key, capacity in capacities.items():
+            link = link_by_id[capacity["link"]]
+            for round_id in active_rounds:
+                slots = _round_available_slots(
+                    frame_slots,
+                    boundary,
+                    link.latency_cycles,
+                    round_id,
+                )
+                available = (
+                    capacity["capacity_bits"]
+                    if capacity["link"] in constraints["sll_links"]
+                    else link.transport_bits_per_cycle_per_direction * slots
+                )
+                used = reference_usage.get((key, round_id), 0)
+                utilization = used / available
+                maximum_utilization = max(maximum_utilization, utilization)
+                if used > available:
+                    overloaded += 1
+                    excess = (used - available) / available
+                    maximum_excess = max(maximum_excess, excess)
+                    total_excess += excess
+        return (
+            overloaded,
+            maximum_excess,
+            total_excess,
+            maximum_utilization,
+            abs(boundary - midpoint),
+        )
+
+    return min(range(first, last + 1), key=lambda item: (score(item), item))
+
+
+def _validate_round_capacity_contract(
+    routes: Mapping[str, Any],
+    platform: Platform,
+    constraints: Mapping[str, Any],
+) -> Dict[str, Any]:
+    active_rounds = sorted(
+        {
+            int(route.get("transport_round", 0))
+            for route in routes.get("routes", [])
+        }
+    )
+    contract = routes.get("round_capacity_contract")
+    if active_rounds != [0, 1]:
+        if contract is not None:
+            raise ValidationError(
+                "routes.round_capacity_contract is only valid for rounds 0/1"
+            )
+        return {}
+    if not isinstance(contract, dict):
+        raise ValidationError(
+            "routes.round_capacity_contract is required for rounds 0/1"
+        )
+    boundary = contract.get("source_ready_slot")
+    if isinstance(boundary, bool) or not isinstance(boundary, int):
+        raise ValidationError(
+            "routes.round_capacity_contract.source_ready_slot is invalid"
+        )
+    _, arcs, capacities = build_directed_graph(platform, constraints)
+    link_by_id = {link.id: link for link in platform.links}
+    maximum_latency = max(
+        link_by_id[capacity["link"]].latency_cycles
+        for capacity in capacities.values()
+    )
+    if not (
+        maximum_latency + 1
+        <= boundary
+        <= int(constraints["frame_slots"])
+        - RUNTIME_BARRIER_SLOTS
+        - maximum_latency
+        - 1
+    ):
+        raise ValidationError(
+            "routes.round_capacity_contract has an illegal round boundary"
+        )
+    usage: Dict[Tuple[str, int], int] = defaultdict(int)
+    for route in routes["routes"]:
+        round_id = int(route.get("transport_round", 0))
+        width = int(route["width_bits"])
+        for edge in route["tree_edges"]:
+            arc = arcs[_arc_key(edge["link"], edge["from"], edge["to"])]
+            usage[(arc["capacity_key"], round_id)] += width
+    expected_domains = []
+    for capacity_key in sorted(capacities):
+        capacity = capacities[capacity_key]
+        link = link_by_id[capacity["link"]]
+        for round_id in active_rounds:
+            available_slots = _round_available_slots(
+                int(constraints["frame_slots"]),
+                boundary,
+                link.latency_cycles,
+                round_id,
+            )
+            capacity_bits = (
+                capacity["capacity_bits"]
+                if capacity["link"] in constraints["sll_links"]
+                else link.transport_bits_per_cycle_per_direction
+                * available_slots
+            )
+            used_bits = usage[(capacity_key, round_id)]
+            if used_bits > capacity_bits:
+                raise ValidationError(
+                    "routes exceed transport-round capacity for "
+                    f"{capacity_key!r} round {round_id}: "
+                    f"{used_bits} > {capacity_bits}"
+                )
+            expected_domains.append(
+                {
+                    "key": capacity_key,
+                    "link": capacity["link"],
+                    "direction": capacity["direction"],
+                    "transport_round": round_id,
+                    "latency_cycles": link.latency_cycles,
+                    "lanes": link.transport_bits_per_cycle_per_direction,
+                    "available_slots": available_slots,
+                    "capacity_bits": capacity_bits,
+                    "used_bits": used_bits,
+                    "utilization": used_bits / capacity_bits,
+                }
+            )
+    expected = {
+        "schema": ROUND_CAPACITY_CONTRACT_SCHEMA,
+        "frame_slots": int(constraints["frame_slots"]),
+        "barrier_slots": RUNTIME_BARRIER_SLOTS,
+        "source_ready_slot": boundary,
+        "active_rounds": active_rounds,
+        "domains": expected_domains,
+    }
+    if contract != expected:
+        raise ValidationError(
+            "routes.round_capacity_contract does not match independent "
+            "reconstruction"
+        )
+    return {
+        "round_capacity_boundary": boundary,
+        "round_capacity_domains": len(expected_domains),
+        "max_round_capacity_utilization": max(
+            (record["utilization"] for record in expected_domains),
+            default=0.0,
+        ),
+    }
 
 
 def _number(value: Any, context: str, *, positive: bool = False) -> float:
@@ -466,39 +730,92 @@ def _prepare_native_model(
     adjacency, arcs_by_key, capacities = build_directed_graph(
         platform, constraints
     )
-    nodes = sorted(fpga.id for fpga in platform.fpgas)
-    node_index = {node: index for index, node in enumerate(nodes)}
-    capacity_keys = sorted(capacities)
+    physical_nodes = sorted(fpga.id for fpga in platform.fpgas)
+    active_rounds = sorted(
+        {int(demand.get("transport_round", 0)) for demand in demands}
+    )
+    layered_rounds = active_rounds == [0, 1]
+    round_boundary = (
+        _select_round_boundary(
+            demands, adjacency, capacities, platform, constraints
+        )
+        if layered_rounds
+        else None
+    )
+    node_layers: List[Optional[int]] = (
+        list(active_rounds) if layered_rounds else [None]
+    )
+    nodes = [
+        f"round{round_id}:{node}" if round_id is not None else node
+        for round_id in node_layers
+        for node in physical_nodes
+    ]
+    node_index = {
+        (round_id, node): index
+        for index, (round_id, node) in enumerate(
+            (round_id, node)
+            for round_id in node_layers
+            for node in physical_nodes
+        )
+    }
+    physical_capacity_keys = sorted(capacities)
+    native_capacity_keys = [
+        (key, round_id)
+        for round_id in node_layers
+        for key in physical_capacity_keys
+    ]
     capacity_index = {
-        key: index for index, key in enumerate(capacity_keys)
+        key: index for index, key in enumerate(native_capacity_keys)
     }
     link_index = {
         link.id: index
         for index, link in enumerate(sorted(platform.links, key=lambda x: x.id))
     }
 
-    ordered_arc_keys = sorted(arcs_by_key)
+    physical_arc_keys = sorted(arcs_by_key)
+    ordered_arc_keys = [
+        (round_id, key)
+        for round_id in node_layers
+        for key in physical_arc_keys
+    ]
     arc_index = {key: index for index, key in enumerate(ordered_arc_keys)}
     direction_group_by_link = {}
     for link in sorted(platform.links, key=lambda item: item.id):
         if link.direction == "half_duplex":
             direction_group_by_link[link.id] = len(direction_group_by_link)
     sll_links = set(constraints.get("sll_links", []))
+    link_by_id = {link.id: link for link in platform.links}
     native_arcs = []
-    for index, key in enumerate(ordered_arc_keys):
+    for index, (round_id, key) in enumerate(ordered_arc_keys):
         arc = arcs_by_key[key]
-        link = next(link for link in platform.links if link.id == arc["link"])
-        opposite_key = _arc_key(link.id, arc["to"], arc["from"])
+        link = link_by_id[arc["link"]]
+        opposite_key = (
+            round_id,
+            _arc_key(link.id, arc["to"], arc["from"]),
+        )
+        capacity_bits = capacities[arc["capacity_key"]]["capacity_bits"]
+        if layered_rounds and link.id not in sll_links:
+            capacity_bits = (
+                link.transport_bits_per_cycle_per_direction
+                * _round_available_slots(
+                    int(constraints["frame_slots"]),
+                    int(round_boundary),
+                    link.latency_cycles,
+                    int(round_id),
+                )
+            )
         native_arcs.append(
             {
                 "index": index,
                 "link_index": link_index[link.id],
-                "from": node_index[arc["from"]],
-                "to": node_index[arc["to"]],
-                "capacity_domain": capacity_index[arc["capacity_key"]],
+                "from": node_index[(round_id, arc["from"])],
+                "to": node_index[(round_id, arc["to"])],
+                "capacity_domain": capacity_index[
+                    (arc["capacity_key"], round_id)
+                ],
                 "direction_group": direction_group_by_link.get(link.id, -1),
                 "opposite_arc": arc_index.get(opposite_key, -1),
-                "capacity": capacities[arc["capacity_key"]]["capacity_bits"],
+                "capacity": capacity_bits,
                 "lanes": link.transport_bits_per_cycle_per_direction,
                 "delay_ns": route_link_delay_ns(
                     platform,
@@ -532,11 +849,19 @@ def _prepare_native_model(
         normalized_slack = min(
             (path["normalized_slack"] for path in related), default=1.0
         )
+        demand_round = (
+            int(demand.get("transport_round", 0))
+            if layered_rounds
+            else None
+        )
         native_demands.append(
             {
                 "index": index,
-                "source": node_index[demand["source"]],
-                "sinks": [node_index[sink] for sink in demand["sinks"]],
+                "source": node_index[(demand_round, demand["source"])],
+                "sinks": [
+                    node_index[(demand_round, sink)]
+                    for sink in demand["sinks"]
+                ],
                 "width": demand["width_bits"],
                 "normalized_slack": normalized_slack,
                 "predicted_delay_ns": _static_predicted_delay(
@@ -563,11 +888,25 @@ def _prepare_native_model(
         )
     return nodes, {
         "demands": demands,
-        "arc_keys": ordered_arc_keys,
+        "arc_keys": [key for _round_id, key in ordered_arc_keys],
+        "arc_rounds": [round_id for round_id, _key in ordered_arc_keys],
         "arcs": native_arcs,
         "paths": native_paths,
         "native_demands": native_demands,
-        "capacity_keys": capacity_keys,
+        "capacity_keys": [
+            (
+                key
+                if round_id is None
+                else f"{key}@transport-round-{round_id}"
+            )
+            for key, round_id in native_capacity_keys
+        ],
+        "capacity_physical_keys": [
+            key for key, _round_id in native_capacity_keys
+        ],
+        "physical_capacity_keys": physical_capacity_keys,
+        "active_rounds": active_rounds,
+        "round_boundary": round_boundary,
         "normalization": normalized_timing["normalization"],
     }
 
@@ -693,7 +1032,9 @@ def _write_native_input(
                 f"{demand['predicted_delay_ns']:.17g}\n"
             )
         if feedback_prices is not None:
-            for index, capacity_key in enumerate(model["capacity_keys"]):
+            for index, capacity_key in enumerate(
+                model["capacity_physical_keys"]
+            ):
                 stream.write(
                     f"PRICE {index} {feedback_prices[capacity_key]:.17g}\n"
                 )
@@ -1021,7 +1362,7 @@ def route_system_native(
             ):
                 raise ValidationError("TDM feedback domain price is invalid")
             feedback_prices[domain["key"]] = float(domain["routing_price"])
-        if set(feedback_prices) != set(model["capacity_keys"]):
+        if set(feedback_prices) != set(model["physical_capacity_keys"]):
             raise ValidationError(
                 "TDM feedback capacity-domain coverage is not exact"
             )
@@ -1062,6 +1403,7 @@ def route_system_native(
     _, arcs, capacities = build_directed_graph(platform, constraints)
     routes = []
     usage = {key: 0 for key in capacities}
+    round_usage: Dict[Tuple[str, int], int] = defaultdict(int)
     maximum_observed_hops = 0
     for demand_index, demand in enumerate(model["demands"]):
         native_route = native["routes"].pop(demand_index)
@@ -1070,6 +1412,12 @@ def route_system_native(
         ]
         for key in edge_keys:
             usage[arcs[key]["capacity_key"]] += demand["width_bits"]
+            round_usage[
+                (
+                    arcs[key]["capacity_key"],
+                    int(demand.get("transport_round", 0)),
+                )
+            ] += demand["width_bits"]
         route = {
             **demand,
             "tree_edges": [
@@ -1173,9 +1521,30 @@ def route_system_native(
         # artifact and release the native candidate table before constructing
         # the canonical routes/timing payload.
         native["candidates"].clear()
+    physical_arc_index = {
+        key: index for index, key in enumerate(sorted(arcs))
+    }
+    route_signature_by_net = {
+        route["net"]: sorted(
+            physical_arc_index[
+                _arc_key(edge["link"], edge["from"], edge["to"])
+            ]
+            for edge in route["tree_edges"]
+        )
+        for route in routes
+    }
     timing_records = []
     if timing_paths is not None:
         for index, path in enumerate(timing_paths["paths"]):
+            native_timing = native["timing"].pop(index)
+            native_timing["route_signature"] = (
+                ",".join(
+                    str(arc)
+                    for net in path["cut_nets"]
+                    for arc in route_signature_by_net[net]
+                )
+                or "-"
+            )
             timing_records.append(
                 {
                     "path": path["id"],
@@ -1193,7 +1562,7 @@ def route_system_native(
                         if "cut_transitions" in path
                         else {}
                     ),
-                    **native["timing"].pop(index),
+                    **native_timing,
                 }
             )
     model["paths"].clear()
@@ -1271,6 +1640,48 @@ def route_system_native(
             else {}
         ),
     }
+    if model["round_boundary"] is not None:
+        link_by_id = {link.id: link for link in platform.links}
+        round_domains = []
+        for capacity_key in model["physical_capacity_keys"]:
+            capacity = capacities[capacity_key]
+            link = link_by_id[capacity["link"]]
+            for round_id in model["active_rounds"]:
+                available_slots = _round_available_slots(
+                    int(constraints["frame_slots"]),
+                    int(model["round_boundary"]),
+                    link.latency_cycles,
+                    round_id,
+                )
+                capacity_bits = (
+                    capacity["capacity_bits"]
+                    if capacity["link"] in constraints["sll_links"]
+                    else link.transport_bits_per_cycle_per_direction
+                    * available_slots
+                )
+                used_bits = round_usage[(capacity_key, round_id)]
+                round_domains.append(
+                    {
+                        "key": capacity_key,
+                        "link": capacity["link"],
+                        "direction": capacity["direction"],
+                        "transport_round": round_id,
+                        "latency_cycles": link.latency_cycles,
+                        "lanes": link.transport_bits_per_cycle_per_direction,
+                        "available_slots": available_slots,
+                        "capacity_bits": capacity_bits,
+                        "used_bits": used_bits,
+                        "utilization": used_bits / capacity_bits,
+                    }
+                )
+        result["round_capacity_contract"] = {
+            "schema": ROUND_CAPACITY_CONTRACT_SCHEMA,
+            "frame_slots": int(constraints["frame_slots"]),
+            "barrier_slots": RUNTIME_BARRIER_SLOTS,
+            "source_ready_slot": int(model["round_boundary"]),
+            "active_rounds": model["active_rounds"],
+            "domains": round_domains,
+        }
     if provider == GLOBAL_CANDIDATE_PROVIDER:
         batch_certificate = build_route_refinement_batches(
             assignment, platform, candidate_pool, timing_paths
@@ -1406,16 +1817,23 @@ def reconstruct_system_route_timing(
     arc_index = {key: index for index, key in enumerate(ordered_arc_keys)}
     route_delay_by_net = {}
     route_signature_by_net = {}
-    capacity_usage = {key: 0 for key in capacities}
+    round_aware = sorted(
+        {int(route.get("transport_round", 0)) for route in routes["routes"]}
+    ) == [0, 1]
+    capacity_usage: Dict[Any, int] = defaultdict(int)
     for route in routes["routes"]:
         graph: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
         signature = []
         for edge in route["tree_edges"]:
             key = _arc_key(edge["link"], edge["from"], edge["to"])
             graph[edge["from"]].append((edge["to"], edge["link"]))
-            capacity_usage[arcs[key]["capacity_key"]] += int(
-                route["width_bits"]
-            )
+            capacity_key: Any = arcs[key]["capacity_key"]
+            if round_aware:
+                capacity_key = (
+                    capacity_key,
+                    int(route.get("transport_round", 0)),
+                )
+            capacity_usage[capacity_key] += int(route["width_bits"])
             signature.append(arc_index[key])
         delay_by_node = {route["source"]: 0.0}
         queue = deque([route["source"]])
@@ -1434,13 +1852,24 @@ def reconstruct_system_route_timing(
         )
         route_signature_by_net[route["net"]] = sorted(signature)
 
-    ratios = {}
-    for key, capacity in capacities.items():
+    ratios: Dict[Any, int] = {}
+    ratio_keys = (
+        [
+            (key, round_id)
+            for key in capacities
+            for round_id in (0, 1)
+        ]
+        if round_aware
+        else list(capacities)
+    )
+    for ratio_key in ratio_keys:
+        key = ratio_key[0] if round_aware else ratio_key
+        capacity = capacities[key]
         lanes = link_by_id[
             capacity["link"]
         ].transport_bits_per_cycle_per_direction
-        signals = capacity_usage[key]
-        ratios[key] = estimate_tdm_ratio(
+        signals = capacity_usage[ratio_key]
+        ratios[ratio_key] = estimate_tdm_ratio(
             signals,
             lanes,
             constraints,
@@ -1452,11 +1881,17 @@ def reconstruct_system_route_timing(
         graph: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
         for edge in route["tree_edges"]:
             key = _arc_key(edge["link"], edge["from"], edge["to"])
+            capacity_key: Any = arcs[key]["capacity_key"]
+            if round_aware:
+                capacity_key = (
+                    capacity_key,
+                    int(route.get("transport_round", 0)),
+                )
             graph[edge["from"]].append(
                 (
                     edge["to"],
                     edge["link"],
-                    arcs[key]["capacity_key"],
+                    capacity_key,
                 )
             )
         delay_by_node = {route["source"]: 0.0}
@@ -1495,9 +1930,22 @@ def reconstruct_system_route_timing(
                     )
                     * (
                         ratios[
-                            arcs[
+                            (
+                                arcs[
+                                    _arc_key(
+                                        edge["link"],
+                                        edge["from"],
+                                        edge["to"],
+                                    )
+                                ]["capacity_key"],
+                                int(route.get("transport_round", 0)),
+                            )
+                            if round_aware
+                            else arcs[
                                 _arc_key(
-                                    edge["link"], edge["from"], edge["to"]
+                                    edge["link"],
+                                    edge["from"],
+                                    edge["to"],
                                 )
                             ]["capacity_key"]
                         ]
@@ -1819,6 +2267,9 @@ def validate_native_system_routes(
     constraints = normalize_route_constraints(
         routes.get("constraints"), platform
     )
+    round_capacity_validation = _validate_round_capacity_contract(
+        routes, platform, constraints
+    )
     route_delay_by_net = {}
     route_by_net = {}
     ordered_arc_keys = sorted(
@@ -1871,26 +2322,47 @@ def validate_native_system_routes(
             "provider": provider,
             "direction_locks": len(lock_by_link),
             "predicted_delay_check": "pass",
+            **round_capacity_validation,
         }
 
     # Independently reconstruct the route/TDM co-optimization proxy used by
     # the native router.  This is deliberately separate from native output:
     # a corrupt or incorrectly implemented optimizer cannot self-certify.
     _, arcs, capacities = build_directed_graph(platform, constraints)
-    capacity_usage = {key: 0 for key in capacities}
+    round_aware = sorted(
+        {int(route.get("transport_round", 0)) for route in routes["routes"]}
+    ) == [0, 1]
+    capacity_usage: Dict[Any, int] = defaultdict(int)
     for route in routes["routes"]:
         width = int(route["width_bits"])
         for edge in route["tree_edges"]:
             key = _arc_key(edge["link"], edge["from"], edge["to"])
-            capacity_usage[arcs[key]["capacity_key"]] += width
+            capacity_key: Any = arcs[key]["capacity_key"]
+            if round_aware:
+                capacity_key = (
+                    capacity_key,
+                    int(route.get("transport_round", 0)),
+                )
+            capacity_usage[capacity_key] += width
     link_by_id = {link.id: link for link in platform.links}
-    ratios = {}
-    for key, capacity in capacities.items():
+    ratios: Dict[Any, int] = {}
+    ratio_keys = (
+        [
+            (key, round_id)
+            for key in capacities
+            for round_id in (0, 1)
+        ]
+        if round_aware
+        else list(capacities)
+    )
+    for ratio_key in ratio_keys:
+        key = ratio_key[0] if round_aware else ratio_key
+        capacity = capacities[key]
         lanes = link_by_id[
             capacity["link"]
         ].transport_bits_per_cycle_per_direction
-        signals = capacity_usage[key]
-        ratios[key] = estimate_tdm_ratio(
+        signals = capacity_usage[ratio_key]
+        ratios[ratio_key] = estimate_tdm_ratio(
             signals,
             lanes,
             constraints,
@@ -1901,8 +2373,14 @@ def validate_native_system_routes(
         graph: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
         for edge in route["tree_edges"]:
             key = _arc_key(edge["link"], edge["from"], edge["to"])
+            capacity_key: Any = arcs[key]["capacity_key"]
+            if round_aware:
+                capacity_key = (
+                    capacity_key,
+                    int(route.get("transport_round", 0)),
+                )
             graph[edge["from"]].append(
-                (edge["to"], edge["link"], arcs[key]["capacity_key"])
+                (edge["to"], edge["link"], capacity_key)
             )
         delay_by_node = {route["source"]: 0.0}
         queue = deque([route["source"]])
@@ -1936,9 +2414,22 @@ def validate_native_system_routes(
                     )
                     * (
                         ratios[
-                            arcs[
+                            (
+                                arcs[
+                                    _arc_key(
+                                        edge["link"],
+                                        edge["from"],
+                                        edge["to"],
+                                    )
+                                ]["capacity_key"],
+                                int(route.get("transport_round", 0)),
+                            )
+                            if round_aware
+                            else arcs[
                                 _arc_key(
-                                    edge["link"], edge["from"], edge["to"]
+                                    edge["link"],
+                                    edge["from"],
+                                    edge["to"],
                                 )
                             ]["capacity_key"]
                         ]
@@ -2128,4 +2619,5 @@ def validate_native_system_routes(
         "direction_locks": len(locks),
         "accepted_reroutes": metrics.get("accepted_reroutes"),
         "rolled_back_reroutes": metrics.get("rolled_back_reroutes"),
+        **round_capacity_validation,
     }

@@ -30,9 +30,13 @@ def build_route_refinement_batches(
         }:
             continue
         index = demand_index[candidate["demand_id"]]
+        transport_round = int(candidate.get("transport_round", 0))
         for edge in candidate["tree_edges"]:
             key = _arc_key(edge["link"], edge["from"], edge["to"])
-            domains_by_demand[index].add(arcs[key]["capacity_key"])
+            domains_by_demand[index].add(
+                f"{arcs[key]['capacity_key']}@transport-round-"
+                f"{transport_round}"
+            )
 
     net_to_demand = {demand["net"]: index for index, demand in enumerate(demands)}
     paths_by_demand: Dict[int, Set[int]] = defaultdict(set)
