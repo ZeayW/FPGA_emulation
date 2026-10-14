@@ -1238,9 +1238,122 @@ class Router {
           best_seed_sweeps = completed_seed_sweeps;
         }
       }
+      // The fixed column pool can still be insufficient: negotiated
+      // congestion may produce six globally overloaded columns even though
+      // the underlying graph has a legal routing.  In that case construct a
+      // fresh column demand by demand while treating exhausted capacity
+      // domains as unreachable.  Multiple deterministic orders avoid making
+      // the result depend on one unlucky greedy prefix.
+      if (!seed_found) {
+        std::vector<std::vector<int>> residual_orders;
+        residual_orders.push_back(order);
+        residual_orders.emplace_back(order.rbegin(), order.rend());
+        std::vector<int> by_size(model_.demands.size());
+        std::iota(by_size.begin(), by_size.end(), 0);
+        std::stable_sort(
+            by_size.begin(), by_size.end(), [&](int left, int right) {
+              const Demand& lhs = model_.demands[left];
+              const Demand& rhs = model_.demands[right];
+              const long long left_size =
+                  static_cast<long long>(lhs.width) * lhs.sinks.size();
+              const long long right_size =
+                  static_cast<long long>(rhs.width) * rhs.sinks.size();
+              if (left_size != right_size) {
+                return left_size > right_size;
+              }
+              return left < right;
+            });
+        residual_orders.push_back(std::move(by_size));
+        std::vector<int> by_index(model_.demands.size());
+        std::iota(by_index.begin(), by_index.end(), 0);
+        residual_orders.push_back(by_index);
+        residual_orders.emplace_back(by_index.rbegin(), by_index.rend());
+        for (int numerator : {1, 2, 3}) {
+          std::vector<int> rotated = order;
+          const std::size_t offset =
+              rotated.size() * static_cast<std::size_t>(numerator) / 4;
+          std::rotate(
+              rotated.begin(), rotated.begin() + offset, rotated.end());
+          residual_orders.push_back(std::move(rotated));
+        }
+
+        const std::vector<double> residual_history = history_;
+        for (const std::vector<int>& residual_order : residual_orders) {
+          std::fill(usage_.begin(), usage_.end(), 0);
+          history_ = residual_history;
+          master_selection_.assign(model_.demands.size(), "");
+          bool complete = true;
+          for (int demand : residual_order) {
+            std::vector<std::pair<int, double>> blocked_history;
+            for (int domain = 0;
+                 domain < static_cast<int>(usage_.size()); ++domain) {
+              if (usage_[domain] + model_.demands[demand].width >
+                  capacity_for_domain(domain)) {
+                blocked_history.push_back({domain, history_[domain]});
+                history_[domain] = kInf;
+              }
+            }
+            bool have_choice = false;
+            Route best_route;
+            std::string best_generator;
+            std::tuple<double, double, long long, int> best_choice;
+            int generator_rank = 0;
+            for (const Alternative& alternative : feasible_alternatives) {
+              try {
+                const Route candidate = route_for_generator(
+                    demand, alternative.generator, {});
+                routes_[demand] = candidate;
+                add_usage(candidate, model_.demands[demand].width);
+                if (capacity_legal()) {
+                  const auto choice = std::make_tuple(
+                      demand_tdm_delay(demand),
+                      candidate.max_delay_ns,
+                      static_cast<long long>(candidate.arcs.size()) *
+                          model_.demands[demand].width,
+                      generator_rank);
+                  if (!have_choice || choice < best_choice) {
+                    have_choice = true;
+                    best_choice = choice;
+                    best_route = candidate;
+                    best_generator = alternative.generator;
+                  }
+                }
+                add_usage(candidate, -model_.demands[demand].width);
+              } catch (const std::runtime_error&) {
+                // This generator cannot span the demand without entering an
+                // already exhausted capacity domain; try the next one.
+              }
+              ++generator_rank;
+            }
+            for (const auto& [domain, value] : blocked_history) {
+              history_[domain] = value;
+            }
+            if (!have_choice) {
+              complete = false;
+              break;
+            }
+            routes_[demand] = best_route;
+            master_selection_[demand] = best_generator;
+            add_usage(best_route, model_.demands[demand].width);
+          }
+          if (!complete || !capacity_legal()) {
+            continue;
+          }
+          const Objective seed_objective = objective();
+          if (!seed_found || better(seed_objective, best_seed_objective)) {
+            seed_found = true;
+            best_seed_objective = seed_objective;
+            best_seed_routes = routes_;
+            best_seed_usage = usage_;
+            best_seed_selection = master_selection_;
+            best_seed_sweeps = 1;
+          }
+        }
+        history_ = residual_history;
+      }
       if (!seed_found) {
         throw std::runtime_error(
-            "large candidate master found no legal mixed-column seed");
+            "large candidate master found no legal residual-capacity seed");
       }
       routes_ = std::move(best_seed_routes);
       usage_ = std::move(best_seed_usage);
@@ -1277,6 +1390,18 @@ class Router {
         // not improve.
         bool found_local = false;
         std::tuple<double, double, long long, int> best_local;
+        routes_[demand] = original;
+        add_usage(original, model_.demands[demand].width);
+        if (capacity_legal()) {
+          found_local = true;
+          best_local = std::make_tuple(
+              demand_tdm_delay(demand),
+              original.max_delay_ns,
+              static_cast<long long>(original.arcs.size()) *
+                  model_.demands[demand].width,
+              -1);
+        }
+        add_usage(original, -model_.demands[demand].width);
         int generator_rank = 0;
         for (const Alternative& alternative : alternatives) {
           if (!alternative.generated ||
