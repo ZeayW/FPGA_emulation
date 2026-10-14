@@ -1662,6 +1662,14 @@ returns only after Phase 7/7C passes. A separate `multi-fpga validate` is an
 explicit offline forensic audit; routine one-shot validation does not reread,
 rehash, and replay the just-completed flow. A non-vacuous promotion run still
 requires at least one real combinational cut in its terminal evidence.
+The legacy `experiment-stage *-run` producers follow the same single-pass
+rule: after atomically writing their result they return without invoking the
+matching `*-validate` command and reloading the just-produced graph. Their
+standalone validators remain available as explicit independent gates, and the
+canonical managed experiment definitions already schedule those validators as
+separate nodes. A producer plus an explicitly requested validator therefore
+performs one independent validation, not an implicit producer replay followed
+by a second validation.
 The shared slot-edge convention, semantic contract, fail-closed policy, and
 Phase 3--7 acceptance sequence are specified in
 [Static exact combinational-cut mode](docs/STATIC_EXACT_COMBINATIONAL_CUT.md).

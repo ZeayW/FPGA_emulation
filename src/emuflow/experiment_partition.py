@@ -426,51 +426,6 @@ def run_partition_checkpoint(
     write_json(
         output_dir / "experiment-partition-report.json", report, compact=True
     )
-    if not managed_dag_node:
-        validate_partition_checkpoint(
-            frontend_root,
-            timing_root,
-            platform_path,
-            output_dir,
-            constraints_path=constraints_path,
-            route_constraints_path=route_constraints_path,
-            tritonpart_solution=tritonpart_solution,
-            expected_provider=provider,
-            expected_seed=seed,
-            expected_seed_attempts=seed_attempts,
-            expected_repair_balance=repair_balance,
-            expected_mfspart_post_refinement=mfspart_post_refinement,
-            expected_mfspart_post_refinement_early_stop=(
-                mfspart_post_refinement_early_stop
-            ),
-            expected_mfspart_post_refinement_bottleneck_beta=(
-                mfspart_post_refinement_bottleneck_beta
-            ),
-            expected_mfspart_post_refinement_timing_path_beta=(
-                mfspart_post_refinement_timing_path_beta
-            ),
-            expected_cut_mode=cut_mode,
-            expected_max_cross_fpga_dependency_depth=(
-                max_cross_fpga_dependency_depth
-            ),
-            expected_minimum_combinational_cut_nets=(
-                minimum_combinational_cut_nets
-            ),
-            patron_initial_assignment_path=patron_initial_assignment_path,
-            patron_initial_clusters_path=patron_initial_clusters_path,
-            expected_patron_flow_refinement=patron_flow_refinement,
-            expected_patron_algorithm_version=patron_algorithm_version,
-            expected_patron_max_moves=patron_max_moves,
-            patron_physical_system_timing_path=(
-                patron_physical_system_timing_path
-            ),
-            expected_patron_physical_feedback_scale=(
-                patron_physical_feedback_scale
-            ),
-            expected_static_exact_candidate_policy=(
-                static_exact_candidate_policy
-            ),
-        )
     return report
 
 

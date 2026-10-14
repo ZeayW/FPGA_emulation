@@ -550,10 +550,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 build_qualification.call_args.args[:3],
                 (ir_value, assignment_value, database_value),
             )
-            self.assertEqual(
-                _validate_cut.call_args.args[:3],
-                (frontend, timing, partition),
-            )
+            _validate_cut.assert_not_called()
 
     def test_cut_timing_projection_provenance_is_relocation_portable(
         self,

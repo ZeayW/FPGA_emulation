@@ -930,16 +930,6 @@ def _finish_physical_lookahead(
             }
         )
     write_json(output_dir / "experiment-lookahead-report.json", report)
-    if not managed_dag_node:
-        validate_physical_lookahead(
-            output_dir,
-            shared_root,
-            baseline_phase6_root,
-            platform_path,
-            reuse_validated_phase6_equivalence=reuse_validated_phase6_equivalence,
-            _validation_session=session,
-            _physical_report=physical,
-        )
     return report
 
 
@@ -1297,15 +1287,6 @@ def run_phase6_checkpoint(
             }
         )
     write_json(output_dir / "experiment-phase6-report.json", report)
-    if not managed_dag_node:
-        validate_phase6_checkpoint(
-            output_dir,
-            shared_root,
-            lookahead_root,
-            platform_path,
-            validation_mode="producer-self-check",
-            _validation_session=session,
-        )
     return report
 
 
@@ -1569,17 +1550,6 @@ def run_phase7_checkpoint(
             }
         )
     write_json(output_dir / "experiment-phase7-report.json", report)
-    if not managed_dag_node:
-        validate_phase7_checkpoint(
-            output_dir,
-            shared_root,
-            lookahead_root,
-            phase6_root,
-            platform_path,
-            reuse_validated_phase6_equivalence=reuse_validated_phase6_equivalence,
-            replay_qor=False,
-            _validation_session=session,
-        )
     return report
 
 

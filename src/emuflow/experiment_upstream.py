@@ -356,8 +356,6 @@ def run_frontend_checkpoint(
             }
         )
     write_json(output_dir / "experiment-frontend-report.json", report)
-    if not managed_dag_node:
-        validate_frontend_checkpoint(output_dir, platform_path)
     return report
 
 
@@ -526,8 +524,6 @@ def run_timing_checkpoint(
             }
         )
     write_json(output_dir / "experiment-timing-report.json", report)
-    if not managed_dag_node:
-        validate_timing_checkpoint(frontend_root, output_dir)
     return report
 
 
@@ -687,15 +683,6 @@ def run_cut_timing_checkpoint(
             }
         )
     write_json(output_dir / "experiment-cut-timing-report.json", report)
-    if not managed_dag_node:
-        validate_cut_timing_checkpoint(
-            frontend_root,
-            timing_root,
-            partition_root,
-            output_dir,
-            timing_model_path=timing_model_path,
-            architecture_timing_db_path=architecture_timing_db_path,
-        )
     return report
 
 
@@ -870,14 +857,6 @@ def run_route_checkpoint(
             }
         )
     write_json(output_dir / "experiment-route-report.json", report)
-    if not managed_dag_node:
-        validate_route_checkpoint(
-            partition_root,
-            cut_timing_root,
-            platform_path,
-            output_dir,
-            constraints_path=constraints_path,
-        )
     return report
 
 
@@ -1012,10 +991,6 @@ def run_tdm_checkpoint(
             }
         )
     write_json(output_dir / "experiment-tdm-report.json", report)
-    if not managed_dag_node:
-        validate_tdm_checkpoint(
-            route_root, partition_root, platform_path, output_dir
-        )
     return report
 
 
