@@ -156,15 +156,15 @@ def _source_metadata(connection: sqlite3.Connection) -> dict[str, Any]:
             "logical_schema": metadata["logical_schema"],
             "design": json.loads(metadata["design_json"]),
             "warnings": json.loads(metadata["warnings_json"]),
+            "record_counts": json.loads(
+                metadata.get("record_counts_json", "{}")
+            ),
             "clocks": [
                 json.loads(row[0])
                 for row in connection.execute(
                     "SELECT record_json FROM src.clocks ORDER BY seq"
                 )
             ],
-            "record_counts": json.loads(
-                metadata.get("record_counts_json", "{}")
-            ),
         }
     except (KeyError, json.JSONDecodeError) as error:
         raise ValidationError("EmuIR SQLite metadata is malformed") from error
@@ -185,6 +185,9 @@ def read_compact_emuir_control_metadata(path: Path) -> dict[str, Any]:
             "logical_schema": metadata["logical_schema"],
             "design": json.loads(metadata["design_json"]),
             "warnings": json.loads(metadata["warnings_json"]),
+            "record_counts": json.loads(
+                metadata.get("record_counts_json", "{}")
+            ),
             "clocks": [
                 json.loads(row[0])
                 for row in connection.execute(

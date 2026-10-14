@@ -300,6 +300,49 @@ class Phase6Test(unittest.TestCase):
             self.assertEqual(summary["status"], "pass")
             self.assertEqual(summary["source_instances"], 8)
 
+    def test_large_sqlite_phase6_never_enters_python_graph_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.sqlite"
+            assignment_path = root / "assignment.sqlite"
+            schedule_path = root / "schedule.json"
+            output_path = root / "phase6"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            with sqlite3.connect(ir_path) as connection:
+                connection.execute(
+                    "UPDATE metadata SET value=? "
+                    "WHERE key='record_counts_json'",
+                    (json.dumps({
+                        "cell_records": 4_000_000,
+                        "net_records": 4_000_000,
+                        "endpoint_records": 12_000_000,
+                    }),),
+                )
+            write_phase3_assignment_index(
+                assignment_path, self.ir, self.assignment
+            )
+            write_json(schedule_path, self.schedule)
+            with mock.patch(
+                "emuflow.phase6.EmuIR.load",
+                side_effect=AssertionError(
+                    "large Phase 6 must not materialize the EmuIR graph"
+                ),
+            ):
+                report = run_phase6(
+                    ir_path,
+                    assignment_path,
+                    schedule_path,
+                    PLATFORM_PATH,
+                    output_path,
+                    clock_periods={"clk": 10.0},
+                )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["equivalence"]["cycles"], 0)
+            self.assertEqual(
+                report["equivalence"]["provider"],
+                "constructive-sqlite-split-certificate-v1",
+            )
+
     def test_cycle_model_supports_generic_yosys_lut_and_dff(self) -> None:
         value = {
             "modules": {
