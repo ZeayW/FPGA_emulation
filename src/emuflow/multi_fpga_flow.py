@@ -19,6 +19,7 @@ from .academic_chimew import materialize_academic_chimew_inputs
 from .chimew_pipeline import run_chimew_phase6_pipeline
 from .cross_stage import run_cross_stage_optimization
 from .cut_segment_qualification import build_cut_segment_qualification
+from .default_platform import DEFAULT_PLATFORM_PATH
 from .errors import EmuFlowError, ValidationError
 from .frame_search import (
     run_frame_length_search,
@@ -1163,8 +1164,8 @@ def validate_multi_fpga_flow_bundle(
 
 
 def run_multi_fpga_flow(
-    platform_path: Path,
-    output_dir: Path,
+    platform_path: Path = DEFAULT_PLATFORM_PATH,
+    output_dir: Optional[Path] = None,
     *,
     sources: Iterable[Path] = (),
     top: Optional[str] = None,
@@ -1275,7 +1276,10 @@ def run_multi_fpga_flow(
     serial_bsp_runtime_sync_root: Optional[str] = None,
     serial_bsp_ready_stable_cycles: int = 4,
 ) -> Dict[str, Any]:
-    """Compile RTL/EmuIR through the checked board-independent split."""
+    """Compile RTL/EmuIR, using the bundled research BoardDB when omitted."""
+
+    if output_dir is None:
+        raise EmuFlowError("multi-FPGA compilation requires an output directory")
 
     if global_timing_engine not in {"opensta", "python"}:
         raise EmuFlowError("unsupported global timing engine")

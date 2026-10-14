@@ -1,0 +1,160 @@
+{
+  "schema": "emuflow.boarddb/v1",
+  "platform": {
+    "name": "rapidwright_xcvu19p_4fpga_mesh",
+    "kind": "virtual",
+    "description": "4-XCVU19P research model: RapidWright device resources, K2,2 topology (fpga0/fpga1 to fpga2/fpga3), 6 cables with 3 paired HP banks per cable, 20 effective data wires per bank, and single-hop delay 30 + 0.5*R ns"
+  },
+  "fpgas": [
+    {
+      "id": "fpga0",
+      "part": "xcvu19p-fsva3824-2-e",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 4085760,
+        "ff": 8171520,
+        "bram18k": 4320,
+        "dsp48": 3840,
+        "carry8": 510720,
+        "uram288": 320
+      },
+      "hp_io_bank_count": 38,
+      "hd_io_bank_count": 4
+    },
+    {
+      "id": "fpga1",
+      "part": "xcvu19p-fsva3824-2-e",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 4085760,
+        "ff": 8171520,
+        "bram18k": 4320,
+        "dsp48": 3840,
+        "carry8": 510720,
+        "uram288": 320
+      },
+      "hp_io_bank_count": 38,
+      "hd_io_bank_count": 4
+    },
+    {
+      "id": "fpga2",
+      "part": "xcvu19p-fsva3824-2-e",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 4085760,
+        "ff": 8171520,
+        "bram18k": 4320,
+        "dsp48": 3840,
+        "carry8": 510720,
+        "uram288": 320
+      },
+      "hp_io_bank_count": 38,
+      "hd_io_bank_count": 4
+    },
+    {
+      "id": "fpga3",
+      "part": "xcvu19p-fsva3824-2-e",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 4085760,
+        "ff": 8171520,
+        "bram18k": 4320,
+        "dsp48": 3840,
+        "carry8": 510720,
+        "uram288": 320
+      },
+      "hp_io_bank_count": 38,
+      "hd_io_bank_count": 4
+    }
+  ],
+  "links": [
+    {
+      "id": "link_0_2",
+      "endpoints": [
+        "fpga0",
+        "fpga2"
+      ],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 360,
+      "capacity_sharing": "shared_bidirectional",
+      "bank_count": 18,
+      "wires_per_bank": 20,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 8,
+      "tdm_delay_model": {
+        "model": "linear-ratio-v1",
+        "intercept_ns": 30.0,
+        "ratio_coefficient_ns": 0.5
+      },
+      "cable_count": 6,
+      "hp_banks_per_cable": 3
+    },
+    {
+      "id": "link_0_3",
+      "endpoints": [
+        "fpga0",
+        "fpga3"
+      ],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 360,
+      "capacity_sharing": "shared_bidirectional",
+      "bank_count": 18,
+      "wires_per_bank": 20,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 8,
+      "tdm_delay_model": {
+        "model": "linear-ratio-v1",
+        "intercept_ns": 30.0,
+        "ratio_coefficient_ns": 0.5
+      },
+      "cable_count": 6,
+      "hp_banks_per_cable": 3
+    },
+    {
+      "id": "link_1_2",
+      "endpoints": [
+        "fpga1",
+        "fpga2"
+      ],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 360,
+      "capacity_sharing": "shared_bidirectional",
+      "bank_count": 18,
+      "wires_per_bank": 20,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 8,
+      "tdm_delay_model": {
+        "model": "linear-ratio-v1",
+        "intercept_ns": 30.0,
+        "ratio_coefficient_ns": 0.5
+      },
+      "cable_count": 6,
+      "hp_banks_per_cable": 3
+    },
+    {
+      "id": "link_1_3",
+      "endpoints": [
+        "fpga1",
+        "fpga3"
+      ],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 360,
+      "capacity_sharing": "shared_bidirectional",
+      "bank_count": 18,
+      "wires_per_bank": 20,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 8,
+      "tdm_delay_model": {
+        "model": "linear-ratio-v1",
+        "intercept_ns": 30.0,
+        "ratio_coefficient_ns": 0.5
+      },
+      "cable_count": 6,
+      "hp_banks_per_cable": 3
+    }
+  ]
+}

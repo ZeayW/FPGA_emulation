@@ -35,6 +35,11 @@ def _link_directions(link: BoardLink) -> Sequence[Tuple[str, str]]:
 
 
 def _physical_data_lanes(platform: Platform) -> List[Dict[str, Any]]:
+    if any(link.bank_count is not None for link in platform.links):
+        raise ValidationError(
+            "a shared-bank platform requires a schedule-aware physical BSP; "
+            "independent per-direction package-pin requirements are unsupported"
+        )
     records: List[Dict[str, Any]] = []
     for link in platform.links:
         if link.direction == "half_duplex":

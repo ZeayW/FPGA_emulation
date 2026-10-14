@@ -12,9 +12,10 @@ Device resources and the inter-FPGA platform model are separate: a virtual
 BoardDB is an academic model, not a deployable board or evidence of hardware
 signoff. See [backend selection](#configuration-and-limits) for the explicit CLI
 options for the research route and alternative backends.
-The [PPro calibration review](#ppro-calibration-scope-and-status) separates
-retained observations from the bank-capacity and single-hop timing work still
-required; the existing research profile is not a qualified board model.
+The default [inter-FPGA research model](#inter-fpga-research-model) uses six
+cables per connected FPGA pair, three corresponding HP-bank groups per cable,
+and twenty effective data wires per bank,
+and a single-hop delay of `30 + 0.5R` ns at TDM ratio `R`.
 
 ## Flow
 
@@ -149,11 +150,11 @@ also records when upstream values become available and when downstream
 transmissions consume them. Those runtime bindings are EmuFlow integration
 work, distinct from the cited ratio-optimization algorithms.
 
-For the PPro platform under review, Phase 5 must also choose how many whole
-communication banks serve each direction of an FPGA pair, jointly with TDM
-ratios and slots. This bank-granular allocation is pending; existing generic
-shared-capacity rules do not establish support for it. See the
-[platform contract below](#ppro-calibration-scope-and-status).
+For the default research platform, Phase 5 allocates whole communication
+banks between the two directions of each connected FPGA pair according to
+directional communication load, then optimizes TDM ratios and slots within
+that allocation. Each bank serves one direction for the schedule. See the
+[shared-bank capacity and delay model below](#inter-fpga-research-model).
 
 ### Phase 6: pin planning, netlist splitting, and transport
 
@@ -170,6 +171,10 @@ RUDY congestion estimates supply physical guidance. The implementation keeps
 paper-derived kernels separate from EmuFlow's electrical, slot, and transport
 adapters. Academic region estimates must be distinguished from actual SLR/SLL
 data, and package binding requires a declared pin/electrical model.
+
+For shared-bank platforms, physical lane remapping must remain inside the
+direction banks allocated by Phase 5. Phase 6 rejects mappings that cross those
+bank ranges or combine opposite directions in one bank.
 
 All providers feed the EmuFlow netlist splitter and transport generator.
 Static TDM communication, shadow state, and frame synchronization implement
@@ -234,90 +239,122 @@ points are mapped in [Algorithms and providers](docs/ALGORITHMS.md#implementatio
 - **RWRoute: An Open-source Timing-driven Router for Commercial FPGAs** —
   [Author manuscript](https://www.rapidwright.io/docs/_downloads/3858e01e500602e00f7d5dda065b19ec/RWRoute_final_submitted.pdf).
 
-## PPro calibration: scope and status
+## Inter-FPGA research model
 
-PPro reports are useful observations of a particular compiler/platform
-configuration. They do not by themselves identify physical channel capacity
-or establish a deployable board timing model. The corrected contract separates
-three quantities:
+`multi-fpga compile` and `run_multi_fpga_flow` use the bundled
+`rapidwright_xcvu19p_4fpga_mesh` BoardDB when no platform is supplied.
+The two-FPGA `rapidwright_xcvu19p_2fpga_p2p` model uses the same link rules for
+single-hop work. These are specified research models, qualified as
+**model-only**; their link parameters are not hardware timing signoff.
+An explicit `--platform` or Python `platform_path` selects that BoardDB's own
+capacity, topology, and delay definitions.
 
-| Quantity | Source or model | Remaining work |
-| --- | --- | --- |
-| Intra-FPGA resource capacity | The matching RapidWright device/provider inventory supplies LUT, FF, BRAM, DSP, and URAM totals. Transport/system logic consumes those resources; any additional headroom is an explicit configuration. | Keep device identity and resource units consistent. The previous 75% limit was configured, not a PPro measurement or proof that PPro reserves the other 25%. |
-| Inter-FPGA channel capacity | Each FPGA pair has a fixed total number of communication banks and a declared channel count per bank. Phase 5 chooses the integer allocation of banks between directions. | Confirm bank counts, channel counts, and direction restrictions; implement and validate bank allocation jointly with TDM and slot assignment. |
-| Inter-FPGA delay | Fit only the single-hop crossing delay `d(r)` as a function of the observed TDM ratio `r`, with direction, clock, protocol, and timing endpoints held explicit. Intra-FPGA segments come from the physical backend/STA. | Recover path-specific crossing measurements, then validate multi-hop composition and application paths. |
+Device capacity comes from the matching RapidWright device/provider inventory
+for `xcvu19p-fsva3824-2-e`, with LUT, FF, BRAM18K, DSP48, carry, and URAM units
+kept distinct. The presets apply an explicit `utilization_limit` of 0.75;
+this headroom is a configuration choice. Design and communication logic consume
+the device resources. FPGA-internal path delays come from the physical backend
+and STA.
 
-For a pair A/B with `B` banks and `q` usable channels per bank:
+The four-FPGA topology connects each of `fpga0` and `fpga1` to both `fpga2` and
+`fpga3`. There is no direct `fpga0`–`fpga1` or `fpga2`–`fpga3` link:
+
+```mermaid
+graph LR
+    F0[fpga0] <--> F2[fpga2]
+    F0 <--> F3[fpga3]
+    F1[fpga1] <--> F2
+    F1 <--> F3
+```
+
+Each direct FPGA pair is connected by **6 cables**. Each cable uses **3 HP I/O
+banks at each endpoint**, paired with the corresponding banks at the other
+FPGA. This gives **18 bank groups per pair**, shared between the two directions.
+Each HP bank supplies **20 effective data wires**, for **360 shared wires per
+pair**. The twenty-wire value is the usable data width configured for this
+model, rather than the device's total pin count per bank.
+
+The device inventory is **38 HP banks and 4 HD banks per FPGA**. Each FPGA in
+the four-FPGA topology has two direct neighbors, so those links use
+`2 * 6 * 3 = 36` HP banks at that FPGA. The remaining 2 HP banks and the 4 HD
+banks are outside this inter-FPGA capacity pool. The two-FPGA variant uses
+18 HP banks at each endpoint.
+
+Phase 5 first chooses a whole-bank split from the two directional loads,
+minimizing the worst predicted TDM ratio and then the sum of predicted ratios.
+It then assigns TDM ratios and slots within that bank allocation and validates
+the result. Banks within one cable can serve different
+directions, but one bank cannot alternate directions between slots of the same
+schedule. For each connected pair:
 
 ```text
 b_AB, b_BA are nonnegative integers
-b_AB + b_BA <= B              (equal when every bank is assigned)
-C_AB = q * b_AB; C_BA = q * b_BA
+b_AB + b_BA <= 18
+C_AB = 20 * b_AB wires
+C_BA = 20 * b_BA wires
 ```
 
-These are communication banks on the FPGA-pair link, not an assertion about
-the device's native I/O-bank structure. For illustration only, ten banks of
-twenty channels permit 4/6 or 7/3 directional allocations; those numbers are
-not measured PPro platform parameters. Separate fixed capacities for A-to-B
-and B-to-A cannot represent this exchange of whole banks.
+For example, a 7/11 split gives 140 wires A→B and 220 wires B→A; a 9/9 split
+provides 180 wires in each direction. Idle bank groups may remain unassigned.
+BoardDB records `cable_count: 6`, `hp_banks_per_cable: 3`, `bank_count: 18`,
+`wires_per_bank: 20`, and `capacity_sharing: "shared_bidirectional"`.
+`data_lanes_per_direction: 360` is the pair's shared pool before directional
+allocation; it does not provide 360 independent wires in both directions.
 
-The delay decomposition is:
+The single-hop net delay uses the TDM ratio assigned to that net on that hop:
 
 ```text
-path delay = reported intra-FPGA segments + sum of single-hop d_i(r_i)
+d_net(R) = 30 + 0.5 * R                       [ns]
+path delay = intra-FPGA delay + sum_h d_net(R_h)
 ```
 
-Each crossing measurement must identify its TX/RX boundary and actual ratio
-on the same path. Extract the crossing segment directly, or subtract local
-segments from that same run/path with the same timing reference. A different
-EmuFlow implementation's local delay cannot be subtracted from a PPro path.
-Start with a table of measured delay at each observed ratio; fit a curve only
-if the observations support it. If `d(r)` includes TDM waiting, do not add that
-wait again. A consumer that explicitly propagates scheduled TX events instead
-needs the transfer component with the wait separated consistently.
+Thus `R=8` gives 34 ns and `R=16` gives 38 ns. A two-hop path with ratios 8 and
+16 contributes 72 ns of cross-FPGA delay; each hop is evaluated separately.
+The ratio term is already included in `d_net`, so this model does not add a
+second slot-wait or serialization-delay term. The 250 MHz fabric clock controls
+the concrete slot schedule; it does not replace the nanosecond delay formula.
+`latency_cycles: 8` is the rounded-up R=1 reference (`ceil(30.5 / 4)`). The
+scheduler computes `ceil(d_net(R) / 4)` for each entry's actual ratio.
+BoardDB records the formula explicitly:
 
-### What the existing experiments establish
+```json
+{
+  "tdm_delay_model": {
+    "model": "linear-ratio-v1",
+    "intercept_ns": 30.0,
+    "ratio_coefficient_ns": 0.5
+  }
+}
+```
 
-The counts below describe the calibration record at research snapshot
-[afccf846](https://github.com/ZeayW/FPGA_emulation/tree/afccf846c33340f23f8c4d78a3d62976c74ce4a5).
-This documentation revision does not add experiments or repair that
-implementation.
+Export either bundled platform for inspection or standalone phase commands.
+`--wires-per-bank` explicitly overrides the effective data width when defining
+a different research configuration; its default is 20:
 
-| Existing evidence | What can be retained | What it does not establish / what must change |
-| --- | --- | --- |
-| Topology: 28 probes covering all 12 ordered FPGA pairs | Reported reachability and full-data routes support an effective bidirectional K2,2 topology in the tested configuration. | This does not identify physical connectors or shared-bank capacity. |
-| Single-direction width/TDM scans: 96 runs, 88 selected observations, 16 holdout class checks | Keep observed widths, routes, and ratios. The 64/128-bit values are passed TDM=1 lower bounds under those test conditions. | All scanned cases succeeded: there is no measured maximum crossing width. The 16 checks distinguish TDM=1 from TDM>1, not exact ratio prediction. Bidirectional bank sharing and allocation remain unmeasured. |
-| Resource-report/limit checks | Keep report-unit normalization and acceptance/rejection checks against the configured utilization limit. | These do not calibrate device totals or EmuFlow's usable capacity. RapidWright supplies totals; own logic occupancy and declared headroom determine the budget. |
-| Aggregate delay: 34 fit and 22 holdout observations | Keep the report observations and any recoverable path details. The old fit reproduced aggregate report values in this sample set. | Withdraw the general per-hop timing claim. The extracted maximum ratio and maximum delay need not belong to the same path; no local/crossing decomposition was preserved. The old hop/sink/ratio regression and its projected 7.2 ns per-link value are not qualified link timing. |
-| EmuFlow transport RTL cost: 19 fit and 6 holdout cases | Retain as characterization of EmuFlow's own tested communication RTL. | It does not measure PPro's private transport implementation. That cost was not identifiable from the ordinary PPro reports. |
+```bash
+emuflow platform research-model --wires-per-bank 20 --output build/research-boarddb.json
+emuflow platform research-model --fpga-count 2 --output build/two-fpga-boarddb.json
+emuflow platform validate build/research-boarddb.json
 
-The audited research profile still projects the width observations into fixed
-`per_direction` capacities and projects an aggregate timing fit into link
-delay. Those projections must be replaced before the profile can qualify
-shared-bank scheduling or cross-FPGA timing. Generic shared bandwidth is not
-equivalent to integer bank allocation. This README corrects the evidence and
-target contract; it does not claim the production changes are complete.
+# Omit --platform to use the bundled four-FPGA model.
+emuflow multi-fpga compile design.v --top top \
+  --clock clk --clock-period clk=10 --out build/design
 
-### What needs to be redone, in priority order
+# Select a different platform explicitly.
+emuflow multi-fpga compile design.v --top top \
+  --clock clk --clock-period clk=10 \
+  --platform build/two-fpga-boarddb.json --out build/design-two-fpga
+```
 
-1. **Correct the model and extraction.** Keep RapidWright resource totals;
-   represent the shared bank pool and its directional restrictions; preserve
-   path identity, actual per-hop ratio, TX/RX boundaries, and local/crossing
-   timing segments. Review available original reports before launching new
-   runs. Reuse a single-hop observation only if those facts can be recovered;
-   aggregate maxima alone are insufficient.
-2. **Fill the measurement gaps.** Obtain bank parameters from platform
-   configuration where available. Run simultaneous asymmetric bidirectional
-   traffic, varying the two loads independently, and check allocation in
-   whole-bank increments. For delay, hold an adjacent FPGA pair/direction and
-   timing boundaries fixed, scan load to obtain actual TDM ratios, and collect
-   independent holdouts. Re-run old cases only where the necessary report
-   details are unavailable; supplement missing ratios and operating conditions.
-3. **Validate the integrated flow.** Exercise the new bank allocation with
-   Phase 5's ratios and concrete slots. Use multi-hop and multicast cases to
-   test delay composition, then complete genuine cross-FPGA application
-   holdouts through physical implementation and global STA. Single-FPGA runs
-   remain local implementation evidence and cannot validate this board model.
+The Python equivalent is `run_multi_fpga_flow(output_dir=..., sources=...,
+top=..., clocks=..., clock_periods=...)`; pass `platform_path=...` to override
+the same default. The bundled models are installed with the Python package
+and the CMake CLI, so default selection does not depend on the current working
+directory. `--physical` and the matching backend inputs are still required for
+physical implementation and global physical timing. Physical package-pin
+binding needs a schedule-aware BSP. The existing independent-direction Phase 8A
+requirements exporter rejects shared-bank platforms instead of assigning two
+independent 360-wire pools.
 
 ## Build
 

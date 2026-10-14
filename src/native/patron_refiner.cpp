@@ -1,3 +1,4 @@
+#include "bank_allocation.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -23,7 +24,10 @@ constexpr double kQuantum = 1.0e-9;
 struct Domain {
   int lanes = 0;
   bool is_sll = false;
-  double cycle_ns = 0.0;
+  double ratio_delay_slope_ns = 0.0;
+  int opposite = -1;
+  int banks = 0;
+  int wires = 0;
 };
 
 struct Arc {
@@ -74,6 +78,7 @@ struct Model {
   int max_hops = -1;
   int frame_slots = 0;
   int ratio_quantum = 1;
+  int min_ratio = 1;
   int min_used_parts = 1;
   int max_moves = 0;
   int max_sweeps = 1;
@@ -301,13 +306,27 @@ int tdm_ratio(const Model& model, int load, const Domain& domain) {
   if (domain.is_sll || load <= 0) {
     return 1;
   }
-  int raw = std::max(1, (load + domain.lanes - 1) / domain.lanes);
+  int raw = std::max(model.min_ratio, (load + domain.lanes - 1) / domain.lanes);
   if (raw == 1) {
     return 1;
   }
   raw = ((raw + model.ratio_quantum - 1) / model.ratio_quantum)
         * model.ratio_quantum;
   return std::min(model.frame_slots, raw);
+}
+
+std::vector<int> paired_domain_ratios(const Model& model, const std::vector<int>& loads) {
+  std::vector<int> result(model.domains, 1);
+  for (int i = 0; i < model.domains; ++i)
+    result[i] = tdm_ratio(model, loads[i], model.domain[i]);
+  for (int i = 0; i < model.domains; ++i) {
+    const Domain& d = model.domain[i];
+    if (d.banks == 0 || i >= d.opposite) continue;
+    const auto ratios = shared_bank_ratios(loads[i], loads[d.opposite],
+        d.banks, d.wires, model.ratio_quantum, model.min_ratio, model.frame_slots + 1);
+    result[i] = ratios.first; result[d.opposite] = ratios.second;
+  }
+  return result;
 }
 
 double predicted_route_delay(const Model& model,
@@ -317,7 +336,7 @@ double predicted_route_delay(const Model& model,
   for (const Arc& arc : route.arcs) {
     delay += arc.delay_ns
              + std::max(0, ratios[arc.domain] - 1)
-                   * model.domain[arc.domain].cycle_ns
+                   * model.domain[arc.domain].ratio_delay_slope_ns
              + model.physical_hop_guard_scale_ns;
   }
   return delay;
@@ -338,6 +357,10 @@ Model read_model(const std::string& path) {
   require(stream.good(), "cannot open input");
   std::string token;
   stream >> token;
+  const std::string bank_suffix = "_BANKS_V1";
+  const bool bank_input = token.size() > bank_suffix.size() &&
+      token.compare(token.size() - bank_suffix.size(), bank_suffix.size(), bank_suffix) == 0;
+  if (bank_input) token.resize(token.size() - bank_suffix.size());
   const bool flow_v7 = token == "EMUFLOW_PATRON_INPUT_V7";
   const bool flow_v8 = token == "EMUFLOW_PATRON_INPUT_V8";
   const bool flow_v9 = token == "EMUFLOW_PATRON_INPUT_V9";
@@ -358,6 +381,7 @@ Model read_model(const std::string& path) {
       >> model.boundary_fanout_penalty_scale_ns >> model.max_sweeps
       >> model.ejection_critical_limit >> model.ejection_donor_limit
       >> model.max_ejections;
+  if (bank_input) stream >> model.min_ratio;
   require(stream.good() && model.parts > 0 && model.clusters > 0
               && model.dimensions > 0 && model.domains > 0
               && model.nets > 0 && model.paths > 0
@@ -451,10 +475,25 @@ Model read_model(const std::string& path) {
     int index = -1;
     int is_sll = 0;
     stream >> index >> model.domain[domain].lanes >> is_sll
-        >> model.domain[domain].cycle_ns;
+        >> model.domain[domain].ratio_delay_slope_ns;
+    if (bank_input) stream >> model.domain[domain].opposite
+        >> model.domain[domain].banks >> model.domain[domain].wires;
     require(index == domain && model.domain[domain].lanes > 0,
             "invalid DOMAIN");
     model.domain[domain].is_sll = is_sll != 0;
+    const auto& d = model.domain[domain];
+    require(std::isfinite(d.ratio_delay_slope_ns) && d.ratio_delay_slope_ns >= 0.0
+                && d.banks >= 0 && d.wires >= 0
+                && ((d.banks == 0) == (d.wires == 0)), "invalid DOMAIN delay/banks");
+  }
+  for (int i = 0; i < model.domains; ++i) {
+    const auto& d = model.domain[i];
+    if (!d.banks) continue;
+    require(d.opposite >= 0 && d.opposite < model.domains && d.opposite != i,
+            "invalid opposite bank domain");
+    const auto& other = model.domain[d.opposite];
+    require(other.opposite == i && other.banks == d.banks && other.wires == d.wires,
+            "asymmetric bank domain metadata");
   }
 
   model.route.assign(model.parts, std::vector<Route>(model.parts));
@@ -625,11 +664,10 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
       }
     }
   }
-  std::vector<int> ratios(model.domains, 1);
+  std::vector<int> ratios = paired_domain_ratios(model, domain_load);
   int maximum_ratio = 1;
   int maximum_load = 0;
   for (int domain = 0; domain < model.domains; ++domain) {
-    ratios[domain] = tdm_ratio(model, domain_load[domain], model.domain[domain]);
     maximum_ratio = std::max(maximum_ratio, ratios[domain]);
     maximum_load = std::max(maximum_load, domain_load[domain]);
   }
@@ -1031,10 +1069,8 @@ ProxyState build_proxy_state(
     state.hops += state.net[net].hops;
     state.cuts += state.net[net].cuts;
   }
-  state.domain_ratio.resize(model.domains);
+  state.domain_ratio = paired_domain_ratios(model, state.domain_load);
   for (int domain = 0; domain < model.domains; ++domain) {
-    state.domain_ratio[domain]
-        = tdm_ratio(model, state.domain_load[domain], model.domain[domain]);
     state.ratio_order.insert(state.domain_ratio[domain]);
   }
   state.path.resize(model.paths);
@@ -1965,12 +2001,11 @@ std::vector<int> diagnose_flow_corridors(
             }
             int parametric_max_ratio = 1;
             int parametric_max_load = 0;
+            const auto parametric_ratios = paired_domain_ratios(model, parametric_domain_load);
             for (int domain = 0; domain < model.domains; ++domain) {
               parametric_max_ratio = std::max(
                   parametric_max_ratio,
-                  tdm_ratio(model,
-                            parametric_domain_load[domain],
-                            model.domain[domain]));
+                  parametric_ratios[domain]);
               parametric_max_load = std::max(
                   parametric_max_load, parametric_domain_load[domain]);
             }
@@ -2614,16 +2649,13 @@ ProxyDelta evaluate_proxy_changes(
       ++item;
     }
   }
-  std::vector<int> projected_ratios = state.domain_ratio;
+  std::vector<int> projected_loads = state.domain_load;
+  for (const auto& item : delta.domain_delta) projected_loads[item.first] += item.second;
+  std::vector<int> projected_ratios = paired_domain_ratios(model, projected_loads);
   std::vector<int> ratio_changed_domains;
-  ratio_changed_domains.reserve(delta.domain_delta.size());
-  for (const auto& item : delta.domain_delta) {
-    const int projected_load = state.domain_load[item.first] + item.second;
-    projected_ratios[item.first] = tdm_ratio(
-        model, projected_load, model.domain[item.first]);
-    if (projected_ratios[item.first] != state.domain_ratio[item.first]) {
-      ratio_changed_domains.push_back(item.first);
-    }
+  for (int domain = 0; domain < model.domains; ++domain) {
+    if (projected_ratios[domain] != state.domain_ratio[domain])
+      ratio_changed_domains.push_back(domain);
   }
   std::vector<int> affected_paths;
   for (const auto& item : delta.nets) {
@@ -2806,12 +2838,13 @@ void apply_proxy_delta(const Model& model,
     state.cuts += item.second.cuts - state.net[item.first].cuts;
     state.net[item.first] = item.second;
   }
-  for (const auto& item : delta.domain_delta) {
-    const int domain = item.first;
+  for (const auto& item : delta.domain_delta)
+    state.domain_load[item.first] += item.second;
+  const auto new_ratios = paired_domain_ratios(model, state.domain_load);
+  for (int domain = 0; domain < model.domains; ++domain) {
+    if (new_ratios[domain] == state.domain_ratio[domain]) continue;
     erase_one(state.ratio_order, state.domain_ratio[domain]);
-    state.domain_load[domain] += item.second;
-    state.domain_ratio[domain]
-        = tdm_ratio(model, state.domain_load[domain], model.domain[domain]);
+    state.domain_ratio[domain] = new_ratios[domain];
     state.ratio_order.insert(state.domain_ratio[domain]);
   }
   for (const auto& item : delta.paths) {

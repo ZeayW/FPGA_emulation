@@ -55,6 +55,11 @@ from .board_link_timing import (
     validate_board_link_timing,
 )
 from .board_support import validate_board_support_overlay_file
+from .default_platform import (
+    DEFAULT_PLATFORM_PATH,
+    DEFAULT_WIRES_PER_BANK,
+    materialize_research_platform,
+)
 from .bsp import run_phase8a
 from .cross_stage import (
     evaluate_cross_stage_candidate,
@@ -1171,6 +1176,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     platform_validate.add_argument("path", type=Path)
     platform_validate.add_argument("--normalized-out", type=Path)
+    platform_research = platform_subparsers.add_parser(
+        "research-model", help="materialize the shared-bank research platform"
+    )
+    platform_research.add_argument("--fpga-count", type=int, choices=(2, 4), default=4)
+    platform_research.add_argument(
+        "--wires-per-bank", type=int, default=DEFAULT_WIRES_PER_BANK,
+        help="effective data wires per HP bank (default: 20)",
+    )
+    platform_research.add_argument("--output", "-o", type=Path, required=True)
     platform_mps4 = platform_subparsers.add_parser(
         "arm-mps4-materialize",
         help="materialize Arm's documented three-MPS4 serial-link topology",
@@ -1860,7 +1874,10 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="use existing Yosys JSON instead of synthesizing RTL",
     )
-    multi_fpga_compile.add_argument("--platform", type=Path, required=True)
+    multi_fpga_compile.add_argument(
+        "--platform", type=Path, default=DEFAULT_PLATFORM_PATH,
+        help="BoardDB (default: bundled four-XCVU19P shared-bank research model)",
+    )
     multi_fpga_compile.add_argument("--out", type=Path, required=True)
     multi_fpga_compile.add_argument(
         "--archive-out",
@@ -4634,6 +4651,12 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0 if report.get("status") not in {"failed", "submit_failed"} else 2
 
     if args.command == "platform":
+        if args.platform_command == "research-model":
+            _print_json(materialize_research_platform(
+                args.output, fpga_count=args.fpga_count,
+                wires_per_bank=args.wires_per_bank,
+            ))
+            return 0
         if args.platform_command == "arm-mps4-materialize":
             report = materialize_arm_mps4_boarddb(
                 output_path=args.output,

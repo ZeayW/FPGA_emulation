@@ -1,3 +1,4 @@
+#include "bank_allocation.hpp"
 // SPDX-License-Identifier: Apache-2.0
 //
 // Timing-aware load-balanced die-level routing for EmuFlow.
@@ -48,6 +49,8 @@ struct Arc {
   double delay_ns = 0.0;
   double beta_ns = 0.0;
   bool is_sll = false;
+  int banks = 0;
+  int wires = 0;
 };
 
 struct Demand {
@@ -137,6 +140,10 @@ Input read_input(const std::string& path) {
   }
   std::string magic;
   std::getline(input, magic);
+  const std::string bank_suffix = "_BANKS_V1";
+  const bool bank_input = magic.size() > bank_suffix.size() &&
+      magic.compare(magic.size() - bank_suffix.size(), bank_suffix.size(), bank_suffix) == 0;
+  if (bank_input) magic.resize(magic.size() - bank_suffix.size());
   const bool input_v9 = magic == "EMUFLOW_TLR_INPUT_V9";
   const bool input_v8 = magic == "EMUFLOW_TLR_INPUT_V8" || input_v9;
   const bool input_v7 = magic == "EMUFLOW_TLR_INPUT_V7" || input_v8;
@@ -208,9 +215,12 @@ Input read_input(const std::string& path) {
           arc.capacity_domain >> arc.direction_group >> arc.opposite_arc >>
           arc.capacity >> arc.lanes >> arc.delay_ns >> arc.beta_ns >> is_sll;
       arc.is_sll = is_sll != 0;
+      if (bank_input) stream >> arc.banks >> arc.wires;
       if (index != static_cast<int>(model.arcs.size())) {
         throw std::runtime_error("ARC indices must be contiguous");
       }
+      if (arc.banks < 0 || arc.wires < 0 || ((arc.banks == 0) != (arc.wires == 0)))
+        throw std::runtime_error("invalid bank metadata");
       model.arcs.push_back(arc);
     } else if (kind == "DEMAND") {
       int index = -1;
@@ -289,13 +299,21 @@ class Router {
       if (arc.from < 0 || arc.from >= model_.node_count ||
           arc.to < 0 || arc.to >= model_.node_count ||
           arc.capacity <= 0 || arc.lanes <= 0 || arc.delay_ns < 0.0 ||
-          arc.beta_ns <= 0.0 || model_.ratio_quantum <= 0 ||
+          arc.beta_ns < 0.0 || model_.ratio_quantum <= 0 ||
           model_.min_ratio <= 0 ||
           (model_.min_ratio != 1 &&
            model_.min_ratio % model_.ratio_quantum != 0) ||
           model_.min_ratio > model_.frame_slots ||
           model_.frame_slots <= 0 || model_.lambda_tdm < 0.0) {
         throw std::runtime_error("invalid arc");
+      }
+      if (arc.banks > 0) {
+        if (arc.opposite_arc < 0 || arc.opposite_arc >= static_cast<int>(model_.arcs.size()))
+          throw std::runtime_error("missing opposite bank arc");
+        const Arc& opposite = model_.arcs[arc.opposite_arc];
+        if (opposite.opposite_arc != index || opposite.banks != arc.banks ||
+            opposite.wires != arc.wires || opposite.capacity_domain == arc.capacity_domain)
+          throw std::runtime_error("inconsistent opposite bank arc");
       }
       adjacency_[arc.from].push_back(index);
     }
@@ -708,8 +726,9 @@ class Router {
             continue;
           }
           for (int arc : (*routes)[demand].arcs) {
-            item.capacity_domains.insert(
-                model_.arcs[arc].capacity_domain);
+            item.capacity_domains.insert(model_.arcs[arc].capacity_domain);
+            if (model_.arcs[arc].banks > 0)
+              item.capacity_domains.insert(model_.arcs[model_.arcs[arc].opposite_arc].capacity_domain);
           }
         }
       }
@@ -1132,6 +1151,7 @@ class Router {
               break;
             }
           }
+          legal = legal && capacity_legal();
           if (legal) {
             const auto local = std::make_tuple(
                 demand_tdm_delay(demand), candidate.max_delay_ns,
@@ -1227,6 +1247,17 @@ class Router {
       if (arc.capacity_domain == domain && arc.is_sll) {
         return 1;
       }
+    }
+    for (const Arc& arc : model_.arcs) {
+      if (arc.capacity_domain != domain || arc.banks == 0) continue;
+      const int other = model_.arcs[arc.opposite_arc].capacity_domain;
+      const int first = std::min(domain, other), second = std::max(domain, other);
+      const auto ratios = shared_bank_ratios(
+          usage_[first] + (first == domain ? additional_width : 0),
+          usage_[second] + (second == domain ? additional_width : 0),
+          arc.banks, arc.wires, model_.ratio_quantum, model_.min_ratio,
+          model_.frame_slots + 1);
+      return domain == first ? ratios.first : ratios.second;
     }
     const long long signals = usage_[domain] + additional_width;
     if (signals <= 0) {
@@ -2154,6 +2185,16 @@ class Router {
       if (usage_[domain] > capacity_for_domain(domain)) {
         return false;
       }
+    }
+    for (const Arc& arc : model_.arcs) {
+      if (arc.banks == 0) continue;
+      const int other = model_.arcs[arc.opposite_arc].capacity_domain;
+      if (arc.capacity_domain >= other) continue;
+      const long long bank_capacity = static_cast<long long>(arc.wires) * model_.frame_slots;
+      const auto needed = [&](int domain) {
+        return (usage_[domain] + bank_capacity - 1) / bank_capacity;
+      };
+      if (needed(arc.capacity_domain) + needed(other) > arc.banks) return false;
     }
     return true;
   }

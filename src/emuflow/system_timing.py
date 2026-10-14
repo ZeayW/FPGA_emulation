@@ -209,15 +209,15 @@ def _fixed_slot_transport_path_delay(
     commit_slot: int,
     uncertainty_ns: float,
     transport_semantics: str = "sampled-virtual-wire",
+    platform: Optional[Platform] = None,
 ) -> Dict[str, Any]:
     """Propagate one transported path through its fixed physical schedule.
 
-    Static TDM is not an additive ``logic + average TDM wait`` path.  Each
-    first-hop TX acts at the concrete Phase-5 slot.  A registered boundary may
-    wait safely because its value is stable, while a sampled virtual wire also
-    has explicit dependency readiness; in both cases that absolute wait is
-    part of target-clock latency.  This evaluator consumes the fixed schedule
-    and never reschedules a path during Phase 7C.
+    TX/commit readiness uses concrete Phase-5 events. Legacy links include
+    absolute slot waits in target-clock latency. A total net-ratio model
+    instead adds per-hop modeled delays and measured local segments, without
+    counting TDM waiting twice. Event readiness remains an independent gate.
+    This evaluator never reschedules a path during Phase 7C.
     """
 
     if transport_semantics not in {
@@ -268,6 +268,12 @@ def _fixed_slot_transport_path_delay(
     physical_interface_ns = 0.0
     board_ns = 0.0
     minimum_tx_slack_ns = math.inf
+    board_links = {} if platform is None else {link.id: link for link in platform.links}
+    ratio_mode = bool(board_links) and any(
+        board_links[h["link"]].tdm_delay_model is not None for h in scheduled_hops)
+    if ratio_mode and not all(board_links[h["link"]].tdm_delay_model is not None
+                              for h in scheduled_hops):
+        raise ValidationError("one path cannot mix total net-ratio and fixed-slot delay models")
     for cut_index, hops in enumerate(hops_by_cut):
         segment = ordered_segments[cut_index]
         segment_delay = float(segment["delay_ns"])
@@ -311,6 +317,8 @@ def _fixed_slot_transport_path_delay(
                 if board_link_delays is not None
                 else float(hop["base_link_delay_ns"])
             )
+            if ratio_mode:
+                link_delay_ns = board_links[hop["link"]].tdm_delay_model.delay_ns(entry.get("tdm_ratio"))
             rx_delay_ns = endpoint_delays[hop["rx_endpoint"]]
             board_ns += link_delay_ns
             physical_interface_ns += rx_delay_ns
@@ -338,8 +346,8 @@ def _fixed_slot_transport_path_delay(
     commit_deadline_ns = float(commit_slot) * slot_period_ns
     capture_slack_ns = commit_deadline_ns - uncertainty_ns - capture_ready_ns
     causal_slack_ns = min(minimum_tx_slack_ns, capture_slack_ns)
-    total_delay_ns = capture_ready_ns + uncertainty_ns
     physical_stage_ns = physical_logic_ns + physical_interface_ns
+    total_delay_ns = ((physical_stage_ns + board_ns) if ratio_mode else capture_ready_ns) + uncertainty_ns
     return {
         "transport_semantics": transport_semantics,
         "system_delay_bound_ns": total_delay_ns,
@@ -347,7 +355,7 @@ def _fixed_slot_transport_path_delay(
         "physical_interface_delay_bound_ns": physical_interface_ns,
         "physical_routed_stage_delay_bound_ns": physical_stage_ns,
         "scheduled_link_tdm_delay_ns": max(
-            0.0, capture_ready_ns - physical_stage_ns
+            0.0, board_ns if ratio_mode else capture_ready_ns - physical_stage_ns
         ),
         "fixed_slot_event_timing_status": (
             "pass" if causal_slack_ns >= -1.0e-9 else "fail"
@@ -712,13 +720,17 @@ def build_system_timing(
         transport_delay = record["transport_delay_ns"]
         transport_model = "phase5-boarddb-model"
         if board_link_delays is not None:
+            board_links = {link.id: link for link in platform.links}
             transport_delay = 0.0
             for hop in scheduled_hops:
                 key = (hop["link"], hop["from"], hop["to"])
-                transport_delay += (
-                    board_link_delays[key]
-                    + hop["tdm_wait_slots"] * hop["tdm_slot_ns"]
-                )
+                model = board_links[hop["link"]].tdm_delay_model
+                if model is not None:
+                    transport_delay += model.delay_ns(
+                        schedule_entries[hop["schedule_entry"]].get("tdm_ratio"))
+                else:
+                    transport_delay += (board_link_delays[key]
+                        + hop["tdm_wait_slots"] * hop["tdm_slot_ns"])
             transport_model = "board-link-timing-db"
         target_period = record["clock_period_ns"]
         target_required_time = record.get("required_time_ns", target_period)
@@ -766,6 +778,7 @@ def build_system_timing(
                     commit_slot=commit_slot,
                     uncertainty_ns=sampled_uncertainty_ns,
                     transport_semantics=str(transport_semantics),
+                    platform=platform,
                 )
                 member_local_delay = fixed_slot_event[
                     "physical_logic_delay_bound_ns"
@@ -784,6 +797,8 @@ def build_system_timing(
                     if sampled_schedule
                     else "registered-boundary-fixed-slot-event-propagation"
                 )
+                if any(link.tdm_delay_model is not None for link in platform.links):
+                    transport_model = "linear-ratio-v1"
                 total_delay = fixed_slot_event["system_delay_bound_ns"]
                 fixed_slot_event_paths += 1
                 fixed_slot_event_failures += int(

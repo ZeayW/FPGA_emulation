@@ -33,6 +33,8 @@ def build_route_refinement_batches(
         for edge in candidate["tree_edges"]:
             key = _arc_key(edge["link"], edge["from"], edge["to"])
             domains_by_demand[index].add(arcs[key]["capacity_key"])
+            if arcs[key].get("bank_group"):
+                domains_by_demand[index].add(arcs[key]["opposite_capacity_key"])
 
     net_to_demand = {demand["net"]: index for index, demand in enumerate(demands)}
     paths_by_demand: Dict[int, Set[int]] = defaultdict(set)

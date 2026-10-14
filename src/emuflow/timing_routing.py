@@ -14,6 +14,7 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .platform import Platform
+from .bank_allocation import apply_bank_domain_ratios
 from .routing import (
     ArcKey,
     _arc_key,
@@ -22,6 +23,7 @@ from .routing import (
     estimate_tdm_ratio,
     normalize_route_constraints,
     route_link_delay_ns,
+    route_link_delay_coefficients_ns,
     validate_system_routes,
     _validate_route_tree,
 )
@@ -507,8 +509,12 @@ def _prepare_native_model(
                     arc["to"],
                     constraints,
                 ),
-                "beta_ns": 1000.0 / link.fabric_clock_mhz,
+                "beta_ns": route_link_delay_coefficients_ns(
+                    platform, link.id, arc["from"], arc["to"], constraints
+                )[1],
                 "is_sll": link.id in sll_links,
+                "bank_count": arc.get("bank_count", 0),
+                "wires_per_bank": arc.get("wires_per_bank", 0),
             }
         )
 
@@ -584,9 +590,9 @@ def _write_native_input(
     normalization = model["normalization"]
     with path.open("w", encoding="utf-8") as stream:
         stream.write(
-            "EMUFLOW_TLR_INPUT_V9\n"
+            "EMUFLOW_TLR_INPUT_V9_BANKS_V1\n"
             if provider == GLOBAL_CANDIDATE_PROVIDER
-            else "EMUFLOW_TLR_INPUT_V7\n"
+            else "EMUFLOW_TLR_INPUT_V7_BANKS_V1\n"
         )
         topology_mode = {
             NATIVE_ROUTER_PROVIDER: 0,
@@ -621,7 +627,8 @@ def _write_native_input(
                 f"{arc['capacity_domain']} {arc['direction_group']} "
                 f"{arc['opposite_arc']} {arc['capacity']} "
                 f"{arc['lanes']} {arc['delay_ns']:.17g} "
-                f"{arc['beta_ns']:.17g} {int(arc['is_sll'])}\n"
+                f"{arc['beta_ns']:.17g} {int(arc['is_sll'])} "
+                f"{arc['bank_count']} {arc['wires_per_bank']}\n"
             )
         for demand in model["native_demands"]:
             sinks = ",".join(str(sink) for sink in demand["sinks"])
@@ -1318,6 +1325,7 @@ def reconstruct_system_route_timing(
             is_sll=capacity["link"] in constraints["sll_links"],
         )
 
+    ratios = apply_bank_domain_ratios(capacities, capacity_usage, ratios, constraints)
     route_tdm_delay_by_net = {}
     for route in routes["routes"]:
         graph: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
@@ -1344,8 +1352,9 @@ def reconstruct_system_route_timing(
                     + (
                         0.0
                         if link_id in constraints["sll_links"]
-                        else (1000.0 / link.fabric_clock_mhz)
-                        * (ratios[capacity_key] - 1)
+                        else route_link_delay_coefficients_ns(
+                            platform, link_id, node, sink, constraints
+                        )[1] * (ratios[capacity_key] - 1)
                     )
                 )
                 queue.append(sink)
@@ -1362,7 +1371,9 @@ def reconstruct_system_route_timing(
                     0.0
                     if edge["link"] in constraints["sll_links"]
                     else (
-                        1000.0 / link_by_id[edge["link"]].fabric_clock_mhz
+                        route_link_delay_coefficients_ns(
+                            platform, edge["link"], edge["from"], edge["to"], constraints
+                        )[1]
                     )
                     * (
                         ratios[
@@ -1767,6 +1778,7 @@ def validate_native_system_routes(
             constraints,
             is_sll=capacity["link"] in constraints["sll_links"],
         )
+    ratios = apply_bank_domain_ratios(capacities, capacity_usage, ratios, constraints)
     route_tdm_delay_by_net = {}
     for net, route in route_by_net.items():
         graph: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
@@ -1786,8 +1798,9 @@ def validate_native_system_routes(
                     + route_link_delay_ns(
                         platform, link_id, node, sink, constraints
                     )
-                    + (1000.0 / link.fabric_clock_mhz)
-                    * (ratios[capacity_key] - 1)
+                    + route_link_delay_coefficients_ns(
+                        platform, link_id, node, sink, constraints
+                    )[1] * (ratios[capacity_key] - 1)
                 )
                 queue.append(sink)
         if constraints.get("tree_edge_sum_tdm", False):
@@ -1803,7 +1816,9 @@ def validate_native_system_routes(
                     0.0
                     if edge["link"] in constraints["sll_links"]
                     else (
-                        1000.0 / link_by_id[edge["link"]].fabric_clock_mhz
+                        route_link_delay_coefficients_ns(
+                            platform, edge["link"], edge["from"], edge["to"], constraints
+                        )[1]
                     )
                     * (
                         ratios[

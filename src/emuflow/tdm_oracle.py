@@ -243,6 +243,7 @@ def _slot_oracle_model(
 ) -> Dict[str, Any]:
     from .routing import normalize_route_constraints
     from .tdm_ratio import validate_tdm_ratio_plan
+    from .tdm import tdm_hop_latency_cycles
 
     validate_tdm_ratio_plan(routes, platform, ratio_plan)
     hops = list(ratio_plan["hops"])
@@ -304,6 +305,11 @@ def _slot_oracle_model(
         "constraints": constraints,
         "frame_slots": constraints["frame_slots"],
         "link_by_id": link_by_id,
+        "latency_by_hop": {
+            hop["index"]: tdm_hop_latency_cycles(
+                link_by_id[hop["link"]], hop["discrete_ratio"],
+                base_delay_ns=hop["base_delay_ns"]) for hop in hops
+        },
         "hop_by_index": {hop["index"]: hop for hop in hops},
         "parent": parent,
         "depth": depth,
@@ -356,7 +362,7 @@ def _reconstruct_slot_oracle_result(
                 round_ready[transport_round]
                 if parent is None
                 else slots[parent]
-                + link_by_id[hop_by_index[parent]["link"]].latency_cycles
+                + model["latency_by_hop"][parent]
                 + COMBINATIONAL_SETTLE_SLOTS
             )
             slot = slots[index]
@@ -364,7 +370,7 @@ def _reconstruct_slot_oracle_result(
                 ready + hop["discrete_ratio"],
                 frame_slots
                 - RUNTIME_BARRIER_SLOTS
-                - link_by_id[hop["link"]].latency_cycles,
+                - model["latency_by_hop"][index],
             )
             if slot < ready or slot >= latest_exclusive:
                 raise ValidationError(
@@ -384,7 +390,7 @@ def _reconstruct_slot_oracle_result(
                 continue
             completion = max(
                 slots[index]
-                + link_by_id[hop_by_index[index]["link"]].latency_cycles
+                + model["latency_by_hop"][index]
                 for index in model["sink_hops_by_route"][route]
             )
             route_completions[route] = completion
@@ -396,10 +402,12 @@ def _reconstruct_slot_oracle_result(
         transport_arrival = 0.0
         for index in path["hops"]:
             hop = hop_by_index[index]
-            transport_arrival = max(
-                transport_arrival,
-                hop["beta_ns"] * slots[index],
-            ) + hop["base_delay_ns"]
+            if hop.get("delay_model") == "linear-ratio-v1":
+                transport_arrival += hop["base_delay_ns"] + hop["beta_ns"] * (hop["discrete_ratio"] - 1)
+            else:
+                transport_arrival = max(
+                    transport_arrival, hop["beta_ns"] * slots[index]
+                ) + hop["base_delay_ns"]
         delay = path["fixed_delay_ns"] + transport_arrival
         slack = path.get("required_time_ns", path["clock_period_ns"]) - delay
         worst = min(
@@ -521,9 +529,7 @@ def exact_multi_round_slot_schedule(
                 prior_completions.append(
                     max(
                         slot_by_hop[sink_hop]
-                        + link_by_id[
-                            hop_by_index[sink_hop]["link"]
-                        ].latency_cycles
+                        + model["latency_by_hop"][sink_hop]
                         for sink_hop in model["sink_hops_by_route"][route]
                     )
                 )
@@ -537,16 +543,14 @@ def exact_multi_round_slot_schedule(
         else:
             ready = (
                 slot_by_hop[parent_index]
-                + link_by_id[
-                    hop_by_index[parent_index]["link"]
-                ].latency_cycles
+                + model["latency_by_hop"][parent_index]
                 + COMBINATIONAL_SETTLE_SLOTS
             )
         latest = min(
             ready + hop["discrete_ratio"],
             frame_slots
             - RUNTIME_BARRIER_SLOTS
-            - link_by_id[hop["link"]].latency_cycles,
+            - model["latency_by_hop"][index],
         )
         key_prefix = (hop["domain"], hop["lane"])
         for slot in range(ready, latest):

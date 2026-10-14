@@ -35,9 +35,9 @@ def directed_board_links(
 def build_board_link_timing_model(
     platform: Platform,
     *,
-    reference: str = "BoardDB latency_cycles",
+    reference: str = "BoardDB declared interconnect model",
 ) -> Dict[str, Any]:
-    """Materialize the current BoardDB cycle latency as an explicit model."""
+    """Materialize the declared delay model; ratio models carry an R=1 reference."""
     if not reference:
         raise ValidationError("board link timing reference is empty")
     records = []
@@ -52,7 +52,12 @@ def build_board_link_timing_model(
                 "to": sink,
                 "fabric_clock_mhz": link.fabric_clock_mhz,
                 "latency_cycles": link.latency_cycles,
-                "delay_bound_ns": link.latency_cycles * slot_ns,
+                "delay_bound_ns": (link.tdm_delay_model.delay_ns(1)
+                                   if link.tdm_delay_model is not None
+                                   else link.latency_cycles * slot_ns),
+                **({"tdm_delay_model": link.tdm_delay_model.to_dict(),
+                    "reference_tdm_ratio": 1}
+                   if link.tdm_delay_model is not None else {}),
                 "qualification": "model-only",
                 "source": {
                     "kind": "boarddb-model",
@@ -136,6 +141,14 @@ def validate_board_link_timing(
             "characterized-upper-bound": "vendor-characterization",
             "measured-upper-bound": "hardware-measurement",
         }[qualification]
+        if link.tdm_delay_model is not None:
+            if (record.get("tdm_delay_model") != link.tdm_delay_model.to_dict()
+                    or record.get("reference_tdm_ratio") != 1
+                    or not math.isclose(delay, link.tdm_delay_model.delay_ns(1), abs_tol=1e-9)
+                    or qualification != "model-only"):
+                raise ValidationError(f"{context}: TDM ratio model disagrees with BoardDB")
+        elif "tdm_delay_model" in record:
+            raise ValidationError(f"{context}: unexpected TDM ratio model")
         if source["kind"] != expected_source_kind:
             raise ValidationError(f"{context} measurement claim is invalid")
         observations = source.get("observations")

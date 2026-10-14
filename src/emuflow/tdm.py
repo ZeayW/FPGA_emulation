@@ -11,6 +11,8 @@ from .routing import (
     SYSTEM_ROUTES_SCHEMA,
     build_directed_graph,
     normalize_route_constraints,
+    route_hop_delay_ns,
+    route_link_delay_coefficients_ns,
 )
 
 
@@ -84,15 +86,11 @@ def is_sampled_virtual_wire_schedule(schedule: Mapping[str, Any]) -> bool:
 
 
 def is_fixed_slot_transport_schedule(schedule: Mapping[str, Any]) -> bool:
-    """Return whether Phase 7 must honor the concrete TX slot in timing.
+    """Return whether concrete TX events exist for physical readiness checks.
 
-    Both registered boundaries and sampled virtual wires are implemented by
-    the same static slot transport.  Their functional readiness rules differ,
-    but physical target-clock timing must use the absolute TX slot for both;
-    a registered source is stable while it waits, not teleported across that
-    wait.  Keeping this predicate separate from the sampled dependency
-    certificate prevents Phase 7 from comparing two transport semantics with
-    different delay models.
+    A declared ratio-delay model owns its target transport delay separately.
+    The events still constrain causal TX/RX and commit readiness; legacy
+    platforms also use the projected fixed-slot event as the delay objective.
     """
 
     return schedule.get("transport_semantics") in {
@@ -519,6 +517,134 @@ def _exact_capture_certificate(
     return records, minimum
 
 
+def _bank_direction_allocations(
+    routes: Mapping[str, Any], platform: Platform,
+    constraints: Mapping[str, Any],
+) -> Dict[Tuple[str, str, str], Dict[str, int]]:
+    """Choose integer bank budgets once for the concrete routed workload.
+
+    The load-based split is a deterministic minimax-ratio heuristic. Native
+    ratio optimization and scheduling then obey these fixed direction budgets;
+    neither is allowed to borrow individual wires from the opposite direction.
+    Lane identifiers remain physical, pair-global wire identifiers.
+    """
+    from .bank_allocation import allocate_shared_banks
+
+    counts: Dict[Tuple[str, str, str], int] = defaultdict(int)
+    for route in routes["routes"]:
+        for edge in route["tree_edges"]:
+            counts[(edge["link"], edge["from"], edge["to"])] += 1
+    result = {}
+    for link in platform.links:
+        if link.bank_count is None:
+            continue
+        left, right = sorted(link.endpoints)
+        forward = (link.id, left, right)
+        reverse = (link.id, right, left)
+        allocation = allocate_shared_banks(
+            counts[forward], counts[reverse], link.bank_count,
+            link.wires_per_bank,
+            min_ratio=int(constraints.get("tdm_min_ratio", 1)),
+            ratio_quantum=int(constraints["tdm_ratio_quantum"]),
+            max_ratio=int(constraints["frame_slots"]),
+        )
+        if allocation is None:
+            raise TDMScheduleInfeasibleError(
+                f"shared bank allocation is infeasible for link {link.id!r}"
+            )
+        for key, prefix, offset in (
+            (forward, "forward", 0),
+            (reverse, "reverse", allocation["forward_lanes"]),
+        ):
+            result[key] = {
+                "bank_count": allocation[f"{prefix}_banks"],
+                "wires_per_bank": link.wires_per_bank,
+                "lane_offset": offset,
+                "lanes": allocation[f"{prefix}_lanes"],
+            }
+    return result
+
+
+def _bank_allocation_records(
+    allocations: Mapping[Tuple[str, str, str], Mapping[str, int]],
+) -> List[Dict[str, Any]]:
+    return [
+        {"link": key[0], "from": key[1], "to": key[2], **value}
+        for key, value in sorted(allocations.items())
+    ]
+
+
+def tdm_hop_latency_cycles(
+    link: Any, ratio: int, *, base_delay_ns: Optional[float] = None,
+) -> int:
+    """Round a ratio-model hop delay up to physical fabric-clock cycles."""
+    if link.tdm_delay_model is None:
+        return link.latency_cycles
+    if isinstance(ratio, bool) or not isinstance(ratio, int) or ratio < 1:
+        raise ValidationError("TDM hop latency requires a positive integer ratio")
+    delay = (link.tdm_delay_model.intercept_ns
+             + link.tdm_delay_model.ratio_coefficient_ns * ratio)
+    if base_delay_ns is not None:
+        delay = base_delay_ns + link.tdm_delay_model.ratio_coefficient_ns * (ratio - 1)
+    return math.ceil(delay / (1000.0 / link.fabric_clock_mhz))
+
+
+def _baseline_ratio_hops(
+    routes: Mapping[str, Any], platform: Platform,
+    arcs: Mapping[Any, Any], allocations: Mapping[Any, Any],
+    constraints: Mapping[str, Any],
+) -> Dict[HopKey, Dict[str, int]]:
+    """Bind new-model baseline nets to homogeneous fixed wire groups.
+
+    The old earliest-free-wire baseline can put unrelated releases on one
+    wire unpredictably. Fixing each wire group first makes its actual ratio
+    available before causality/arrival times are scheduled.
+    """
+    links = _link_by_id(platform)
+    grouped: Dict[str, List[HopKey]] = defaultdict(list)
+    for route in routes["routes"]:
+        for edge in route["tree_edges"]:
+            if links[edge["link"]].tdm_delay_model is not None:
+                key = _hop_key(route["id"], edge["link"], edge["from"], edge["to"])
+                grouped[arcs[key[1:]]["capacity_key"]].append(key)
+    result = {}
+    for keys in grouped.values():
+        keys.sort()
+        link = links[keys[0][1]]
+        budget = allocations.get(keys[0][1:])
+        lanes = budget["lanes"] if budget else link.transport_bits_per_cycle_per_direction
+        offset = budget["lane_offset"] if budget else 0
+        if lanes <= 0:
+            raise TDMScheduleInfeasibleError("active direction has no allocated bank")
+        for i, key in enumerate(keys):
+            local_lane = i % lanes
+            count = (len(keys) - 1 - local_lane) // lanes + 1
+            raw = max(count, int(constraints.get("tdm_min_ratio", 1)))
+            quantum = int(constraints["tdm_ratio_quantum"])
+            ratio = 1 if raw == 1 else math.ceil(raw / quantum) * quantum
+            if ratio > constraints["frame_slots"]:
+                raise TDMScheduleInfeasibleError("baseline wire group exceeds maximum TDM ratio")
+            result[key] = {"lane": offset + local_lane, "discrete_ratio": ratio}
+    return result
+
+
+def _entry_ratio_delay(
+    link: Any, entry: Mapping[str, Any], base: float, slope: float,
+    prior_arrival: float,
+) -> Tuple[float, float, float]:
+    """Keep physical TX events separate from the declared net-delay model."""
+    slot_period = 1000.0 / link.fabric_clock_mhz
+    tx_time = float(entry["slot"]) * slot_period
+    if link.tdm_delay_model is not None:
+        ratio = entry.get("tdm_ratio")
+        if isinstance(ratio, bool) or not isinstance(ratio, int) or ratio < 1:
+            raise ValidationError("ratio-delay schedule entry requires a positive tdm_ratio")
+        hop_delay = base + slope * (ratio - 1)
+        return hop_delay, prior_arrival + hop_delay, tx_time
+    wait = entry["slot"] - entry["ready_slot"]
+    return base + slot_period * wait, max(prior_arrival, tx_time) + base, tx_time
+
+
 def build_tdm_schedule(
     routes: Mapping[str, Any],
     platform: Platform,
@@ -544,6 +670,7 @@ def build_tdm_schedule(
     )
     _, arcs, capacity_records = build_directed_graph(platform, constraints)
     links = _link_by_id(platform)
+    bank_allocations = _bank_direction_allocations(routes, platform, constraints)
     planned_hops = None
     planned_round_one_ready = None
     if ratio_plan is not None:
@@ -569,6 +696,8 @@ def build_tdm_schedule(
         key: list(range(frame_slots + 1)) for key in capacity_records
     }
     planned_occupancy: Dict[str, Set[Tuple[int, int]]] = defaultdict(set)
+    baseline_hops = (_baseline_ratio_hops(routes, platform, arcs, bank_allocations, constraints)
+                     if ratio_plan is None else {})
 
     def first_available_slot(capacity_key: str, start: int) -> int:
         parents = next_available[capacity_key]
@@ -665,18 +794,13 @@ def build_tdm_schedule(
                 )
             arc = arcs[arc_key]
             link = links[edge["link"]]
+            bank_budget = bank_allocations.get(arc_key)
+            lane_offset = bank_budget["lane_offset"] if bank_budget else 0
+            lane_budget = bank_budget["lanes"] if bank_budget else link.transport_bits_per_cycle_per_direction
             ready_slot = (
                 source_ready_slot
                 if edge["from"] == route["source"]
                 else arrival_by_node[edge["from"]] + 1
-            )
-            # The final frame slot is reserved for the lockstep runtime
-            # barrier/virtual-clock release.  A transport arrival must be
-            # visible before that slot, not merely before the frame wraps.
-            latest_exclusive = (
-                frame_slots
-                - RUNTIME_BARRIER_SLOTS
-                - link.latency_cycles
             )
             plan_hop = (
                 planned_hops.get(
@@ -695,7 +819,15 @@ def build_tdm_schedule(
                     f"TDM ratio plan is missing demand {route['id']!r} "
                     f"edge {arc_key}"
                 )
-            if plan_hop is None:
+            baseline_hop = baseline_hops.get(_hop_key(
+                route["id"], edge["link"], edge["from"], edge["to"]))
+            assigned_hop = plan_hop or baseline_hop
+            ratio = assigned_hop["discrete_ratio"] if assigned_hop else 1
+            base, _slope = route_link_delay_coefficients_ns(
+                platform, edge["link"], edge["from"], edge["to"], constraints)
+            latency_cycles = tdm_hop_latency_cycles(link, ratio, base_delay_ns=base)
+            latest_exclusive = frame_slots - RUNTIME_BARRIER_SLOTS - latency_cycles
+            if assigned_hop is None:
                 slot = (
                     frame_slots
                     if ready_slot >= frame_slots
@@ -705,13 +837,12 @@ def build_tdm_schedule(
                     )
                 )
                 lane = (
-                    slot_fill[arc["capacity_key"]][slot]
+                    lane_offset + slot_fill[arc["capacity_key"]][slot]
                     if slot < frame_slots
                     else 0
                 )
             else:
-                lane = plan_hop["lane"]
-                ratio = plan_hop["discrete_ratio"]
+                lane = assigned_hop["lane"]
                 ratio_window_end = min(
                     latest_exclusive,
                     ready_slot + ratio,
@@ -728,19 +859,19 @@ def build_tdm_schedule(
                     f"TDM scheduling is infeasible for demand {route['id']!r} "
                     f"edge {arc_key}: ready={ready_slot}, "
                     f"frame_slots={frame_slots}, "
-                    f"latency={link.latency_cycles}"
+                    f"latency={latency_cycles}"
                 )
-            if plan_hop is not None and slot >= ready_slot + ratio:
+            if assigned_hop is not None and slot >= ready_slot + ratio:
                 raise TDMScheduleInfeasibleError(
                     f"TDM ratio schedule is infeasible for demand "
                     f"{route['id']!r} edge {arc_key}: ready={ready_slot}, "
                     f"ratio={ratio}, lane={lane}"
                 )
-            if plan_hop is None:
+            if assigned_hop is None:
                 slot_fill[arc["capacity_key"]][slot] += 1
                 if (
                     slot_fill[arc["capacity_key"]][slot]
-                    == link.transport_bits_per_cycle_per_direction
+                    == lane_budget
                 ):
                     next_available[arc["capacity_key"]][slot] = (
                         first_available_slot(
@@ -752,7 +883,7 @@ def build_tdm_schedule(
                 planned_occupancy[arc["capacity_key"]].add(
                     (slot, lane)
                 )
-            arrival_slot = slot + link.latency_cycles
+            arrival_slot = slot + latency_cycles
             arrival_by_node[edge["to"]] = arrival_slot
             entry = {
                     "id": f"s{entry_index:06d}",
@@ -779,6 +910,8 @@ def build_tdm_schedule(
                         "ratio_wait_slots": slot - ready_slot,
                     }
                 )
+            if baseline_hop is not None:
+                entry["tdm_ratio"] = ratio
             entries.append(entry)
             entry_index += 1
 
@@ -913,6 +1046,7 @@ def build_tdm_schedule(
             else {}
         ),
         "route_constraints": constraints,
+        **({"bank_allocations": _bank_allocation_records(bank_allocations)} if bank_allocations else {}),
         "routes": [
             {
                 "id": route["id"],
@@ -1217,6 +1351,10 @@ def validate_tdm_schedule(
             )
     _, arcs, _ = build_directed_graph(platform, constraints)
     links = _link_by_id(platform)
+    bank_allocations = _bank_direction_allocations(routes, platform, constraints)
+    if bank_allocations and schedule.get("bank_allocations") != _bank_allocation_records(bank_allocations):
+        raise ValidationError("schedule.bank_allocations does not match routed bank allocation")
+    bank_directions: Dict[Tuple[str, int], Tuple[str, str]] = {}
     expected = _expected_hops(routes)
     academic_schedule = schedule.get("provider") in {
         TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER,
@@ -1277,6 +1415,8 @@ def validate_tdm_schedule(
     if schedule.get("routes") != expected_route_metadata:
         raise ValidationError("schedule.routes does not match system routes")
 
+    baseline_hops = (_baseline_ratio_hops(routes, platform, arcs, bank_allocations, constraints)
+                     if not academic_schedule else {})
     raw_entries = schedule.get("entries")
     if not isinstance(raw_entries, list):
         raise ValidationError("schedule.entries: expected an array")
@@ -1331,6 +1471,23 @@ def validate_tdm_schedule(
             raise ValidationError(
                 f"schedule.entries[{index}].lane: out of range"
             )
+        bank_budget = bank_allocations.get((entry["link"], entry["from"], entry["to"]))
+        if bank_budget is not None:
+            offset = bank_budget["lane_offset"]
+            if not offset <= lane < offset + bank_budget["lanes"]:
+                raise ValidationError("schedule entry wire lies outside its allocated direction banks")
+            bank_key = (entry["link"], lane // bank_budget["wires_per_bank"])
+            direction = (entry["from"], entry["to"])
+            if bank_directions.setdefault(bank_key, direction) != direction:
+                raise ValidationError("schedule bank is assigned to both directions")
+        if link.tdm_delay_model is not None:
+            ratio = entry.get("tdm_ratio")
+            quantum = int(constraints["tdm_ratio_quantum"])
+            minimum = int(constraints.get("tdm_min_ratio", 1))
+            if (isinstance(ratio, bool) or not isinstance(ratio, int)
+                    or ratio < minimum or ratio > frame_slots
+                    or (ratio != 1 and ratio % quantum)):
+                raise ValidationError("schedule entry tdm_ratio is invalid for the net delay model")
         collision = (slot, lane)
         if collision in occupancy[arc["capacity_key"]]:
             raise ValidationError(
@@ -1371,7 +1528,16 @@ def validate_tdm_schedule(
                     f"schedule.entries[{index}]: "
                     "wait exceeds TDM ratio window"
                 )
-        expected_arrival = slot + link.latency_cycles
+        if key in baseline_hops:
+            baseline = baseline_hops[key]
+            if lane != baseline["lane"] or entry.get("tdm_ratio") != baseline["discrete_ratio"]:
+                raise ValidationError("baseline schedule wire/ratio differs from fixed group")
+            if slot - entry["ready_slot"] >= entry["tdm_ratio"]:
+                raise ValidationError("baseline schedule wait exceeds its ratio window")
+        base, _slope = route_link_delay_coefficients_ns(
+            platform, entry["link"], entry["from"], entry["to"], constraints)
+        expected_arrival = slot + tdm_hop_latency_cycles(
+            link, entry.get("tdm_ratio", 1), base_delay_ns=base)
         if entry.get("arrival_slot") != expected_arrival:
             raise ValidationError(
                 f"schedule.entries[{index}].arrival_slot: expected "
@@ -1760,17 +1926,11 @@ def reconstruct_tdm_schedule_timing(
     *,
     model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Reconstruct projected fixed-slot delay on every imported STA path.
+    """Reconstruct delay on every imported STA path.
 
-    A concrete static-TDM schedule is an event schedule: transmitting in
-    slot 7 is one slot later than transmitting in slot 6 even when both
-    entries have ``slot == ready_slot``.  The old Phase-5 objective charged
-    only ``slot - ready_slot`` and therefore could not distinguish those two
-    schedules, while Phase 7C correctly charged the absolute transmit event.
-    This pre-physical projection mirrors that event semantics for both
-    registered and sampled transports.  Phase 7C remains the sign-off model
-    because it replaces the projected logic/interface delays with routed
-    measurements.
+    Declared per-hop ratio models sum d(R) without adding slot waits again.
+    Legacy links retain their projected fixed-slot event semantics. Physical
+    readiness and arrival slots are checked separately by schedule validation.
     """
     if model is None:
         records = reconstruct_tdm_schedule_timing_paths_from_routes(
@@ -1810,7 +1970,7 @@ def reconstruct_tdm_schedule_timing(
     )
     return {
         "status": "pass",
-        "timing_model": "projected-fixed-slot-event-v1",
+        "timing_model": ("per-hop-ratio-delay-v1" if any(link.tdm_delay_model is not None for link in platform.links) else "projected-fixed-slot-event-v1"),
         "timing_paths": len(records),
         "worst_path": worst["path"],
         "worst_delay_ns": worst["delay_ns"],
@@ -1841,6 +2001,10 @@ def reconstruct_tdm_schedule_timing_paths(
     """Return independently reconstructed, traceable timing-path records."""
     from .tdm_ratio import _normalized_slack, _prepare_model
 
+    if (any(link.tdm_delay_model is not None for link in platform.links)
+            and any(path.get("cut_transitions") is None
+                    for path in routes.get("timing", {}).get("paths", []))):
+        return reconstruct_tdm_schedule_timing_paths_from_routes(routes, platform, schedule)
     if model is None:
         model = _prepare_model(routes, platform)
     if entries is None:
@@ -1886,18 +2050,9 @@ def reconstruct_tdm_schedule_timing_paths(
                     "schedule timing reconstruction found a negative wait "
                     f"for hop {key}"
                 )
-            hop_delay_ns = (
-                hop["base_delay_ns"]
-                + hop["beta_ns"] * wait_slots
-            )
-            tx_time_ns = float(entry["slot"]) * hop["beta_ns"]
-            # A route hop cannot consume a value before the preceding hop
-            # has delivered it.  The max is normally the concrete TX event;
-            # it also makes a cross-domain/model-latency inconsistency a
-            # conservative delay penalty instead of silently time-travelling.
-            transport_arrival_ns = (
-                max(transport_arrival_ns, tx_time_ns)
-                + hop["base_delay_ns"]
+            link = next(link for link in platform.links if link.id == hop["link"])
+            hop_delay_ns, transport_arrival_ns, tx_time_ns = _entry_ratio_delay(
+                link, entry, hop["base_delay_ns"], hop["beta_ns"], transport_arrival_ns
             )
             scheduled_hops.append(
                 {
@@ -1910,7 +2065,11 @@ def reconstruct_tdm_schedule_timing_paths(
                     "rx_endpoint": f"__emuflow_rx_{entry['id']}",
                     "base_link_delay_ns": hop["base_delay_ns"],
                     "tdm_wait_slots": wait_slots,
-                    "tdm_slot_ns": hop["beta_ns"],
+                    "tdm_slot_ns": 1000.0 / link.fabric_clock_mhz,
+                    **({"tdm_ratio": entry["tdm_ratio"],
+                        "ratio_delay_slope_ns": hop["beta_ns"],
+                        "timing_model": "per-hop-ratio-delay-v1"}
+                       if link.tdm_delay_model is not None else {}),
                     "link_tdm_delay_ns": hop_delay_ns,
                     "fixed_slot_tx_time_ns": tx_time_ns,
                     "projected_arrival_ns": transport_arrival_ns,
@@ -1984,6 +2143,20 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
     constraints = normalize_route_constraints(
         routes.get("constraints"), platform
     )
+    entries = {}
+    for entry in schedule["entries"]:
+        key = _hop_key(
+            entry["demand"],
+            entry["link"],
+            entry["from"],
+            entry["to"],
+        )
+        if key in entries:
+            raise ValidationError(
+                f"schedule timing reconstruction found duplicate hop {key}"
+            )
+        entries[key] = entry
+    links = _link_by_id(platform)
     route_by_net = {}
     route_paths = {}
     longest_sink = {}
@@ -2002,6 +2175,16 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
                 edge["to"],
                 constraints,
             )
+            link = links[edge["link"]]
+            if link.tdm_delay_model is not None:
+                key = _hop_key(route["id"], edge["link"], edge["from"], edge["to"])
+                entry = entries.get(key)
+                if entry is None:
+                    raise ValidationError(f"schedule timing reconstruction is missing routed hop {key}")
+                _base, slope = route_link_delay_coefficients_ns(
+                    platform, edge["link"], edge["from"], edge["to"], constraints)
+                base_delay, _arrival, _tx = _entry_ratio_delay(
+                    link, entry, base_delay, slope, 0.0)
             paths_by_node[edge["to"]] = (
                 parent_delay + base_delay,
                 [*parent_path, edge],
@@ -2017,20 +2200,6 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
         }
     route_net_names = set(route_by_net)
 
-    entries = {}
-    for entry in schedule["entries"]:
-        key = _hop_key(
-            entry["demand"],
-            entry["link"],
-            entry["from"],
-            entry["to"],
-        )
-        if key in entries:
-            raise ValidationError(
-                f"schedule timing reconstruction found duplicate hop {key}"
-            )
-        entries[key] = entry
-    links = _link_by_id(platform)
     records = []
     for index, timing_path in enumerate(timing["paths"]):
         cut_nets = timing_path.get("cut_nets")
@@ -2141,11 +2310,11 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
                     edge["to"],
                     constraints,
                 )
-                beta_ns = 1000.0 / link.fabric_clock_mhz
-                hop_delay = base_delay + beta_ns * wait_slots
-                tx_time_ns = float(entry["slot"]) * beta_ns
-                transport_arrival_ns = (
-                    max(transport_arrival_ns, tx_time_ns) + base_delay
+                _base, beta_ns = route_link_delay_coefficients_ns(
+                    platform, edge["link"], edge["from"], edge["to"], constraints
+                )
+                hop_delay, transport_arrival_ns, tx_time_ns = _entry_ratio_delay(
+                    link, entry, base_delay, beta_ns, transport_arrival_ns
                 )
                 scheduled_hops.append(
                     {
@@ -2158,7 +2327,11 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
                         "rx_endpoint": f"__emuflow_rx_{entry['id']}",
                         "base_link_delay_ns": base_delay,
                         "tdm_wait_slots": wait_slots,
-                        "tdm_slot_ns": beta_ns,
+                        "tdm_slot_ns": 1000.0 / link.fabric_clock_mhz,
+                        **({"tdm_ratio": entry["tdm_ratio"],
+                            "ratio_delay_slope_ns": beta_ns,
+                            "timing_model": "per-hop-ratio-delay-v1"}
+                           if link.tdm_delay_model is not None else {}),
                         "link_tdm_delay_ns": hop_delay,
                         "fixed_slot_tx_time_ns": tx_time_ns,
                         "projected_arrival_ns": transport_arrival_ns,
@@ -2352,15 +2525,12 @@ def schedule_to_systemverilog_testbench(
         fpga.id: index for index, fpga in enumerate(platform.fpgas)
     }
     links = _link_by_id(platform)
-    channel_keys = sorted(
-        {entry["capacity_key"] for entry in schedule["entries"]}
-    )
-    channel_index = {
-        key: index for index, key in enumerate(channel_keys)
-    }
-    channel_link = {}
-    for entry in schedule["entries"]:
-        channel_link[entry["capacity_key"]] = links[entry["link"]]
+    def channel_key(entry: Mapping[str, Any]) -> Tuple[str, int]:
+        return entry["capacity_key"], entry["arrival_slot"] - entry["slot"]
+
+    channel_keys = sorted({channel_key(entry) for entry in schedule["entries"]})
+    channel_index = {key: index for index, key in enumerate(channel_keys)}
+    channel_link = {channel_key(entry): links[entry["link"]] for entry in schedule["entries"]}
 
     lines = [
         "`timescale 1ns/1ps",
@@ -2391,7 +2561,7 @@ def schedule_to_systemverilog_testbench(
                 f"  wire [{lanes - 1}:0] rx_valid_{index};",
                 "  emuflow_tdm_link #(",
                 f"    .LANES({lanes}),",
-                f"    .LATENCY({link.latency_cycles})",
+                f"    .LATENCY({key[1]})",
                 f"  ) channel_{index} (",
                 "    .clk(clk), .reset(reset),",
                 f"    .tx_data(tx_data_{index}),",
@@ -2423,7 +2593,7 @@ def schedule_to_systemverilog_testbench(
     for slot in sorted(entries_by_slot):
         lines.append(f"      {slot}: begin")
         for entry in sorted(entries_by_slot[slot], key=lambda item: item["id"]):
-            channel = channel_index[entry["capacity_key"]]
+            channel = channel_index[channel_key(entry)]
             demand = demand_index[entry["demand"]]
             source = fpga_index[entry["from"]]
             lines.append(
@@ -2452,7 +2622,7 @@ def schedule_to_systemverilog_testbench(
             arrivals_by_slot[slot],
             key=lambda item: (item["hop"], item["id"]),
         ):
-            channel = channel_index[entry["capacity_key"]]
+            channel = channel_index[channel_key(entry)]
             demand = demand_index[entry["demand"]]
             sink = fpga_index[entry["to"]]
             lines.extend(

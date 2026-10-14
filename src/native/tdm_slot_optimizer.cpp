@@ -28,6 +28,8 @@ struct Hop {
   int priority = -1;
   double base_ns = 0.0;
   double beta_ns = 0.0;
+  double slot_period_ns = 0.0;
+  bool ratio_delay_model = false;
   int lane_resource = -1;
 };
 
@@ -99,7 +101,8 @@ Model read_model(const std::string& path) {
   if (!input) throw std::runtime_error("cannot open input");
   std::string header;
   std::getline(input, header);
-  if (header != "EMUFLOW_TDM_SLOT_INPUT_V4") {
+  const bool ratio_contract = header == "EMUFLOW_TDM_SLOT_INPUT_V5";
+  if (!ratio_contract && header != "EMUFLOW_TDM_SLOT_INPUT_V4") {
     throw std::runtime_error("invalid input header");
   }
   Model model;
@@ -121,6 +124,14 @@ Model read_model(const std::string& path) {
       fields >> hop.index >> hop.round >> hop.domain >> hop.lane >>
           hop.ratio >> hop.latency >> hop.release >> hop.priority >>
           hop.base_ns >> hop.beta_ns;
+      if (ratio_contract) {
+        int mode = -1;
+        fields >> hop.slot_period_ns >> mode;
+        if (mode != 0 && mode != 1) throw std::runtime_error("invalid delay mode");
+        hop.ratio_delay_model = mode == 1;
+      } else {
+        hop.slot_period_ns = hop.beta_ns;
+      }
       model.hops.push_back(hop);
     } else if (kind == "DEP") {
       Dependency dependency;
@@ -164,7 +175,10 @@ Model read_model(const std::string& path) {
     const auto& hop = model.hops[index];
     if (hop.index != index || hop.round < 0 || hop.domain < 0 ||
         hop.lane < 0 || hop.ratio <= 0 || hop.latency < 0 ||
-        hop.release < 0 || hop.priority < 0) {
+        hop.release < 0 || hop.priority < 0 ||
+        !std::isfinite(hop.slot_period_ns) || hop.slot_period_ns <= 0.0 ||
+        !std::isfinite(hop.base_ns) || hop.base_ns < 0.0 ||
+        !std::isfinite(hop.beta_ns) || hop.beta_ns < 0.0) {
       throw std::runtime_error("invalid hop record");
     }
   }
@@ -377,8 +391,12 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
     double transport_arrival = 0.0;
     for (int index : path.hops) {
       const auto& hop = model.hops[index];
-      const double tx_time = hop.beta_ns * result.slots[index];
-      transport_arrival = std::max(transport_arrival, tx_time) + hop.base_ns;
+      if (hop.ratio_delay_model) {
+        transport_arrival += hop.base_ns + hop.beta_ns * (hop.ratio - 1);
+      } else {
+        const double tx_time = hop.slot_period_ns * result.slots[index];
+        transport_arrival = std::max(transport_arrival, tx_time) + hop.base_ns;
+      }
     }
     const double delay = path.fixed_ns + transport_arrival;
     const double slack = path.required_time_ns - delay;

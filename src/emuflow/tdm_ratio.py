@@ -16,9 +16,9 @@ from .routing import (
     SYSTEM_ROUTES_SCHEMA,
     build_directed_graph,
     normalize_route_constraints,
-    route_link_delay_ns,
+    route_link_delay_coefficients_ns,
 )
-from .tdm import RUNTIME_BARRIER_SLOTS
+from .tdm import RUNTIME_BARRIER_SLOTS, _bank_direction_allocations, tdm_hop_latency_cycles
 from .tdm_compatibility import (
     derive_tdm_compatibility,
     validate_tdm_compatibility,
@@ -44,17 +44,13 @@ def _link_delay_model(
 ) -> Dict[Tuple[str, str, str], Tuple[float, float]]:
     result = {}
     for link in platform.links:
-        slot_ns = 1000.0 / link.fabric_clock_mhz
         left, right = link.endpoints
         directions = [(left, right)]
         if link.direction in {"full_duplex", "half_duplex"}:
             directions.append((right, left))
         for source, sink in directions:
-            result[(link.id, source, sink)] = (
-                route_link_delay_ns(
-                    platform, link.id, source, sink, constraints
-                ),
-                slot_ns,
+            result[(link.id, source, sink)] = route_link_delay_coefficients_ns(
+                platform, link.id, source, sink, constraints
             )
     return result
 
@@ -135,6 +131,7 @@ def _prepare_model(
     )
     _, arcs, capacities = build_directed_graph(platform, constraints)
     link_delays = _link_delay_model(platform, constraints)
+    bank_allocations = _bank_direction_allocations(routes, platform, constraints)
     links = {link.id: link for link in platform.links}
     raw_hops = []
     route_by_net = {}
@@ -186,6 +183,9 @@ def _prepare_model(
                     "direction_pair": (edge["from"], edge["to"]),
                     "base_delay_ns": base_ns,
                     "beta_ns": beta_ns,
+                    **({"slot_period_ns": 1000.0 / links[edge["link"]].fabric_clock_mhz,
+                        "delay_model": "linear-ratio-v1"}
+                       if links[edge["link"]].tdm_delay_model is not None else {}),
                 }
             )
             direction_pairs_by_capacity.setdefault(
@@ -234,15 +234,21 @@ def _prepare_model(
     domains = []
     for capacity_key in capacity_keys:
         capacity = capacities[capacity_key]
+        pair = next(iter(direction_pairs_by_capacity[capacity_key]))
+        bank_budget = bank_allocations.get((capacity["link"], *pair))
         domains.append(
             {
                 "index": domain_index[capacity_key],
                 "key": capacity_key,
                 "link": capacity["link"],
                 "direction": capacity["direction"],
-                "lanes": links[
+                "lanes": (bank_budget["lanes"] if bank_budget else links[
                     capacity["link"]
-                ].transport_bits_per_cycle_per_direction,
+                ].transport_bits_per_cycle_per_direction),
+                **({"bank_count": bank_budget["bank_count"],
+                    "wires_per_bank": bank_budget["wires_per_bank"],
+                    "lane_offset": bank_budget["lane_offset"]}
+                   if bank_budget else {}),
             }
         )
 
@@ -616,10 +622,15 @@ def _round_barrier_legalize(
     domain_by_index = {
         domain["index"]: domain for domain in model["domains"]
     }
-    latency_by_domain = {
-        index: link_by_id[domain["link"]].latency_cycles
-        for index, domain in domain_by_index.items()
-    }
+    representative_hop = {}
+    for hop in hop_records:
+        representative_hop.setdefault(hop["domain"], hop)
+
+    def latency_for(domain: int, ratio: int) -> int:
+        link = link_by_id[domain_by_index[domain]["link"]]
+        hop = representative_hop[domain]
+        return tdm_hop_latency_cycles(link, ratio, base_delay_ns=hop.get("base_delay_ns"))
+
 
     def buckets() -> Dict[
         Tuple[int, int, int], List[Dict[str, Any]]
@@ -659,7 +670,7 @@ def _round_barrier_legalize(
         source_ready_slot: int,
     ) -> int:
         domain, _direction, ratio = key
-        latency = latency_by_domain[domain]
+        latency = latency_for(domain, ratio)
         if len(rounds) == 1:
             available = frame_slots - RUNTIME_BARRIER_SLOTS - latency
             if available <= 0:
@@ -713,7 +724,7 @@ def _round_barrier_legalize(
                 required,
             )
 
-        minimum_latency = max(latency_by_domain.values())
+        minimum_latency = max(latency_for(key[0], key[2]) for key in counts)
         first_source_ready = minimum_latency + 1
         last_source_ready = (
             frame_slots
@@ -800,7 +811,7 @@ def _round_barrier_legalize(
 
         for key, count in counts.items():
             domain, _direction, ratio = key
-            latency = latency_by_domain[domain]
+            latency = latency_for(domain, ratio)
             denominator_sum = (
                 frame_slots - RUNTIME_BARRIER_SLOTS - latency
             )
@@ -1174,6 +1185,27 @@ def _round_barrier_legalize(
     }
 
 
+def _schedule_safe_max_ratio(model: Mapping[str, Any], platform: Platform, quantum: int) -> int:
+    links = {link.id: link for link in platform.links}
+    frame = model["constraints"]["frame_slots"]
+    allowed = [1] + list(range(quantum, frame + 1, quantum))
+    new_model = any(links[hop["link"]].tdm_delay_model is not None for hop in model["hops"])
+    if not new_model:
+        usable = min(frame - links[hop["link"]].latency_cycles for hop in model["hops"])
+        if usable <= 0:
+            raise ValidationError("TDM ratio schedule has no slot before link arrival deadline")
+        return (usable // quantum) * quantum if usable >= quantum else 1
+    # The ratio is a group capacity, not a requirement to populate all of its
+    # slots. Concrete group counts and arrivals are checked by legalization.
+    legal = [ratio for ratio in allowed if all(
+        tdm_hop_latency_cycles(links[hop["link"]], ratio,
+                               base_delay_ns=hop["base_delay_ns"])
+        < frame - RUNTIME_BARRIER_SLOTS for hop in model["hops"])]
+    if not legal:
+        raise ValidationError("TDM ratio schedule has no slot before ratio-dependent link arrival deadline")
+    return max(legal)
+
+
 def build_tdm_ratio_plan(
     routes: Mapping[str, Any],
     platform: Platform,
@@ -1201,21 +1233,7 @@ def build_tdm_ratio_plan(
             model["constraints"].get("tdm_ratio_quantum", 8)
         )
     if max_ratio is None:
-        link_by_id = {link.id: link for link in platform.links}
-        usable_slots = min(
-            model["constraints"]["frame_slots"]
-            - link_by_id[hop["link"]].latency_cycles
-            for hop in model["hops"]
-        )
-        if usable_slots <= 0:
-            raise ValidationError(
-                "TDM ratio schedule has no slot before link arrival deadline"
-            )
-        max_ratio = (
-            (usable_slots // ratio_quantum) * ratio_quantum
-            if usable_slots >= ratio_quantum
-            else 1
-        )
+        max_ratio = _schedule_safe_max_ratio(model, platform, ratio_quantum)
     for name, value, allow_zero in (
         ("max_iterations", max_iterations, False),
         ("max_ratio", max_ratio, False),
@@ -1316,6 +1334,10 @@ def build_tdm_ratio_plan(
     barrier_legalization = _round_barrier_legalize(
         hop_records, model, platform, max_ratio, ratio_quantum
     )
+    # Native and round-barrier solvers use local direction lanes. Bind once
+    # to pair-global physical wires at complete-bank offsets afterwards.
+    for hop in hop_records:
+        hop["lane"] += model["domains"][hop["domain"]].get("lane_offset", 0)
     hop_records.sort(key=lambda hop: hop["index"])
     timing_records, discrete_worst = _discrete_timing_records(
         model, hop_records
@@ -1543,8 +1565,8 @@ def validate_tdm_ratio_plan(
         if (
             isinstance(lane, bool)
             or not isinstance(lane, int)
-            or lane < 0
-            or lane >= domain["lanes"]
+            or lane < domain.get("lane_offset", 0)
+            or lane >= domain.get("lane_offset", 0) + domain["lanes"]
         ):
             raise ValidationError(
                 f"ratio plan hop {expected['index']}: lane is invalid"
@@ -1652,15 +1674,17 @@ def validate_tdm_ratio_plan(
         round_counts: Dict[
             Tuple[int, int], Counter
         ] = defaultdict(Counter)
+        lane_hops = {}
         for hop in raw_hops:
-            round_counts[(hop["domain"], hop["lane"])][
-                hop["transport_round"]
-            ] += 1
+            lane_key = (hop["domain"], hop["lane"])
+            lane_hops.setdefault(lane_key, hop)
+            round_counts[lane_key][hop["transport_round"]] += 1
         for (domain, lane), counts in round_counts.items():
             domain_record = domain_by_index[domain]
-            latency = link_by_id[
-                domain_record["link"]
-            ].latency_cycles
+            lane_hop = lane_hops[(domain, lane)]
+            latency = tdm_hop_latency_cycles(
+                link_by_id[domain_record["link"]], lane_hop["discrete_ratio"],
+                base_delay_ns=lane_hop["base_delay_ns"])
             if counts.get(0, 0) > source_ready - latency:
                 raise ValidationError(
                     f"ratio plan domain {domain} lane {lane}: "

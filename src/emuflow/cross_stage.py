@@ -49,6 +49,7 @@ from .routing import (
     SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
     load_route_constraints,
     route_link_delay_ns,
+    route_hop_delay_ns,
     semantic_contract_for_routes,
     validate_system_routes,
 )
@@ -177,16 +178,15 @@ def _scheduled_transport_delay_by_net(
                         f"schedule routed hop {key} has negative wait"
                     )
                 link = link_by_id[edge["link"]]
-                edge_delay = route_link_delay_ns(
-                    platform,
-                    edge["link"],
-                    edge["from"],
-                    edge["to"],
-                    constraints,
-                )
-                edge_delay += (
-                    1000.0 / link.fabric_clock_mhz
-                ) * wait_slots
+                if link.tdm_delay_model is not None:
+                    edge_delay = route_hop_delay_ns(
+                        platform, edge["link"], edge["from"], edge["to"],
+                        constraints, entry.get("tdm_ratio"),
+                    )
+                else:
+                    edge_delay = route_link_delay_ns(
+                        platform, edge["link"], edge["from"], edge["to"], constraints,
+                    ) + (1000.0 / link.fabric_clock_mhz) * wait_slots
                 arrival[edge["to"]] = arrival[node] + edge_delay
                 queue.append(edge["to"])
         delay_by_net[route["net"]] = max(
@@ -557,6 +557,8 @@ def _platform_automorphisms(
             fpga.part,
             fpga.utilization_limit,
             tuple(sorted(fpga.capacity.items())),
+            fpga.hp_io_bank_count,
+            fpga.hd_io_bank_count,
         )
 
     def link_signature(link: Any, mapping: Mapping[str, str]) -> Tuple[Any, ...]:
@@ -595,6 +597,12 @@ def _platform_automorphisms(
             link.fabric_clock_mhz,
             link.latency_cycles,
             link.capacity_sharing,
+            link.bank_count if link.bank_count is not None else -1,
+            link.wires_per_bank if link.wires_per_bank is not None else -1,
+            link.cable_count if link.cable_count is not None else -1,
+            link.hp_banks_per_cable if link.hp_banks_per_cable is not None else -1,
+            (() if link.tdm_delay_model is None else
+             (link.tdm_delay_model.intercept_ns, link.tdm_delay_model.ratio_coefficient_ns)),
             link.payload_bits_per_lane_per_cycle,
             link.max_line_rate_gbps_per_lane,
             bindings,

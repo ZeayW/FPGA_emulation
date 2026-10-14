@@ -570,21 +570,8 @@ def build_timing_dag_ratio_plan(
             model["constraints"].get("tdm_ratio_quantum", 8)
         )
     if max_ratio is None:
-        link_by_id = {link.id: link for link in platform.links}
-        usable_slots = min(
-            model["constraints"]["frame_slots"]
-            - link_by_id[hop["link"]].latency_cycles
-            for hop in model["hops"]
-        )
-        if usable_slots <= 0:
-            raise ValidationError(
-                "timing-DAG schedule has no slot before link arrival deadline"
-            )
-        max_ratio = (
-            (usable_slots // ratio_quantum) * ratio_quantum
-            if usable_slots >= ratio_quantum
-            else 1
-        )
+        from .tdm_ratio import _schedule_safe_max_ratio
+        max_ratio = _schedule_safe_max_ratio(model, platform, ratio_quantum)
     seed = optimize_prepared_timing_dag(
         model,
         executable=dag_executable,

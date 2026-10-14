@@ -38,7 +38,6 @@ emuflow multi-fpga compile \
   --top serv_synth_wrapper \
   --clock clk \
   --clock-period clk=10 \
-  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --opensta build/codespaces-opensta/install/bin/sta \
   --partition-provider mfspart \
   --min-used-fpgas 2 \
