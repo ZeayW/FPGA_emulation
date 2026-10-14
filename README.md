@@ -1708,15 +1708,7 @@ one global round boundary. The native router therefore cannot return a route
 that fits only in aggregate frame bandwidth but is impossible for Phase 5 to
 schedule. `routes.json` carries a compact `route-round-capacity/v1` contract;
 the standalone Phase 4 validator reconstructs its per-domain/round loads and
-capacities from the route trees, BoardDB, and frame policy. Phase 5 consumes
-that exact boundary as a hard handoff contract; it no longer searches for a
-second, potentially inconsistent split. Round-0 launches must arrive before
-the boundary and round-1 launches cannot start before it. In Static Exact mode,
-the effective TX readiness is the maximum of this transport window and the
-path-local dependency-DAG readiness, so capacity legalization cannot weaken
-combinational-cut causality and dependency timing cannot overflow the route
-window. The schedule retains only the compact contract binding needed by
-Phase 6 and independent validation.
+capacities from the route trees, BoardDB, and frame policy.
 
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
 gate. Its default public VTR mapping preserves multiplier and synchronous

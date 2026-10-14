@@ -57,11 +57,7 @@ from emuflow.tdm import (
 from emuflow.tdm_ratio import build_tdm_ratio_plan
 from emuflow.tdm_slot import refine_tdm_schedule_native
 from emuflow.timing_routing import route_system_native
-from tests.native_build import (
-    tdm_ratio_optimizer,
-    tdm_slot_optimizer,
-    tlr_router,
-)
+from tests.native_build import tdm_ratio_optimizer, tdm_slot_optimizer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -893,15 +889,75 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             )
 
     def _exact_routes(self, assignment, frame_slots=16):
+        demands = demands_from_assignment(assignment, self.platform)
         constraints = normalize_route_constraints(
             None, self.platform, frame_slots=frame_slots
         )
-        routes = route_system_native(
-            assignment,
-            self.platform,
-            constraints,
-            executable=str(tlr_router()),
-        )
+        utilization = {
+            "link_0_1:fpga0->fpga1": 0,
+            "link_0_1:fpga1->fpga0": 0,
+        }
+        routed = []
+        for demand in demands:
+            source = demand["source"]
+            sink = demand["sinks"][0]
+            key = f"link_0_1:{source}->{sink}"
+            utilization[key] += 1
+            routed.append(
+                {
+                    **demand,
+                    "tree_edges": [
+                        {
+                            "link": "link_0_1",
+                            "from": source,
+                            "to": sink,
+                        }
+                    ],
+                    "max_latency_cycles": 2,
+                }
+            )
+        capacity = 32 * frame_slots
+        link_utilization = []
+        for key in sorted(utilization):
+            direction = key.split(":", 1)[1]
+            used = utilization[key]
+            link_utilization.append(
+                {
+                    "key": key,
+                    "link": "link_0_1",
+                    "direction": direction,
+                    "capacity_bits": capacity,
+                    "used_bits": used,
+                    "utilization": used / capacity,
+                }
+            )
+        routes = {
+            "schema": "emuflow.system-routes/v1",
+            "design": assignment["design"],
+            "platform": self.platform.name,
+            "provider": "native-load-balanced-multicast-v2",
+            "constraints": constraints,
+            "demands": demands,
+            "routes": routed,
+            "link_utilization": link_utilization,
+            "metrics": {
+                "demands": len(demands),
+                "routed_sinks": len(demands),
+                "tree_edges": len(demands),
+                "max_link_utilization": max(
+                    item["utilization"] for item in link_utilization
+                ),
+                "total_link_bit_hops": len(demands),
+                "iterations": 1,
+            },
+            "semantic_contract_schema": assignment["semantic_contract"][
+                "schema"
+            ],
+            "semantic_contract_sha256": assignment[
+                "semantic_contract_sha256"
+            ],
+        }
+        validate_system_routes(assignment, self.platform, routes)
         # Low-level TDM tests exercise the solver directly with an in-memory
         # view. Persisted Phase 4 artifacts retain only the schema/digest
         # binding and are hydrated by run_phase5 from assignment.json.
@@ -1868,11 +1924,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             ]
         }
         self.assertEqual(readiness["n0"]["source_ready_slot"], 1)
-        self.assertEqual(readiness["d"]["dependency_ready_slot"], 4)
-        self.assertEqual(
-            readiness["d"]["source_ready_slot"],
-            routes["round_capacity_contract"]["source_ready_slot"],
-        )
+        self.assertEqual(readiness["d"]["source_ready_slot"], 4)
         self.assertEqual(
             readiness["d"]["evidence"][0]["predecessor_cut_net"],
             "n0",
@@ -2161,14 +2213,13 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "semantic_contract"):
             validate_system_routes(assignment, self.platform, tampered)
 
-    def test_phase4_rejects_fixed_frame_without_a_round_window(self):
+    def test_phase5_rejects_fixed_frame_that_cannot_meet_capture(self):
         _, assignment = self._exact_artifacts(
             frame_slots=4, dependent_return=True
         )
-        with self.assertRaisesRegex(
-            ValidationError, "no legal global round boundary"
-        ):
-            self._exact_routes(assignment, frame_slots=4)
+        routes = self._exact_routes(assignment, frame_slots=4)
+        with self.assertRaisesRegex(ValidationError, "infeasible"):
+            build_tdm_schedule(routes, self.platform)
 
     def test_phase6_event_model_uses_local_slot_values_and_is_equivalent(self):
         _, assignment = self._exact_artifacts(dependent_return=True)

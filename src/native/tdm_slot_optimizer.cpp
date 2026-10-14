@@ -25,8 +25,6 @@ struct Hop {
   int ratio = 1;
   int latency = 0;
   int release = 0;
-  int window_start = 0;
-  int window_end = 0;
   int priority = -1;
   double base_ns = 0.0;
   double beta_ns = 0.0;
@@ -101,7 +99,7 @@ Model read_model(const std::string& path) {
   if (!input) throw std::runtime_error("cannot open input");
   std::string header;
   std::getline(input, header);
-  if (header != "EMUFLOW_TDM_SLOT_INPUT_V5") {
+  if (header != "EMUFLOW_TDM_SLOT_INPUT_V4") {
     throw std::runtime_error("invalid input header");
   }
   Model model;
@@ -121,8 +119,8 @@ Model read_model(const std::string& path) {
     } else if (kind == "HOP") {
       Hop hop;
       fields >> hop.index >> hop.round >> hop.domain >> hop.lane >>
-          hop.ratio >> hop.latency >> hop.release >> hop.window_start >>
-          hop.window_end >> hop.priority >> hop.base_ns >> hop.beta_ns;
+          hop.ratio >> hop.latency >> hop.release >> hop.priority >>
+          hop.base_ns >> hop.beta_ns;
       model.hops.push_back(hop);
     } else if (kind == "DEP") {
       Dependency dependency;
@@ -166,9 +164,7 @@ Model read_model(const std::string& path) {
     const auto& hop = model.hops[index];
     if (hop.index != index || hop.round < 0 || hop.domain < 0 ||
         hop.lane < 0 || hop.ratio <= 0 || hop.latency < 0 ||
-        hop.release < 0 || hop.window_start < 0 ||
-        hop.window_end <= hop.window_start ||
-        hop.window_end > model.frame_slots || hop.priority < 0) {
+        hop.release < 0 || hop.priority < 0) {
       throw std::runtime_error("invalid hop record");
     }
   }
@@ -304,8 +300,9 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
       if (prior_completion < 0) return result;
       source_ready = prior_completion + model.settle_slots;
     }
-    if (round == 1 && model.planned_round_one_ready >= 0) {
-      source_ready = std::max(source_ready, model.planned_round_one_ready);
+    if (round == 1 && model.planned_round_one_ready >= 0 &&
+        source_ready > model.planned_round_one_ready) {
+      return result;
     }
     result.round_ready[round] = source_ready;
     auto compare = [&](int left, int right) {
@@ -328,7 +325,7 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
       const int index = ready_queue.top();
       ready_queue.pop();
       const auto& hop = model.hops[index];
-      int ready = std::max({source_ready, hop.release, hop.window_start});
+      int ready = std::max(source_ready, hop.release);
       for (const auto& dependency : parents[index]) {
         const int parent = dependency.first;
         ready = std::max(
@@ -337,7 +334,7 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
       }
       const int latest = std::min(
           ready + hop.ratio,
-          hop.window_end);
+          model.frame_slots - model.runtime_barrier_slots - hop.latency);
       int slot = ready;
       auto occupancy_key = [&](int candidate_slot) {
         return static_cast<std::uint64_t>(hop.lane_resource) *

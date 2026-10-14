@@ -1583,32 +1583,6 @@ def _static_exact_equivalence_context(
     ):
         raise ValidationError("static exact frame/commit contract is invalid")
     commit_slot = timing_constraints["commit_slot"]
-    active_rounds = sorted(
-        {route.get("transport_round", 0) for route in routes}
-    )
-    round_capacity_binding = schedule.get("round_capacity_binding")
-    if active_rounds == [0, 1]:
-        if (
-            not isinstance(round_capacity_binding, dict)
-            or round_capacity_binding.get("schema")
-            != "emuflow.route-round-capacity/v1"
-            or round_capacity_binding.get("frame_slots") != frame_slots
-            or round_capacity_binding.get("barrier_slots") != 1
-            or round_capacity_binding.get("active_rounds") != active_rounds
-            or isinstance(
-                round_capacity_binding.get("source_ready_slot"), bool
-            )
-            or not isinstance(
-                round_capacity_binding.get("source_ready_slot"), int
-            )
-        ):
-            raise ValidationError(
-                "static exact schedule round-capacity binding is invalid"
-            )
-    elif round_capacity_binding is not None:
-        raise ValidationError(
-            "static exact schedule has an unexpected round-capacity binding"
-        )
     entry_ids = set()
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
@@ -1696,7 +1670,6 @@ def _static_exact_equivalence_context(
         "frame_slots": frame_slots,
         "commit_slot": commit_slot,
         "timing_constraints": timing_constraints,
-        "round_capacity_binding": round_capacity_binding,
         "override_pins_by_shadow": {
             key: tuple(sorted(set(value)))
             for key, value in override_pins_by_shadow.items()
@@ -1961,22 +1934,12 @@ def _simulate_static_exact_macro_step(
             route = context["route_by_id"][entry["demand"]]
             if entry["from"] == route["source"]:
                 node = context["node_by_net"][entry["net"]]
-                dependency_ready_slot, readiness = (
-                    _static_exact_source_ready_slot(
-                        node,
-                        context["segment_by_id"],
-                        current_arrivals,
-                        context["timing_constraints"],
-                    )
+                ready_slot, readiness = _static_exact_source_ready_slot(
+                    node,
+                    context["segment_by_id"],
+                    current_arrivals,
+                    context["timing_constraints"],
                 )
-                round_binding = context["round_capacity_binding"]
-                round_ready_slot = (
-                    round_binding["source_ready_slot"]
-                    if round_binding is not None
-                    and route.get("transport_round", 0) == 1
-                    else 0
-                )
-                ready_slot = max(dependency_ready_slot, round_ready_slot)
                 source_ready_checks += 1
                 if entry["ready_slot"] != ready_slot or slot < ready_slot:
                     raise ValidationError(
