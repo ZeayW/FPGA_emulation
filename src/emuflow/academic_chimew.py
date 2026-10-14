@@ -41,6 +41,8 @@ from .chimew_refinement import (
 )
 from .chimew_rudy import CHIMEW_RUDY_INPUT_PROVIDER, CHIMEW_RUDY_INPUT_SCHEMA
 from .errors import ValidationError
+from .emuir_compact import is_compact_emuir, selected_net_instance_endpoints
+from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from .io import read_json, write_json
 from .ir import EmuIR
 from .platform import Platform
@@ -141,20 +143,39 @@ def _instance_locations(
                 )
         cluster_locations = _parse_vpr_placement(placement_path)
         packed = read_json(packed_path)
-        placement_ir = read_json(Path(lowering["output"]))
-        raw_instances = placement_ir.get("instances")
-        if not isinstance(raw_instances, list) or not raw_instances:
-            raise ValidationError(
-                f"academic Chimew prepass FPGA {fpga!r} has no placement instances"
-            )
-        instance_order = []
-        for index, instance in enumerate(raw_instances):
-            instance_id = instance.get("id") if isinstance(instance, Mapping) else None
-            if not isinstance(instance_id, str) or not instance_id:
+        placement_ir_path = Path(lowering["output"])
+        from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
+
+        if is_emuir_sqlite(placement_ir_path):
+            connection = open_emuir_sqlite_read_only(placement_ir_path)
+            try:
+                instance_order = [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT id FROM cell_records ORDER BY seq"
+                    )
+                ]
+            finally:
+                connection.close()
+        else:
+            placement_ir = read_json(placement_ir_path)
+            raw_instances = placement_ir.get("instances")
+            if not isinstance(raw_instances, list):
                 raise ValidationError(
-                    f"academic Chimew placement instance {index} is malformed"
+                    f"academic Chimew prepass FPGA {fpga!r} placement IR is malformed"
                 )
-            instance_order.append(instance_id)
+            instance_order = [
+                instance.get("id")
+                if isinstance(instance, Mapping) else None
+                for instance in raw_instances
+            ]
+        if not instance_order or any(
+            not isinstance(instance_id, str) or not instance_id
+            for instance_id in instance_order
+        ):
+            raise ValidationError(
+                f"academic Chimew prepass FPGA {fpga!r} has malformed placement instances"
+            )
         if len(instance_order) != len(set(instance_order)):
             raise ValidationError(
                 f"academic Chimew prepass FPGA {fpga!r} has duplicate instances"
@@ -1039,7 +1060,6 @@ def materialize_academic_chimew_inputs(
 
     if not 2 <= region_count <= 31:
         raise ValidationError("academic Chimew region count must be in [2, 31]")
-    ir = EmuIR.load(ir_path).value
     source_schedule = read_json(schedule_path)
     explicit_ratios = [
         "tdm_ratio" in entry for entry in source_schedule.get("entries", [])
@@ -1085,7 +1105,32 @@ def materialize_academic_chimew_inputs(
     )
     placement_sha = _sha256(placement_source)
     architecture_sha = _sha256(architecture_source)
-    net_by_id = {net["id"]: net for net in ir["nets"]}
+    scheduled_net_ids = [entry["net"] for entry in schedule["entries"]]
+    if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path):
+        connection = open_emuir_sqlite_read_only(ir_path)
+        try:
+            net_instances = selected_net_instance_endpoints(
+                connection, scheduled_net_ids
+            )
+        finally:
+            connection.close()
+    else:
+        ir = EmuIR.load(ir_path).value
+        net_instances = {
+            net["id"]: {
+                "drivers": [
+                    endpoint["instance"]
+                    for endpoint in net["drivers"]
+                    if endpoint.get("instance") is not None
+                ],
+                "sinks": [
+                    endpoint["instance"]
+                    for endpoint in net["sinks"]
+                    if endpoint.get("instance") is not None
+                ],
+            }
+            for net in ir["nets"]
+        }
     fpga_order = {fpga.id: index for index, fpga in enumerate(platform.fpgas)}
     coordinate_scale = 1.0 + max(
         point[0]
@@ -1096,21 +1141,13 @@ def materialize_academic_chimew_inputs(
     fallbacks = 0
     forwarded_boundary_endpoints = 0
     for entry in schedule.get("entries", []):
-        net = net_by_id.get(entry.get("net"))
+        net = net_instances.get(entry.get("net"))
         if net is None:
             raise ValidationError(
                 f"schedule entry {entry.get('id')!r} references an unknown net"
             )
-        drivers = [
-            endpoint["instance"]
-            for endpoint in net["drivers"]
-            if endpoint.get("instance") is not None
-        ]
-        sinks = [
-            endpoint["instance"]
-            for endpoint in net["sinks"]
-            if endpoint.get("instance") is not None
-        ]
+        drivers = net["drivers"]
+        sinks = net["sinks"]
         source_x, source_y, source_norm_y, source_fallback = _centroid(
             entry["from"], drivers, locations
         )

@@ -15,6 +15,10 @@ from .equivalence import _lut_definition
 from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
+from .emuir_compact import is_compact_emuir, selected_net_records
+from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
+from .indexed_physical_ir import IndexedPhysicalIR
+from .indexed_timing import IndexedTimingView
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .placement import _vivado_mapped_name
 from .platform import Platform
@@ -152,7 +156,9 @@ def _architectural_launch_endpoints(
     return [launches[key] for key in sorted(launches)]
 
 
-def _instance_pin_inventory(ir: EmuIR) -> Dict[str, set[tuple[str, int]]]:
+def _instance_pin_inventory(ir: EmuIR) -> Mapping[str, set[tuple[str, int]]]:
+    if isinstance(ir, IndexedPhysicalIR):
+        return ir.pins
     result: Dict[str, set[tuple[str, int]]] = {
         instance["id"]: set() for instance in ir.value["instances"]
     }
@@ -184,6 +190,39 @@ def _top_pin(
         Mapping[tuple[str, int], Mapping[str, Any]]
     ] = None,
 ) -> str:
+    if isinstance(ir, IndexedPhysicalIR):
+        try:
+            net_index, role = ir.top_binding(
+                endpoint["port"], endpoint["bit"]
+            )
+        except KeyError as error:
+            raise ValidationError(
+                f"physical top endpoint {endpoint!r} does not bind one net"
+            ) from error
+        collection = ("drivers", "sinks")[role]
+        if eblif_top_ports is not None:
+            record = eblif_top_ports.get(
+                (endpoint["port"], endpoint["bit"])
+            )
+            direction = "input" if collection == "drivers" else "output"
+            if (
+                record is None
+                or record.get("direction") != direction
+                or record.get("source_net", record.get("net"))
+                != f"n{net_index}"
+                or not isinstance(record.get("packed_block"), str)
+            ):
+                raise ValidationError(
+                    f"physical top endpoint {endpoint!r} disagrees with "
+                    "the eBLIF top-port map"
+                )
+            suffix = "inpad[0]" if direction == "input" else "outpad[0]"
+            return f"{record['packed_block']}.{suffix}"
+        return (
+            f"n{net_index}.inpad[0]"
+            if collection == "drivers"
+            else f"out:n{net_index}.outpad[0]"
+        )
     matches = []
     for index, net in enumerate(ir.value["nets"]):
         for collection in ("drivers", "sinks"):
@@ -504,12 +543,15 @@ def _segment_id(member: str, cut_index: int, role: str) -> str:
 class LogicSegmentQueryInputs:
     """Immutable global timing state shared by all per-FPGA workers."""
 
-    original_ir: EmuIR
+    original_ir: EmuIR | None
     assignment: Mapping[str, Any]
     path_database: Mapping[str, Any]
     routes: Mapping[str, Any]
     schedule: Mapping[str, Any]
-    object_index: Mapping[str, Any]
+    object_index: Mapping[str, Any] | None
+    path_endpoints: Mapping[
+        str, tuple[Mapping[str, Any], Mapping[str, Any]]
+    ]
     database_paths: Mapping[str, Mapping[str, Any]]
     route_timing: Mapping[str, Mapping[str, Any]]
     route_by_net: Mapping[str, Mapping[str, Any]]
@@ -521,6 +563,9 @@ class LogicSegmentQueryInputs:
     exact_contract_sha256: Optional[str]
     exact_segment_by_key: Mapping[Any, str]
     exact_captures: Mapping[str, Mapping[str, Any]]
+    exact_launches: Mapping[
+        tuple[str, str], List[Mapping[str, Any]]
+    ]
 
 
 def _route_timing_paths(
@@ -602,6 +647,84 @@ def _index_exact_logic_segments(
     return segment_by_key, captures
 
 
+def _indexed_architectural_launch_endpoints(
+    connection: Any,
+    instance_assignment: Mapping[str, str],
+    sink_net: str,
+    fpga: str,
+    incoming_cut_nets: Set[str],
+    net_cache: Dict[str, Mapping[str, Any]],
+) -> List[Mapping[str, Any]]:
+    """Traverse one exact launch cone without materializing the design."""
+
+    launches: Dict[Tuple[str, str, int], Mapping[str, Any]] = {}
+    pending = [sink_net]
+    visited: Set[str] = set()
+    incoming_cache: Dict[str, List[str]] = {}
+    resource_cache: Dict[str, Dict[str, int]] = {}
+    while pending:
+        net_id = pending.pop()
+        if net_id in visited:
+            continue
+        visited.add(net_id)
+        if net_id != sink_net and net_id in incoming_cut_nets:
+            continue
+        net = net_cache.get(net_id)
+        if net is None:
+            net = selected_net_records(connection, [net_id])[net_id]
+            net_cache[net_id] = net
+        for driver in net["drivers"]:
+            instance_id = driver["instance"]
+            if instance_id is None:
+                launches[("", driver["port"], driver["bit"])] = driver
+                continue
+            if instance_assignment.get(instance_id) != fpga:
+                if net_id in incoming_cut_nets:
+                    continue
+                raise ValidationError(
+                    "static exact launch cone crosses an undeclared "
+                    f"partition boundary at {net_id!r}"
+                )
+            resources = resource_cache.get(instance_id)
+            if resources is None:
+                resources = {
+                    row[0]: int(row[1])
+                    for row in connection.execute(
+                        """SELECT r.resource,r.amount
+                        FROM instance_resources r JOIN cell_records c
+                        ON c.seq=r.instance_seq WHERE c.id=?""",
+                        (instance_id,),
+                    )
+                }
+                if not resources:
+                    present = connection.execute(
+                        "SELECT 1 FROM cell_records WHERE id=?", (instance_id,)
+                    ).fetchone()
+                    if present is None:
+                        raise ValidationError(
+                            f"static exact launch driver {instance_id!r} is absent"
+                        )
+                resource_cache[instance_id] = resources
+            if any(resources.get(field, 0) for field in _STATE_RESOURCES):
+                launches[(instance_id, driver["port"], driver["bit"])] = driver
+                continue
+            incoming = incoming_cache.get(instance_id)
+            if incoming is None:
+                incoming = [
+                    row[0]
+                    for row in connection.execute(
+                        """SELECT n.id FROM endpoint_records e
+                        JOIN cell_records c ON c.seq=e.instance_seq
+                        JOIN net_records n ON n.seq=e.net_seq
+                        WHERE c.id=? AND e.role=1 ORDER BY n.seq""",
+                        (instance_id,),
+                    )
+                ]
+                incoming_cache[instance_id] = incoming
+            pending.extend(incoming)
+    return [launches[key] for key in sorted(launches)]
+
+
 def prepare_logic_segment_query_inputs(
     original_ir_path: Path,
     assignment_path: Path,
@@ -611,7 +734,6 @@ def prepare_logic_segment_query_inputs(
     platform: Platform,
 ) -> LogicSegmentQueryInputs:
     """Parse and index global query inputs exactly once per physical run."""
-    original_ir = EmuIR.load(original_ir_path)
     assignment = read_json(assignment_path)
     path_database = load_sta_path_database(path_database_path)
     routes = read_json(routes_path)
@@ -642,35 +764,103 @@ def prepare_logic_segment_query_inputs(
             exact_contract
         )
 
-    incoming_nets_by_instance: Dict[str, List[str]] = defaultdict(list)
-    for net in original_ir.value["nets"]:
-        for endpoint in net["sinks"]:
-            instance = endpoint["instance"]
-            if instance is not None:
-                incoming_nets_by_instance[instance].append(net["id"])
     route_timing_paths = _route_timing_paths(routes)
+    indexed = (
+        is_emuir_sqlite(original_ir_path)
+        and is_compact_emuir(original_ir_path)
+    )
+    exact_launches: Dict[
+        tuple[str, str], List[Mapping[str, Any]]
+    ] = {}
+    if indexed:
+        view = IndexedTimingView(original_ir_path)
+        try:
+            object_index = view.object_index
+            path_endpoints = {
+                path["id"]: sta_path_endpoints(path, object_index)
+                for path in path_database["paths"]
+            }
+            selected_ids = {
+                net_id
+                for path in path_database["paths"]
+                for net_id in path.get("path_nets", [])
+            }
+            selected_ids.update(item["net"] for item in routes["routes"])
+            if isinstance(exact_contract, dict):
+                for semantic in exact_contract["logic_segments"]:
+                    for field in ("source_cut_net", "sink_cut_net"):
+                        if isinstance(semantic.get(field), str):
+                            selected_ids.add(semantic[field])
+            original_nets = selected_net_records(
+                view.connection, selected_ids
+            )
+            if isinstance(exact_contract, dict):
+                instance_assignment = assignment["instance_assignment"]
+                cache: Dict[str, Mapping[str, Any]] = dict(original_nets)
+                for semantic in exact_contract["logic_segments"]:
+                    if semantic["kind"] != "launch_to_tx":
+                        continue
+                    key = (semantic["sink_cut_net"], semantic["fpga"])
+                    if key in exact_launches:
+                        continue
+                    exact_launches[key] = _indexed_architectural_launch_endpoints(
+                        view.connection,
+                        instance_assignment,
+                        semantic["sink_cut_net"],
+                        semantic["fpga"],
+                        _incoming_transported_cut_nets(
+                            exact_contract, semantic["fpga"]
+                        ),
+                        cache,
+                    )
+                original_nets.update(cache)
+        finally:
+            view.close()
+        original_ir = None
+        object_index = None
+        original_instances: Dict[str, Mapping[str, Any]] = {}
+        incoming_nets_by_instance: Dict[str, List[str]] = {}
+    else:
+        original_ir = EmuIR.load(original_ir_path)
+        object_index = sta_object_index(original_ir)
+        path_endpoints = {
+            path["id"]: sta_path_endpoints(path, object_index)
+            for path in path_database["paths"]
+        }
+        original_nets = {
+            item["id"]: item for item in original_ir.value["nets"]
+        }
+        original_instances = {
+            item["id"]: item for item in original_ir.value["instances"]
+        }
+        incoming_nets_by_instance = defaultdict(list)
+        for net in original_ir.value["nets"]:
+            for endpoint in net["sinks"]:
+                instance = endpoint["instance"]
+                if instance is not None:
+                    incoming_nets_by_instance[instance].append(net["id"])
     return LogicSegmentQueryInputs(
         original_ir=original_ir,
         assignment=assignment,
         path_database=path_database,
         routes=routes,
         schedule=schedule,
-        object_index=sta_object_index(original_ir),
+        object_index=object_index,
+        path_endpoints=path_endpoints,
         database_paths={item["id"]: item for item in path_database["paths"]},
         route_timing={item["path"]: item for item in route_timing_paths},
         route_by_net={item["net"]: item for item in routes["routes"]},
         timing_records=reconstruct_tdm_schedule_timing_paths(
             routes, platform, schedule
         ),
-        original_nets={item["id"]: item for item in original_ir.value["nets"]},
-        original_instances={
-            item["id"]: item for item in original_ir.value["instances"]
-        },
+        original_nets=original_nets,
+        original_instances=original_instances,
         incoming_nets_by_instance=incoming_nets_by_instance,
         exact_contract=exact_contract,
         exact_contract_sha256=exact_contract_sha256,
         exact_segment_by_key=exact_segment_by_key,
         exact_captures=exact_captures,
+        exact_launches=exact_launches,
     )
 
 
@@ -701,7 +891,14 @@ def _write_logic_segment_query(
         platform,
     )
     original_ir = prepared.original_ir
-    merged_ir = EmuIR.load(merged_ir_path)
+    indexed_merged = (
+        is_emuir_sqlite(merged_ir_path) and is_compact_emuir(merged_ir_path)
+    )
+    merged_ir = (
+        IndexedPhysicalIR(merged_ir_path)
+        if indexed_merged
+        else EmuIR.load(merged_ir_path)
+    )
     assignment = prepared.assignment
     path_database = prepared.path_database
     routes = prepared.routes
@@ -722,22 +919,34 @@ def _write_logic_segment_query(
     exact_contract_sha256 = prepared.exact_contract_sha256
     exact_segment_by_key = prepared.exact_segment_by_key
     exact_captures = prepared.exact_captures
-    object_index = prepared.object_index
     database_paths = prepared.database_paths
     route_timing = prepared.route_timing
     route_by_net = prepared.route_by_net
     records = prepared.timing_records
-    instance_index = {
-        instance["id"]: index
-        for index, instance in enumerate(merged_ir.value["instances"])
-    }
-    merged_instances = {
-        instance["id"]: instance
-        for instance in merged_ir.value["instances"]
-    }
-    merged_net_index = {
-        net["id"]: index for index, net in enumerate(merged_ir.value["nets"])
-    }
+    instance_index = (
+        merged_ir.instance_indices
+        if indexed_merged
+        else {
+            instance["id"]: index
+            for index, instance in enumerate(merged_ir.value["instances"])
+        }
+    )
+    merged_instances = (
+        merged_ir.instances
+        if indexed_merged
+        else {
+            instance["id"]: instance
+            for instance in merged_ir.value["instances"]
+        }
+    )
+    merged_net_index = (
+        merged_ir.net_indices
+        if indexed_merged
+        else {
+            net["id"]: index
+            for index, net in enumerate(merged_ir.value["nets"])
+        }
+    )
     original_nets = prepared.original_nets
     original_instances = prepared.original_instances
     incoming_nets_by_instance = prepared.incoming_nets_by_instance
@@ -893,9 +1102,7 @@ def _write_logic_segment_query(
                 unsupported[member] = "discontinuous-compressed-partition-chain"
                 continue
             try:
-                start_endpoint, end_endpoint = sta_path_endpoints(
-                    path, object_index
-                )
+                start_endpoint, end_endpoint = prepared.path_endpoints[member]
                 start_instance = start_endpoint["instance"]
                 end_instance = end_endpoint["instance"]
                 if (
@@ -1199,16 +1406,24 @@ def _write_logic_segment_query(
                 sink_cut_net = semantic["sink_cut_net"]
                 starts = launches_by_sink_net.get(sink_cut_net)
                 if starts is None:
-                    starts = _architectural_launch_endpoints(
-                        original_ir,
-                        instance_assignment,
-                        sink_cut_net,
-                        fpga,
-                        incoming_cut_nets,
-                        nets=original_nets,
-                        instances=original_instances,
-                        incoming=incoming_nets_by_instance,
+                    starts = prepared.exact_launches.get(
+                        (sink_cut_net, fpga)
                     )
+                    if starts is None:
+                        if original_ir is None:
+                            raise ValidationError(
+                                "indexed exact launch evidence is absent"
+                            )
+                        starts = _architectural_launch_endpoints(
+                            original_ir,
+                            instance_assignment,
+                            sink_cut_net,
+                            fpga,
+                            incoming_cut_nets,
+                            nets=original_nets,
+                            instances=original_instances,
+                            incoming=incoming_nets_by_instance,
+                        )
                     launches_by_sink_net[sink_cut_net] = starts
                 if not starts:
                     # A dependency-free constant cone has no dynamic launch
@@ -1315,6 +1530,8 @@ def _write_logic_segment_query(
             ),
         ]
     query_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    if indexed_merged:
+        merged_ir.close()
     return {
         "status": "pass",
         "fpga": fpga,

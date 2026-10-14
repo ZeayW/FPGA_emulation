@@ -40,7 +40,12 @@ from .opensta import (
 )
 from .openparf import validate_openparf_runtime
 from .phase1 import run_phase1
-from .phase3 import promote_patron_baseline, run_phase3, validate_phase3
+from .phase3 import (
+    promote_patron_baseline,
+    run_phase3,
+    validate_phase3,
+    validate_phase3_indexed,
+)
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
@@ -1026,8 +1031,11 @@ def validate_multi_fpga_flow_bundle(
                 f"multi-FPGA live {stage} report disagrees with the flow report"
             )
 
-    phase3_validation = validate_phase3(
-        ir_path, platform_path, clusters_path, assignment_path
+    phase3_validation = validate_phase3_indexed(
+        ir_path,
+        platform_path,
+        assignment_path.with_name("phase3_report.json"),
+        assignment_path.with_name("assignment.sqlite"),
     )
     if phase3_validation != report["stages"]["partition"]["validation"]:
         raise ValidationError("independent Phase 3 replay disagrees")

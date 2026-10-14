@@ -246,7 +246,7 @@ def run_vivado_board_timing(
         source_root = flow_root / "physical" / fpga_id
         fpga_out = output_dir / fpga_id
         fpga_out.mkdir(exist_ok=resume)
-        merged_ir = source_root / "placement.emuir.json"
+        merged_ir = source_root / "placement.emuir.sqlite"
         identities = source_physical.get("boundary_identities", {}).get(fpga_id)
         if not isinstance(identities, dict) or not merged_ir.is_file():
             raise ValidationError(f"{fpga_id}: physical timing identity is missing")

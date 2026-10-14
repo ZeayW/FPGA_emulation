@@ -37,9 +37,10 @@ from .local_path_timing import (
 from .ir import EMUIR_SCHEMA, EmuIR
 from .lowering import (
     PLACEMENT_IR_REPORT_SCHEMA,
+    run_placement_ir_lowering_from_split,
     run_placement_ir_lowering_from_value,
 )
-from .split_netlist_storage import read_split_netlist_sqlite
+from .split_netlist_storage import SplitNetlistView
 from .netlist import SPLIT_MANIFEST_SCHEMA
 from .packed_netlist import run_packed_netlist_import
 from .packed_placement import run_packed_openparf_placement
@@ -987,13 +988,42 @@ def run_multi_fpga_physical_flow(
         fpga_root.mkdir(parents=True, exist_ok=True)
         netlist_path = split_root / item["netlist"]
         transport_path = split_root / item["transport"]
-        if "netlist_selector" in item:
-            netlist = read_split_netlist_sqlite(
-                netlist_path, item["netlist_selector"]
+        transport = read_json(transport_path)
+        split_selector = item.get("netlist_selector")
+        if split_selector is not None:
+            with SplitNetlistView(netlist_path, split_selector) as split_view:
+                split_counts = split_view.counts()
+            netlist = None
+            original_cells = split_counts["instances"]
+            physical_work = any(split_counts.values()) or any(
+                transport.get(field, [])
+                for field in ("endpoints", "source_signals", "shadow_signals")
             )
         else:
             netlist = read_json(netlist_path)
-        transport = read_json(transport_path)
+            original_cells = len(netlist["instances"])
+            physical_work = _partition_has_physical_work(netlist, transport)
+
+        def lower_placement_ir(
+            transport_ir_path: Path, merged_ir: Path
+        ) -> Dict[str, Any]:
+            if split_selector is not None:
+                return run_placement_ir_lowering_from_split(
+                    netlist_path,
+                    split_selector,
+                    transport_path,
+                    transport_ir_path,
+                    merged_ir,
+                    fpga_root / "placement-ir-report.json",
+                )
+            assert netlist is not None
+            return run_placement_ir_lowering_from_value(
+                netlist,
+                transport_path,
+                transport_ir_path,
+                merged_ir,
+                fpga_root / "placement-ir-report.json",
+            )
         fpga_part = next(
             fpga.part for fpga in platform.fpgas if fpga.id == fpga_id
         )
@@ -1004,17 +1034,14 @@ def run_multi_fpga_physical_flow(
             for clock, record in runtime["virtual_dut_clocks"].items()
         }
         cross_period = runtime["timing_model"]["fabric_to_dut_max_delay_ns"]
-        if not _partition_has_physical_work(netlist, transport):
+        if not physical_work:
             # Do not synthesize the shared controller or invoke a placer for an
             # FPGA that is not part of this design's selected/relay subgraph.
             # The old path created five controller-only cells and could leave
             # OpenPARF's ISM loop running forever at zero HPWL.  Retain exact
             # empty coverage evidence instead of inventing physical timing.
-            transport_ir_path = fpga_root / "transport.emuir.json"
-            write_json(
-                transport_ir_path,
-                _inactive_transport_ir(transport).to_dict(),
-            )
+            transport_ir_path = fpga_root / "transport.emuir.sqlite"
+            _inactive_transport_ir(transport).save(transport_ir_path)
             transport_report = {
                 "status": "pass",
                 "provider": _INACTIVE_PARTITION_PROVIDER,
@@ -1024,13 +1051,9 @@ def run_multi_fpga_physical_flow(
                 "output": str(transport_ir_path),
                 "sha256": _sha256(transport_ir_path),
             }
-            merged_ir = fpga_root / "placement.emuir.json"
-            lowering_report = run_placement_ir_lowering_from_value(
-                netlist,
-                transport_path,
-                transport_ir_path,
-                merged_ir,
-                fpga_root / "placement-ir-report.json",
+            merged_ir = fpga_root / "placement.emuir.sqlite"
+            lowering_report = lower_placement_ir(
+                transport_ir_path, merged_ir
             )
             if (
                 lowering_report.get("instances") != 0
@@ -1247,8 +1270,8 @@ def run_multi_fpga_physical_flow(
             top=module_match.group(1),
             clocks=("fabric_clk",),
         )
-        transport_ir_path = fpga_root / "transport.emuir.json"
-        write_json(transport_ir_path, transport_ir.to_dict())
+        transport_ir_path = fpga_root / "transport.emuir.sqlite"
+        transport_ir.save(transport_ir_path)
         transport_report = {
             "status": "pass",
             "provider": "yosys-generic-lut6-ff",
@@ -1259,15 +1282,8 @@ def run_multi_fpga_physical_flow(
             "sha256": _sha256(transport_ir_path),
         }
 
-        merged_ir = fpga_root / "placement.emuir.json"
-        lowering_report = run_placement_ir_lowering_from_value(
-            netlist,
-            transport_path,
-            transport_ir_path,
-            merged_ir,
-            fpga_root / "placement-ir-report.json",
-        )
-        original_cells = len(netlist["instances"])
+        merged_ir = fpga_root / "placement.emuir.sqlite"
+        lowering_report = lower_placement_ir(transport_ir_path, merged_ir)
         transport_cells = lowering_report["transport_instances"]
         stages = {
             "transport_synthesis": transport_report,

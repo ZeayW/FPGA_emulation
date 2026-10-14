@@ -12,6 +12,7 @@ from emuflow.cut_segment_qualification import (
     validate_cut_segment_qualification,
 )
 from emuflow.io import write_json
+from emuflow.ir import EmuIR
 from emuflow.opensta import (
     DEFAULT_TIMING_MODEL,
     classify_through_net_timing_endpoints,
@@ -137,3 +138,27 @@ class CutSegmentQualificationTest(unittest.TestCase):
                 "functional_only_nets": 0,
             },
         )
+
+    def test_compact_classification_matches_legacy_without_graph_reload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path, assignment_path, database_path, _ = self._fixture(root)
+            compact_path = root / "design.emuir.sqlite"
+            EmuIR.load(ir_path).save(compact_path)
+            legacy = build_cut_segment_qualification(
+                ir_path,
+                assignment_path,
+                database_path,
+                input_already_validated=True,
+            )
+            with mock.patch(
+                "emuflow.cut_segment_qualification.EmuIR.load",
+                side_effect=AssertionError("whole-graph loading forbidden"),
+            ):
+                compact = build_cut_segment_qualification(
+                    compact_path,
+                    assignment_path,
+                    database_path,
+                    input_already_validated=True,
+                )
+            self.assertEqual(compact, legacy)

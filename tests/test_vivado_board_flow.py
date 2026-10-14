@@ -158,9 +158,8 @@ class VivadoBoardFlowTest(unittest.TestCase):
                 )
                 fpga_root = flow / "physical" / fpga.id
                 (fpga_root / "vivado").mkdir(parents=True)
-                write_json(
-                    fpga_root / "placement.emuir.json",
-                    _placement_ir(platform, fpga.id).to_dict(),
+                _placement_ir(platform, fpga.id).save(
+                    fpga_root / "placement.emuir.sqlite"
                 )
                 (phase6c / record["rtl"]).write_text(
                     f"module {record['module']}; endmodule\n",

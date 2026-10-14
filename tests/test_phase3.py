@@ -1,12 +1,14 @@
 import copy
 import json
 import math
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
+from emuflow.emuir_compact import write_compact_emuir
 from emuflow.io import read_json
 from emuflow.ir import EmuIR
 from emuflow.partition import (
@@ -17,7 +19,7 @@ from emuflow.partition import (
     validate_cluster_assignment_balance,
     validate_partition_artifacts,
 )
-from emuflow.phase3 import run_phase3
+from emuflow.phase3 import run_phase3, validate_phase3_indexed
 from emuflow.platform import BoardLink, FpgaNode, Platform
 from emuflow.resources import RESOURCE_FIELDS, ResourceVector
 from emuflow.yosys import import_yosys_json
@@ -51,6 +53,43 @@ class Phase3Test(unittest.TestCase):
             seed=7,
         )
         return constraints, clusters, assignment
+
+    def test_indexed_terminal_validation_avoids_graph_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.sqlite"
+            output = root / "phase3"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            report = run_phase3(
+                ir_path,
+                PLATFORM_PATH,
+                output,
+                provider="greedy",
+                seed=7,
+            )
+            with patch(
+                "emuflow.phase3.EmuIR.load",
+                side_effect=AssertionError(
+                    "terminal validation must not replay the EmuIR graph"
+                ),
+            ):
+                checked = validate_phase3_indexed(
+                    ir_path,
+                    PLATFORM_PATH,
+                    output / "phase3_report.json",
+                    output / "assignment.sqlite",
+                )
+            self.assertEqual(checked, report["validation"])
+
+            with sqlite3.connect(output / "assignment.sqlite") as connection:
+                connection.execute("DELETE FROM cut_sinks")
+            with self.assertRaisesRegex(ValidationError, "cut relation"):
+                validate_phase3_indexed(
+                    ir_path,
+                    PLATFORM_PATH,
+                    output / "phase3_report.json",
+                    output / "assignment.sqlite",
+                )
 
     def test_minimum_capacity_policy_uses_one_partition_target(self) -> None:
         constraints = normalize_partition_constraints(

@@ -116,21 +116,33 @@ def build_cut_segment_qualification(
 ) -> Dict[str, Any]:
     """Build deterministic pre-route cut qualification without STA guessing."""
 
-    ir = EmuIR.load(ir_path)
+    from .emuir_compact import is_compact_emuir
+    from .emuir_storage import is_emuir_sqlite
+    from .indexed_timing import IndexedTimingView
+
+    ir = (
+        IndexedTimingView(ir_path)
+        if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path)
+        else EmuIR.load(ir_path)
+    )
     assignment = read_json(assignment_path)
     database = read_json(path_database_path)
-    if not input_already_validated:
-        validate_sta_path_database_path_value(path_database_path, database, ir)
-    return build_cut_segment_qualification_value(
-        ir,
-        assignment,
-        database,
-        timing_model_path=timing_model_path,
-        architecture_timing_db_path=architecture_timing_db_path,
-        path_records=iter_sta_path_database_paths(
-            path_database_path, database, verify_payload=False
-        ),
-    )
+    try:
+        if not input_already_validated:
+            validate_sta_path_database_path_value(path_database_path, database, ir)
+        return build_cut_segment_qualification_value(
+            ir,
+            assignment,
+            database,
+            timing_model_path=timing_model_path,
+            architecture_timing_db_path=architecture_timing_db_path,
+            path_records=iter_sta_path_database_paths(
+                path_database_path, database, verify_payload=False
+            ),
+        )
+    finally:
+        if isinstance(ir, IndexedTimingView):
+            ir.close()
 
 
 def build_cut_segment_qualification_value(
@@ -174,15 +186,29 @@ def build_cut_segment_qualification_value(
             )
         for net in set(path["path_nets"]) & set(cut_nets):
             member_ids[net].append(path_id)
-    net_by_id = {net["id"]: net for net in ir.value["nets"]}
+    net_by_id = (
+        None
+        if hasattr(ir, "connection")
+        else {net["id"]: net for net in ir.value["nets"]}
+    )
     records = []
     for net in cut_nets:
-        if net not in net_by_id:
-            raise ValidationError(
-                f"cut-segment qualification net is absent from EmuIR: {net!r}"
-            )
-        drivers = net_by_id[net].get("drivers")
-        if not isinstance(drivers, list) or len(drivers) != 1:
+        if net_by_id is None:
+            row = ir.connection.execute(
+                """SELECT COUNT(*) FROM endpoint_records AS e
+                     JOIN net_records AS n ON n.seq=e.net_seq
+                    WHERE n.id=? AND e.role=0""",
+                (net,),
+            ).fetchone()
+            driver_count = int(row[0])
+        else:
+            if net not in net_by_id:
+                raise ValidationError(
+                    f"cut-segment qualification net is absent from EmuIR: {net!r}"
+                )
+            drivers = net_by_id[net].get("drivers")
+            driver_count = len(drivers) if isinstance(drivers, list) else -1
+        if driver_count != 1:
             raise ValidationError(
                 f"cut-segment qualification net must have one driver: {net!r}"
             )
@@ -243,19 +269,12 @@ def validate_cut_segment_qualification(
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    ir = EmuIR.load(ir_path)
-    assignment = read_json(assignment_path)
-    database = read_json(path_database_path)
-    validate_sta_path_database_path_value(path_database_path, database, ir)
-    expected = build_cut_segment_qualification_value(
-        ir,
-        assignment,
-        database,
+    expected = build_cut_segment_qualification(
+        ir_path,
+        assignment_path,
+        path_database_path,
         timing_model_path=timing_model_path,
         architecture_timing_db_path=architecture_timing_db_path,
-        path_records=iter_sta_path_database_paths(
-            path_database_path, database, verify_payload=False
-        ),
     )
     if dict(artifact) != expected:
         raise ValidationError(

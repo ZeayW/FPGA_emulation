@@ -12,6 +12,10 @@ from typing import Any, Dict, Mapping
 from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
+from .emuir_compact import is_compact_emuir, selected_net_records
+from .emuir_storage import is_emuir_sqlite
+from .indexed_physical_ir import IndexedPhysicalIR
+from .indexed_timing import IndexedTimingView
 from .logic_segment_timing import (
     LOGIC_SEGMENT_TIMING_HEADER,
     _instance_pin_inventory,
@@ -360,11 +364,14 @@ def _explicit_vpr_path_pins(
 class LocalPathQueryInputs:
     """Immutable original-design timing state shared by FPGA workers."""
 
-    original_ir: EmuIR
+    original_ir: EmuIR | None
     assignment: Mapping[str, Any]
     database: Mapping[str, Any]
     routes: Mapping[str, Any]
-    object_index: Mapping[str, Any]
+    object_index: Mapping[str, Any] | None
+    path_endpoints: Mapping[
+        str, tuple[Mapping[str, Any], Mapping[str, Any]]
+    ]
     original_nets: Mapping[str, Mapping[str, Any]]
     cross_path_ids: frozenset[str]
     source_manifest: Mapping[str, Any]
@@ -382,11 +389,46 @@ def prepare_vpr_local_path_query_inputs(
     routes: Mapping[str, Any] | None = None,
 ) -> LocalPathQueryInputs:
     """Validate, hash and index global local-path inputs once per run."""
-    original_ir = original_ir or EmuIR.load(original_ir_path)
     assignment = assignment or read_json(assignment_path)
     database = database or load_sta_path_database(path_database_path)
     routes = routes or read_json(routes_path)
-    validate_sta_path_database_value(database, original_ir)
+    indexed = (
+        original_ir is None
+        and is_emuir_sqlite(original_ir_path)
+        and is_compact_emuir(original_ir_path)
+    )
+    if indexed:
+        view = IndexedTimingView(original_ir_path)
+        try:
+            validate_sta_path_database_value(database, view)
+            object_index = view.object_index
+            path_endpoints = {
+                path["id"]: sta_path_endpoints(path, object_index)
+                for path in database["paths"]
+            }
+            selected_ids = {
+                net_id
+                for path in database["paths"]
+                for net_id in path.get("path_nets", [])
+            }
+            original_nets = selected_net_records(
+                view.connection, selected_ids
+            )
+        finally:
+            view.close()
+        original_ir = None
+        object_index = None
+    else:
+        original_ir = original_ir or EmuIR.load(original_ir_path)
+        validate_sta_path_database_value(database, original_ir)
+        object_index = sta_object_index(original_ir)
+        path_endpoints = {
+            path["id"]: sta_path_endpoints(path, object_index)
+            for path in database["paths"]
+        }
+        original_nets = {
+            item["id"]: item for item in original_ir.value["nets"]
+        }
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError("local path assignment schema is invalid")
     if assignment.get("design") != database.get("design"):
@@ -411,10 +453,9 @@ def prepare_vpr_local_path_query_inputs(
         assignment=assignment,
         database=database,
         routes=routes,
-        object_index=sta_object_index(original_ir),
-        original_nets={
-            item["id"]: item for item in original_ir.value["nets"]
-        },
+        object_index=object_index,
+        path_endpoints=path_endpoints,
+        original_nets=original_nets,
         cross_path_ids=frozenset(cross_path_ids),
         source_manifest=_source_manifest(
             database,
@@ -448,8 +489,14 @@ def _write_local_path_query(
         path_database_path,
         routes_path,
     )
-    original_ir = prepared.original_ir
-    merged_ir = EmuIR.load(merged_ir_path)
+    indexed_merged = (
+        is_emuir_sqlite(merged_ir_path) and is_compact_emuir(merged_ir_path)
+    )
+    merged_ir = (
+        IndexedPhysicalIR(merged_ir_path)
+        if indexed_merged
+        else EmuIR.load(merged_ir_path)
+    )
     assignment = prepared.assignment
     database = prepared.database
     cross_path_ids = prepared.cross_path_ids
@@ -458,14 +505,21 @@ def _write_local_path_query(
     instance_assignment = assignment.get("instance_assignment")
     if not isinstance(instance_assignment, dict):
         raise ValidationError("local path instance assignment is invalid")
-    object_index = prepared.object_index
-    merged_index = {
-        item["id"]: index
-        for index, item in enumerate(merged_ir.value["instances"])
-    }
-    merged_instances = {
-        item["id"]: item for item in merged_ir.value["instances"]
-    }
+    merged_index = (
+        merged_ir.instance_indices
+        if indexed_merged
+        else {
+            item["id"]: index
+            for index, item in enumerate(merged_ir.value["instances"])
+        }
+    )
+    merged_instances = (
+        merged_ir.instances
+        if indexed_merged
+        else {
+            item["id"]: item for item in merged_ir.value["instances"]
+        }
+    )
     merged_pins = _instance_pin_inventory(merged_ir)
     original_nets = prepared.original_nets
 
@@ -484,8 +538,8 @@ def _write_local_path_query(
         if path["id"] in cross_path_ids:
             continue
         try:
-            start, end = sta_path_endpoints(path, object_index)
-        except ValidationError as error:
+            start, end = prepared.path_endpoints[path["id"]]
+        except (KeyError, ValidationError) as error:
             unresolved.append({"path": path["id"], "reason": str(error)})
             continue
         path_fpga = _resolve_local_path_fpga(
@@ -581,6 +635,8 @@ def _write_local_path_query(
     ]
     query_path.parent.mkdir(parents=True, exist_ok=True)
     query_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    if indexed_merged:
+        merged_ir.close()
     return {
         "status": "pass",
         "fpga": fpga,

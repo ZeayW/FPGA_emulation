@@ -839,6 +839,198 @@ def open_split_netlists_sqlite(path: Path) -> sqlite3.Connection:
     return connection
 
 
+class SplitNetlistView:
+    """Streaming view of one selected FPGA in the shared split database."""
+
+    def __init__(self, path: Path, fpga: str):
+        self.connection = open_split_netlists_sqlite(path)
+        try:
+            self.metadata = {
+                row["key"]: json.loads(row["value"])
+                for row in self.connection.execute(
+                    "SELECT key,value FROM metadata"
+                )
+            }
+            part = self.connection.execute(
+                "SELECT part_index FROM parts WHERE fpga=?", (fpga,)
+            ).fetchone()
+            if part is None:
+                raise ValidationError(f"split netlists omit FPGA {fpga!r}")
+            self.fpga = fpga
+            self.part_index = int(part[0])
+            self.ports = [
+                json.loads(row[0])
+                for row in self.connection.execute(
+                    "SELECT record_json FROM ports WHERE part_index=? ORDER BY id",
+                    (self.part_index,),
+                )
+            ]
+            self.resources = {
+                row[0]: int(row[1])
+                for row in self.connection.execute(
+                    "SELECT resource,amount FROM resources "
+                    "WHERE part_index=? ORDER BY resource",
+                    (self.part_index,),
+                )
+            }
+            self._source_segments: dict[str, list[str]] = defaultdict(list)
+            for row in self.connection.execute(
+                "SELECT net_id,segment_id FROM exact_cut_sources "
+                "ORDER BY net_id,ordinal"
+            ):
+                self._source_segments[row[0]].append(row[1])
+            self._consumer_segments: dict[str, list[str]] = defaultdict(list)
+            for row in self.connection.execute(
+                "SELECT source_cut_net,segment_id FROM exact_logic_segments "
+                "WHERE part_index=? ORDER BY source_cut_net,segment_id",
+                (self.part_index,),
+            ):
+                self._consumer_segments[row[0]].append(row[1])
+            self._cut_source = {
+                row[0]: int(row[1])
+                for row in self.connection.execute(
+                    "SELECT DISTINCT net_id,source_part_index FROM cut_sinks"
+                )
+            }
+        except BaseException:
+            self.connection.close()
+            raise
+
+    def __enter__(self) -> "SplitNetlistView":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.connection.close()
+
+    def instances(self):
+        for row in self.connection.execute(
+            """SELECT c.copy_id,c.is_replica,i.original_id,i.name,i.flags,i.type,
+            r.value AS resources_json,p.value AS parameters_json,
+            a.value AS attributes_json,k.value AS constants_json,
+            x.value AS extras_json
+            FROM instance_copies c
+            JOIN source_instances i ON i.source_instance_seq=c.source_instance_seq
+            JOIN payloads r ON r.seq=i.resources_seq
+            LEFT JOIN payloads p ON p.seq=i.parameters_seq
+            LEFT JOIN payloads a ON a.seq=i.attributes_seq
+            JOIN payloads k ON k.seq=i.constants_seq
+            JOIN payloads x ON x.seq=i.extras_seq
+            WHERE c.part_index=?
+            ORDER BY COALESCE(c.copy_id,i.original_id)""",
+            (self.part_index,),
+        ):
+            identity = row["copy_id"] or row["original_id"]
+            record = {
+                "id": identity,
+                "type": row["type"],
+                "resources": json.loads(row["resources_json"]),
+                "constant_connections": json.loads(row["constants_json"]),
+                **json.loads(row["extras_json"]),
+            }
+            record["name"] = (
+                row["original_id"] if row["flags"] & 1 else row["name"]
+            )
+            if row["parameters_json"] is not None:
+                record["parameters"] = json.loads(row["parameters_json"])
+            if row["attributes_json"] is not None:
+                record["attributes"] = json.loads(row["attributes_json"])
+            if row["is_replica"]:
+                record["replica_of"] = row["original_id"]
+                record["replica_target_fpga"] = self.fpga
+            yield record
+
+    def has_net(self, original_net: str) -> bool:
+        return self.connection.execute(
+            """SELECT 1 FROM net_segments s JOIN source_nets n
+            ON n.source_net_seq=s.source_net_seq
+            WHERE s.part_index=? AND n.original_net=?""",
+            (self.part_index, original_net),
+        ).fetchone() is not None
+
+    def counts(self) -> dict[str, int]:
+        return {
+            "instances": int(self.connection.execute(
+                "SELECT count(*) FROM instance_copies WHERE part_index=?",
+                (self.part_index,),
+            ).fetchone()[0]),
+            "nets": int(self.connection.execute(
+                "SELECT count(*) FROM net_segments WHERE part_index=?",
+                (self.part_index,),
+            ).fetchone()[0]),
+            "ports": len(self.ports),
+        }
+
+    def nets(self):
+        endpoints = iter(
+            self.connection.execute(
+                """SELECT n.original_net,e.source_net_seq,e.role,e.ordinal,e.bit,e.synthetic,
+                pn.name AS port,x.value AS extras_json,
+                CASE WHEN e.synthetic=1 THEN e.synthetic_instance_id
+                     WHEN e.source_instance_seq IS NULL THEN NULL
+                     ELSE COALESCE(c.copy_id,i.original_id) END AS instance_id
+                FROM endpoint_segments e
+                JOIN source_nets n ON n.source_net_seq=e.source_net_seq
+                JOIN pin_names pn ON pn.seq=e.port_seq
+                JOIN payloads x ON x.seq=e.extras_seq
+                LEFT JOIN instance_copies c
+                  ON c.part_index=e.part_index
+                 AND c.source_instance_seq=e.source_instance_seq
+                LEFT JOIN source_instances i
+                  ON i.source_instance_seq=e.source_instance_seq
+                WHERE e.part_index=?
+                ORDER BY n.original_net,e.role,e.synthetic,
+                (CASE WHEN e.synthetic=1 THEN e.synthetic_instance_id
+                      WHEN e.source_instance_seq IS NULL THEN NULL
+                      ELSE COALESCE(c.copy_id,i.original_id) END IS NULL),e.ordinal""",
+                (self.part_index,),
+            )
+        )
+        endpoint = next(endpoints, None)
+        exact_digest = self.metadata.get("semantic_contract_sha256")
+        for row in self.connection.execute(
+            """SELECT s.source_net_seq,s.source_kind,n.original_net,
+            CASE WHEN n.flags & 1 THEN n.original_net ELSE n.name END AS name,
+            n.cut_class FROM net_segments s JOIN source_nets n
+            ON n.source_net_seq=s.source_net_seq
+            WHERE s.part_index=? ORDER BY n.original_net""",
+            (self.part_index,),
+        ):
+            record = {
+                "id": f"{row['original_net']}@{self.fpga}",
+                "original_net": row["original_net"],
+                "name": row["name"],
+                "cut_class": row["cut_class"],
+                "source_kind": row["source_kind"],
+                "drivers": [],
+                "sinks": [],
+            }
+            while endpoint is not None and endpoint["original_net"] == row["original_net"]:
+                record[("drivers", "sinks")[endpoint["role"]]].append({
+                    "instance": endpoint["instance_id"],
+                    "port": endpoint["port"],
+                    "bit": endpoint["bit"],
+                    **json.loads(endpoint["extras_json"]),
+                })
+                endpoint = next(endpoints, None)
+            if exact_digest is not None and row["original_net"] in self._cut_source:
+                if row["source_kind"] == "transport_shadow":
+                    role = "transport_shadow_sink"
+                    segment_ids = self._consumer_segments.get(row["original_net"], [])
+                elif self._cut_source[row["original_net"]] == self.part_index:
+                    role = "cut_source"
+                    segment_ids = self._source_segments.get(row["original_net"], [])
+                else:
+                    role, segment_ids = "local_logic", []
+                record["static_exact_boundary"] = {
+                    "semantic_contract_sha256": exact_digest,
+                    "role": role,
+                    "logic_segment_ids": segment_ids,
+                }
+            yield record
+        if endpoint is not None:
+            raise ValidationError("split netlist contains orphaned endpoints")
+
+
 def validate_split_netlists_sqlite(
     path: Path,
     ir_path: Path,

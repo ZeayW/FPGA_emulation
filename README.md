@@ -1078,6 +1078,28 @@ and path-limit status. A reached path limit is not full-population evidence.
 **NVDLA storage, runtime, peak RSS and actual
 OpenSTA-result A/B measurements remain pending**. Temporary Yosys normalization
 staging still precedes compact publication; do not claim a zero-copy frontend.
+
+Large-design terminal validation and physical handoff use the same control-plane/
+data-plane rule.  A completed Phase 1 checkpoint is identified from compact
+metadata and record counts without reconstructing the circuit in Python.  Phase
+3 publishes an assignment SQLite sidecar while the solver already owns the
+validated graph; routine terminal validation proves exact instance coverage,
+cut-source/sink relations, replica placement, and per-FPGA resource totals with
+set-oriented SQL instead of replaying clustering and partitioning.  Phase 6
+publishes split netlists in SQLite, and Phase 7 lowers each selected FPGA
+directly from that store into a per-FPGA compact EmuIR database.  The VTR eBLIF
+writer streams records, while physical timing queries fetch only the selected
+nets, endpoint pins, instances, and ordinals they reference.  Small-design
+qualification still compares these indexed paths exactly against the legacy
+in-memory implementations, including fanout, transport stitches, placement
+records, timing endpoints, and generated text.
+
+This does not mean that every full-graph read is forbidden.  Phase 2 placement,
+Phase 3 partitioning, OpenSTA graph export, and explicit offline forensic replay
+are algorithms whose input is the circuit itself.  They may consume the graph
+once when selected.  Routine downstream validation, identity checks, format
+conversion, and report generation must not materialize a second Python copy of
+the whole design.
 An explicitly requested debugging continuation can read a
 completed Phase 1 artifact directly without rerunning synthesis or creating a
 persistent cache. Producer-owned temporary files are not completed artifacts.

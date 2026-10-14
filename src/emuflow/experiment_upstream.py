@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 from .errors import EmuFlowError, ValidationError
 from .cut_segment_qualification import (
-    build_cut_segment_qualification_value,
+    build_cut_segment_qualification,
 )
 from .cross_layer_timing import validate_cross_layer_timing_contract
 from .experiment_stages import (
@@ -31,12 +31,16 @@ from .experiment_stages import (
     validate_shared_phase1_5,
 )
 from .io import read_json, write_json
-from .ir import EmuIR
 from .opensta import (
     DEFAULT_TIMING_MODEL,
     run_opensta_path_database,
 )
-from .phase1 import analyze_clock_topology, run_phase1
+from .phase1 import (
+    analyze_indexed_clock_topology,
+    indexed_phase1_facts,
+    indexed_phase1_identity,
+    run_phase1,
+)
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .platform import Platform
@@ -49,7 +53,6 @@ from .sta import (
     sta_path_database_payload_path,
     validate_partition_net_weights,
     validate_sta_path_database,
-    validate_sta_path_database_path_value,
     validate_sta_path_database_value,
 )
 from .synthesis import (
@@ -436,9 +439,9 @@ def validate_frontend_checkpoint(
     platform = Platform.load(platform_path)
     if read_json(normalized_platform) != platform.to_dict():
         raise ValidationError("frontend normalized platform is not the supplied BoardDB")
-    ir = EmuIR.load(ir_path)
     phase1 = read_json(phase1_path)
-    totals = ir.resource_totals()
+    design, _, totals, _ = indexed_phase1_facts(ir_path)
+    _, instances, nets = indexed_phase1_identity(ir_path)
     aggregate = {
         resource: sum(fpga.effective_capacity.get(resource, 0) for fpga in platform.fpgas)
         for resource in sorted(
@@ -449,7 +452,7 @@ def validate_frontend_checkpoint(
         raise ValidationError("frontend Phase 1 resource totals are invalid")
     if phase1.get("fits_on_platform") != totals.fits_capacity(aggregate):
         raise ValidationError("frontend Phase 1 capacity result is invalid")
-    if phase1.get("clock_topology") != analyze_clock_topology(ir):
+    if phase1.get("clock_topology") != analyze_indexed_clock_topology(ir_path):
         raise ValidationError("frontend Phase 1 clock-topology result is invalid")
     if report.get("require_no_fabric_clock") and phase1["clock_topology"][
         "fabric_logic_clock_nets"
@@ -457,9 +460,9 @@ def validate_frontend_checkpoint(
         raise ValidationError("frontend checkpoint contains an unsafe fabric clock")
     return {
         "status": "pass",
-        "design": ir.value["design"]["name"],
-        "instances": len(ir.value["instances"]),
-        "nets": len(ir.value["nets"]),
+        "design": design,
+        "instances": instances,
+        "nets": nets,
     }
 
 
@@ -625,19 +628,14 @@ def run_cut_timing_checkpoint(
         if managed_dag_node
         else _sha256(complete_database)
     )
-    ir = EmuIR.load(ir_path)
     database = read_json(complete_database)
-    qualification = build_cut_segment_qualification_value(
-        ir,
-        assignment,
-        database,
+    qualification = build_cut_segment_qualification(
+        ir_path,
+        assignment_path,
+        complete_database,
         timing_model_path=timing_model_path,
         architecture_timing_db_path=architecture_timing_db_path,
-        path_records=iter_sta_path_database_paths(
-            complete_database,
-            database,
-            verify_payload=managed_dag_node,
-        ),
+        input_already_validated=managed_dag_node,
     )
     qualification_path = output_dir / "cut-segment-qualification.json"
     write_json(qualification_path, qualification)
@@ -748,20 +746,17 @@ def validate_cut_timing_checkpoint(
     if report.get("cut_net_count") != len(expected_cut_nets):
         raise ValidationError("cut-timing cut-net count is not reconstructed")
     qualification = read_json(qualification_path)
-    ir = EmuIR.load(ir_path)
     database = read_json(complete_database)
-    database_validation = validate_sta_path_database_path_value(
-        complete_database, database, ir
+    database_validation = validate_sta_path_database(
+        complete_database, ir_path
     )
-    expected_qualification = build_cut_segment_qualification_value(
-        ir,
-        assignment,
-        database,
+    expected_qualification = build_cut_segment_qualification(
+        ir_path,
+        assignment_path,
+        complete_database,
         timing_model_path=timing_model_path,
         architecture_timing_db_path=architecture_timing_db_path,
-        path_records=iter_sta_path_database_paths(
-            complete_database, database, verify_payload=False
-        ),
+        input_already_validated=True,
     )
     if qualification != expected_qualification:
         raise ValidationError(

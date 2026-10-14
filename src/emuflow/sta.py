@@ -1388,10 +1388,17 @@ def validate_sta_path_database_value(
     raw_paths = database.get("paths")
     if not isinstance(raw_paths, list) or not raw_paths:
         raise ValidationError("STA path database paths are invalid")
-    known_nets = {net["id"] for net in ir.value["nets"]}
-    known_instances = {
-        instance["id"] for instance in ir.value["instances"]
-    }
+    # IndexedTimingView exposes membership indexes backed by SQLite.  Do not
+    # decode every net and retain million-entry Python ID sets merely to
+    # validate the comparatively small set referenced by TimingPathDB.
+    known_nets = getattr(ir, "net_ids", None)
+    if known_nets is None:
+        known_nets = {net["id"] for net in ir.value["nets"]}
+    known_instances = getattr(ir, "instance_ids", None)
+    if known_instances is None:
+        known_instances = {
+            instance["id"] for instance in ir.value["instances"]
+        }
     path_ids = set()
     clock_domains = set()
     path_nets_union = set()
@@ -1504,15 +1511,27 @@ def validate_sta_path_database(
     ir_path: Path,
 ) -> Dict[str, Any]:
     database = read_json(database_path)
-    ir = EmuIR.load(ir_path)
-    if database.get("schema") in {
-        STA_PATH_DATABASE_STREAM_SCHEMA,
-        STA_PATH_DATABASE_INDEX_SCHEMA,
-    }:
-        return _validate_sta_path_database_stream(
-            database_path, database, ir
-        )
-    return validate_sta_path_database_value(database, ir)
+    from .emuir_compact import is_compact_emuir
+    from .emuir_storage import is_emuir_sqlite
+    from .indexed_timing import IndexedTimingView
+
+    ir = (
+        IndexedTimingView(ir_path)
+        if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path)
+        else EmuIR.load(ir_path)
+    )
+    try:
+        if database.get("schema") in {
+            STA_PATH_DATABASE_STREAM_SCHEMA,
+            STA_PATH_DATABASE_INDEX_SCHEMA,
+        }:
+            return _validate_sta_path_database_stream(
+                database_path, database, ir
+            )
+        return validate_sta_path_database_value(database, ir)
+    finally:
+        if isinstance(ir, IndexedTimingView):
+            ir.close()
 
 
 def validate_sta_path_database_path_value(
@@ -1556,10 +1575,7 @@ def derive_partition_net_weights(
             )
         checked = {"paths": int(summary["paths"])}
     else:
-        ir = EmuIR.load(ir_path)
-        checked = validate_sta_path_database_path_value(
-            database_path, database, ir
-        )
+        checked = validate_sta_path_database(database_path, ir_path)
     for name, value in (
         ("criticality_scale", criticality_scale),
         ("criticality_exponent", criticality_exponent),
@@ -1915,8 +1931,7 @@ def validate_partition_net_weights(
     if weights.get("schema") != PARTITION_NET_WEIGHTS_INDEX_SCHEMA:
         raise ValidationError("partition net weights schema is invalid")
     database = read_json(database_path)
-    ir = EmuIR.load(ir_path)
-    checked = validate_sta_path_database_path_value(database_path, database, ir)
+    checked = validate_sta_path_database(database_path, ir_path)
     parameters = weights.get("parameters")
     if not isinstance(parameters, Mapping):
         raise ValidationError("partition net weights parameters are invalid")

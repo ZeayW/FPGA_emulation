@@ -9,6 +9,8 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .architecture import ArchitectureDB
 from .errors import ValidationError
+from .emuir_compact import source_metadata
+from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from .io import file_sha256, read_json, write_json
 from .physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA
 from .sta import iter_sta_path_database_paths
@@ -330,7 +332,14 @@ def _run_rapidwright_routed_backend_tail(
         timing_value_sink=routed_timing_value,
     )
     timing_check = dict(routed_timing)
-    mapped_ir = read_json(merged_ir_path)
+    if is_emuir_sqlite(merged_ir_path):
+        connection = open_emuir_sqlite_read_only(merged_ir_path)
+        try:
+            mapped_ir = source_metadata(connection)
+        finally:
+            connection.close()
+    else:
+        mapped_ir = read_json(merged_ir_path)
     clocks = _physical_clock_periods(mapped_ir, runtime)
     path_database_path = output_dir / "opensta-paths.json"
     opensta_summary_path = output_dir / "opensta-summary.json"

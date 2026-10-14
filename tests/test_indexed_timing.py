@@ -13,7 +13,14 @@ from emuflow.indexed_timing import IndexedTimingView
 from emuflow.ir import EmuIR
 from emuflow.opensta import run_opensta_path_database
 from emuflow.resources import ResourceVector
-from emuflow.sta import sta_object_index, write_emuir_net_map, iter_sta_path_database_paths
+from emuflow.sta import (
+    derive_partition_net_weights,
+    iter_sta_path_database_paths,
+    sta_object_index,
+    validate_partition_net_weights,
+    validate_sta_path_database,
+    write_emuir_net_map,
+)
 from emuflow.verilog import mapped_verilog, write_mapped_verilog
 from emuflow.yosys import import_yosys_json
 
@@ -65,6 +72,32 @@ def test_compact_stream_uses_real_provider_protocol_without_ir_reload(tmp_path):
     )
     assert records == list(iter_sta_path_database_paths(old_out, json.loads(old_out.read_text())))
     assert report["path_qor"] == old_report["path_qor"]
+
+
+def test_compact_timing_validators_do_not_reload_the_whole_graph(tmp_path):
+    ir = import_yosys_json(
+        ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
+    )
+    path = tmp_path / "design.emuir.sqlite"
+    ir.save(path)
+    database = tmp_path / "paths.json"
+    run_opensta_path_database(
+        path,
+        database,
+        clocks={"clk": 10},
+        executable=str(ROOT / "tests/fixtures/fake_opensta_paths.py"),
+        _stream_output=True,
+    )
+    weights = tmp_path / "weights.json"
+    with patch(
+        "emuflow.sta.EmuIR.load",
+        side_effect=AssertionError("whole-graph loading forbidden"),
+    ):
+        assert validate_sta_path_database(database, path)["status"] == "pass"
+        derive_partition_net_weights(database, path, weights)
+        assert validate_partition_net_weights(weights, database, path)[
+            "status"
+        ] == "pass"
 
 
 def test_repeated_resources_and_long_endpoint_owners_are_not_stored_per_pin(tmp_path):

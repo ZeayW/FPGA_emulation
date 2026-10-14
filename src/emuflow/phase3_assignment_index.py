@@ -541,3 +541,207 @@ def validate_phase3_assignment_index(
         }
     finally:
         connection.close()
+
+
+def validate_phase3_assignment_index_against_emuir(
+    path: Path,
+    ir_path: Path,
+    *,
+    expected_design: str,
+    expected_platform: str,
+) -> dict[str, Any]:
+    """Prove the Phase 3 data-plane relation against compact EmuIR.
+
+    This is the production end-to-end validation boundary.  It checks the
+    complete instance relation, per-FPGA resources, and every cross-partition
+    source/sink pair with set-oriented SQL.  It deliberately does not rebuild
+    the multi-million-object EmuIR and partition graph in Python merely to
+    replay validation already performed while Phase 3 owned those objects.
+    """
+
+    connection = open_phase3_assignment_index(path)
+    try:
+        connection.execute(
+            "ATTACH DATABASE ? AS src",
+            (f"file:{ir_path.resolve()}?mode=ro&immutable=1",),
+        )
+        if connection.execute("PRAGMA src.user_version").fetchone()[0] != 2:
+            raise ValidationError(
+                "indexed Phase 3 validation requires compact EmuIR SQLite v2"
+            )
+        metadata = {
+            row["key"]: json.loads(row["value"])
+            for row in connection.execute("SELECT key,value FROM metadata")
+        }
+        source_metadata = dict(
+            connection.execute("SELECT key,value FROM src.metadata")
+        )
+        try:
+            source_design = json.loads(source_metadata["design_json"])["name"]
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ValidationError("compact EmuIR design metadata is invalid") from error
+        if (
+            metadata.get("schema") != ASSIGNMENT_INDEX_SCHEMA
+            or metadata.get("design") != expected_design
+            or source_design != expected_design
+        ):
+            raise ValidationError("indexed Phase 3 design identity disagrees")
+        if metadata.get("platform") != expected_platform:
+            raise ValidationError("indexed Phase 3 platform identity disagrees")
+
+        source_instances = int(connection.execute(
+            "SELECT count(*) FROM src.cell_records"
+        ).fetchone()[0])
+        primary_instances = int(connection.execute(
+            "SELECT count(*) FROM copies WHERE is_replica=0"
+        ).fetchone()[0])
+        coverage_errors = int(connection.execute(
+            """
+            SELECT count(*) FROM (
+              SELECT s.seq
+                FROM src.cell_records s
+                LEFT JOIN copies c
+                  ON c.source_instance_seq=s.seq AND c.is_replica=0
+               WHERE c.source_instance_seq IS NULL OR c.copy_id!=s.id
+              UNION ALL
+              SELECT c.source_instance_seq
+                FROM copies c
+                LEFT JOIN src.cell_records s ON s.seq=c.source_instance_seq
+               WHERE c.is_replica=0 AND s.seq IS NULL
+            )
+            """
+        ).fetchone()[0])
+        if (
+            source_instances != primary_instances
+            or source_instances != metadata.get("source_instance_count")
+            or coverage_errors
+        ):
+            raise ValidationError(
+                "indexed Phase 3 instance coverage disagrees with EmuIR"
+            )
+
+        cut_pair_errors = int(connection.execute(
+            """
+            WITH primary_driver_parts AS (
+              SELECT DISTINCT e.net_seq,c.part_index
+                FROM src.endpoint_records e
+                JOIN copies c
+                  ON c.source_instance_seq=e.instance_seq AND c.is_replica=0
+               WHERE e.role=0 AND e.instance_seq IS NOT NULL
+            ), driver_locations AS (
+              SELECT DISTINCT e.net_seq,c.part_index
+                FROM src.endpoint_records e JOIN copies c
+                  ON c.source_instance_seq=e.instance_seq
+               WHERE e.role=0 AND e.instance_seq IS NOT NULL
+            ), sink_parts AS (
+              SELECT DISTINCT e.net_seq,c.part_index
+                FROM src.endpoint_records e
+                JOIN copies c
+                  ON c.source_instance_seq=e.instance_seq
+               WHERE e.role=1 AND e.instance_seq IS NOT NULL
+            ), expected AS (
+              SELECT n.id AS net_id,d.part_index AS source_part_index,
+                     s.part_index AS sink_part_index
+                FROM primary_driver_parts d
+                JOIN sink_parts s ON s.net_seq=d.net_seq
+                JOIN src.net_records n ON n.seq=d.net_seq
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM driver_locations x
+                  WHERE x.net_seq=s.net_seq AND x.part_index=s.part_index
+               )
+            )
+            SELECT count(*) FROM (
+              SELECT net_id,source_part_index,sink_part_index FROM expected
+              EXCEPT
+              SELECT net_id,source_part_index,sink_part_index FROM cut_sinks
+            )
+            """
+        ).fetchone()[0]) + int(connection.execute(
+            """
+            WITH primary_driver_parts AS (
+              SELECT DISTINCT e.net_seq,c.part_index
+                FROM src.endpoint_records e
+                JOIN copies c
+                  ON c.source_instance_seq=e.instance_seq AND c.is_replica=0
+               WHERE e.role=0 AND e.instance_seq IS NOT NULL
+            ), driver_locations AS (
+              SELECT DISTINCT e.net_seq,c.part_index
+                FROM src.endpoint_records e JOIN copies c
+                  ON c.source_instance_seq=e.instance_seq
+               WHERE e.role=0 AND e.instance_seq IS NOT NULL
+            ), sink_parts AS (
+              SELECT DISTINCT e.net_seq,c.part_index
+                FROM src.endpoint_records e
+                JOIN copies c
+                  ON c.source_instance_seq=e.instance_seq
+               WHERE e.role=1 AND e.instance_seq IS NOT NULL
+            ), expected AS (
+              SELECT n.id AS net_id,d.part_index AS source_part_index,
+                     s.part_index AS sink_part_index
+                FROM primary_driver_parts d
+                JOIN sink_parts s ON s.net_seq=d.net_seq
+                JOIN src.net_records n ON n.seq=d.net_seq
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM driver_locations x
+                  WHERE x.net_seq=s.net_seq AND x.part_index=s.part_index
+               )
+            )
+            SELECT count(*) FROM (
+              SELECT net_id,source_part_index,sink_part_index FROM cut_sinks
+              EXCEPT
+              SELECT net_id,source_part_index,sink_part_index FROM expected
+            )
+            """
+        ).fetchone()[0])
+        if cut_pair_errors:
+            raise ValidationError(
+                "indexed Phase 3 cut relation disagrees with EmuIR"
+            )
+
+        resources_by_fpga: dict[str, dict[str, int]] = {}
+        for row in connection.execute(
+            """
+            SELECT p.fpga,r.key AS resource,SUM(r.value) AS amount
+              FROM copies c JOIN parts p ON p.part_index=c.part_index
+              JOIN src.cell_records i ON i.seq=c.source_instance_seq
+              JOIN src.payloads payload ON payload.seq=i.resources_seq,
+                   json_each(payload.value) r
+             WHERE c.is_replica=0
+             GROUP BY p.fpga,r.key ORDER BY p.fpga,r.key
+            """
+        ):
+            amount = int(row["amount"])
+            if amount:
+                resources_by_fpga.setdefault(row["fpga"], {})[
+                    row["resource"]
+                ] = amount
+        for row in connection.execute(
+            "SELECT fpga FROM parts ORDER BY part_index"
+        ):
+            resources_by_fpga.setdefault(row["fpga"], {})
+
+        return {
+            "status": "pass",
+            "provider": "sqlite-phase3-relation-certificate-v1",
+            "design": expected_design,
+            "platform": expected_platform,
+            "source_instances": source_instances,
+            "primary_instances": primary_instances,
+            "replicas": int(connection.execute(
+                "SELECT count(*) FROM copies WHERE is_replica=1"
+            ).fetchone()[0]),
+            "parts": int(connection.execute(
+                "SELECT count(*) FROM parts"
+            ).fetchone()[0]),
+            "cut_pairs": int(connection.execute(
+                "SELECT count(*) FROM cut_sinks"
+            ).fetchone()[0]),
+            "coverage_errors": coverage_errors,
+            "cut_pair_errors": cut_pair_errors,
+            "resources_by_fpga": resources_by_fpga,
+            "semantic_contract_sha256": metadata.get(
+                "semantic_contract_sha256"
+            ),
+        }
+    finally:
+        connection.close()

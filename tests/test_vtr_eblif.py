@@ -1,9 +1,13 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.io import write_json
+from emuflow.ir import EmuIR
+from emuflow.indexed_physical_ir import IndexedPhysicalIR
+from emuflow.logic_segment_timing import _instance_pin_inventory, _vpr_atom_pin
 from emuflow.vtr_eblif import emit_vtr_eblif, validate_vtr_eblif_report
 
 
@@ -186,6 +190,46 @@ class VtrEblifTest(unittest.TestCase):
             write_json(source, value)
             report = emit_vtr_eblif(source, output, root / "report.json")
             text = output.read_text(encoding="utf-8")
+            compact_source = root / "partition.emuir.sqlite"
+            EmuIR(value).save(compact_source)
+            compact_output = root / "partition-compact.eblif"
+            with mock.patch(
+                "emuflow.vtr_eblif.EmuIR.load",
+                side_effect=AssertionError("whole-graph loading forbidden"),
+            ):
+                compact_report = emit_vtr_eblif(
+                    compact_source,
+                    compact_output,
+                    root / "compact-report.json",
+                )
+            with IndexedPhysicalIR(compact_source) as indexed:
+                self.assertEqual(indexed.instance_indices["ff"], 1)
+                self.assertEqual(indexed.net_indices["q"], 5)
+                self.assertIn(("Q", 0), _instance_pin_inventory(indexed)["ff"])
+                self.assertEqual(
+                    _vpr_atom_pin(
+                        indexed,
+                        indexed.instance_indices,
+                        _endpoint("ff", "Q"),
+                        indexed.instances,
+                    ),
+                    "i1.Q[0]",
+                )
+            self.assertEqual(compact_output.read_text(encoding="utf-8"), text)
+            for field in (
+                "source_instances",
+                "source_nets",
+                "source_inventory",
+                "clock_nets",
+                "top_ports",
+                "ff_control_luts",
+                "output_alias_luts",
+                "memory_atom_expansion",
+                "emitted_atoms",
+                "hard_block_atoms",
+                "dangling_outputs",
+            ):
+                self.assertEqual(compact_report[field], report[field])
 
         self.assertEqual(report["source_instances"], 4)
         self.assertEqual(report["memory_atom_expansion"], 1)

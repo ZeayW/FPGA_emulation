@@ -37,7 +37,7 @@ from .mfspart_refine import (
     DEFAULT_TIMING_PATH_BETA,
     validate_mfspart_native_certificate,
 )
-from .phase3 import run_phase3, validate_phase3
+from .phase3 import run_phase3, validate_phase3_indexed
 from .platform import Platform
 from .routing import load_route_constraints
 from .sta import STA_PATH_DATABASE_SCHEMA, load_sta_path_database
@@ -901,11 +901,11 @@ def validate_partition_checkpoint(
             raise ValidationError(
                 "partition balance-repair report disagrees with assignment"
             )
-    checked = validate_phase3(
+    checked = validate_phase3_indexed(
         ir_path,
         platform_path,
-        seals["clusters_sha256"],
-        seals["assignment_sha256"],
+        root / "phase3_report.json",
+        root / "assignment.sqlite",
     )
     minimum_combinational_cut_nets = report.get(
         "minimum_combinational_cut_nets", 0

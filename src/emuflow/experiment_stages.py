@@ -23,6 +23,8 @@ from .cross_layer_timing import (
 )
 from .errors import EmuFlowError, ValidationError
 from .experiment_storage import validate_experiment_write_path
+from .emuir_compact import is_compact_emuir, selected_net_instance_endpoints
+from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from .io import read_json, write_json
 from .ir import EmuIR
 from .multi_fpga_physical_flow import (
@@ -30,10 +32,11 @@ from .multi_fpga_physical_flow import (
     validate_multi_fpga_physical_report,
 )
 from .native_tools import resolve_native_executable
-from .phase3 import validate_phase3
+from .phase3 import validate_phase3_indexed
 from .phase4 import validate_phase4
 from .phase5 import validate_phase5
 from .phase6 import run_phase6, validate_phase6
+from .phase1 import indexed_phase1_identity
 from .phase7c import run_phase7c
 from .pin_planning import (
     SIGNAL_POSITION_HINTS_SCHEMA,
@@ -443,7 +446,6 @@ def _placement_aware_positions(
     *,
     region_count: int,
 ) -> Dict[str, Any]:
-    ir = EmuIR.load(ir_path).value
     schedule = read_json(schedule_path)
     placement_source = read_json(placement_source_path)
     locations = {
@@ -453,7 +455,35 @@ def _placement_aware_positions(
         }
         for fpga in placement_source.get("fpgas", [])
     }
-    net_by_id = {net["id"]: net for net in ir.get("nets", [])}
+    scheduled_net_ids = [
+        entry.get("net") for entry in schedule.get("entries", [])
+        if isinstance(entry.get("net"), str)
+    ]
+    if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path):
+        connection = open_emuir_sqlite_read_only(ir_path)
+        try:
+            net_instances = selected_net_instance_endpoints(
+                connection, scheduled_net_ids
+            )
+        finally:
+            connection.close()
+    else:
+        ir = EmuIR.load(ir_path).value
+        net_instances = {
+            net["id"]: {
+                "drivers": [
+                    endpoint["instance"]
+                    for endpoint in net.get("drivers", [])
+                    if endpoint.get("instance") is not None
+                ],
+                "sinks": [
+                    endpoint["instance"]
+                    for endpoint in net.get("sinks", [])
+                    if endpoint.get("instance") is not None
+                ],
+            }
+            for net in ir.get("nets", [])
+        }
 
     def centroid(fpga: str, instances: list[str]) -> tuple[float, bool]:
         values = [
@@ -466,21 +496,13 @@ def _placement_aware_positions(
     hints = []
     fallbacks = 0
     for entry in sorted(schedule.get("entries", []), key=lambda item: item["id"]):
-        net = net_by_id.get(entry.get("net"))
+        net = net_instances.get(entry.get("net"))
         if net is None:
             raise ValidationError(
                 f"placement-aware entry {entry.get('id')!r} references an unknown net"
             )
-        drivers = [
-            endpoint["instance"]
-            for endpoint in net.get("drivers", [])
-            if endpoint.get("instance") is not None
-        ]
-        sinks = [
-            endpoint["instance"]
-            for endpoint in net.get("sinks", [])
-            if endpoint.get("instance") is not None
-        ]
+        drivers = net["drivers"]
+        sinks = net["sinks"]
         source_y, source_fallback = centroid(entry["from"], drivers)
         sink_y, sink_fallback = centroid(entry["to"], sinks)
         fallbacks += int(source_fallback) + int(sink_fallback)
@@ -572,7 +594,12 @@ def validate_shared_phase1_5(
             session.shared[key] = copy.deepcopy(result)
             return result
     paths = _shared_paths(root)
-    validate_phase3(paths["ir"], platform_path, paths["clusters"], paths["assignment"])
+    validate_phase3_indexed(
+        paths["ir"],
+        platform_path,
+        paths["assignment"].with_name("phase3_report.json"),
+        paths["assignment"].with_name("assignment.sqlite"),
+    )
     validate_phase4(
         paths["assignment"],
         platform_path,
@@ -587,11 +614,11 @@ def validate_shared_phase1_5(
         ratio_plan_path=ratio_plan if ratio_plan.is_file() else None,
         assignment_path=paths["assignment"],
     )
-    ir = EmuIR.load(paths["ir"])
     platform = Platform.load(platform_path)
+    design, _, _ = indexed_phase1_identity(paths["ir"])
     result = {
         "status": "pass",
-        "design": ir.value["design"]["name"],
+        "design": design,
         "platform": platform.name,
         "phase1_5_sha256": {
             label: _sha256(paths[label])

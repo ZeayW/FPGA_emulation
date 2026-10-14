@@ -43,7 +43,11 @@ from .combinational_cut import (
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
 from .phase3_storage import pack_phase3_assignment, pack_phase3_clusters
-from .phase3_assignment_index import write_phase3_assignment_index
+from .phase3_assignment_index import (
+    validate_phase3_assignment_index_against_emuir,
+    write_phase3_assignment_index,
+)
+from .phase1 import indexed_phase1_identity
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
@@ -1132,3 +1136,58 @@ def validate_phase3(
         read_json(clusters_path),
         read_json(assignment_path),
     )
+
+
+def validate_phase3_indexed(
+    ir_path: Path,
+    platform_path: Path,
+    phase3_report_path: Path,
+    assignment_index_path: Path,
+) -> Dict[str, Any]:
+    """Validate a completed Phase 3 without replaying its Python graph.
+
+    The Phase 3 producer already performs the exhaustive in-process artifact
+    validation before publication.  A complete-flow terminal check needs an
+    independent relation check, not a second construction of every EmuIR,
+    cluster, endpoint, and cut object.  The assignment sidecar and compact
+    EmuIR make that relation check set-oriented and bounded-memory.
+    """
+
+    platform = Platform.load(platform_path)
+    design, _, _ = indexed_phase1_identity(ir_path)
+    proof = validate_phase3_assignment_index_against_emuir(
+        assignment_index_path,
+        ir_path,
+        expected_design=design,
+        expected_platform=platform.name,
+    )
+    report = read_json(phase3_report_path)
+    if (
+        report.get("schema") != PHASE3_REPORT_SCHEMA
+        or report.get("status") != "pass"
+        or report.get("design") != design
+        or report.get("platform") != platform.name
+    ):
+        raise ValidationError("Phase 3 report identity is invalid")
+    validation = report.get("validation")
+    if not isinstance(validation, dict) or validation.get("status") != "pass":
+        raise ValidationError("Phase 3 report lacks passing validation")
+    if validation.get("instances") != proof["source_instances"]:
+        raise ValidationError("Phase 3 report instance count disagrees")
+    resource_field = (
+        "primary_resources_by_fpga"
+        if "primary_resources_by_fpga" in validation
+        else "resources_by_fpga"
+    )
+    if validation.get(resource_field) != proof["resources_by_fpga"]:
+        raise ValidationError("Phase 3 report resource totals disagree")
+    if proof["semantic_contract_sha256"] is not None:
+        if validation.get("cut_mode") != CUT_MODE_STATIC_EXACT:
+            raise ValidationError(
+                "Phase 3 exact assignment lacks exact validation status"
+            )
+    elif validation.get("cut_mode") == CUT_MODE_STATIC_EXACT:
+        raise ValidationError(
+            "Phase 3 sequential assignment claims exact validation status"
+        )
+    return validation

@@ -299,9 +299,14 @@ class ExperimentStagesTest(unittest.TestCase):
             projected = root / "timing/cut-timing-paths.json"
             projected.parent.mkdir(parents=True, exist_ok=True)
             write_json(projected, {"source": {"input_sha256": "a" * 64}})
-            with mock.patch("emuflow.experiment_stages.validate_phase3"), mock.patch(
+            with mock.patch("emuflow.experiment_stages.validate_phase3_indexed"), mock.patch(
                 "emuflow.experiment_stages.validate_phase4"
-            ) as validate_phase4, mock.patch("emuflow.experiment_stages.validate_phase5"):
+            ) as validate_phase4, mock.patch(
+                "emuflow.experiment_stages.validate_phase5"
+            ), mock.patch(
+                "emuflow.experiment_stages.EmuIR.load",
+                side_effect=AssertionError("whole-graph loading forbidden"),
+            ):
                 report = validate_shared_phase1_5(root, platform)
             self.assertEqual(report["status"], "pass")
             self.assertEqual(
@@ -416,6 +421,14 @@ class ExperimentStagesTest(unittest.TestCase):
             self.assertEqual(
                 validate_frontend_checkpoint(output, platform)["status"], "pass"
             )
+            with mock.patch(
+                "emuflow.ir.EmuIR.load",
+                side_effect=AssertionError("whole-graph loading forbidden"),
+            ):
+                self.assertEqual(
+                    validate_frontend_checkpoint(output, platform)["status"],
+                    "pass",
+                )
             (output / "phase1/design.emuir.sqlite").write_bytes(b"corrupt")
             with self.assertRaisesRegex(Exception, "EmuIR seal"):
                 validate_frontend_checkpoint(output, platform)

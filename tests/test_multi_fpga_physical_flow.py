@@ -523,7 +523,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             def fake_lower(netlist, _transport, _transport_ir, output, report):
                 fpga = netlist["instances"][0]["id"].removesuffix("_original")
                 value = _merged_ir(fpga)
-                write_json(output, value.to_dict())
+                value.save(output)
                 boundary_path = output.with_name("boundary-identities.json")
                 boundary = {
                     "schema": "emuflow.boundary-identity/v1",

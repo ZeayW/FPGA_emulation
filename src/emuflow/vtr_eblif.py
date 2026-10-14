@@ -18,6 +18,8 @@ from .equivalence import _lut_definition, _parameter_int
 from .errors import ValidationError
 from .io import write_json
 from .ir import EmuIR
+from .emuir_compact import compact_instances, compact_metadata, is_compact_emuir
+from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 
 
 VTR_EBLIF_REPORT_SCHEMA = "emuflow.vtr-eblif-report/v1"
@@ -332,7 +334,7 @@ def validate_vtr_eblif_report(report: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
-def emit_vtr_eblif(
+def _emit_vtr_eblif_materialized(
     ir_path: Path,
     output_path: Path,
     report_path: Optional[Path] = None,
@@ -484,3 +486,233 @@ def emit_vtr_eblif(
     if report_path is not None:
         write_json(report_path, report)
     return report
+
+
+class _CompactPins:
+    """Instance-local pin view for streamed compact-EmuIR eBLIF emission."""
+
+    def __init__(self, connection) -> None:
+        self.top = {
+            (row[1], int(row[2])): f"n{int(row[0])}"
+            for row in connection.execute(
+                """SELECT e.net_seq,p.name,e.bit FROM endpoint_records AS e
+                     JOIN pin_names AS p ON p.seq=e.port_seq
+                    WHERE e.instance_seq IS NULL
+                    ORDER BY e.net_seq,e.role,e.ordinal"""
+            )
+        }
+        self.pins: Dict[Tuple[str, str, int], str] = {}
+        self.constants: Dict[Tuple[str, str, int], int] = {}
+        self.dangling = 0
+
+    def bind(self, instance: Mapping[str, Any], rows) -> None:
+        identity = instance["id"]
+        self.pins = {
+            (identity, row[1], int(row[2])): f"n{int(row[0])}"
+            for row in rows
+        }
+        self.constants = {
+            (identity, item["port"], item["bit"]): _bit(item["value"])
+            for item in instance.get("constant_connections", [])
+        }
+
+    input = _Pins.input
+    output = _Pins.output
+
+
+def _emit_vtr_eblif_compact(
+    ir_path: Path,
+    output_path: Path,
+    report_path: Optional[Path],
+) -> Dict[str, Any]:
+    connection = open_emuir_sqlite_read_only(ir_path)
+    try:
+        metadata = compact_metadata(connection)
+        counts_row = connection.execute(
+            "SELECT value FROM metadata WHERE key='record_counts_json'"
+        ).fetchone()
+        if counts_row is None:
+            raise ValidationError("compact EmuIR record counts are missing")
+        import json
+
+        counts = json.loads(counts_row[0])
+        inventory = Counter(
+            {
+                row[0]: int(row[1])
+                for row in connection.execute(
+                    "SELECT type,COUNT(*) FROM cell_records GROUP BY type"
+                )
+            }
+        )
+        unsupported = sorted(
+            cell_type
+            for cell_type in inventory
+            if not (
+                _is_lut(cell_type)
+                or _is_ff(cell_type)
+                or cell_type in _MACRO_TYPES
+            )
+        )
+        if unsupported:
+            raise ValidationError(
+                "VTR eBLIF lowering does not support mapped primitives: "
+                + ", ".join(unsupported)
+            )
+
+        pins = _CompactPins(connection)
+        ports = metadata["ports"]
+        output_port_bits = [
+            (port["id"], bit, pins.top[(port["id"], bit)])
+            for port in ports
+            if port["direction"] == "output"
+            for bit in range(port["width"])
+            if (port["id"], bit) in pins.top
+        ]
+        output_net_counts = Counter(net for _, _, net in output_port_bits)
+        output_alias_names = {
+            (port_id, bit): f"emuflow_top_output_{index:06d}"
+            for index, (port_id, bit, net) in enumerate(output_port_bits)
+            if output_net_counts[net] > 1
+        }
+        inputs: list[str] = []
+        outputs: list[str] = []
+        output_aliases: list[Tuple[str, str]] = []
+        top_ports = []
+        for port in ports:
+            target = inputs if port["direction"] == "input" else outputs
+            if port["direction"] not in {"input", "output"}:
+                raise ValidationError(
+                    f"VTR eBLIF cannot lower {port['direction']} port {port['id']!r}"
+                )
+            for bit in range(port["width"]):
+                net = pins.top.get((port["id"], bit))
+                if net is None:
+                    continue
+                external_net = net
+                if port["direction"] == "output" and output_net_counts[net] > 1:
+                    external_net = output_alias_names[(port["id"], bit)]
+                    output_aliases.append((net, external_net))
+                target.append(external_net)
+                top_ports.append(
+                    {
+                        "port": port["id"],
+                        "bit": bit,
+                        "direction": port["direction"],
+                        "net": external_net,
+                        "source_net": net,
+                        "packed_block": (
+                            f"out:{external_net}"
+                            if port["direction"] == "output"
+                            else external_net
+                        ),
+                    }
+                )
+
+        output_path = output_path.resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        ff_control_luts = 0
+        memory_atom_expansion = 0
+        base_atoms = 0
+        hard_block_atoms = Counter()
+        endpoint_cursor = iter(
+            connection.execute(
+                """SELECT e.instance_seq,e.net_seq,p.name,e.bit,e.role
+                     FROM endpoint_records AS e INDEXED BY endpoint_owner
+                     JOIN pin_names AS p ON p.seq=e.port_seq
+                    WHERE e.instance_seq IS NOT NULL
+                    ORDER BY e.instance_seq,e.port_seq,e.bit"""
+            )
+        )
+        endpoint_row = next(endpoint_cursor, None)
+        top = metadata["design"]["top"]
+        model = "emuflow_partition_" + hashlib.sha256(
+            top.encode()
+        ).hexdigest()[:12]
+        with output_path.open("w", encoding="utf-8") as output:
+            output.write(f".model {model}\n")
+            output.write(
+                ".inputs"
+                + (" " + " ".join(sorted(set(inputs))) if inputs else "")
+                + "\n"
+            )
+            output.write(
+                ".outputs"
+                + (" " + " ".join(sorted(set(outputs))) if outputs else "")
+                + "\n"
+            )
+            output.write(".names emuflow_const0\n.names emuflow_const1\n1\n")
+            for source_net, output_net in output_aliases:
+                output.write(f".names {source_net} {output_net}\n1 1\n")
+            for index, instance in enumerate(compact_instances(connection)):
+                rows = []
+                while endpoint_row is not None and int(endpoint_row[0]) == index:
+                    if int(endpoint_row[4]) not in (0, 1):
+                        raise ValidationError("compact EmuIR endpoint role is invalid")
+                    rows.append(endpoint_row[1:])
+                    endpoint_row = next(endpoint_cursor, None)
+                if endpoint_row is not None and int(endpoint_row[0]) < index:
+                    raise ValidationError("compact EmuIR endpoint owner is invalid")
+                pins.bind(instance, rows)
+                atom_name = f"i{index}"
+                cell_type = instance["type"]
+                if _is_lut(cell_type):
+                    emitted = _lut_lines(instance, pins, atom_name)
+                    base_atoms += 1
+                elif _is_ff(cell_type):
+                    emitted, controls = _ff_lines(instance, pins, atom_name)
+                    base_atoms += 1
+                    ff_control_luts += controls
+                else:
+                    emitted, atoms = _macro_lines(instance, pins, atom_name)
+                    base_atoms += atoms
+                    memory_atom_expansion += atoms - 1
+                    hard_block_atoms[cell_type] += atoms
+                for line in emitted:
+                    output.write(line + "\n")
+            if endpoint_row is not None:
+                raise ValidationError("compact EmuIR endpoint owner is invalid")
+            output.write(".end\n")
+
+        report = {
+            "schema": VTR_EBLIF_REPORT_SCHEMA,
+            "status": "pass",
+            "provider": "emuir-to-vtr-eblif-v1",
+            "design": metadata["design"]["name"],
+            "top": top,
+            "source": str(ir_path),
+            "source_sha256": _sha256(ir_path),
+            "source_instances": int(counts["cell_records"]),
+            "source_nets": int(counts["net_records"]),
+            "source_inventory": dict(sorted(inventory.items())),
+            "clock_nets": {
+                clock["id"]: pins.top[(clock["source_port"], 0)]
+                for clock in metadata["clocks"]
+                if (clock["source_port"], 0) in pins.top
+            },
+            "top_ports": sorted(top_ports, key=lambda item: (item["port"], item["bit"])),
+            "ff_control_luts": ff_control_luts,
+            "output_alias_luts": len(output_aliases),
+            "memory_atom_expansion": memory_atom_expansion,
+            "emitted_atoms": base_atoms + ff_control_luts + len(output_aliases),
+            "hard_block_atoms": dict(sorted(hard_block_atoms.items())),
+            "dangling_outputs": pins.dangling,
+            "output": str(output_path),
+            "output_sha256": _sha256(output_path),
+        }
+        report["validation"] = validate_vtr_eblif_report(report)
+        if report_path is not None:
+            write_json(report_path, report)
+        return report
+    finally:
+        connection.close()
+
+
+def emit_vtr_eblif(
+    ir_path: Path,
+    output_path: Path,
+    report_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    ir_path = ir_path.resolve()
+    if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path):
+        return _emit_vtr_eblif_compact(ir_path, output_path, report_path)
+    return _emit_vtr_eblif_materialized(ir_path, output_path, report_path)

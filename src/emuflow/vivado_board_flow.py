@@ -832,7 +832,7 @@ def run_vivado_board_flow(
         record = phase6c_by_fpga[fpga_id]
         physical_record = physical_by_fpga[fpga_id]
         physical_root = flow_root / "physical" / fpga_id
-        ir_path = physical_root / "placement.emuir.json"
+        ir_path = physical_root / "placement.emuir.sqlite"
         wrapper = phase6c_root / record["rtl"]
         gt_tcl_name = phase6c_report.get("artifacts", {}).get(
             "gt_site_tcl", {}

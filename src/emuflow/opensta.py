@@ -1224,6 +1224,11 @@ def classify_through_net_timing_endpoints(
     zero-path result is accepted only when a second implementation proves that
     no sequential startpoint-to-data/setup path crosses the requested net.
     """
+    if hasattr(ir, "timing_connections") and hasattr(ir, "connection"):
+        return _classify_indexed_through_net_timing_endpoints(
+            ir, model, through_nets, instance_cell_types
+        )
+
     net_by_id = {net["id"]: net for net in ir.value["nets"]}
     if len(net_by_id) != len(ir.value["nets"]):
         raise ValidationError("OpenSTA structural timing net IDs are not unique")
@@ -1362,6 +1367,150 @@ def classify_through_net_timing_endpoints(
             "direct_top_level_sinks": top_level_sink_counts[net],
         }
         for net in through_nets
+    }
+
+
+def _classify_indexed_through_net_timing_endpoints(
+    ir,
+    model: Mapping[str, Any],
+    through_nets: Sequence[str],
+    instance_cell_types: Optional[Mapping[str, str]],
+) -> Dict[str, Dict[str, Any]]:
+    """Classify compact EmuIR using integer connectivity, not Python records."""
+
+    from .sta import _scalar_pin
+
+    requested: Dict[int, str] = {}
+    for net in through_nets:
+        row = ir.connection.execute(
+            "SELECT seq FROM net_records WHERE id=?", (net,)
+        ).fetchone()
+        if row is None:
+            raise ValidationError(
+                f"OpenSTA structural timing nets are absent from EmuIR: {[net]}"
+            )
+        requested[int(row[0])] = net
+    if len(requested) != len(through_nets):
+        raise ValidationError("OpenSTA structural timing nets are not unique")
+
+    forward_edges: DefaultDict[int, set[int]] = defaultdict(set)
+    reverse_edges: DefaultDict[int, set[int]] = defaultdict(set)
+    timing_startpoints: set[int] = set()
+    direct_timed: set[int] = set()
+    direct_timed_counts: DefaultDict[int, int] = defaultdict(int)
+    direct_timed_pins: DefaultDict[int, set[str]] = defaultdict(set)
+
+    for instance, wires in ir.timing_connections():
+        instance_id = instance["id"]
+        cell_type = (
+            instance_cell_types.get(instance_id, instance["type"])
+            if instance_cell_types is not None
+            else instance["type"]
+        )
+        cell = model["cells"].get(cell_type)
+        if cell is None:
+            raise ValidationError(
+                f"OpenSTA structural timing model lacks {cell_type!r}"
+            )
+        pins = set(wires) | {
+            (item["port"], item["bit"])
+            for item in instance.get("constant_connections", [])
+        }
+        scalar_wires: Dict[str, int] = {}
+        for (port, bit), net_seq in wires.items():
+            scalar = _scalar_pin(port, bit, pins)
+            previous = scalar_wires.setdefault(scalar, int(net_seq))
+            if previous != int(net_seq):
+                raise ValidationError(
+                    "OpenSTA structural timing scalar pin is ambiguous"
+                )
+        kind = cell["kind"]
+        if kind == "combinational":
+            input_nets = []
+            for pin in cell["inputs"]:
+                if pin in cell.get("controls", []):
+                    continue
+                if pin in scalar_wires:
+                    input_nets.append(scalar_wires[pin])
+            output_nets = [
+                scalar_wires[pin]
+                for pin in cell.get("outputs", [cell.get("output")])
+                if pin in scalar_wires
+            ]
+            for predecessor in input_nets:
+                for successor in output_nets:
+                    forward_edges[predecessor].add(successor)
+                    reverse_edges[successor].add(predecessor)
+        elif kind in {"rising_edge_ff", "falling_edge_ff"}:
+            output = scalar_wires.get(cell["output"])
+            if output is not None:
+                timing_startpoints.add(output)
+            data = scalar_wires.get(cell["data"])
+            if data is not None:
+                direct_timed.add(data)
+                if data in requested:
+                    direct_timed_counts[data] += 1
+                    direct_timed_pins[data].add(
+                        f"{instance_id}/{cell['data']}"
+                    )
+        elif kind == "rising_edge_bank":
+            for pin in cell["outputs"]:
+                output = scalar_wires.get(pin)
+                if output is not None:
+                    timing_startpoints.add(output)
+            for pin in cell["inputs"]:
+                data = scalar_wires.get(pin)
+                if data is not None:
+                    direct_timed.add(data)
+                    if data in requested:
+                        direct_timed_counts[data] += 1
+                        direct_timed_pins[data].add(f"{instance_id}/{pin}")
+        elif kind != "constant":
+            raise ValidationError(
+                f"OpenSTA structural timing kind is unsupported: {kind!r}"
+            )
+
+    reachable_from_startpoint = set(timing_startpoints)
+    pending = list(timing_startpoints)
+    while pending:
+        predecessor = pending.pop()
+        for successor in forward_edges.get(predecessor, ()):
+            if successor not in reachable_from_startpoint:
+                reachable_from_startpoint.add(successor)
+                pending.append(successor)
+
+    reaches_timed = set(direct_timed)
+    pending = list(direct_timed)
+    while pending:
+        successor = pending.pop()
+        for predecessor in reverse_edges.get(successor, ()):
+            if predecessor not in reaches_timed:
+                reaches_timed.add(predecessor)
+                pending.append(predecessor)
+
+    top_level_sink_counts: DefaultDict[int, int] = defaultdict(int)
+    for row in ir.connection.execute(
+        """SELECT net_seq, COUNT(*) FROM endpoint_records
+             WHERE instance_seq IS NULL AND role=1 GROUP BY net_seq"""
+    ):
+        net_seq = int(row[0])
+        if net_seq in requested:
+            top_level_sink_counts[net_seq] = int(row[1])
+    return {
+        net: {
+            "status": (
+                "timed"
+                if net_seq in reachable_from_startpoint
+                and net_seq in reaches_timed
+                else "no_timed_endpoint"
+            ),
+            "direct_timed_endpoints": direct_timed_counts[net_seq],
+            "direct_timed_endpoint_pins": sorted(
+                direct_timed_pins[net_seq]
+            ),
+            "direct_top_level_sinks": top_level_sink_counts[net_seq],
+        }
+        for net_seq, net in requested.items()
     }
 
 

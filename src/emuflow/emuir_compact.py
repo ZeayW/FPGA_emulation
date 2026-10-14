@@ -12,7 +12,7 @@ import sys
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from .emuir_storage import (
     EMUIR_SQLITE_APPLICATION_ID, EMUIR_COMPACT_STORAGE_SCHEMA,
@@ -238,6 +238,108 @@ def compact_nets(c) -> Iterator[dict]:
         yield record
     endpoints.finish()
     aliases.finish()
+
+
+def selected_net_instance_endpoints(
+    c: sqlite3.Connection,
+    net_ids: Iterable[str],
+) -> dict[str, dict[str, list[str]]]:
+    """Read only instance owners for selected nets from compact EmuIR.
+
+    Placement-aware planning and lookahead need the endpoints of scheduled
+    nets, not a reconstructed copy of every instance, payload, and net in the
+    design.  Keep the query bounded so callers can use it for thousands of
+    schedule entries without hitting SQLite's parameter limit.
+    """
+
+    requested = sorted(set(net_ids))
+    result: dict[str, dict[str, list[str]]] = {}
+    for offset in range(0, len(requested), 500):
+        batch = requested[offset : offset + 500]
+        placeholders = ",".join("?" for _ in batch)
+        rows = c.execute(
+            f"""SELECT n.id,e.role,e.ordinal,cell.id AS instance_id
+            FROM net_records n
+            LEFT JOIN endpoint_records e ON e.net_seq=n.seq
+            LEFT JOIN cell_records cell ON cell.seq=e.instance_seq
+            WHERE n.id IN ({placeholders})
+            ORDER BY n.id,e.role,e.ordinal""",
+            batch,
+        )
+        for row in rows:
+            record = result.setdefault(
+                row["id"], {"drivers": [], "sinks": []}
+            )
+            if row["role"] is None or row["instance_id"] is None:
+                continue
+            if row["role"] not in (0, 1):
+                raise ValueError("compact EmuIR endpoint has invalid role")
+            record[("drivers", "sinks")[row["role"]]].append(
+                row["instance_id"]
+            )
+    missing = sorted(set(requested) - set(result))
+    if missing:
+        raise ValueError(
+            "compact EmuIR is missing requested nets: "
+            + ", ".join(repr(item) for item in missing[:10])
+        )
+    return result
+
+
+def selected_net_records(
+    c: sqlite3.Connection,
+    net_ids: Iterable[str],
+) -> dict[str, dict[str, Any]]:
+    """Decode complete logical records only for an explicit net subset."""
+
+    requested = sorted(set(net_ids))
+    result: dict[str, dict[str, Any]] = {}
+    for offset in range(0, len(requested), 500):
+        batch = requested[offset : offset + 500]
+        placeholders = ",".join("?" for _ in batch)
+        for row in c.execute(
+            f"SELECT * FROM nets WHERE id IN ({placeholders}) ORDER BY seq",
+            batch,
+        ):
+            record = {
+                "id": row["id"],
+                "cut_class": row["cut_class"],
+                "drivers": [],
+                "sinks": [],
+                **_decode(row["extras_json"], "net extras"),
+            }
+            for field in ("name", "yosys_bit", "bus_index", "fanout"):
+                if row[field] is not None:
+                    record[field] = row[field]
+            result[row["id"]] = record
+        for row in c.execute(
+            f"""SELECT n.id,e.role,e.ordinal,cell.id AS instance_id,
+            pin.name AS port,e.bit,payload.value AS extras_json
+            FROM net_records n JOIN endpoint_records e ON e.net_seq=n.seq
+            LEFT JOIN cell_records cell ON cell.seq=e.instance_seq
+            JOIN pin_names pin ON pin.seq=e.port_seq
+            JOIN payloads payload ON payload.seq=e.extras_seq
+            WHERE n.id IN ({placeholders})
+            ORDER BY n.id,e.role,e.ordinal""",
+            batch,
+        ):
+            if row["role"] not in (0, 1):
+                raise ValueError("compact EmuIR endpoint has invalid role")
+            result[row["id"]][("drivers", "sinks")[row["role"]]].append(
+                {
+                    "instance": row["instance_id"],
+                    "port": row["port"],
+                    "bit": row["bit"],
+                    **_decode(row["extras_json"], "endpoint extras"),
+                }
+            )
+    missing = sorted(set(requested) - set(result))
+    if missing:
+        raise ValueError(
+            "compact EmuIR is missing requested nets: "
+            + ", ".join(repr(item) for item in missing[:10])
+        )
+    return result
 
 
 def read_compact_emuir(path: Path) -> dict:

@@ -17,8 +17,13 @@ from emuflow.errors import ValidationError
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
 from emuflow.io import read_json, write_json
+from emuflow.lowering import (
+    run_placement_ir_lowering_from_split,
+    run_placement_ir_lowering_from_value,
+)
 from emuflow.netlist import (
     build_split_artifacts,
+    transport_endpoint_port,
     validate_split_artifacts,
 )
 from emuflow.partition import (
@@ -279,6 +284,196 @@ class Phase6Test(unittest.TestCase):
                     control["transports"][fpga], old["transports"][fpga]
                 )
                 self.assertEqual(control["anchors"][fpga], old["anchors"][fpga])
+
+    def test_streaming_phase7_lowering_matches_legacy_exactly(self) -> None:
+        """The production SQLite handoff must preserve every EmuIR record."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.sqlite"
+            assignment_path = root / "assignment.sqlite"
+            split_path = root / "split.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            write_phase3_assignment_index(
+                assignment_path, self.ir, self.assignment
+            )
+            write_split_netlists_sqlite(
+                split_path,
+                ir_path,
+                assignment_path,
+                self.schedule,
+                expected_design=self.ir.value["design"]["name"],
+                expected_platform=self.platform.name,
+            )
+            control = build_streaming_split_metadata(
+                assignment_path,
+                self.schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+            )
+            fpga = "fpga0"
+            transport = control["transports"][fpga]
+            transport_path = root / "transport.json"
+            write_json(transport_path, transport)
+
+            ports = []
+            instances = []
+            nets = []
+            if transport["source_signals"]:
+                ports.append({
+                    "id": "source_values",
+                    "name": "source_values",
+                    "direction": "input",
+                    "width": len(transport["source_signals"]),
+                    "clock": False,
+                    "reset": False,
+                })
+            if transport["shadow_signals"]:
+                ports.append({
+                    "id": "shadow_values",
+                    "name": "shadow_values",
+                    "direction": "output",
+                    "width": len(transport["shadow_signals"]),
+                    "clock": False,
+                    "reset": False,
+                })
+            for index, _signal in enumerate(transport["source_signals"]):
+                identity = f"source_sink_{index}"
+                instances.append({
+                    "id": identity,
+                    "name": identity,
+                    "type": "LUT1",
+                    "resources": {"lut": 1},
+                    "parameters": {"INIT": "10"},
+                    "attributes": {},
+                    "constant_connections": [],
+                })
+                nets.append({
+                    "id": f"source_net_{index}",
+                    "name": f"source_net_{index}",
+                    "drivers": [{
+                        "instance": None,
+                        "port": "source_values",
+                        "bit": index,
+                    }],
+                    "sinks": [{
+                        "instance": identity,
+                        "port": "I0",
+                        "bit": 0,
+                    }],
+                    "fanout": 1,
+                    "cut_class": "combinational",
+                })
+            for index, _signal in enumerate(transport["shadow_signals"]):
+                identity = f"shadow_driver_{index}"
+                instances.append({
+                    "id": identity,
+                    "name": identity,
+                    "type": "FDRE",
+                    "resources": {"ff": 1},
+                    "parameters": {"INIT": "0"},
+                    "attributes": {},
+                    "constant_connections": [],
+                })
+                nets.append({
+                    "id": f"shadow_net_{index}",
+                    "name": f"shadow_net_{index}",
+                    "drivers": [{
+                        "instance": identity,
+                        "port": "Q",
+                        "bit": 0,
+                    }],
+                    "sinks": [{
+                        "instance": None,
+                        "port": "shadow_values",
+                        "bit": index,
+                    }],
+                    "fanout": 1,
+                    "cut_class": "register_output",
+                })
+            interface_ports = {}
+            for endpoint in transport["endpoints"]:
+                port_id = transport_endpoint_port(endpoint)
+                width = endpoint["lane"] + 1
+                record = interface_ports.setdefault(port_id, {
+                    "id": port_id,
+                    "name": port_id,
+                    "direction": (
+                        "output" if endpoint["kind"] == "tx" else "input"
+                    ),
+                    "width": width,
+                    "clock": False,
+                    "reset": False,
+                })
+                record["width"] = max(record["width"], width)
+                is_tx = endpoint["kind"] == "tx"
+                nets.append({
+                    "id": f"interface_{endpoint['id']}",
+                    "name": f"interface_{endpoint['id']}",
+                    "drivers": ([] if is_tx else [{
+                        "instance": None,
+                        "port": port_id,
+                        "bit": endpoint["lane"],
+                    }]),
+                    "sinks": ([{
+                        "instance": None,
+                        "port": port_id,
+                        "bit": endpoint["lane"],
+                    }] if is_tx else []),
+                    "fanout": int(is_tx),
+                    "cut_class": "combinational",
+                })
+            ports.extend(interface_ports.values())
+            transport_ir = EmuIR({
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "transport",
+                    "top": "transport",
+                    "source_format": "test",
+                },
+                "ports": ports,
+                "instances": instances,
+                "nets": nets,
+                "clocks": [],
+                "warnings": [],
+            })
+            transport_ir_path = root / "transport.emuir.sqlite"
+            write_compact_emuir(transport_ir_path, transport_ir.to_dict())
+
+            legacy_output = root / "legacy.emuir.sqlite"
+            direct_output = root / "direct.emuir.sqlite"
+            legacy_boundary = root / "legacy-boundary.json"
+            direct_boundary = root / "direct-boundary.json"
+            run_placement_ir_lowering_from_value(
+                read_split_netlist_sqlite(split_path, fpga),
+                transport_path,
+                transport_ir_path,
+                legacy_output,
+                boundary_identity_path=legacy_boundary,
+            )
+            with mock.patch(
+                "emuflow.lowering.read_split_netlist_sqlite",
+                side_effect=AssertionError(
+                    "streaming lowering must not materialize a split graph"
+                ),
+                create=True,
+            ):
+                run_placement_ir_lowering_from_split(
+                    split_path,
+                    fpga,
+                    transport_path,
+                    transport_ir_path,
+                    direct_output,
+                    boundary_identity_path=direct_boundary,
+                )
+            self.assertEqual(
+                EmuIR.load(direct_output).to_dict(),
+                EmuIR.load(legacy_output).to_dict(),
+            )
+            self.assertEqual(
+                read_json(direct_boundary), read_json(legacy_boundary)
+            )
 
     def test_legacy_assignment_migration_does_not_load_emuir_graph(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

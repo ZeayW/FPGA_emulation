@@ -198,6 +198,44 @@ def indexed_phase1_facts(
         connection.close()
 
 
+def indexed_phase1_identity(ir_path: Path) -> tuple[str, int, int]:
+    """Read the bounded identity/count subset used by checkpoint control code."""
+
+    connection = open_emuir_sqlite_read_only(ir_path)
+    try:
+        metadata = {
+            row["key"]: row["value"]
+            for row in connection.execute(
+                "SELECT key, value FROM metadata WHERE key IN (?, ?)",
+                ("design_json", "record_counts_json"),
+            )
+        }
+        design = json.loads(metadata["design_json"])
+        if connection.execute("PRAGMA user_version").fetchone()[0] == 2:
+            counts = json.loads(metadata["record_counts_json"])
+            instances = counts["cell_records"]
+            nets = counts["net_records"]
+        else:
+            instances = connection.execute(
+                "SELECT COUNT(*) FROM instances"
+            ).fetchone()[0]
+            nets = connection.execute("SELECT COUNT(*) FROM nets").fetchone()[0]
+        if (
+            not isinstance(design.get("name"), str)
+            or not design["name"]
+            or isinstance(instances, bool)
+            or not isinstance(instances, int)
+            or instances < 0
+            or isinstance(nets, bool)
+            or not isinstance(nets, int)
+            or nets < 0
+        ):
+            raise ValueError("indexed EmuIR identity is invalid")
+        return design["name"], instances, nets
+    finally:
+        connection.close()
+
+
 def run_phase1(
     yosys_json: Path,
     platform_path: Path,

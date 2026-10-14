@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
@@ -15,19 +16,131 @@ from emuflow.logic_segment_timing import (
     _vpr_atom_pin,
     import_vivado_logic_segment_timing,
     import_vpr_logic_segment_timing,
+    prepare_logic_segment_query_inputs,
 )
 from emuflow.local_path_timing import (
     _explicit_vpr_path_pins,
     _resolve_local_path_fpga,
     import_vpr_local_path_timing,
     path_id_set_sha256,
+    prepare_vpr_local_path_query_inputs,
     validate_local_path_identity,
     validate_local_path_timing,
 )
 from emuflow.routing import SYSTEM_ROUTES_SCHEMA, system_route_timing_paths
+from emuflow.platform import Platform
 
 
 class LogicSegmentTimingTest(unittest.TestCase):
+    def test_compact_local_path_preparation_never_loads_whole_graph(self):
+        value = {
+            "schema": "emuflow.emuir/v1",
+            "design": {"name": "dut", "top": "dut", "source_format": "test"},
+            "ports": [],
+            "instances": [
+                {
+                    "id": name,
+                    "name": name,
+                    "type": "FDRE" if name != "logic" else "LUT1",
+                    "resources": {"ff": 1} if name != "logic" else {"lut": 1},
+                    "parameters": {},
+                    "attributes": {},
+                    "constant_connections": [],
+                }
+                for name in ("launch", "logic", "capture")
+            ],
+            "nets": [
+                {
+                    "id": "n0", "name": "n0", "fanout": 1,
+                    "cut_class": "register_output",
+                    "drivers": [{"instance": "launch", "port": "Q", "bit": 0}],
+                    "sinks": [{"instance": "logic", "port": "I0", "bit": 0}],
+                },
+                {
+                    "id": "n1", "name": "n1", "fanout": 1,
+                    "cut_class": "combinational",
+                    "drivers": [{"instance": "logic", "port": "O", "bit": 0}],
+                    "sinks": [{"instance": "capture", "port": "D", "bit": 0}],
+                },
+            ],
+            "clocks": [],
+            "warnings": [],
+        }
+        database = {
+            "schema": "emuflow.sta-path-database/v1",
+            "design": "dut",
+            "source": {"provider": "opensta-fpga-path-database-v1", "input": "test"},
+            "normalization": {
+                "positive_slack_scale_ns": 10.0,
+                "negative_slack_scale_ns": 1.0,
+                "max_clock_period_ns": 10.0,
+            },
+            "paths": [{
+                "id": "p0",
+                "startpoint": {"object": "launch/Q", "instance": "launch", "port": "Q", "bit": 0},
+                "endpoint": {"object": "capture/D", "instance": "capture", "port": "D", "bit": 0},
+                "clock_domain": "clk",
+                "clock_period_ns": 10.0,
+                "slack_ns": 1.0,
+                "fixed_delay_ns": 9.0,
+                "path_nets": ["n0", "n1"],
+                "normalized_slack": 0.1,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "dut.emuir.sqlite"
+            EmuIR(value).save(ir_path)
+            assignment = root / "assignment.json"
+            write_json(assignment, {
+                "schema": "emuflow.partition-assignment/v1",
+                "design": "dut",
+                "instance_assignment": {
+                    "launch": "fpga0", "logic": "fpga0", "capture": "fpga0"
+                },
+            })
+            paths = root / "paths.json"
+            write_json(paths, database)
+            routes = root / "routes.json"
+            write_json(routes, {"schema": SYSTEM_ROUTES_SCHEMA, "routes": []})
+            with mock.patch(
+                "emuflow.local_path_timing.EmuIR.load",
+                side_effect=AssertionError("whole-graph loading forbidden"),
+            ):
+                prepared = prepare_vpr_local_path_query_inputs(
+                    ir_path, assignment, paths, routes
+                )
+            schedule = root / "schedule.json"
+            write_json(schedule, {
+                "schema": "emuflow.tdm-schedule/v1",
+                "design": "dut",
+                "platform": "test-platform",
+                "entries": [],
+            })
+            platform = Platform.from_dict({
+                "schema": "emuflow.boarddb/v1",
+                "platform": {
+                    "name": "test-platform", "kind": "virtual", "description": "test"
+                },
+                "fpgas": [{
+                    "id": "fpga0", "part": "test", "utilization_limit": 0.75,
+                    "capacity": {"lut": 10, "ff": 10},
+                }],
+                "links": [],
+            })
+            with mock.patch(
+                "emuflow.logic_segment_timing.EmuIR.load",
+                side_effect=AssertionError("whole-graph loading forbidden"),
+            ):
+                logic = prepare_logic_segment_query_inputs(
+                    ir_path, assignment, paths, routes, schedule, platform
+                )
+        self.assertIsNone(prepared.original_ir)
+        self.assertEqual(set(prepared.original_nets), {"n0", "n1"})
+        self.assertEqual(prepared.path_endpoints["p0"][0]["instance"], "launch")
+        self.assertIsNone(logic.original_ir)
+        self.assertEqual(set(logic.original_nets), {"n0", "n1"})
+
     def test_local_path_owner_uses_selected_drivers_for_top_level_ports(self):
         nets = {
             "input": {

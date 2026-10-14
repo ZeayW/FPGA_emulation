@@ -479,15 +479,13 @@ class ExperimentUpstreamTest(unittest.TestCase):
     @mock.patch("emuflow.experiment_upstream.validate_cut_timing_checkpoint")
     @mock.patch("emuflow.experiment_upstream._sha256", return_value="0" * 64)
     @mock.patch("emuflow.experiment_upstream.project_sta_path_database_value")
-    @mock.patch("emuflow.experiment_upstream.build_cut_segment_qualification_value")
-    @mock.patch("emuflow.experiment_upstream.EmuIR.load")
+    @mock.patch("emuflow.experiment_upstream.build_cut_segment_qualification")
     @mock.patch("emuflow.experiment_upstream.read_json")
     @mock.patch("emuflow.experiment_upstream.validate_timing_checkpoint")
     def test_cut_timing_projects_complete_prepartition_database(
         self,
         _validate_timing,
         read_json,
-        load_ir,
         build_qualification,
         project,
         _sha,
@@ -499,8 +497,6 @@ class ExperimentUpstreamTest(unittest.TestCase):
         }
         database_value = {"schema": "emuflow.sta-paths/v1"}
         read_json.side_effect = [assignment_value, database_value]
-        ir_value = object()
-        load_ir.return_value = ir_value
         build_qualification.return_value = {
             "status": "pass",
             "summary": {
@@ -548,7 +544,11 @@ class ExperimentUpstreamTest(unittest.TestCase):
             self.assertIs(project.call_args.args[1], assignment_value)
             self.assertEqual(
                 build_qualification.call_args.args[:3],
-                (ir_value, assignment_value, database_value),
+                (
+                    (frontend / "phase1/design.emuir.sqlite").resolve(),
+                    (partition / "assignment.json").resolve(),
+                    complete.resolve(),
+                ),
             )
             _validate_cut.assert_not_called()
 
@@ -730,7 +730,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
         )
         return frontend, timing, platform, partition
 
-    @mock.patch("emuflow.experiment_partition.validate_phase3")
+    @mock.patch("emuflow.experiment_partition.validate_phase3_indexed")
     def test_partition_validator_binds_seed_sweep_and_repair(
         self, validate_phase3
     ) -> None:
@@ -751,7 +751,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
             )
             self.assertEqual(checked["status"], "pass")
 
-    @mock.patch("emuflow.experiment_partition.validate_phase3")
+    @mock.patch("emuflow.experiment_partition.validate_phase3_indexed")
     def test_partition_validator_seals_optional_constraints(
         self, validate_phase3
     ) -> None:
@@ -787,7 +787,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     constraints_path=constraints,
                 )
 
-    @mock.patch("emuflow.experiment_partition.validate_phase3")
+    @mock.patch("emuflow.experiment_partition.validate_phase3_indexed")
     def test_partition_validator_seals_precomputed_tritonpart_solution(
         self, validate_phase3
     ) -> None:
@@ -824,7 +824,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     tritonpart_solution=solution,
                 )
 
-    @mock.patch("emuflow.experiment_partition.validate_phase3")
+    @mock.patch("emuflow.experiment_partition.validate_phase3_indexed")
     def test_partition_validator_rejects_resealed_policy_mismatch(
         self, validate_phase3
     ) -> None:
@@ -854,7 +854,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     frontend, timing, platform, partition
                 )
 
-    @mock.patch("emuflow.experiment_partition.validate_phase3")
+    @mock.patch("emuflow.experiment_partition.validate_phase3_indexed")
     def test_partition_validator_binds_static_exact_cut_policy(
         self, validate_phase3
     ) -> None:
@@ -908,7 +908,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     frontend, timing, platform, partition
                 )
 
-    @mock.patch("emuflow.experiment_partition.validate_phase3")
+    @mock.patch("emuflow.experiment_partition.validate_phase3_indexed")
     def test_partition_validator_enforces_actual_exact_cut_evidence(
         self, validate_phase3
     ) -> None:

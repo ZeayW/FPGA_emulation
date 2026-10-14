@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping, Optional
 
 from .errors import ValidationError
 from .ir import EmuIR
+from .indexed_physical_ir import IndexedPhysicalIR
 from .netlist import TRANSPORT_ENDPOINTS_SCHEMA, transport_endpoint_port
 
 
@@ -15,6 +16,21 @@ BOUNDARY_TIMING_SCHEMA = "emuflow.boundary-timing/v1"
 
 
 def _top_net_index(ir: EmuIR) -> Dict[tuple[str, int], str]:
+    if isinstance(ir, IndexedPhysicalIR):
+        result: Dict[tuple[str, int], str] = {}
+        for row in ir.connection.execute(
+            """SELECT p.name,e.bit,n.id FROM endpoint_records e
+            JOIN pin_names p ON p.seq=e.port_seq
+            JOIN net_records n ON n.seq=e.net_seq
+            WHERE e.instance_seq IS NULL ORDER BY e.net_seq,e.role,e.ordinal"""
+        ):
+            key = (row[0], int(row[1]))
+            previous = result.setdefault(key, row[2])
+            if previous != row[2]:
+                raise ValidationError(
+                    f"physical boundary port {key!r} is on multiple nets"
+                )
+        return result
     result: Dict[tuple[str, int], str] = {}
     for net in ir.value["nets"]:
         for collection in ("drivers", "sinks"):
@@ -50,7 +66,11 @@ def build_boundary_identity_database(
         raise ValidationError("transport and merged EmuIR identities disagree")
 
     ports = {port["id"]: port for port in merged_ir.value["ports"]}
-    nets = {net["id"]: net for net in merged_ir.value["nets"]}
+    nets = (
+        merged_ir.nets
+        if isinstance(merged_ir, IndexedPhysicalIR)
+        else {net["id"]: net for net in merged_ir.value["nets"]}
+    )
     top_nets = _top_net_index(merged_ir)
     shadow_registers: Dict[str, list[str]] = {}
     if transport_ir is not None:
