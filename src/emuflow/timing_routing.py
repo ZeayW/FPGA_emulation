@@ -196,7 +196,7 @@ def _select_round_boundary(
     return min(range(first, last + 1), key=lambda item: (score(item), item))
 
 
-def _validate_round_capacity_contract(
+def validate_round_capacity_contract(
     routes: Mapping[str, Any],
     platform: Platform,
     constraints: Mapping[str, Any],
@@ -2267,7 +2267,7 @@ def validate_native_system_routes(
     constraints = normalize_route_constraints(
         routes.get("constraints"), platform
     )
-    round_capacity_validation = _validate_round_capacity_contract(
+    round_capacity_validation = validate_round_capacity_contract(
         routes, platform, constraints
     )
     route_delay_by_net = {}

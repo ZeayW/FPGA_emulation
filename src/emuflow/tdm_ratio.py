@@ -133,6 +133,14 @@ def _prepare_model(
     constraints = normalize_route_constraints(
         routes.get("constraints"), platform
     )
+    # Phase 4 owns the transport-round capacity split.  Phase 5 must consume
+    # that exact boundary instead of independently selecting a second one.
+    # Import locally to avoid the timing_routing -> tdm -> tdm_ratio module
+    # cycle during interpreter initialization.
+    from .timing_routing import validate_round_capacity_contract
+
+    validate_round_capacity_contract(routes, platform, constraints)
+    round_capacity_contract = routes.get("round_capacity_contract")
     _, arcs, capacities = build_directed_graph(platform, constraints)
     link_delays = _link_delay_model(platform, constraints)
     links = {link.id: link for link in platform.links}
@@ -397,6 +405,7 @@ def _prepare_model(
         "hops": hops,
         "timing_paths": timing_paths,
         "compatibility": compatibility,
+        "round_capacity_contract": round_capacity_contract,
     }
 
 
@@ -710,6 +719,33 @@ def _round_barrier_legalize(
                     abs(frame_slots // 2),
                 ),
                 0,
+                required,
+            )
+
+        fixed_contract = model.get("round_capacity_contract")
+        if fixed_contract is not None:
+            source_ready = fixed_contract["source_ready_slot"]
+            required = {
+                domain: sum(
+                    lane_need(key, count, source_ready)
+                    for key, count in counts.items()
+                    if key[0] == domain
+                )
+                for domain in domain_by_index
+            }
+            excesses = [
+                max(0, required[domain] - domain_by_index[domain]["lanes"])
+                for domain in required
+            ]
+            return (
+                (
+                    max(excesses, default=0),
+                    sum(excesses),
+                    max(required.values(), default=0),
+                    sum(required.values()),
+                    0,
+                ),
+                source_ready,
                 required,
             )
 
@@ -1163,7 +1199,20 @@ def _round_barrier_legalize(
 
     return {
         "active_rounds": rounds,
-        "source_ready_semantics": "capacity_split_estimate",
+        "source_ready_semantics": (
+            "route-round-capacity-contract"
+            if model.get("round_capacity_contract") is not None
+            else "capacity_split_estimate"
+        ),
+        **(
+            {
+                "route_round_capacity_schema": model[
+                    "round_capacity_contract"
+                ]["schema"]
+            }
+            if model.get("round_capacity_contract") is not None
+            else {}
+        ),
         "source_ready_slot": (
             source_ready_slot if len(rounds) == 2 else None
         ),
@@ -1594,9 +1643,28 @@ def validate_tdm_ratio_plan(
         raise ValidationError(
             "ratio plan round-barrier active rounds are inconsistent"
         )
-    if barrier.get("source_ready_semantics") != "capacity_split_estimate":
+    expected_semantics = (
+        "route-round-capacity-contract"
+        if model.get("round_capacity_contract") is not None
+        else "capacity_split_estimate"
+    )
+    if barrier.get("source_ready_semantics") != expected_semantics:
         raise ValidationError(
             "ratio plan round-barrier source-ready semantics are invalid"
+        )
+    if model.get("round_capacity_contract") is not None:
+        contract = model["round_capacity_contract"]
+        if (
+            barrier.get("route_round_capacity_schema") != contract["schema"]
+            or barrier.get("source_ready_slot")
+            != contract["source_ready_slot"]
+        ):
+            raise ValidationError(
+                "ratio plan does not bind the Phase 4 round-capacity contract"
+            )
+    elif "route_round_capacity_schema" in barrier:
+        raise ValidationError(
+            "ratio plan has an unexpected round-capacity contract binding"
         )
     promoted_hops = barrier.get("promoted_hops")
     rebalanced_hops = barrier.get(

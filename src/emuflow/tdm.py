@@ -280,25 +280,30 @@ def _round_barrier_realization(
     active_rounds: Sequence[int],
     completion_by_round: Mapping[int, int],
     planned_source_ready_slot: Optional[int],
+    *,
+    hard_capacity_boundary: bool = False,
 ) -> Dict[str, Any]:
     """Describe the concrete barrier realized by a legal slot schedule.
 
-    The ratio planner's source-ready slot is a capacity-split estimate.  It
-    deliberately ignores multicast-tree precedence and therefore cannot be a
-    hard upper bound on the concrete schedule.  The schedule is the
-    authoritative realization and is checked independently below.
+    Legacy route artifacts expose only a planner estimate, so the schedule
+    computes the realized barrier from concrete hop completion.  New Phase-4
+    artifacts carry a validated hard capacity boundary; Phase 5 must preserve
+    that exact boundary rather than search or shift it.
     """
     realized = None
     if len(active_rounds) > 1:
-        second_round = active_rounds[1]
-        realized = max(
-            (
-                completion + COMBINATIONAL_SETTLE_SLOTS
-                for transport_round, completion in completion_by_round.items()
-                if transport_round < second_round
-            ),
-            default=0,
-        )
+        if hard_capacity_boundary:
+            realized = planned_source_ready_slot
+        else:
+            second_round = active_rounds[1]
+            realized = max(
+                (
+                    completion + COMBINATIONAL_SETTLE_SLOTS
+                    for transport_round, completion in completion_by_round.items()
+                    if transport_round < second_round
+                ),
+                default=0,
+            )
     return {
         "active_rounds": list(active_rounds),
         "capacity_split_slot": planned_source_ready_slot,
@@ -309,6 +314,43 @@ def _round_barrier_realization(
             else 0
         ),
     }
+
+
+def _validated_round_capacity_contract(
+    routes: Mapping[str, Any],
+    platform: Platform,
+    constraints: Mapping[str, Any],
+) -> Optional[Mapping[str, Any]]:
+    """Return the independently checked Phase-4 round capacity contract."""
+
+    from .timing_routing import validate_round_capacity_contract
+
+    validate_round_capacity_contract(routes, platform, constraints)
+    contract = routes.get("round_capacity_contract")
+    return contract if isinstance(contract, dict) else None
+
+
+def _round_slot_window(
+    contract: Optional[Mapping[str, Any]],
+    transport_round: int,
+    frame_slots: int,
+    latency_cycles: int,
+) -> Tuple[int, int]:
+    """Return inclusive launch start and exclusive launch end for a hop."""
+
+    final_exclusive = (
+        frame_slots - RUNTIME_BARRIER_SLOTS - latency_cycles
+    )
+    if contract is None:
+        return 0, final_exclusive
+    boundary = int(contract["source_ready_slot"])
+    if transport_round == 0:
+        return 0, boundary - latency_cycles
+    if transport_round == 1:
+        return boundary, final_exclusive
+    raise ValidationError(
+        "round-capacity contract supports transport rounds 0 and 1"
+    )
 
 
 def _exact_route_metadata(route: Mapping[str, Any]) -> Dict[str, Any]:
@@ -538,6 +580,9 @@ def build_tdm_schedule(
         platform,
     )
     frame_slots = constraints["frame_slots"]
+    round_capacity_contract = _validated_round_capacity_contract(
+        routes, platform, constraints
+    )
     sampled_timing_constraints = (
         sampled_virtual_wire_timing_constraints(frame_slots)
         if exact_contract is not None
@@ -618,9 +663,12 @@ def build_tdm_schedule(
                 key=lambda item: (item["dependency_level"], item["net"]),
             )
         ]
-        # Transport rounds are an implementation detail of registered-boundary
-        # transport.  Sampled virtual wires use their path-local readiness DAG.
-        active_rounds = [0]
+        # Static Exact uses the path-local dependency DAG for semantic
+        # readiness, while the Phase-4 transport rounds still define hard
+        # capacity windows.  Both constraints must hold simultaneously.
+        active_rounds = sorted(
+            {route.get("transport_round", 0) for route in raw_routes}
+        )
     completion_by_round: Dict[int, int] = {}
     prior_round_completion = -1
     active_round = None
@@ -642,11 +690,20 @@ def build_tdm_schedule(
             )
         else:
             node = exact_nodes[route["net"]]
-            source_ready_slot, source_evidence = _exact_source_readiness(
+            dependency_ready_slot, source_evidence = _exact_source_readiness(
                 node,
                 exact_segments,
                 exact_arrivals,
                 sampled_timing_constraints,
+            )
+            round_window_start, _ = _round_slot_window(
+                round_capacity_contract,
+                transport_round,
+                frame_slots,
+                0,
+            )
+            source_ready_slot = max(
+                dependency_ready_slot, round_window_start
             )
             exact_readiness_records.append(
                 {
@@ -655,7 +712,25 @@ def build_tdm_schedule(
                     "source": route["source"],
                     "source_ready_slot": source_ready_slot,
                     "evidence": source_evidence,
+                    **(
+                        {
+                            "dependency_ready_slot": dependency_ready_slot,
+                            "round_window_ready_slot": round_window_start,
+                        }
+                        if round_capacity_contract is not None
+                        else {}
+                    ),
                 }
+            )
+        if exact_contract is None and round_capacity_contract is not None:
+            round_window_start, _ = _round_slot_window(
+                round_capacity_contract,
+                transport_round,
+                frame_slots,
+                0,
+            )
+            source_ready_slot = max(
+                source_ready_slot, round_window_start
             )
         arrival_by_node = {route["source"]: source_ready_slot - 1}
         for depth, edge in _route_hops(route):
@@ -674,11 +749,13 @@ def build_tdm_schedule(
             # The final frame slot is reserved for the lockstep runtime
             # barrier/virtual-clock release.  A transport arrival must be
             # visible before that slot, not merely before the frame wraps.
-            latest_exclusive = (
-                frame_slots
-                - RUNTIME_BARRIER_SLOTS
-                - link.latency_cycles
+            round_window_start, latest_exclusive = _round_slot_window(
+                round_capacity_contract,
+                transport_round,
+                frame_slots,
+                link.latency_cycles,
             )
+            ready_slot = max(ready_slot, round_window_start)
             plan_hop = (
                 planned_hops.get(
                     _hop_key(
@@ -932,6 +1009,17 @@ def build_tdm_schedule(
         "domain_schedules": domain_schedules,
         "metrics": metrics,
     }
+    if round_capacity_contract is not None:
+        result["round_capacity_binding"] = {
+            key: round_capacity_contract[key]
+            for key in (
+                "schema",
+                "frame_slots",
+                "barrier_slots",
+                "source_ready_slot",
+                "active_rounds",
+            )
+        }
     if exact_contract is not None:
         result.update(
             {
@@ -949,6 +1037,7 @@ def build_tdm_schedule(
             active_rounds,
             completion_by_round,
             planned_round_one_ready,
+            hard_capacity_boundary=round_capacity_contract is not None,
         )
     return result
 
@@ -1207,6 +1296,9 @@ def validate_tdm_schedule(
             "schedule.route_constraints does not match routes"
         )
     frame_slots = constraints["frame_slots"]
+    round_capacity_contract = _validated_round_capacity_contract(
+        routes, platform, constraints
+    )
     sampled_timing_constraints = None
     if exact_contract is not None:
         sampled_timing_constraints = sampled_virtual_wire_timing_constraints(
@@ -1277,6 +1369,24 @@ def validate_tdm_schedule(
         expected_route_metadata.append(record)
     if schedule.get("routes") != expected_route_metadata:
         raise ValidationError("schedule.routes does not match system routes")
+    expected_round_binding = (
+        {
+            key: round_capacity_contract[key]
+            for key in (
+                "schema",
+                "frame_slots",
+                "barrier_slots",
+                "source_ready_slot",
+                "active_rounds",
+            )
+        }
+        if round_capacity_contract is not None
+        else None
+    )
+    if schedule.get("round_capacity_binding") != expected_round_binding:
+        raise ValidationError(
+            "schedule.round_capacity_binding does not match Phase 4"
+        )
 
     raw_entries = schedule.get("entries")
     if not isinstance(raw_entries, list):
@@ -1383,6 +1493,17 @@ def validate_tdm_schedule(
                 f"schedule.entries[{index}]: arrival reaches reserved "
                 "runtime barrier slot"
             )
+        round_window_start, round_window_end = _round_slot_window(
+            round_capacity_contract,
+            route.get("transport_round", 0),
+            frame_slots,
+            link.latency_cycles,
+        )
+        if not round_window_start <= slot < round_window_end:
+            raise ValidationError(
+                f"schedule.entries[{index}]: slot is outside the Phase 4 "
+                "transport-round capacity window"
+            )
     if set(entries_by_hop) != set(expected):
         missing = sorted(set(expected) - set(entries_by_hop))
         raise ValidationError(
@@ -1408,7 +1529,12 @@ def validate_tdm_schedule(
                 key=lambda item: (item["dependency_level"], item["net"]),
             )
         ]
-        active_rounds = [0]
+        active_rounds = sorted(
+            {
+                route.get("transport_round", 0)
+                for route in routes["routes"]
+            }
+        )
     completion_by_round: Dict[int, int] = {}
     prior_round_completion = -1
     active_round = None
@@ -1429,13 +1555,22 @@ def validate_tdm_schedule(
                 else 0
             )
         else:
-            source_ready_slot, source_evidence = (
+            dependency_ready_slot, source_evidence = (
                 _independently_reconstruct_exact_source_readiness(
                     exact_nodes[route["net"]],
                     exact_segments,
                     exact_arrivals,
                     sampled_timing_constraints,
                 )
+            )
+            round_window_start, _ = _round_slot_window(
+                round_capacity_contract,
+                transport_round,
+                frame_slots,
+                0,
+            )
+            source_ready_slot = max(
+                dependency_ready_slot, round_window_start
             )
             exact_readiness_records.append(
                 {
@@ -1444,7 +1579,25 @@ def validate_tdm_schedule(
                     "source": route["source"],
                     "source_ready_slot": source_ready_slot,
                     "evidence": source_evidence,
+                    **(
+                        {
+                            "dependency_ready_slot": dependency_ready_slot,
+                            "round_window_ready_slot": round_window_start,
+                        }
+                        if round_capacity_contract is not None
+                        else {}
+                    ),
                 }
+            )
+        if exact_contract is None and round_capacity_contract is not None:
+            round_window_start, _ = _round_slot_window(
+                round_capacity_contract,
+                transport_round,
+                frame_slots,
+                0,
+            )
+            source_ready_slot = max(
+                source_ready_slot, round_window_start
             )
         arrival_by_node = {route["source"]: source_ready_slot - 1}
         for depth, edge in _route_hops(route):
@@ -1469,6 +1622,17 @@ def validate_tdm_schedule(
             if entry["slot"] < ready:
                 raise ValidationError(
                     f"schedule demand {route['id']!r}: precedence violation"
+                )
+            round_window_start, round_window_end = _round_slot_window(
+                round_capacity_contract,
+                transport_round,
+                frame_slots,
+                links[edge["link"]].latency_cycles,
+            )
+            if not round_window_start <= entry["slot"] < round_window_end:
+                raise ValidationError(
+                    f"schedule demand {route['id']!r}: slot is outside "
+                    "the Phase 4 transport-round capacity window"
                 )
             arrival_by_node[edge["to"]] = entry["arrival_slot"]
         missing_sinks = sorted(set(route["sinks"]) - set(arrival_by_node))
@@ -1516,6 +1680,7 @@ def validate_tdm_schedule(
             ratio_plan["round_barrier_legalization"].get(
                 "source_ready_slot"
             ),
+            hard_capacity_boundary=round_capacity_contract is not None,
         )
         if schedule.get("round_barrier_realization") != expected_realization:
             raise ValidationError(

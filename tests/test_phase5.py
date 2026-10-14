@@ -1,11 +1,9 @@
 import copy
 import json
-import math
 import shutil
 import subprocess
 import tempfile
 import unittest
-from collections import Counter, defaultdict
 from pathlib import Path
 from unittest import mock
 
@@ -119,6 +117,25 @@ def _assignment(platform, cuts):
 
 def _routes(platform, cuts, frame_slots):
     assignment = _assignment(platform, cuts)
+    constraints = normalize_route_constraints(
+        {
+            "schema": "emuflow.system-route-constraints/v1",
+            "frame_slots": frame_slots,
+        },
+        platform,
+    )
+    return route_system_native(
+        assignment,
+        platform,
+        constraints,
+        executable=str(tlr_router()),
+    )
+
+
+def _routes_with_rounds(platform, cuts, frame_slots, round_by_net):
+    assignment = _assignment(platform, cuts)
+    for cut in assignment["cut_nets"]:
+        cut["transport_round"] = round_by_net[cut["net"]]
     constraints = normalize_route_constraints(
         {
             "schema": "emuflow.system-route-constraints/v1",
@@ -1066,18 +1083,18 @@ class Phase5Test(unittest.TestCase):
                 [_link("ab", "a", "b", lanes=2, latency=1)],
             )
         )
-        routes = _routes(
+        routes = _routes_with_rounds(
             platform,
             [
                 (f"n{index:02d}", "a", ["b"])
                 for index in range(17)
             ],
             frame_slots=32,
+            round_by_net={
+                f"n{index:02d}": 0 if index < 8 else 1
+                for index in range(17)
+            },
         )
-        for route in routes["routes"]:
-            route["transport_round"] = (
-                0 if int(route["net"][1:]) < 8 else 1
-            )
         routes["timing"] = {
             "schema": "emuflow.sta-paths/v1",
             "normalization": {
@@ -1153,74 +1170,9 @@ class Phase5Test(unittest.TestCase):
                     "source_ready_slot"
                 ]
             )
-            domain_by_index = {
-                domain["index"]: domain for domain in plan["domains"]
-            }
-            latency_by_link = {
-                link.id: link.latency_cycles for link in platform.links
-            }
-            bucket_counts = defaultdict(Counter)
-            for hop in plan["hops"]:
-                bucket_counts[
-                    (
-                        hop["domain"],
-                        hop["direction"],
-                        hop["discrete_ratio"],
-                    )
-                ][hop["transport_round"]] += 1
-            frame_slots = routes["constraints"]["frame_slots"]
-            minimum_latency = max(latency_by_link.values())
-            brute_candidates = []
-            for source_ready in range(
-                minimum_latency + 1,
-                frame_slots - 1 - minimum_latency,
-            ):
-                required = {}
-                for domain, domain_record in domain_by_index.items():
-                    latency = latency_by_link[domain_record["link"]]
-                    total_slots = frame_slots - 1 - 2 * latency
-                    required[domain] = sum(
-                        max(
-                            math.ceil(
-                                sum(counts.values())
-                                / min(ratio, total_slots)
-                            ),
-                            math.ceil(
-                                counts.get(0, 0)
-                                / (source_ready - latency)
-                            ),
-                            math.ceil(
-                                counts.get(1, 0)
-                                / (frame_slots - 1 - latency - source_ready)
-                            ),
-                        )
-                        for (bucket_domain, _direction, ratio), counts
-                        in bucket_counts.items()
-                        if bucket_domain == domain
-                    )
-                excesses = [
-                    max(
-                        0,
-                        required[domain]
-                        - domain_by_index[domain]["lanes"],
-                    )
-                    for domain in required
-                ]
-                brute_candidates.append(
-                    (
-                        (
-                            max(excesses, default=0),
-                            sum(excesses),
-                            max(required.values(), default=0),
-                            sum(required.values()),
-                            abs(source_ready - frame_slots // 2),
-                        ),
-                        source_ready,
-                    )
-                )
             self.assertEqual(
                 plan["round_barrier_legalization"]["source_ready_slot"],
-                min(brute_candidates)[1],
+                routes["round_capacity_contract"]["source_ready_slot"],
             )
             by_net = {hop["net"]: hop for hop in plan["hops"]}
             self.assertEqual(by_net["n16"]["discrete_ratio"], 1)
@@ -1256,15 +1208,15 @@ class Phase5Test(unittest.TestCase):
                 "projected-fixed-slot-event-v1",
             )
             self.assertAlmostEqual(
-                timing_validation["worst_delay_ns"], 52.0
+                timing_validation["worst_delay_ns"], 76.0
             )
             self.assertAlmostEqual(
-                timing_validation["worst_slack_ns"], -32.0
+                timing_validation["worst_slack_ns"], -56.0
             )
-            # The academic ratio assignment changes the relative wait from
-            # four slots to zero, but leaves the critical TX in absolute slot
-            # 9.  A fixed-slot objective must not claim a timing improvement.
-            self.assertAlmostEqual(
+            # Both schedules consume the same immutable Phase-4 capacity
+            # boundary; the remaining improvement is due to lane/slot choices,
+            # not a silently moved round split.
+            self.assertGreater(
                 timing_validation["worst_normalized_slack"],
                 baseline_timing["worst_normalized_slack"],
             )
@@ -1912,15 +1864,15 @@ class Phase5Test(unittest.TestCase):
                 [_link("ab", "a", "b", lanes=2, latency=1)],
             )
         )
-        routes = _routes(
+        routes = _routes_with_rounds(
             platform,
             [(f"n{index}", "a", ["b"]) for index in range(4)],
             frame_slots=8,
+            round_by_net={
+                f"n{index}": 0 if index < 2 else 1
+                for index in range(4)
+            },
         )
-        for route in routes["routes"]:
-            route["transport_round"] = (
-                0 if route["net"] in {"n0", "n1"} else 1
-            )
         routes["timing"] = {
             "schema": "emuflow.sta-paths/v1",
             "normalization": {
@@ -1995,7 +1947,7 @@ class Phase5Test(unittest.TestCase):
                 routes, platform, plan, corrupted
             )
 
-    def test_capacity_split_estimate_is_not_a_hard_multihop_barrier(
+    def test_phase4_capacity_split_is_a_hard_multihop_barrier(
         self,
     ) -> None:
         platform = Platform.from_dict(
@@ -2008,7 +1960,7 @@ class Phase5Test(unittest.TestCase):
                 ],
             )
         )
-        routes = _routes(
+        routes = _routes_with_rounds(
             platform,
             [
                 ("round0_a", "a", ["c"]),
@@ -2016,11 +1968,12 @@ class Phase5Test(unittest.TestCase):
                 ("round1", "c", ["a"]),
             ],
             frame_slots=10,
+            round_by_net={
+                "round0_a": 0,
+                "round0_b": 0,
+                "round1": 1,
+            },
         )
-        for route in routes["routes"]:
-            route["transport_round"] = (
-                1 if route["net"] == "round1" else 0
-            )
         routes["timing"] = {
             "schema": "emuflow.sta-paths/v1",
             "normalization": {
@@ -2051,23 +2004,28 @@ class Phase5Test(unittest.TestCase):
             ratio_quantum=2,
             post_refinement_iterations=0,
         )
-        plan["round_barrier_legalization"]["source_ready_slot"] = 3
-        validate_tdm_ratio_plan(routes, platform, plan)
+        boundary = routes["round_capacity_contract"]["source_ready_slot"]
+        self.assertEqual(
+            plan["round_barrier_legalization"]["source_ready_slot"],
+            boundary,
+        )
 
         schedule = build_tdm_schedule(routes, platform, plan)
         validation = validate_tdm_schedule(
             routes, platform, schedule, plan
         )
         realization = schedule["round_barrier_realization"]
-        self.assertEqual(realization["capacity_split_slot"], 3)
-        self.assertEqual(realization["source_ready_slot"], 5)
-        self.assertEqual(realization["shift_slots"], 2)
+        self.assertEqual(realization["capacity_split_slot"], boundary)
+        self.assertEqual(realization["source_ready_slot"], boundary)
+        self.assertEqual(realization["shift_slots"], 0)
         self.assertEqual(validation["status"], "pass")
 
         oracle = exact_multi_round_slot_schedule(
             routes, platform, plan, max_hops=6
         )
-        self.assertEqual(oracle["round_source_ready_slots"][1], 5)
+        self.assertEqual(
+            oracle["round_source_ready_slots"][1], boundary
+        )
         refined = refine_tdm_schedule_native(
             routes,
             platform,
@@ -2285,18 +2243,42 @@ class Phase5Test(unittest.TestCase):
         schedule = build_tdm_schedule(routes, platform)
         validation = validate_tdm_schedule(routes, platform, schedule)
         entries = {entry["net"]: entry for entry in schedule["entries"]}
+        boundary = routes["round_capacity_contract"]["source_ready_slot"]
         self.assertEqual(entries["q"]["slot"], 0)
         self.assertEqual(entries["q"]["arrival_slot"], 1)
-        self.assertEqual(entries["d"]["ready_slot"], 2)
-        self.assertEqual(entries["d"]["slot"], 2)
+        self.assertEqual(entries["d"]["ready_slot"], boundary)
+        self.assertEqual(entries["d"]["slot"], boundary)
         self.assertEqual(validation["transport_rounds"], 2)
         self.assertEqual(validation["round_barriers"], 1)
         self.assertEqual(validation["max_transport_round"], 1)
         completion = {
             item["net"]: item for item in schedule["demand_completions"]
         }
-        self.assertEqual(completion["d"]["source_ready_slot"], 2)
+        self.assertEqual(
+            completion["d"]["source_ready_slot"], boundary
+        )
         self.assertEqual(completion["d"]["transport_round"], 1)
+
+        tampered = copy.deepcopy(schedule)
+        tampered_entry = next(
+            entry for entry in tampered["entries"] if entry["net"] == "d"
+        )
+        tampered_entry["slot"] = boundary - 1
+        tampered_entry["ready_slot"] = boundary - 1
+        tampered_entry["arrival_slot"] = boundary
+        with self.assertRaisesRegex(
+            ValidationError, "transport-round capacity window"
+        ):
+            validate_tdm_schedule(routes, platform, tampered)
+
+        tampered_binding = copy.deepcopy(schedule)
+        tampered_binding["round_capacity_binding"][
+            "source_ready_slot"
+        ] += 1
+        with self.assertRaisesRegex(
+            ValidationError, "round_capacity_binding"
+        ):
+            validate_tdm_schedule(routes, platform, tampered_binding)
 
     def test_many_transport_rounds_do_not_rescan_prior_rounds(self) -> None:
         platform = Platform.from_dict(

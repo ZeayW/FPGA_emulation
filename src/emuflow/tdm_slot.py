@@ -38,6 +38,7 @@ def _write_native_input(
         RUNTIME_BARRIER_SLOTS,
         _route_hops,
         sampled_logic_segment_budget_slots,
+        _round_slot_window,
     )
 
     entries = {
@@ -159,7 +160,7 @@ def _write_native_input(
         )
     planned_ready = realization.get("source_ready_slot")
     lines = [
-        "EMUFLOW_TDM_SLOT_INPUT_V4",
+        "EMUFLOW_TDM_SLOT_INPUT_V5",
         (
             f"PARAM {frame_slots} {RUNTIME_BARRIER_SLOTS} "
             f"{COMBINATIONAL_SETTLE_SLOTS} {max_iterations} "
@@ -174,12 +175,19 @@ def _write_native_input(
         key = _hop_key(
             hop["demand"], hop["link"], hop["from"], hop["to"]
         )
+        window_start, window_end = _round_slot_window(
+            routes.get("round_capacity_contract"),
+            hop["transport_round"],
+            frame_slots,
+            link_by_id[hop["link"]].latency_cycles,
+        )
         lines.append(
             f"HOP {hop['index']} "
             f"{0 if exact_contract is not None else hop['transport_round']} "
             f"{hop['domain']} {hop['lane']} {hop['discrete_ratio']} "
             f"{link_by_id[hop['link']].latency_cycles} "
-            f"{release_by_index[hop['index']]} {priority[key]} "
+            f"{release_by_index[hop['index']]} {window_start} {window_end} "
+            f"{priority[key]} "
             f"{hop['base_delay_ns']:.17g} {hop['beta_ns']:.17g}"
         )
     dependency_delays = {}
@@ -289,6 +297,7 @@ def _apply_native_schedule(
         _domain_schedule_records,
         _round_barrier_realization,
         _round_order,
+        _round_slot_window,
         _route_hops,
         reconstruct_tdm_schedule_timing,
         validate_tdm_schedule,
@@ -320,6 +329,8 @@ def _apply_native_schedule(
     completion_by_round: Dict[int, int] = {}
     completions = []
     exact_contract = routes.get("semantic_contract")
+    round_capacity_contract = routes.get("round_capacity_contract")
+    frame_slots = refined["route_constraints"]["frame_slots"]
     exact_arrivals = {}
     exact_readiness = []
     if exact_contract is None:
@@ -337,7 +348,12 @@ def _apply_native_schedule(
                 key=lambda item: (item["dependency_level"], item["net"]),
             )
         ]
-        _active_rounds = [0]
+        _active_rounds = sorted(
+            {
+                route.get("transport_round", 0)
+                for route in routes["routes"]
+            }
+        )
     for route in ordered_routes:
         transport_round = route.get("transport_round", 0)
         if exact_contract is None:
@@ -350,12 +366,19 @@ def _apply_native_schedule(
                 default=0,
             )
         else:
-            source_ready, evidence = _exact_source_readiness(
+            dependency_ready, evidence = _exact_source_readiness(
                 exact_nodes[route["net"]],
                 exact_segments,
                 exact_arrivals,
                 refined["timing_constraints"],
             )
+            round_window_ready, _ = _round_slot_window(
+                round_capacity_contract,
+                transport_round,
+                frame_slots,
+                0,
+            )
+            source_ready = max(dependency_ready, round_window_ready)
             exact_readiness.append(
                 {
                     "demand": route["id"],
@@ -363,8 +386,24 @@ def _apply_native_schedule(
                     "source": route["source"],
                     "source_ready_slot": source_ready,
                     "evidence": evidence,
+                    **(
+                        {
+                            "dependency_ready_slot": dependency_ready,
+                            "round_window_ready_slot": round_window_ready,
+                        }
+                        if round_capacity_contract is not None
+                        else {}
+                    ),
                 }
             )
+        if exact_contract is None and round_capacity_contract is not None:
+            round_window_ready, _ = _round_slot_window(
+                round_capacity_contract,
+                transport_round,
+                frame_slots,
+                0,
+            )
+            source_ready = max(source_ready, round_window_ready)
         arrival_by_node = {route["source"]: source_ready - 1}
         for _depth, edge in _route_hops(route):
             entry = entries_by_hop[
@@ -414,6 +453,7 @@ def _apply_native_schedule(
         ratio_plan["round_barrier_legalization"].get(
             "source_ready_slot"
         ),
+        hard_capacity_boundary=round_capacity_contract is not None,
     )
     refined["domain_schedules"] = _domain_schedule_records(
         platform,

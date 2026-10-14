@@ -401,13 +401,15 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             path["scheduled_link_tdm_model"],
             "sampled-virtual-wire-event-propagation",
         )
-        # launch(3 ns) is ready for slot 1 at 4 ns; the two physical links
-        # arrive at 12.5 ns and 24.5 ns, then the 7 ns capture segment ends at
-        # 31.5 ns. The old separable sum produced 29.5 ns and was incorrect.
-        self.assertAlmostEqual(path["system_delay_bound_ns"], 31.5)
+        # launch(3 ns) is ready for slot 1 at 4 ns. Phase 4 binds the dependent
+        # return to the second transport window at slot 7; the two physical
+        # links then arrive at 12.5 ns and 36.5 ns, and the 7 ns capture
+        # segment ends at 43.5 ns. The event model must preserve both the
+        # dependency and the Phase-4 capacity boundary.
+        self.assertAlmostEqual(path["system_delay_bound_ns"], 43.5)
         self.assertAlmostEqual(path["target_required_time_ns"], 18.0)
         self.assertAlmostEqual(path["source_required_time_adjustment_ns"], 2.0)
-        self.assertAlmostEqual(path["target_clock_slack_bound_ns"], -13.5)
+        self.assertAlmostEqual(path["target_clock_slack_bound_ns"], -25.5)
         self.assertAlmostEqual(path["minimum_tx_readiness_slack_ns"], 1.0)
         self.assertEqual(path["sampled_event_timing_status"], "pass")
 
@@ -453,7 +455,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         )
         for link in physical["board_link_timing"]["links"]:
             if link["from"] == "fpga0" and link["to"] == "fpga1":
-                link["delay_bound_ns"] = 10.0
+                link["delay_bound_ns"] = 30.0
                 link["qualification"] = "characterized-upper-bound"
                 link["source"] = {
                     "kind": "vendor-characterization",
@@ -475,7 +477,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         self.assertEqual(result["status"], "fail")
         path = result["paths"][0]
         self.assertEqual(path["sampled_event_timing_status"], "fail")
-        self.assertAlmostEqual(path["minimum_tx_readiness_slack_ns"], -1.0)
+        self.assertAlmostEqual(path["minimum_tx_readiness_slack_ns"], -9.0)
         self.assertEqual(result["path_exactness"]["sampled_event_failures"], 1)
 
     def test_depth_three_event_chain_uses_each_fixed_tx_slot(self):
