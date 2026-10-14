@@ -55,8 +55,11 @@ from .routing import (
 from .runtime import build_virtual_runtime, validate_virtual_runtime
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
+    STA_PATH_DATABASE_INDEX_SCHEMA,
+    STA_PATH_DATABASE_STREAM_SCHEMA,
     _normalized_slack,
     _validate_database_normalization,
+    iter_sta_path_database_paths,
     load_sta_path_database,
     project_sta_path_database,
 )
@@ -80,6 +83,26 @@ CROSS_STAGE_OBJECTIVE = (
     "path count, maximum TDM ratio, completion slot, link bit-hops, cut "
     "bits, replica LUTs)"
 )
+
+
+def _streaming_path_database(path: Path) -> Mapping[str, Any]:
+    """Expose a TimingPathDB population without materializing its sidecar."""
+
+    manifest = read_json(path)
+    if manifest.get("schema") == STA_PATH_DATABASE_SCHEMA:
+        return manifest
+    if manifest.get("schema") not in {
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA,
+    }:
+        raise ValidationError("cross-stage candidate STA database is invalid")
+    return {
+        **manifest,
+        "schema": STA_PATH_DATABASE_SCHEMA,
+        "paths": iter_sta_path_database_paths(
+            path, manifest, verify_payload=False
+        ),
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -219,10 +242,15 @@ def _path_metrics(
         )
 
     raw_paths = database.get("paths")
-    if not isinstance(raw_paths, list) or not raw_paths:
+    if raw_paths is None or isinstance(raw_paths, (str, bytes, Mapping)):
         raise ValidationError("STA path database paths are invalid")
-    records = []
     path_ids = set()
+    normalized_values = []
+    crossing_paths = 0
+    negative_slack_paths = 0
+    total_negative_normalized_slack = 0.0
+    worst = None
+    slowest = None
     for index, path in enumerate(raw_paths):
         if not isinstance(path, dict):
             raise ValidationError(
@@ -293,47 +321,45 @@ def _path_metrics(
             realized_slack,
             normalization,
         )
-        records.append(
-            {
-                "path": path_id,
-                "crossed_cut_nets": len(crossed),
-                "delay_ns": delay,
-                "required_time_ns": required_time,
-                "slack_ns": realized_slack,
-                "normalized_slack": realized_normalized,
-            }
-        )
-    ordered = sorted(
-        records,
-        key=lambda item: (item["normalized_slack"], item["path"]),
-    )
-    normalized_values = sorted(
-        record["normalized_slack"] for record in records
-    )
-    negative = [
-        record for record in records if record["slack_ns"] < 0.0
-    ]
-    worst = ordered[0]
-    slowest = max(
-        records, key=lambda item: (item["delay_ns"], item["path"])
-    )
+        record = {
+            "path": path_id,
+            "crossed_cut_nets": len(crossed),
+            "delay_ns": delay,
+            "required_time_ns": required_time,
+            "slack_ns": realized_slack,
+            "normalized_slack": realized_normalized,
+        }
+        normalized_values.append(realized_normalized)
+        crossing_paths += bool(crossed)
+        if realized_slack < 0.0:
+            negative_slack_paths += 1
+            total_negative_normalized_slack += realized_normalized
+        if worst is None or (
+            realized_normalized,
+            path_id,
+        ) < (worst["normalized_slack"], worst["path"]):
+            worst = record
+        if slowest is None or (delay, path_id) > (
+            slowest["delay_ns"],
+            slowest["path"],
+        ):
+            slowest = record
+    if worst is None or slowest is None:
+        raise ValidationError("STA path database paths are invalid")
+    normalized_values.sort()
     return {
-        "all_paths": len(records),
-        "crossing_paths": sum(
-            record["crossed_cut_nets"] > 0 for record in records
-        ),
-        "no_cut_paths": sum(
-            record["crossed_cut_nets"] == 0 for record in records
-        ),
-        "negative_slack_paths": len(negative),
+        "all_paths": len(path_ids),
+        "crossing_paths": crossing_paths,
+        "no_cut_paths": len(path_ids) - crossing_paths,
+        "negative_slack_paths": negative_slack_paths,
         "worst_path": worst["path"],
         "worst_delay_ns": worst["delay_ns"],
         "worst_slack_ns": worst["slack_ns"],
         "worst_normalized_slack": worst["normalized_slack"],
         "maximum_delay_path": slowest["path"],
         "maximum_delay_ns": slowest["delay_ns"],
-        "total_negative_normalized_slack": sum(
-            record["normalized_slack"] for record in negative
+        "total_negative_normalized_slack": (
+            total_negative_normalized_slack
         ),
         "p01_normalized_slack": normalized_values[
             len(normalized_values) // 100
@@ -784,7 +810,7 @@ def evaluate_cross_stage_candidate(
         "platform": platform_path,
     }
     candidate = build_cross_stage_candidate(
-        load_sta_path_database(database_path),
+        _streaming_path_database(database_path),
         read_json(assignment_path),
         read_json(routes_path),
         read_json(schedule_path),
@@ -814,7 +840,7 @@ def validate_cross_stage_candidate(
         "platform": platform_path,
     }
     expected = build_cross_stage_candidate(
-        load_sta_path_database(database_path),
+        _streaming_path_database(database_path),
         read_json(assignment_path),
         read_json(routes_path),
         read_json(schedule_path),

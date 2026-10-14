@@ -26,10 +26,11 @@ from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .routing import system_route_timing_paths
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
-    load_sta_path_database,
+    STA_PATH_DATABASE_INDEX_SCHEMA,
+    STA_PATH_DATABASE_STREAM_SCHEMA,
+    iter_sta_path_database_paths,
     sta_object_index,
     sta_path_endpoints,
-    validate_sta_path_database_value,
 )
 
 
@@ -63,8 +64,14 @@ def _source_manifest(
     original_ir_path: Path,
     assignment_path: Path,
     routes_path: Path,
+    *,
+    path_ids: list[str] | None = None,
 ) -> Dict[str, Any]:
-    ids = [item["id"] for item in database["paths"]]
+    ids = (
+        [item["id"] for item in database["paths"]]
+        if path_ids is None
+        else path_ids
+    )
     return {
         "path_database_sha256": _sha256(path),
         "original_ir_sha256": _sha256(original_ir_path),
@@ -368,13 +375,22 @@ class LocalPathQueryInputs:
     assignment: Mapping[str, Any]
     database: Mapping[str, Any]
     routes: Mapping[str, Any]
-    object_index: Mapping[str, Any] | None
-    path_endpoints: Mapping[
-        str, tuple[Mapping[str, Any], Mapping[str, Any]]
-    ]
+    original_ir_path: Path
+    local_paths_by_fpga: Mapping[str, tuple[Mapping[str, Any], ...]]
     original_nets: Mapping[str, Mapping[str, Any]]
     cross_path_ids: frozenset[str]
     source_manifest: Mapping[str, Any]
+
+    @property
+    def path_endpoints(
+        self,
+    ) -> Mapping[str, tuple[Mapping[str, Any], Mapping[str, Any]]]:
+        """Compatibility view for small callers; production never builds it."""
+        return {
+            path["id"]: (path["startpoint"], path["endpoint"])
+            for paths in self.local_paths_by_fpga.values()
+            for path in paths
+        }
 
 
 def prepare_vpr_local_path_query_inputs(
@@ -387,52 +403,35 @@ def prepare_vpr_local_path_query_inputs(
     assignment: Mapping[str, Any] | None = None,
     database: Mapping[str, Any] | None = None,
     routes: Mapping[str, Any] | None = None,
+    object_provider: str = "vpr",
 ) -> LocalPathQueryInputs:
-    """Validate, hash and index global local-path inputs once per run."""
+    """Partition TimingPathDB into bounded per-FPGA local-path records.
+
+    The old implementation converted the complete indexed TimingPathDB into a
+    Python list, then retained a second endpoint map and every selected EmuIR
+    net.  Large designs expanded a 1.2 GiB SQLite payload to several GiB of
+    Python objects before physical work began.  This implementation streams
+    paths in bounded batches, resolves ownership once, and retains only the
+    lightweight records that each FPGA worker will consume.
+    """
+    if object_provider not in {"vpr", "xilinx"}:
+        raise ValidationError("local path object provider is invalid")
     assignment = assignment or read_json(assignment_path)
-    database = database or load_sta_path_database(path_database_path)
+    database = database or read_json(path_database_path)
     routes = routes or read_json(routes_path)
-    indexed = (
-        original_ir is None
-        and is_emuir_sqlite(original_ir_path)
-        and is_compact_emuir(original_ir_path)
-    )
-    if indexed:
-        view = IndexedTimingView(original_ir_path)
-        try:
-            validate_sta_path_database_value(database, view)
-            object_index = view.object_index
-            path_endpoints = {
-                path["id"]: sta_path_endpoints(path, object_index)
-                for path in database["paths"]
-            }
-            selected_ids = {
-                net_id
-                for path in database["paths"]
-                for net_id in path.get("path_nets", [])
-            }
-            original_nets = selected_net_records(
-                view.connection, selected_ids
-            )
-        finally:
-            view.close()
-        original_ir = None
-        object_index = None
-    else:
-        original_ir = original_ir or EmuIR.load(original_ir_path)
-        validate_sta_path_database_value(database, original_ir)
-        object_index = sta_object_index(original_ir)
-        path_endpoints = {
-            path["id"]: sta_path_endpoints(path, object_index)
-            for path in database["paths"]
-        }
-        original_nets = {
-            item["id"]: item for item in original_ir.value["nets"]
-        }
+    if database.get("schema") not in {
+        STA_PATH_DATABASE_SCHEMA,
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA,
+    }:
+        raise ValidationError("local path STA database schema is invalid")
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError("local path assignment schema is invalid")
     if assignment.get("design") != database.get("design"):
         raise ValidationError("local path assignment design disagrees")
+    instance_assignment = assignment.get("instance_assignment")
+    if not isinstance(instance_assignment, dict):
+        raise ValidationError("local path instance assignment is invalid")
     raw_route_timing = system_route_timing_paths(
         routes,
         context="local path system routes",
@@ -448,14 +447,146 @@ def prepare_vpr_local_path_query_inputs(
         ):
             raise ValidationError("local path route member coverage is invalid")
         cross_path_ids.update(members)
+
+    indexed = (
+        original_ir is None
+        and is_emuir_sqlite(original_ir_path)
+        and is_compact_emuir(original_ir_path)
+    )
+    local_paths_by_fpga: Dict[str, list[Mapping[str, Any]]] = {}
+    prepared_original_nets: Dict[str, Mapping[str, Any]] = {}
+    all_path_ids: list[str] = []
+    unresolved: list[dict[str, str]] = []
+    if indexed:
+        view = IndexedTimingView(original_ir_path)
+        try:
+            object_index = view.object_index
+            iterator = iter_sta_path_database_paths(
+                path_database_path,
+                database,
+                verify_payload=False,
+            )
+            while True:
+                batch = []
+                try:
+                    for _ in range(1024):
+                        batch.append(next(iterator))
+                except StopIteration:
+                    pass
+                if not batch:
+                    break
+                all_path_ids.extend(path["id"] for path in batch)
+                candidates = [
+                    path for path in batch
+                    if path["id"] not in cross_path_ids
+                ]
+                selected_ids = {
+                    net_id
+                    for path in candidates
+                    for net_id in path.get("path_nets", [])
+                }
+                original_nets = selected_net_records(
+                    view.connection, selected_ids
+                )
+                if object_provider == "vpr":
+                    prepared_original_nets.update(original_nets)
+                for path in candidates:
+                    try:
+                        start, end = sta_path_endpoints(path, object_index)
+                        path_fpga = _resolve_local_path_fpga(
+                            path,
+                            start,
+                            end,
+                            original_nets,
+                            instance_assignment,
+                        )
+                    except (KeyError, ValidationError) as error:
+                        unresolved.append(
+                            {"path": path["id"], "reason": str(error)}
+                        )
+                        continue
+                    if path_fpga is None:
+                        unresolved.append(
+                            {
+                                "path": path["id"],
+                                "reason": "path-partition-unresolved",
+                            }
+                        )
+                        continue
+                    record = {
+                        "id": path["id"],
+                        "clock_domain": path["clock_domain"],
+                        "clock_period_ns": path["clock_period_ns"],
+                        "slack_ns": path["slack_ns"],
+                        "fixed_delay_ns": path["fixed_delay_ns"],
+                        "startpoint": start,
+                        "endpoint": end,
+                    }
+                    if object_provider == "vpr":
+                        record["path_nets"] = list(path["path_nets"])
+                    local_paths_by_fpga.setdefault(path_fpga, []).append(record)
+                if len(batch) < 1024:
+                    break
+        finally:
+            view.close()
+        original_ir = None
+    else:
+        original_ir = original_ir or EmuIR.load(original_ir_path)
+        object_index = sta_object_index(original_ir)
+        original_nets = {
+            item["id"]: item for item in original_ir.value["nets"]
+        }
+        if object_provider == "vpr":
+            prepared_original_nets.update(original_nets)
+        for path in iter_sta_path_database_paths(
+            path_database_path,
+            database,
+            verify_payload=False,
+        ):
+            all_path_ids.append(path["id"])
+            if path["id"] in cross_path_ids:
+                continue
+            try:
+                start, end = sta_path_endpoints(path, object_index)
+                path_fpga = _resolve_local_path_fpga(
+                    path,
+                    start,
+                    end,
+                    original_nets,
+                    instance_assignment,
+                )
+            except (KeyError, ValidationError) as error:
+                unresolved.append({"path": path["id"], "reason": str(error)})
+                continue
+            if path_fpga is None:
+                unresolved.append(
+                    {"path": path["id"], "reason": "path-partition-unresolved"}
+                )
+                continue
+            record = {
+                **path,
+                "startpoint": start,
+                "endpoint": end,
+            }
+            if object_provider != "vpr":
+                record.pop("path_nets", None)
+            local_paths_by_fpga.setdefault(path_fpga, []).append(record)
+    if unresolved:
+        raise ValidationError(
+            "complete local path timing has unresolved original endpoints: "
+            f"{unresolved[:10]}"
+        )
     return LocalPathQueryInputs(
         original_ir=original_ir,
         assignment=assignment,
         database=database,
         routes=routes,
-        object_index=object_index,
-        path_endpoints=path_endpoints,
-        original_nets=original_nets,
+        original_ir_path=original_ir_path,
+        local_paths_by_fpga={
+            fpga: tuple(paths)
+            for fpga, paths in local_paths_by_fpga.items()
+        },
+        original_nets=prepared_original_nets,
         cross_path_ids=frozenset(cross_path_ids),
         source_manifest=_source_manifest(
             database,
@@ -463,6 +594,7 @@ def prepare_vpr_local_path_query_inputs(
             original_ir_path,
             assignment_path,
             routes_path,
+            path_ids=all_path_ids,
         ),
     )
 
@@ -498,13 +630,8 @@ def _write_local_path_query(
         else EmuIR.load(merged_ir_path)
     )
     assignment = prepared.assignment
-    database = prepared.database
-    cross_path_ids = prepared.cross_path_ids
     if merged_ir.value["design"]["name"] != f"{assignment['design']}__{fpga}":
         raise ValidationError("local path merged IR target is invalid")
-    instance_assignment = assignment.get("instance_assignment")
-    if not isinstance(instance_assignment, dict):
-        raise ValidationError("local path instance assignment is invalid")
     merged_index = (
         merged_ir.instance_indices
         if indexed_merged
@@ -521,7 +648,29 @@ def _write_local_path_query(
         }
     )
     merged_pins = _instance_pin_inventory(merged_ir)
-    original_nets = prepared.original_nets
+    local_paths = prepared.local_paths_by_fpga.get(fpga, ())
+    original_nets: Mapping[str, Mapping[str, Any]] = {}
+    if object_provider == "vpr":
+        if prepared.original_nets:
+            original_nets = prepared.original_nets
+        elif prepared.original_ir is not None:
+            original_nets = {
+                item["id"]: item
+                for item in prepared.original_ir.value["nets"]
+            }
+        else:
+            view = IndexedTimingView(prepared.original_ir_path)
+            try:
+                original_nets = selected_net_records(
+                    view.connection,
+                    {
+                        net_id
+                        for path in local_paths
+                        for net_id in path.get("path_nets", [])
+                    },
+                )
+            finally:
+                view.close()
 
     def endpoint_pin(endpoint: Mapping[str, Any]) -> str:
         if object_provider == "vpr":
@@ -533,29 +682,9 @@ def _write_local_path_query(
         )[1]
 
     records = []
-    unresolved = []
-    for path in database["paths"]:
-        if path["id"] in cross_path_ids:
-            continue
-        try:
-            start, end = prepared.path_endpoints[path["id"]]
-        except (KeyError, ValidationError) as error:
-            unresolved.append({"path": path["id"], "reason": str(error)})
-            continue
-        path_fpga = _resolve_local_path_fpga(
-            path,
-            start,
-            end,
-            original_nets,
-            instance_assignment,
-        )
-        if path_fpga is None:
-            unresolved.append(
-                {"path": path["id"], "reason": "path-partition-unresolved"}
-            )
-            continue
-        if path_fpga != fpga:
-            continue
+    for path in local_paths:
+        start = path["startpoint"]
+        end = path["endpoint"]
         record = {
             "id": path["id"],
             "kind": "local",
@@ -591,11 +720,6 @@ def _write_local_path_query(
             }
         )
         records.append(record)
-    if unresolved:
-        raise ValidationError(
-            "complete local path timing has unresolved original endpoints: "
-            f"{unresolved[:10]}"
-        )
     records.sort(key=lambda item: item["id"])
     identity = {
         "schema": LOCAL_PATH_IDENTITY_SCHEMA_V2,

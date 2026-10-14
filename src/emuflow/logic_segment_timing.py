@@ -25,7 +25,9 @@ from .platform import Platform
 from .routing import system_route_timing_paths
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
-    load_sta_path_database,
+    STA_PATH_DATABASE_INDEX_SCHEMA,
+    STA_PATH_DATABASE_STREAM_SCHEMA,
+    iter_selected_sta_path_database_paths,
     sta_object_index,
     sta_path_endpoints,
 )
@@ -735,12 +737,16 @@ def prepare_logic_segment_query_inputs(
 ) -> LogicSegmentQueryInputs:
     """Parse and index global query inputs exactly once per physical run."""
     assignment = read_json(assignment_path)
-    path_database = load_sta_path_database(path_database_path)
+    path_database = read_json(path_database_path)
     routes = read_json(routes_path)
     schedule = read_json(schedule_path)
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError("logic segment assignment schema is invalid")
-    if path_database.get("schema") != STA_PATH_DATABASE_SCHEMA:
+    if path_database.get("schema") not in {
+        STA_PATH_DATABASE_SCHEMA,
+        STA_PATH_DATABASE_STREAM_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA,
+    }:
         raise ValidationError("logic segment STA database schema is invalid")
 
     exact_contract = assignment.get("semantic_contract")
@@ -765,6 +771,26 @@ def prepare_logic_segment_query_inputs(
         )
 
     route_timing_paths = _route_timing_paths(routes)
+    selected_path_ids = {
+        member
+        for item in route_timing_paths
+        for member in item.get("compressed_path_ids", [item["path"]])
+    }
+    selected_paths = (
+        list(path_database.get("paths", []))
+        if (
+            path_database.get("schema") == STA_PATH_DATABASE_SCHEMA
+            and not selected_path_ids
+        )
+        else list(
+            iter_selected_sta_path_database_paths(
+                path_database_path,
+                path_database,
+                selected_path_ids,
+                verify_payload=False,
+            )
+        )
+    )
     indexed = (
         is_emuir_sqlite(original_ir_path)
         and is_compact_emuir(original_ir_path)
@@ -778,11 +804,11 @@ def prepare_logic_segment_query_inputs(
             object_index = view.object_index
             path_endpoints = {
                 path["id"]: sta_path_endpoints(path, object_index)
-                for path in path_database["paths"]
+                for path in selected_paths
             }
             selected_ids = {
                 net_id
-                for path in path_database["paths"]
+                for path in selected_paths
                 for net_id in path.get("path_nets", [])
             }
             selected_ids.update(item["net"] for item in routes["routes"])
@@ -825,7 +851,7 @@ def prepare_logic_segment_query_inputs(
         object_index = sta_object_index(original_ir)
         path_endpoints = {
             path["id"]: sta_path_endpoints(path, object_index)
-            for path in path_database["paths"]
+            for path in selected_paths
         }
         original_nets = {
             item["id"]: item for item in original_ir.value["nets"]
@@ -847,7 +873,7 @@ def prepare_logic_segment_query_inputs(
         schedule=schedule,
         object_index=object_index,
         path_endpoints=path_endpoints,
-        database_paths={item["id"]: item for item in path_database["paths"]},
+        database_paths={item["id"]: item for item in selected_paths},
         route_timing={item["path"]: item for item in route_timing_paths},
         route_by_net={item["net"]: item for item in routes["routes"]},
         timing_records=reconstruct_tdm_schedule_timing_paths(

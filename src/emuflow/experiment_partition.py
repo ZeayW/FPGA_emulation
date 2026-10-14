@@ -40,7 +40,12 @@ from .mfspart_refine import (
 from .phase3 import run_phase3, validate_phase3_indexed
 from .platform import Platform
 from .routing import load_route_constraints
-from .sta import STA_PATH_DATABASE_SCHEMA, load_sta_path_database
+from .sta import (
+    STA_PATH_DATABASE_SCHEMA,
+    STA_PATH_DATABASE_INDEX_SCHEMA,
+    STA_PATH_DATABASE_STREAM_SCHEMA,
+    iter_sta_path_database_paths,
+)
 
 
 def _rebuild_timing_path_objective(
@@ -52,11 +57,14 @@ def _rebuild_timing_path_objective(
 
     ir = EmuIR.load(ir_path)
     clusters = read_json(clusters_path)
-    database = load_sta_path_database(database_path)
+    database = read_json(database_path)
     if (
-        database.get("schema") != STA_PATH_DATABASE_SCHEMA
+        database.get("schema") not in {
+            STA_PATH_DATABASE_SCHEMA,
+            STA_PATH_DATABASE_STREAM_SCHEMA,
+            STA_PATH_DATABASE_INDEX_SCHEMA,
+        }
         or database.get("design") != ir.value["design"]["name"]
-        or not isinstance(database.get("paths"), list)
     ):
         raise ValidationError("invalid partition timing-path database")
     ordered_clusters = sorted(clusters["clusters"], key=lambda item: item["id"])
@@ -94,7 +102,11 @@ def _rebuild_timing_path_objective(
     unmaterialized_paths = 0
     materialized_transitions = 0
     path_guard_chains: set[tuple[int, ...]] = set()
-    for path in database["paths"]:
+    database_paths = 0
+    for path in iter_sta_path_database_paths(
+        database_path, database, verify_payload=False
+    ):
+        database_paths += 1
         try:
             chain: list[int] = []
 
@@ -159,7 +171,7 @@ def _rebuild_timing_path_objective(
     return {
         "schema": "emuflow.mfspart-timing-path-objective/v2",
         "database_sha256": _sha256(database_path),
-        "database_paths": len(database["paths"]),
+        "database_paths": database_paths,
         "eligible_paths": eligible_paths,
         "unmaterialized_paths": unmaterialized_paths,
         "materialized_transitions": materialized_transitions,

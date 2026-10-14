@@ -20,6 +20,7 @@ from emuflow.sta import (
     derive_partition_net_weights,
     import_sta_path_database_tsv,
     import_sta_path_database_tsv_streaming,
+    iter_selected_sta_path_database_paths,
     iter_sta_path_database_paths,
     import_vivado_path_database_tsv,
     import_vivado_sta_tsv,
@@ -70,6 +71,24 @@ class StaAdapterTest(unittest.TestCase):
                 records = list(iter_sta_path_database_paths(database_path, read_json(database_path)))
                 self.assertEqual(len(records), 1)
                 self.assertEqual(records[0]["path_nets"], [net_id])
+                selected = list(
+                    iter_selected_sta_path_database_paths(
+                        database_path,
+                        read_json(database_path),
+                        {"path0"},
+                    )
+                )
+                self.assertEqual(selected, records)
+                with self.assertRaisesRegex(
+                    ValidationError, "lacks selected paths"
+                ):
+                    list(
+                        iter_selected_sta_path_database_paths(
+                            database_path,
+                            read_json(database_path),
+                            {"missing"},
+                        )
+                    )
                 derive_partition_net_weights(database_path, ir_path, expected_weights)
                 with patch("emuflow.sta.EmuIR.load", side_effect=AssertionError("unused whole-graph load")):
                     derive_partition_net_weights(

@@ -1094,6 +1094,19 @@ qualification still compares these indexed paths exactly against the legacy
 in-memory implementations, including fanout, transport stitches, placement
 records, timing endpoints, and generated text.
 
+The same rule applies to TimingPathDB.  Phase 7 logic-segment binding now uses
+the SQLite `path_id` index to fetch only Phase 4 route members.  Same-FPGA path
+binding scans the TimingPathDB once in bounded batches, resolves each path to
+its owning FPGA, discards the graph-scale `path_nets` payload for the Xilinx
+backend, and shares only lightweight per-FPGA records with physical workers.
+It no longer expands the complete indexed path population into a Python list
+plus duplicate endpoint and selected-net dictionaries.  MFSPart timing-path
+grouping, its independent qualification reconstruction, and cross-stage
+candidate scoring likewise consume indexed TimingPathDB records as streams.
+Routine consumers trust the producer's published payload seal and validate
+selected-record coverage and semantic identities; repeating a multi-gigabyte
+payload hash is reserved for an explicit offline audit.
+
 This does not mean that every full-graph read is forbidden.  Phase 2 placement,
 Phase 3 partitioning, OpenSTA graph export, and explicit offline forensic replay
 are algorithms whose input is the circuit itself.  They may consume the graph

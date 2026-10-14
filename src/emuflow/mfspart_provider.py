@@ -19,7 +19,12 @@ from .mfspart_refine import (
     refine_mfspart_hierarchy,
     refine_mfspart_level,
 )
-from .sta import STA_PATH_DATABASE_SCHEMA, load_sta_path_database
+from .sta import (
+    STA_PATH_DATABASE_SCHEMA,
+    STA_PATH_DATABASE_INDEX_SCHEMA,
+    STA_PATH_DATABASE_STREAM_SCHEMA,
+    iter_sta_path_database_paths,
+)
 from .partition import (
     CUT_MODE_STATIC_EXACT,
     build_partition_assignment,
@@ -72,11 +77,14 @@ def _timing_path_groups(
     *,
     include_hash_evidence: bool = True,
 ) -> tuple[list[dict[str, Any]], list[list[int]], Dict[str, Any]]:
-    database = load_sta_path_database(database_path)
+    database = read_json(database_path)
     if (
-        database.get("schema") != STA_PATH_DATABASE_SCHEMA
+        database.get("schema") not in {
+            STA_PATH_DATABASE_SCHEMA,
+            STA_PATH_DATABASE_STREAM_SCHEMA,
+            STA_PATH_DATABASE_INDEX_SCHEMA,
+        }
         or database.get("design") != ir.value["design"]["name"]
-        or not isinstance(database.get("paths"), list)
     ):
         raise ValidationError("invalid MFSPart timing-path database")
     cluster_by_instance = {
@@ -116,7 +124,11 @@ def _timing_path_groups(
     unmaterialized_paths = 0
     materialized_transitions = 0
     path_guard_chains: set[tuple[int, ...]] = set()
-    for timing_path in database["paths"]:
+    database_paths = 0
+    for timing_path in iter_sta_path_database_paths(
+        database_path, database, verify_payload=False
+    ):
+        database_paths += 1
         chain: list[int] = []
 
         def append_pin(pin: int) -> None:
@@ -169,7 +181,7 @@ def _timing_path_groups(
         )
     report = {
         "schema": "emuflow.mfspart-timing-path-objective/v2",
-        "database_paths": len(database["paths"]),
+        "database_paths": database_paths,
         "eligible_paths": eligible_paths,
         "unmaterialized_paths": unmaterialized_paths,
         "materialized_transitions": materialized_transitions,

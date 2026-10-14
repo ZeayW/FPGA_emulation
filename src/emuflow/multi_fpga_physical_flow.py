@@ -836,6 +836,9 @@ def run_multi_fpga_physical_flow(
                     else None
                 ),
                 routes=prepared_logic_inputs.routes,
+                object_provider=(
+                    "vpr" if backend == "open" else "xilinx"
+                ),
             )
     manifest_fpgas = [item.get("fpga") for item in manifest.get("fpgas", [])]
     if set(manifest_fpgas) != set(expected_fpgas):

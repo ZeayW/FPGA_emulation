@@ -347,6 +347,143 @@ def iter_sta_path_database_paths(
         raise ValidationError("STA path database payload digest disagrees")
 
 
+def iter_selected_sta_path_database_paths(
+    path: Path,
+    value: Mapping[str, Any],
+    path_ids: set[str],
+    *,
+    verify_payload: bool = False,
+) -> Iterator[Mapping[str, Any]]:
+    """Read only named timing paths from an indexed TimingPathDB.
+
+    Phase 7 logic-segment binding needs the paths named by Phase 4 routes, not
+    the complete endpoint population.  Loading the whole SQLite sidecar into
+    Python used several gigabytes on NVDLA.  The v3 payload already has a
+    unique index on ``paths.path_id``; use it directly and retain the generic
+    streaming fallback for small legacy databases.
+
+    ``verify_payload`` defaults to false deliberately.  The producer validated
+    and sealed the payload when publishing the phase boundary.  Routine
+    consumers validate schema, selected-record coverage, and circuit identity;
+    rereading a multi-gigabyte payload solely to repeat its hash is an explicit
+    offline audit, not part of the hot path.
+    """
+
+    requested = set(path_ids)
+    if not requested:
+        return
+    schema = value.get("schema")
+    if schema == STA_PATH_DATABASE_INDEX_SCHEMA:
+        payload_path, expected_digest, _records, payload_format = (
+            _sta_path_payload(path, value)
+        )
+        if payload_format == STA_PATH_DATABASE_SQLITE_FORMAT:
+            if verify_payload:
+                _verify_file_digest(
+                    payload_path,
+                    expected_digest,
+                    "STA path database payload",
+                )
+            normalization = _validate_database_normalization(
+                value.get("normalization")
+            )
+            connection = _open_sqlite_read_only(payload_path)
+            found: set[str] = set()
+            ordered_requested = sorted(requested)
+            try:
+                for offset in range(0, len(ordered_requested), 400):
+                    batch = ordered_requested[offset : offset + 400]
+                    placeholders = ",".join("?" for _ in batch)
+                    cursor = connection.execute(
+                        f"""
+                        SELECT p.ordinal, p.path_id, p.clock_domain,
+                               p.clock_period_ns, p.slack_ns,
+                               p.fixed_delay_ns, p.start_object,
+                               p.start_instance, p.start_port, p.start_bit,
+                               p.end_object, p.end_instance, p.end_port,
+                               p.end_bit, n.net_ordinal, n.net_id
+                        FROM paths AS p JOIN path_nets AS n
+                          ON n.path_ordinal = p.ordinal
+                        WHERE p.path_id IN ({placeholders})
+                        ORDER BY p.ordinal, n.net_ordinal
+                        """,
+                        batch,
+                    )
+                    current_ordinal: Optional[int] = None
+                    record: Optional[Dict[str, Any]] = None
+                    for row in cursor:
+                        ordinal = int(row[0])
+                        if current_ordinal != ordinal:
+                            if record is not None:
+                                found.add(record["id"])
+                                yield record
+                            current_ordinal = ordinal
+                            record = {
+                                "id": row[1],
+                                "clock_domain": row[2],
+                                "clock_period_ns": float(row[3]),
+                                "slack_ns": float(row[4]),
+                                "fixed_delay_ns": float(row[5]),
+                                "path_nets": [],
+                                "normalized_slack": _normalized_slack(
+                                    float(row[3]),
+                                    float(row[4]),
+                                    normalization,
+                                ),
+                            }
+                            if row[6] is not None:
+                                record["startpoint"] = {
+                                    "object": row[6],
+                                    "instance": row[7],
+                                    "port": row[8],
+                                    "bit": int(row[9]),
+                                }
+                                record["endpoint"] = {
+                                    "object": row[10],
+                                    "instance": row[11],
+                                    "port": row[12],
+                                    "bit": int(row[13]),
+                                }
+                        if (
+                            record is None
+                            or int(row[14]) != len(record["path_nets"])
+                        ):
+                            raise ValidationError(
+                                "STA path database SQLite net ordering is invalid"
+                            )
+                        record["path_nets"].append(row[15])
+                    if record is not None:
+                        found.add(record["id"])
+                        yield record
+            except sqlite3.DatabaseError as error:
+                raise ValidationError(
+                    "STA path database SQLite payload is invalid"
+                ) from error
+            finally:
+                connection.close()
+            missing = sorted(requested - found)
+            if missing:
+                raise ValidationError(
+                    "STA path database lacks selected paths: "
+                    + ", ".join(repr(item) for item in missing[:10])
+                )
+            return
+
+    found = set()
+    for record in iter_sta_path_database_paths(
+        path, value, verify_payload=verify_payload
+    ):
+        if record.get("id") in requested:
+            found.add(record["id"])
+            yield record
+    missing = sorted(requested - found)
+    if missing:
+        raise ValidationError(
+            "STA path database lacks selected paths: "
+            + ", ".join(repr(item) for item in missing[:10])
+        )
+
+
 def sta_path_database_qor(
     database_path: Path, value: Optional[Mapping[str, Any]] = None
 ) -> Dict[str, Any]:
