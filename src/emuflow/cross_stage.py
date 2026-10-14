@@ -62,6 +62,7 @@ from .sta import (
 )
 from .tdm import validate_tdm_schedule
 from .tdm_ratio import (
+    TDM_RATIO_PROVIDER,
     TDM_TIMING_DAG_RATIO_PROVIDER,
     validate_tdm_ratio_plan,
 )
@@ -1094,6 +1095,15 @@ def run_cross_stage_optimization(
     if optimize_frame_slots and frame_slots is None:
         raise ValidationError(
             "cross-stage --optimize-frame-slots requires --frame-slots"
+        )
+    if tdm_provider not in {
+        None,
+        TDM_RATIO_PROVIDER,
+        TDM_TIMING_DAG_RATIO_PROVIDER,
+    }:
+        raise ValidationError(
+            "cross-stage feedback requires an academic Phase 5 ratio-plan "
+            "provider"
         )
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValidationError(

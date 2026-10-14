@@ -51,6 +51,7 @@ from emuflow.routing import (
 from emuflow.tdm import (
     TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER,
     TDM_BASELINE_PROVIDER,
+    TDM_EXACT_DEPENDENCY_PROVIDER,
     SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
     build_tdm_schedule,
     validate_tdm_schedule,
@@ -985,7 +986,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 item["capacity_bits"]
                 for item in routes["link_utilization"]
             },
-            {32 * (16 - 1 - 2)},
+            {32 * 8},
         )
         checked = validate_system_routes(assignment, self.platform, routes)
         self.assertEqual(checked["status"], "pass")
@@ -1970,7 +1971,9 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         _, assignment = self._exact_artifacts(dependent_return=True)
         routes = self._exact_routes(assignment)
         schedule = build_tdm_schedule(routes, self.platform)
-        self.assertEqual(schedule["provider"], TDM_BASELINE_PROVIDER)
+        self.assertEqual(
+            schedule["provider"], TDM_EXACT_DEPENDENCY_PROVIDER
+        )
         self.assertEqual(
             schedule["schedule_dependency_certificate"]["schema"],
             SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,

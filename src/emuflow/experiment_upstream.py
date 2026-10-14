@@ -56,7 +56,11 @@ from .synthesis import (
     run_generic_yosys,
     run_xilinx_ultrascaleplus_yosys_stream,
 )
-from .tdm import TDM_BASELINE_PROVIDER, is_sampled_virtual_wire_schedule
+from .tdm import (
+    TDM_BASELINE_PROVIDER,
+    TDM_EXACT_DEPENDENCY_PROVIDER,
+    is_sampled_virtual_wire_schedule,
+)
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_netlist import normalize_vtr_hard_block_json
 from .xilinx_primitives import (
@@ -1043,7 +1047,10 @@ def validate_tdm_checkpoint(
         )
         if route_document.get("constraints") != constraints:
             raise ValidationError("TDM route-constraints contract disagrees")
-        if actual_provider != TDM_BASELINE_PROVIDER:
+        if actual_provider not in {
+            TDM_BASELINE_PROVIDER,
+            TDM_EXACT_DEPENDENCY_PROVIDER,
+        }:
             if not ratio_plan.is_file():
                 raise ValidationError(
                     "TDM contest constraints require a ratio plan"

@@ -19,6 +19,7 @@ from .routing import (
 
 TDM_SCHEDULE_SCHEMA = "emuflow.tdm-schedule/v1"
 TDM_BASELINE_PROVIDER = "deterministic-round-barrier-earliest-slot-v2"
+TDM_EXACT_DEPENDENCY_PROVIDER = "deterministic-dependency-earliest-slot-v1"
 SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA = (
     "emuflow.sampled-virtual-wire-schedule-certificate/v1"
 )
@@ -975,7 +976,11 @@ def build_tdm_schedule(
         "provider": (
             TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER
             if ratio_plan is not None
-            else TDM_BASELINE_PROVIDER
+            else (
+                TDM_EXACT_DEPENDENCY_PROVIDER
+                if exact_contract is not None
+                else TDM_BASELINE_PROVIDER
+            )
         ),
         "transport_semantics": (
             "sampled-virtual-wire"
@@ -1309,6 +1314,7 @@ def validate_tdm_schedule(
     }
     extended_schedule = schedule.get("provider") in {
         TDM_BASELINE_PROVIDER,
+        TDM_EXACT_DEPENDENCY_PROVIDER,
         TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER,
         TDM_ACADEMIC_SCHEDULE_PROVIDER,
     }

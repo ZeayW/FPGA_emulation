@@ -1473,7 +1473,12 @@ largest legal discrete TDM ratio after link-latency/commit reservation and
 ratio-quantum rounding. It therefore cannot route traffic that fits the raw
 slot count but cannot be represented by Phase 5's ratio domain. Static Exact
 does not subdivide that capacity by a global transport-round barrier; its
-path-local dependency releases are applied by Phase 5.
+path-local dependency releases are applied by Phase 5. Static Exact therefore
+defaults to `deterministic-dependency-earliest-slot-v1`; the ASP-DAC ratio
+optimizer remains an explicit research comparison until its lane legalization
+models path-local release windows directly. The optional cross-stage
+ratio-feedback study must therefore name its academic ratio provider
+explicitly; it is not an implicit part of the Static Exact default.
 
 Those gates are qualified as `route-contract-propagation-pass` and
 `dependency-schedule-readiness-pass`; neither is a functional-equivalence or

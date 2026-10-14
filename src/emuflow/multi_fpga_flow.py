@@ -56,8 +56,8 @@ from .platform import Platform
 from .ppro_calibrated_platform import validate_transport_cost_database
 from .runtime import validate_virtual_runtime
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
-from .tdm import TDM_BASELINE_PROVIDER
-from .tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
+from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
+from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     NATIVE_ROUTER_PROVIDER,
     NATIVE_TIMING_EVALUATED_PROVIDER,
@@ -681,7 +681,12 @@ def validate_multi_fpga_flow_report(
                 "timing-driven report is missing partition weights"
             )
         if not timing_optimization:
-            expected_tdm_provider = TDM_BASELINE_PROVIDER
+            expected_tdm_provider = (
+                TDM_EXACT_DEPENDENCY_PROVIDER
+                if partition_validation.get("cut_mode")
+                == CUT_MODE_STATIC_EXACT
+                else TDM_BASELINE_PROVIDER
+            )
             if (
                 stages["system_route"].get("provider")
                 != NATIVE_TIMING_EVALUATED_PROVIDER
@@ -1454,6 +1459,18 @@ def run_multi_fpga_flow(
         raise EmuFlowError(
             "--cross-stage-iterations requires --timing-driven"
         )
+    if (
+        exact_cut_mode
+        and cross_stage_iterations
+        and tdm_provider
+        not in {TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER}
+    ):
+        raise EmuFlowError(
+            "Static Exact cross-stage ratio feedback requires an explicit "
+            f"--tdm-provider {TDM_TIMING_DAG_RATIO_PROVIDER}; the default "
+            f"{TDM_EXACT_DEPENDENCY_PROVIDER} scheduler deliberately has "
+            "no ratio-plan or global transport-round barrier"
+        )
     if optimize_frame_slots and not timing_driven:
         raise EmuFlowError(
             "--optimize-frame-slots requires --timing-driven"
@@ -2003,11 +2020,15 @@ def run_multi_fpga_flow(
 
     effective_route_provider = route_provider
     effective_tdm_provider = tdm_provider
-    if exact_cut_mode and effective_tdm_provider is None:
+    if effective_tdm_provider is None:
         effective_tdm_provider = (
-            TDM_TIMING_DAG_RATIO_PROVIDER
-            if timing_driven and projected_timing_paths is not None
-            else TDM_BASELINE_PROVIDER
+            TDM_EXACT_DEPENDENCY_PROVIDER
+            if exact_cut_mode
+            else (
+                TDM_TIMING_DAG_RATIO_PROVIDER
+                if timing_driven
+                else TDM_BASELINE_PROVIDER
+            )
         )
     if internal_timing_database and not timing_driven:
         if route_provider not in {
@@ -2019,23 +2040,38 @@ def run_multi_fpga_flow(
                 "--no-timing-driven requires the timing-oblivious Phase 4 "
                 "baseline; remove --route-provider"
             )
-        if tdm_provider not in {None, TDM_BASELINE_PROVIDER}:
+        no_timing_tdm_provider = (
+            TDM_EXACT_DEPENDENCY_PROVIDER
+            if exact_cut_mode
+            else TDM_BASELINE_PROVIDER
+        )
+        if tdm_provider not in {None, no_timing_tdm_provider}:
             raise EmuFlowError(
-                "--no-timing-driven requires the timing-oblivious Phase 5 "
-                "baseline; remove --tdm-provider"
+                "--no-timing-driven requires the provider-neutral Phase 5 "
+                f"correctness path {no_timing_tdm_provider!r}; remove or "
+                "correct --tdm-provider"
             )
         if route_candidate_workers != 1:
             raise EmuFlowError(
                 "--no-timing-driven requires --route-candidate-workers 1"
             )
         effective_route_provider = NATIVE_TIMING_EVALUATED_PROVIDER
-        effective_tdm_provider = TDM_BASELINE_PROVIDER
+        effective_tdm_provider = no_timing_tdm_provider
     if not has_inter_fpga_cuts:
         # Timing-aware interconnect optimization is vacuous for a packed
         # single-FPGA solution.  Keep Phase 4/5 artifacts explicit and
         # independently replayable with the ordinary zero-demand providers.
         effective_route_provider = NATIVE_ROUTER_PROVIDER
-        effective_tdm_provider = TDM_BASELINE_PROVIDER
+        effective_tdm_provider = (
+            TDM_EXACT_DEPENDENCY_PROVIDER
+            if exact_cut_mode
+            else TDM_BASELINE_PROVIDER
+        )
+
+    academic_tdm_provider = effective_tdm_provider in {
+        TDM_RATIO_PROVIDER,
+        TDM_TIMING_DAG_RATIO_PROVIDER,
+    }
 
     phase4_root = output_dir / "system-route"
     phase5_root = output_dir / "tdm"
@@ -2095,10 +2131,16 @@ def run_multi_fpga_flow(
             frame_slots=frame_slots,
             optimize_frame_slots=optimize_frame_slots,
             route_max_iterations=route_max_iterations,
-            tdm_provider=tdm_provider,
-            ratio_optimizer=ratio_optimizer,
-            timing_dag_optimizer=timing_dag_optimizer,
-            slot_optimizer=slot_optimizer,
+            tdm_provider=effective_tdm_provider,
+            ratio_optimizer=(
+                ratio_optimizer if academic_tdm_provider else None
+            ),
+            timing_dag_optimizer=(
+                timing_dag_optimizer if academic_tdm_provider else None
+            ),
+            slot_optimizer=(
+                slot_optimizer if academic_tdm_provider else None
+            ),
             ratio_max_iterations=ratio_max_iterations,
             max_ratio=max_ratio,
             ratio_quantum=ratio_quantum,
@@ -2207,11 +2249,21 @@ def run_multi_fpga_flow(
             assignment_path=assignment_path,
             simulation_frames=simulation_frames,
             provider=effective_tdm_provider,
-            ratio_optimizer=(ratio_optimizer if has_inter_fpga_cuts else None),
-            timing_dag_optimizer=(
-                timing_dag_optimizer if has_inter_fpga_cuts else None
+            ratio_optimizer=(
+                ratio_optimizer
+                if has_inter_fpga_cuts and academic_tdm_provider
+                else None
             ),
-            slot_optimizer=(slot_optimizer if has_inter_fpga_cuts else None),
+            timing_dag_optimizer=(
+                timing_dag_optimizer
+                if has_inter_fpga_cuts and academic_tdm_provider
+                else None
+            ),
+            slot_optimizer=(
+                slot_optimizer
+                if has_inter_fpga_cuts and academic_tdm_provider
+                else None
+            ),
             ratio_max_iterations=ratio_max_iterations,
             max_ratio=max_ratio,
             ratio_quantum=ratio_quantum,

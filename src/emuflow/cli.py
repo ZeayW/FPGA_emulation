@@ -302,7 +302,7 @@ from .serial_wrapper import run_phase6c
 from .serial_phy_provider import validate_serial_phy_provider_file
 from .serial_phy_elaboration import run_serial_phy_elaboration
 from .serial_phy_recipe import materialize_serial_phy_recipe
-from .tdm import TDM_BASELINE_PROVIDER
+from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
@@ -2168,10 +2168,12 @@ def _build_parser() -> argparse.ArgumentParser:
             TDM_RATIO_PROVIDER,
             TDM_TIMING_DAG_RATIO_PROVIDER,
             TDM_BASELINE_PROVIDER,
+            TDM_EXACT_DEPENDENCY_PROVIDER,
         ),
         help=(
-            f"explicit Phase 5 provider; timing-enabled flows default to "
-            f"{TDM_TIMING_DAG_RATIO_PROVIDER}"
+            f"explicit Phase 5 provider; Static Exact defaults to "
+            f"{TDM_EXACT_DEPENDENCY_PROVIDER}, other timing-enabled flows "
+            f"default to {TDM_TIMING_DAG_RATIO_PROVIDER}"
         ),
     )
     multi_fpga_compile.add_argument("--ratio-optimizer")
@@ -3479,11 +3481,13 @@ def _build_parser() -> argparse.ArgumentParser:
             TDM_RATIO_PROVIDER,
             TDM_TIMING_DAG_RATIO_PROVIDER,
             TDM_BASELINE_PROVIDER,
+            TDM_EXACT_DEPENDENCY_PROVIDER,
         ),
         default=None,
         help=(
-            f"defaults to {TDM_TIMING_DAG_RATIO_PROVIDER} when routes "
-            "contain timing, otherwise the deterministic baseline"
+            f"defaults to {TDM_EXACT_DEPENDENCY_PROVIDER} for Static Exact, "
+            f"{TDM_TIMING_DAG_RATIO_PROVIDER} for other timing-aware routes, "
+            "otherwise the deterministic baseline"
         ),
     )
     phase5.add_argument(
@@ -3767,7 +3771,11 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=(
             TDM_RATIO_PROVIDER,
             TDM_TIMING_DAG_RATIO_PROVIDER,
-            TDM_BASELINE_PROVIDER,
+        ),
+        help=(
+            "cross-stage feedback consumes an explicit academic ratio plan; "
+            f"Static Exact's default {TDM_EXACT_DEPENDENCY_PROVIDER} "
+            "scheduler is intentionally outside this optional study"
         ),
     )
     cross_stage_optimize.add_argument("--ratio-optimizer")

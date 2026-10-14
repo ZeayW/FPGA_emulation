@@ -14,6 +14,7 @@ from .platform import Platform
 from .routing import semantic_contract_for_routes
 from .tdm import (
     TDM_BASELINE_PROVIDER,
+    TDM_EXACT_DEPENDENCY_PROVIDER,
     build_tdm_schedule,
     build_transport_manifest,
     reconstruct_tdm_schedule_timing,
@@ -98,9 +99,19 @@ def run_phase5(
     exact_mode = semantic_contract is not None
     if provider is None:
         provider = (
-            TDM_TIMING_DAG_RATIO_PROVIDER
-            if isinstance(routes.get("timing"), dict)
-            else TDM_BASELINE_PROVIDER
+            TDM_EXACT_DEPENDENCY_PROVIDER
+            if exact_mode
+            else (
+                TDM_TIMING_DAG_RATIO_PROVIDER
+                if isinstance(routes.get("timing"), dict)
+                else TDM_BASELINE_PROVIDER
+            )
+        )
+    if exact_mode and provider == TDM_BASELINE_PROVIDER:
+        raise ValueError(
+            f"{TDM_BASELINE_PROVIDER} is the explicit registered-boundary "
+            "legacy provider and is incompatible with Static Exact; use "
+            f"{TDM_EXACT_DEPENDENCY_PROVIDER}"
         )
     ratio_plan = None
     ratio_validation = None
@@ -109,7 +120,14 @@ def run_phase5(
     timing_validation = None
     candidate_selection = None
     prepared_ratio_model = None
-    if provider == TDM_BASELINE_PROVIDER:
+    if provider in {
+        TDM_BASELINE_PROVIDER,
+        TDM_EXACT_DEPENDENCY_PROVIDER,
+    }:
+        if provider == TDM_EXACT_DEPENDENCY_PROVIDER and not exact_mode:
+            raise ValueError(
+                "dependency TDM scheduling requires a Static Exact contract"
+            )
         if (
             ratio_optimizer is not None
             or timing_dag_optimizer is not None

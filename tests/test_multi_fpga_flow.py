@@ -28,8 +28,10 @@ from emuflow.open_transport_characterization import (
 from emuflow.platform import Platform
 from emuflow.tdm import (
     TDM_BASELINE_PROVIDER,
+    TDM_EXACT_DEPENDENCY_PROVIDER,
     reconstruct_tdm_schedule_timing_paths,
 )
+from emuflow.tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
     NATIVE_ROUTER_PROVIDER,
@@ -331,7 +333,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             )
             self.assertEqual(
                 report["stages"]["tdm"]["provider"],
-                "deterministic-round-barrier-earliest-slot-v2",
+                TDM_EXACT_DEPENDENCY_PROVIDER,
             )
             self.assertEqual(
                 json.loads((root / "tdm/schedule.json").read_text())[
@@ -381,6 +383,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 slot_optimizer=str(tdm_slot_optimizer()),
+                tdm_provider=TDM_TIMING_DAG_RATIO_PROVIDER,
                 cross_stage_feedback_optimizer=str(
                     tdm_partition_feedback()
                 ),
