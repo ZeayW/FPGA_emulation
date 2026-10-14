@@ -1281,6 +1281,7 @@ def build_partition_assignment(
                 ),
             }
         )
+        _remove_static_exact_global_rounds(cut_nets, cut_metrics)
     partition_records = []
     for fpga in platform.fpgas:
         cluster_ids = sorted(
@@ -1500,7 +1501,7 @@ def validate_partition_artifacts_online(
 def compute_cut_nets(
     ir: EmuIR,
     instance_assignment: Mapping[str, str],
-) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     cut_nets: List[Dict[str, Any]] = []
     replicated_primary_inputs = 0
     global_nets = 0
@@ -1580,6 +1581,26 @@ def compute_cut_nets(
             }
         )
     return sorted(cut_nets, key=lambda item: item["net"]), metrics
+
+
+def _remove_static_exact_global_rounds(
+    cut_nets: Sequence[Dict[str, Any]],
+    metrics: Dict[str, Any],
+) -> None:
+    """Make the Static Exact dependency DAG the sole ordering contract.
+
+    ``compute_cut_nets`` also serves the registered-boundary flow, where a
+    two-round barrier is part of that flow's conservative transport model.
+    Static Exact has an explicit, path-local dependency DAG instead.  Carrying
+    the legacy round marker into its assignment would make downstream
+    equivalence and scheduling reintroduce an unrelated global barrier.
+    """
+
+    for cut in cut_nets:
+        cut.pop("transport_round", None)
+    metrics.pop("transport_rounds", None)
+    metrics.pop("round_barriers", None)
+    metrics["transport_ordering_policy"] = "path-local-dependency-dag-v1"
 
 
 def validate_cluster_assignment_balance(
@@ -2104,6 +2125,7 @@ def validate_partition_artifacts(
                 ),
             }
         )
+        _remove_static_exact_global_rounds(expected_cuts, expected_metrics)
         if assignment_artifact.get("semantic_contract") != expected_contract:
             raise ValidationError(
                 "assignment.semantic_contract does not match independent "

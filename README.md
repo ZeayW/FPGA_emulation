@@ -1716,11 +1716,15 @@ otherwise partitionable design into one combinational atomic component.
 | Hardware BSP | In-tree open PCS/runtime-sync RTL plus source-backed Arm MPS4 topology/pin inventory | Phase 6C derives channel/common quad topology and binds the open PCS to source-visible GTY recipes; the optional Vivado gate jointly routes DUT, TDM, PCS, sync, and GT, then feeds routed FPGA logic/boundary timing back into Phase 7C. Real refclk/reset binding, measured board-link/elastic-buffer latency, bitstream, and hardware qualification remain open gates |
 
 Static Exact uses its explicit per-cut dependency DAG as the scheduling
-contract. `transport_round` remains diagnostic metadata and does not divide
-the physical graph or impose a global launch barrier: Phase 4 routes against
-the real aggregate link capacity, while Phase 5 enforces each cut's computed
-release time, hop precedence, per-slot/lane capacity, and frame deadline. This
-avoids delaying a ready dependent cut behind thousands of unrelated transfers.
+contract. Its Phase 3 assignment therefore removes the registered-boundary
+`transport_round` marker and reports
+`transport_ordering_policy=path-local-dependency-dag-v1`; no round count or
+global barrier is part of the Static Exact artifact. Phase 4 routes against the
+real aggregate link capacity, while Phase 5 enforces each cut's computed release
+time, hop precedence, per-slot/lane capacity, and frame deadline. This avoids
+delaying a ready dependent cut behind thousands of unrelated transfers and
+also prevents Phase 6 equivalence from accidentally reconstructing the legacy
+barrier.
 The conservative two-window `route-round-capacity/v1` contract is retained
 only for legacy registered-boundary transport, where no exact dependency DAG
 exists. Standalone `partition-feedback` runs over Static Exact routes must pass

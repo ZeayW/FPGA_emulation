@@ -1087,6 +1087,18 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         self.assertEqual([item["net"] for item in combinational], ["n0"])
         self.assertEqual(combinational[0]["predecessor_cut_nets"], [])
         self.assertEqual(combinational[0]["combinational_dependency_depth"], 1)
+        self.assertTrue(
+            all(
+                "transport_round" not in item
+                for item in assignment["cut_nets"]
+            )
+        )
+        self.assertNotIn("transport_rounds", assignment["metrics"])
+        self.assertNotIn("round_barriers", assignment["metrics"])
+        self.assertEqual(
+            assignment["metrics"]["transport_ordering_policy"],
+            "path-local-dependency-dag-v1",
+        )
         contract = assignment["semantic_contract"]
         self.assertEqual(
             contract["qualification"],
@@ -1985,6 +1997,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             validation["qualification"],
             "dependency-schedule-readiness-pass",
         )
+        self.assertEqual(validation["transport_rounds"], 1)
+        self.assertEqual(validation["round_barriers"], 0)
         readiness = {
             item["net"]: item
             for item in schedule["schedule_dependency_certificate"][
