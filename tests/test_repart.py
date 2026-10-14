@@ -218,10 +218,8 @@ class RePartTest(unittest.TestCase):
     def test_phase3_imports_and_validates_legal_logic_replica(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)
-            ir_path = output / "design.emuir.json"
-            ir_path.write_text(
-                json.dumps(self.ir.to_dict()), encoding="utf-8"
-            )
+            ir_path = output / "design.emuir.sqlite"
+            self.ir.save(ir_path)
             baseline = assign_clusters(
                 self.ir,
                 self.platform,

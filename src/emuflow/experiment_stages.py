@@ -1404,7 +1404,6 @@ def validate_phase6_checkpoint(
         platform_path,
         manifest,
         replay_equivalence=validation_mode == "full-replay",
-        reconstruct_artifacts=validation_mode == "full-replay",
     )
     if provider == "placement-aware":
         validate_pin_plan(

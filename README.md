@@ -3442,10 +3442,20 @@ semantically. Phase 5 retains only the schedule, ratio plan when applicable,
 and compact report; simulation traces, TSV, transport manifests, generated
 testbenches, and feedback dumps remain standalone diagnostics. Phase 6
 references the canonical Phase 5 schedule instead of copying it into every
-provider checkpoint. Phase 7 references the canonical physical summary from
-its flow report and reuses the sealed TimingPathDB identity instead of hashing
-the full database again. Standalone commands still materialize their
-human-oriented diagnostics for interactive use.
+provider checkpoint. Phase 3 additionally publishes `assignment.sqlite`, a
+compact integer-keyed instance/copy/partition relation. Phase 6 attaches that
+index and the canonical `design.emuir.sqlite` to SQLite, performs set-oriented
+instance/net/endpoint splitting without reconstructing the circuit in Python,
+and publishes one `split-netlists.sqlite` plus bounded per-FPGA transport and
+anchor manifests. Its constructive certificate checks copy cardinality,
+net-segment materialization, endpoint ownership, and scheduled shadow-driver
+invariants without rerunning the same multi-gigabyte source joins. Exhaustive
+or trace-based behavioral replay remains enabled for small qualification
+designs only. Phase 7 selects one FPGA partition from the split database at a
+time. Phase 7 references the canonical physical summary from its flow report
+and reuses the sealed TimingPathDB identity instead of hashing the full
+database again. Standalone commands still materialize their human-oriented
+diagnostics for interactive use.
 
 The retired canonical experiment compiler used `--managed-dag-node` to select
 this contract. Current one-shot commands must not depend on that historical
@@ -3457,16 +3467,15 @@ qualification is invoked explicitly through `partition-pressure-reference` or
 the dedicated qualification tests, never inferred from the absence of a cache
 flag.
 
-Large JSON interfaces are stored losslessly in a transparent managed envelope:
-Phase 3 uses the compact cluster/assignment representation, while Phase 4
-routes, Phase 5 schedules/transport metadata, and Phase 6 split manifests use
-fast level-1 compression. `read_json` reconstructs the original logical
-schemas, so algorithms and standalone outputs are unchanged. Only the selected
-candidate is expanded into a complete checkpoint. Phase 7 workers share one
-parsed global timing/assignment/routing context instead of reparsing it once
-per FPGA, and same-seed baseline lookahead reuse hard-links the immutable
-physical tree on the same filesystem. The external independent validators
-still replay the full semantic contract once before publication.
+Bounded JSON interfaces are stored losslessly in a transparent managed
+envelope: Phase 3 uses the compact cluster/assignment representation, while
+Phase 4 routes and Phase 5 schedule/transport metadata use fast level-1
+compression. Complete EmuIR and split-netlist graphs are SQLite data-plane
+artifacts rather than managed JSON. `read_json` reconstructs bounded logical
+schemas; it is not a license to expand a multi-gigabyte circuit graph. Only the
+selected candidate is expanded into a complete checkpoint. Phase 7 workers
+select their own partition from the common split database instead of reparsing
+a whole-design JSON file per FPGA.
 
 - `reuse`: a byte-valid content-addressed checkpoint already exists;
 - `revalidate`: execution output is reusable but the independent validator

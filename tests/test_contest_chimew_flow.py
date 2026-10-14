@@ -446,8 +446,8 @@ class ContestChimewCrossFlowTest(unittest.TestCase):
             ir = import_yosys_json(
                 ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
             )
-            ir_path = root / "counter.emuir.json"
-            write_json(ir_path, ir.to_dict())
+            ir_path = root / "counter.emuir.sqlite"
+            ir.save(ir_path)
             phase3_root = root / "phase3"
             phase4_root = root / "phase4"
             phase5_root = root / "phase5"

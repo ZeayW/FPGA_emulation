@@ -13,6 +13,7 @@ from emuflow.chimew_phase6 import (
     CHIMEW_PHASE6_BINDING_SCHEMA_V1,
 )
 from emuflow.errors import ValidationError
+from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
 from emuflow.io import read_json, write_json
 from emuflow.netlist import (
@@ -26,6 +27,15 @@ from emuflow.partition import (
     normalize_partition_constraints,
 )
 from emuflow.phase6 import run_phase6, validate_phase6
+from emuflow.phase3_assignment_index import (
+    migrate_phase3_assignment_index,
+    write_phase3_assignment_index,
+)
+from emuflow.split_netlist_storage import (
+    build_streaming_split_metadata,
+    read_split_netlist_sqlite,
+    write_split_netlists_sqlite,
+)
 from emuflow.pin_planning import (
     CHIMEW_PIN_PLAN_PROVIDER,
     SIGNAL_POSITION_HINTS_SCHEMA,
@@ -204,6 +214,66 @@ class Phase6Test(unittest.TestCase):
         self.assertEqual(equivalence["mismatches"], 0)
         self.assertEqual(equivalence["cycles"], 12)
 
+    def test_sqlite_data_plane_matches_legacy_split_exactly(self) -> None:
+        old = build_split_artifacts(
+            self.ir, self.assignment, self.schedule, self.platform
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.sqlite"
+            assignment_path = root / "assignment.sqlite"
+            split_path = root / "split.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            write_phase3_assignment_index(
+                assignment_path, self.ir, self.assignment
+            )
+            proof = write_split_netlists_sqlite(
+                split_path,
+                ir_path,
+                assignment_path,
+                self.schedule,
+                expected_design=self.ir.value["design"]["name"],
+                expected_platform=self.platform.name,
+            )
+            control = build_streaming_split_metadata(
+                assignment_path,
+                self.schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+            )
+            self.assertEqual(proof["status"], "pass")
+            self.assertEqual(control["lane_map"], old["lane_map"])
+            for fpga in ("fpga0", "fpga1"):
+                self.assertEqual(
+                    read_split_netlist_sqlite(split_path, fpga),
+                    old["netlists"][fpga],
+                )
+                self.assertEqual(
+                    control["transports"][fpga], old["transports"][fpga]
+                )
+                self.assertEqual(control["anchors"][fpga], old["anchors"][fpga])
+
+    def test_legacy_assignment_migration_does_not_load_emuir_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.sqlite"
+            assignment_path = root / "assignment.json"
+            index_path = root / "assignment.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            assignment_path.write_text(
+                json.dumps(self.assignment), encoding="utf-8"
+            )
+            with mock.patch(
+                "emuflow.phase3_assignment_index.EmuIR.load",
+                side_effect=AssertionError("whole EmuIR must not load"),
+            ):
+                summary = migrate_phase3_assignment_index(
+                    index_path, ir_path, assignment_path
+                )
+            self.assertEqual(summary["status"], "pass")
+            self.assertEqual(summary["source_instances"], 8)
+
     def test_cycle_model_supports_generic_yosys_lut_and_dff(self) -> None:
         value = {
             "modules": {
@@ -273,12 +343,15 @@ class Phase6Test(unittest.TestCase):
     def test_phase6_writes_and_independently_reloads_all_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            ir_path = root / "ir.json"
+            ir_path = root / "design.emuir.sqlite"
             assignment_path = root / "assignment.json"
             schedule_path = root / "schedule.json"
-            ir_path.write_text(json.dumps(self.ir.to_dict()), encoding="utf-8")
+            write_compact_emuir(ir_path, self.ir.to_dict())
             assignment_path.write_text(
                 json.dumps(self.assignment), encoding="utf-8"
+            )
+            write_phase3_assignment_index(
+                root / "assignment.sqlite", self.ir, self.assignment
             )
             schedule_path.write_text(
                 json.dumps(self.schedule), encoding="utf-8"
@@ -307,12 +380,11 @@ class Phase6Test(unittest.TestCase):
                 "lane_map.json",
                 "phase6_report.json",
                 "virtual_runtime_controller.sv",
-                "fpga0/netlist.json",
+                "split-netlists.sqlite",
                 "fpga0/transport.json",
                 "fpga0/transport_schedule.sv",
                 "fpga0/virtual_anchors.json",
                 "fpga0/virtual_anchors.xdc.template",
-                "fpga1/netlist.json",
                 "fpga1/transport.json",
                 "fpga1/transport_schedule.sv",
                 "fpga1/virtual_anchors.json",
@@ -323,13 +395,16 @@ class Phase6Test(unittest.TestCase):
     def test_phase6_binds_and_replays_transport_cost_prediction(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            ir_path = root / "ir.json"
+            ir_path = root / "design.emuir.sqlite"
             assignment_path = root / "assignment.json"
             schedule_path = root / "schedule.json"
             cost_path = root / "transport-cost.json"
-            ir_path.write_text(json.dumps(self.ir.to_dict()), encoding="utf-8")
+            write_compact_emuir(ir_path, self.ir.to_dict())
             assignment_path.write_text(
                 json.dumps(self.assignment), encoding="utf-8"
+            )
+            write_phase3_assignment_index(
+                root / "assignment.sqlite", self.ir, self.assignment
             )
             schedule = copy.deepcopy(self.schedule)
             schedule["metrics"]["frame_slots"] = 8
@@ -432,20 +507,25 @@ class Phase6Test(unittest.TestCase):
                 refinement_iterations=4,
             )
             paths = {
-                "ir": root / "ir.json",
+                "ir": root / "design.emuir.sqlite",
                 "assignment": root / "assignment.json",
                 "schedule": root / "schedule.json",
                 "positions": root / "positions.json",
                 "plan": root / "plan.json",
             }
             documents = {
-                "ir": self.ir.to_dict(),
                 "assignment": self.assignment,
                 "schedule": schedule,
                 "positions": positions,
                 "plan": plan,
             }
+            write_compact_emuir(paths["ir"], self.ir.to_dict())
+            write_phase3_assignment_index(
+                root / "assignment.sqlite", self.ir, self.assignment
+            )
             for name, path in paths.items():
+                if name == "ir":
+                    continue
                 path.write_text(
                     json.dumps(documents[name]), encoding="utf-8"
                 )

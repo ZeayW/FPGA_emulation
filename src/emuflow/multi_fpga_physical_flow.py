@@ -35,7 +35,11 @@ from .local_path_timing import (
     write_xilinx_local_path_query,
 )
 from .ir import EMUIR_SCHEMA, EmuIR
-from .lowering import PLACEMENT_IR_REPORT_SCHEMA, run_placement_ir_lowering
+from .lowering import (
+    PLACEMENT_IR_REPORT_SCHEMA,
+    run_placement_ir_lowering_from_value,
+)
+from .split_netlist_storage import read_split_netlist_sqlite
 from .netlist import SPLIT_MANIFEST_SCHEMA
 from .packed_netlist import run_packed_netlist_import
 from .packed_placement import run_packed_openparf_placement
@@ -981,9 +985,14 @@ def run_multi_fpga_physical_flow(
         source_root = split_root / fpga_id
         fpga_root = output_dir / fpga_id
         fpga_root.mkdir(parents=True, exist_ok=True)
-        netlist_path = source_root / "netlist.json"
-        transport_path = source_root / "transport.json"
-        netlist = read_json(netlist_path)
+        netlist_path = split_root / item["netlist"]
+        transport_path = split_root / item["transport"]
+        if "netlist_selector" in item:
+            netlist = read_split_netlist_sqlite(
+                netlist_path, item["netlist_selector"]
+            )
+        else:
+            netlist = read_json(netlist_path)
         transport = read_json(transport_path)
         fpga_part = next(
             fpga.part for fpga in platform.fpgas if fpga.id == fpga_id
@@ -1016,8 +1025,8 @@ def run_multi_fpga_physical_flow(
                 "sha256": _sha256(transport_ir_path),
             }
             merged_ir = fpga_root / "placement.emuir.json"
-            lowering_report = run_placement_ir_lowering(
-                netlist_path,
+            lowering_report = run_placement_ir_lowering_from_value(
+                netlist,
                 transport_path,
                 transport_ir_path,
                 merged_ir,
@@ -1251,8 +1260,8 @@ def run_multi_fpga_physical_flow(
         }
 
         merged_ir = fpga_root / "placement.emuir.json"
-        lowering_report = run_placement_ir_lowering(
-            netlist_path,
+        lowering_report = run_placement_ir_lowering_from_value(
+            netlist,
             transport_path,
             transport_ir_path,
             merged_ir,

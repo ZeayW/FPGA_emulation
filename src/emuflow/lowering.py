@@ -329,10 +329,30 @@ def run_placement_ir_lowering(
     report_path: Optional[Path] = None,
     boundary_identity_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    return run_placement_ir_lowering_from_value(
+        read_json(netlist_path),
+        transport_path,
+        transport_ir_path,
+        output_path,
+        report_path,
+        boundary_identity_path,
+    )
+
+
+def run_placement_ir_lowering_from_value(
+    netlist: Mapping[str, Any],
+    transport_path: Path,
+    transport_ir_path: Path,
+    output_path: Path,
+    report_path: Optional[Path] = None,
+    boundary_identity_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Lower one already-selected partition without a JSON round trip."""
+
     transport = read_json(transport_path)
     transport_ir = EmuIR.load(transport_ir_path)
     result = build_placement_ir(
-        read_json(netlist_path), transport, transport_ir
+        netlist, transport, transport_ir
     )
     write_json(output_path, result.to_dict())
     boundary_path = (

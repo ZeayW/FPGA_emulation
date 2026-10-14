@@ -43,6 +43,7 @@ from .combinational_cut import (
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
 from .phase3_storage import pack_phase3_assignment, pack_phase3_clusters
+from .phase3_assignment_index import write_phase3_assignment_index
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
@@ -900,6 +901,7 @@ def run_phase3(
             "clusters": "clusters.json",
             "constraints": "constraints.normalized.json",
             "assignment": "assignment.json",
+            "assignment_index": "assignment.sqlite",
             "report": "phase3_report.json",
         },
     }
@@ -994,6 +996,7 @@ def run_phase3(
         report["artifact_storage"] = {
             "clusters": "emuflow.phase3-clusters-storage/v1",
             "assignment": "emuflow.phase3-assignment-storage/v1",
+            "assignment_index": "emuflow.phase3-assignment-sqlite/v1",
             "logical_schema": "unchanged-transparent-expansion",
         }
 
@@ -1018,6 +1021,9 @@ def run_phase3(
     write_json(output_dir / "constraints.normalized.json", constraints)
     write_json(
         output_dir / "assignment.json", persisted_assignment, compact=True
+    )
+    write_phase3_assignment_index(
+        output_dir / "assignment.sqlite", ir, assignment
     )
     if (
         provider == "patron"

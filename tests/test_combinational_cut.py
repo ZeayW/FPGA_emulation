@@ -42,6 +42,7 @@ from emuflow.partition import (
 )
 from emuflow.platform import Platform
 from emuflow.phase6 import run_phase6, validate_phase6
+from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from emuflow.routing import (
     build_directed_graph,
     demands_from_assignment,
@@ -2433,12 +2434,15 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            ir_path = root / "design.emuir.json"
+            ir_path = root / "design.emuir.sqlite"
             assignment_path = root / "assignment.json"
             schedule_path = root / "schedule.json"
             output = root / "phase6"
-            ir_path.write_text(json.dumps(self.ir.to_dict()), encoding="utf-8")
+            self.ir.save(ir_path)
             assignment_path.write_text(json.dumps(assignment), encoding="utf-8")
+            write_phase3_assignment_index(
+                root / "assignment.sqlite", self.ir, assignment
+            )
             schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
             report = run_phase6(
                 ir_path,

@@ -413,10 +413,20 @@ requirements, not optional micro-optimizations.
   retain only that candidate's compact consumer artifact behind an explicit
   request. Do not retain or recreate the provider's model, trace, hashes, or
   diagnostic directory merely to keep one alternative assignment available.
-- Production Phase 6 performs a bounded one-macro-cycle smoke replay for each
-  deterministic trace seed. Deeper event-driven replay is an explicit
-  `--equivalence-cycles` qualification choice; do not make a 16-cycle large-DLA
-  replay the implicit cost of every Phase 1--7 run.
+- Production Phase 6 is a SQLite/C++ data plane with a Python control plane.
+  It must never deserialize the complete EmuIR or split circuit into Python
+  `dict`/`list`/`str` objects.  Phase 3 publishes a compact assignment index;
+  Phase 6 joins integer instance/net IDs with that index and the schedule,
+  emits split partitions incrementally, and retains only bounded manifests and
+  QoR summaries in Python.  A validator checks the emitted database and
+  transport boundaries directly; it must not repeat all source joins or build
+  a second Python graph merely to replay the producer.
+- Small-design qualification may run exhaustive and deterministic event-driven
+  equivalence.  Large-design production uses the constructive split
+  certificate (lossless source records, exact endpoint coverage, one scheduled
+  shadow driver per remote sink, and the sealed Static Exact dependency
+  contract).  Deep or multi-seed replay remains an explicit offline
+  qualification and must not be an implicit Phase 1--7 cost.
 - A representation-only optimization must not change logical schemas, QoR,
   assignment, scheduling, routing, or validation strength.  Add round-trip,
   corruption, truncation, relocation, and mixed-run rejection tests, plus a

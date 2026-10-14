@@ -520,8 +520,8 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 worker_barrier.wait()
                 write_json(output, {"modules": {}})
 
-            def fake_lower(netlist_path, _transport, _transport_ir, output, report):
-                fpga = netlist_path.parent.name
+            def fake_lower(netlist, _transport, _transport_ir, output, report):
+                fpga = netlist["instances"][0]["id"].removesuffix("_original")
                 value = _merged_ir(fpga)
                 write_json(output, value.to_dict())
                 boundary_path = output.with_name("boundary-identities.json")
@@ -664,7 +664,8 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     return_value=_merged_ir("transport"),
                 ),
                 patch(
-                    "emuflow.multi_fpga_physical_flow.run_placement_ir_lowering",
+                    "emuflow.multi_fpga_physical_flow."
+                    "run_placement_ir_lowering_from_value",
                     side_effect=fake_lower,
                 ),
                 patch(

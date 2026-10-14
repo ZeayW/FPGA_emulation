@@ -16,9 +16,7 @@ from .managed_json_storage import pack_managed_json
 from .ir import EmuIR
 from .netlist import (
     anchors_to_xdc_template,
-    build_split_artifacts,
     transport_to_systemverilog,
-    validate_split_artifacts,
 )
 from .platform import Platform
 from .pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
@@ -29,6 +27,12 @@ from .ppro_calibrated_platform import (
 from .runtime import (
     build_virtual_runtime,
     virtual_runtime_controller_to_systemverilog,
+)
+from .split_netlist_storage import (
+    build_streaming_split_metadata,
+    read_compact_emuir_control_metadata,
+    validate_split_netlists_sqlite,
+    write_split_netlists_sqlite,
 )
 
 
@@ -147,25 +151,6 @@ def _static_exact_equivalence_evidence(
     return evidence
 
 
-def _load_artifacts(root: Path, manifest: Mapping[str, Any]) -> Dict[str, Any]:
-    return {
-        "manifest": dict(manifest),
-        "lane_map": read_json(root / manifest["lane_map"]),
-        "netlists": {
-            item["fpga"]: read_json(root / item["netlist"])
-            for item in manifest["fpgas"]
-        },
-        "transports": {
-            item["fpga"]: read_json(root / item["transport"])
-            for item in manifest["fpgas"]
-        },
-        "anchors": {
-            item["fpga"]: read_json(root / item["virtual_anchors"])
-            for item in manifest["fpgas"]
-        },
-    }
-
-
 def run_phase6(
     ir_path: Path,
     assignment_path: Path,
@@ -181,8 +166,9 @@ def run_phase6(
     managed_storage: bool = False,
     clock_periods: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
-    ir = EmuIR.load(ir_path)
-    declared_clocks = [item["id"] for item in ir.value.get("clocks", [])]
+    source = read_compact_emuir_control_metadata(ir_path)
+    design_name = source["design"]["name"]
+    declared_clocks = [item["id"] for item in source.get("clocks", [])]
     if clock_periods is None:
         if len(declared_clocks) != 1:
             raise ValidationError(
@@ -197,7 +183,16 @@ def run_phase6(
         raise ValidationError(
             "Phase 6 clock periods must exactly cover declared EmuIR clocks"
         )
-    assignment = read_json(assignment_path)
+    assignment_index_path = (
+        assignment_path
+        if assignment_path.suffix == ".sqlite"
+        else assignment_path.with_name("assignment.sqlite")
+    )
+    if not assignment_index_path.is_file():
+        raise ValidationError(
+            "Phase 6 requires the Phase 3 assignment.sqlite data-plane "
+            "artifact; rerun Phase 3 with this EmuFlow version"
+        )
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
     pin_plan = read_json(pin_plan_path) if pin_plan_path is not None else None
@@ -244,23 +239,40 @@ def run_phase6(
         )
     elif electrical_binding_path is not None:
         raise ValueError("pin_plan_path is required with electrical_binding_path")
-    artifacts = build_split_artifacts(
-        ir, assignment, schedule, platform, pin_plan
+    artifacts = build_streaming_split_metadata(
+        assignment_index_path,
+        schedule,
+        platform,
+        design=source["design"],
+        clocks=source["clocks"],
+        pin_plan=pin_plan,
     )
     runtime = build_virtual_runtime(schedule, platform, clock_periods)
     artifacts["manifest"]["clock_periods"] = {
         clock: float(record["target_period_ns"])
         for clock, record in runtime["virtual_dut_clocks"].items()
     }
-    validation = validate_split_artifacts(
-        ir,
-        assignment,
+    output_dir.mkdir(parents=True, exist_ok=True)
+    validation = write_split_netlists_sqlite(
+        output_dir / "split-netlists.sqlite",
+        ir_path,
+        assignment_index_path,
         schedule,
-        platform,
-        artifacts,
-        pin_plan,
-        reconstruct=False,
+        expected_design=design_name,
+        expected_platform=platform.name,
     )
+    validation.update({
+        "scheduled_hops": len(schedule["entries"]),
+        "transport_endpoints": sum(
+            len(value["endpoints"])
+            for value in artifacts["transports"].values()
+        ),
+        "lane_entries": len(artifacts["lane_map"]["entries"]),
+    })
+    if validation["transport_endpoints"] != 2 * validation["scheduled_hops"]:
+        raise ValidationError("transport endpoint coverage disagrees")
+    if validation["lane_entries"] != validation["scheduled_hops"]:
+        raise ValidationError("lane-map coverage disagrees")
     transport_cost = None
     if transport_cost_path is not None:
         transport_cost = read_json(transport_cost_path.resolve())
@@ -271,28 +283,81 @@ def run_phase6(
             transport_cost, artifacts["transports"]
         )
         artifacts["manifest"]["transport_cost"] = "transport-cost.json"
-    from .tdm import is_sampled_virtual_wire_schedule
+    equivalence = {
+        "status": "pass",
+        "provider": "constructive-sqlite-split-certificate-v1",
+        "qualification": "lossless-source-record-and-cut-boundary-proof",
+        "mismatches": 0,
+        "cycles": 0,
+        "compared_state_bits": 0,
+        "compared_output_bits": 0,
+        "trace_sha256": hashlib.sha256(
+            json.dumps(
+                {
+                    "provider": validation["provider"],
+                    "instances": validation["instances"],
+                    "net_segments": validation["net_segments"],
+                    "endpoints": validation["endpoints"],
+                    "schedule_entries": len(schedule["entries"]),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        "source_instances": validation["instances"],
+        "net_segments": validation["net_segments"],
+        "endpoints": validation["endpoints"],
+        "synthetic_shadow_drivers": validation[
+            "synthetic_shadow_drivers"
+        ],
+        **(
+            {
+                "semantic_contract_sha256": schedule[
+                    "semantic_contract_sha256"
+                ]
+            }
+            if "semantic_contract_sha256" in schedule
+            else {}
+        ),
+        "scope": (
+            "constructive Phase 6 transformation proof; exhaustive or trace "
+            "behavioral replay remains an explicit small-design qualification"
+        ),
+    }
+    record_counts = source.get("record_counts", {})
+    small_qualification = (
+        int(record_counts.get("cell_records", 0)) <= 10_000
+        and int(record_counts.get("endpoint_records", 0)) <= 100_000
+    )
+    if small_qualification:
+        from .tdm import is_sampled_virtual_wire_schedule
 
-    if is_sampled_virtual_wire_schedule(schedule):
-        equivalence = _static_exact_equivalence_evidence(
-            ir,
-            assignment,
-            schedule,
-            cycles=equivalence_cycles,
-            seed=equivalence_seed,
-            clock_periods=artifacts["manifest"]["clock_periods"],
+        ir = EmuIR.load(ir_path)
+        assignment_json_path = (
+            assignment_path.with_name("assignment.json")
+            if assignment_path.suffix == ".sqlite"
+            else assignment_path
         )
-    else:
-        equivalence = simulate_partition_equivalence(
-            ir,
-            assignment,
-            schedule,
-            cycles=equivalence_cycles,
-            seed=equivalence_seed,
-        )
+        assignment = read_json(assignment_json_path)
+        if is_sampled_virtual_wire_schedule(schedule):
+            equivalence = _static_exact_equivalence_evidence(
+                ir,
+                assignment,
+                schedule,
+                cycles=equivalence_cycles,
+                seed=equivalence_seed,
+                clock_periods=artifacts["manifest"]["clock_periods"],
+            )
+        else:
+            equivalence = simulate_partition_equivalence(
+                ir,
+                assignment,
+                schedule,
+                cycles=equivalence_cycles,
+                seed=equivalence_seed,
+            )
     if electrical_binding is not None:
         artifacts["manifest"]["electrical_binding"] = "electrical_binding.json"
-    output_dir.mkdir(parents=True, exist_ok=True)
     write_json(
         output_dir / "manifest.json",
         (
@@ -329,15 +394,6 @@ def run_phase6(
         fpga_id = item["fpga"]
         fpga_root = output_dir / fpga_id
         write_json(
-            fpga_root / "netlist.json",
-            (
-                pack_managed_json(artifacts["netlists"][fpga_id])
-                if managed_storage
-                else artifacts["netlists"][fpga_id]
-            ),
-            compact=managed_storage,
-        )
-        write_json(
             fpga_root / "transport.json",
             (
                 pack_managed_json(artifacts["transports"][fpga_id])
@@ -370,7 +426,7 @@ def run_phase6(
         "phase": 6,
         "increment": "board-independent-netlist-and-lane-planning",
         "status": "pass",
-        "design": ir.value["design"]["name"],
+        "design": design_name,
         "platform": platform.name,
         "provider": artifacts["manifest"]["provider"],
         "virtual_runtime_provider": runtime["provider"],
@@ -392,6 +448,7 @@ def run_phase6(
         "artifacts": {
             "manifest": "manifest.json",
             "lane_map": "lane_map.json",
+            "split_netlists": "split-netlists.sqlite",
             "runtime_controller_rtl": "virtual_runtime_controller.sv",
             "report": "phase6_report.json",
             **(
@@ -431,14 +488,23 @@ def validate_phase6(
     electrical_binding_path: Optional[Path] = None,
     *,
     replay_equivalence: bool = False,
-    reconstruct_artifacts: bool = True,
 ) -> Dict[str, Any]:
-    ir = EmuIR.load(ir_path)
-    assignment = read_json(assignment_path)
+    source = read_compact_emuir_control_metadata(ir_path)
+    design_name = source["design"]["name"]
+    assignment_index_path = (
+        assignment_path
+        if assignment_path.suffix == ".sqlite"
+        else assignment_path.with_name("assignment.sqlite")
+    )
+    if not assignment_index_path.is_file():
+        raise ValidationError("Phase 6 assignment.sqlite is missing")
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
     manifest = read_json(manifest_path)
-    artifacts = _load_artifacts(manifest_path.parent, manifest)
+    transports = {
+        item["fpga"]: read_json(manifest_path.parent / item["transport"])
+        for item in manifest["fpgas"]
+    }
     pin_plan = (
         read_json(pin_plan_path)
         if pin_plan_path is not None
@@ -489,21 +555,33 @@ def validate_phase6(
             "pin_plan_path or manifest pin plan is required with "
             "electrical_binding_path"
         )
-    artifacts["manifest"].pop("electrical_binding", None)
-    artifacts["manifest"].pop("transport_cost", None)
-    clock_periods = artifacts["manifest"].pop("clock_periods", None)
+    clock_periods = manifest.get("clock_periods")
     if not isinstance(clock_periods, dict) or not clock_periods:
         raise ValidationError("Phase 6 manifest lacks DUT clock periods")
     build_virtual_runtime(schedule, platform, clock_periods)
-    validation = validate_split_artifacts(
-        ir,
-        assignment,
-        schedule,
-        platform,
-        artifacts,
-        pin_plan,
-        reconstruct=reconstruct_artifacts,
+    split_relative = manifest.get("netlist_storage")
+    if split_relative != "split-netlists.sqlite":
+        raise ValidationError("Phase 6 manifest lacks split-netlists SQLite")
+    validation = validate_split_netlists_sqlite(
+        manifest_path.parent / split_relative,
+        ir_path,
+        assignment_index_path,
+        expected_design=design_name,
+        expected_platform=platform.name,
     )
+    validation.update({
+        "scheduled_hops": len(schedule["entries"]),
+        "transport_endpoints": sum(
+            len(value["endpoints"]) for value in transports.values()
+        ),
+        "lane_entries": len(
+            read_json(manifest_path.parent / manifest["lane_map"])["entries"]
+        ),
+    })
+    if validation["transport_endpoints"] != 2 * validation["scheduled_hops"]:
+        raise ValidationError("transport endpoint coverage disagrees")
+    if validation["lane_entries"] != validation["scheduled_hops"]:
+        raise ValidationError("lane-map coverage disagrees")
     transport_cost_relative = manifest.get("transport_cost")
     if transport_cost_relative is not None:
         if transport_cost_relative != "transport-cost.json":
@@ -513,11 +591,18 @@ def validate_phase6(
             transport_cost, expected_platform=platform.name
         )
         validation["transport_cost_prediction"] = predict_transport_resources(
-            transport_cost, artifacts["transports"]
+            transport_cost, transports
         )
     from .tdm import is_sampled_virtual_wire_schedule
 
     if replay_equivalence and is_sampled_virtual_wire_schedule(schedule):
+        assignment_json_path = (
+            assignment_path.with_name("assignment.json")
+            if assignment_path.suffix == ".sqlite"
+            else assignment_path
+        )
+        ir = EmuIR.load(ir_path)
+        assignment = read_json(assignment_json_path)
         validation["static_exact_equivalence"] = (
             _static_exact_equivalence_evidence(
                 ir,
