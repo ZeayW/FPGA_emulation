@@ -471,6 +471,54 @@ def estimate_tdm_ratio(
     )
 
 
+def maximum_schedulable_tdm_ratio(
+    constraints: Mapping[str, Any],
+    latency_cycles: int,
+    *,
+    ratio_quantum: Optional[int] = None,
+    minimum_ratio: Optional[int] = None,
+) -> int:
+    """Return the largest discrete ratio that arrives before commit.
+
+    Phase 4 and Phase 5 must use the same discrete ratio domain. Counting
+    every physical launch slot is insufficient when the TDM provider only
+    admits ratio-quantum multiples: a route can pass aggregate capacity and
+    still be impossible to legalize.
+    """
+
+    usable_slots = (
+        int(constraints["frame_slots"])
+        - RUNTIME_BARRIER_SLOTS
+        - int(latency_cycles)
+    )
+    if usable_slots <= 0:
+        raise ValidationError(
+            "TDM schedule has no transmit slot whose data arrives before "
+            "the frame commit"
+        )
+    quantum = int(
+        constraints["tdm_ratio_quantum"]
+        if ratio_quantum is None
+        else ratio_quantum
+    )
+    maximum = (
+        (usable_slots // quantum) * quantum
+        if usable_slots >= quantum
+        else 1
+    )
+    minimum = int(
+        constraints.get("tdm_min_ratio", 1)
+        if minimum_ratio is None
+        else minimum_ratio
+    )
+    if maximum < minimum:
+        raise ValidationError(
+            "TDM schedule has no discrete ratio between the configured "
+            "minimum and the frame-arrival deadline"
+        )
+    return maximum
+
+
 def _capacity_key(
     link: BoardLink,
     source: str,
@@ -530,7 +578,10 @@ def build_directed_graph(
                     reserve_arrival_and_commit
                     and link.id not in constraints["sll_links"]
                 ):
-                    usable_slots -= RUNTIME_BARRIER_SLOTS + link.latency_cycles
+                    usable_slots = maximum_schedulable_tdm_ratio(
+                        constraints,
+                        link.latency_cycles,
+                    )
                 if usable_slots <= 0:
                     raise ValidationError(
                         f"link {link.id!r} has no transmit slot whose data "

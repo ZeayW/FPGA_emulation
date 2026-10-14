@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from .errors import EmuFlowError, ValidationError
 from .native_tools import resolve_native_executable
 from .platform import Platform
+from .routing import maximum_schedulable_tdm_ratio
 from .tdm_ratio import (
     TDM_TIMING_DAG_RATIO_PROVIDER,
     _prepare_model,
@@ -571,19 +572,14 @@ def build_timing_dag_ratio_plan(
         )
     if max_ratio is None:
         link_by_id = {link.id: link for link in platform.links}
-        usable_slots = min(
-            model["constraints"]["frame_slots"]
-            - link_by_id[hop["link"]].latency_cycles
-            for hop in model["hops"]
-        )
-        if usable_slots <= 0:
-            raise ValidationError(
-                "timing-DAG schedule has no slot before link arrival deadline"
+        max_ratio = min(
+            maximum_schedulable_tdm_ratio(
+                model["constraints"],
+                link_by_id[hop["link"]].latency_cycles,
+                ratio_quantum=ratio_quantum,
+                minimum_ratio=min_ratio,
             )
-        max_ratio = (
-            (usable_slots // ratio_quantum) * ratio_quantum
-            if usable_slots >= ratio_quantum
-            else 1
+            for hop in model["hops"]
         )
     seed = optimize_prepared_timing_dag(
         model,

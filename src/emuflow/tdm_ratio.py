@@ -15,6 +15,7 @@ from .platform import Platform
 from .routing import (
     SYSTEM_ROUTES_SCHEMA,
     build_directed_graph,
+    maximum_schedulable_tdm_ratio,
     normalize_route_constraints,
     route_link_delay_ns,
 )
@@ -1204,19 +1205,14 @@ def build_tdm_ratio_plan(
         )
     if max_ratio is None:
         link_by_id = {link.id: link for link in platform.links}
-        usable_slots = min(
-            model["constraints"]["frame_slots"]
-            - link_by_id[hop["link"]].latency_cycles
-            for hop in model["hops"]
-        )
-        if usable_slots <= 0:
-            raise ValidationError(
-                "TDM ratio schedule has no slot before link arrival deadline"
+        max_ratio = min(
+            maximum_schedulable_tdm_ratio(
+                model["constraints"],
+                link_by_id[hop["link"]].latency_cycles,
+                ratio_quantum=ratio_quantum,
+                minimum_ratio=min_ratio,
             )
-        max_ratio = (
-            (usable_slots // ratio_quantum) * ratio_quantum
-            if usable_slots >= ratio_quantum
-            else 1
+            for hop in model["hops"]
         )
     for name, value, allow_zero in (
         ("max_iterations", max_iterations, False),

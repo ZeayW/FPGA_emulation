@@ -262,7 +262,7 @@ class PlatformTest(unittest.TestCase):
         )
         self.assertEqual(
             scheduled_capacities["gty:F0->F1"]["capacity_bits"],
-            768 * (32 - 1 - 4),
+            768 * 24,
         )
 
     def test_serial_user_rate_cannot_exceed_line_rate(self) -> None:

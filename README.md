@@ -1469,10 +1469,11 @@ an independently checkable cross-stage identity.
 
 Phase 4 link capacity is the number of payload bits that can both launch and
 arrive before the frame commit: per-cycle payload width multiplied by the
-frame slots remaining after the link latency and the commit slot. It therefore
-cannot route traffic into late slots that Phase 5 is forbidden to use. Static
-Exact does not subdivide that capacity by a global transport-round barrier;
-its path-local dependency releases are applied by Phase 5.
+largest legal discrete TDM ratio after link-latency/commit reservation and
+ratio-quantum rounding. It therefore cannot route traffic that fits the raw
+slot count but cannot be represented by Phase 5's ratio domain. Static Exact
+does not subdivide that capacity by a global transport-round barrier; its
+path-local dependency releases are applied by Phase 5.
 
 Those gates are qualified as `route-contract-propagation-pass` and
 `dependency-schedule-readiness-pass`; neither is a functional-equivalence or

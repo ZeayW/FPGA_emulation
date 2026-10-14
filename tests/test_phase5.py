@@ -752,8 +752,8 @@ class Phase5Test(unittest.TestCase):
             ratio_quantum=8,
             post_refinement_iterations=20,
         )
-        # The 32-slot frame and one-cycle link latency leave 31 usable
-        # launch slots; the largest legal ratio quantum is therefore 24.
+        # Arrival and commit reserve the frame tail; after ratio-quantum
+        # rounding, the largest legal ratio is 24.
         self.assertEqual(plan["configuration"]["max_ratio"], 24)
         self.assertEqual(
             validate_tdm_ratio_plan(routes, platform, plan)["status"],
