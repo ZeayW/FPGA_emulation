@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import math
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
@@ -274,6 +275,100 @@ def _round_order(
         {route.get("transport_round", 0) for route in routes}
     )
     return ordered, active_rounds
+
+
+def _exact_dependency_order(
+    exact_nodes: Mapping[str, Mapping[str, Any]],
+    routes: Sequence[Mapping[str, Any]],
+    planned_hops: Optional[Mapping[HopKey, Mapping[str, Any]]] = None,
+) -> List[Mapping[str, Any]]:
+    """Topologically order exact cuts without imposing level barriers.
+
+    Sorting all level-0 cuts before any level-1 cut is functionally legal but
+    catastrophically pessimistic: one ready predecessor can be followed by
+    thousands of unrelated transfers before its dependent cut is considered.
+    This ready-queue keeps only real DAG precedence and prioritizes chains with
+    the greatest remaining dependency depth.
+    """
+
+    route_by_net = {route.get("net"): route for route in routes}
+    if len(route_by_net) != len(routes) or set(route_by_net) != set(
+        exact_nodes
+    ):
+        raise ValidationError(
+            "cross-layer timing cut coverage does not match routes"
+        )
+    successors: Dict[str, List[str]] = {
+        net: [] for net in exact_nodes
+    }
+    indegree: Dict[str, int] = {}
+    for net, node in exact_nodes.items():
+        predecessors = list(node.get("predecessor_cut_nets", []))
+        unknown = sorted(set(predecessors) - set(exact_nodes))
+        if unknown:
+            raise ValidationError(
+                f"cross-layer timing cut {net!r} has unknown predecessors "
+                f"{unknown}"
+            )
+        indegree[net] = len(predecessors)
+        for predecessor in predecessors:
+            successors[predecessor].append(net)
+    for values in successors.values():
+        values.sort()
+
+    remaining_depth = {net: 0 for net in exact_nodes}
+    for node in sorted(
+        exact_nodes.values(),
+        key=lambda item: (item["dependency_level"], item["net"]),
+        reverse=True,
+    ):
+        net = node["net"]
+        for predecessor in node.get("predecessor_cut_nets", []):
+            remaining_depth[predecessor] = max(
+                remaining_depth[predecessor],
+                remaining_depth[net] + 1,
+            )
+
+    def priority(net: str) -> Tuple[float, float, int, str]:
+        route = route_by_net[net]
+        ratios = (
+            [
+                float(
+                    planned_hops[
+                        _hop_key(
+                            route["id"],
+                            edge["link"],
+                            edge["from"],
+                            edge["to"],
+                        )
+                    ]["continuous_ratio"]
+                )
+                for _depth, edge in _route_hops(route)
+            ]
+            if planned_hops is not None
+            else []
+        )
+        return (
+            -float(remaining_depth[net]),
+            min(ratios, default=0.0),
+            -max((depth for depth, _edge in _route_hops(route)), default=0),
+            net,
+        )
+
+    ready: List[Tuple[Tuple[float, float, int, str], str]] = []
+    for net in sorted(net for net, count in indegree.items() if count == 0):
+        heapq.heappush(ready, (priority(net), net))
+    ordered = []
+    while ready:
+        _key, net = heapq.heappop(ready)
+        ordered.append(route_by_net[net])
+        for successor in successors[net]:
+            indegree[successor] -= 1
+            if indegree[successor] == 0:
+                heapq.heappush(ready, (priority(successor), successor))
+    if len(ordered) != len(routes):
+        raise ValidationError("cross-layer timing dependency graph is cyclic")
+    return ordered
 
 
 def _round_barrier_realization(
@@ -604,20 +699,9 @@ def build_tdm_schedule(
         exact_nodes, exact_segments, exact_captures = (
             _exact_contract_indexes(exact_contract)
         )
-        route_by_net = {route.get("net"): route for route in raw_routes}
-        if len(route_by_net) != len(raw_routes) or set(route_by_net) != set(
-            exact_nodes
-        ):
-            raise ValidationError(
-                "cross-layer timing cut coverage does not match routes"
-            )
-        ordered_routes = [
-            route_by_net[node["net"]]
-            for node in sorted(
-                exact_nodes.values(),
-                key=lambda item: (item["dependency_level"], item["net"]),
-            )
-        ]
+        ordered_routes = _exact_dependency_order(
+            exact_nodes, raw_routes, planned_hops
+        )
         # Transport rounds are an implementation detail of registered-boundary
         # transport.  Sampled virtual wires use their path-local readiness DAG.
         active_rounds = [0]
@@ -1400,14 +1484,9 @@ def validate_tdm_schedule(
         exact_nodes, exact_segments, exact_captures = (
             _exact_contract_indexes(exact_contract)
         )
-        route_by_net = {route["net"]: route for route in routes["routes"]}
-        ordered_routes = [
-            route_by_net[node["net"]]
-            for node in sorted(
-                exact_nodes.values(),
-                key=lambda item: (item["dependency_level"], item["net"]),
-            )
-        ]
+        ordered_routes = _exact_dependency_order(
+            exact_nodes, routes["routes"], planned_hops
+        )
         active_rounds = [0]
     completion_by_round: Dict[int, int] = {}
     prior_round_completion = -1

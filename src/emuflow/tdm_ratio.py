@@ -397,6 +397,8 @@ def _prepare_model(
         "hops": hops,
         "timing_paths": timing_paths,
         "compatibility": compatibility,
+        "exact_dependency_schedule": routes.get("semantic_contract")
+        is not None,
     }
 
 
@@ -1313,9 +1315,25 @@ def build_tdm_ratio_plan(
     hop_records = []
     for expected, optimized in zip(model["hops"], native["hops"]):
         hop_records.append({**expected, **optimized})
-    barrier_legalization = _round_barrier_legalize(
-        hop_records, model, platform, max_ratio, ratio_quantum
-    )
+    if model["exact_dependency_schedule"]:
+        _records, initial_worst = _discrete_timing_records(
+            model, hop_records
+        )
+        barrier_legalization = {
+            "active_rounds": sorted(
+                {hop["transport_round"] for hop in hop_records}
+            ),
+            "source_ready_semantics": "dependency-dag-only",
+            "source_ready_slot": None,
+            "promoted_hops": 0,
+            "promotion_steps": 0,
+            "pre_legalization_worst_normalized_slack": initial_worst,
+            "round_aware_lane_rebalanced_hops": 0,
+        }
+    else:
+        barrier_legalization = _round_barrier_legalize(
+            hop_records, model, platform, max_ratio, ratio_quantum
+        )
     hop_records.sort(key=lambda hop: hop["index"])
     timing_records, discrete_worst = _discrete_timing_records(
         model, hop_records
@@ -1594,7 +1612,12 @@ def validate_tdm_ratio_plan(
         raise ValidationError(
             "ratio plan round-barrier active rounds are inconsistent"
         )
-    if barrier.get("source_ready_semantics") != "capacity_split_estimate":
+    expected_ready_semantics = (
+        "dependency-dag-only"
+        if model["exact_dependency_schedule"]
+        else "capacity_split_estimate"
+    )
+    if barrier.get("source_ready_semantics") != expected_ready_semantics:
         raise ValidationError(
             "ratio plan round-barrier source-ready semantics are invalid"
         )
@@ -1636,7 +1659,18 @@ def validate_tdm_ratio_plan(
         raise ValidationError(
             "ratio plan pre-legalization slack is invalid"
         )
-    if len(active_rounds) == 2:
+    if model["exact_dependency_schedule"]:
+        if (
+            barrier.get("source_ready_slot") is not None
+            or promoted_hops != 0
+            or promotion_steps != 0
+            or rebalanced_hops != 0
+        ):
+            raise ValidationError(
+                "Static Exact ratio plan must treat transport rounds as "
+                "diagnostic labels"
+            )
+    elif len(active_rounds) == 2:
         source_ready = barrier.get("source_ready_slot")
         frame_slots = model["constraints"]["frame_slots"]
         if (

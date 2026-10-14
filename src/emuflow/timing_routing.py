@@ -200,6 +200,8 @@ def _validate_round_capacity_contract(
     routes: Mapping[str, Any],
     platform: Platform,
     constraints: Mapping[str, Any],
+    *,
+    exact_dependency_schedule: bool = False,
 ) -> Dict[str, Any]:
     active_rounds = sorted(
         {
@@ -208,6 +210,15 @@ def _validate_round_capacity_contract(
         }
     )
     contract = routes.get("round_capacity_contract")
+    if exact_dependency_schedule:
+        if contract is not None:
+            raise ValidationError(
+                "Static Exact routes must not carry a global transport-round "
+                "capacity contract"
+            )
+        return {
+            "transport_round_policy": "dependency-diagnostic-only",
+        }
     if active_rounds != [0, 1]:
         if contract is not None:
             raise ValidationError(
@@ -734,7 +745,15 @@ def _prepare_native_model(
     active_rounds = sorted(
         {int(demand.get("transport_round", 0)) for demand in demands}
     )
-    layered_rounds = active_rounds == [0, 1]
+    # A global round barrier is only the conservative fallback used by the
+    # legacy registered-boundary transport, which has no explicit dependency
+    # graph. Static Exact carries the real per-cut dependency DAG; splitting
+    # its physical routing capacity into two synthetic windows would reject
+    # legal schedules and bias routing based on a diagnostic label.
+    layered_rounds = (
+        assignment.get("semantic_contract") is None
+        and active_rounds == [0, 1]
+    )
     round_boundary = (
         _select_round_boundary(
             demands, adjacency, capacities, platform, constraints
@@ -2268,7 +2287,11 @@ def validate_native_system_routes(
         routes.get("constraints"), platform
     )
     round_capacity_validation = _validate_round_capacity_contract(
-        routes, platform, constraints
+        routes,
+        platform,
+        constraints,
+        exact_dependency_schedule=assignment.get("semantic_contract")
+        is not None,
     )
     route_delay_by_net = {}
     route_by_net = {}
@@ -2329,9 +2352,16 @@ def validate_native_system_routes(
     # the native router.  This is deliberately separate from native output:
     # a corrupt or incorrectly implemented optimizer cannot self-certify.
     _, arcs, capacities = build_directed_graph(platform, constraints)
-    round_aware = sorted(
-        {int(route.get("transport_round", 0)) for route in routes["routes"]}
-    ) == [0, 1]
+    round_aware = (
+        assignment.get("semantic_contract") is None
+        and sorted(
+            {
+                int(route.get("transport_round", 0))
+                for route in routes["routes"]
+            }
+        )
+        == [0, 1]
+    )
     capacity_usage: Dict[Any, int] = defaultdict(int)
     for route in routes["routes"]:
         width = int(route["width_bits"])

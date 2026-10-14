@@ -57,7 +57,11 @@ from emuflow.tdm import (
 from emuflow.tdm_ratio import build_tdm_ratio_plan
 from emuflow.tdm_slot import refine_tdm_schedule_native
 from emuflow.timing_routing import route_system_native
-from tests.native_build import tdm_ratio_optimizer, tdm_slot_optimizer
+from tests.native_build import (
+    tdm_ratio_optimizer,
+    tdm_slot_optimizer,
+    tlr_router,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -962,6 +966,59 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         # view. Persisted Phase 4 artifacts retain only the schema/digest
         # binding and are hydrated by run_phase5 from assignment.json.
         return {**routes, "semantic_contract": assignment["semantic_contract"]}
+
+    def test_exact_routing_uses_dependency_dag_not_global_round_windows(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        constraints = normalize_route_constraints(
+            None, self.platform, frame_slots=16
+        )
+        routes = route_system_native(
+            assignment,
+            self.platform,
+            constraints,
+            executable=str(tlr_router()),
+        )
+        self.assertNotIn("round_capacity_contract", routes)
+        checked = validate_system_routes(assignment, self.platform, routes)
+        self.assertEqual(checked["status"], "pass")
+        hydrated = {
+            **routes,
+            "semantic_contract": assignment["semantic_contract"],
+        }
+        hydrated["timing"] = {
+            "schema": "emuflow.sta-paths/v1",
+            "normalization": {
+                "positive_slack_scale_ns": 100.0,
+                "negative_slack_scale_ns": 100.0,
+                "max_clock_period_ns": 100.0,
+            },
+            "compression": {"original_paths": 1, "compressed_paths": 1},
+            "paths": [
+                {
+                    "path": "cross-layer-path",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 100.0,
+                    "fixed_delay_ns": 1.0,
+                    "cut_nets": ["n0", "d"],
+                    "cut_transitions": [
+                        {"net": "n0", "from": "fpga0", "to": "fpga1"},
+                        {"net": "d", "from": "fpga1", "to": "fpga0"},
+                    ],
+                }
+            ],
+        }
+        plan = build_tdm_ratio_plan(
+            hydrated,
+            self.platform,
+            executable=str(tdm_ratio_optimizer()),
+        )
+        self.assertEqual(
+            plan["round_barrier_legalization"]["source_ready_semantics"],
+            "dependency-dag-only",
+        )
+        self.assertIsNone(
+            plan["round_barrier_legalization"]["source_ready_slot"]
+        )
 
     @staticmethod
     def _persisted_routes(routes):

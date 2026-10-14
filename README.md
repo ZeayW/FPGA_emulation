@@ -1702,13 +1702,15 @@ otherwise partitionable design into one combinational atomic component.
 | Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
 | Hardware BSP | In-tree open PCS/runtime-sync RTL plus source-backed Arm MPS4 topology/pin inventory | Phase 6C derives channel/common quad topology and binds the open PCS to source-visible GTY recipes; the optional Vivado gate jointly routes DUT, TDM, PCS, sync, and GT, then feeds routed FPGA logic/boundary timing back into Phase 7C. Real refclk/reset binding, measured board-link/elastic-buffer latency, bitstream, and hardware qualification remain open gates |
 
-For Static Exact designs with both transport rounds, Phase 4 divides each
-physical capacity domain into the two latency-adjusted slot windows selected by
-one global round boundary. The native router therefore cannot return a route
-that fits only in aggregate frame bandwidth but is impossible for Phase 5 to
-schedule. `routes.json` carries a compact `route-round-capacity/v1` contract;
-the standalone Phase 4 validator reconstructs its per-domain/round loads and
-capacities from the route trees, BoardDB, and frame policy.
+Static Exact uses its explicit per-cut dependency DAG as the scheduling
+contract. `transport_round` remains diagnostic metadata and does not divide
+the physical graph or impose a global launch barrier: Phase 4 routes against
+the real aggregate link capacity, while Phase 5 enforces each cut's computed
+release time, hop precedence, per-slot/lane capacity, and frame deadline. This
+avoids delaying a ready dependent cut behind thousands of unrelated transfers.
+The conservative two-window `route-round-capacity/v1` contract is retained
+only for legacy registered-boundary transport, where no exact dependency DAG
+exists.
 
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
 gate. Its default public VTR mapping preserves multiplier and synchronous
@@ -5342,7 +5344,8 @@ The academic Phase 5 provider is likewise rooted in editable C++17 source at
 `src/native/tdm_ratio_optimizer.cpp`. The Python layer constructs the
 versioned timing model, realizes the optimized ratio/lane groups as an exact
 slot schedule, and independently checks capacity, ratio legality, timing,
-collisions, precedence, round barriers, and transported values.
+collisions, precedence, dependency release/deadline legality, and transported
+values.
 Unless an experiment supplies an explicit override, Phase 5 inherits both the
 minimum legal ratio and the ratio quantum from the normalized Phase 4 route
 constraints and seals the resolved values in `ratio_plan.json`.  The native
@@ -5351,7 +5354,8 @@ domain.  This matters for imported architectures such as EDA 2023, whose
 inter-FPGA Wire ratios start at four rather than the generic ratio-one domain;
 silently widening that domain would make an otherwise legal schedule solve a
 different platform problem.
-Its multi-round legalizer evaluates the exact capacity boundary through
+For legacy registered-boundary inputs only, its multi-round legalizer evaluates
+the conservative capacity boundary through
 monotone quotient intervals and scores ratio promotions from incremental
 domain and affected-path deltas, avoiding frame-slot-by-bucket and
 candidate-by-full-path rescans on large routed designs.

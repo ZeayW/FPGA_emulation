@@ -64,7 +64,11 @@ def _write_native_input(
     priority_keys = sorted(
         entries,
         key=lambda key: (
-            plan_by_key[key]["transport_round"],
+            (
+                0
+                if exact_contract is not None
+                else plan_by_key[key]["transport_round"]
+            ),
             entries[key]["slot"],
             entries[key]["id"],
         ),
@@ -285,6 +289,7 @@ def _apply_native_schedule(
         TDM_ACADEMIC_SCHEDULE_PROVIDER,
         _exact_capture_certificate,
         _exact_contract_indexes,
+        _exact_dependency_order,
         _exact_source_readiness,
         _domain_schedule_records,
         _round_barrier_realization,
@@ -329,14 +334,15 @@ def _apply_native_schedule(
         exact_nodes, exact_segments, exact_captures = (
             _exact_contract_indexes(exact_contract)
         )
-        route_by_net = {item["net"]: item for item in routes["routes"]}
-        ordered_routes = [
-            route_by_net[node["net"]]
-            for node in sorted(
-                exact_nodes.values(),
-                key=lambda item: (item["dependency_level"], item["net"]),
-            )
-        ]
+        planned_hops = {
+            _hop_key(
+                hop["demand"], hop["link"], hop["from"], hop["to"]
+            ): hop
+            for hop in ratio_plan["hops"]
+        }
+        ordered_routes = _exact_dependency_order(
+            exact_nodes, routes["routes"], planned_hops
+        )
         _active_rounds = [0]
     for route in ordered_routes:
         transport_round = route.get("transport_round", 0)
