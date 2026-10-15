@@ -5,8 +5,18 @@ source_dir=$1
 runtime_dir=$2
 native_base=$3
 expected_commit=$4
-test "$(git --git-dir="$source_dir/.git" rev-parse HEAD)" = "$expected_commit"
-test -z "$(git --git-dir="$source_dir/.git" --work-tree="$source_dir" status --porcelain)"
+# The minimal physical runtime image has no Git. The host verifies clean
+# pushed provenance before entering it; retain a fail-closed HEAD check here.
+if command -v git >/dev/null 2>&1; then
+  actual_commit=$(git --git-dir="$source_dir/.git" rev-parse HEAD)
+  test -z "$(git --git-dir="$source_dir/.git" --work-tree="$source_dir" status --porcelain)"
+else
+  IFS= read -r actual_commit < "$source_dir/.git/HEAD"
+  case "$actual_commit" in
+    'ref: '*) IFS= read -r actual_commit < "$source_dir/.git/${actual_commit#ref: }" ;;
+  esac
+fi
+test "$actual_commit" = "$expected_commit"
 case "$runtime_dir" in /research/d4/gds/ziyiwang21/*) ;; *) exit 2;; esac
 mkdir -p "$runtime_dir/bin" "$runtime_dir/tmp"
 export TMPDIR="$runtime_dir/tmp"
