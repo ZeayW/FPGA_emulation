@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import gc
+import hashlib
+import json
 import math
 from collections import Counter
 from pathlib import Path
@@ -284,6 +286,7 @@ def _run_rapidwright_routed_backend_tail(
     placement_stage: Mapping[str, Any],
     placement_artifacts: Mapping[str, Path],
     mapped_sha256: Optional[str] = None,
+    virtual_io_contract: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Route and time one already materialized packed placement."""
 
@@ -302,6 +305,7 @@ def _run_rapidwright_routed_backend_tail(
         packed_value=packed_value,
         placement_value=placement_value,
         source_sha256=source_sha256,
+        virtual_io_contract=virtual_io_contract,
     )
     route_path = output_dir / "route.json"
     route_value: Dict[str, Any] = {}
@@ -322,6 +326,7 @@ def _run_rapidwright_routed_backend_tail(
         packed_value=packed_value,
         source_sha256=source_sha256,
         route_value_sink=route_value,
+        virtual_io_contract=virtual_io_contract,
     )
     route_check = {
         key: value for key, value in route_report.items()
@@ -433,6 +438,7 @@ def _run_rapidwright_routed_backend_tail(
         int(route_input_report["expanded_lut6_2_cells"])
         + 7 * int(route_input_report["transformed_dsp48e2_cells"])
     )
+    virtual_io_cells = int(route_input_report.get("virtual_io_cells", 0))
     artifacts = {
         "mapped": _artifact(mapped_path, source_sha256["mapped_sha256"]),
         "packed": _artifact(packed_path, source_sha256["packed_sha256"]),
@@ -458,8 +464,11 @@ def _run_rapidwright_routed_backend_tail(
             "original_cells": original_cells,
             "transport_cells": transport_cells,
             "routed_cells": original_cells + transport_cells,
-            "physical_cells": original_cells + transport_cells + expansion_cells,
-            "infrastructure_cells": 0,
+            "physical_cells": (
+                original_cells + transport_cells + expansion_cells
+                + virtual_io_cells
+            ),
+            "infrastructure_cells": virtual_io_cells,
             "optimization_cells": expansion_cells,
         },
         "closure": {
@@ -520,6 +529,38 @@ def _run_rapidwright_routed_backend_tail(
             "paths": str(path_database_path),
         },
         "boundary_timing": {"status": "pass", "import": boundary_import},
+        **(
+            {
+                "virtual_io_implementation": {
+                    "status": "pass",
+                    "provider": (
+                        "rapidwright-fixed-lvds-iob-routed-boundary-v1"
+                    ),
+                    "qualification": (
+                        "P-side LVDS IOB materialized and routed; N-side "
+                        "dedicated differential mate verified by the fixed "
+                        "device-pin contract"
+                    ),
+                    "contract_sha256": hashlib.sha256(
+                        json.dumps(
+                            virtual_io_contract,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    "differential_pairs": virtual_io_cells,
+                    "physical_ports": 2 * virtual_io_cells,
+                    "route_validation": {
+                        "virtual_io_cells": route_check["virtual_io_cells"],
+                        "maximum_route_delay_ps": route_check[
+                            "maximum_route_delay_ps"
+                        ],
+                    },
+                }
+            }
+            if virtual_io_contract is not None
+            else {}
+        ),
         **({"logic_segment_timing": logic_stage} if logic_stage else {}),
         **({"local_path_timing": local_stage} if local_stage else {}),
         "result": result,
@@ -550,6 +591,7 @@ def run_rapidwright_partition_backend(
     opensta: Optional[str] = None,
     logic_identity_path: Optional[Path] = None,
     local_identity_path: Optional[Path] = None,
+    virtual_io_contract: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Pack, place, route, time, and independently check one partition."""
 
@@ -671,6 +713,7 @@ def run_rapidwright_partition_backend(
         },
         placement_artifacts={"placement_region": region_path},
         mapped_sha256=mapped_sha256,
+        virtual_io_contract=virtual_io_contract,
     )
 
 
@@ -698,6 +741,7 @@ def run_rapidwright_openparf_native_candidate_backend(
     opensta: Optional[str] = None,
     logic_identity_path: Optional[Path] = None,
     local_identity_path: Optional[Path] = None,
+    virtual_io_contract: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run the fail-closed native OpenPARF placement candidate backend."""
 
@@ -866,4 +910,5 @@ def run_rapidwright_openparf_native_candidate_backend(
             "openparf_atomic_certificate": certificate_path,
         },
         mapped_sha256=mapped_sha256,
+        virtual_io_contract=virtual_io_contract,
     )

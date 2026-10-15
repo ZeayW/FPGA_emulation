@@ -38,6 +38,7 @@ def materialize_research_platform(
         raise ValidationError("effective differential data pairs per HP bank must be a positive integer")
     value = read_json(research_platform_path(fpga_count))
     if wires_per_bank != DEFAULT_WIRES_PER_BANK:
+        value["platform"].pop("virtual_board_wiring", None)
         value["platform"]["name"] += f"_wires{wires_per_bank}"
         value["platform"]["description"] = value["platform"]["description"].replace(
             f"{DEFAULT_WIRES_PER_BANK} effective differential data pairs per bank",

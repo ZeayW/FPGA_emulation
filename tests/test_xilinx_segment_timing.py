@@ -100,14 +100,26 @@ def test_boundary_timing_covers_rx_and_tx_with_routed_delays():
                 "logic_coefficients_ps": coefficients,
             },
             "endpoints": [
+                {"id": "n2:rx_lut/I0", "sink": {"instance": "rx_lut", "pin": "I0"},
+                 "route_delay_ns": 0.11},
                 {"id": "n3:shadow/D", "sink": {"instance": "shadow", "pin": "D"},
                  "route_delay_ns": 0.2},
                 {"id": "n4:tx_lut/I0", "sink": {"instance": "tx_lut", "pin": "I0"},
                  "route_delay_ns": 0.3},
             ],
+            "virtual_io": [
+                {"id": "rx-io", "direction": "rx", "logical_port": "rx",
+                 "logical_bit": 0, "p_site": "IOB_X0Y0", "n_site": "IOB_X0Y1",
+                 "route_delay_ns": 0.11,
+                 "measurement": "fixed-iob-routed-boundary"},
+                {"id": "tx-io", "direction": "tx", "logical_port": "tx",
+                 "logical_bit": 0, "p_site": "IOB_X0Y2", "n_site": "IOB_X0Y3",
+                 "route_delay_ns": 0.4,
+                 "measurement": "fixed-iob-routed-boundary"},
+            ],
             "summary": {
-                "logical_endpoints": 2, "physical_route_sinks": 2,
-                "exact_site_bindings": 2, "shared_site_bindings": 0,
+                "logical_endpoints": 3, "physical_route_sinks": 3,
+                "exact_site_bindings": 3, "shared_site_bindings": 0,
                 "intra_site_endpoints": 0, "maximum_route_delay_ns": 0.3,
             },
         }
@@ -148,8 +160,8 @@ def test_boundary_timing_covers_rx_and_tx_with_routed_delays():
     assert streamed_result["endpoints"] == 2
     assert streamed_database == database
     delays = {item["id"]: item["delay_ns"] for item in database["endpoints"]}
-    assert abs(delays["rx0"] - 0.27) < 1e-12
-    assert abs(delays["tx0"] - 0.395) < 1e-12
+    assert abs(delays["rx0"] - 0.38) < 1e-12
+    assert abs(delays["tx0"] - 0.795) < 1e-12
 
 
 def test_local_path_timing_is_source_bound_and_uses_routed_graph():

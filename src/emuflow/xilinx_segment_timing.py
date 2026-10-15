@@ -30,7 +30,7 @@ from .xilinx_timing import (
 
 
 XILINX_SEGMENT_QUALIFICATION = (
-    "rapidwright-lightweight-routed-setup-no-hold-abstract-io-boundary"
+    "rapidwright-lightweight-routed-setup-no-hold-fixed-lvds-iob-boundary"
 )
 _SEQUENTIAL = {
     "FDCE", "FDPE", "FDRE", "FDSE", "RAMB18E2", "RAMB36E2", "URAM288"
@@ -69,6 +69,26 @@ class _TimingGraph:
         self.edges: Dict[str, list[Tuple[str, float]]] = defaultdict(list)
         self.reverse: Dict[str, list[Tuple[str, float]]] = defaultdict(list)
         self.source_offsets: Dict[str, float] = {}
+        self.virtual_io: Dict[Tuple[str, int, str], float] = {}
+        for item in timing.get("virtual_io", []):
+            key = (
+                item.get("logical_port"), item.get("logical_bit"),
+                item.get("direction"),
+            )
+            delay = item.get("route_delay_ns")
+            if (
+                not isinstance(key[0], str)
+                or isinstance(key[1], bool)
+                or not isinstance(key[1], int)
+                or key[2] not in {"tx", "rx"}
+                or isinstance(delay, bool)
+                or not isinstance(delay, (int, float))
+                or not math.isfinite(float(delay))
+                or float(delay) < 0.0
+                or key in self.virtual_io
+            ):
+                raise ValidationError("RapidWright virtual I/O timing is invalid")
+            self.virtual_io[key] = float(delay)
         coefficients = timing["qualification"]["logic_coefficients_ps"]
         lut_delay = max(float(value) for name, value in coefficients.items()
                         if name.startswith("lut_a")) / 1000.0
@@ -253,6 +273,9 @@ def build_xilinx_boundary_timing(
     )
     measurements = {}
     graph_nodes = set(graph.edges) | set(graph.reverse)
+    # A few callers construct the graph directly for algorithmic tests.  Treat
+    # those legacy graphs as having no physical I/O observations.
+    virtual_io = getattr(graph, "virtual_io", {})
     tx_solution = None
     for endpoint in identity["endpoints"]:
         merged = endpoint["merged_ir"]
@@ -280,8 +303,19 @@ def build_xilinx_boundary_timing(
                     f"RapidWright timing graph has no path to {top_node!r}"
                 )
             delay, start = arrival[top_node], origin[top_node]
+            io_key = (port, bit, "tx")
+            if virtual_io and io_key not in virtual_io:
+                raise ValidationError(
+                    f"RapidWright TX boundary {endpoint['id']!r} lacks fixed I/O timing"
+                )
+            delay += virtual_io.get(io_key, 0.0)
             end = top_node
         else:
+            io_key = (port, bit, "rx")
+            if virtual_io and io_key not in virtual_io:
+                raise ValidationError(
+                    f"RapidWright RX boundary {endpoint['id']!r} lacks fixed I/O timing"
+                )
             registers = merged["boundary_register_instances"]
             if len(registers) != 1:
                 raise ValidationError(

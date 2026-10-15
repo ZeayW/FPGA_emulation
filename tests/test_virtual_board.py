@@ -15,6 +15,7 @@ from emuflow.virtual_board import (
     INVENTORY_PATH,
     build_virtual_binding,
     build_virtual_board,
+    build_virtual_io_physical_contract,
     validate_virtual_binding,
     validate_virtual_board,
     virtual_binding_to_xdc,
@@ -339,3 +340,34 @@ def test_lvds_adapter_deduplicates_tdm_ports_and_preserves_polarity(platform):
         for polarity, primitive_pin in [("p", "O" if primitive == "OBUFDS" else "I"),
                                          ("n", "OB" if primitive == "OBUFDS" else "IB")]:
             assert re.search(rf"\.{primitive_pin}\s*\(\s*{re.escape(end[polarity]['port'])}\s*\)", sv)
+
+
+def test_phase7_physical_contract_consumes_exact_xdc_and_adapter(platform, tmp_path):
+    board = build_virtual_board(platform)
+    schedule, artifacts = schedule_and_ports(
+        platform,
+        [("fpga0", "fpga1", 7, 2), ("fpga0", "fpga1", 7, 3)],
+    )
+    binding = build_virtual_binding(platform, board, schedule, artifacts)
+    xdc = tmp_path / "virtual_data_pins.xdc"
+    adapter = tmp_path / "virtual_differential_io.sv"
+    xdc.write_text(virtual_binding_to_xdc(binding, "fpga0"), encoding="utf-8")
+    adapter.write_text(
+        virtual_board.virtual_binding_to_systemverilog(binding, "fpga0"),
+        encoding="utf-8",
+    )
+    contract = build_virtual_io_physical_contract(
+        binding, "fpga0", xdc_path=xdc, adapter_path=adapter
+    )
+    assert contract["metrics"] == {
+        "differential_pairs": 1,
+        "physical_ports": 2,
+        "scheduled_hops": 2,
+    }
+    assert contract["entries"][0]["schedule_entries"] == ["entry0", "entry1"]
+    with xdc.open("a", encoding="utf-8") as stream:
+        stream.write("# stale\n")
+    with pytest.raises(ValidationError, match="XDC differs"):
+        build_virtual_io_physical_contract(
+            binding, "fpga0", xdc_path=xdc, adapter_path=adapter
+        )

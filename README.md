@@ -383,7 +383,10 @@ platforms instead of assigning two independent 360-wire pools.
 ### Fixed virtual board wiring
 
 Both bundled XCVU19P presets declare
-`virtual_board_model: xcvu19p-hp-lvds-cable-v1`. The model pairs **real device
+`virtual_board_model: xcvu19p-hp-lvds-cable-v1` and an explicit
+`virtual_board_wiring` CSV. That checked-in table is the authoritative board
+connection source consumed by Phase 6; the deterministic model and device-pin
+inventory independently reject a stale or altered table. The table pairs **real device
 P/N package pins** through **hypothetical fixed cables**, connecting P to P
 and N to N. Each endpoint records its HP bank, vendor differential-pair ID,
 both package pins, pin functions, and IOB sites. RapidWright supplies the
@@ -428,9 +431,9 @@ During Phase 6, a declared virtual board automatically produces:
   logical transport bit, and both endpoints' P/N pin/port identities;
 - `split/<fpga>/virtual_data_pins.xdc`: `PACKAGE_PIN` and `IOSTANDARD LVDS`
   constraints for both polarities of used channels, with TDM reuse deduplicated;
-- `split/<fpga>/virtual_differential_io.sv`: a standalone data adapter using
+- `split/<fpga>/virtual_differential_io.sv`: the differential adapter contract using
   `OBUFDS` at transmitters and `IBUFDS` at receivers. Its logical buses connect
-  to transport RTL; its P/N ports must be exposed at the physical top level.
+  to transport RTL and its P/N ports define the physical top-level interface.
 
 The Phase 6 validator checks these files against the device inventory, schedule,
 transport ports and bank direction allocation. It rejects missing or altered
@@ -443,9 +446,14 @@ termination (`IBUFDS.DIFF_TERM=TRUE`), enabled only at the receiving end
 ([AMD UG571, LVDS](https://docs.amd.com/api/khub/documents/kFbaUC5HGcXyGNauhgU6Gw/content)). These are design assumptions, not electrical
 signoff. Clock/reset/control pins, power/ground wiring, configuration-pin reuse,
 and a cable product's connector pinout need board-specific constraints. The
-current OOC RapidWright backend does **not yet integrate the data adapter or
-consume its XDC files**. A successful binding therefore does not establish
-I/O placement/routing or a deployable board. Link timing keeps the configured
+Phase 7 fails closed if the binding, adapter, or XDC differ. The RapidWright
+backend consumes that sealed contract, lowers each used LVDS pair to a fixed
+IOB at the P package pin with the inventory-verified N mate, and includes the
+IOB boundary in routing and boundary timing. Its physical summary reports exact
+lane/port/package-pin coverage. This is a routed research implementation, not
+board electrical signoff: RapidWright's lightweight timing model does not
+characterize the differential buffer's intrinsic delay, and the clock/reset/
+control services above remain board-specific. Link timing keeps the configured
 per-hop `30 + 0.5R` ns model; switching to differential does not recalibrate it.
 
 ## Build

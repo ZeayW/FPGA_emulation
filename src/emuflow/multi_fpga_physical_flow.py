@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import shutil
@@ -71,6 +72,11 @@ from .vtr_architecture import (
     run_vtr_architecture_import,
 )
 from .vtr_eblif import emit_vtr_eblif
+from .virtual_board import (
+    build_virtual_io_physical_contract,
+    validate_virtual_binding,
+    validate_virtual_board,
+)
 from .vivado_backend import run_vivado_partition_backend
 from .vivado_netlist import emit_vivado_mapped_verilog
 from .yosys import import_yosys_json
@@ -770,6 +776,10 @@ def run_multi_fpga_physical_flow(
     schedule = read_json(schedule_path)
     position_hints = None
     electrical_binding = None
+    virtual_board = None
+    virtual_binding = None
+    virtual_artifacts = manifest.get("virtual_board_binding")
+    expected_fpgas = [fpga.id for fpga in platform.fpgas]
     if "position_hints" in manifest:
         position_hints = read_json(split_root / manifest["position_hints"])
     if "electrical_binding" in manifest:
@@ -778,6 +788,56 @@ def run_multi_fpga_physical_flow(
         raise ValidationError(
             "physical Chimew anchors require position hints with electrical binding"
         )
+    if virtual_artifacts is not None:
+        if not isinstance(virtual_artifacts, Mapping):
+            raise ValidationError("physical virtual-board artifact manifest is invalid")
+        wiring_ref = virtual_artifacts.get("wiring")
+        binding_ref = virtual_artifacts.get("binding")
+        xdc_refs = virtual_artifacts.get("xdc")
+        adapter_refs = virtual_artifacts.get("differential_io")
+        if (
+            not isinstance(wiring_ref, str)
+            or not isinstance(binding_ref, str)
+            or not isinstance(xdc_refs, Mapping)
+            or not isinstance(adapter_refs, Mapping)
+            or set(xdc_refs) != set(expected_fpgas)
+            or set(adapter_refs) != set(expected_fpgas)
+        ):
+            raise ValidationError("physical virtual-board artifact coverage is invalid")
+        virtual_board = read_json(split_root / wiring_ref)
+        virtual_binding = read_json(split_root / binding_ref)
+        validate_virtual_board(platform, virtual_board)
+        virtual_phase6_artifacts = {
+            "lane_map": read_json(split_root / manifest["lane_map"]),
+            "transports": {
+                item["fpga"]: read_json(split_root / item["transport"])
+                for item in manifest["fpgas"]
+            },
+        }
+        validate_virtual_binding(
+            platform,
+            virtual_board,
+            schedule,
+            virtual_phase6_artifacts,
+            virtual_binding,
+        )
+        canonical = lambda value: hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        if (
+            virtual_binding.get("board_sha256") != canonical(virtual_board)
+            or virtual_binding.get("schedule_sha256") != canonical(schedule)
+        ):
+            raise ValidationError(
+                "physical virtual-board binding source seals disagree"
+            )
+        if backend != "rapidwright":
+            raise ValidationError(
+                f"the {backend} physical backend does not yet consume the fixed "
+                "differential-I/O contract"
+            )
     clock_periods = manifest.get("clock_periods")
     if not isinstance(clock_periods, dict) or not clock_periods:
         raise ValidationError(
@@ -989,6 +1049,22 @@ def run_multi_fpga_physical_flow(
         source_root = split_root / fpga_id
         fpga_root = output_dir / fpga_id
         fpga_root.mkdir(parents=True, exist_ok=True)
+        virtual_io_contract = None
+        if virtual_binding is not None:
+            assert isinstance(virtual_artifacts, Mapping)
+            virtual_io_contract = build_virtual_io_physical_contract(
+                virtual_binding,
+                fpga_id,
+                xdc_path=split_root / virtual_artifacts["xdc"][fpga_id],
+                adapter_path=(
+                    split_root / virtual_artifacts["differential_io"][fpga_id]
+                ),
+            )
+            write_json(
+                fpga_root / "virtual-io-physical-contract.json",
+                virtual_io_contract,
+                compact=True,
+            )
         netlist_path = split_root / item["netlist"]
         transport_path = split_root / item["transport"]
         transport = read_json(transport_path)
@@ -1725,6 +1801,7 @@ def run_multi_fpga_physical_flow(
                 opensta=rapidwright_opensta,
                 logic_identity_path=logic_identity_path,
                 local_identity_path=local_identity_path,
+                virtual_io_contract=virtual_io_contract,
             )
             if logic_query_report is not None:
                 rapidwright_report["logic_segment_timing"][
@@ -1736,6 +1813,10 @@ def run_multi_fpga_physical_flow(
                 ] = local_query_report
             physical_result = rapidwright_report["result"]
             stages["rapidwright_implementation"] = rapidwright_report
+            if virtual_io_contract is not None:
+                stages["virtual_io_implementation"] = rapidwright_report[
+                    "virtual_io_implementation"
+                ]
         else:
             boundary_identity_path = Path(
                 lowering_report["boundary_identity"]["output"]
@@ -1875,6 +1956,23 @@ def run_multi_fpga_physical_flow(
             for item in records
         },
     }
+    if virtual_binding is not None:
+        physical_summary["virtual_io_implementation"] = {
+            "status": "pass",
+            "provider": "rapidwright-fixed-lvds-iob-routed-boundary-v1",
+            "fpgas": {
+                item["fpga"]: item["stages"]["virtual_io_implementation"]
+                for item in records
+                if item.get("active") is not False
+            },
+            "differential_pairs": sum(
+                item["stages"]["virtual_io_implementation"][
+                    "differential_pairs"
+                ]
+                for item in records
+                if item.get("active") is not False
+            ),
+        }
     transports_by_fpga = {
         item["fpga"]: read_json(split_root / item["transport"])
         for item in manifest["fpgas"]

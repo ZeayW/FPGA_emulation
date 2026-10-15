@@ -4,7 +4,8 @@
     "name": "rapidwright_xcvu19p_2fpga_p2p",
     "kind": "virtual",
     "description": "2-XCVU19P research model: RapidWright device resources, point-to-point link, 6 cables with 3 paired HP banks per cable, 20 effective differential data pairs per bank, and single-hop delay 30 + 0.5*R ns",
-    "virtual_board_model": "xcvu19p-hp-lvds-cable-v1"
+    "virtual_board_model": "xcvu19p-hp-lvds-cable-v1",
+    "virtual_board_wiring": "rapidwright_xcvu19p_2fpga_p2p.wires.csv"
   },
   "fpgas": [
     {

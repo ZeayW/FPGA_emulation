@@ -86,6 +86,9 @@ def _build_payload(
                     endpoints[bit].append(
                         (instance, _logical_pin(port, index, len(bits)), role)
                     )
+    virtual_io_by_net = {
+        item["mapped_net"]: item for item in route.get("virtual_io", [])
+    }
 
     records = [] if record_sink is None else None
     logical_endpoints = 0
@@ -122,14 +125,46 @@ def _build_payload(
         logical = endpoints.get(bit, [])
         drivers = [value for value in logical if value[2] == "driver"]
         sinks = [value for value in logical if value[2] == "sink"]
-        if len(drivers) != 1 or not sinks:
-            raise ValidationError(f"routed bit {bit} lacks one mapped driver and sinks")
-        driver, driver_pin, _ = drivers[0]
-        driver_site = sites[driver]
         route_net = net
         route_sources = [pin for pin in route_net["pins"] if pin["is_output"]]
-        if len(route_sources) != 1 or route_sources[0]["site"] != driver_site:
-            raise ValidationError(f"routed bit {bit} driver site disagrees")
+        virtual_io = virtual_io_by_net.get(net.get("net"))
+        if virtual_io is None:
+            if len(drivers) != 1 or not sinks:
+                raise ValidationError(
+                    f"routed bit {bit} lacks one mapped driver and sinks"
+                )
+            driver, driver_pin, _ = drivers[0]
+            driver_site = sites[driver]
+            if len(route_sources) != 1 or route_sources[0]["site"] != driver_site:
+                raise ValidationError(f"routed bit {bit} driver site disagrees")
+        elif virtual_io["direction"] == "tx":
+            if len(drivers) != 1 or sinks:
+                raise ValidationError(f"TX virtual I/O bit {bit} endpoint set is invalid")
+            driver, driver_pin, _ = drivers[0]
+            driver_site = sites[driver]
+            if (
+                len(route_sources) != 1
+                or route_sources[0]["site"] != driver_site
+                or not any(
+                    not pin["is_output"] and pin["site"] == virtual_io["p_site"]
+                    for pin in route_net["pins"]
+                )
+            ):
+                raise ValidationError(f"TX virtual I/O bit {bit} route is invalid")
+            # There is no mapped logical sink beyond the fixed output IOB.
+            # Its route delay is carried in the explicit virtual-I/O timing
+            # record and added to the TX boundary measurement downstream.
+            continue
+        elif virtual_io["direction"] == "rx":
+            if drivers or not sinks:
+                raise ValidationError(f"RX virtual I/O bit {bit} endpoint set is invalid")
+            driver = f"virtual_io:{virtual_io['id']}"
+            driver_pin = "O"
+            driver_site = virtual_io["p_site"]
+            if len(route_sources) != 1 or route_sources[0]["site"] != driver_site:
+                raise ValidationError(f"RX virtual I/O bit {bit} route is invalid")
+        else:
+            raise ValidationError(f"virtual I/O bit {bit} direction is invalid")
         delay_by_site: Dict[str, list[float]] = defaultdict(list)
         for pin in route_net["pins"]:
             if not pin["is_output"]:
@@ -196,6 +231,19 @@ def _build_payload(
             "intra_site_endpoints": intra_site_endpoints,
             "maximum_route_delay_ns": maximum,
         },
+        "virtual_io": [
+            {
+                "id": item["id"],
+                "direction": item["direction"],
+                "logical_port": item["logical_port"],
+                "logical_bit": item["logical_bit"],
+                "p_site": item["p_site"],
+                "n_site": item["n_site"],
+                "route_delay_ns": float(item["route_delay_ps"]) / 1000.0,
+                "measurement": "fixed-iob-routed-boundary",
+            }
+            for item in route.get("virtual_io", [])
+        ],
     }
     if records is not None:
         result["endpoints"] = records
@@ -490,6 +538,47 @@ def validate_xilinx_routed_timing(
             raise ValidationError(
                 f"XilinxRoutedTimingDB logic coefficient {name!r} is invalid"
             )
+    seen_virtual_io = set()
+    seen_virtual_ports = set()
+    virtual_io = value.get("virtual_io", [])
+    if not isinstance(virtual_io, list):
+        raise ValidationError("XilinxRoutedTimingDB virtual I/O collection is invalid")
+    for index, item in enumerate(virtual_io):
+        identity = item.get("id") if isinstance(item, dict) else None
+        direction = item.get("direction") if isinstance(item, dict) else None
+        port = item.get("logical_port") if isinstance(item, dict) else None
+        bit = item.get("logical_bit") if isinstance(item, dict) else None
+        p_site = item.get("p_site") if isinstance(item, dict) else None
+        n_site = item.get("n_site") if isinstance(item, dict) else None
+        delay = item.get("route_delay_ns") if isinstance(item, dict) else None
+        port_key = (port, bit, direction)
+        if (
+            not isinstance(identity, str)
+            or not identity
+            or identity in seen_virtual_io
+            or direction not in {"tx", "rx"}
+            or not isinstance(port, str)
+            or not port
+            or isinstance(bit, bool)
+            or not isinstance(bit, int)
+            or bit < 0
+            or port_key in seen_virtual_ports
+            or not isinstance(p_site, str)
+            or not p_site
+            or not isinstance(n_site, str)
+            or not n_site
+            or p_site == n_site
+            or isinstance(delay, bool)
+            or not isinstance(delay, (int, float))
+            or not math.isfinite(float(delay))
+            or float(delay) < 0.0
+            or item.get("measurement") != "fixed-iob-routed-boundary"
+        ):
+            raise ValidationError(
+                f"XilinxRoutedTimingDB virtual I/O record {index} is invalid"
+            )
+        seen_virtual_io.add(identity)
+        seen_virtual_ports.add(port_key)
     summary = value.get("summary", {})
     if summary.get("logical_endpoints") != endpoint_count or not math.isclose(
         float(summary.get("maximum_route_delay_ns", -1.0)), maximum,

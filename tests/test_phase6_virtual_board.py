@@ -36,7 +36,9 @@ def inputs():
 
 def emit(tmp_path, inputs, *, enabled=True, managed=False):
     ir,platform,assignment,schedule=copy.deepcopy(inputs)
-    if not enabled:platform['platform'].pop('virtual_board_model')
+    if not enabled:
+        platform['platform'].pop('virtual_board_model')
+        platform['platform'].pop('virtual_board_wiring')
     for name,value in [('ir',ir),('platform',platform),('assignment',assignment),('schedule',schedule)]:
         write_json(tmp_path/(name+'.json'),value)
     write_compact_emuir(tmp_path/'design.emuir.sqlite', ir)
@@ -52,7 +54,7 @@ def test_phase6_automatically_emits_binding_and_replay_matches_report(tmp_path,i
     args,out,report=emit(tmp_path,inputs,managed=managed)
     validation=validate_phase6(*args,out/'manifest.json')
     assert validation==report['validation']
-    assert report['virtual_board_binding']['physical_backend_status']=='not_consumed_by_ooc_backend'
+    assert report['virtual_board_binding']['physical_backend_status']=='phase7_consumption_required'
     board=read_json(out/'virtual_board_wiring.json')
     binding=read_json(out/'virtual_board_binding.json')
     assert board['metrics']['differential_pairs']==360

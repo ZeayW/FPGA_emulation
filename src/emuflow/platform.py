@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -286,6 +287,7 @@ class Platform:
     clocks: Tuple[BoardClockContract, ...] = ()
     resets: Tuple[BoardResetContract, ...] = ()
     virtual_board_model: Optional[str] = None
+    virtual_board_wiring: Optional[str] = None
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "Platform":
@@ -310,6 +312,20 @@ class Platform:
             virtual_board_model != "xcvu19p-hp-lvds-cable-v1" or kind != "virtual"
         ):
             raise ValidationError("platform.virtual_board_model: unsupported virtual board model")
+        virtual_board_wiring = metadata.get("virtual_board_wiring")
+        if virtual_board_wiring is not None:
+            if (
+                virtual_board_model != "xcvu19p-hp-lvds-cable-v1"
+                or not isinstance(virtual_board_wiring, str)
+                or re.fullmatch(
+                    r"rapidwright_xcvu19p_(?:2fpga_p2p|4fpga_mesh)\.wires\.csv",
+                    virtual_board_wiring,
+                )
+                is None
+            ):
+                raise ValidationError(
+                    "platform.virtual_board_wiring: unsupported fixed wiring table"
+                )
 
         raw_fpgas = value.get("fpgas")
         if not isinstance(raw_fpgas, list) or not raw_fpgas:
@@ -802,6 +818,7 @@ class Platform:
             clocks=tuple(sorted(clocks, key=lambda item: item.id)),
             resets=tuple(sorted(resets, key=lambda item: item.id)),
             virtual_board_model=virtual_board_model,
+            virtual_board_wiring=virtual_board_wiring,
         )
 
     @classmethod
@@ -826,6 +843,8 @@ class Platform:
             }
         if self.virtual_board_model is not None:
             result["platform"]["virtual_board_model"] = self.virtual_board_model
+        if self.virtual_board_wiring is not None:
+            result["platform"]["virtual_board_wiring"] = self.virtual_board_wiring
         return result
 
     def summary(self) -> Dict[str, Any]:

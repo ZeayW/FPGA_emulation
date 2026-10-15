@@ -9,6 +9,7 @@ import com.xilinx.rapidwright.design.Cell;
 import com.xilinx.rapidwright.design.Design;
 import com.xilinx.rapidwright.design.DesignTools;
 import com.xilinx.rapidwright.design.Net;
+import com.xilinx.rapidwright.design.PinType;
 import com.xilinx.rapidwright.design.SiteInst;
 import com.xilinx.rapidwright.design.SitePinInst;
 import com.xilinx.rapidwright.design.Unisim;
@@ -723,6 +724,7 @@ public final class EmuFlowRWRoute {
         String part = null;
         Map<String, String> metadata = new HashMap<>();
         Map<String, String[]> cellRows = new HashMap<>();
+        Map<String, String[]> iobRows = new HashMap<>();
         Map<String, Map<String, String>> cellParameters = new HashMap<>();
         Map<String, String> netKinds = new HashMap<>();
         Map<String, List<String[]>> pinRows = new HashMap<>();
@@ -745,6 +747,10 @@ public final class EmuFlowRWRoute {
                     if (fields.length != 4 || !cellParameters.containsKey(fields[1])
                         || cellParameters.get(fields[1]).put(fields[2], fields[3]) != null)
                         throw new IllegalArgumentException("invalid PARAM record");
+                    break;
+                case "IOB":
+                    if (fields.length != 13 || iobRows.put(fields[1], fields) != null)
+                        throw new IllegalArgumentException("invalid IOB record");
                     break;
                 case "NET":
                     if (fields.length != 3 || netKinds.put(fields[1], fields[2]) != null)
@@ -798,8 +804,46 @@ public final class EmuFlowRWRoute {
                 transformedDsp48e2Cells++;
             }
         }
+        List<String> iobNames = new ArrayList<>(iobRows.keySet());
+        iobNames.sort(String::compareTo);
+        for (String safeName : iobNames) {
+            String[] row = iobRows.get(safeName);
+            PinType pinType;
+            String logicalType;
+            if (row[3].equals("tx")) {
+                pinType = PinType.OUT;
+                logicalType = "OBUF";
+            } else if (row[3].equals("rx")) {
+                pinType = PinType.IN;
+                logicalType = "IBUF";
+            } else {
+                throw new IllegalArgumentException("invalid IOB direction " + row[3]);
+            }
+            if (design.getDevice().getSite(row[8]) == null
+                || design.getDevice().getSite(row[9]) == null) {
+                throw new IllegalArgumentException(
+                    "virtual I/O references an absent P/N site: " + row[8] + "/" + row[9]
+                );
+            }
+            Cell cell = design.createAndPlaceIOB(row[4], pinType, row[6], row[12]);
+            if (!cell.getSiteName().equals(row[8])) {
+                throw new IllegalStateException(
+                    "package pin " + row[6] + " resolved to " + cell.getSiteName()
+                    + " instead of " + row[8]
+                );
+            }
+            cells.put(
+                safeName,
+                new MaterializedCell(
+                    logicalType, cell, cell.getSiteInst(), 1,
+                    Collections.emptyMap()
+                )
+            );
+            physicalCells++;
+        }
 
         Map<String, Net> nets = new HashMap<>();
+        Map<String, String> iobNetNames = new HashMap<>();
         List<String> netNames = new ArrayList<>(netKinds.keySet());
         netNames.sort(String::compareTo);
         for (String netName : netNames) {
@@ -809,6 +853,7 @@ public final class EmuFlowRWRoute {
             for (String[] row : pins) {
                 MaterializedCell cell = cells.get(row[2]);
                 if (cell == null) throw new IllegalArgumentException("unknown cell " + row[2]);
+                if (iobRows.containsKey(row[2])) iobNetNames.put(row[2], netName);
                 try {
                     List<SitePinInst> connected = new ArrayList<>();
                     if (cell.isTransformedDSP48E2()) {
@@ -924,6 +969,7 @@ public final class EmuFlowRWRoute {
         int staticNets = 0;
         int staticSinks = 0;
         int boundaryClockNets = 0;
+        Map<String, Float> iobRouteDelays = new HashMap<>();
         for (Object item : excluded) {
             JSONObject excludedRecord = (JSONObject)item;
             if (excludedRecord.getString("reason").equals("boundary_clock")) {
@@ -986,6 +1032,13 @@ public final class EmuFlowRWRoute {
                             );
                         }
                         pinValue.put("route_delay_ps", delayPs);
+                        for (String safeName : iobNames) {
+                            if (!netName.equals(iobNetNames.get(safeName))) continue;
+                            String[] row = iobRows.get(safeName);
+                            if (row[3].equals("rx") || pin.getSiteInstName().equals(row[8])) {
+                                iobRouteDelays.merge(safeName, delayPs, Math::max);
+                            }
+                        }
                         timedEndpoints++;
                         maximumRouteDelayPs = Math.max(maximumRouteDelayPs, delayPs);
                     }
@@ -1062,8 +1115,43 @@ public final class EmuFlowRWRoute {
             .put("mapped_sha256", metadata.get("mapped_sha256"))
             .put("packed_sha256", metadata.get("packed_sha256"))
             .put("placement_sha256", metadata.get("placement_sha256"))
+            .putOpt(
+                "virtual_io_contract_sha256",
+                metadata.get("virtual_io_contract_sha256")
+            )
             .put("rwroute_input_sha256", sha256(Path.of(args[0]))));
         output.put("cells", cells.size());
+        JSONArray virtualIO = new JSONArray();
+        for (String safeName : iobNames) {
+            String[] row = iobRows.get(safeName);
+            MaterializedCell cell = cells.get(safeName);
+            Float delay = iobRouteDelays.get(safeName);
+            if (delay == null) {
+                throw new IllegalStateException("virtual I/O has no routed delay: " + row[2]);
+            }
+            virtualIO.put(new JSONObject()
+                .put("id", row[2])
+                .put("direction", row[3])
+                .put("p_port", row[4])
+                .put("n_port", row[5])
+                .put("p_package_pin", row[6])
+                .put("n_package_pin", row[7])
+                .put("p_site", row[8])
+                .put("n_site", row[9])
+                .put("logical_port", row[10])
+                .put("logical_bit", Integer.parseInt(row[11]))
+                .put("iostandard", row[12])
+                .put("mapped_net", iobNetNames.get(safeName))
+                .put("physical_cell", cell.regularCell.getName())
+                .put("physical_site", cell.regularCell.getSiteName())
+                .put("physical_bel", cell.regularCell.getBELName())
+                .put("route_delay_ps", delay)
+                .put(
+                    "differential_lowering",
+                    "rapidwright-lvds-p-iob-with-verified-dedicated-n-mate-v1"
+                ));
+        }
+        output.put("virtual_io", virtualIO);
         output.put("materialization", new JSONObject()
             .put("route_cells", cells.size())
             .put("physical_cells", physicalCells)

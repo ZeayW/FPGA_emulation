@@ -372,6 +372,7 @@ def export_rwroute_input(
     packed_value: Optional[Mapping[str, Any]] = None,
     placement_value: Optional[Mapping[str, Any]] = None,
     source_sha256: Optional[Mapping[str, str]] = None,
+    virtual_io_contract: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     packed = read_json(packed_path) if packed_value is None else packed_value
@@ -399,7 +400,8 @@ def export_rwroute_input(
     top = packed.get("top")
     if not isinstance(top, str):
         raise ValidationError("PackedSiteNetlist top is invalid")
-    cells = _select_module(mapped, top)["cells"]
+    module = _select_module(mapped, top)
+    cells = module["cells"]
     physical = {
         assignment["instance"]: (
             assignment.get("site", entry["site"]), assignment["bel"]
@@ -445,8 +447,53 @@ def export_rwroute_input(
         pin_bindings[(name, "I1")] = (o6_key, "I1")
         pin_bindings[(name, "O6")] = (o6_key, "O")
         expanded_lut6_2 += 1
+    io_rows: Dict[str, Mapping[str, Any]] = {}
+    io_by_bit: Dict[int, Tuple[str, str, str]] = {}
+    if virtual_io_contract is not None:
+        if (
+            virtual_io_contract.get("schema")
+            != "emuflow.virtual-io-physical-contract/v1"
+            or virtual_io_contract.get("status") != "pass"
+        ):
+            raise ValidationError("RWRoute virtual I/O contract is invalid")
+        ports = module.get("ports")
+        if not isinstance(ports, Mapping):
+            raise ValidationError("mapped top-port inventory is invalid")
+        for index, entry in enumerate(virtual_io_contract.get("entries", [])):
+            if not isinstance(entry, Mapping):
+                raise ValidationError("RWRoute virtual I/O entry is invalid")
+            direction = entry.get("direction")
+            logical_port = entry.get("logical_port")
+            logical_bit = entry.get("logical_bit")
+            port = ports.get(logical_port) if isinstance(logical_port, str) else None
+            bits = port.get("bits") if isinstance(port, Mapping) else None
+            expected_direction = "output" if direction == "tx" else "input"
+            if (
+                direction not in {"tx", "rx"}
+                or isinstance(logical_bit, bool)
+                or not isinstance(logical_bit, int)
+                or not isinstance(bits, list)
+                or logical_bit < 0
+                or logical_bit >= len(bits)
+                or port.get("direction") != expected_direction
+                or len(bits) != entry.get("logical_port_width")
+                or not isinstance(bits[logical_bit], int)
+            ):
+                raise ValidationError(
+                    "RWRoute virtual I/O logical top-port binding is invalid"
+                )
+            mapped_bit = bits[logical_bit]
+            role = "sink" if direction == "tx" else "driver"
+            key = f"\0IO{index}"
+            if mapped_bit in io_by_bit:
+                raise ValidationError("one mapped bit has multiple physical I/O bindings")
+            io_by_bit[mapped_bit] = (
+                key, "I" if direction == "tx" else "O", role
+            )
+            io_rows[key] = entry
     safe = {
-        name: f"c{index}" for index, name in enumerate(sorted(route_cells))
+        name: f"c{index}"
+        for index, name in enumerate(sorted([*route_cells, *io_rows]))
     }
     lines = [
         f"META\tpart\t{placement['part']}",
@@ -454,6 +501,15 @@ def export_rwroute_input(
         f"META\tpacked_sha256\t{digests['packed_sha256']}",
         f"META\tplacement_sha256\t{digests['placement_sha256']}",
     ]
+    if virtual_io_contract is not None:
+        lines.append(
+            "META\tvirtual_io_contract_sha256\t"
+            + hashlib.sha256(
+                json.dumps(
+                    virtual_io_contract, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+        )
     for route_name in sorted(route_cells):
         display_name, cell_type, site, bel = route_cells[route_name]
         if any(character in display_name for character in "\t\r\n"):
@@ -477,6 +533,18 @@ def export_rwroute_input(
                     lines.append(
                         f"PARAM\t{safe[route_name]}\t{parameter}\t{value}"
                     )
+    for key, entry in sorted(io_rows.items()):
+        fields = [
+            "IOB", safe[key], str(entry["id"]), str(entry["direction"]),
+            str(entry["p"]["port"]), str(entry["n"]["port"]),
+            str(entry["p"]["package_pin"]), str(entry["n"]["package_pin"]),
+            str(entry["p"]["site"]), str(entry["n"]["site"]),
+            str(entry["logical_port"]), str(entry["logical_bit"]),
+            str(entry["iostandard"]),
+        ]
+        if any(any(character in value for character in "\t\r\n") for value in fields):
+            raise ValidationError("RWRoute virtual I/O entry is not TSV-safe")
+        lines.append("\t".join(fields))
 
     endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
     for name in sorted(physical):
@@ -494,6 +562,8 @@ def export_rwroute_input(
                     endpoints[bit].append(
                         (name, _logical_pin(port, index, len(bits)), role)
                     )
+    for bit, endpoint in io_by_bit.items():
+        endpoints[bit].append(endpoint)
 
     included = 0
     excluded = 0
@@ -520,13 +590,20 @@ def export_rwroute_input(
                 lines.append(f"EXCLUDED\t{net_name}\t{reason}")
             excluded += 1
             continue
-        sites = {physical[name][0] for name, _pin, _role in [drivers[0], *sinks]}
+        sites = {
+            (
+                physical[name][0]
+                if name in physical
+                else str(io_rows[name]["p"]["site"])
+            )
+            for name, _pin, _role in [drivers[0], *sinks]
+        }
         if len(sites) == 1:
             lines.append(f"EXCLUDED\t{net_name}\tintra_site")
             excluded += 1
             continue
         driver_cell, driver_pin, _driver_role = drivers[0]
-        if cells[driver_cell].get("type") == "CARRY8":
+        if driver_cell in cells and cells[driver_cell].get("type") == "CARRY8":
             match = re.fullmatch(r"(CO|O)\[(\d+)\]", driver_pin)
             if match is not None and int(match.group(2)) < 7:
                 exit_key = (driver_cell, int(match.group(2)))
@@ -547,7 +624,7 @@ def export_rwroute_input(
             route_name, route_pin = pin_bindings.get(
                 (name, pin), (name, pin)
             )
-            if route_name not in route_cells:
+            if route_name not in route_cells and route_name not in io_rows:
                 raise ValidationError(
                     f"cell {name!r} pin {pin!r} has no RWRoute physical binding"
                 )
@@ -559,6 +636,7 @@ def export_rwroute_input(
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {
         "status": "pass", "cells": len(safe), "logical_cells": len(physical),
+        "virtual_io_cells": len(io_rows),
         "expanded_lut6_2_cells": expanded_lut6_2,
         "transformed_dsp48e2_cells": transformed_dsp48e2,
         "physical_cells": len(safe) + 7 * transformed_dsp48e2,
@@ -585,6 +663,7 @@ def run_rwroute(
     packed_value: Optional[Mapping[str, Any]] = None,
     source_sha256: Optional[Mapping[str, str]] = None,
     route_value_sink: Optional[Dict[str, Any]] = None,
+    virtual_io_contract: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     classes_dir.mkdir(parents=True, exist_ok=True)
     runtime_home = classes_dir.parent / "rapidwright-runtime-home"
@@ -673,6 +752,7 @@ def run_rwroute(
         mapped_value=mapped_value,
         packed_value=packed_value,
         source_sha256=source_sha256,
+        virtual_io_contract=virtual_io_contract,
         _value=value,
     )
     if route_value_sink is not None:
@@ -690,6 +770,7 @@ def validate_xilinx_route_db(
     mapped_value: Optional[Mapping[str, Any]] = None,
     packed_value: Optional[Mapping[str, Any]] = None,
     source_sha256: Optional[Mapping[str, str]] = None,
+    virtual_io_contract: Optional[Mapping[str, Any]] = None,
     _value: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     # RWRoute already materializes a very large in-memory object.  Accepting
@@ -709,12 +790,14 @@ def validate_xilinx_route_db(
         raise ValidationError("XilinxRouteDB provider identity is invalid")
     route_cells = value.get("cells")
     materialization = value.get("materialization")
+    virtual_io = value.get("virtual_io", [])
     if (
         isinstance(route_cells, bool)
         or not isinstance(route_cells, int)
         or route_cells < 0
         or not isinstance(materialization, dict)
         or materialization.get("route_cells") != route_cells
+        or not isinstance(virtual_io, list)
     ):
         raise ValidationError("XilinxRouteDB materialized route-cell count is invalid")
     physical_cells = materialization.get("physical_cells")
@@ -754,6 +837,17 @@ def validate_xilinx_route_db(
             raise ValidationError(f"XilinxRouteDB source.{key} is invalid")
         if source_path is not None and digest != expected_sources.get(key):
             raise ValidationError(f"XilinxRouteDB source.{key} does not match input")
+    expected_io_digest = (
+        hashlib.sha256(
+            json.dumps(
+                virtual_io_contract, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+        if virtual_io_contract is not None
+        else None
+    )
+    if source.get("virtual_io_contract_sha256") != expected_io_digest:
+        raise ValidationError("XilinxRouteDB virtual I/O source seal disagrees")
     if mapped_path is not None and packed_path is not None:
         mapped = read_json(mapped_path) if mapped_value is None else mapped_value
         packed = read_json(packed_path) if packed_value is None else packed_value
@@ -767,11 +861,56 @@ def validate_xilinx_route_db(
         expected_dsp48e2 = sum(
             cell.get("type") == "DSP48E2" for cell in mapped_cells.values()
         )
-        expected_route_cells = len(mapped_cells) + expected_lut6_2
+        expected_route_cells = len(mapped_cells) + expected_lut6_2 + len(virtual_io)
         if route_cells != expected_route_cells:
             raise ValidationError("XilinxRouteDB route-cell accounting disagrees")
         if transformed_dsp48e2 != expected_dsp48e2:
             raise ValidationError("XilinxRouteDB DSP48E2 transform count disagrees")
+    if virtual_io_contract is None:
+        if virtual_io:
+            raise ValidationError("XilinxRouteDB has undeclared virtual I/O cells")
+    else:
+        expected_io = {
+            entry["id"]: entry for entry in virtual_io_contract.get("entries", [])
+        }
+        observed_io = {}
+        for index, entry in enumerate(virtual_io):
+            if not isinstance(entry, dict) or entry.get("id") in observed_io:
+                raise ValidationError(
+                    f"XilinxRouteDB virtual I/O record {index} is invalid"
+                )
+            observed_io[entry["id"]] = entry
+        if set(observed_io) != set(expected_io):
+            raise ValidationError("XilinxRouteDB virtual I/O coverage disagrees")
+        for identity, expected in expected_io.items():
+            observed = observed_io[identity]
+            required = {
+                "id": identity,
+                "direction": expected["direction"],
+                "logical_port": expected["logical_port"],
+                "logical_bit": expected["logical_bit"],
+                "iostandard": expected["iostandard"],
+                "p_port": expected["p"]["port"],
+                "n_port": expected["n"]["port"],
+                "p_package_pin": expected["p"]["package_pin"],
+                "n_package_pin": expected["n"]["package_pin"],
+                "p_site": expected["p"]["site"],
+                "n_site": expected["n"]["site"],
+            }
+            if any(observed.get(key) != expected_value for key, expected_value in required.items()):
+                raise ValidationError(
+                    f"XilinxRouteDB virtual I/O {identity!r} differs from XDC contract"
+                )
+            delay = observed.get("route_delay_ps")
+            if (
+                isinstance(delay, bool)
+                or not isinstance(delay, (int, float))
+                or not math.isfinite(float(delay))
+                or float(delay) < 0.0
+            ):
+                raise ValidationError(
+                    f"XilinxRouteDB virtual I/O {identity!r} delay is invalid"
+                )
     input_digest = source.get("rwroute_input_sha256")
     if not isinstance(input_digest, str) or re.fullmatch(r"[0-9a-f]{64}", input_digest) is None:
         raise ValidationError("XilinxRouteDB source.rwroute_input_sha256 is invalid")
@@ -1073,6 +1212,7 @@ def validate_xilinx_route_db(
         "hold_analysis": timing["hold_analysis"],
         "route_cells": route_cells,
         "physical_cells": physical_cells,
+        "virtual_io_cells": len(virtual_io),
         "transformed_dsp48e2_cells": transformed_dsp48e2,
         "static_nets": static_nets,
         "static_sinks": static_sinks,

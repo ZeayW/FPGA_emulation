@@ -4,7 +4,8 @@
     "name": "rapidwright_xcvu19p_4fpga_mesh",
     "kind": "virtual",
     "description": "4-XCVU19P research model: RapidWright device resources, K2,2 topology (fpga0/fpga1 to fpga2/fpga3), 6 cables with 3 paired HP banks per cable, 20 effective differential data pairs per bank, and single-hop delay 30 + 0.5*R ns",
-    "virtual_board_model": "xcvu19p-hp-lvds-cable-v1"
+    "virtual_board_model": "xcvu19p-hp-lvds-cable-v1",
+    "virtual_board_wiring": "rapidwright_xcvu19p_4fpga_mesh.wires.csv"
   },
   "fpgas": [
     {

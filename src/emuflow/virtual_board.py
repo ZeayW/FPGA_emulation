@@ -11,6 +11,7 @@ import csv
 import hashlib
 import json
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Mapping
@@ -22,7 +23,9 @@ from .platform import Platform
 MODEL = "xcvu19p-hp-lvds-cable-v1"
 WIRING_SCHEMA = "emuflow.virtual-board-wiring/v1"
 BINDING_SCHEMA = "emuflow.virtual-board-binding/v1"
+IO_CONTRACT_SCHEMA = "emuflow.virtual-io-physical-contract/v1"
 INVENTORY_PATH = Path(__file__).parent / "data/io/xcvu19p-fsva3824-2-e.hp-pins.json"
+FIXED_WIRING_ROOT = Path(__file__).resolve().parents[2] / "platforms/virtual"
 
 
 def _digest(value: Any) -> str:
@@ -62,7 +65,7 @@ def _bank_pairs(bank: Mapping[str, Any]) -> list:
     return [{"pair_id": key, **pairs[key]} for key in order]
 
 
-def build_virtual_board(platform: Platform) -> Dict[str, Any]:
+def _build_virtual_board_model(platform: Platform) -> Dict[str, Any]:
     """Assign disjoint real HP banks and connect each P to P and N to N."""
     if platform.virtual_board_model != MODEL or platform.kind != "virtual":
         raise ValidationError(f"virtual board requires the declared {MODEL} model")
@@ -150,6 +153,120 @@ def build_virtual_board(platform: Platform) -> Dict[str, Any]:
     }
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_fixed_wiring(path: Path) -> list[Dict[str, Any]]:
+    expected_fields = [
+        "link", "wire", "cable", "bank_group", "bank_in_cable",
+        "wire_in_bank", "connector_data_contact_p",
+        "connector_data_contact_n",
+    ]
+    for tag in ("a", "b"):
+        expected_fields += [f"{key}_{tag}" for key in ("fpga", "bank", "pair_id")]
+        expected_fields += [
+            f"{key}_{tag}_{polarity}"
+            for polarity in ("p", "n")
+            for key in ("package_pin", "site", "pin_function")
+        ]
+    if not path.is_file():
+        raise ValidationError(f"fixed virtual-board wiring table is missing: {path}")
+    wires: list[Dict[str, Any]] = []
+    with path.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        if reader.fieldnames != expected_fields:
+            raise ValidationError("fixed virtual-board wiring table header is invalid")
+        for line_number, row in enumerate(reader, start=2):
+            if set(row) != set(expected_fields) or any(value is None for value in row.values()):
+                raise ValidationError(
+                    f"fixed virtual-board wiring row {line_number} is malformed"
+                )
+            try:
+                wire_index = int(row["wire"])
+                bank_group = int(row["bank_group"])
+                bank_in_cable = int(row["bank_in_cable"])
+                wire_in_bank = int(row["wire_in_bank"])
+                contact_p = int(row["connector_data_contact_p"])
+                contact_n = int(row["connector_data_contact_n"])
+            except ValueError as error:
+                raise ValidationError(
+                    f"fixed virtual-board wiring row {line_number} has a non-integer index"
+                ) from error
+            endpoints = []
+            for tag in ("a", "b"):
+                endpoint: Dict[str, Any] = {
+                    key: row[f"{key}_{tag}"] for key in ("fpga", "bank", "pair_id")
+                }
+                for polarity in ("p", "n"):
+                    endpoint[polarity] = {
+                        key: row[f"{key}_{tag}_{polarity}"]
+                        for key in ("package_pin", "site", "pin_function")
+                    }
+                endpoints.append(endpoint)
+            cable_match = re.fullmatch(r"(.+):cable(\d+)", row["cable"])
+            if cable_match is None or cable_match.group(1) != row["link"]:
+                raise ValidationError(
+                    f"fixed virtual-board wiring row {line_number} has an invalid cable"
+                )
+            wires.append({
+                "id": f"{row['link']}:wire{wire_index}",
+                "link": row["link"],
+                "wire": wire_index,
+                "bank_group": bank_group,
+                "cable": row["cable"],
+                "cable_index": int(cable_match.group(2)),
+                "bank_in_cable": bank_in_cable,
+                "wire_in_bank": wire_in_bank,
+                "connector_data_contacts": {"p": contact_p, "n": contact_n},
+                "endpoints": endpoints,
+            })
+    return wires
+
+
+def _fixed_wiring_path(reference: str) -> Path:
+    candidates = (
+        FIXED_WIRING_ROOT / reference,
+        Path(sys.prefix) / "share/emuflow/platforms" / reference,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise ValidationError(
+        "fixed virtual-board wiring table is missing: "
+        + ", ".join(str(path) for path in candidates)
+    )
+
+
+def build_virtual_board(platform: Platform) -> Dict[str, Any]:
+    """Load a declared fixed wiring table and independently verify its model."""
+    board = _build_virtual_board_model(platform)
+    reference = platform.virtual_board_wiring
+    if reference is None:
+        # Custom research platforms retain the deterministic model generator;
+        # the distributed defaults always declare a fixed source table.
+        return board
+    path = _fixed_wiring_path(reference)
+    wires = _read_fixed_wiring(path)
+    if wires != board["wires"]:
+        raise ValidationError(
+            "fixed virtual-board wiring table differs from the declared model "
+            "or device pin inventory"
+        )
+    board["wires"] = wires
+    board["source"] = {
+        **board["source"],
+        "wiring_table": reference,
+        "wiring_table_sha256": _file_sha256(path),
+        "wiring_authority": "checked-in-fixed-table",
+    }
+    return board
+
+
 def validate_virtual_board(platform: Platform, board: Mapping[str, Any]) -> Dict[str, Any]:
     expected = build_virtual_board(platform)
     if board != expected:
@@ -227,9 +344,9 @@ def build_virtual_binding(platform: Platform, board: Mapping[str, Any], schedule
     return {"schema": BINDING_SCHEMA, "platform": platform.name, "design": schedule.get("design"),
             "qualification": "virtual_board_real_device_pins", "status": "pass",
             "integration_status": "differential_data_constraints_and_adapter_generated",
-            "physical_backend_status": "not_consumed_by_ooc_backend",
+            "physical_backend_status": "phase7_consumption_required",
             "board_services_status": "clock_reset_and_control_pins_not_bound",
-            "io_adapter_status": "standalone_adapter_requires_top_level_integration",
+            "io_adapter_status": "phase7_top_level_integration_required",
             "board_sha256": _digest(board), "schedule_sha256": _digest(schedule),
             "lane_map_sha256": _digest(artifacts["lane_map"]),
             "entries": entries,
@@ -311,6 +428,89 @@ def virtual_binding_to_systemverilog(binding: Mapping[str, Any], fpga: str) -> s
         "// Whole-bank directions are static for this build; internal receiver termination enabled.",
         f"module emuflow_virtual_io_{_name(fpga)} (", ",\n".join(ports), ");", *body, "endmodule", "",
     ])
+
+
+def build_virtual_io_physical_contract(
+    binding: Mapping[str, Any],
+    fpga: str,
+    *,
+    xdc_path: Path,
+    adapter_path: Path,
+) -> Dict[str, Any]:
+    """Seal the exact Phase-6 XDC/adapter inputs consumed by Phase 7."""
+    if binding.get("schema") != BINDING_SCHEMA or binding.get("status") != "pass":
+        raise ValidationError("virtual I/O physical contract has an invalid binding")
+    expected_xdc = virtual_binding_to_xdc(binding, fpga)
+    expected_adapter = virtual_binding_to_systemverilog(binding, fpga)
+    if not xdc_path.is_file() or xdc_path.read_text(encoding="utf-8") != expected_xdc:
+        raise ValidationError(f"{fpga} virtual data-pin XDC differs from its binding")
+    if (
+        not adapter_path.is_file()
+        or adapter_path.read_text(encoding="utf-8") != expected_adapter
+    ):
+        raise ValidationError(f"{fpga} differential I/O adapter differs from its binding")
+
+    records: Dict[str, Dict[str, Any]] = {}
+    for item in binding["entries"]:
+        for role, direction in (("source", "tx"), ("sink", "rx")):
+            end = item[role]
+            if end["fpga"] != fpga:
+                continue
+            match = re.fullmatch(
+                r"([a-zA-Z_][a-zA-Z0-9_]*)\[(\d+)\]", end["logical_port"]
+            )
+            if match is None:
+                raise ValidationError("virtual I/O contract has an invalid logical port")
+            record = {
+                "id": f"{direction}:{end['p']['port']}",
+                "direction": direction,
+                "link": item["link"],
+                "wire": item["wire"],
+                "wire_id": item["wire_id"],
+                "bank": end["bank"],
+                "pair_id": end["pair_id"],
+                "iostandard": item["iostandard"],
+                "logical_port": match.group(1),
+                "logical_bit": int(match.group(2)),
+                "logical_port_width": end["logical_port_width"],
+                "p": dict(end["p"]),
+                "n": dict(end["n"]),
+                "schedule_entries": [],
+            }
+            key = record["id"]
+            existing = records.setdefault(key, record)
+            comparable = {k: v for k, v in record.items() if k != "schedule_entries"}
+            if {k: v for k, v in existing.items() if k != "schedule_entries"} != comparable:
+                raise ValidationError("one physical differential pair has conflicting bindings")
+            existing["schedule_entries"].append(item["schedule_entry"])
+    for record in records.values():
+        record["schedule_entries"].sort()
+    entries = sorted(records.values(), key=lambda item: item["id"])
+    return {
+        "schema": IO_CONTRACT_SCHEMA,
+        "status": "pass",
+        "provider": "phase6-xdc-differential-adapter-contract-v1",
+        "platform": binding["platform"],
+        "design": binding.get("design"),
+        "fpga": fpga,
+        "binding_sha256": _digest(binding),
+        "xdc": {"path": str(xdc_path), "sha256": _file_sha256(xdc_path)},
+        "adapter": {
+            "path": str(adapter_path),
+            "sha256": _file_sha256(adapter_path),
+            "module": f"emuflow_virtual_io_{_name(fpga)}",
+        },
+        "implementation_contract": (
+            "one fixed RapidWright LVDS IOB at the P package pin; the verified "
+            "N package pin is the dedicated complementary mate"
+        ),
+        "entries": entries,
+        "metrics": {
+            "differential_pairs": len(entries),
+            "physical_ports": 2 * len(entries),
+            "scheduled_hops": sum(len(item["schedule_entries"]) for item in entries),
+        },
+    }
 
 
 def write_wiring_csv(path: Path, board: Mapping[str, Any]) -> None:

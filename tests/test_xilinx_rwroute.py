@@ -24,6 +24,72 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_exporter_routes_fixed_virtual_io_instead_of_excluding_top_ports(self):
+        mapped = {"modules": {"top": {
+            "ports": {
+                "tx": {"direction": "output", "bits": [1]},
+                "rx": {"direction": "input", "bits": [2]},
+            },
+            "cells": {
+                "tx_src": {
+                    "type": "LUT1", "port_directions": {"O": "output"},
+                    "connections": {"O": [1]},
+                },
+                "rx_sink": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [2]},
+                },
+            },
+        }}}
+        assignments = [
+            {"instance": "tx_src", "cell_type": "LUT1", "bel": "A6LUT"},
+            {"instance": "rx_sink", "cell_type": "FDRE", "bel": "AFF"},
+        ]
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+            "clusters": [{"assignments": assignments}],
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
+                {"instance": "tx_src", "bel": "A6LUT", "site": "SLICE_X0Y0"},
+                {"instance": "rx_sink", "bel": "AFF", "site": "SLICE_X0Y1"},
+            ]}],
+        }
+        def io(identity, direction, port, bit, p, n, ps, ns):
+            return {
+                "id": identity, "direction": direction, "logical_port": port,
+                "logical_bit": bit, "logical_port_width": 1,
+                "iostandard": "LVDS", "p": {"port": identity + "_p",
+                "package_pin": p, "site": ps}, "n": {"port": identity + "_n",
+                "package_pin": n, "site": ns},
+            }
+        contract = {
+            "schema": "emuflow.virtual-io-physical-contract/v1", "status": "pass",
+            "entries": [
+                io("tx0", "tx", "tx", 0, "BR49", "BT49", "IOB_X0Y0", "IOB_X0Y1"),
+                io("rx0", "rx", "rx", 0, "BW47", "BW48", "IOB_X0Y2", "IOB_X0Y3"),
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / name for name in (
+                "mapped.json", "packed.json", "placement.json"
+            )]
+            for path, value in zip(paths, (mapped, packed, placement)):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            output = root / "route.tsv"
+            report = export_rwroute_input(
+                *paths, output, virtual_io_contract=contract
+            )
+            text = output.read_text(encoding="utf-8")
+        self.assertEqual(report["virtual_io_cells"], 2)
+        self.assertEqual(report["routable_nets"], 2)
+        self.assertEqual(text.count("\nIOB\t"), 2)
+        self.assertIn("\nNET\tn1\tsignal\n", text)
+        self.assertIn("\nNET\tn2\tsignal\n", text)
+        self.assertNotIn("boundary_or_driverless", text)
+
     def test_recovery_tree_drops_stable_connections_between_iterations(self):
         source = (
             Path(__file__).parents[1]
