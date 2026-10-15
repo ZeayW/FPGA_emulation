@@ -435,7 +435,7 @@ def _derive_contract(
     audit = audit_xilinx_mapped_json(mapped_path, top=top, source=source)
     selected_top, module = _select_module(source, top)
     cells = module.get("cells")
-    if not isinstance(cells, dict):
+    if not isinstance(cells, Mapping):
         raise ValidationError("mapped Xilinx cells are invalid")
     drivers = _net_drivers(cells)
     endpoints = _driver_endpoints(cells)
@@ -640,7 +640,7 @@ def validate_xilinx_physical_macro_contract(
     source = read_json(mapped_json)
     selected_top, module = _select_module(source, top)
     cells = module.get("cells")
-    if not isinstance(cells, dict):
+    if not isinstance(cells, Mapping):
         raise ValidationError("mapped Xilinx cells are invalid")
     _validate_shape(value, cells)
     expected = _derive_contract(mapped_json, top=selected_top)

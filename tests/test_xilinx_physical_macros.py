@@ -3,8 +3,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import MappingProxyType
 
 from emuflow.errors import ValidationError
+import emuflow.xilinx_physical_macros as physical_macros
 from emuflow.xilinx_physical_macros import (
     XILINX_PHYSICAL_MACRO_CONTRACT_SCHEMA,
     derive_xilinx_physical_macro_contract,
@@ -205,6 +207,21 @@ class XilinxPhysicalMacroContractTest(unittest.TestCase):
         serialized = contract.read_text(encoding="utf-8")
         self.assertNotIn("4100", serialized)
         self.assertIn('"sha256"', serialized)
+
+    def test_derives_from_read_only_mapped_cell_view(self):
+        value = complete_fixture()
+        cells = value["modules"]["top"]["cells"]
+        value["modules"]["top"]["cells"] = MappingProxyType(cells)
+        with tempfile.TemporaryDirectory() as temporary:
+            mapped = Path(temporary) / "mapped.json"
+            mapped.write_text("{}", encoding="utf-8")
+            report = physical_macros._derive_contract(
+                mapped, top="top", source=value
+            )
+        self.assertEqual(
+            report["schema"], XILINX_PHYSICAL_MACRO_CONTRACT_SCHEMA
+        )
+        self.assertTrue(report["site_macros"])
 
     def test_ramb18_occupancy_does_not_invent_name_based_pairing(self):
         _mapped, _contract, report = self._derive(complete_fixture())
