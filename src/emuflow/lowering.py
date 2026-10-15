@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import heapq
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -12,10 +11,10 @@ from .boundary_timing import (
 from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EMUIR_SCHEMA, EmuIR
-from .emuir_compact import write_compact_emuir
 from .emuir_storage import open_emuir_sqlite_read_only
 from .indexed_physical_ir import IndexedPhysicalIR
 from .netlist import FPGA_NETLIST_SCHEMA, TRANSPORT_ENDPOINTS_SCHEMA
+from .placement_ir_storage import write_placement_emuir_from_split
 from .split_netlist_storage import SplitNetlistView
 
 
@@ -450,11 +449,6 @@ def run_placement_ir_lowering_from_split(
             value["instance"] = instance_map[value["instance"]]
         return value
 
-    rx_endpoint_to_signal = {
-        endpoint["id"]: endpoint["signal"]
-        for endpoint in transport["endpoints"]
-        if endpoint["kind"] == "rx"
-    }
     shadow_signal_to_logical_net = {
         endpoint["signal"]: endpoint["net"]
         for endpoint in transport["endpoints"]
@@ -473,11 +467,7 @@ def run_placement_ir_lowering_from_split(
     }
     removed_ports = {"source_values", "shadow_values"}
 
-    with SplitNetlistView(
-        split_path,
-        fpga,
-        compact_owner_hints=True,
-    ) as split:
+    with SplitNetlistView(split_path, fpga) as split:
         if split.metadata.get("schema") != "emuflow.split-netlists-sqlite/v2":
             raise ValidationError("invalid split-netlist storage schema")
         if split.fpga != transport.get("fpga"):
@@ -502,6 +492,8 @@ def run_placement_ir_lowering_from_split(
         consumed_transport_nets = set()
         preserved_shadow_nets = set()
         shadow_internal_sinks: Dict[str, List[Dict[str, Any]]] = {}
+        rx_internal_drivers: Dict[str, List[Dict[str, Any]]] = {}
+        expected_rx_bindings = []
         for signal, index in shadow_index.items():
             top_net = _top_net(
                 top_net_index, "shadow_values", index, "sinks"
@@ -514,6 +506,17 @@ def run_placement_ir_lowering_from_split(
             logical_net = shadow_signal_to_logical_net.get(signal)
             if logical_net is not None and split.has_net(logical_net):
                 shadow_internal_sinks[logical_net] = internal
+                rx_internal_drivers[logical_net] = [
+                    remap_endpoint(endpoint)
+                    for endpoint in top_net["drivers"]
+                    if endpoint["instance"] is not None
+                ]
+                expected_rx_bindings.extend(
+                    (logical_net, endpoint["id"])
+                    for endpoint in transport["endpoints"]
+                    if endpoint["kind"] == "rx"
+                    and endpoint["signal"] == signal
+                )
                 consumed_transport_nets.add(top_net["id"])
             else:
                 preserved_shadow_nets.add(top_net["id"])
@@ -554,68 +557,34 @@ def run_placement_ir_lowering_from_split(
             ) and net["id"] not in preserved_shadow_nets:
                 consumed_transport_nets.add(net["id"])
 
-        seen_sources = set()
-        seen_shared: Dict[Tuple[str, int], int] = {
-            key: 0 for key in shared_sinks
-        }
+        added_endpoints = []
+        endpoint_orders: Dict[Tuple[str, int], int] = {}
 
-        def local_nets():
-            for segment in split.nets():
-                value = dict(segment)
-                value["aliases"] = list(segment.get("aliases", []))
-                value["drivers"] = [dict(item) for item in segment["drivers"]]
-                value["sinks"] = [dict(item) for item in segment["sinks"]]
-                value["id"] = segment["original_net"]
-                value["name"] = segment["name"]
-                value.setdefault("bus_index", 0)
-                # Preserve the established lowering contract exactly.  Source
-                # taps are transport observations and historically do not
-                # change the DUT fanout metadata; shadow/shared-port stitching
-                # does because it replaces or joins a physical driver net.
-                value.setdefault("fanout", len(value["sinks"]))
-                generated = [
-                    item for item in value["drivers"]
-                    if isinstance(item.get("instance"), str)
-                    and item["instance"].startswith("__emuflow_rx_")
-                ]
-                value["drivers"] = [
-                    item for item in value["drivers"] if item not in generated
-                ]
-                if generated:
-                    endpoint_id = generated[0]["instance"]
-                    signal = rx_endpoint_to_signal.get(endpoint_id)
-                    if signal is None:
-                        raise ValidationError(
-                            f"local net references unknown RX endpoint {endpoint_id!r}"
-                        )
-                    top_net = _top_net(
-                        top_net_index,
-                        "shadow_values",
-                        shadow_index[signal],
-                        "sinks",
-                    )
-                    value["drivers"].extend(
-                        remap_endpoint(item)
-                        for item in top_net["drivers"]
-                        if item["instance"] is not None
-                    )
-                if value["id"] in source_internal_sinks:
-                    value["sinks"].extend(source_internal_sinks[value["id"]])
-                    seen_sources.add(value["id"])
-                if value["id"] in shadow_internal_sinks:
-                    value["sinks"].extend(shadow_internal_sinks[value["id"]])
-                    value["fanout"] = len(value["sinks"])
-                for endpoint in value["drivers"]:
-                    key = (endpoint.get("port"), endpoint.get("bit"))
-                    if endpoint.get("instance") is None and key in shared_sinks:
-                        value["sinks"].extend(shared_sinks[key])
-                        seen_shared[key] += 1
-                        value["fanout"] = len(value["sinks"])
-                yield value
-            if seen_sources != set(source_internal_sinks):
-                raise ValidationError("transport source-net coverage is incomplete")
-            if any(count != 1 for count in seen_shared.values()):
-                raise ValidationError("shared transport input does not bind one DUT net")
+        def add_endpoints(
+            net_id: str,
+            role: int,
+            endpoints: List[Dict[str, Any]],
+        ) -> None:
+            key = (net_id, role)
+            order = endpoint_orders.get(key, 0)
+            for endpoint in endpoints:
+                added_endpoints.append((net_id, role, order, endpoint))
+                order += 1
+            endpoint_orders[key] = order
+
+        for net_id, endpoints in rx_internal_drivers.items():
+            add_endpoints(net_id, 0, endpoints)
+        for net_id, endpoints in source_internal_sinks.items():
+            add_endpoints(net_id, 1, endpoints)
+        for net_id, endpoints in shadow_internal_sinks.items():
+            add_endpoints(net_id, 1, endpoints)
+
+        port_added_endpoints = []
+        for (port_id, bit), endpoints in shared_sinks.items():
+            for order, endpoint in enumerate(endpoints):
+                port_added_endpoints.append(
+                    (port_id, bit, order, endpoint)
+                )
 
         transport_nets = []
         for net in transport_ir.value["nets"]:
@@ -636,15 +605,16 @@ def run_placement_ir_lowering_from_split(
             transport_nets.append(value)
         transport_nets.sort(key=lambda item: item["id"])
 
-        def transport_instances():
-            for instance in sorted(
-                transport_ir.value["instances"], key=lambda item: item["id"]
-            ):
-                yield {
+        transport_instances = [
+                {
                     **deepcopy(instance),
                     "id": instance_map[instance["id"]],
                     "name": instance_map[instance["id"]],
                 }
+            for instance in sorted(
+                transport_ir.value["instances"], key=lambda item: item["id"]
+            )
+        ]
 
         ports = list(split.ports)
         ports_by_id = {port["id"]: port for port in ports}
@@ -662,28 +632,27 @@ def run_placement_ir_lowering_from_split(
             for port in ports if port.get("clock")
         ]
         design = split.metadata["design"]
-        write_compact_emuir(
+        merged_design = {
+            **design,
+            "name": f"{design['name']}__{fpga}",
+            "top": f"{design['top']}__{fpga}",
+            "source_format": "emuflow-phase7-merged",
+        }
+        write_placement_emuir_from_split(
+            split_path,
+            fpga,
             output_path,
-            {
-                "schema": EMUIR_SCHEMA,
-                "design": {
-                    **design,
-                    "name": f"{design['name']}__{fpga}",
-                    "top": f"{design['top']}__{fpga}",
-                    "source_format": "emuflow-phase7-merged",
-                },
-                "ports": ports,
-                "instances": heapq.merge(
-                    split.instances(), transport_instances(),
-                    key=lambda item: item["id"],
-                ),
-                "nets": heapq.merge(
-                    local_nets(), transport_nets,
-                    key=lambda item: item["id"],
-                ),
-                "clocks": clocks,
-                "warnings": list(transport_ir.value.get("warnings", [])),
-            },
+            design=merged_design,
+            ports=ports,
+            clocks=clocks,
+            warnings=list(transport_ir.value.get("warnings", [])),
+            transport_instances=transport_instances,
+            transport_nets=transport_nets,
+            added_endpoints=added_endpoints,
+            port_added_endpoints=port_added_endpoints,
+            recompute_fanout=shadow_internal_sinks,
+            expected_source_nets=source_internal_sinks,
+            expected_rx_bindings=expected_rx_bindings,
         )
         original_instances = split.counts()["instances"]
 

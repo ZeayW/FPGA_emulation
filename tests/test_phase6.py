@@ -38,6 +38,7 @@ from emuflow.phase3_assignment_index import (
     write_phase3_assignment_index,
 )
 from emuflow.split_netlist_storage import (
+    SplitNetlistView,
     build_streaming_split_metadata,
     read_split_netlist_sqlite,
     write_split_netlists_sqlite,
@@ -458,6 +459,18 @@ class Phase6Test(unittest.TestCase):
                     "streaming lowering must not materialize a split graph"
                 ),
                 create=True,
+            ), mock.patch.object(
+                SplitNetlistView,
+                "instances",
+                side_effect=AssertionError(
+                    "production lowering must not iterate DUT instances"
+                ),
+            ), mock.patch.object(
+                SplitNetlistView,
+                "nets",
+                side_effect=AssertionError(
+                    "production lowering must not iterate DUT nets"
+                ),
             ):
                 run_placement_ir_lowering_from_split(
                     split_path,
